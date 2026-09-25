@@ -11,6 +11,9 @@ import {
   createContact,
   assertMergeTargets,
   createProduct,
+  createSavedView,
+  parseCsv,
+  toCsv,
   isDuplicatePair,
   linkContact,
   scoreBand,
@@ -258,5 +261,36 @@ describe("crm duplicate detection and merge", () => {
   it("refuses to merge a contact with itself", () => {
     expect(() => assertMergeTargets("contact-1", "contact-1")).toThrow(/different contacts/);
     expect(() => assertMergeTargets("contact-1", "contact-2")).not.toThrow();
+  });
+});
+
+describe("crm saved views", () => {
+  it("creates a saved view with a record type", () => {
+    const view = createSavedView({ companyId: "workspace-a", name: "Hot leads", recordType: "contact", filters: { lifecycle: "lead" } });
+    expect(view.recordType).toBe("contact");
+    expect(view.filters).toEqual({ lifecycle: "lead" });
+  });
+
+  it("rejects a blank name and an invalid record type", () => {
+    expect(() => createSavedView({ companyId: "workspace-a", name: "  ", recordType: "contact" })).toThrow(/name is required/);
+    expect(() => createSavedView({ companyId: "workspace-a", name: "X", recordType: "widget" })).toThrow(/contact, company, or deal/);
+  });
+});
+
+describe("crm csv", () => {
+  it("round-trips a CSV with quoted cells", () => {
+    const csv = toCsv(["name", "emails"], [
+      { name: "Ada, Lovelace", emails: "ada@northwind.test" },
+      { name: "Grace", emails: "grace@northwind.test" },
+    ]);
+    const rows = parseCsv(csv);
+    expect(rows[0]).toEqual(["name", "emails"]);
+    expect(rows[1][0]).toBe("Ada, Lovelace");
+    expect(rows[2][1]).toBe("grace@northwind.test");
+  });
+
+  it("escapes quotes in CSV cells", () => {
+    const csv = toCsv(["name"], [{ name: 'He said "hi"' }]);
+    expect(csv).toContain('"He said ""hi"""');
   });
 });

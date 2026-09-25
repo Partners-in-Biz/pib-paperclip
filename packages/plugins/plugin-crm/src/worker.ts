@@ -13,7 +13,10 @@ import {
   defineField,
   dueEnrollments,
   enrollmentByIssue,
+  deleteSavedView,
   findDuplicateContacts,
+  insertSavedView,
+  listSavedViews,
   mergeContacts,
   enrollmentsForContact,
   ensurePipeline,
@@ -60,8 +63,12 @@ import {
   assertCurrency,
   assertMergeTargets,
   assertProductName,
+  assertViewName,
+  createSavedView,
   isDuplicatePair,
   normalizeEmail,
+  parseCsv,
+  toCsv,
   assertLifecycle,
   assertNextAction,
   assertPrincipalType,
@@ -202,6 +209,16 @@ async function dispatch(
       return findDuplicates(ctx, viewer);
     case "merge-contacts":
       return mergeContactsRecord(ctx, viewer, body);
+    case "create-saved-view":
+      return createSavedViewRecord(ctx, viewer, body);
+    case "list-saved-views":
+      return listSavedViewsRecord(ctx, viewer);
+    case "delete-saved-view":
+      return deleteSavedViewRecord(ctx, viewer, body);
+    case "export-contacts":
+      return exportContacts(ctx, viewer);
+    case "import-contacts":
+      return importContacts(ctx, viewer, body);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -451,6 +468,92 @@ async function mergeContactsRecord(ctx: PluginContext, viewer: Viewer, params: R
   }
   await mergeContacts(ctx, { companyId: viewer.companyId, primaryId, duplicateId });
   return { primaryId, duplicateId, merged: true };
+}
+
+async function createSavedViewRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const view = createSavedView({
+    companyId: viewer.companyId,
+    name: requiredString(params, "name"),
+    recordType: requiredString(params, "recordType"),
+    filters: asRecord(params.filters),
+    createdByUserId: viewer.userId,
+  });
+  await insertSavedView(ctx, {
+    id: view.id,
+    company_id: view.companyId,
+    name: view.name,
+    record_type: view.recordType,
+    filters: view.filters,
+    created_by_user_id: view.createdByUserId,
+  });
+  return view;
+}
+
+async function listSavedViewsRecord(ctx: PluginContext, viewer: Viewer) {
+  const rows = await listSavedViews(ctx, viewer.companyId);
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    recordType: row.record_type,
+    filters: asRecord(row.filters),
+  }));
+}
+
+async function deleteSavedViewRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const id = requiredString(params, "viewId");
+  const deleted = await deleteSavedView(ctx, viewer.companyId, id);
+  if (!deleted) throw new CrmError("Saved view was not found");
+  return { deleted: true, viewId: id };
+}
+
+async function exportContacts(ctx: PluginContext, viewer: Viewer) {
+  const contacts = await listContacts(ctx, viewer.companyId);
+  const visible = contacts.filter((contact) => canSeeRecord(viewer, contact, []));
+  const rows = visible.map((contact) => ({
+    name: contact.name,
+    emails: contact.emails.join(";"),
+    phones: contact.phones.join(";"),
+    lifecycle: contact.lifecycle,
+    tags: contact.tags.join(";"),
+  }));
+  return { csv: toCsv(["name", "emails", "phones", "lifecycle", "tags"], rows), count: rows.length };
+}
+
+async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const csv = requiredString(params, "csv");
+  const parsed = parseCsv(csv);
+  if (parsed.length < 2) throw new CrmError("CSV needs a header row and at least one contact");
+  const headers = parsed[0].map((header) => header.trim().toLowerCase());
+  const nameIdx = headers.indexOf("name");
+  const emailIdx = headers.indexOf("emails");
+  const phoneIdx = headers.indexOf("phones");
+  const lifecycleIdx = headers.indexOf("lifecycle");
+  const tagsIdx = headers.indexOf("tags");
+  if (nameIdx < 0) throw new CrmError("CSV needs a name column");
+  let created = 0;
+  for (let i = 1; i < parsed.length; i++) {
+    const row = parsed[i];
+    const name = (row[nameIdx] ?? "").trim();
+    if (!name) continue;
+    const contact = createContact({
+      companyId: viewer.companyId,
+      name,
+      emails: splitList(row[emailIdx]),
+      phones: splitList(row[phoneIdx]),
+      lifecycle: lifecycleIdx >= 0 ? row[lifecycleIdx] : undefined,
+      tags: splitList(row[tagsIdx]),
+      ownerUserId: viewer.userId,
+      assigneeAgentId: viewer.agentId,
+    });
+    await insertContact(ctx, contact);
+    created += 1;
+  }
+  return { created };
+}
+
+function splitList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(";").map((part) => part.trim()).filter(Boolean);
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

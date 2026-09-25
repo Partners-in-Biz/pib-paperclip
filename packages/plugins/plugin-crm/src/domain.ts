@@ -541,6 +541,97 @@ export function assertMergeTargets(primaryId: string, duplicateId: string): void
   if (primaryId === duplicateId) throw new CrmError("Primary and duplicate must be different contacts");
 }
 
+export interface SavedViewDraft {
+  id: string;
+  companyId: string;
+  name: string;
+  recordType: RecordType;
+  filters: Record<string, unknown>;
+  createdByUserId: string | null;
+}
+
+export function createSavedView(input: {
+  companyId: string;
+  name: string;
+  recordType: string;
+  filters?: Record<string, unknown>;
+  createdByUserId?: string | null;
+  id?: string;
+}): SavedViewDraft {
+  const name = input.name.trim();
+  if (!name) throw new CrmError("View name is required");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    name,
+    recordType: assertRecordType(input.recordType),
+    filters: input.filters ?? {},
+    createdByUserId: input.createdByUserId ?? null,
+  };
+}
+
+export function assertViewName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new CrmError("View name is required");
+  return name;
+}
+
+/** Escape a value for a CSV cell. */
+export function csvCell(value: unknown): string {
+  if (value == null) return "";
+  const text = String(value);
+  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+/** Build a CSV string from a header row and data rows. */
+export function toCsv(headers: string[], rows: Array<Record<string, unknown>>): string {
+  const lines = [headers.map(csvCell).join(",")];
+  for (const row of rows) {
+    lines.push(headers.map((header) => csvCell(row[header])).join(","));
+  }
+  return lines.join("\n");
+}
+
+/** Parse a CSV string into rows of string values, handling quoted cells. */
+export function parseCsv(input: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (inQuotes) {
+      if (char === '"') {
+        if (input[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += char;
+      }
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n" || char === "\r") {
+      if (char === "\r" && input[i + 1] === "\n") i++;
+      row.push(cell);
+      cell = "";
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  if (row.some((value) => value !== "")) rows.push(row);
+  return rows;
+}
+
 function cleanStrings(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }

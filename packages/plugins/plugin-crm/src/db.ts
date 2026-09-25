@@ -853,3 +853,39 @@ export async function mergeContacts(
     [duplicateId, companyId],
   );
 }
+
+export interface SavedViewRow {
+  id: string;
+  company_id: string;
+  name: string;
+  record_type: string;
+  filters: unknown;
+  created_by_user_id: string | null;
+}
+
+export async function listSavedViews(ctx: PluginContext, companyId: string): Promise<SavedViewRow[]> {
+  return ctx.db.query<SavedViewRow>(
+    `SELECT id, company_id, name, record_type, filters, created_by_user_id
+       FROM ${table(ctx, "saved_views")}
+      WHERE company_id = $1
+      ORDER BY name`,
+    [companyId],
+  );
+}
+
+export async function insertSavedView(ctx: PluginContext, view: SavedViewRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "saved_views")}
+      (id, company_id, name, record_type, filters, created_by_user_id)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+    [view.id, view.company_id, view.name, view.record_type, JSON.stringify(view.filters ?? {}), view.created_by_user_id],
+  );
+}
+
+export async function deleteSavedView(ctx: PluginContext, companyId: string, id: string): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "saved_views")} WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  );
+  return result != null;
+}

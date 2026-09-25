@@ -226,4 +226,42 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
         duplicateContactId: text,
       }),
     },
-  ];
+    {
+    name: "create-saved-view",
+    displayName: "Create saved view",
+    description: "Save a named filter view for contacts, companies, or deals so a person can reopen it later.",
+    parametersSchema: schema(["name", "recordType"], {
+      name: text,
+      recordType: text,
+      filters: objectBag,
+    }),
+  },
+  {
+    name: "list-saved-views",
+    displayName: "List saved views",
+    description: "Return the saved filter views for this workspace.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "delete-saved-view",
+    displayName: "Delete saved view",
+    description: "Delete a saved filter view by id.",
+    parametersSchema: schema(["viewId"], {
+      viewId: text,
+    }),
+  },
+  {
+    name: "export-contacts",
+    displayName: "Export contacts",
+    description: "Return the visible contacts as CSV text with name, emails, phones, lifecycle, and tags columns.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "import-contacts",
+    displayName: "Import contacts",
+    description: "Create contacts from CSV text. The first row must be headers: name, emails, phones, lifecycle, tags. emails and phones are semicolon-separated.",
+    parametersSchema: schema(["csv"], {
+      csv: text,
+    }),
+  },
+];
