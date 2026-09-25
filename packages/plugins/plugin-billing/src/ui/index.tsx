@@ -22,7 +22,7 @@ import {
   Toolbar,
   errorText,
   formatMinor,
-} from "./shell";
+} from "@partnersinbiz/pib-plugin-ui";
 
 interface Invoice { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string }
 interface Quote { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string }

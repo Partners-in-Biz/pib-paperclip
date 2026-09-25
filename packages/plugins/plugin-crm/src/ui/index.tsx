@@ -27,7 +27,7 @@ import {
   Toolbar,
   errorText,
   formatMinor,
-} from "./shell";
+} from "@partnersinbiz/pib-plugin-ui";
 
 interface Account {
   id: string;

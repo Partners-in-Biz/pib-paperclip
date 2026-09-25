@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Org and personal social accounts, post review, and a publish job.",
-  "files": ["dist", "migrations", "README.md"],
+  "files": [
+    "dist",
+    "migrations",
+    "README.md"
+  ],
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
@@ -25,6 +29,13 @@
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
-  "peerDependencies": { "react": ">=18" },
-  "engines": { "node": ">=24.11.0" }
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "dependencies": {
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
+  }
 }

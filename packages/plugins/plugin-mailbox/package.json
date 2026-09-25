@@ -1,9 +1,9 @@
 {
-  "name": "@partnersinbiz/plugin-billing",
+  "name": "@partnersinbiz/plugin-mailbox",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Commercial invoices in minor units. Agents draft. A person approves sending and payment.",
+  "description": "Member mailboxes, message metadata, and agent delegations. Sending is off unless the delegation allows it.",
   "files": [
     "dist",
     "migrations",

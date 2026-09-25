@@ -22,7 +22,7 @@ import {
   TextArea,
   Toolbar,
   errorText,
-} from "./shell";
+} from "@partnersinbiz/pib-plugin-ui";
 
 interface Account { id: string; displayName: string; platform: string; scope: string; hasCredential: boolean }
 interface Post { id: string; body: string; status: string; scope: string }

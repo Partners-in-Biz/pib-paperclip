@@ -1,9 +1,9 @@
 {
-  "name": "@partnersinbiz/plugin-billing",
+  "name": "@partnersinbiz/plugin-partners",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Commercial invoices in minor units. Agents draft. A person approves sending and payment.",
+  "description": "Bilateral company links and named record grants.",
   "files": [
     "dist",
     "migrations",

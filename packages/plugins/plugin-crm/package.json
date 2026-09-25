@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Partners in Biz CRM plugin. Companies, contacts, deals, and sequences in the Paperclip Postgres namespace.",
-  "files": ["dist", "migrations", "README.md"],
+  "files": [
+    "dist",
+    "migrations",
+    "README.md"
+  ],
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
@@ -30,5 +34,8 @@
   },
   "engines": {
     "node": ">=24.11.0"
+  },
+  "dependencies": {
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
   }
 }
