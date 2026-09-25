@@ -31,6 +31,11 @@ export const tokens = {
 
 const font = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
 
+const focusRing: CSSProperties = {
+  outline: "none",
+  boxShadow: `0 0 0 2px ${tokens.bg}, 0 0 0 4px ${tokens.ring}`,
+};
+
 const fieldBase: CSSProperties = {
   height: 36,
   borderRadius: 8,
@@ -42,6 +47,7 @@ const fieldBase: CSSProperties = {
   fontFamily: "inherit",
   outline: "none",
   minWidth: 140,
+  transition: "border-color 120ms ease, box-shadow 120ms ease",
 };
 
 export function Page({ title, description, children, message, actions }: {
@@ -55,10 +61,10 @@ export function Page({ title, description, children, message, actions }: {
     <main style={{
       fontFamily: font,
       color: tokens.fg,
-      padding: 24,
-      maxWidth: 1120,
+      padding: 28,
+      maxWidth: 1160,
       display: "grid",
-      gap: 20,
+      gap: 22,
     }}>
       <PageHeader title={title} description={description} actions={actions} />
       {message ? (
@@ -67,11 +73,12 @@ export function Page({ title, description, children, message, actions }: {
           style={{
             margin: 0,
             fontSize: 13,
-            padding: "10px 12px",
+            padding: "10px 14px",
             borderRadius: 10,
             border: `1px solid ${tokens.border}`,
             background: tokens.secondary,
             color: tokens.secondaryFg,
+            lineHeight: 1.45,
           }}
         >
           {message}
@@ -89,9 +96,9 @@ export function PageHeader({ title, description, actions }: {
 }) {
   return (
     <header style={{ display: "flex", gap: 16, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
-      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>{title}</h1>
-        <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.45 }}>{description}</p>
+      <div style={{ display: "grid", gap: 5, minWidth: 0 }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 650, letterSpacing: "-0.025em", lineHeight: 1.2 }}>{title}</h1>
+        <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, maxWidth: 640 }}>{description}</p>
       </div>
       {actions ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{actions}</div> : null}
     </header>
@@ -102,14 +109,15 @@ export function Section({ title, children, actions }: { title: string; children:
   return (
     <section style={{
       display: "grid",
-      gap: 12,
-      padding: 16,
-      borderRadius: 12,
+      gap: 14,
+      padding: 18,
+      borderRadius: 14,
       border: `1px solid ${tokens.border}`,
       background: tokens.card,
+      boxShadow: "0 1px 2px color-mix(in oklab, black 4%, transparent)",
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, letterSpacing: "0.02em", textTransform: "uppercase", color: tokens.muted }}>
+        <h2 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>
           {title}
         </h2>
         {actions}
@@ -125,7 +133,7 @@ export function Tabs({ tabs, active, onChange }: {
   onChange: (id: string) => void;
 }) {
   return (
-    <div role="tablist" style={{ display: "flex", gap: 4, borderBottom: `1px solid ${tokens.border}`, paddingBottom: 0 }}>
+    <div role="tablist" style={{ display: "flex", gap: 2, borderBottom: `1px solid ${tokens.border}`, paddingBottom: 0 }}>
       {tabs.map((tab) => {
         const selected = tab.id === active;
         return (
@@ -142,11 +150,13 @@ export function Tabs({ tabs, active, onChange }: {
               color: selected ? tokens.fg : tokens.muted,
               fontSize: 13,
               fontWeight: selected ? 600 : 500,
-              padding: "8px 12px",
+              padding: "9px 14px",
               cursor: "pointer",
               borderBottom: selected ? `2px solid ${tokens.fg}` : "2px solid transparent",
               marginBottom: -1,
               fontFamily: "inherit",
+              transition: "color 120ms ease",
+              borderRadius: "8px 8px 0 0",
             }}
           >
             {tab.label}
@@ -164,7 +174,7 @@ export function Toolbar({ children, search, onSearchChange, searchPlaceholder = 
   searchPlaceholder?: string;
 }) {
   return (
-    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
       {onSearchChange ? (
         <Input
           aria-label="Search"
@@ -187,16 +197,26 @@ export function EmptyState({ title, description, action }: {
   return (
     <div style={{
       display: "grid",
-      gap: 8,
+      gap: 10,
       placeItems: "center",
       textAlign: "center",
-      padding: "36px 16px",
-      borderRadius: 12,
+      padding: "44px 20px",
+      borderRadius: 14,
       border: `1px dashed ${tokens.border}`,
       background: tokens.bg,
     }}>
-      <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
-      {description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, maxWidth: 360 }}>{description}</p> : null}
+      <div style={{
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        display: "grid",
+        placeItems: "center",
+        background: tokens.secondary,
+        color: tokens.muted,
+        fontSize: 18,
+      }} aria-hidden="true">◇</div>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div>
+      {description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, maxWidth: 380, lineHeight: 1.5 }}>{description}</p> : null}
       {action}
     </div>
   );
@@ -204,7 +224,7 @@ export function EmptyState({ title, description, action }: {
 
 export function StatRow({ children }: { children: ReactNode }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
       {children}
     </div>
   );
@@ -218,21 +238,22 @@ export function BarChart({ title, items }: {
   return (
     <div style={{
       display: "grid",
-      gap: 10,
-      padding: 14,
-      borderRadius: 12,
+      gap: 12,
+      padding: 16,
+      borderRadius: 14,
       border: `1px solid ${tokens.border}`,
       background: tokens.card,
+      boxShadow: "0 1px 2px color-mix(in oklab, black 4%, transparent)",
     }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.02em" }}>
+      <div style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
         {title}
       </div>
       {items.length === 0 ? (
         <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No data yet.</p>
       ) : (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gap: 10 }}>
           {items.map((item, index) => (
-            <div key={item.label} style={{ display: "grid", gap: 4 }}>
+            <div key={item.label} style={{ display: "grid", gap: 5 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
                 <span>{item.label}</span>
                 <span style={{ color: tokens.muted, fontVariantNumeric: "tabular-nums" }}>{item.value}</span>
@@ -243,6 +264,7 @@ export function BarChart({ title, items }: {
                   height: "100%",
                   background: item.color ?? tokens.chart[index % tokens.chart.length],
                   borderRadius: 999,
+                  transition: "width 300ms ease",
                 }} />
               </div>
             </div>
@@ -259,25 +281,25 @@ export function PipelineBoard({ columns }: {
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: `repeat(${Math.max(columns.length, 1)}, minmax(180px, 1fr))`,
-      gap: 10,
+      gridTemplateColumns: `repeat(${Math.max(columns.length, 1)}, minmax(190px, 1fr))`,
+      gap: 12,
       overflowX: "auto",
       paddingBottom: 4,
     }}>
       {columns.map((column) => (
         <div key={column.id} style={{
           display: "grid",
-          gap: 8,
+          gap: 10,
           alignContent: "start",
-          minWidth: 180,
-          padding: 10,
-          borderRadius: 12,
+          minWidth: 190,
+          padding: 12,
+          borderRadius: 14,
           border: `1px solid ${tokens.border}`,
           background: tokens.bg,
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-            <strong style={{ fontSize: 12, letterSpacing: "0.02em", textTransform: "uppercase", color: tokens.muted }}>{column.title}</strong>
-            {column.meta ? <span style={{ fontSize: 11, color: tokens.muted }}>{column.meta}</span> : null}
+            <strong style={{ fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", color: tokens.muted }}>{column.title}</strong>
+            {column.meta ? <span style={{ fontSize: 11, color: tokens.muted, fontVariantNumeric: "tabular-nums" }}>{column.meta}</span> : null}
           </div>
           <div style={{ display: "grid", gap: 8 }}>{column.children}</div>
         </div>
@@ -300,15 +322,16 @@ export function PipelineCard({ title, subtitle, footer, onClick }: {
         appearance: "none",
         textAlign: "left",
         display: "grid",
-        gap: 4,
+        gap: 5,
         width: "100%",
-        padding: 10,
-        borderRadius: 10,
+        padding: 12,
+        borderRadius: 12,
         border: `1px solid ${tokens.border}`,
         background: tokens.card,
         color: tokens.fg,
         cursor: onClick ? "pointer" : "default",
         fontFamily: "inherit",
+        transition: "border-color 120ms ease, box-shadow 120ms ease",
       }}
     >
       <div style={{ fontSize: 13, fontWeight: 600 }}>{title}</div>
@@ -351,7 +374,8 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         position: "fixed",
         inset: 0,
         zIndex: 80,
-        background: "color-mix(in oklab, black 45%, transparent)",
+        background: "color-mix(in oklab, black 50%, transparent)",
+        backdropFilter: "blur(2px)",
         display: "grid",
         placeItems: "center",
         padding: 16,
@@ -363,28 +387,28 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         aria-modal="true"
         aria-labelledby={titleId}
         style={{
-          width: "min(480px, 100%)",
+          width: "min(500px, 100%)",
           maxHeight: "90vh",
           overflow: "auto",
-          borderRadius: 14,
+          borderRadius: 16,
           border: `1px solid ${tokens.border}`,
           background: tokens.card,
           color: tokens.fg,
-          boxShadow: "0 18px 50px color-mix(in oklab, black 35%, transparent)",
+          boxShadow: "0 24px 60px color-mix(in oklab, black 40%, transparent)",
           display: "grid",
-          gap: 14,
-          padding: 18,
+          gap: 16,
+          padding: 20,
           fontFamily: font,
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
           <div style={{ display: "grid", gap: 4 }}>
-            <h2 id={titleId} style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{title}</h2>
-            {description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{description}</p> : null}
+            <h2 id={titleId} style={{ margin: 0, fontSize: 17, fontWeight: 650, letterSpacing: "-0.01em" }}>{title}</h2>
+            {description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.45 }}>{description}</p> : null}
           </div>
           <Button type="button" variant="secondary" onClick={onClose} aria-label="Close" style={{ minWidth: 0, padding: "0 10px" }}>×</Button>
         </div>
-        <div style={{ display: "grid", gap: 12 }}>{children}</div>
+        <div style={{ display: "grid", gap: 14 }}>{children}</div>
         {footer ? <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>{footer}</div> : null}
       </div>
     </div>
@@ -418,7 +442,8 @@ export function Sheet({ open, title, children, onClose }: {
         position: "fixed",
         inset: 0,
         zIndex: 70,
-        background: "color-mix(in oklab, black 35%, transparent)",
+        background: "color-mix(in oklab, black 40%, transparent)",
+        backdropFilter: "blur(2px)",
         display: "flex",
         justifyContent: "flex-end",
       }}
@@ -428,21 +453,22 @@ export function Sheet({ open, title, children, onClose }: {
         aria-modal="true"
         aria-label={title}
         style={{
-          width: "min(420px, 100%)",
+          width: "min(440px, 100%)",
           height: "100%",
           background: tokens.card,
           borderLeft: `1px solid ${tokens.border}`,
           color: tokens.fg,
-          padding: 18,
+          padding: 20,
           display: "grid",
-          gap: 14,
+          gap: 16,
           alignContent: "start",
           overflow: "auto",
           fontFamily: font,
+          boxShadow: "-12px 0 40px color-mix(in oklab, black 20%, transparent)",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{title}</h2>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 650, letterSpacing: "-0.01em" }}>{title}</h2>
           <Button type="button" variant="secondary" onClick={onClose} aria-label="Close" style={{ minWidth: 0, padding: "0 10px" }}>×</Button>
         </div>
         {children}
@@ -453,7 +479,7 @@ export function Sheet({ open, title, children, onClose }: {
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label style={{ display: "grid", gap: 6, fontSize: 12, color: tokens.muted }}>
+    <label style={{ display: "grid", gap: 6, fontSize: 12, color: tokens.muted, fontWeight: 500 }}>
       <span>{label}</span>
       {children}
     </label>
@@ -476,9 +502,9 @@ export function ListItem({ children }: { children: ReactNode }) {
   return (
     <li style={{
       fontSize: 13,
-      lineHeight: 1.4,
-      padding: "8px 10px",
-      borderRadius: 8,
+      lineHeight: 1.45,
+      padding: "9px 12px",
+      borderRadius: 10,
       background: tokens.secondary,
       color: tokens.fg,
     }}>
@@ -491,7 +517,7 @@ export function Form({ onSubmit, children }: { onSubmit: (event: FormEvent) => v
   return (
     <form
       onSubmit={onSubmit}
-      style={{ display: "grid", gap: 12 }}
+      style={{ display: "grid", gap: 14 }}
     >
       {children}
     </form>
@@ -499,21 +525,55 @@ export function Form({ onSubmit, children }: { onSubmit: (event: FormEvent) => v
 }
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} style={{ ...fieldBase, width: "100%", minWidth: 0, ...((props.style as CSSProperties) ?? {}) }} />;
+  return (
+    <input
+      {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
+      style={{ ...fieldBase, width: "100%", minWidth: 0, ...((props.style as CSSProperties) ?? {}) }}
+    />
+  );
 }
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} style={{ ...fieldBase, width: "100%", minWidth: 0, ...((props.style as CSSProperties) ?? {}) }} />;
+  return (
+    <select
+      {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
+      style={{ ...fieldBase, width: "100%", minWidth: 0, ...((props.style as CSSProperties) ?? {}) }}
+    />
+  );
 }
 
 export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
       style={{
         ...fieldBase,
         height: "auto",
-        minHeight: 72,
+        minHeight: 76,
         padding: 10,
         resize: "vertical",
         width: "100%",
@@ -533,14 +593,32 @@ export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<H
   return (
     <button
       {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
+      onMouseEnter={(event) => {
+        if (!props.disabled) event.currentTarget.style.filter = "brightness(0.97)";
+        props.onMouseEnter?.(event);
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.filter = "none";
+        props.onMouseLeave?.(event);
+      }}
       style={{
         height: 36,
-        borderRadius: 8,
-        padding: "0 12px",
+        borderRadius: 9,
+        padding: "0 14px",
         fontSize: 13,
-        fontWeight: 550,
+        fontWeight: 600,
         fontFamily: "inherit",
-        cursor: "pointer",
+        cursor: props.disabled ? "not-allowed" : "pointer",
+        opacity: props.disabled ? 0.55 : 1,
+        transition: "filter 120ms ease, box-shadow 120ms ease",
         ...styles,
         ...((props.style as CSSProperties) ?? {}),
       }}
