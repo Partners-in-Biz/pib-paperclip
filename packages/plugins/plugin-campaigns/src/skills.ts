@@ -7,7 +7,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`request-campaign-approval\` opens a Paperclip issue for a person to approve the campaign. \`launch-campaign\` refuses to run until that issue is done.
 - \`launch-campaign\` enrolls matching contacts and opens the first step's Paperclip issue. A person sends the email and marks the issue done.
 - \`pause-campaign\` and \`resume-campaign\` control a running program. \`complete-campaign\` ends it.
-- \`campaign-stats\` reports enrolled, running, and completed counts.
+- \`campaign-stats\` reports enrolled, running, and completed counts. \`campaign-funnel\` shows how many contacts are at each step.
 - \`enroll-contact\` adds one contact to a campaign. \`complete-step\` advances an enrollment after its issue is done.
 - \`create-ab-variant\` adds a B variant to a step so contacts are split between two versions. The enrollment records which variant was sent.
 - Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.

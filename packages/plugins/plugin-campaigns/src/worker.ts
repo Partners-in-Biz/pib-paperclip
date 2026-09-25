@@ -8,6 +8,7 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  campaignFunnel,
   campaignStats,
   crmContactsByTags,
   dueEnrollments,
@@ -94,6 +95,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "complete-step") return completeStep(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
   if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
+  if (name === "campaign-funnel") return funnel(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -352,6 +354,12 @@ async function createAbVariant(ctx: PluginContext, companyId: string, params: Re
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   return { campaignId: campaign.id, step };
+}
+
+async function funnel(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const funnel = await campaignFunnel(ctx, campaign.id);
+  return { campaignId: campaign.id, ...funnel };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

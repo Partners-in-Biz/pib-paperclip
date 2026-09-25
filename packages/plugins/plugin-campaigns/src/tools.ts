@@ -110,4 +110,12 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       body: text,
     }),
   },
+  {
+    name: "campaign-funnel",
+    displayName: "Campaign funnel",
+    description: "Return how many contacts are at each step of a campaign, plus completed and stopped counts.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId: text,
+    }),
+  },
 ];

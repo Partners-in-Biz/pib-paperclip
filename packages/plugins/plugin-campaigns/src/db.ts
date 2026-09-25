@@ -303,3 +303,27 @@ export async function crmContactsByTags(
     throw new Error(`Could not read CRM contacts: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+export async function campaignFunnel(ctx: PluginContext, campaignId: string): Promise<{ byStep: Array<{ stepPosition: number; variant: string; count: number }>; completed: number; stopped: number }> {
+  const rows = await ctx.db.query<{ step_position: number; variant: string; count: string | number }>(
+    `SELECT step_position, variant, count(*) AS count
+       FROM ${table(ctx, "campaign_enrollments")}
+      WHERE campaign_id = $1 AND status = 'running'
+      GROUP BY step_position, variant
+      ORDER BY step_position, variant`,
+    [campaignId],
+  );
+  const done = await ctx.db.query<{ count: string | number }>(
+    `SELECT count(*) AS count FROM ${table(ctx, "campaign_enrollments")} WHERE campaign_id = $1 AND status = 'done'`,
+    [campaignId],
+  );
+  const stopped = await ctx.db.query<{ count: string | number }>(
+    `SELECT count(*) AS count FROM ${table(ctx, "campaign_enrollments")} WHERE campaign_id = $1 AND status = 'stopped'`,
+    [campaignId],
+  );
+  return {
+    byStep: rows.map((row) => ({ stepPosition: row.step_position, variant: row.variant, count: Number(row.count ?? 0) })),
+    completed: Number(done[0]?.count ?? 0),
+    stopped: Number(stopped[0]?.count ?? 0),
+  };
+}
