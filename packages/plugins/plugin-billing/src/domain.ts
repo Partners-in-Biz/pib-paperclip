@@ -259,3 +259,41 @@ export function nextRunDate(from: Date, frequency: RecurringFrequency): Date {
   else next.setUTCFullYear(next.getUTCFullYear() + 1);
   return next;
 }
+
+export interface PaymentDraft {
+  id: string;
+  companyId: string;
+  invoiceId: string;
+  amountMinor: number;
+  method: string;
+  reference: string | null;
+  paidAt: string;
+}
+
+export function assertPaymentAmount(value: unknown): number {
+  const amount = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new BillingError("Payment amount must be a positive integer in minor units");
+  }
+  return amount;
+}
+
+export function createPayment(input: {
+  companyId: string;
+  invoiceId: string;
+  amountMinor: number;
+  method?: string;
+  reference?: string | null;
+  paidAt?: string;
+  id?: string;
+}): PaymentDraft {
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    invoiceId: input.invoiceId,
+    amountMinor: assertPaymentAmount(input.amountMinor),
+    method: (input.method ?? "bank").trim().toLowerCase() || "bank",
+    reference: input.reference?.trim() || null,
+    paidAt: input.paidAt ?? new Date().toISOString(),
+  };
+}

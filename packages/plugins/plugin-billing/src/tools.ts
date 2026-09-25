@@ -114,4 +114,24 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       recurringId: text,
     }),
   },
+  {
+    name: "record-payment",
+    displayName: "Record payment",
+    description: "Record a payment against an invoice. Amount is a positive integer in minor units.",
+    parametersSchema: schema(["invoiceId", "amountMinor"], {
+      invoiceId: text,
+      amountMinor: { type: "integer" },
+      method: text,
+      reference: text,
+      paidAt: text,
+    }),
+  },
+  {
+    name: "invoice-payments",
+    displayName: "Invoice payments",
+    description: "Return the recorded payments for an invoice.",
+    parametersSchema: schema(["invoiceId"], {
+      invoiceId: text,
+    }),
+  },
 ];

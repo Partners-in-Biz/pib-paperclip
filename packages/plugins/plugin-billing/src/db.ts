@@ -344,3 +344,30 @@ export async function dueRecurring(ctx: PluginContext): Promise<RecurringRow[]> 
       WHERE is_active = true AND next_run_at <= now()`,
   );
 }
+
+export interface PaymentRow {
+  id: string;
+  company_id: string;
+  invoice_id: string;
+  amount_minor: number | string;
+  method: string;
+  reference: string | null;
+  paid_at: unknown;
+}
+
+export async function insertPayment(ctx: PluginContext, payment: PaymentRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "payments")}
+      (id, company_id, invoice_id, amount_minor, method, reference, paid_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [payment.id, payment.company_id, payment.invoice_id, Number(payment.amount_minor), payment.method, payment.reference, payment.paid_at],
+  );
+}
+
+export async function paymentsForInvoice(ctx: PluginContext, invoiceId: string): Promise<PaymentRow[]> {
+  return ctx.db.query<PaymentRow>(
+    `SELECT id, company_id, invoice_id, amount_minor, method, reference, paid_at
+       FROM ${table(ctx, "payments")} WHERE invoice_id = $1 ORDER BY paid_at`,
+    [invoiceId],
+  );
+}

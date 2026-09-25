@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentMaySend, assertFrequency, assertQuoteStatus, buildInvoiceHtml, canSeeInvoice, createExpense, lineTotal, markPaid, markSent, nextNumber, nextRunDate, type InvoiceState } from "../src/domain.js";
+import { assertAgentMaySend, assertFrequency, assertQuoteStatus, buildInvoiceHtml, canSeeInvoice, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, type InvoiceState } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 const draft: InvoiceState = {
@@ -116,5 +116,18 @@ describe("billing recurring", () => {
     expect(nextRunDate(base, "monthly").toISOString()).toBe("2026-02-15T00:00:00.000Z");
     expect(nextRunDate(base, "quarterly").toISOString()).toBe("2026-04-15T00:00:00.000Z");
     expect(nextRunDate(base, "yearly").toISOString()).toBe("2027-01-15T00:00:00.000Z");
+  });
+});
+
+describe("billing payments", () => {
+  it("creates a payment with defaults", () => {
+    const payment = createPayment({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 50000 });
+    expect(payment.method).toBe("bank");
+    expect(payment.amountMinor).toBe(50000);
+  });
+
+  it("rejects a zero or negative amount", () => {
+    expect(() => createPayment({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 0 })).toThrow(/positive integer/);
+    expect(() => createPayment({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: -5 })).toThrow(/positive integer/);
   });
 });

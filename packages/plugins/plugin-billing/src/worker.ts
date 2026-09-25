@@ -17,6 +17,7 @@ import {
   insertGrant,
   insertInvoice,
   insertLine,
+  insertPayment,
   insertQuote,
   insertQuoteLine,
   invoiceByApproval,
@@ -31,6 +32,7 @@ import {
   listQuotes,
   listRecurring,
   markOverdue,
+  paymentsForInvoice,
   saveRecurring,
   quoteLinesFor,
   saveQuoteStatus,
@@ -47,6 +49,7 @@ import {
   buildInvoiceHtml,
   canSeeInvoice,
   createExpense,
+  createPayment,
   lineTotal,
   markPaid,
   markSent,
@@ -77,6 +80,8 @@ const plugin = definePlugin({
     ctx.actions.register("billing.list-recurring", (_params, context) => listRecurringAction(ctx, context));
     ctx.actions.register("billing.pause-recurring", (params, context) => setRecurringActive(ctx, context, params, false));
     ctx.actions.register("billing.resume-recurring", (params, context) => setRecurringActive(ctx, context, params, true));
+    ctx.actions.register("billing.record-payment", (params, context) => recordPayment(ctx, context, params));
+    ctx.actions.register("billing.invoice-payments", (params, context) => invoicePayments(ctx, context, params));
     ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
     ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.events.on("issue.updated", (event) => onIssueDone(ctx, event.entityId, event.companyId));
@@ -111,6 +116,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "list-recurring-invoices") return { content: "Recurring invoices listed", data: await listRecurringAction(ctx, toolContext(run)) };
     if (name === "pause-recurring-invoice") return { content: "Recurring invoice paused", data: await setRecurringActive(ctx, toolContext(run), body, false) };
     if (name === "resume-recurring-invoice") return { content: "Recurring invoice resumed", data: await setRecurringActive(ctx, toolContext(run), body, true) };
+    if (name === "record-payment") return { content: "Payment recorded", data: await recordPayment(ctx, toolContext(run), body) };
+    if (name === "invoice-payments") return { content: "Payments listed", data: await invoicePayments(ctx, toolContext(run), body) };
     return { error: "Unknown billing tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Billing tool failed" };
@@ -514,6 +521,53 @@ function publicRecurring(row: { id: string; company_id: string; template_invoice
     frequency: row.frequency,
     nextRunAt: row.next_run_at == null ? null : String(row.next_run_at),
     isActive: row.is_active,
+  };
+}
+
+async function recordPayment(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  const payment = createPayment({
+    companyId,
+    invoiceId: invoice.id,
+    amountMinor: integer(params.amountMinor, "amountMinor"),
+    method: optionalString(params, "method"),
+    reference: optionalString(params, "reference"),
+    paidAt: optionalString(params, "paidAt"),
+  });
+  await insertPayment(ctx, {
+    id: payment.id,
+    company_id: payment.companyId,
+    invoice_id: payment.invoiceId,
+    amount_minor: payment.amountMinor,
+    method: payment.method,
+    reference: payment.reference,
+    paid_at: payment.paidAt,
+  });
+  return publicPayment(payment);
+}
+
+async function invoicePayments(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  const rows = await paymentsForInvoice(ctx, invoice.id);
+  return rows.map((row) => ({
+    id: row.id,
+    amountMinor: Number(row.amount_minor),
+    method: row.method,
+    reference: row.reference,
+    paidAt: row.paid_at == null ? null : String(row.paid_at),
+  }));
+}
+
+function publicPayment(payment: { id: string; invoiceId: string; amountMinor: number; method: string; reference: string | null; paidAt: string }) {
+  return {
+    id: payment.id,
+    invoiceId: payment.invoiceId,
+    amountMinor: payment.amountMinor,
+    method: payment.method,
+    reference: payment.reference,
+    paidAt: payment.paidAt,
   };
 }
 
