@@ -13,14 +13,20 @@ export const PARTNER_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["otherCompanyId"], { otherCompanyId: text }),
   },
   {
-    name: "propose-grant",
-    displayName: "Propose record grant",
-    description: "Propose a named CRM record or invoice share. Do not copy the record.",
-    parametersSchema: schema(["linkId", "recordType", "recordId", "granteeCompanyId"], {
-      linkId: text,
-      recordType: text,
-      recordId: text,
-      granteeCompanyId: text,
-    }),
-  },
-];
+      name: "propose-grant",
+      displayName: "Propose record grant",
+      description: "Propose a named CRM record or invoice share. Do not copy the record.",
+      parametersSchema: schema(["linkId", "recordType", "recordId", "granteeCompanyId"], {
+        linkId: text,
+        recordType: text,
+        recordId: text,
+        granteeCompanyId: text,
+      }),
+    },
+    {
+      name: "revoke-grant",
+      displayName: "Revoke record grant",
+      description: "Revoke a shared record grant. The partner company loses access to that named record.",
+      parametersSchema: schema(["grantId"], { grantId: text }),
+    },
+  ];

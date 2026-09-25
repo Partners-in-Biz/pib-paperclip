@@ -34,7 +34,7 @@ interface GrantRow {
   record_id: string;
   source_company_id: string;
   grantee_company_id: string;
-  status: "proposed" | "active";
+  status: "proposed" | "active" | "revoked";
 }
 
 const plugin = definePlugin({
@@ -47,6 +47,7 @@ const plugin = definePlugin({
     ctx.actions.register("partners.accept-link", (params, context) => acceptLink(ctx, requiredCompany(context), params));
     ctx.actions.register("partners.propose-grant", (params, context) => proposeNamedGrant(ctx, requiredCompany(context), params));
     ctx.actions.register("partners.accept-grant", (params, context) => acceptNamedGrant(ctx, context, params));
+    ctx.actions.register("partners.revoke-grant", (params, context) => revokeGrant(ctx, requiredCompany(context), params));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await safeReconcile(ctx, event.companyId);
     });
@@ -65,6 +66,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     const body = objectParams(params);
     if (name === "propose-link") return { content: "Link proposed", data: await proposeLink(ctx, run.companyId, body) };
     if (name === "propose-grant") return { content: "Grant proposed", data: await proposeNamedGrant(ctx, run.companyId, body) };
+    if (name === "revoke-grant") return { content: "Grant revoked", data: await revokeGrant(ctx, run.companyId, body) };
     return { error: "Unknown partners tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Partners tool failed" };
@@ -162,6 +164,17 @@ async function acceptNamedGrant(ctx: PluginContext, context: PluginPerformAction
       ? { plugin: "billing" as const, invoiceId: grant.record_id, granteeCompanyId: grant.grantee_company_id }
       : { plugin: "crm" as const, recordType: grant.record_type, recordId: grant.record_id, granteeCompanyId: grant.grantee_company_id },
   };
+}
+
+async function revokeGrant(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const grant = await requireGrant(ctx, requiredString(params, "grantId"));
+  if (grant.source_company_id !== companyId) throw new PartnerError("Only the company that owns the record can revoke the grant");
+  if (grant.status === "revoked") throw new PartnerError("This grant is already revoked");
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "grants")} SET status = 'revoked' WHERE id = $1`,
+    [grant.id],
+  );
+  return { grantId: grant.id, recordType: grant.record_type, recordId: grant.record_id, status: "revoked" };
 }
 
 async function requireLink(ctx: PluginContext, id: string): Promise<LinkRow> {
