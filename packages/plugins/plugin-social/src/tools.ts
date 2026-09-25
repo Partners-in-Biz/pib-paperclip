@@ -93,4 +93,35 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     description: "Return the media assets in the vault for this workspace.",
     parametersSchema: schema([], {}),
   },
+  {
+    name: "create-rss-feed",
+    displayName: "Create RSS feed",
+    description: "Track an RSS feed to repurpose its items as posts.",
+    parametersSchema: schema(["url"], {
+      url: text,
+      accountId: text,
+    }),
+  },
+  {
+    name: "list-rss-feeds",
+    displayName: "List RSS feeds",
+    description: "Return the tracked RSS feeds for this workspace.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "pause-rss-feed",
+    displayName: "Pause RSS feed",
+    description: "Stop tracking an RSS feed.",
+    parametersSchema: schema(["feedId"], {
+      feedId: text,
+    }),
+  },
+  {
+    name: "resume-rss-feed",
+    displayName: "Resume RSS feed",
+    description: "Re-enable a paused RSS feed.",
+    parametersSchema: schema(["feedId"], {
+      feedId: text,
+    }),
+  },
 ];

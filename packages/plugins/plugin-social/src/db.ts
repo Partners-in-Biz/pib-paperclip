@@ -240,3 +240,36 @@ export async function listMediaAssets(ctx: PluginContext, companyId: string): Pr
     [companyId],
   );
 }
+
+export interface RssFeedRow {
+  id: string;
+  company_id: string;
+  url: string;
+  account_id: string | null;
+  is_active: boolean;
+  last_checked_at: unknown;
+}
+
+export async function insertRssFeed(ctx: PluginContext, feed: RssFeedRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "rss_feeds")} (id, company_id, url, account_id, is_active)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [feed.id, feed.company_id, feed.url, feed.account_id, feed.is_active],
+  );
+}
+
+export async function listRssFeeds(ctx: PluginContext, companyId: string): Promise<RssFeedRow[]> {
+  return ctx.db.query<RssFeedRow>(
+    `SELECT id, company_id, url, account_id, is_active, last_checked_at
+       FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1 ORDER BY created_at DESC`,
+    [companyId],
+  );
+}
+
+export async function setRssFeedActive(ctx: PluginContext, companyId: string, id: string, active: boolean): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "rss_feeds")} SET is_active = $3 WHERE id = $1 AND company_id = $2`,
+    [id, companyId, active],
+  );
+  return result != null;
+}

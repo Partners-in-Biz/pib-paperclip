@@ -4,6 +4,7 @@ import { assertAgentTransition, assertDestination, createPost, publishResult,
   aggregateMetrics,
   assertMetric,
   createMediaAsset,
+  createRssFeed,
   createTemplate,} from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
@@ -85,5 +86,18 @@ describe("social media assets", () => {
   it("rejects a blank url and an invalid kind", () => {
     expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "  " })).toThrow(/URL is required/);
     expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "u", kind: "audio" })).toThrow(/image or video/);
+  });
+});
+
+describe("social rss feeds", () => {
+  it("creates an active feed", () => {
+    const feed = createRssFeed({ companyId: "workspace-a", url: "https://blog.test/feed.xml" });
+    expect(feed.isActive).toBe(true);
+    expect(feed.url).toBe("https://blog.test/feed.xml");
+  });
+
+  it("rejects a blank or non-http url", () => {
+    expect(() => createRssFeed({ companyId: "workspace-a", url: "  " })).toThrow(/URL is required/);
+    expect(() => createRssFeed({ companyId: "workspace-a", url: "ftp://x" })).toThrow(/http/);
   });
 });

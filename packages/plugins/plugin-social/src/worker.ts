@@ -17,14 +17,17 @@ import {
   insertDestination,
   insertMediaAsset,
   insertMetrics,
+  insertRssFeed,
   insertPost,
   insertTemplate,
   listAccounts,
   listMediaAssets,
   listPosts,
+  listRssFeeds,
   listTemplates,
   metricsForCompany,
   metricsForPost,
+  setRssFeedActive,
   publicAccount,
   publicPost,
   saveDestination,
@@ -39,6 +42,7 @@ import {
   assertTransition,
   aggregateMetrics,
   createMediaAsset,
+  createRssFeed,
   createTemplate,
   publishResult,
   SocialError,
@@ -112,6 +116,10 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "post-analytics") return analytics(ctx, Promise.resolve(viewer), body);
   if (name === "create-media-asset") return createMediaAssetAction(ctx, Promise.resolve(viewer), body);
   if (name === "list-media-assets") return listMediaAssetsAction(ctx, Promise.resolve(viewer));
+  if (name === "create-rss-feed") return createRssFeedAction(ctx, Promise.resolve(viewer), body);
+  if (name === "list-rss-feeds") return listRssFeedsAction(ctx, Promise.resolve(viewer));
+  if (name === "pause-rss-feed") return setRssActive(ctx, Promise.resolve(viewer), body, false);
+  if (name === "resume-rss-feed") return setRssActive(ctx, Promise.resolve(viewer), body, true);
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -210,6 +218,44 @@ async function listMediaAssetsAction(ctx: PluginContext, viewerPromise: Promise<
   const viewer = await viewerPromise;
   const assets = await listMediaAssets(ctx, viewer.companyId);
   return assets.map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, kind: asset.kind }));
+}
+
+async function createRssFeedAction(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const feed = createRssFeed({
+    companyId: viewer.companyId,
+    url: requiredString(params, "url"),
+    accountId: optionalString(params, "accountId"),
+  });
+  await insertRssFeed(ctx, {
+    id: feed.id,
+    company_id: feed.companyId,
+    url: feed.url,
+    account_id: feed.accountId,
+    is_active: feed.isActive,
+    last_checked_at: null,
+  });
+  return feed;
+}
+
+async function listRssFeedsAction(ctx: PluginContext, viewerPromise: Promise<Viewer>) {
+  const viewer = await viewerPromise;
+  const feeds = await listRssFeeds(ctx, viewer.companyId);
+  return feeds.map((feed) => ({
+    id: feed.id,
+    url: feed.url,
+    accountId: feed.account_id,
+    isActive: feed.is_active,
+    lastCheckedAt: feed.last_checked_at == null ? null : String(feed.last_checked_at),
+  }));
+}
+
+async function setRssActive(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>, active: boolean) {
+  const viewer = await viewerPromise;
+  const id = requiredString(params, "feedId");
+  const changed = await setRssFeedActive(ctx, viewer.companyId, id, active);
+  if (!changed) throw new SocialError("RSS feed was not found");
+  return { feedId: id, isActive: active };
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

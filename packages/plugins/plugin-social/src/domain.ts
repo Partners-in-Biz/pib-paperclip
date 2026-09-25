@@ -157,3 +157,29 @@ export function createMediaAsset(input: {
     kind,
   };
 }
+
+export interface RssFeedDraft {
+  id: string;
+  companyId: string;
+  url: string;
+  accountId: string | null;
+  isActive: boolean;
+}
+
+export function createRssFeed(input: {
+  companyId: string;
+  url: string;
+  accountId?: string | null;
+  id?: string;
+}): RssFeedDraft {
+  const url = input.url.trim();
+  if (!url) throw new SocialError("Feed URL is required");
+  if (!/^https?:\/\//i.test(url)) throw new SocialError("Feed URL must start with http(s)");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    url,
+    accountId: input.accountId?.trim() || null,
+    isActive: true,
+  };
+}
