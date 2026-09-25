@@ -127,6 +127,7 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "record-inbox-item") return recordInboxItem(ctx, Promise.resolve(viewer), body);
   if (name === "list-inbox") return listInbox(ctx, Promise.resolve(viewer), body);
   if (name === "mark-inbox-read") return markInboxRead(ctx, Promise.resolve(viewer), body);
+  if (name === "bulk-schedule") return bulkSchedule(ctx, Promise.resolve(viewer), body);
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -308,6 +309,23 @@ async function markInboxRead(ctx: PluginContext, viewerPromise: Promise<Viewer>,
   const changed = await setInboxItemStatus(ctx, viewer.companyId, id, "read");
   if (!changed) throw new SocialError("Inbox item was not found");
   return { itemId: id, status: "read" };
+}
+
+async function bulkSchedule(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const postIds = params.postIds;
+  if (!Array.isArray(postIds) || postIds.length === 0) throw new SocialError("postIds must be a non-empty list");
+  const scheduledAt = requiredString(params, "scheduledAt");
+  if (Number.isNaN(Date.parse(scheduledAt))) throw new SocialError("scheduledAt must be a time");
+  let scheduled = 0;
+  for (const rawId of postIds) {
+    if (typeof rawId !== "string") continue;
+    const post = await requirePost(ctx, viewer, rawId);
+    assertTransition(post.status, "scheduled");
+    await setPostStatus(ctx, post.id, "scheduled", scheduledAt);
+    scheduled += 1;
+  }
+  return { scheduled, scheduledAt };
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

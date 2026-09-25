@@ -151,4 +151,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       itemId: text,
     }),
   },
+  {
+    name: "bulk-schedule",
+    displayName: "Bulk schedule posts",
+    description: "Schedule several approved posts at once. Pass postIds and a scheduledAt time.",
+    parametersSchema: schema(["postIds", "scheduledAt"], {
+      postIds: { type: "array", items: { type: "string" } },
+      scheduledAt: text,
+    }),
+  },
 ];
