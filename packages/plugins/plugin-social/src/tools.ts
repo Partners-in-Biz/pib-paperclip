@@ -169,4 +169,10 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       body: text,
     }),
   },
+  {
+    name: "account-analytics",
+    displayName: "Account analytics",
+    description: "Return aggregated engagement metrics per account for this workspace.",
+    parametersSchema: schema([], {}),
+  },
 ];

@@ -15,4 +15,5 @@ Use the \`partnersinbiz.social\` tools to draft and schedule posts.
 - \`record-inbox-item\` records a mention, comment, or message. \`list-inbox\` returns the social inbox. \`mark-inbox-read\` marks an item read.
 - \`bulk-schedule\` schedules several approved posts at once with a single time.
 - \`reply-inbox\` marks an inbox item as replied and creates a draft post with the reply body.
+- \`account-analytics\` returns aggregated engagement metrics per account.
 `;

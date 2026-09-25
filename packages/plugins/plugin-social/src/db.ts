@@ -317,3 +317,21 @@ export async function getInboxItem(ctx: PluginContext, companyId: string, id: st
   );
   return rows[0] ?? null;
 }
+
+export async function accountMetrics(ctx: PluginContext, companyId: string): Promise<Array<{ accountId: string; views: number; likes: number; comments: number; shares: number }>> {
+  const rows = await ctx.db.query<{ account_id: string; views: string | number; likes: string | number; comments: string | number; shares: string | number }>(
+    `SELECT d.account_id, sum(m.views) AS views, sum(m.likes) AS likes, sum(m.comments) AS comments, sum(m.shares) AS shares
+       FROM ${table(ctx, "post_metrics")} m
+       JOIN ${table(ctx, "destinations")} d ON d.post_id = m.post_id
+      WHERE d.company_id = $1
+      GROUP BY d.account_id`,
+    [companyId],
+  );
+  return rows.map((row) => ({
+    accountId: row.account_id,
+    views: Number(row.views ?? 0),
+    likes: Number(row.likes ?? 0),
+    comments: Number(row.comments ?? 0),
+    shares: Number(row.shares ?? 0),
+  }));
+}

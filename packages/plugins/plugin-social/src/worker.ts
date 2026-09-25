@@ -8,6 +8,7 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  accountMetrics,
   claimScheduled,
   destinationsFor,
   duePosts,
@@ -130,6 +131,7 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "mark-inbox-read") return markInboxRead(ctx, Promise.resolve(viewer), body);
   if (name === "bulk-schedule") return bulkSchedule(ctx, Promise.resolve(viewer), body);
   if (name === "reply-inbox") return replyInbox(ctx, Promise.resolve(viewer), body);
+  if (name === "account-analytics") return accountAnalytics(ctx, Promise.resolve(viewer));
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -347,6 +349,21 @@ async function replyInbox(ctx: PluginContext, viewerPromise: Promise<Viewer>, pa
   });
   await setInboxItemStatus(ctx, viewer.companyId, item.id, "replied");
   return { itemId: item.id, postId, status: "replied" };
+}
+
+async function accountAnalytics(ctx: PluginContext, viewerPromise: Promise<Viewer>) {
+  const viewer = await viewerPromise;
+  const metrics = await accountMetrics(ctx, viewer.companyId);
+  const accounts = await listAccounts(ctx, viewer.companyId);
+  const byId = new Map(accounts.map((account) => [account.id, account.display_name]));
+  return metrics.map((row) => ({
+    accountId: row.accountId,
+    displayName: byId.get(row.accountId) ?? "Unknown",
+    views: row.views,
+    likes: row.likes,
+    comments: row.comments,
+    shares: row.shares,
+  }));
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
