@@ -111,6 +111,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Hermes",
     description: "Hermes harness",
     icon: Bot,
+    recommended: true,
   },
   opencode_local: {
     label: "OpenCode",

@@ -20,8 +20,11 @@ import {
   useHostNavigation,
   usePluginStream,
   usePluginToast,
+  PluginBridgeContext,
+  type PluginHostContext,
 } from "./bridge.js";
-import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { pluginsApi } from "@/api/plugins";
+import { Component, createElement, useCallback, useContext, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import * as ReactJsxRuntimeModule from "react/jsx-runtime";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { User } from "lucide-react";
@@ -639,6 +642,169 @@ function PluginSdkMetricCard({ label, value, unit }: { label: string; value: str
   );
 }
 
+type PluginTimeseriesPoint = { timestamp: string; value: number; label?: string };
+type PluginTimeseriesChartProps = {
+  data: PluginTimeseriesPoint[];
+  title?: string;
+  yLabel?: string;
+  type?: "line" | "bar";
+  height?: number;
+  loading?: boolean;
+};
+
+function PluginSdkTimeseriesChart({
+  data,
+  title,
+  yLabel,
+  type = "line",
+  height = 200,
+  loading,
+}: PluginTimeseriesChartProps) {
+  if (loading) {
+    return createElement("div", { className: "rounded-md border bg-card p-3 text-sm text-muted-foreground" }, "Loading chart…");
+  }
+  if (!data.length) {
+    return createElement(
+      "div",
+      { className: "rounded-md border bg-card p-3", style: { minHeight: height } },
+      title ? createElement("div", { className: "mb-2 text-xs font-medium text-muted-foreground" }, title) : null,
+      createElement("div", { className: "text-sm text-muted-foreground" }, "No data yet."),
+    );
+  }
+
+  const values = data.map((point) => point.value);
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const span = Math.max(max - min, 1);
+  const width = 320;
+  const pad = 12;
+  const chartH = height - 36;
+  const chartW = width - pad * 2;
+
+  if (type === "bar") {
+    return createElement(
+      "div",
+      { className: "rounded-md border bg-card p-3" },
+      title ? createElement("div", { className: "mb-2 text-xs font-medium text-muted-foreground" }, title) : null,
+      yLabel ? createElement("div", { className: "mb-1 text-[11px] text-muted-foreground" }, yLabel) : null,
+      createElement(
+        "div",
+        { className: "flex items-end gap-1", style: { height: chartH } },
+        data.map((point, index) => {
+          const ratio = (point.value - min) / span;
+          return createElement(
+            "div",
+            {
+              key: `${point.timestamp}-${index}`,
+              className: "flex-1 rounded-t-sm",
+              title: `${point.label ?? point.timestamp}: ${point.value}`,
+              style: {
+                height: `${Math.max(ratio * 100, 4)}%`,
+                background: "var(--chart-1)",
+                minWidth: 4,
+              },
+            },
+          );
+        }),
+      ),
+    );
+  }
+
+  const points = data.map((point, index) => {
+    const x = pad + (data.length === 1 ? chartW / 2 : (index / (data.length - 1)) * chartW);
+    const y = pad + (1 - (point.value - min) / span) * (chartH - pad);
+    return `${x},${y}`;
+  }).join(" ");
+
+  return createElement(
+    "div",
+    { className: "rounded-md border bg-card p-3" },
+    title ? createElement("div", { className: "mb-2 text-xs font-medium text-muted-foreground" }, title) : null,
+    yLabel ? createElement("div", { className: "mb-1 text-[11px] text-muted-foreground" }, yLabel) : null,
+    createElement(
+      "svg",
+      { viewBox: `0 0 ${width} ${height}`, className: "w-full", role: "img", "aria-label": title ?? "Chart" },
+      createElement("polyline", {
+        fill: "none",
+        stroke: "var(--chart-1)",
+        strokeWidth: 2,
+        points,
+      }),
+    ),
+  );
+}
+
+type PluginActionBarItem = {
+  label: string;
+  actionKey: string;
+  params?: Record<string, unknown>;
+  variant?: "default" | "primary" | "destructive";
+  confirm?: boolean;
+  confirmMessage?: string;
+};
+
+type PluginActionBarProps = {
+  actions: PluginActionBarItem[];
+  onSuccess?: (actionKey: string, result: unknown) => void;
+  onError?: (actionKey: string, error: unknown) => void;
+};
+
+function serializeRenderEnvironment(renderEnvironment: PluginHostContext["renderEnvironment"]) {
+  if (!renderEnvironment) return null;
+  return renderEnvironment;
+}
+
+function PluginSdkActionBar({ actions, onSuccess, onError }: PluginActionBarProps) {
+  const bridge = useContext(PluginBridgeContext);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const run = useCallback(async (item: PluginActionBarItem) => {
+    if (!bridge) {
+      onError?.(item.actionKey, new Error("Action bar is outside a plugin bridge"));
+      return;
+    }
+    if (item.confirm && !window.confirm(item.confirmMessage ?? `Run ${item.label}?`)) return;
+    setBusyKey(item.actionKey);
+    try {
+      const response = await pluginsApi.bridgePerformAction(
+        bridge.pluginId,
+        item.actionKey,
+        item.params,
+        bridge.hostContext.companyId,
+        serializeRenderEnvironment(bridge.hostContext.renderEnvironment),
+      );
+      onSuccess?.(item.actionKey, response.data);
+    } catch (error) {
+      onError?.(item.actionKey, error);
+    } finally {
+      setBusyKey(null);
+    }
+  }, [bridge, onError, onSuccess]);
+
+  return createElement(
+    "div",
+    { className: "flex flex-wrap gap-2" },
+    actions.map((item) => {
+      const variantClass = item.variant === "primary"
+        ? "bg-primary text-primary-foreground"
+        : item.variant === "destructive"
+          ? "bg-destructive text-destructive-foreground"
+          : "border bg-background text-foreground hover:bg-muted";
+      return createElement(
+        "button",
+        {
+          key: item.actionKey + item.label,
+          type: "button",
+          disabled: busyKey === item.actionKey,
+          className: `inline-flex h-8 items-center rounded-md px-3 text-xs font-medium disabled:opacity-60 ${variantClass}`,
+          onClick: () => { void run(item); },
+        },
+        busyKey === item.actionKey ? "Working…" : item.label,
+      );
+    }),
+  );
+}
+
 function PluginSdkJsonTree({ data }: { data: unknown }) {
   return createElement("pre", { className: "max-h-80 overflow-auto rounded-md border bg-muted/30 p-2 text-xs" }, JSON.stringify(data, null, 2));
 }
@@ -711,6 +877,8 @@ export function initPluginBridge(
       MetricCard: PluginSdkMetricCard,
       StatusBadge: PluginSdkStatusBadge,
       DataTable: PluginSdkDataTable,
+      TimeseriesChart: PluginSdkTimeseriesChart,
+      ActionBar: PluginSdkActionBar,
       KeyValueList: PluginSdkKeyValueList,
       JsonTree: PluginSdkJsonTree,
       Spinner: PluginSdkSpinner,
