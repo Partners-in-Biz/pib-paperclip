@@ -75,7 +75,7 @@ export async function insertAccount(ctx: PluginContext, row: AccountRow): Promis
            updated_at = now()`,
     [row.id, row.company_id, row.platform, row.scope, row.owner_user_id ?? null, row.status, row.secret_ref ?? null, row.display_name,
      row.external_id ?? null, row.handle ?? null, row.avatar_url ?? null, row.token_enc ?? null, row.refresh_token_enc ?? null,
-     row.token_expires_at ?? null, row.scopes ?? []],
+     row.token_expires_at ?? null, JSON.stringify(row.scopes ?? [])],
   );
 }
 
@@ -91,7 +91,7 @@ export async function updateAccountToken(ctx: PluginContext, id: string, fields:
         SET token_enc = $2, refresh_token_enc = $3, token_expires_at = $4, scopes = $5,
             status = COALESCE($6, status), updated_at = now()
       WHERE id = $1`,
-    [id, fields.token_enc, fields.refresh_token_enc, fields.token_expires_at, fields.scopes, fields.status ?? null],
+    [id, fields.token_enc, fields.refresh_token_enc, fields.token_expires_at, JSON.stringify(fields.scopes), fields.status ?? null],
   );
 }
 
@@ -128,7 +128,7 @@ export async function createOauthSession(ctx: PluginContext, session: {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "oauth_sessions")} (state, company_id, platform, account_label, extra, expires_at)
      VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))`,
-    [session.state, session.company_id, session.platform, session.account_label, session.extra ?? {}, session.ttlSeconds ?? 600],
+    [session.state, session.company_id, session.platform, session.account_label, JSON.stringify(session.extra ?? {}), session.ttlSeconds ?? 600],
   );
 }
 

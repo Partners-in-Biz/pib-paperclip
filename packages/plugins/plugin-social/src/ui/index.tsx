@@ -444,7 +444,7 @@ function ConnectAccounts({ companyId, onChanged, onMessage, callbackOrigin }: {
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Connect accounts (OAuth)</div>
       <div style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.5 }}>
         Register this callback URL in each OAuth app:{" "}
-        <code style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{callbackOrigin ?? window.location.origin}/social/oauth/callback</code>
+        <code style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{callbackOrigin ?? `${window.location.origin}/social/oauth/callback`}</code>
         . Paste the app's client ID + secret in the plugin settings, then connect below.
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
