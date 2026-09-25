@@ -24,7 +24,19 @@ import {
   errorText,
 } from "@partnersinbiz/pib-plugin-ui";
 
-interface Account { id: string; displayName: string; platform: string; scope: string; hasCredential: boolean }
+interface Account {
+  id: string;
+  displayName: string;
+  platform: string;
+  scope: string;
+  hasCredential: boolean;
+  handle?: string | null;
+  avatarUrl?: string | null;
+  status?: string;
+  hasToken?: boolean;
+  tokenExpiresAt?: string | null;
+  externalId?: string | null;
+}
 interface Post { id: string; body: string; status: string; scope: string; scheduledAt: string }
 interface Template { id: string; name: string; body: string; platform: string | null }
 interface Snapshot { accounts: Account[]; posts: Post[]; templates: Template[] }
@@ -64,6 +76,38 @@ export function SocialPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId) return;
     refresh().catch((error: unknown) => setMessage(errorText(error)));
+  }, [context.companyId]);
+
+  // Handle the OAuth redirect back to /social/oauth/callback?code&state (or X's oauth_token/verifier).
+  useEffect(() => {
+    if (!context.companyId) return;
+    const params = new URLSearchParams(window.location.search);
+    const state = params.get("state") ?? params.get("pstate") ?? "";
+    if (!state) return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/plugins/partnersinbiz.social/api/oauth/complete", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            state,
+            code: params.get("code") ?? undefined,
+            oauthToken: params.get("oauth_token") ?? undefined,
+            oauthVerifier: params.get("oauth_verifier") ?? undefined,
+            companyId: context.companyId,
+          }),
+        });
+        const data = await res.json() as { error?: string; displayName?: string };
+        window.history.replaceState({}, "", window.location.pathname);
+        if (!res.ok) throw new Error(data.error ?? "Connect failed");
+        setMessage(`Connected ${data.displayName ?? "account"} \u2713`);
+        await refresh();
+      } catch (error) {
+        window.history.replaceState({}, "", window.location.pathname);
+        setMessage(errorText(error));
+      }
+    })();
   }, [context.companyId]);
 
   async function run(work: () => Promise<unknown>, success: string) {
@@ -160,6 +204,7 @@ export function SocialPage({ context }: PluginPageProps) {
 
       {tab === "accounts" ? (
         <div style={{ display: "grid", gap: 12 }}>
+          <ConnectAccounts companyId={context.companyId} onChanged={() => void refresh()} onMessage={setMessage} />
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search accounts…">
             <Button type="button" onClick={() => setCreate("account")}>+ Account</Button>
           </Toolbar>
@@ -169,11 +214,12 @@ export function SocialPage({ context }: PluginPageProps) {
             <DataTable
               columns={[
                 { key: "displayName", header: "Account" },
-                { key: "platform", header: "Platform" },
-                { key: "scope", header: "Scope", render: (value) => <StatusBadge label={String(value)} status="info" /> },
-                { key: "credential", header: "Credential" },
+                { key: "platform", header: "Platform", render: (value) => <StatusBadge label={String(value)} status="info" /> },
+                { key: "handle", header: "Handle" },
+                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value ?? "—")} status={String(value) === "connected" ? "ok" : "warning"} /> },
+                { key: "tokenExpiresAt", header: "Token expires", render: (value) => value ? new Date(String(value)).toLocaleDateString() : "—" },
               ]}
-              rows={accounts.map((account) => ({ ...account, credential: account.hasCredential ? "yes" : "no" }))}
+              rows={accounts.map((account) => ({ ...account, handle: account.handle ?? account.externalId ?? "—" }))}
               emptyMessage="No accounts match."
             />
           )}
@@ -338,5 +384,130 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
       <span aria-hidden="true" className="relative shrink-0">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
     </a>
+  );
+}
+
+
+// ── OAuth Connect Accounts ──────────────────────────────────────────────────
+const CONNECT_PLATFORMS: Array<{ id: string; label: string; needsInstance?: boolean; credentialConnect?: boolean }> = [
+  { id: "facebook", label: "Facebook" },
+  { id: "instagram", label: "Instagram" },
+  { id: "threads", label: "Threads" },
+  { id: "linkedin", label: "LinkedIn" },
+  { id: "x", label: "X / Twitter" },
+  { id: "tiktok", label: "TikTok" },
+  { id: "mastodon", label: "Mastodon", needsInstance: true },
+  { id: "pinterest", label: "Pinterest" },
+  { id: "reddit", label: "Reddit" },
+  { id: "bluesky", label: "Bluesky", credentialConnect: true },
+  { id: "dribbble", label: "Dribbble" },
+  { id: "youtube", label: "YouTube" },
+];
+
+function ConnectAccounts({ companyId, onChanged, onMessage }: {
+  companyId: string | null;
+  onChanged: () => void;
+  onMessage: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState("");
+  const [instance, setInstance] = useState("https://mastodon.social");
+  const [bskyIdentifier, setBskyIdentifier] = useState("");
+  const [bskyPassword, setBskyPassword] = useState("");
+  const [showBsky, setShowBsky] = useState(false);
+  const [showMasto, setShowMasto] = useState(false);
+
+  async function startConnect(platform: string, extra?: Record<string, string>) {
+    if (!companyId) return;
+    setBusy(platform);
+    try {
+      const query = new URLSearchParams({ companyId, ...(extra ?? {}) });
+      const res = await fetch(`/api/plugins/partnersinbiz.social/api/oauth/${platform}/start?${query.toString()}`, {
+        credentials: "include",
+      });
+      const data = await res.json() as { error?: string; connectUrl?: string; mode?: string; state?: string };
+      if (!res.ok) throw new Error(data.error ?? "Connect failed");
+      if (data.mode === "credentials") {
+        setShowBsky(true);
+        return;
+      }
+      if (data.connectUrl) window.location.assign(data.connectUrl);
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function completeBluesky() {
+    if (!companyId || !bskyIdentifier || !bskyPassword) return;
+    setBusy("bluesky");
+    try {
+      const startRes = await fetch(`/api/plugins/partnersinbiz.social/api/oauth/bluesky/start?companyId=${encodeURIComponent(companyId)}`, {
+        credentials: "include",
+      });
+      const startData = await startRes.json() as { error?: string; state?: string };
+      if (!startRes.ok) throw new Error(startData.error ?? "Connect failed");
+      const res = await fetch("/api/plugins/partnersinbiz.social/api/oauth/complete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: startData.state, platform: "bluesky", identifier: bskyIdentifier, password: bskyPassword, companyId }),
+      });
+      const data = await res.json() as { error?: string; displayName?: string };
+      if (!res.ok) throw new Error(data.error ?? "Connect failed");
+      setBskyIdentifier("");
+      setBskyPassword("");
+      setShowBsky(false);
+      onMessage(`Connected Bluesky (${data.displayName ?? ""}) \u2713`);
+      onChanged();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12, padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Connect accounts (OAuth)</div>
+      <div style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.5 }}>
+        Register each OAuth app's callback URL as <code style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{window.location.origin}/social/oauth/callback</code>.
+        Paste the app's client ID + secret in the plugin settings, then connect below.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {CONNECT_PLATFORMS.map((p) => (
+          <Button
+            key={p.id}
+            type="button"
+            variant="secondary"
+            disabled={busy !== ""}
+            onClick={() => {
+              if (p.credentialConnect) {
+                void startConnect(p.id);
+              } else if (p.needsInstance) {
+                setShowMasto((v) => !v);
+              } else {
+                void startConnect(p.id);
+              }
+            }}
+          >
+            {busy === p.id ? "Connecting…" : `+ ${p.label}`}
+          </Button>
+        ))}
+      </div>
+      {showMasto ? (
+        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr auto" }}>
+          <Input value={instance} onChange={(event) => setInstance(event.target.value)} placeholder="https://mastodon.social" />
+          <Button type="button" onClick={() => { void startConnect("mastodon", { instance }); setShowMasto(false); }}>Connect Mastodon</Button>
+        </div>
+      ) : null}
+      {showBsky ? (
+        <div style={{ display: "grid", gap: 8, maxWidth: 420 }}>
+          <Field label="Bluesky handle"><Input value={bskyIdentifier} onChange={(event) => setBskyIdentifier(event.target.value)} placeholder="you.bsky.social" autoComplete="username" /></Field>
+          <Field label="App password"><Input type="password" value={bskyPassword} onChange={(event) => setBskyPassword(event.target.value)} placeholder="xxxx-xxxx-xxxx-xxxx" autoComplete="current-password" /></Field>
+          <div><Button type="button" onClick={() => void completeBluesky()} disabled={busy !== ""}>Connect Bluesky</Button></div>
+        </div>
+      ) : null}
+    </div>
   );
 }

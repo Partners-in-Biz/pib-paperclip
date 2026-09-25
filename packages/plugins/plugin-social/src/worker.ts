@@ -4,16 +4,21 @@ import {
   runWorker,
   type PluginContext,
   type PluginPerformActionContext,
+  type PluginApiRequestInput,
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
   accountMetrics,
   claimScheduled,
+  createOauthSession,
+  deleteAccount,
+  deleteOauthSession,
   destinationsFor,
   duePosts,
   getAccount,
   getInboxItem,
+  getOauthSession,
   getPost,
   insertAccount,
   insertDestination,
@@ -31,8 +36,11 @@ import {
   listTemplates,
   metricsForCompany,
   metricsForPost,
+  setAccountStatus,
   setInboxItemStatus,
+  setPostPublishResult,
   setRssFeedActive,
+  updateAccountToken,
   publicAccount,
   publicPost,
   saveDestination,
@@ -50,17 +58,30 @@ import {
   createMediaAsset,
   createRssFeed,
   createTemplate,
-  publishResult,
   SocialError,
   type AccountScope,
   type PostStatus,
 } from "./domain.js";
 import { SOCIAL_TOOLS } from "./tools.js";
+import {
+  buildConnectUrl,
+  completeConnect,
+  encryptedToBundle,
+  loadPlatformCfg,
+  tokenKeyFor,
+  bundleToEncrypted,
+  publicBaseFromHeaders,
+} from "./oauth/index.js";
+import { isCredentialConnect, isSupportedPlatform, providerFor } from "./oauth/registry.js";
+import type { AccountTokenBundle, PublishInput, SocialPlatform } from "./oauth/types.js";
+import { ALL_PLATFORMS, PLATFORM_LABELS } from "./oauth/types.js";
 
 const LOCAL_BOARD_USER_ID = "local-board";
+let pluginCtx: PluginContext | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    pluginCtx = ctx;
     for (const tool of SOCIAL_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
     }
@@ -94,6 +115,10 @@ const plugin = definePlugin({
   async onHealth() {
     return { status: "ok", message: "Social plugin ready" };
   },
+  async onApiRequest(input) {
+    if (!pluginCtx) return { status: 503, body: { error: "Social plugin is not ready" } };
+    return handleApiRoute(pluginCtx, input);
+  },
 });
 
 export default plugin;
@@ -118,6 +143,10 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "schedule-post") return schedule(ctx, Promise.resolve(viewer), body);
   if (name === "create-template") return createTemplateAction(ctx, Promise.resolve(viewer), body);
   if (name === "list-templates") return listTemplatesAction(ctx, Promise.resolve(viewer));
+  if (name === "connect-account") return connectAccountAction(ctx, viewer, body);
+  if (name === "list-connected-accounts") return listConnectedAccountsAction(ctx, viewer);
+  if (name === "disconnect-account") return disconnectAccountAction(ctx, viewer, body);
+  if (name === "refresh-account") return refreshAccountAction(ctx, viewer, body);
   if (name === "record-post-metrics") return recordMetrics(ctx, Promise.resolve(viewer), body);
   if (name === "post-analytics") return analytics(ctx, Promise.resolve(viewer), body);
   if (name === "create-media-asset") return createMediaAssetAction(ctx, Promise.resolve(viewer), body);
@@ -444,20 +473,244 @@ async function publishDue(ctx: PluginContext) {
   for (const post of posts) {
     const claimed = await claimScheduled(ctx, post.id);
     if (claimed === 0) continue;
+    await setPostStatus(ctx, post.id, "publishing", post.scheduled_at == null ? null : String(post.scheduled_at));
     const destinations = await destinationsFor(ctx, post.id);
     if (destinations.length === 0) {
-      await setPostStatus(ctx, post.id, "failed", post.scheduled_at == null ? null : String(post.scheduled_at));
+      await setPostPublishResult(ctx, post.id, "failed", null, "No destination accounts attached");
       continue;
     }
     let failed = false;
     for (const destination of destinations) {
       const account = await getAccount(ctx, destination.account_id);
-      const outcome = publishResult(account?.secret_ref ?? null);
-      if (outcome.status === "failed") failed = true;
-      await saveDestination(ctx, destination.id, outcome.status, outcome.result);
+      if (!account) {
+        failed = true;
+        await saveDestination(ctx, destination.id, "failed", { error: "Destination account not found" });
+        continue;
+      }
+      try {
+        const outcome = await publishToAccount(ctx, account, post);
+        if (!outcome.ok) failed = true;
+        await saveDestination(ctx, destination.id, outcome.ok ? "published" : "failed", { ...outcome });
+      } catch (error) {
+        failed = true;
+        await saveDestination(ctx, destination.id, "failed", { error: error instanceof Error ? error.message : String(error) });
+      }
     }
-    await setPostStatus(ctx, post.id, failed ? "failed" : "published", post.scheduled_at == null ? null : String(post.scheduled_at));
+    await setPostPublishResult(ctx, post.id, failed ? "failed" : "published", null, failed ? "One or more destinations failed to publish" : null);
   }
+}
+
+interface PublishOutcome {
+  ok: boolean;
+  externalId?: string;
+  url?: string;
+  error?: string;
+}
+
+async function decryptBundle(ctx: PluginContext, account: AccountRow, platform: SocialPlatform): Promise<AccountTokenBundle> {
+  const cfg = await loadPlatformCfg(ctx, platform);
+  if (!account.token_enc) throw new Error("Account has no stored access token");
+  const key = tokenKeyFor(account.company_id, cfg);
+  return encryptedToBundle(account.token_enc, account.refresh_token_enc ?? null, key);
+}
+
+async function publishToAccount(ctx: PluginContext, account: AccountRow, post: PostRow): Promise<PublishOutcome> {
+  const platform = account.platform as SocialPlatform;
+  const impl = providerFor(platform);
+  const cfg = await loadPlatformCfg(ctx, platform);
+  let bundle = await decryptBundle(ctx, account, platform);
+  if (bundle.expiresAt && new Date(bundle.expiresAt).getTime() < Date.now() + 120_000 && impl.refresh) {
+    try {
+      const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
+      const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle);
+      bundle = { ...bundle, ...refreshed };
+      const key = tokenKeyFor(account.company_id, cfg);
+      const enc = bundleToEncrypted(bundle, key);
+      await updateAccountToken(ctx, account.id, {
+        token_enc: enc.tokenEnc,
+        refresh_token_enc: enc.refreshEnc,
+        token_expires_at: bundle.expiresAt ?? null,
+        scopes: bundle.scopes,
+      });
+    } catch (error) {
+      ctx.logger.info("Token refresh failed", { platform, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  let mediaUrls: string[] = [];
+  const media = (post as unknown as { media?: unknown }).media;
+  if (Array.isArray(media)) mediaUrls = media.filter((m): m is string => typeof m === "string");
+  const overrides = ((post as unknown as { overrides?: unknown }).overrides ?? {}) as Record<string, unknown>;
+  const input: PublishInput = {
+    text: post.body,
+    mediaUrls,
+    extra: overrides,
+  };
+  if (typeof overrides.link === "string" && overrides.link) (input as { link?: string }).link = overrides.link;
+  if (typeof overrides.title === "string" && overrides.title) (input as { title?: string }).title = overrides.title;
+  if (typeof overrides.visibility === "string" && overrides.visibility) (input as { visibility?: "public" | "unlisted" | "private" }).visibility = overrides.visibility as never;
+  const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
+  const result = await impl.publish({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle, input);
+  return result;
+}
+
+// ── API routes (OAuth connect) ──────────────────────────────────────────────
+async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
+  try {
+    if (input.routeKey === "oauth-start") return handleOauthStart(ctx, input);
+    if (input.routeKey === "oauth-complete") return handleOauthComplete(ctx, input);
+    return { status: 404, body: { error: "Not found" } };
+  } catch (error) {
+    return { status: 400, body: { error: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
+function queryString(input: PluginApiRequestInput, key: string): string {
+  const v = input.query[key];
+  return typeof v === "string" ? v : Array.isArray(v) ? String(v[0] ?? "") : "";
+}
+
+async function handleOauthStart(ctx: PluginContext, input: PluginApiRequestInput) {
+  const platform = String(input.params.platform ?? "");
+  if (!isSupportedPlatform(platform)) return { status: 400, body: { error: `Unsupported platform: ${platform}` } };
+  const companyId = queryString(input, "companyId") || input.companyId;
+  if (!companyId) return { status: 400, body: { error: "companyId is required" } };
+  const extras: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input.query)) {
+    if (k === "companyId") continue;
+    extras[k] = Array.isArray(v) ? String(v[0] ?? "") : String(v);
+  }
+  if (isCredentialConnect(platform)) {
+    const { randomUUID } = await import("node:crypto");
+    const state = randomUUID();
+    await createOauthSession(ctx, { state, company_id: companyId, platform, account_label: extras.accountLabel ?? null, ttlSeconds: 600 });
+    return { status: 200, body: { mode: "credentials", state, platform, label: PLATFORM_LABELS[platform], connectUrl: null } };
+  }
+  const { connectUrl, state } = await buildConnectUrl(ctx, input.headers, companyId, platform, extras);
+  return { status: 200, body: { mode: "oauth", connectUrl, state, platform, label: PLATFORM_LABELS[platform] } };
+}
+
+async function handleOauthComplete(ctx: PluginContext, input: PluginApiRequestInput) {
+  const body = (input.body && typeof input.body === "object" ? input.body : {}) as Record<string, unknown>;
+  const state = String(body.state ?? queryString(input, "state") ?? "");
+  if (!state) return { status: 400, body: { error: "state is required" } };
+  const session = await getOauthSession(ctx, state);
+  if (!session) return { status: 400, body: { error: "Connect session expired. Please try again." } };
+  const platform = String(body.platform ?? session.platform ?? "");
+  if (!platform || !isSupportedPlatform(platform)) return { status: 400, body: { error: "platform is required" } };
+  if (isCredentialConnect(platform)) {
+    const identifier = String(body.identifier ?? "");
+    const password = String(body.password ?? "");
+    if (!identifier || !password) return { status: 400, body: { error: "identifier and password are required" } };
+    const cfg = await loadPlatformCfg(ctx, platform as SocialPlatform);
+    const impl = providerFor(platform as SocialPlatform);
+    const bundle = await impl.connectWithCredentials!(cfg, { identifier, password });
+    const key = tokenKeyFor(session.company_id, cfg);
+    const enc = bundleToEncrypted(bundle, key);
+    const accountId = randomUUID();
+    await insertAccount(ctx, {
+      id: accountId,
+      company_id: session.company_id,
+      platform,
+      scope: "org",
+      owner_user_id: null,
+      status: "connected",
+      secret_ref: null,
+      display_name: bundle.name,
+      external_id: bundle.externalId,
+      handle: bundle.handle ?? null,
+      avatar_url: bundle.avatarUrl ?? null,
+      token_enc: enc.tokenEnc,
+      refresh_token_enc: enc.refreshEnc,
+      token_expires_at: bundle.expiresAt ?? null,
+      scopes: bundle.scopes,
+    });
+    await deleteOauthSession(ctx, state);
+    return { status: 200, body: { ok: true, platform, accountId, displayName: bundle.name, handle: bundle.handle ?? null, avatarUrl: bundle.avatarUrl ?? null } };
+  }
+  const code = body.code ? String(body.code) : queryString(input, "code") || undefined;
+  const oauthToken = body.oauthToken ? String(body.oauthToken) : queryString(input, "oauth_token") || undefined;
+  const oauthVerifier = body.oauthVerifier ? String(body.oauthVerifier) : queryString(input, "oauth_verifier") || undefined;
+  const result = await completeConnect(ctx, input.headers, state, code, oauthToken, oauthVerifier);
+  return { status: 200, body: { ok: true, ...result } };
+}
+
+// ── Tools (agent-visible) ───────────────────────────────────────────────────
+async function connectAccountAction(ctx: PluginContext, viewer: Viewer, body: Record<string, unknown>) {
+  const platform = String(body.platform ?? "");
+  if (!isSupportedPlatform(platform)) return { error: `Unsupported platform: ${platform}` };
+  const baseUrl = body.baseUrl ? String(body.baseUrl).replace(/\/$/, "") : undefined;
+  if (!baseUrl) {
+    return {
+      platform,
+      label: PLATFORM_LABELS[platform],
+      connectUrl: null,
+      instruction: "Account connection requires a human: open the Social page in the Paperclip board and click Connect for this platform.",
+    };
+  }
+  const host = baseUrl.replace(/^https?:\/\//, "");
+  const headers = { host, "x-forwarded-proto": baseUrl.startsWith("https") ? "https" : "http" };
+  const label = body.accountLabel ? String(body.accountLabel) : undefined;
+  const extras: Record<string, string> = {};
+  if (label) extras.accountLabel = label;
+  if (body.instance) extras.instance = String(body.instance);
+  if (body.scopes) extras.scopes = String(body.scopes);
+  const { connectUrl, state } = await buildConnectUrl(ctx, headers, viewer.companyId, platform, extras);
+  return {
+    platform,
+    label: PLATFORM_LABELS[platform],
+    connectUrl,
+    state,
+    instruction: `Ask the human to open the connect URL and approve access. Use accountLabel=${label ?? "account"} to label the connection.`,
+  };
+}
+
+async function listConnectedAccountsAction(ctx: PluginContext, viewer: Viewer) {
+  const accounts = await listAccounts(ctx, viewer.companyId);
+  return {
+    accounts: accounts.map((a) => ({
+      id: a.id,
+      platform: a.platform,
+      label: PLATFORM_LABELS[a.platform as SocialPlatform] ?? a.platform,
+      handle: a.handle ?? a.external_id ?? a.display_name,
+      displayName: a.display_name,
+      status: a.status,
+      avatarUrl: a.avatar_url,
+      tokenExpiresAt: a.token_expires_at ? String(a.token_expires_at) : null,
+      scopes: Array.isArray(a.scopes) ? a.scopes : [],
+    })),
+  };
+}
+
+async function disconnectAccountAction(ctx: PluginContext, viewer: Viewer, body: Record<string, unknown>) {
+  const accountId = String(body.accountId ?? "");
+  if (!accountId) return { error: "accountId is required" };
+  await deleteAccount(ctx, viewer.companyId, accountId);
+  return { ok: true, accountId };
+}
+
+async function refreshAccountAction(ctx: PluginContext, viewer: Viewer, body: Record<string, unknown>) {
+  const accountId = String(body.accountId ?? "");
+  if (!accountId) return { error: "accountId is required" };
+  const account = await getAccount(ctx, accountId);
+  if (!account || account.company_id !== viewer.companyId) return { error: "Account not found" };
+  const platform = account.platform as SocialPlatform;
+  const impl = providerFor(platform);
+  if (!impl.refresh) return { ok: true, refreshed: false, reason: "Platform does not use refresh tokens" };
+  const cfg = await loadPlatformCfg(ctx, platform);
+  const bundle = await decryptBundle(ctx, account, platform);
+  const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
+  const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle);
+  const next = { ...bundle, ...refreshed };
+  const key = tokenKeyFor(account.company_id, cfg);
+  const enc = bundleToEncrypted(next, key);
+  await updateAccountToken(ctx, account.id, {
+    token_enc: enc.tokenEnc,
+    refresh_token_enc: enc.refreshEnc,
+    token_expires_at: next.expiresAt ?? null,
+    scopes: next.scopes,
+    status: "connected",
+  });
+  return { ok: true, refreshed: true, expiresAt: next.expiresAt ?? null };
 }
 
 interface Viewer {

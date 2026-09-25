@@ -175,4 +175,34 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     description: "Return aggregated engagement metrics per account for this workspace.",
     parametersSchema: schema([], {}),
   },
+  {
+    name: "connect-account",
+    displayName: "Connect social account",
+    description:
+      "Start an OAuth connection for a platform (facebook, instagram, threads, linkedin, x, tiktok, mastodon, pinterest, reddit, dribbble, youtube). Requires baseUrl (this Paperclip instance URL). Returns a connect URL a human must open and approve. For bluesky, a human must enter handle + app password in the Social page.",
+    parametersSchema: schema(["platform", "baseUrl"], {
+      platform: text,
+      baseUrl: text,
+      accountLabel: text,
+      instance: text,
+    }),
+  },
+  {
+    name: "list-connected-accounts",
+    displayName: "List connected accounts",
+    description: "List OAuth-connected social accounts (platform, handle, status, token expiry).",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "disconnect-account",
+    displayName: "Disconnect social account",
+    description: "Disconnect a connected social account (removes its stored tokens).",
+    parametersSchema: schema(["accountId"], { accountId: text }),
+  },
+  {
+    name: "refresh-account",
+    displayName: "Refresh account token",
+    description: "Manually refresh an account's OAuth access token (LinkedIn, TikTok, Google, Pinterest, Reddit).",
+    parametersSchema: schema(["accountId"], { accountId: text }),
+  },
 ];

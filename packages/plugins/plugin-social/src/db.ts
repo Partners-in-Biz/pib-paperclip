@@ -15,6 +15,14 @@ export interface AccountRow {
   status: string;
   secret_ref: string | null;
   display_name: string;
+  external_id?: string | null;
+  handle?: string | null;
+  avatar_url?: string | null;
+  token_enc?: string | null;
+  refresh_token_enc?: string | null;
+  token_expires_at?: unknown;
+  scopes?: unknown;
+  updated_at?: unknown;
 }
 
 export interface PostRow {
@@ -25,11 +33,15 @@ export interface PostRow {
   scheduled_at: unknown;
   scope: "org" | "personal";
   owner_user_id: string | null;
+  external_id?: string | null;
+  error?: string | null;
 }
+
+const ACCOUNT_COLS = "id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name, external_id, handle, avatar_url, token_enc, refresh_token_enc, token_expires_at, scopes, updated_at";
 
 export async function listAccounts(ctx: PluginContext, companyId: string): Promise<AccountRow[]> {
   return ctx.db.query<AccountRow>(
-    `SELECT id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name
+    `SELECT ${ACCOUNT_COLS}
        FROM ${table(ctx, "accounts")} WHERE company_id = $1 ORDER BY display_name`,
     [companyId],
   );
@@ -37,7 +49,7 @@ export async function listAccounts(ctx: PluginContext, companyId: string): Promi
 
 export async function getAccount(ctx: PluginContext, id: string): Promise<AccountRow | null> {
   const rows = await ctx.db.query<AccountRow>(
-    `SELECT id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name
+    `SELECT ${ACCOUNT_COLS}
        FROM ${table(ctx, "accounts")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -47,10 +59,103 @@ export async function getAccount(ctx: PluginContext, id: string): Promise<Accoun
 export async function insertAccount(ctx: PluginContext, row: AccountRow): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "accounts")}
-      (id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [row.id, row.company_id, row.platform, row.scope, row.owner_user_id, row.status, row.secret_ref, row.display_name],
+      (id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name,
+       external_id, handle, avatar_url, token_enc, refresh_token_enc, token_expires_at, scopes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     ON CONFLICT (id) DO UPDATE
+       SET status = EXCLUDED.status,
+           display_name = EXCLUDED.display_name,
+           external_id = EXCLUDED.external_id,
+           handle = EXCLUDED.handle,
+           avatar_url = EXCLUDED.avatar_url,
+           token_enc = EXCLUDED.token_enc,
+           refresh_token_enc = EXCLUDED.refresh_token_enc,
+           token_expires_at = EXCLUDED.token_expires_at,
+           scopes = EXCLUDED.scopes,
+           updated_at = now()`,
+    [row.id, row.company_id, row.platform, row.scope, row.owner_user_id ?? null, row.status, row.secret_ref ?? null, row.display_name,
+     row.external_id ?? null, row.handle ?? null, row.avatar_url ?? null, row.token_enc ?? null, row.refresh_token_enc ?? null,
+     row.token_expires_at ?? null, row.scopes ?? []],
   );
+}
+
+export async function updateAccountToken(ctx: PluginContext, id: string, fields: {
+  token_enc: string;
+  refresh_token_enc: string | null;
+  token_expires_at: unknown;
+  scopes: string[];
+  status?: string;
+}): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "accounts")}
+        SET token_enc = $2, refresh_token_enc = $3, token_expires_at = $4, scopes = $5,
+            status = COALESCE($6, status), updated_at = now()
+      WHERE id = $1`,
+    [id, fields.token_enc, fields.refresh_token_enc, fields.token_expires_at, fields.scopes, fields.status ?? null],
+  );
+}
+
+export async function setAccountStatus(ctx: PluginContext, id: string, status: string, reason?: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "accounts")} SET status = $2, updated_at = now() WHERE id = $1`,
+    [id, status],
+  );
+}
+
+export async function deleteAccount(ctx: PluginContext, companyId: string, id: string): Promise<void> {
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "accounts")} WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  );
+}
+
+export async function setPostPublishResult(ctx: PluginContext, id: string, status: string, externalId: string | null, error: string | null): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "posts")} SET status = $2, external_id = $3, error = $4, updated_at = now() WHERE id = $1`,
+    [id, status, externalId, error],
+  );
+}
+
+// ── OAuth sessions ──────────────────────────────────────────────────────────
+export async function createOauthSession(ctx: PluginContext, session: {
+  state: string;
+  company_id: string;
+  platform: string;
+  account_label: string | null;
+  extra?: Record<string, unknown>;
+  ttlSeconds?: number;
+}): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "oauth_sessions")} (state, company_id, platform, account_label, extra, expires_at)
+     VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))`,
+    [session.state, session.company_id, session.platform, session.account_label, session.extra ?? {}, session.ttlSeconds ?? 600],
+  );
+}
+
+export async function getOauthSession(ctx: PluginContext, state: string): Promise<{
+  state: string;
+  company_id: string;
+  platform: string;
+  account_label: string | null;
+  extra: Record<string, unknown> | null;
+} | null> {
+  const rows = await ctx.db.query<{
+    state: string;
+    company_id: string;
+    platform: string;
+    account_label: string | null;
+    extra: Record<string, unknown> | null;
+  }>(
+    `SELECT state, company_id, platform, account_label, extra
+       FROM ${table(ctx, "oauth_sessions")}
+      WHERE state = $1 AND expires_at > now() LIMIT 1`,
+    [state],
+  );
+  return rows[0] ?? null;
+}
+
+export async function deleteOauthSession(ctx: PluginContext, state: string): Promise<void> {
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "oauth_sessions")} WHERE state = $1`, [state]);
 }
 
 export async function listPosts(ctx: PluginContext, companyId: string): Promise<PostRow[]> {
@@ -138,6 +243,12 @@ export function publicAccount(row: AccountRow): Record<string, unknown> {
     status: row.status,
     displayName: row.display_name,
     hasCredential: Boolean(row.secret_ref),
+    handle: row.handle ?? null,
+    externalId: row.external_id ?? null,
+    avatarUrl: row.avatar_url ?? null,
+    hasToken: Boolean(row.token_enc),
+    tokenExpiresAt: row.token_expires_at ? String(row.token_expires_at) : null,
+    scopes: Array.isArray(row.scopes) ? row.scopes : [],
   };
 }
 
