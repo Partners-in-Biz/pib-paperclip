@@ -12,6 +12,7 @@ import {
   destinationsFor,
   duePosts,
   getAccount,
+  getInboxItem,
   getPost,
   insertAccount,
   insertDestination,
@@ -128,6 +129,7 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "list-inbox") return listInbox(ctx, Promise.resolve(viewer), body);
   if (name === "mark-inbox-read") return markInboxRead(ctx, Promise.resolve(viewer), body);
   if (name === "bulk-schedule") return bulkSchedule(ctx, Promise.resolve(viewer), body);
+  if (name === "reply-inbox") return replyInbox(ctx, Promise.resolve(viewer), body);
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -326,6 +328,25 @@ async function bulkSchedule(ctx: PluginContext, viewerPromise: Promise<Viewer>, 
     scheduled += 1;
   }
   return { scheduled, scheduledAt };
+}
+
+async function replyInbox(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const item = await getInboxItem(ctx, viewer.companyId, requiredString(params, "itemId"));
+  if (!item) throw new SocialError("Inbox item was not found");
+  const body = requiredString(params, "body");
+  const postId = randomUUID();
+  await insertPost(ctx, {
+    id: postId,
+    company_id: viewer.companyId,
+    body,
+    status: "draft",
+    scheduled_at: null,
+    scope: "org",
+    owner_user_id: viewer.userId,
+  });
+  await setInboxItemStatus(ctx, viewer.companyId, item.id, "replied");
+  return { itemId: item.id, postId, status: "replied" };
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

@@ -14,4 +14,5 @@ Use the \`partnersinbiz.social\` tools to draft and schedule posts.
 - \`create-rss-feed\` / \`list-rss-feeds\` track an RSS feed to repurpose its items. \`pause-rss-feed\` and \`resume-rss-feed\` control tracking.
 - \`record-inbox-item\` records a mention, comment, or message. \`list-inbox\` returns the social inbox. \`mark-inbox-read\` marks an item read.
 - \`bulk-schedule\` schedules several approved posts at once with a single time.
+- \`reply-inbox\` marks an inbox item as replied and creates a draft post with the reply body.
 `;

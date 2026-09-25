@@ -160,4 +160,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       scheduledAt: text,
     }),
   },
+  {
+    name: "reply-inbox",
+    displayName: "Reply to inbox item",
+    description: "Mark an inbox item as replied and create a draft post with the reply body.",
+    parametersSchema: schema(["itemId", "body"], {
+      itemId: text,
+      body: text,
+    }),
+  },
 ];

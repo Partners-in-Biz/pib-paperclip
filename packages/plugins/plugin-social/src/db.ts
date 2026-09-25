@@ -308,3 +308,12 @@ export async function setInboxItemStatus(ctx: PluginContext, companyId: string, 
   );
   return result != null;
 }
+
+export async function getInboxItem(ctx: PluginContext, companyId: string, id: string): Promise<InboxItemRow | null> {
+  const rows = await ctx.db.query<InboxItemRow>(
+    `SELECT id, company_id, account_id, kind, author, body, status, created_at
+       FROM ${table(ctx, "inbox_items")} WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [id, companyId],
+  );
+  return rows[0] ?? null;
+}
