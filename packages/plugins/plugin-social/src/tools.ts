@@ -1,0 +1,60 @@
+import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+
+const text = { type: "string" } satisfies JsonSchema;
+function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
+  return { type: "object", required, properties, additionalProperties: false };
+}
+
+export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
+  {
+    name: "create-account",
+    displayName: "Create social account",
+    description: "Record an org or personal social account. Pass a secret ref, never the token itself.",
+    parametersSchema: schema(["platform", "displayName", "scope"], {
+      platform: text,
+      displayName: text,
+      scope: text,
+      secretRef: text,
+    }),
+  },
+  {
+    name: "create-post",
+    displayName: "Create post",
+    description: "Draft one post. Scope is org or personal.",
+    parametersSchema: schema(["body"], { body: text, scope: text }),
+  },
+  {
+    name: "attach-destination",
+    displayName: "Attach destination",
+    description: "Target an account from a post. An org post cannot target a personal account.",
+    parametersSchema: schema(["postId", "accountId"], { postId: text, accountId: text }),
+  },
+  {
+    name: "request-review",
+    displayName: "Request review",
+    description: "Move a draft post to review.",
+    parametersSchema: schema(["postId"], { postId: text }),
+  },
+  {
+      name: "schedule-post",
+      displayName: "Schedule post",
+      description: "Schedule an approved post. Do not include tokens.",
+      parametersSchema: schema(["postId", "scheduledAt"], { postId: text, scheduledAt: text }),
+    },
+    {
+      name: "create-template",
+      displayName: "Create post template",
+      description: "Save reusable post copy. Use it to draft consistent posts.",
+      parametersSchema: schema(["name", "body"], {
+        name: text,
+        body: text,
+        platform: text,
+      }),
+    },
+    {
+      name: "list-templates",
+      displayName: "List post templates",
+      description: "Return the saved post templates for this workspace.",
+      parametersSchema: schema([], {}),
+    },
+  ];
