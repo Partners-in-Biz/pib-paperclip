@@ -912,3 +912,30 @@ export async function listFacts(
     createdAt: row.created_at == null ? "" : String(row.created_at),
   }));
 }
+
+export interface DealProductRow {
+  id: string;
+  company_id: string;
+  deal_id: string;
+  product_id: string;
+  quantity: number | string;
+  unit_amount_minor: number | string;
+}
+
+export async function insertDealProduct(ctx: PluginContext, row: DealProductRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "deal_products")}
+      (id, company_id, deal_id, product_id, quantity, unit_amount_minor)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (deal_id, product_id) DO NOTHING`,
+    [row.id, row.company_id, row.deal_id, row.product_id, Number(row.quantity), Number(row.unit_amount_minor)],
+  );
+}
+
+export async function listDealProducts(ctx: PluginContext, dealId: string): Promise<DealProductRow[]> {
+  return ctx.db.query<DealProductRow>(
+    `SELECT id, company_id, deal_id, product_id, quantity, unit_amount_minor
+       FROM ${table(ctx, "deal_products")} WHERE deal_id = $1 ORDER BY created_at`,
+    [dealId],
+  );
+}

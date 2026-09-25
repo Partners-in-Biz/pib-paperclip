@@ -297,4 +297,23 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     description: "Return the open pipeline value by stage with a weighted forecast, using each stage's win probability.",
     parametersSchema: schema([], {}),
   },
+  {
+    name: "add-deal-product",
+    displayName: "Add deal product",
+    description: "Add a product line to a deal. Quantity is a positive integer; unit amount is in minor units.",
+    parametersSchema: schema(["dealId", "productId"], {
+      dealId: text,
+      productId: text,
+      quantity: { type: "integer" },
+      unitAmountMinor: { type: "integer" },
+    }),
+  },
+  {
+    name: "list-deal-products",
+    displayName: "List deal products",
+    description: "Return the product lines on a deal.",
+    parametersSchema: schema(["dealId"], {
+      dealId: text,
+    }),
+  },
 ];

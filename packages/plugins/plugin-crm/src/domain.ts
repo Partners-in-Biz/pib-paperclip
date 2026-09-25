@@ -541,6 +541,35 @@ export function assertMergeTargets(primaryId: string, duplicateId: string): void
   if (primaryId === duplicateId) throw new CrmError("Primary and duplicate must be different contacts");
 }
 
+export interface DealProductDraft {
+  id: string;
+  companyId: string;
+  dealId: string;
+  productId: string;
+  quantity: number;
+  unitAmountMinor: number;
+}
+
+export function createDealProduct(input: {
+  companyId: string;
+  dealId: string;
+  productId: string;
+  quantity?: number;
+  unitAmountMinor?: number;
+  id?: string;
+}): DealProductDraft {
+  const quantity = input.quantity ?? 1;
+  if (!Number.isInteger(quantity) || quantity < 1) throw new CrmError("Quantity must be a positive integer");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    dealId: input.dealId,
+    productId: input.productId,
+    quantity,
+    unitAmountMinor: assertAmountMinor(input.unitAmountMinor ?? 0),
+  };
+}
+
 /** Default win probability by stage kind. Open stages weight by position. */
 export function stageWinProbability(kind: StageKind, position: number, totalOpenStages: number): number {
   if (kind === "won") return 1;

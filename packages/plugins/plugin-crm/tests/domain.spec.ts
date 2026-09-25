@@ -10,6 +10,7 @@ import {
   createAccount,
   createContact,
   assertMergeTargets,
+  createDealProduct,
   createProduct,
   forecastPipeline,
   createSavedView,
@@ -317,5 +318,17 @@ describe("crm pipeline forecast", () => {
     expect(forecast.weightedMinor).toBeLessThan(300000);
     const won = forecast.stages.find((stage) => stage.kind === "won");
     expect(won?.probability).toBe(1);
+  });
+});
+
+describe("crm deal products", () => {
+  it("creates a deal product line with a default quantity", () => {
+    const line = createDealProduct({ companyId: "workspace-a", dealId: "deal-1", productId: "prod-1" });
+    expect(line.quantity).toBe(1);
+    expect(line.unitAmountMinor).toBe(0);
+  });
+
+  it("rejects a zero quantity", () => {
+    expect(() => createDealProduct({ companyId: "workspace-a", dealId: "deal-1", productId: "prod-1", quantity: 0 })).toThrow(/positive integer/);
   });
 });
