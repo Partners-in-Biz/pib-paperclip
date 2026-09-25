@@ -4,7 +4,7 @@ import type { AccountTokenBundle, PlatformAppConfig, ProviderContext, SocialPlat
 import { decryptToken, deriveTokenKey, encryptToken } from "./crypto.js";
 import { providerFor } from "./registry.js";
 
-export const OAUTH_REDIRECT_PATH = "/social/oauth/callback";
+export const OAUTH_REDIRECT_PATH = "/social";
 
 export function publicBaseFromHeaders(headers: Record<string, string>): string {
   const proto = headers["x-forwarded-proto"] ?? "https";

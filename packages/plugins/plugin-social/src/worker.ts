@@ -179,7 +179,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
     })),
     media: media.map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, kind: asset.kind })),
     oauthCallbackUrl: socialCfg.social?.publicBaseUrl
-      ? `${String(socialCfg.social.publicBaseUrl).replace(/\/$/, "")}/social/oauth/callback`
+      ? `${String(socialCfg.social.publicBaseUrl).replace(/\/$/, "")}/social`
       : null,
   };
 }
@@ -506,7 +506,7 @@ async function publishToAccount(ctx: PluginContext, account: AccountRow, post: P
   if (bundle.expiresAt && new Date(bundle.expiresAt).getTime() < Date.now() + 120_000 && impl.refresh) {
     try {
       const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
-      const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle);
+      const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social" }, bundle);
       bundle = { ...bundle, ...refreshed };
       const key = tokenKeyFor(account.company_id, cfg);
       const enc = bundleToEncrypted(bundle, key);
@@ -533,7 +533,7 @@ async function publishToAccount(ctx: PluginContext, account: AccountRow, post: P
   if (typeof overrides.title === "string" && overrides.title) (input as { title?: string }).title = overrides.title;
   if (typeof overrides.visibility === "string" && overrides.visibility) (input as { visibility?: "public" | "unlisted" | "private" }).visibility = overrides.visibility as never;
   const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
-  const result = await impl.publish({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle, input);
+  const result = await impl.publish({ cfg, publicBaseUrl: base, redirectPath: "/social" }, bundle, input);
   return result;
 }
 
@@ -683,7 +683,7 @@ async function refreshAccountAction(ctx: PluginContext, viewer: Viewer, body: Re
   const cfg = await loadPlatformCfg(ctx, platform);
   const bundle = await decryptBundle(ctx, account, platform);
   const base = publicBaseFromHeaders({ host: "paperclip.internal", "x-forwarded-proto": "https" });
-  const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social/oauth/callback" }, bundle);
+  const refreshed = await impl.refresh({ cfg, publicBaseUrl: base, redirectPath: "/social" }, bundle);
   const next = { ...bundle, ...refreshed };
   const key = tokenKeyFor(account.company_id, cfg);
   const enc = bundleToEncrypted(next, key);
