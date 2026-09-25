@@ -28,6 +28,7 @@ import {
   assertCanComplete,
   assertCanLaunch,
   assertCanPause,
+  assertCanRequestApproval,
   CampaignError,
   createCampaign,
   matchesAudience,
@@ -90,6 +91,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-stats") return stats(ctx, companyId, body);
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "complete-step") return completeStep(ctx, companyId, body);
+  if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -170,6 +172,10 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
 async function launch(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanLaunch(campaign.status);
+  if (campaign.approvalIssueId) {
+    const approval = await ctx.issues.get(campaign.approvalIssueId, companyId);
+    if (approval?.status !== "done") throw new CampaignError("The campaign has not been approved yet");
+  }
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch");
   const explicitIds = stringList(params, "contactIds");
@@ -304,6 +310,23 @@ function crmNamespace(): string {
   // Derived identically to the CRM plugin's namespace.
   const hash = createHash("sha256").update("partnersinbiz.crm").digest("hex").slice(0, 10);
   return `plugin_crm_${hash}`;
+}
+
+async function requestApproval(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  assertCanRequestApproval(campaign.status);
+  if (campaign.approvalIssueId) throw new CampaignError("Approval was already requested for this campaign");
+  const issue = await ctx.issues.create({
+    companyId,
+    title: `Approve campaign ${campaign.name}`,
+    description: `A person marks this issue done to approve launching campaign ${campaign.name}.`,
+    status: "todo",
+    originKind: "plugin:partnersinbiz.campaigns",
+    originId: campaign.id,
+  });
+  campaign.approvalIssueId = issue.id;
+  await saveCampaign(ctx, campaign);
+  return { campaignId: campaign.id, approvalIssueId: issue.id };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

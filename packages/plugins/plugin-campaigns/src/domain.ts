@@ -22,6 +22,7 @@ export interface CampaignDraft {
   audienceTags: string[];
   startAt: string | null;
   endAt: string | null;
+  approvalIssueId: string | null;
 }
 
 export interface CampaignStepDraft {
@@ -77,7 +78,12 @@ export function createCampaign(input: {
     audienceTags: (input.audienceTags ?? []).map((tag) => tag.trim()).filter(Boolean),
     startAt: input.startAt ?? null,
     endAt: input.endAt ?? null,
+    approvalIssueId: null,
   };
+}
+
+export function assertCanRequestApproval(status: CampaignStatus): void {
+  if (status !== "draft") throw new CampaignError("Only a draft campaign can be sent for approval");
 }
 
 export function assertCanLaunch(status: CampaignStatus): void {

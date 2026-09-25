@@ -5,6 +5,7 @@ import {
   advanceEnrollment,
   assertCanLaunch,
   assertCanPause,
+  assertCanRequestApproval,
   createCampaign,
   matchesAudience,
   startEnrollment,
@@ -84,5 +85,12 @@ describe("campaign enrollments", () => {
   it("builds an issue title from the step subject and contact name", () => {
     const copy = stepIssueCopy("Ada Lovelace", steps[0]);
     expect(copy.title).toBe("Welcome: Ada Lovelace");
+  });
+});
+
+describe("campaign approval", () => {
+  it("only a draft can be sent for approval", () => {
+    expect(() => assertCanRequestApproval("draft")).not.toThrow();
+    expect(() => assertCanRequestApproval("active")).toThrow(/draft/);
   });
 });

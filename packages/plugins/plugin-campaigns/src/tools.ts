@@ -91,4 +91,12 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       enrollmentId: text,
     }),
   },
+  {
+    name: "request-campaign-approval",
+    displayName: "Request campaign approval",
+    description: "Open a Paperclip issue for a person to approve the campaign before it launches.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId: text,
+    }),
+  },
 ];

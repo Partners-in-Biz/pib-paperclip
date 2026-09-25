@@ -24,6 +24,7 @@ export interface CampaignRow {
   audience_tags: unknown;
   start_at: unknown;
   end_at: unknown;
+  approval_issue_id: string | null;
 }
 
 export interface StepRow {
@@ -80,6 +81,7 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     audienceTags: asStringList(row.audience_tags),
     startAt: asIso(row.start_at),
     endAt: asIso(row.end_at),
+    approvalIssueId: row.approval_issue_id,
   };
 }
 
@@ -98,7 +100,7 @@ function mapEnrollment(row: EnrollmentRow): EnrollmentDraft {
 
 export async function listCampaigns(ctx: PluginContext, companyId: string): Promise<CampaignDraft[]> {
   const rows = await ctx.db.query<CampaignRow>(
-    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at
+    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id
        FROM ${table(ctx, "campaigns")}
       WHERE company_id = $1
       ORDER BY created_at DESC`,
@@ -109,7 +111,7 @@ export async function listCampaigns(ctx: PluginContext, companyId: string): Prom
 
 export async function getCampaign(ctx: PluginContext, id: string): Promise<CampaignDraft | null> {
   const rows = await ctx.db.query<CampaignRow>(
-    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at
+    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id
        FROM ${table(ctx, "campaigns")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -119,8 +121,8 @@ export async function getCampaign(ctx: PluginContext, id: string): Promise<Campa
 export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaigns")}
-      (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)`,
+      (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)`,
     [
       campaign.id,
       campaign.companyId,
@@ -133,6 +135,7 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
       JSON.stringify(campaign.audienceTags),
       campaign.startAt,
       campaign.endAt,
+      campaign.approvalIssueId,
     ],
   );
 }
@@ -141,7 +144,7 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
   await ctx.db.execute(
     `UPDATE ${table(ctx, "campaigns")}
         SET name = $2, description = $3, status = $4, from_name = $5, from_local = $6, reply_to = $7,
-            audience_tags = $8::jsonb, start_at = $9, end_at = $10, updated_at = now()
+            audience_tags = $8::jsonb, start_at = $9, end_at = $10, approval_issue_id = $11, updated_at = now()
       WHERE id = $1`,
     [
       campaign.id,
@@ -154,6 +157,7 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
       JSON.stringify(campaign.audienceTags),
       campaign.startAt,
       campaign.endAt,
+      campaign.approvalIssueId,
     ],
   );
 }

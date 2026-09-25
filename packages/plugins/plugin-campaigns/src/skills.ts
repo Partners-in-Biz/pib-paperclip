@@ -4,6 +4,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 
 - A campaign groups email steps that target an audience. \`audienceTags\` narrows which contacts are enrolled; empty means every visible contact.
 - \`create-campaign\` then \`add-campaign-step\` build the program. A step has a subject, body, and a \`delayDays\` wait after the previous step.
+- \`request-campaign-approval\` opens a Paperclip issue for a person to approve the campaign. \`launch-campaign\` refuses to run until that issue is done.
 - \`launch-campaign\` enrolls matching contacts and opens the first step's Paperclip issue. A person sends the email and marks the issue done.
 - \`pause-campaign\` and \`resume-campaign\` control a running program. \`complete-campaign\` ends it.
 - \`campaign-stats\` reports enrolled, running, and completed counts.
