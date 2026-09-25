@@ -105,6 +105,7 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
       format: "esm" as const,
       platform: "browser" as const,
       target: "es2022",
+      jsx: "automatic" as const,
       sourcemap,
       minify,
       external: uiExternal,

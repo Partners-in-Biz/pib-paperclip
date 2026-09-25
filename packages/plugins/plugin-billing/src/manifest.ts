@@ -40,7 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
         jobKey: "run-recurring",
         displayName: "Run recurring invoices",
         description: "Creates a new draft invoice from each due recurring schedule.",
-        schedule: "0 0 0 * * *",
+        schedule: "0 0 * * *",
       },
     ],
   skills: [
