@@ -53,8 +53,10 @@ import {
   lineTotal,
   markPaid,
   markSent,
+  assertTaxRate,
   nextNumber,
   nextRunDate,
+  totalWithTax,
   type InvoiceState,
 } from "./domain.js";
 import { BILLING_TOOLS } from "./tools.js";
@@ -82,6 +84,7 @@ const plugin = definePlugin({
     ctx.actions.register("billing.resume-recurring", (params, context) => setRecurringActive(ctx, context, params, true));
     ctx.actions.register("billing.record-payment", (params, context) => recordPayment(ctx, context, params));
     ctx.actions.register("billing.invoice-payments", (params, context) => invoicePayments(ctx, context, params));
+    ctx.actions.register("billing.set-invoice-tax", (params, context) => setInvoiceTax(ctx, context, params));
     ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
     ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.events.on("issue.updated", (event) => onIssueDone(ctx, event.entityId, event.companyId));
@@ -118,6 +121,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "resume-recurring-invoice") return { content: "Recurring invoice resumed", data: await setRecurringActive(ctx, toolContext(run), body, true) };
     if (name === "record-payment") return { content: "Payment recorded", data: await recordPayment(ctx, toolContext(run), body) };
     if (name === "invoice-payments") return { content: "Payments listed", data: await invoicePayments(ctx, toolContext(run), body) };
+    if (name === "set-invoice-tax") return { content: "Invoice tax set", data: await setInvoiceTax(ctx, toolContext(run), body) };
     return { error: "Unknown billing tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Billing tool failed" };
@@ -172,6 +176,7 @@ async function createInvoice(ctx: PluginContext, context: PluginPerformActionCon
     sender_snapshot: null,
     customer_snapshot: null,
     total_minor: 0,
+    tax_rate: 0,
     due_at: optionalString(params, "dueAt") ?? null,
     approval_issue_id: null,
     pending_action: null,
@@ -284,6 +289,7 @@ async function createQuote(ctx: PluginContext, context: PluginPerformActionConte
     sender: { name: optionalString(params, "senderName") ?? "Workspace" },
     customer: { name: requiredString(params, "customerName"), refKind: customerKind, refId: requiredString(params, "customerRef") },
     total_minor: 0,
+    tax_rate: 0,
     valid_until: optionalString(params, "validUntil") ?? null,
     converted_invoice_id: null,
   };
@@ -331,6 +337,7 @@ async function convertQuote(ctx: PluginContext, context: PluginPerformActionCont
     sender_snapshot: null,
     customer_snapshot: null,
     total_minor: Number(quote.total_minor),
+    tax_rate: Number(quote.tax_rate ?? 0),
     due_at: null,
     approval_issue_id: null,
     pending_action: null,
@@ -487,6 +494,7 @@ async function runRecurring(ctx: PluginContext) {
         sender_snapshot: null,
         customer_snapshot: null,
         total_minor: Number(template.total_minor),
+        tax_rate: Number(template.tax_rate ?? 0),
         due_at: null,
         approval_issue_id: null,
         pending_action: null,
@@ -569,6 +577,16 @@ function publicPayment(payment: { id: string; invoiceId: string; amountMinor: nu
     reference: payment.reference,
     paidAt: payment.paidAt,
   };
+}
+
+async function setInvoiceTax(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  if (invoice.status !== "draft") throw new BillingError("Tax can only be set on a draft invoice");
+  const taxRate = assertTaxRate(params.taxRate);
+  invoice.tax_rate = taxRate;
+  await saveTotalsAndStatus(ctx, invoice);
+  return { invoiceId: invoice.id, taxRate };
 }
 
 async function requireInvoice(ctx: PluginContext, companyId: string, id: string): Promise<InvoiceRow> {

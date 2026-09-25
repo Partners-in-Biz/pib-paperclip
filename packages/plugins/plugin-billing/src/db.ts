@@ -19,6 +19,7 @@ export interface InvoiceRow {
   sender_snapshot: unknown;
   customer_snapshot: unknown;
   total_minor: number | string;
+  tax_rate: number | string;
   due_at: unknown;
   approval_issue_id: string | null;
   pending_action: string | null;
@@ -28,7 +29,7 @@ export interface InvoiceRow {
 export async function listInvoices(ctx: PluginContext, companyId: string): Promise<InvoiceRow[]> {
   return ctx.db.query<InvoiceRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
-            sender_snapshot, customer_snapshot, total_minor, due_at, approval_issue_id, pending_action, sent_at
+            sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at
        FROM ${table(ctx, "invoices")}
       WHERE company_id = $1
          OR id IN (
@@ -42,7 +43,7 @@ export async function listInvoices(ctx: PluginContext, companyId: string): Promi
 export async function getInvoice(ctx: PluginContext, id: string): Promise<InvoiceRow | null> {
   const rows = await ctx.db.query<InvoiceRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
-            sender_snapshot, customer_snapshot, total_minor, due_at, approval_issue_id, pending_action, sent_at
+            sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at
        FROM ${table(ctx, "invoices")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -52,8 +53,8 @@ export async function getInvoice(ctx: PluginContext, id: string): Promise<Invoic
 export async function insertInvoice(ctx: PluginContext, row: InvoiceRow): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "invoices")}
-      (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, due_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
+      (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, tax_rate, due_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)`,
     [
       row.id,
       row.company_id,
@@ -65,6 +66,7 @@ export async function insertInvoice(ctx: PluginContext, row: InvoiceRow): Promis
       JSON.stringify(row.sender ?? {}),
       JSON.stringify(row.customer ?? {}),
       Number(row.total_minor),
+      Number(row.tax_rate ?? 0),
       row.due_at,
     ],
   );
@@ -95,13 +97,14 @@ export async function saveTotalsAndStatus(
 ): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")}
-        SET status = $2, total_minor = $3, sender_snapshot = $4::jsonb, customer_snapshot = $5::jsonb,
-            approval_issue_id = $6, pending_action = $7, sent_at = $8, updated_at = now()
+        SET status = $2, total_minor = $3, tax_rate = $4, sender_snapshot = $5::jsonb, customer_snapshot = $6::jsonb,
+            approval_issue_id = $7, pending_action = $8, sent_at = $9, updated_at = now()
       WHERE id = $1`,
     [
       invoice.id,
       invoice.status,
       Number(invoice.total_minor),
+      Number(invoice.tax_rate ?? 0),
       invoice.sender_snapshot == null ? null : JSON.stringify(invoice.sender_snapshot),
       invoice.customer_snapshot == null ? null : JSON.stringify(invoice.customer_snapshot),
       invoice.approval_issue_id,
@@ -114,7 +117,7 @@ export async function saveTotalsAndStatus(
 export async function invoiceByApproval(ctx: PluginContext, issueId: string): Promise<InvoiceRow | null> {
   const rows = await ctx.db.query<InvoiceRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
-            sender_snapshot, customer_snapshot, total_minor, due_at, approval_issue_id, pending_action, sent_at
+            sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at
        FROM ${table(ctx, "invoices")} WHERE approval_issue_id = $1 LIMIT 1`,
     [issueId],
   );
@@ -169,6 +172,7 @@ export interface QuoteRow {
   sender: unknown;
   customer: unknown;
   total_minor: number | string;
+  tax_rate: number | string;
   valid_until: unknown;
   converted_invoice_id: string | null;
 }
@@ -186,7 +190,7 @@ export interface ExpenseRow {
 export async function listQuotes(ctx: PluginContext, companyId: string): Promise<QuoteRow[]> {
   return ctx.db.query<QuoteRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
-            total_minor, valid_until, converted_invoice_id
+            total_minor, tax_rate, valid_until, converted_invoice_id
        FROM ${table(ctx, "quotes")}
       WHERE company_id = $1
       ORDER BY created_at DESC`,
@@ -197,7 +201,7 @@ export async function listQuotes(ctx: PluginContext, companyId: string): Promise
 export async function getQuote(ctx: PluginContext, id: string): Promise<QuoteRow | null> {
   const rows = await ctx.db.query<QuoteRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
-            total_minor, valid_until, converted_invoice_id
+            total_minor, tax_rate, valid_until, converted_invoice_id
        FROM ${table(ctx, "quotes")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -207,8 +211,8 @@ export async function getQuote(ctx: PluginContext, id: string): Promise<QuoteRow
 export async function insertQuote(ctx: PluginContext, row: QuoteRow): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "quotes")}
-      (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, valid_until)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
+      (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, tax_rate, valid_until)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)`,
     [
       row.id,
       row.company_id,
@@ -220,6 +224,7 @@ export async function insertQuote(ctx: PluginContext, row: QuoteRow): Promise<vo
       JSON.stringify(row.sender ?? {}),
       JSON.stringify(row.customer ?? {}),
       Number(row.total_minor),
+      Number(row.tax_rate ?? 0),
       row.valid_until,
     ],
   );
@@ -250,9 +255,9 @@ export async function saveQuoteStatus(
 ): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "quotes")}
-        SET status = $2, total_minor = $3, converted_invoice_id = $4, updated_at = now()
+        SET status = $2, total_minor = $3, tax_rate = $4, converted_invoice_id = $5, updated_at = now()
       WHERE id = $1`,
-    [quote.id, quote.status, Number(quote.total_minor), quote.converted_invoice_id],
+    [quote.id, quote.status, Number(quote.total_minor), Number(quote.tax_rate ?? 0), quote.converted_invoice_id],
   );
 }
 

@@ -297,3 +297,16 @@ export function createPayment(input: {
     paidAt: input.paidAt ?? new Date().toISOString(),
   };
 }
+
+export function assertTaxRate(value: unknown): number {
+  const rate = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    throw new BillingError("Tax rate must be a percentage between 0 and 100");
+  }
+  return rate;
+}
+
+export function totalWithTax(subtotalMinor: number, taxRate: number): { taxMinor: number; totalMinor: number } {
+  const taxMinor = Math.round(subtotalMinor * (taxRate / 100));
+  return { taxMinor, totalMinor: subtotalMinor + taxMinor };
+}

@@ -134,4 +134,13 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       invoiceId: text,
     }),
   },
+  {
+    name: "set-invoice-tax",
+    displayName: "Set invoice tax",
+    description: "Set the tax rate (percentage) on a draft invoice. The total is recomputed with tax.",
+    parametersSchema: schema(["invoiceId", "taxRate"], {
+      invoiceId: text,
+      taxRate: { type: "number" },
+    }),
+  },
 ];

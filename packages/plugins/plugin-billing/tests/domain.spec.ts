@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentMaySend, assertFrequency, assertQuoteStatus, buildInvoiceHtml, canSeeInvoice, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, type InvoiceState } from "../src/domain.js";
+import { assertAgentMaySend, assertFrequency, assertQuoteStatus, assertTaxRate, buildInvoiceHtml, canSeeInvoice, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, totalWithTax, type InvoiceState } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 const draft: InvoiceState = {
@@ -129,5 +129,19 @@ describe("billing payments", () => {
   it("rejects a zero or negative amount", () => {
     expect(() => createPayment({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 0 })).toThrow(/positive integer/);
     expect(() => createPayment({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: -5 })).toThrow(/positive integer/);
+  });
+});
+
+describe("billing tax", () => {
+  it("validates the tax rate", () => {
+    expect(assertTaxRate(15)).toBe(15);
+    expect(() => assertTaxRate(-1)).toThrow(/between 0 and 100/);
+    expect(() => assertTaxRate(101)).toThrow(/between 0 and 100/);
+  });
+
+  it("computes tax and total", () => {
+    const result = totalWithTax(100000, 15);
+    expect(result.taxMinor).toBe(15000);
+    expect(result.totalMinor).toBe(115000);
   });
 });
