@@ -167,6 +167,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const [accounts, posts] = await Promise.all([listAccounts(ctx, viewer.companyId), listPosts(ctx, viewer.companyId)]);
   const templates = await listTemplates(ctx, viewer.companyId);
   const media = await listMediaAssets(ctx, viewer.companyId);
+  const socialCfg = (await ctx.config.get()) as { social?: { publicBaseUrl?: string } | undefined };
   return {
     accounts: accounts.filter((account) => accountVisible(viewer, account)).map(publicAccount),
     posts: posts.filter((post) => postVisible(viewer, post)).map(publicPost),
@@ -177,6 +178,9 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       platform: template.platform,
     })),
     media: media.map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, kind: asset.kind })),
+    oauthCallbackUrl: socialCfg.social?.publicBaseUrl
+      ? `${String(socialCfg.social.publicBaseUrl).replace(/\/$/, "")}/social/oauth/callback`
+      : null,
   };
 }
 

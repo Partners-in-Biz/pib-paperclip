@@ -39,7 +39,7 @@ interface Account {
 }
 interface Post { id: string; body: string; status: string; scope: string; scheduledAt: string }
 interface Template { id: string; name: string; body: string; platform: string | null }
-interface Snapshot { accounts: Account[]; posts: Post[]; templates: Template[] }
+interface Snapshot { accounts: Account[]; posts: Post[]; templates: Template[]; oauthCallbackUrl?: string | null }
 type TabId = "overview" | "posts" | "accounts" | "templates" | "calendar";
 type CreateKind = "post" | "attach" | "schedule" | "template" | null;
 
@@ -198,7 +198,7 @@ export function SocialPage({ context }: PluginPageProps) {
 
       {tab === "accounts" ? (
         <div style={{ display: "grid", gap: 12 }}>
-          <ConnectAccounts companyId={context.companyId} onChanged={() => void refresh()} onMessage={setMessage} />
+          <ConnectAccounts companyId={context.companyId} onChanged={() => void refresh()} onMessage={setMessage} callbackOrigin={snapshot?.oauthCallbackUrl ?? null} />
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search accounts…" />
           {accounts.length === 0 ? (
             <EmptyState title="No connected accounts" description="Use the Connect accounts section above to connect a real platform via OAuth." />
@@ -375,10 +375,11 @@ const CONNECT_PLATFORMS: Array<{ id: string; label: string; needsInstance?: bool
   { id: "youtube", label: "YouTube" },
 ];
 
-function ConnectAccounts({ companyId, onChanged, onMessage }: {
+function ConnectAccounts({ companyId, onChanged, onMessage, callbackOrigin }: {
   companyId: string | null;
   onChanged: () => void;
   onMessage: (message: string) => void;
+  callbackOrigin: string | null;
 }) {
   const [busy, setBusy] = useState("");
   const [instance, setInstance] = useState("https://mastodon.social");
@@ -442,8 +443,9 @@ function ConnectAccounts({ companyId, onChanged, onMessage }: {
     <div style={{ display: "grid", gap: 12, padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Connect accounts (OAuth)</div>
       <div style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.5 }}>
-        Register each OAuth app's callback URL as <code style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{window.location.origin}/social/oauth/callback</code>.
-        Paste the app's client ID + secret in the plugin settings, then connect below.
+        Register this callback URL in each OAuth app:{" "}
+        <code style={{ fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{callbackOrigin ?? window.location.origin}/social/oauth/callback</code>
+        . Paste the app's client ID + secret in the plugin settings, then connect below.
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {CONNECT_PLATFORMS.map((p) => (

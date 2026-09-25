@@ -18,6 +18,7 @@ export async function loadPlatformCfg(ctx: PluginContext, platform: SocialPlatfo
     social?: {
       platforms?: Record<string, { clientId?: string; clientSecret?: string; extra?: Record<string, unknown> }>;
       encryptionSecret?: string;
+      publicBaseUrl?: string;
     };
   };
   const social = config.social ?? {};
@@ -27,11 +28,18 @@ export async function loadPlatformCfg(ctx: PluginContext, platform: SocialPlatfo
     clientSecret: p.clientSecret ? String(p.clientSecret) : undefined,
     extra: (p.extra ?? {}) as Record<string, unknown>,
     encryptionSecret: social.encryptionSecret,
+    publicBaseUrl: social.publicBaseUrl ? String(social.publicBaseUrl).replace(/\/$/, "") : undefined,
   };
+}
+
+/** Canonical base URL: configured value wins, request host is the fallback. */
+export function resolvePublicBase(cfg: ResolvedCfg, headers: Record<string, string>): string {
+  return cfg.publicBaseUrl ?? publicBaseFromHeaders(headers);
 }
 
 export interface ResolvedCfg extends PlatformAppConfig {
   encryptionSecret?: string;
+  publicBaseUrl?: string;
 }
 
 export function makeProviderCtx(baseUrl: string, cfg: ResolvedCfg): ProviderContext {
@@ -70,7 +78,7 @@ export async function buildConnectUrl(
   if (!cfg.clientId && providerFor(platform).requiresClientSecret !== false) {
     throw new Error(`Platform "${platform}" is not configured. Add its client ID/secret in the plugin settings first.`);
   }
-  const base = publicBaseFromHeaders(headers);
+  const base = resolvePublicBase(cfg, headers);
   const pctx = makeProviderCtx(base, cfg);
   const impl = providerFor(platform);
   const label = extras.accountLabel ?? null;
@@ -111,7 +119,7 @@ export async function completeConnect(
   if (!session) throw new Error("OAuth session expired. Please try connecting again.");
   const platform = session.platform as SocialPlatform;
   const cfg = await loadPlatformCfg(ctx, platform);
-  const base = publicBaseFromHeaders(headers);
+  const base = resolvePublicBase(cfg, headers);
   const impl = providerFor(platform);
   let bundle: AccountTokenBundle;
   const sessionExtra = (session.extra ?? {}) as Record<string, string>;
