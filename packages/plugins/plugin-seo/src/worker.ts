@@ -20,6 +20,10 @@ const plugin = definePlugin({
     ctx.actions.register("seo.record-rank", (params, context) => recordRank(ctx, requiredCompany(context), params));
     ctx.actions.register("seo.record-audit", (params, context) => recordAudit(ctx, requiredCompany(context), params));
     ctx.actions.register("seo.open-task", (params, context) => openTask(ctx, requiredCompany(context), params));
+    ctx.actions.register("seo.add-keyword", (params, context) => addKeyword(ctx, requiredCompany(context), params));
+    ctx.actions.register("seo.add-page", (params, context) => addPage(ctx, requiredCompany(context), params));
+    ctx.actions.register("seo.rank-history", (params, context) => rankHistory(ctx, requiredCompany(context), params));
+    ctx.actions.register("seo.audit-summary", (params, context) => auditSummary(ctx, requiredCompany(context), params));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await safeReconcile(ctx, event.companyId);
     });
@@ -48,6 +52,10 @@ async function dispatch(ctx: PluginContext, companyId: string, name: string, bod
   if (name === "record-rank") return recordRank(ctx, companyId, body);
   if (name === "record-audit") return recordAudit(ctx, companyId, body);
   if (name === "open-task") return openTask(ctx, companyId, body);
+  if (name === "add-keyword") return addKeyword(ctx, companyId, body);
+  if (name === "add-page") return addPage(ctx, companyId, body);
+  if (name === "rank-history") return rankHistory(ctx, companyId, body);
+  if (name === "audit-summary") return auditSummary(ctx, companyId, body);
   throw new SeoError(`Unknown SEO tool ${name}`);
 }
 
@@ -64,7 +72,11 @@ async function load(ctx: PluginContext, companyId: string) {
     `SELECT id, sprint_id, finding, severity FROM ${table(ctx, "audits")} WHERE company_id = $1 ORDER BY created_at DESC`,
     [companyId],
   );
-  return { sprints, keywords, audits };
+  const pages = await ctx.db.query(
+    `SELECT id, sprint_id, url, title FROM ${table(ctx, "pages")} WHERE company_id = $1 ORDER BY created_at DESC`,
+    [companyId],
+  );
+  return { sprints, keywords, audits, pages };
 }
 
 async function createSprint(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
@@ -85,6 +97,12 @@ async function recordRank(ctx: PluginContext, companyId: string, params: Record<
     `INSERT INTO ${table(ctx, "keywords")} (id, company_id, sprint_id, phrase, rank) VALUES ($1, $2, $3, $4, $5)`,
     [id, companyId, sprint.id, requiredString(params, "phrase"), rank],
   );
+  if (rank != null) {
+    await ctx.db.execute(
+      `INSERT INTO ${table(ctx, "rank_history")} (id, company_id, keyword_id, rank) VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), companyId, id, rank],
+    );
+  }
   return { id, sprintId: sprint.id };
 }
 
@@ -110,6 +128,48 @@ async function openTask(ctx: PluginContext, companyId: string, params: Record<st
     originId: task.originId,
   });
   return { issueId: issue.id, sprintId: sprint.id };
+}
+
+async function addKeyword(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "keywords")} (id, company_id, sprint_id, phrase, rank) VALUES ($1, $2, $3, $4, NULL)`,
+    [id, companyId, sprint.id, requiredString(params, "phrase")],
+  );
+  return { id, sprintId: sprint.id };
+}
+
+async function addPage(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "pages")} (id, company_id, sprint_id, url, title) VALUES ($1, $2, $3, $4, $5)`,
+    [id, companyId, sprint.id, requiredString(params, "url"), optionalString(params, "title") ?? ""],
+  );
+  return { id, sprintId: sprint.id };
+}
+
+async function rankHistory(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const keywordId = requiredString(params, "keywordId");
+  const rows = await ctx.db.query(
+    `SELECT rank, recorded_at FROM ${table(ctx, "rank_history")}
+      WHERE keyword_id = $1 AND company_id = $2 ORDER BY recorded_at`,
+    [keywordId, companyId],
+  );
+  return rows;
+}
+
+async function auditSummary(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
+  const rows = await ctx.db.query<{ severity: string; count: string | number }>(
+    `SELECT severity, count(*) AS count FROM ${table(ctx, "audits")}
+      WHERE sprint_id = $1 AND company_id = $2 GROUP BY severity`,
+    [sprint.id, companyId],
+  );
+  const bySeverity: Record<string, number> = {};
+  for (const row of rows) bySeverity[row.severity] = Number(row.count ?? 0);
+  return { sprintId: sprint.id, bySeverity };
 }
 
 async function requireSprint(ctx: PluginContext, companyId: string, id: string): Promise<{ id: string; name: string }> {
