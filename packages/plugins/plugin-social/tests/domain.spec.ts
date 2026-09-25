@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { assertAgentTransition, assertDestination, createPost, publishResult,
   aggregateMetrics,
   assertMetric,
+  createMediaAsset,
   createTemplate,} from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
@@ -71,5 +72,18 @@ describe("social metrics", () => {
       { views: 50, likes: 5, comments: 1, shares: 0 },
     ]);
     expect(totals).toEqual({ views: 150, likes: 15, comments: 3, shares: 1 });
+  });
+});
+
+describe("social media assets", () => {
+  it("creates an image asset", () => {
+    const asset = createMediaAsset({ companyId: "workspace-a", name: "Hero", url: "https://cdn.test/hero.png" });
+    expect(asset.kind).toBe("image");
+    expect(asset.url).toBe("https://cdn.test/hero.png");
+  });
+
+  it("rejects a blank url and an invalid kind", () => {
+    expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "  " })).toThrow(/URL is required/);
+    expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "u", kind: "audio" })).toThrow(/image or video/);
   });
 });

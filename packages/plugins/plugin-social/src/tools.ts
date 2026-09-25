@@ -77,4 +77,20 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       postId: text,
     }),
   },
+  {
+    name: "create-media-asset",
+    displayName: "Create media asset",
+    description: "Add an image or video asset to the media vault for reuse in posts.",
+    parametersSchema: schema(["name", "url"], {
+      name: text,
+      url: text,
+      kind: text,
+    }),
+  },
+  {
+    name: "list-media-assets",
+    displayName: "List media assets",
+    description: "Return the media assets in the vault for this workspace.",
+    parametersSchema: schema([], {}),
+  },
 ];

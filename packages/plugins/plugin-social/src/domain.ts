@@ -127,3 +127,33 @@ export function aggregateMetrics(rows: PostMetrics[]): PostMetrics {
     { views: 0, likes: 0, comments: 0, shares: 0 },
   );
 }
+
+export interface MediaAssetDraft {
+  id: string;
+  companyId: string;
+  name: string;
+  url: string;
+  kind: string;
+}
+
+export function createMediaAsset(input: {
+  companyId: string;
+  name: string;
+  url: string;
+  kind?: string;
+  id?: string;
+}): MediaAssetDraft {
+  const name = input.name.trim();
+  if (!name) throw new SocialError("Asset name is required");
+  const url = input.url.trim();
+  if (!url) throw new SocialError("Asset URL is required");
+  const kind = (input.kind ?? "image").trim().toLowerCase();
+  if (kind !== "image" && kind !== "video") throw new SocialError("Asset kind must be image or video");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    name,
+    url,
+    kind,
+  };
+}

@@ -15,10 +15,12 @@ import {
   getPost,
   insertAccount,
   insertDestination,
+  insertMediaAsset,
   insertMetrics,
   insertPost,
   insertTemplate,
   listAccounts,
+  listMediaAssets,
   listPosts,
   listTemplates,
   metricsForCompany,
@@ -36,6 +38,7 @@ import {
   assertMetric,
   assertTransition,
   aggregateMetrics,
+  createMediaAsset,
   createTemplate,
   publishResult,
   SocialError,
@@ -107,6 +110,8 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "list-templates") return listTemplatesAction(ctx, Promise.resolve(viewer));
   if (name === "record-post-metrics") return recordMetrics(ctx, Promise.resolve(viewer), body);
   if (name === "post-analytics") return analytics(ctx, Promise.resolve(viewer), body);
+  if (name === "create-media-asset") return createMediaAssetAction(ctx, Promise.resolve(viewer), body);
+  if (name === "list-media-assets") return listMediaAssetsAction(ctx, Promise.resolve(viewer));
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -114,6 +119,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const viewer = await actionViewer(ctx, context);
   const [accounts, posts] = await Promise.all([listAccounts(ctx, viewer.companyId), listPosts(ctx, viewer.companyId)]);
   const templates = await listTemplates(ctx, viewer.companyId);
+  const media = await listMediaAssets(ctx, viewer.companyId);
   return {
     accounts: accounts.filter((account) => accountVisible(viewer, account)).map(publicAccount),
     posts: posts.filter((post) => postVisible(viewer, post)).map(publicPost),
@@ -123,6 +129,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       body: template.body,
       platform: template.platform,
     })),
+    media: media.map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, kind: asset.kind })),
   };
 }
 
@@ -179,6 +186,30 @@ async function analytics(ctx: PluginContext, viewerPromise: Promise<Viewer>, par
     shares: Number(row.shares ?? 0),
   })));
   return { postId: postId ?? null, ...totals, snapshots: rows.length };
+}
+
+async function createMediaAssetAction(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const asset = createMediaAsset({
+    companyId: viewer.companyId,
+    name: requiredString(params, "name"),
+    url: requiredString(params, "url"),
+    kind: optionalString(params, "kind"),
+  });
+  await insertMediaAsset(ctx, {
+    id: asset.id,
+    company_id: asset.companyId,
+    name: asset.name,
+    url: asset.url,
+    kind: asset.kind,
+  });
+  return asset;
+}
+
+async function listMediaAssetsAction(ctx: PluginContext, viewerPromise: Promise<Viewer>) {
+  const viewer = await viewerPromise;
+  const assets = await listMediaAssets(ctx, viewer.companyId);
+  return assets.map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, kind: asset.kind }));
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

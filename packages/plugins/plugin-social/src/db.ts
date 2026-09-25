@@ -216,3 +216,27 @@ export async function metricsForCompany(ctx: PluginContext, companyId: string): 
     [companyId],
   );
 }
+
+export interface MediaAssetRow {
+  id: string;
+  company_id: string;
+  name: string;
+  url: string;
+  kind: string;
+}
+
+export async function insertMediaAsset(ctx: PluginContext, asset: MediaAssetRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "media_assets")} (id, company_id, name, url, kind)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [asset.id, asset.company_id, asset.name, asset.url, asset.kind],
+  );
+}
+
+export async function listMediaAssets(ctx: PluginContext, companyId: string): Promise<MediaAssetRow[]> {
+  return ctx.db.query<MediaAssetRow>(
+    `SELECT id, company_id, name, url, kind
+       FROM ${table(ctx, "media_assets")} WHERE company_id = $1 ORDER BY name`,
+    [companyId],
+  );
+}
