@@ -7,7 +7,7 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { assertMayDraft, assertMaySend, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
+import { assertMayDraft, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { MAILBOX_TOOLS } from "./tools.js";
 
 const plugin = definePlugin({
@@ -19,6 +19,10 @@ const plugin = definePlugin({
     ctx.actions.register("mailbox.create-account", (params, context) => createAccount(ctx, requiredCompany(context), context.actor.userId, params));
     ctx.actions.register("mailbox.create-delegation", (params, context) => createDelegation(ctx, requiredCompany(context), params));
     ctx.actions.register("mailbox.create-draft", (params, context) => createDraft(ctx, requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent"));
+    ctx.actions.register("mailbox.list-inbox", (params, context) => listInbox(ctx, requiredCompany(context), params));
+    ctx.actions.register("mailbox.mark-read", (params, context) => markRead(ctx, requiredCompany(context), params));
+    ctx.actions.register("mailbox.create-email-template", (params, context) => createEmailTemplateAction(ctx, requiredCompany(context), params));
+    ctx.actions.register("mailbox.list-email-templates", (_params, context) => listEmailTemplates(ctx, requiredCompany(context)));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await safeReconcile(ctx, event.companyId);
     });
@@ -41,6 +45,10 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "send-draft") {
       return { content: "Draft queued", data: await sendDraft(ctx, run.companyId, run.agentId, requiredString(body, "messageId")) };
     }
+    if (name === "list-inbox") return { content: "Inbox listed", data: await listInbox(ctx, run.companyId, body) };
+    if (name === "mark-read") return { content: "Message marked read", data: await markRead(ctx, run.companyId, body) };
+    if (name === "create-email-template") return { content: "Email template created", data: await createEmailTemplateAction(ctx, run.companyId, body) };
+    if (name === "list-email-templates") return { content: "Email templates listed", data: await listEmailTemplates(ctx, run.companyId) };
     return { error: "Unknown mailbox tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Mailbox tool failed" };
@@ -59,14 +67,24 @@ async function load(ctx: PluginContext, companyId: string) {
     [companyId],
   );
   const messages = await ctx.db.query(
-    `SELECT id, account_id, subject, status, direction FROM ${table(ctx, "messages")}
+    `SELECT id, account_id, subject, status, direction, read_at IS NOT NULL AS is_read FROM ${table(ctx, "messages")}
       WHERE company_id = $1 ORDER BY created_at DESC LIMIT 50`,
+    [companyId],
+  );
+  const templates = await ctx.db.query(
+    `SELECT id, name, subject, body FROM ${table(ctx, "email_templates")} WHERE company_id = $1 ORDER BY name`,
+    [companyId],
+  );
+  const unread = await ctx.db.query<{ count: string | number }>(
+    `SELECT count(*) AS count FROM ${table(ctx, "messages")} WHERE company_id = $1 AND direction = 'inbound' AND read_at IS NULL`,
     [companyId],
   );
   return {
     accounts: accounts.map((row) => ({ ...row, secret_ref: undefined })),
     delegations,
     messages,
+    templates,
+    unreadCount: Number(unread[0]?.count ?? 0),
   };
 }
 
@@ -130,6 +148,50 @@ async function sendDraft(ctx: PluginContext, companyId: string, agentId: string,
   return { id: message.id, status: "queued" };
 }
 
+async function listInbox(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const accountId = requiredString(params, "accountId");
+  const limit = params.limit == null ? 50 : integer(params.limit, "limit");
+  const rows = await ctx.db.query(
+    `SELECT id, account_id, subject, body, status, read_at IS NOT NULL AS is_read, created_at
+       FROM ${table(ctx, "messages")}
+      WHERE company_id = $1 AND account_id = $2 AND direction = 'inbound'
+      ORDER BY created_at DESC LIMIT $3`,
+    [companyId, accountId, limit],
+  );
+  return rows;
+}
+
+async function markRead(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const messageId = requiredString(params, "messageId");
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "messages")} SET read_at = now() WHERE id = $1 AND company_id = $2 AND direction = 'inbound'`,
+    [messageId, companyId],
+  );
+  return { messageId, read: true };
+}
+
+async function createEmailTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const template = createEmailTemplate({
+    companyId,
+    name: requiredString(params, "name"),
+    subject: requiredString(params, "subject"),
+    body: optionalString(params, "body"),
+  });
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "email_templates")} (id, company_id, name, subject, body)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [template.id, template.companyId, template.name, template.subject, template.body],
+  );
+  return template;
+}
+
+async function listEmailTemplates(ctx: PluginContext, companyId: string) {
+  return ctx.db.query(
+    `SELECT id, name, subject, body FROM ${table(ctx, "email_templates")} WHERE company_id = $1 ORDER BY name`,
+    [companyId],
+  );
+}
+
 async function delegationFor(ctx: PluginContext, accountId: string, agentId: string): Promise<Delegation | null> {
   const rows = await ctx.db.query<{ can_read: boolean; can_draft: boolean; can_send: boolean }>(
     `SELECT can_read, can_draft, can_send FROM ${table(ctx, "delegations")}
@@ -167,6 +229,12 @@ function optionalString(params: Record<string, unknown>, key: string): string | 
   if (value == null || value === "") return undefined;
   if (typeof value !== "string") throw new MailboxError(`${key} must be a string`);
   return value.trim();
+}
+
+function integer(value: unknown, key: string): number {
+  const amount = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(amount) || amount < 1) throw new MailboxError(`${key} must be a positive integer`);
+  return amount;
 }
 
 async function reconcileAll(ctx: PluginContext) {

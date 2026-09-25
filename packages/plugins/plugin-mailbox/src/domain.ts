@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export class MailboxError extends Error {
   constructor(message: string) {
     super(message);
@@ -21,4 +23,32 @@ export function assertMaySend(delegation: Delegation | null): void {
 
 export function defaultDelegation(): Delegation {
   return { canRead: true, canDraft: true, canSend: false };
+}
+
+export interface EmailTemplateDraft {
+  id: string;
+  companyId: string;
+  name: string;
+  subject: string;
+  body: string;
+}
+
+export function createEmailTemplate(input: {
+  companyId: string;
+  name: string;
+  subject: string;
+  body?: string;
+  id?: string;
+}): EmailTemplateDraft {
+  const name = input.name.trim();
+  if (!name) throw new MailboxError("Template name is required");
+  const subject = input.subject.trim();
+  if (!subject) throw new MailboxError("Template subject is required");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    name,
+    subject,
+    body: (input.body ?? "").trim(),
+  };
 }
