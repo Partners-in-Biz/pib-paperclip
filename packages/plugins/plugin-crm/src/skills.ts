@@ -17,6 +17,7 @@ Use the \`partnersinbiz.crm\` tools to keep people and the companies they work f
 - \`export-contacts\` returns the visible contacts as CSV. \`import-contacts\` creates contacts from CSV with a header row of name, emails, phones, lifecycle, tags. emails and phones are semicolon-separated.
 - \`field-history\` returns the recorded field changes and facts for a record. Use it to explain why a value is what it is.
 - \`bulk-tag-contacts\` adds or removes tags on many visible contacts at once. \`contact-graph\` returns a contact's companies, deals, and recent activity in one view.
+- \`pipeline-forecast\` returns the open pipeline value by stage with a weighted forecast. Use it to report expected revenue, not a guarantee.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound

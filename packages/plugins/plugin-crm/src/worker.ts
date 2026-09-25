@@ -64,6 +64,7 @@ import {
   assertCurrency,
   assertMergeTargets,
   assertProductName,
+  forecastPipeline,
   assertViewName,
   createSavedView,
   isDuplicatePair,
@@ -226,6 +227,8 @@ async function dispatch(
       return bulkTagContacts(ctx, viewer, body);
     case "contact-graph":
       return contactGraph(ctx, viewer, body);
+    case "pipeline-forecast":
+      return pipelineForecast(ctx, viewer);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -610,6 +613,17 @@ async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<s
     deals: deals.map((deal) => ({ id: deal.id, title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency })),
     activities,
   };
+}
+
+async function pipelineForecast(ctx: PluginContext, viewer: Viewer) {
+  const pipeline = await ensurePipeline(ctx, viewer.companyId);
+  const stages = await listStages(ctx, pipeline.pipelineId);
+  const deals = await listDeals(ctx, viewer.companyId);
+  const visibleDeals = deals.filter((deal) => canSeeRecord(viewer, deal, []));
+  return forecastPipeline({
+    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stageKind(stage.kind), position: stage.position })),
+    deals: visibleDeals.map((deal) => ({ stageId: deal.stageId, amountMinor: deal.amountMinor, currency: deal.currency })),
+  });
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

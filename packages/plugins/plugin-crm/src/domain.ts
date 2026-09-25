@@ -541,6 +541,60 @@ export function assertMergeTargets(primaryId: string, duplicateId: string): void
   if (primaryId === duplicateId) throw new CrmError("Primary and duplicate must be different contacts");
 }
 
+/** Default win probability by stage kind. Open stages weight by position. */
+export function stageWinProbability(kind: StageKind, position: number, totalOpenStages: number): number {
+  if (kind === "won") return 1;
+  if (kind === "lost") return 0;
+  if (totalOpenStages <= 1) return 0.5;
+  return 0.2 + (position / Math.max(totalOpenStages - 1, 1)) * 0.6;
+}
+
+export interface ForecastStage {
+  stageId: string;
+  name: string;
+  kind: StageKind;
+  count: number;
+  amountMinor: number;
+  currency: string;
+  probability: number;
+  weightedMinor: number;
+}
+
+export function forecastPipeline(input: {
+  stages: Array<{ id: string; name: string; kind: StageKind; position: number }>;
+  deals: Array<{ stageId: string; amountMinor: number; currency: string }>;
+}): { stages: ForecastStage[]; totalOpenMinor: number; weightedMinor: number; currency: string } {
+  const openStages = input.stages.filter((stage) => stage.kind === "open");
+  const byStage = new Map<string, { count: number; amountMinor: number; currency: string }>();
+  for (const stage of input.stages) byStage.set(stage.id, { count: 0, amountMinor: 0, currency: "ZAR" });
+  for (const deal of input.deals) {
+    const bucket = byStage.get(deal.stageId) ?? { count: 0, amountMinor: 0, currency: deal.currency };
+    bucket.count += 1;
+    bucket.amountMinor += deal.amountMinor;
+    bucket.currency = deal.currency;
+    byStage.set(deal.stageId, bucket);
+  }
+  const stages: ForecastStage[] = input.stages.map((stage) => {
+    const bucket = byStage.get(stage.id) ?? { count: 0, amountMinor: 0, currency: "ZAR" };
+    const probability = stageWinProbability(stage.kind, stage.position, openStages.length);
+    return {
+      stageId: stage.id,
+      name: stage.name,
+      kind: stage.kind,
+      count: bucket.count,
+      amountMinor: bucket.amountMinor,
+      currency: bucket.currency,
+      probability,
+      weightedMinor: Math.round(bucket.amountMinor * probability),
+    };
+  });
+  const open = stages.filter((stage) => stage.kind === "open");
+  const totalOpenMinor = open.reduce((sum, stage) => sum + stage.amountMinor, 0);
+  const weightedMinor = open.reduce((sum, stage) => sum + stage.weightedMinor, 0);
+  const currency = open[0]?.currency ?? "ZAR";
+  return { stages, totalOpenMinor, weightedMinor, currency };
+}
+
 export interface SavedViewDraft {
   id: string;
   companyId: string;

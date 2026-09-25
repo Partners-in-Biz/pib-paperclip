@@ -11,6 +11,7 @@ import {
   createContact,
   assertMergeTargets,
   createProduct,
+  forecastPipeline,
   createSavedView,
   parseCsv,
   toCsv,
@@ -292,5 +293,29 @@ describe("crm csv", () => {
   it("escapes quotes in CSV cells", () => {
     const csv = toCsv(["name"], [{ name: 'He said "hi"' }]);
     expect(csv).toContain('"He said ""hi"""');
+  });
+});
+
+describe("crm pipeline forecast", () => {
+  const stages = [
+    { id: "s1", name: "Discovery", kind: "open" as const, position: 0 },
+    { id: "s2", name: "Proposal", kind: "open" as const, position: 1 },
+    { id: "s3", name: "Won", kind: "won" as const, position: 2 },
+  ];
+
+  it("weights open deals by stage position", () => {
+    const forecast = forecastPipeline({
+      stages,
+      deals: [
+        { stageId: "s1", amountMinor: 100000, currency: "ZAR" },
+        { stageId: "s2", amountMinor: 200000, currency: "ZAR" },
+        { stageId: "s3", amountMinor: 500000, currency: "ZAR" },
+      ],
+    });
+    expect(forecast.totalOpenMinor).toBe(300000);
+    expect(forecast.weightedMinor).toBeGreaterThan(0);
+    expect(forecast.weightedMinor).toBeLessThan(300000);
+    const won = forecast.stages.find((stage) => stage.kind === "won");
+    expect(won?.probability).toBe(1);
   });
 });

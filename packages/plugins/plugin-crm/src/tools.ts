@@ -291,4 +291,10 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       contactId: text,
     }),
   },
+  {
+    name: "pipeline-forecast",
+    displayName: "Pipeline forecast",
+    description: "Return the open pipeline value by stage with a weighted forecast, using each stage's win probability.",
+    parametersSchema: schema([], {}),
+  },
 ];
