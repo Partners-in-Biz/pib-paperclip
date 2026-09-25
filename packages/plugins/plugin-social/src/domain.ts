@@ -183,3 +183,41 @@ export function createRssFeed(input: {
     isActive: true,
   };
 }
+
+export interface InboxItemDraft {
+  id: string;
+  companyId: string;
+  accountId: string | null;
+  kind: "mention" | "comment" | "message";
+  author: string;
+  body: string;
+  status: "new" | "read" | "replied";
+}
+
+export function assertInboxKind(value: string): "mention" | "comment" | "message" {
+  if (value !== "mention" && value !== "comment" && value !== "message") {
+    throw new SocialError("Inbox kind must be mention, comment, or message");
+  }
+  return value;
+}
+
+export function createInboxItem(input: {
+  companyId: string;
+  kind: string;
+  body: string;
+  accountId?: string | null;
+  author?: string;
+  id?: string;
+}): InboxItemDraft {
+  const body = input.body.trim();
+  if (!body) throw new SocialError("Inbox item body is required");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    accountId: input.accountId?.trim() || null,
+    kind: assertInboxKind(input.kind),
+    author: (input.author ?? "").trim(),
+    body,
+    status: "new",
+  };
+}

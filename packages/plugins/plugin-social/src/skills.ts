@@ -12,4 +12,5 @@ Use the \`partnersinbiz.social\` tools to draft and schedule posts.
 - \`record-post-metrics\` records engagement (views, likes, comments, shares) for a published post. \`post-analytics\` returns the aggregated totals for a post or the whole workspace.
 - \`create-media-asset\` / \`list-media-assets\` keep a media vault of image and video assets for reuse in posts.
 - \`create-rss-feed\` / \`list-rss-feeds\` track an RSS feed to repurpose its items. \`pause-rss-feed\` and \`resume-rss-feed\` control tracking.
+- \`record-inbox-item\` records a mention, comment, or message. \`list-inbox\` returns the social inbox. \`mark-inbox-read\` marks an item read.
 `;

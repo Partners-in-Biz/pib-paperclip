@@ -273,3 +273,38 @@ export async function setRssFeedActive(ctx: PluginContext, companyId: string, id
   );
   return result != null;
 }
+
+export interface InboxItemRow {
+  id: string;
+  company_id: string;
+  account_id: string | null;
+  kind: string;
+  author: string;
+  body: string;
+  status: string;
+  created_at: unknown;
+}
+
+export async function insertInboxItem(ctx: PluginContext, item: InboxItemRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "inbox_items")} (id, company_id, account_id, kind, author, body, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [item.id, item.company_id, item.account_id, item.kind, item.author, item.body, item.status],
+  );
+}
+
+export async function listInboxItems(ctx: PluginContext, companyId: string, limit = 50): Promise<InboxItemRow[]> {
+  return ctx.db.query<InboxItemRow>(
+    `SELECT id, company_id, account_id, kind, author, body, status, created_at
+       FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [companyId, limit],
+  );
+}
+
+export async function setInboxItemStatus(ctx: PluginContext, companyId: string, id: string, status: string): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "inbox_items")} SET status = $3 WHERE id = $1 AND company_id = $2`,
+    [id, companyId, status],
+  );
+  return result != null;
+}

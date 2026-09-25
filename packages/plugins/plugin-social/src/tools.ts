@@ -124,4 +124,31 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       feedId: text,
     }),
   },
+  {
+    name: "record-inbox-item",
+    displayName: "Record inbox item",
+    description: "Record a mention, comment, or message for the social inbox.",
+    parametersSchema: schema(["kind", "body"], {
+      kind: text,
+      body: text,
+      accountId: text,
+      author: text,
+    }),
+  },
+  {
+    name: "list-inbox",
+    displayName: "List social inbox",
+    description: "Return the mentions, comments, and messages for this workspace, newest first.",
+    parametersSchema: schema([], {
+      limit: { type: "integer" },
+    }),
+  },
+  {
+    name: "mark-inbox-read",
+    displayName: "Mark inbox item read",
+    description: "Mark a social inbox item as read.",
+    parametersSchema: schema(["itemId"], {
+      itemId: text,
+    }),
+  },
 ];

@@ -15,18 +15,21 @@ import {
   getPost,
   insertAccount,
   insertDestination,
+  insertInboxItem,
   insertMediaAsset,
   insertMetrics,
   insertRssFeed,
   insertPost,
   insertTemplate,
   listAccounts,
+  listInboxItems,
   listMediaAssets,
   listPosts,
   listRssFeeds,
   listTemplates,
   metricsForCompany,
   metricsForPost,
+  setInboxItemStatus,
   setRssFeedActive,
   publicAccount,
   publicPost,
@@ -41,6 +44,7 @@ import {
   assertMetric,
   assertTransition,
   aggregateMetrics,
+  createInboxItem,
   createMediaAsset,
   createRssFeed,
   createTemplate,
@@ -120,6 +124,9 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "list-rss-feeds") return listRssFeedsAction(ctx, Promise.resolve(viewer));
   if (name === "pause-rss-feed") return setRssActive(ctx, Promise.resolve(viewer), body, false);
   if (name === "resume-rss-feed") return setRssActive(ctx, Promise.resolve(viewer), body, true);
+  if (name === "record-inbox-item") return recordInboxItem(ctx, Promise.resolve(viewer), body);
+  if (name === "list-inbox") return listInbox(ctx, Promise.resolve(viewer), body);
+  if (name === "mark-inbox-read") return markInboxRead(ctx, Promise.resolve(viewer), body);
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -256,6 +263,51 @@ async function setRssActive(ctx: PluginContext, viewerPromise: Promise<Viewer>, 
   const changed = await setRssFeedActive(ctx, viewer.companyId, id, active);
   if (!changed) throw new SocialError("RSS feed was not found");
   return { feedId: id, isActive: active };
+}
+
+async function recordInboxItem(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const item = createInboxItem({
+    companyId: viewer.companyId,
+    kind: requiredString(params, "kind"),
+    body: requiredString(params, "body"),
+    accountId: optionalString(params, "accountId"),
+    author: optionalString(params, "author"),
+  });
+  await insertInboxItem(ctx, {
+    id: item.id,
+    company_id: item.companyId,
+    account_id: item.accountId,
+    kind: item.kind,
+    author: item.author,
+    body: item.body,
+    status: item.status,
+    created_at: null,
+  });
+  return item;
+}
+
+async function listInbox(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const limit = params.limit == null ? 50 : integer(params.limit, "limit");
+  const rows = await listInboxItems(ctx, viewer.companyId, limit);
+  return rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    kind: row.kind,
+    author: row.author,
+    body: row.body,
+    status: row.status,
+    createdAt: row.created_at == null ? null : String(row.created_at),
+  }));
+}
+
+async function markInboxRead(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const id = requiredString(params, "itemId");
+  const changed = await setInboxItemStatus(ctx, viewer.companyId, id, "read");
+  if (!changed) throw new SocialError("Inbox item was not found");
+  return { itemId: id, status: "read" };
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
@@ -421,4 +473,10 @@ function optionalString(params: Record<string, unknown>, key: string): string | 
   if (value == null || value === "") return undefined;
   if (typeof value !== "string") throw new SocialError(`${key} must be a string`);
   return value.trim();
+}
+
+function integer(value: unknown, key: string): number {
+  const amount = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(amount) || amount < 1) throw new SocialError(`${key} must be a positive integer`);
+  return amount;
 }

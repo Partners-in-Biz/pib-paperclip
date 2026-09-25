@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { assertAgentTransition, assertDestination, createPost, publishResult,
   aggregateMetrics,
   assertMetric,
+  createInboxItem,
   createMediaAsset,
   createRssFeed,
   createTemplate,} from "../src/domain.js";
@@ -99,5 +100,19 @@ describe("social rss feeds", () => {
   it("rejects a blank or non-http url", () => {
     expect(() => createRssFeed({ companyId: "workspace-a", url: "  " })).toThrow(/URL is required/);
     expect(() => createRssFeed({ companyId: "workspace-a", url: "ftp://x" })).toThrow(/http/);
+  });
+});
+
+describe("social inbox", () => {
+  it("creates a new mention", () => {
+    const item = createInboxItem({ companyId: "workspace-a", kind: "mention", body: "@us check this", author: "ada" });
+    expect(item.status).toBe("new");
+    expect(item.kind).toBe("mention");
+    expect(item.author).toBe("ada");
+  });
+
+  it("rejects a blank body and an invalid kind", () => {
+    expect(() => createInboxItem({ companyId: "workspace-a", kind: "mention", body: "  " })).toThrow(/body is required/);
+    expect(() => createInboxItem({ companyId: "workspace-a", kind: "like", body: "x" })).toThrow(/mention, comment, or message/);
   });
 });
