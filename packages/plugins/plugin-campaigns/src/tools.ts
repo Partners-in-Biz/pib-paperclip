@@ -99,4 +99,15 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       campaignId: text,
     }),
   },
+  {
+    name: "create-ab-variant",
+    displayName: "Create A/B variant",
+    description: "Add a B variant to a campaign step so contacts are split between the two versions.",
+    parametersSchema: schema(["campaignId", "position", "subject"], {
+      campaignId: text,
+      position: { type: "integer" },
+      subject: text,
+      body: text,
+    }),
+  },
 ];

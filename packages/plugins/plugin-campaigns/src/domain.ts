@@ -30,6 +30,7 @@ export interface CampaignStepDraft {
   delayDays: number;
   subject: string;
   body: string;
+  variant: "a" | "b";
 }
 
 export interface EnrollmentDraft {
@@ -39,8 +40,14 @@ export interface EnrollmentDraft {
   contactId: string;
   status: "running" | "stopped" | "done";
   stepPosition: number;
+  variant: "a" | "b";
   nextDueAt: string | null;
   openIssueId: string | null;
+}
+
+export function assertVariant(value: string): "a" | "b" {
+  if (value !== "a" && value !== "b") throw new CampaignError("Variant must be a or b");
+  return value;
 }
 
 export function assertCampaignStatus(value: string): CampaignStatus {
@@ -125,6 +132,7 @@ export function startEnrollment(input: {
     contactId: input.contactId,
     status: "running",
     stepPosition: first.position,
+    variant: first.variant,
     nextDueAt: new Date(input.now.getTime() + first.delayDays * 86_400_000).toISOString(),
     openIssueId: null,
   };
@@ -146,6 +154,7 @@ export function advanceEnrollment(
     ...enrollment,
     status: "running",
     stepPosition: next.position,
+    variant: next.variant,
     openIssueId: null,
     nextDueAt: new Date(now.getTime() + next.delayDays * 86_400_000).toISOString(),
   };

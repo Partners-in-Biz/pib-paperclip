@@ -29,6 +29,7 @@ import {
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
+  assertVariant,
   CampaignError,
   createCampaign,
   matchesAudience,
@@ -92,6 +93,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "complete-step") return completeStep(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
+  if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -164,6 +166,7 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
     delayDays: params.delayDays == null ? 0 : integer(params.delayDays, "delayDays"),
     subject: requiredString(params, "subject"),
     body: optionalString(params, "body") ?? "",
+    variant: "a",
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   return { campaignId: campaign.id, step };
@@ -261,7 +264,7 @@ async function openDueSteps(ctx: PluginContext) {
   for (const enrollment of due) {
     try {
       const steps = await listSteps(ctx, enrollment.campaignId);
-      const step = steps.find((item) => item.position === enrollment.stepPosition);
+      const step = steps.find((item) => item.position === enrollment.stepPosition && item.variant === enrollment.variant);
       if (!step) continue;
       const contact = await getCrmContact(ctx, enrollment.companyId, enrollment.contactId);
       const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, step);
@@ -327,6 +330,28 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   campaign.approvalIssueId = issue.id;
   await saveCampaign(ctx, campaign);
   return { campaignId: campaign.id, approvalIssueId: issue.id };
+}
+
+async function createAbVariant(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  if (campaign.status !== "draft") throw new CampaignError("A/B variants can only be added to a draft campaign");
+  const position = integer(params.position, "position");
+  const existing = await listSteps(ctx, campaign.id);
+  if (!existing.some((step) => step.position === position && step.variant === "a")) {
+    throw new CampaignError("There is no A variant at that position");
+  }
+  if (existing.some((step) => step.position === position && step.variant === "b")) {
+    throw new CampaignError("A B variant already exists at that position");
+  }
+  const step: CampaignStepDraft = {
+    position,
+    delayDays: 0,
+    subject: requiredString(params, "subject"),
+    body: optionalString(params, "body") ?? "",
+    variant: "b",
+  };
+  await insertStep(ctx, { companyId, campaignId: campaign.id, step });
+  return { campaignId: campaign.id, step };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

@@ -35,6 +35,7 @@ export interface StepRow {
   delay_days: number;
   subject: string;
   body: string;
+  variant: string;
 }
 
 export interface EnrollmentRow {
@@ -44,6 +45,7 @@ export interface EnrollmentRow {
   contact_id: string;
   status: string;
   step_position: number;
+  variant: string;
   next_due_at: unknown;
   open_issue_id: string | null;
 }
@@ -93,6 +95,7 @@ function mapEnrollment(row: EnrollmentRow): EnrollmentDraft {
     contactId: row.contact_id,
     status: row.status as EnrollmentDraft["status"],
     stepPosition: row.step_position,
+    variant: row.variant as "a" | "b",
     nextDueAt: asIso(row.next_due_at),
     openIssueId: row.open_issue_id,
   };
@@ -164,8 +167,8 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
 
 export async function listSteps(ctx: PluginContext, campaignId: string): Promise<CampaignStepDraft[]> {
   const rows = await ctx.db.query<StepRow>(
-    `SELECT id, company_id, campaign_id, position, delay_days, subject, body
-       FROM ${table(ctx, "campaign_steps")} WHERE campaign_id = $1 ORDER BY position`,
+    `SELECT id, company_id, campaign_id, position, delay_days, subject, body, variant
+       FROM ${table(ctx, "campaign_steps")} WHERE campaign_id = $1 ORDER BY position, variant`,
     [campaignId],
   );
   return rows.map((row) => ({
@@ -173,6 +176,7 @@ export async function listSteps(ctx: PluginContext, campaignId: string): Promise
     delayDays: row.delay_days,
     subject: row.subject,
     body: row.body,
+    variant: row.variant as "a" | "b",
   }));
 }
 
@@ -182,15 +186,15 @@ export async function insertStep(
 ): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaign_steps")}
-      (id, company_id, campaign_id, position, delay_days, subject, body)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body],
+      (id, company_id, campaign_id, position, delay_days, subject, body, variant)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body, input.step.variant],
   );
 }
 
 export async function enrollmentsForContact(ctx: PluginContext, campaignId: string, contactId: string): Promise<EnrollmentDraft[]> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, campaign_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id
        FROM ${table(ctx, "campaign_enrollments")}
       WHERE campaign_id = $1 AND contact_id = $2`,
     [campaignId, contactId],
@@ -201,8 +205,8 @@ export async function enrollmentsForContact(ctx: PluginContext, campaignId: stri
 export async function insertEnrollment(ctx: PluginContext, enrollment: EnrollmentDraft): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaign_enrollments")}
-      (id, company_id, campaign_id, contact_id, status, step_position, next_due_at, open_issue_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      (id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [
       enrollment.id,
       enrollment.companyId,
@@ -210,6 +214,7 @@ export async function insertEnrollment(ctx: PluginContext, enrollment: Enrollmen
       enrollment.contactId,
       enrollment.status,
       enrollment.stepPosition,
+      enrollment.variant,
       enrollment.nextDueAt,
       enrollment.openIssueId,
     ],
@@ -219,15 +224,15 @@ export async function insertEnrollment(ctx: PluginContext, enrollment: Enrollmen
 export async function saveEnrollment(ctx: PluginContext, enrollment: EnrollmentDraft): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "campaign_enrollments")}
-        SET status = $2, step_position = $3, next_due_at = $4, open_issue_id = $5, updated_at = now()
+        SET status = $2, step_position = $3, variant = $4, next_due_at = $5, open_issue_id = $6, updated_at = now()
       WHERE id = $1`,
-    [enrollment.id, enrollment.status, enrollment.stepPosition, enrollment.nextDueAt, enrollment.openIssueId],
+    [enrollment.id, enrollment.status, enrollment.stepPosition, enrollment.variant, enrollment.nextDueAt, enrollment.openIssueId],
   );
 }
 
 export async function dueEnrollments(ctx: PluginContext): Promise<EnrollmentDraft[]> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, campaign_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id
        FROM ${table(ctx, "campaign_enrollments")}
       WHERE status = 'running' AND open_issue_id IS NULL AND next_due_at IS NOT NULL AND next_due_at <= now()`,
   );
@@ -236,7 +241,7 @@ export async function dueEnrollments(ctx: PluginContext): Promise<EnrollmentDraf
 
 export async function enrollmentByIssue(ctx: PluginContext, issueId: string): Promise<EnrollmentDraft | null> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, campaign_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id
        FROM ${table(ctx, "campaign_enrollments")}
       WHERE open_issue_id = $1 AND status = 'running' LIMIT 1`,
     [issueId],
@@ -246,7 +251,7 @@ export async function enrollmentByIssue(ctx: PluginContext, issueId: string): Pr
 
 export async function enrollmentById(ctx: PluginContext, id: string): Promise<EnrollmentDraft | null> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, campaign_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id
        FROM ${table(ctx, "campaign_enrollments")} WHERE id = $1 LIMIT 1`,
     [id],
   );

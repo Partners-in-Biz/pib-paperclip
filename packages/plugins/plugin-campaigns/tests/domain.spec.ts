@@ -6,6 +6,7 @@ import {
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
+  assertVariant,
   createCampaign,
   matchesAudience,
   startEnrollment,
@@ -50,8 +51,8 @@ describe("campaigns", () => {
 
 describe("campaign enrollments", () => {
   const steps = [
-    { position: 1, delayDays: 0, subject: "Welcome", body: "Hi" },
-    { position: 2, delayDays: 3, subject: "Follow up", body: "Check in" },
+    { position: 1, delayDays: 0, subject: "Welcome", body: "Hi", variant: "a" as const },
+    { position: 2, delayDays: 3, subject: "Follow up", body: "Check in", variant: "a" as const },
   ];
 
   it("refuses a second running enrollment", () => {
@@ -92,5 +93,13 @@ describe("campaign approval", () => {
   it("only a draft can be sent for approval", () => {
     expect(() => assertCanRequestApproval("draft")).not.toThrow();
     expect(() => assertCanRequestApproval("active")).toThrow(/draft/);
+  });
+});
+
+describe("campaign ab variants", () => {
+  it("accepts only a or b", () => {
+    expect(assertVariant("a")).toBe("a");
+    expect(assertVariant("b")).toBe("b");
+    expect(() => assertVariant("c")).toThrow(/a or b/);
   });
 });

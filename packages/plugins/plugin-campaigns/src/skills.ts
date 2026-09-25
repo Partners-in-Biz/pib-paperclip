@@ -9,6 +9,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`pause-campaign\` and \`resume-campaign\` control a running program. \`complete-campaign\` ends it.
 - \`campaign-stats\` reports enrolled, running, and completed counts.
 - \`enroll-contact\` adds one contact to a campaign. \`complete-step\` advances an enrollment after its issue is done.
+- \`create-ab-variant\` adds a B variant to a step so contacts are split between two versions. The enrollment records which variant was sent.
 - Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.
 - A contact is enrolled once per campaign. A second running enrollment is refused.
 `;
