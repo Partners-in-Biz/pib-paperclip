@@ -143,4 +143,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       taxRate: { type: "number" },
     }),
   },
+  {
+    name: "quote-html",
+    displayName: "Quote HTML",
+    description: "Return a self-contained, printable HTML quote a person can open and save as PDF.",
+    parametersSchema: schema(["quoteId"], {
+      quoteId: text,
+    }),
+  },
 ];

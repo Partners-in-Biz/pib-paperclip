@@ -18,4 +18,5 @@ Use \`partnersinbiz.billing:create-invoice\` and \`partnersinbiz.billing:add-lin
 - \`create-recurring-invoice\` schedules a draft invoice to be re-created on a frequency. \`list-recurring-invoices\`, \`pause-recurring-invoice\`, and \`resume-recurring-invoice\` manage the schedules. The plugin creates the new draft automatically when due.
 - \`record-payment\` records a payment against an invoice. \`invoice-payments\` returns the recorded payments. Amounts are positive integers in minor units.
 - \`set-invoice-tax\` sets the tax rate (percentage) on a draft invoice. The total is recomputed with tax.
+- \`quote-html\` returns a printable HTML quote a person can open and save as PDF.
 `;

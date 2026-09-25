@@ -122,6 +122,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "record-payment") return { content: "Payment recorded", data: await recordPayment(ctx, toolContext(run), body) };
     if (name === "invoice-payments") return { content: "Payments listed", data: await invoicePayments(ctx, toolContext(run), body) };
     if (name === "set-invoice-tax") return { content: "Invoice tax set", data: await setInvoiceTax(ctx, toolContext(run), body) };
+    if (name === "quote-html") return { content: "Quote HTML generated", data: await quoteHtml(ctx, toolContext(run), body) };
     return { error: "Unknown billing tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Billing tool failed" };
@@ -587,6 +588,28 @@ async function setInvoiceTax(ctx: PluginContext, context: PluginPerformActionCon
   invoice.tax_rate = taxRate;
   await saveTotalsAndStatus(ctx, invoice);
   return { invoiceId: invoice.id, taxRate };
+}
+
+async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
+  const lines = await quoteLinesFor(ctx, quote.id);
+  return {
+    quoteId: quote.id,
+    html: buildInvoiceHtml({
+      number: quote.number,
+      status: quote.status,
+      currency: quote.currency,
+      sender: asObject(quote.sender),
+      customer: asObject(quote.customer),
+      lines: lines.map((line) => ({
+        description: "Line item",
+        quantity: Number(line.quantity),
+        unitAmountMinor: Number(line.unit_amount_minor),
+      })),
+      dueAt: quote.valid_until == null ? null : String(quote.valid_until),
+    }),
+  };
 }
 
 async function requireInvoice(ctx: PluginContext, companyId: string, id: string): Promise<InvoiceRow> {
