@@ -14,4 +14,6 @@ Use \`partnersinbiz.billing:create-invoice\` and \`partnersinbiz.billing:add-lin
 - \`create-quote\` and \`add-quote-line\` draft a quote (estimate). A quote is not an invoice.
 - \`convert-quote\` turns an accepted quote into a draft invoice, copying its lines and customer. Only convert a quote the customer has accepted.
 - \`create-expense\` records a business expense. Amounts are integers in minor units. Use a category such as software, travel, or other.
+- \`invoice-html\` returns a printable HTML invoice a person can open and save as PDF.
+- \`create-recurring-invoice\` schedules a draft invoice to be re-created on a frequency. \`list-recurring-invoices\`, \`pause-recurring-invoice\`, and \`resume-recurring-invoice\` manage the schedules. The plugin creates the new draft automatically when due.
 `;

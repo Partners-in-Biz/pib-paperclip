@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentMaySend, assertQuoteStatus, canSeeInvoice, createExpense, lineTotal, markPaid, markSent, nextNumber, type InvoiceState } from "../src/domain.js";
+import { assertAgentMaySend, assertFrequency, assertQuoteStatus, buildInvoiceHtml, canSeeInvoice, createExpense, lineTotal, markPaid, markSent, nextNumber, nextRunDate, type InvoiceState } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 const draft: InvoiceState = {
@@ -70,5 +70,51 @@ describe("billing quote status", () => {
   it("accepts only the known quote statuses", () => {
     expect(assertQuoteStatus("accepted")).toBe("accepted");
     expect(() => assertQuoteStatus("paid")).toThrow(/draft, sent, accepted/);
+  });
+});
+
+describe("billing invoice html", () => {
+  it("builds a printable invoice with the total", () => {
+    const html = buildInvoiceHtml({
+      number: "INV-0001",
+      status: "draft",
+      currency: "ZAR",
+      sender: { name: "Northwind" },
+      customer: { name: "Ada" },
+      lines: [{ description: "Website", quantity: 2, unitAmountMinor: 150000 }],
+      dueAt: null,
+    });
+    expect(html).toContain("Invoice INV-0001");
+    expect(html).toContain("Northwind");
+    expect(html).toContain("Ada");
+    expect(html).toContain("3,000");
+  });
+
+  it("escapes HTML in names", () => {
+    const html = buildInvoiceHtml({
+      number: "INV-1",
+      status: "draft",
+      currency: "ZAR",
+      sender: { name: "<b>Northwind</b>" },
+      customer: { name: "Ada" },
+      lines: [],
+      dueAt: null,
+    });
+    expect(html).not.toContain("<b>Northwind</b>");
+    expect(html).toContain("&lt;b&gt;Northwind&lt;/b&gt;");
+  });
+});
+
+describe("billing recurring", () => {
+  it("validates the frequency", () => {
+    expect(assertFrequency("monthly")).toBe("monthly");
+    expect(() => assertFrequency("weekly")).toThrow(/monthly, quarterly, or yearly/);
+  });
+
+  it("advances the run date by the period", () => {
+    const base = new Date("2026-01-15T00:00:00Z");
+    expect(nextRunDate(base, "monthly").toISOString()).toBe("2026-02-15T00:00:00.000Z");
+    expect(nextRunDate(base, "quarterly").toISOString()).toBe("2026-04-15T00:00:00.000Z");
+    expect(nextRunDate(base, "yearly").toISOString()).toBe("2027-01-15T00:00:00.000Z");
   });
 });

@@ -21,12 +21,17 @@ import {
   insertQuoteLine,
   invoiceByApproval,
   linesFor,
+  dueRecurring,
+  getRecurring,
+  insertRecurring,
   listExpenses,
   listInvoiceNumbers,
   listInvoices,
   listQuoteNumbers,
   listQuotes,
+  listRecurring,
   markOverdue,
+  saveRecurring,
   quoteLinesFor,
   saveQuoteStatus,
   saveTotalsAndStatus,
@@ -36,14 +41,17 @@ import {
 } from "./db.js";
 import {
   assertAgentMaySend,
+  assertFrequency,
   assertQuoteStatus,
   BillingError,
+  buildInvoiceHtml,
   canSeeInvoice,
   createExpense,
   lineTotal,
   markPaid,
   markSent,
   nextNumber,
+  nextRunDate,
   type InvoiceState,
 } from "./domain.js";
 import { BILLING_TOOLS } from "./tools.js";
@@ -65,7 +73,12 @@ const plugin = definePlugin({
     ctx.actions.register("billing.add-quote-line", (params, context) => addQuoteLine(ctx, context, params));
     ctx.actions.register("billing.convert-quote", (params, context) => convertQuote(ctx, context, params));
     ctx.actions.register("billing.create-expense", (params, context) => createExpenseAction(ctx, context, params));
+    ctx.actions.register("billing.create-recurring", (params, context) => createRecurringAction(ctx, context, params));
+    ctx.actions.register("billing.list-recurring", (_params, context) => listRecurringAction(ctx, context));
+    ctx.actions.register("billing.pause-recurring", (params, context) => setRecurringActive(ctx, context, params, false));
+    ctx.actions.register("billing.resume-recurring", (params, context) => setRecurringActive(ctx, context, params, true));
     ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
+    ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.events.on("issue.updated", (event) => onIssueDone(ctx, event.entityId, event.companyId));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await safeReconcile(ctx, event.companyId);
@@ -93,6 +106,11 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "add-quote-line") return { content: "Quote line added", data: await addQuoteLine(ctx, toolContext(run), body) };
     if (name === "convert-quote") return { content: "Quote converted to invoice", data: await convertQuote(ctx, toolContext(run), body) };
     if (name === "create-expense") return { content: "Expense recorded", data: await createExpenseAction(ctx, toolContext(run), body) };
+    if (name === "invoice-html") return { content: "Invoice HTML generated", data: await invoiceHtml(ctx, toolContext(run), body) };
+    if (name === "create-recurring-invoice") return { content: "Recurring invoice scheduled", data: await createRecurringAction(ctx, toolContext(run), body) };
+    if (name === "list-recurring-invoices") return { content: "Recurring invoices listed", data: await listRecurringAction(ctx, toolContext(run)) };
+    if (name === "pause-recurring-invoice") return { content: "Recurring invoice paused", data: await setRecurringActive(ctx, toolContext(run), body, false) };
+    if (name === "resume-recurring-invoice") return { content: "Recurring invoice resumed", data: await setRecurringActive(ctx, toolContext(run), body, true) };
     return { error: "Unknown billing tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Billing tool failed" };
@@ -118,10 +136,12 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   }
   const quotes = await listQuotes(ctx, companyId);
   const expenses = await listExpenses(ctx, companyId);
+  const recurring = await listRecurring(ctx, companyId);
   return {
     invoices: visible,
     quotes: quotes.map(publicQuote),
     expenses: expenses.map(publicExpense),
+    recurring: recurring.map(publicRecurring),
   };
 }
 
@@ -378,6 +398,122 @@ function publicExpense(expense: ExpenseRow) {
     currency: expense.currency,
     category: expense.category,
     incurredOn: expense.incurred_on == null ? null : String(expense.incurred_on),
+  };
+}
+
+async function invoiceHtml(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  const lines = await linesFor(ctx, invoice.id);
+  return {
+    invoiceId: invoice.id,
+    html: buildInvoiceHtml({
+      number: invoice.number,
+      status: invoice.status,
+      currency: invoice.currency,
+      sender: asObject(invoice.sender),
+      customer: asObject(invoice.customer),
+      lines: lines.map((line) => ({
+        description: "Line item",
+        quantity: Number(line.quantity),
+        unitAmountMinor: Number(line.unit_amount_minor),
+      })),
+      dueAt: invoice.due_at == null ? null : String(invoice.due_at),
+    }),
+  };
+}
+
+async function createRecurringAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const template = await requireInvoice(ctx, companyId, requiredString(params, "templateInvoiceId"));
+  const frequency = assertFrequency(requiredString(params, "frequency"));
+  const nextRunAt = requiredString(params, "nextRunAt");
+  if (Number.isNaN(Date.parse(nextRunAt))) throw new BillingError("nextRunAt must be a time");
+  const row = {
+    id: randomUUID(),
+    company_id: companyId,
+    template_invoice_id: template.id,
+    frequency,
+    next_run_at: nextRunAt,
+    is_active: true,
+  };
+  await insertRecurring(ctx, row);
+  return publicRecurring(row);
+}
+
+async function listRecurringAction(ctx: PluginContext, context: PluginPerformActionContext) {
+  const companyId = requiredCompany(context);
+  const rows = await listRecurring(ctx, companyId);
+  return rows.map(publicRecurring);
+}
+
+async function setRecurringActive(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, active: boolean) {
+  const companyId = requiredCompany(context);
+  const row = await getRecurring(ctx, requiredString(params, "recurringId"));
+  if (!row || row.company_id !== companyId) throw new BillingError("Recurring schedule was not found");
+  row.is_active = active;
+  await saveRecurring(ctx, row);
+  return publicRecurring(row);
+}
+
+async function runRecurring(ctx: PluginContext) {
+  const due = await dueRecurring(ctx);
+  for (const schedule of due) {
+    try {
+      const template = await getInvoice(ctx, schedule.template_invoice_id);
+      if (!template) {
+        schedule.is_active = false;
+        await saveRecurring(ctx, schedule);
+        continue;
+      }
+      const existingNumbers = await listInvoiceNumbers(ctx, schedule.company_id);
+      const invoice: InvoiceRow = {
+        id: randomUUID(),
+        company_id: schedule.company_id,
+        number: nextNumber("INV", existingNumbers),
+        status: "draft",
+        currency: template.currency,
+        customer_kind: template.customer_kind,
+        customer_ref: template.customer_ref,
+        sender: asObject(template.sender),
+        customer: asObject(template.customer),
+        sender_snapshot: null,
+        customer_snapshot: null,
+        total_minor: Number(template.total_minor),
+        due_at: null,
+        approval_issue_id: null,
+        pending_action: null,
+        sent_at: null,
+      };
+      await insertInvoice(ctx, invoice);
+      const lines = await linesFor(ctx, template.id);
+      for (const line of lines) {
+        await insertLine(ctx, {
+          companyId: schedule.company_id,
+          invoiceId: invoice.id,
+          description: "Recurring line",
+          quantity: Number(line.quantity),
+          unitAmountMinor: Number(line.unit_amount_minor),
+        });
+      }
+      schedule.next_run_at = nextRunDate(new Date(), schedule.frequency as "monthly" | "quarterly" | "yearly").toISOString();
+      await saveRecurring(ctx, schedule);
+    } catch (error) {
+      ctx.logger.error("Recurring invoice failed", {
+        scheduleId: schedule.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+function publicRecurring(row: { id: string; company_id: string; template_invoice_id: string; frequency: string; next_run_at: unknown; is_active: boolean }) {
+  return {
+    id: row.id,
+    templateInvoiceId: row.template_invoice_id,
+    frequency: row.frequency,
+    nextRunAt: row.next_run_at == null ? null : String(row.next_run_at),
+    isActive: row.is_active,
   };
 }
 

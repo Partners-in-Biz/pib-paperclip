@@ -290,3 +290,57 @@ export async function listQuoteNumbers(ctx: PluginContext, companyId: string): P
   );
   return rows.map((row) => row.number);
 }
+
+export interface RecurringRow {
+  id: string;
+  company_id: string;
+  template_invoice_id: string;
+  frequency: string;
+  next_run_at: unknown;
+  is_active: boolean;
+}
+
+export async function listRecurring(ctx: PluginContext, companyId: string): Promise<RecurringRow[]> {
+  return ctx.db.query<RecurringRow>(
+    `SELECT id, company_id, template_invoice_id, frequency, next_run_at, is_active
+       FROM ${table(ctx, "recurring_invoices")}
+      WHERE company_id = $1
+      ORDER BY next_run_at`,
+    [companyId],
+  );
+}
+
+export async function getRecurring(ctx: PluginContext, id: string): Promise<RecurringRow | null> {
+  const rows = await ctx.db.query<RecurringRow>(
+    `SELECT id, company_id, template_invoice_id, frequency, next_run_at, is_active
+       FROM ${table(ctx, "recurring_invoices")} WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function insertRecurring(ctx: PluginContext, row: RecurringRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "recurring_invoices")}
+      (id, company_id, template_invoice_id, frequency, next_run_at, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [row.id, row.company_id, row.template_invoice_id, row.frequency, row.next_run_at, row.is_active],
+  );
+}
+
+export async function saveRecurring(ctx: PluginContext, row: RecurringRow): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "recurring_invoices")}
+        SET next_run_at = $2, is_active = $3, updated_at = now()
+      WHERE id = $1`,
+    [row.id, row.next_run_at, row.is_active],
+  );
+}
+
+export async function dueRecurring(ctx: PluginContext): Promise<RecurringRow[]> {
+  return ctx.db.query<RecurringRow>(
+    `SELECT id, company_id, template_invoice_id, frequency, next_run_at, is_active
+       FROM ${table(ctx, "recurring_invoices")}
+      WHERE is_active = true AND next_run_at <= now()`,
+  );
+}

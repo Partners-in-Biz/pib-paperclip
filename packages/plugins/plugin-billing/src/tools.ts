@@ -74,4 +74,44 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       incurredOn: text,
     }),
   },
+  {
+    name: "invoice-html",
+    displayName: "Invoice HTML",
+    description: "Return a self-contained, printable HTML invoice a person can open and save as PDF.",
+    parametersSchema: schema(["invoiceId"], {
+      invoiceId: text,
+    }),
+  },
+  {
+    name: "create-recurring-invoice",
+    displayName: "Create recurring invoice",
+    description: "Schedule a draft invoice to be re-created on a frequency (monthly, quarterly, yearly).",
+    parametersSchema: schema(["templateInvoiceId", "frequency", "nextRunAt"], {
+      templateInvoiceId: text,
+      frequency: text,
+      nextRunAt: text,
+    }),
+  },
+  {
+    name: "list-recurring-invoices",
+    displayName: "List recurring invoices",
+    description: "Return the recurring invoice schedules for this workspace.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "pause-recurring-invoice",
+    displayName: "Pause recurring invoice",
+    description: "Stop a recurring schedule from creating new invoices.",
+    parametersSchema: schema(["recurringId"], {
+      recurringId: text,
+    }),
+  },
+  {
+    name: "resume-recurring-invoice",
+    displayName: "Resume recurring invoice",
+    description: "Re-enable a paused recurring schedule.",
+    parametersSchema: schema(["recurringId"], {
+      recurringId: text,
+    }),
+  },
 ];

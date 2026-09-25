@@ -30,13 +30,19 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
   tools: BILLING_TOOLS,
   jobs: [
-    {
-      jobKey: "mark-overdue",
-      displayName: "Mark overdue invoices",
-      description: "Moves sent or viewed invoices past their due time to overdue.",
-      schedule: "0 * * * *",
-    },
-  ],
+      {
+        jobKey: "mark-overdue",
+        displayName: "Mark overdue invoices",
+        description: "Moves sent or viewed invoices past their due time to overdue.",
+        schedule: "0 * * * *",
+      },
+      {
+        jobKey: "run-recurring",
+        displayName: "Run recurring invoices",
+        description: "Creates a new draft invoice from each due recurring schedule.",
+        schedule: "0 0 0 * * *",
+      },
+    ],
   skills: [
     {
       skillKey: "invoice-draft",
