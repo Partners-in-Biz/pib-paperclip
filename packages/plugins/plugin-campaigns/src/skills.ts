@@ -12,6 +12,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`create-ab-variant\` adds a B variant to a step so contacts are split between two versions. The enrollment records which variant was sent.
 - \`record-step-event\` records an open or click on a step. \`campaign-step-analytics\` reports opens and clicks per step.
 - \`set-step-html\` sets the rich HTML body of a step. The plain body stays as a fallback for clients that cannot render HTML.
+- \`create-campaign-template\` saves a reusable campaign with its steps. \`create-campaign-from-template\` makes a new draft from one.
 - Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.
 - A contact is enrolled once per campaign. A second running enrollment is refused.
 `;

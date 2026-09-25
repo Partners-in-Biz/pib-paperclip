@@ -8,6 +8,7 @@ import {
   assertCanRequestApproval,
   assertEventType,
   assertVariant,
+  createCampaignTemplate,
   createCampaign,
   matchesAudience,
   startEnrollment,
@@ -110,5 +111,22 @@ describe("campaign step events", () => {
     expect(assertEventType("open")).toBe("open");
     expect(assertEventType("click")).toBe("click");
     expect(() => assertEventType("bounce")).toThrow(/open or click/);
+  });
+});
+
+describe("campaign templates", () => {
+  it("creates a template with steps", () => {
+    const template = createCampaignTemplate({
+      companyId: "workspace-a",
+      name: "Welcome",
+      steps: [{ subject: "Hi", delayDays: 0 }, { subject: "Follow up", delayDays: 3 }],
+    });
+    expect(template.steps).toHaveLength(2);
+    expect(template.steps[1].delayDays).toBe(3);
+  });
+
+  it("rejects a blank name and a step without a subject", () => {
+    expect(() => createCampaignTemplate({ companyId: "workspace-a", name: "  " })).toThrow(/name is required/);
+    expect(() => createCampaignTemplate({ companyId: "workspace-a", name: "X", steps: [{ subject: "  " }] })).toThrow(/needs a subject/);
   });
 });

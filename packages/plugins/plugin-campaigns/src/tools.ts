@@ -147,4 +147,36 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       variant: text,
     }),
   },
+  {
+    name: "create-campaign-template",
+    displayName: "Create campaign template",
+    description: "Save a reusable campaign with its steps so you can launch it again.",
+    parametersSchema: schema(["name", "steps"], {
+      name: text,
+      description: text,
+      steps: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { subject: text, body: text, delayDays: { type: "integer" } },
+          required: ["subject"],
+        },
+      },
+    }),
+  },
+  {
+    name: "list-campaign-templates",
+    displayName: "List campaign templates",
+    description: "Return the saved campaign templates for this workspace.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "create-campaign-from-template",
+    displayName: "Create campaign from template",
+    description: "Create a new draft campaign copying the template's steps.",
+    parametersSchema: schema(["templateId", "name"], {
+      templateId: text,
+      name: text,
+    }),
+  },
 ];

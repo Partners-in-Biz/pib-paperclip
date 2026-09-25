@@ -178,3 +178,35 @@ export function assertEventType(value: string): "open" | "click" {
   if (value !== "open" && value !== "click") throw new CampaignError("Event type must be open or click");
   return value;
 }
+
+export interface CampaignTemplateDraft {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string;
+  steps: Array<{ subject: string; body: string; delayDays: number }>;
+}
+
+export function createCampaignTemplate(input: {
+  companyId: string;
+  name: string;
+  description?: string;
+  steps?: Array<{ subject: string; body?: string; delayDays?: number }>;
+  id?: string;
+}): CampaignTemplateDraft {
+  const name = input.name.trim();
+  if (!name) throw new CampaignError("Template name is required");
+  const steps = (input.steps ?? []).map((step) => ({
+    subject: step.subject.trim(),
+    body: (step.body ?? "").trim(),
+    delayDays: step.delayDays ?? 0,
+  }));
+  if (steps.some((step) => !step.subject)) throw new CampaignError("Every template step needs a subject");
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    name,
+    description: (input.description ?? "").trim(),
+    steps,
+  };
+}

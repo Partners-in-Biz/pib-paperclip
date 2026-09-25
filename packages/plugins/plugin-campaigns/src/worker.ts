@@ -16,11 +16,14 @@ import {
   enrollmentByIssue,
   enrollmentsForContact,
   getCampaign,
+  getCampaignTemplate,
   insertCampaign,
+  insertCampaignTemplate,
   insertEnrollment,
   insertStep,
   insertStepEvent,
   listCampaigns,
+  listCampaignTemplates,
   listSteps,
   saveCampaign,
   saveEnrollment,
@@ -37,6 +40,7 @@ import {
   assertVariant,
   CampaignError,
   createCampaign,
+  createCampaignTemplate,
   matchesAudience,
   startEnrollment,
   stepIssueCopy,
@@ -103,6 +107,9 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
+  if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
+  if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
+  if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -400,6 +407,74 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   const changed = await setStepHtml(ctx, { companyId, campaignId: campaign.id, position, variant, html });
   if (!changed) throw new CampaignError("No step found at that position and variant");
   return { campaignId: campaign.id, position, variant, htmlSet: true };
+}
+
+async function createTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const template = createCampaignTemplate({
+    companyId,
+    name: requiredString(params, "name"),
+    description: optionalString(params, "description"),
+    steps: templateSteps(params),
+  });
+  await insertCampaignTemplate(ctx, {
+    id: template.id,
+    company_id: template.companyId,
+    name: template.name,
+    description: template.description,
+    steps: template.steps,
+  });
+  return template;
+}
+
+async function listTemplatesAction(ctx: PluginContext, companyId: string) {
+  const rows = await listCampaignTemplates(ctx, companyId);
+  return rows.map((row) => ({ id: row.id, name: row.name, description: row.description }));
+}
+
+async function createFromTemplate(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const template = await getCampaignTemplate(ctx, requiredString(params, "templateId"));
+  if (!template || template.company_id !== companyId) throw new CampaignError("Template was not found");
+  const steps = parseSteps(template.steps);
+  const campaign = createCampaign({ companyId, name: requiredString(params, "name") });
+  await insertCampaign(ctx, campaign);
+  for (const step of steps) {
+    await insertStep(ctx, { companyId, campaignId: campaign.id, step });
+  }
+  return { campaignId: campaign.id, stepCount: steps.length };
+}
+
+function parseSteps(value: unknown): CampaignStepDraft[] {
+  if (!Array.isArray(value)) return [];
+  const result: CampaignStepDraft[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const step = item as Record<string, unknown>;
+    result.push({
+      position: result.length + 1,
+      delayDays: typeof step.delayDays === "number" ? step.delayDays : 0,
+      subject: String(step.subject ?? ""),
+      body: typeof step.body === "string" ? step.body : "",
+      htmlBody: null,
+      variant: "a",
+    });
+  }
+  return result;
+}
+
+function templateSteps(params: Record<string, unknown>): Array<{ subject: string; body: string; delayDays: number }> {
+  if (!Array.isArray(params.steps)) return [];
+  const result: Array<{ subject: string; body: string; delayDays: number }> = [];
+  for (const item of params.steps) {
+    if (!item || typeof item !== "object") continue;
+    const step = item as Record<string, unknown>;
+    if (typeof step.subject !== "string") continue;
+    result.push({
+      subject: step.subject.trim(),
+      body: typeof step.body === "string" ? step.body.trim() : "",
+      delayDays: typeof step.delayDays === "number" ? step.delayDays : 0,
+    });
+  }
+  return result;
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

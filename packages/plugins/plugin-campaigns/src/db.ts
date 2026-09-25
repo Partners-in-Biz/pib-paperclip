@@ -376,3 +376,36 @@ export async function setStepHtml(
   );
   return result != null;
 }
+
+export interface CampaignTemplateRow {
+  id: string;
+  company_id: string;
+  name: string;
+  description: string;
+  steps: unknown;
+}
+
+export async function insertCampaignTemplate(ctx: PluginContext, row: CampaignTemplateRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "campaign_templates")} (id, company_id, name, description, steps)
+     VALUES ($1, $2, $3, $4, $5::jsonb)`,
+    [row.id, row.company_id, row.name, row.description, JSON.stringify(row.steps ?? [])],
+  );
+}
+
+export async function listCampaignTemplates(ctx: PluginContext, companyId: string): Promise<CampaignTemplateRow[]> {
+  return ctx.db.query<CampaignTemplateRow>(
+    `SELECT id, company_id, name, description, steps
+       FROM ${table(ctx, "campaign_templates")} WHERE company_id = $1 ORDER BY name`,
+    [companyId],
+  );
+}
+
+export async function getCampaignTemplate(ctx: PluginContext, id: string): Promise<CampaignTemplateRow | null> {
+  const rows = await ctx.db.query<CampaignTemplateRow>(
+    `SELECT id, company_id, name, description, steps
+       FROM ${table(ctx, "campaign_templates")} WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
