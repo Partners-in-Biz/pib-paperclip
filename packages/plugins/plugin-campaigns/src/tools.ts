@@ -179,4 +179,13 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       name: text,
     }),
   },
+  {
+    name: "declare-ab-winner",
+    displayName: "Declare A/B winner",
+    description: "Declare variant a or b as the winner of a campaign, so new enrollments use only it.",
+    parametersSchema: schema(["campaignId", "winner"], {
+      campaignId: text,
+      winner: text,
+    }),
+  },
 ];

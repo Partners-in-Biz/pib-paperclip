@@ -23,6 +23,7 @@ export interface CampaignDraft {
   startAt: string | null;
   endAt: string | null;
   approvalIssueId: string | null;
+  winnerVariant: "a" | "b" | null;
 }
 
 export interface CampaignStepDraft {
@@ -87,6 +88,7 @@ export function createCampaign(input: {
     startAt: input.startAt ?? null,
     endAt: input.endAt ?? null,
     approvalIssueId: null,
+    winnerVariant: null,
   };
 }
 
@@ -172,6 +174,10 @@ export function matchesAudience(contactTags: string[], audienceTags: string[]): 
   if (audienceTags.length === 0) return true;
   const contact = new Set(contactTags.map((tag) => tag.toLowerCase()));
   return audienceTags.some((tag) => contact.has(tag.toLowerCase()));
+}
+
+export function assertCanDeclareWinner(status: CampaignStatus): void {
+  if (status !== "active" && status !== "paused") throw new CampaignError("Only an active or paused campaign can declare a winner");
 }
 
 export function assertEventType(value: string): "open" | "click" {

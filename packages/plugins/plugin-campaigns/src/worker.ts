@@ -33,6 +33,7 @@ import {
 import {
   advanceEnrollment,
   assertCanComplete,
+  assertCanDeclareWinner,
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
@@ -110,6 +111,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
   if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body);
+  if (name === "declare-ab-winner") return declareWinner(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -475,6 +477,15 @@ function templateSteps(params: Record<string, unknown>): Array<{ subject: string
     });
   }
   return result;
+}
+
+async function declareWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  assertCanDeclareWinner(campaign.status);
+  const winner = assertVariant(requiredString(params, "winner"));
+  campaign.winnerVariant = winner;
+  await saveCampaign(ctx, campaign);
+  return { campaignId: campaign.id, winner };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {
