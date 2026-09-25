@@ -889,3 +889,26 @@ export async function deleteSavedView(ctx: PluginContext, companyId: string, id:
   );
   return result != null;
 }
+
+export async function listFacts(
+  ctx: PluginContext,
+  recordType: RecordType,
+  recordId: string,
+  limit = 100,
+): Promise<Array<{ fieldKey: string; value: unknown; source: string; refused: boolean; createdAt: string }>> {
+  const rows = await ctx.db.query<{ field_key: string; value: unknown; source: string; refused: boolean; created_at: unknown }>(
+    `SELECT field_key, value, source, refused, created_at
+       FROM ${table(ctx, "facts")}
+      WHERE record_type = $1 AND record_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [recordType, recordId, limit],
+  );
+  return rows.map((row) => ({
+    fieldKey: row.field_key,
+    value: asRecord(row.value),
+    source: row.source,
+    refused: row.refused,
+    createdAt: row.created_at == null ? "" : String(row.created_at),
+  }));
+}

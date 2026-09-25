@@ -38,6 +38,7 @@ import {
   insertStep,
   listAccounts,
   listActivities,
+  listFacts,
   listContacts,
   listDeals,
   listLinks,
@@ -219,6 +220,8 @@ async function dispatch(
       return exportContacts(ctx, viewer);
     case "import-contacts":
       return importContacts(ctx, viewer, body);
+    case "field-history":
+      return fieldHistory(ctx, viewer, body);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -554,6 +557,14 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
 function splitList(value: string | undefined): string[] {
   if (!value) return [];
   return value.split(";").map((part) => part.trim()).filter(Boolean);
+}
+
+async function fieldHistory(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const recordType = assertRecordType(requiredString(params, "recordType"));
+  const recordId = requiredString(params, "recordId");
+  await requireRecord(ctx, viewer, recordType, recordId);
+  const facts = await listFacts(ctx, recordType, recordId);
+  return { recordType, recordId, facts };
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

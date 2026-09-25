@@ -15,6 +15,7 @@ Use the \`partnersinbiz.crm\` tools to keep people and the companies they work f
 - \`find-duplicates\` returns contacts that share an email. \`merge-contacts\` folds a duplicate into a primary, moving its links, deals, activities, facts, and enrollments. Only merge when a person confirms the two are the same person.
 - \`create-saved-view\` / \`list-saved-views\` / \`delete-saved-view\` keep reusable filter views for contacts, companies, or deals.
 - \`export-contacts\` returns the visible contacts as CSV. \`import-contacts\` creates contacts from CSV with a header row of name, emails, phones, lifecycle, tags. emails and phones are semicolon-separated.
+- \`field-history\` returns the recorded field changes and facts for a record. Use it to explain why a value is what it is.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound

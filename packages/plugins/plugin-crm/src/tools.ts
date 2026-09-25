@@ -264,4 +264,13 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       csv: text,
     }),
   },
+  {
+    name: "field-history",
+    displayName: "Field history",
+    description: "Return the recorded field changes and facts for a visible contact, company, or deal.",
+    parametersSchema: schema(["recordType", "recordId"], {
+      recordType: text,
+      recordId: text,
+    }),
+  },
 ];
