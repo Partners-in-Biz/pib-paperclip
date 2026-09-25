@@ -100,3 +100,30 @@ export function createTemplate(input: {
     platform: input.platform?.trim() || null,
   };
 }
+
+export interface PostMetrics {
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+}
+
+export function assertMetric(value: unknown, key: string): number {
+  const amount = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(amount) || amount < 0) {
+    throw new SocialError(`${key} must be a non-negative integer`);
+  }
+  return amount;
+}
+
+export function aggregateMetrics(rows: PostMetrics[]): PostMetrics {
+  return rows.reduce(
+    (sum, row) => ({
+      views: sum.views + row.views,
+      likes: sum.likes + row.likes,
+      comments: sum.comments + row.comments,
+      shares: sum.shares + row.shares,
+    }),
+    { views: 0, likes: 0, comments: 0, shares: 0 },
+  );
+}

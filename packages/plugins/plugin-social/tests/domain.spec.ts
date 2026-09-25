@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertAgentTransition, assertDestination, createPost, publishResult,
+  aggregateMetrics,
+  assertMetric,
   createTemplate,} from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
@@ -53,5 +55,21 @@ describe("social templates", () => {
   it("rejects a blank name or body", () => {
     expect(() => createTemplate({ companyId: "workspace-a", name: "  ", body: "x" })).toThrow(/name is required/);
     expect(() => createTemplate({ companyId: "workspace-a", name: "x", body: "  " })).toThrow(/body is required/);
+  });
+});
+
+describe("social metrics", () => {
+  it("rejects a negative or fractional metric", () => {
+    expect(assertMetric(5, "views")).toBe(5);
+    expect(() => assertMetric(-1, "likes")).toThrow(/non-negative/);
+    expect(() => assertMetric(1.5, "shares")).toThrow(/non-negative/);
+  });
+
+  it("aggregates metrics across snapshots", () => {
+    const totals = aggregateMetrics([
+      { views: 100, likes: 10, comments: 2, shares: 1 },
+      { views: 50, likes: 5, comments: 1, shares: 0 },
+    ]);
+    expect(totals).toEqual({ views: 150, likes: 15, comments: 3, shares: 1 });
   });
 });

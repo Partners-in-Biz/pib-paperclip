@@ -25,10 +25,10 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 
 interface Account { id: string; displayName: string; platform: string; scope: string; hasCredential: boolean }
-interface Post { id: string; body: string; status: string; scope: string }
+interface Post { id: string; body: string; status: string; scope: string; scheduledAt: string }
 interface Template { id: string; name: string; body: string; platform: string | null }
 interface Snapshot { accounts: Account[]; posts: Post[]; templates: Template[] }
-type TabId = "overview" | "posts" | "accounts" | "templates";
+type TabId = "overview" | "posts" | "accounts" | "templates" | "calendar";
 type CreateKind = "account" | "post" | "attach" | "schedule" | "template" | null;
 
 export function SocialPage({ context }: PluginPageProps) {
@@ -106,6 +106,7 @@ export function SocialPage({ context }: PluginPageProps) {
           { id: "posts", label: `Posts (${snapshot?.posts.length ?? 0})` },
           { id: "accounts", label: `Accounts (${snapshot?.accounts.length ?? 0})` },
           { id: "templates", label: `Templates (${snapshot?.templates.length ?? 0})` },
+          { id: "calendar", label: "Calendar" },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -200,6 +201,10 @@ export function SocialPage({ context }: PluginPageProps) {
         </div>
       ) : null}
 
+      {tab === "calendar" ? (
+        <CalendarView posts={snapshot?.posts ?? []} />
+      ) : null}
+
       <Modal open={create === "account"} title="Add account" onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
@@ -271,6 +276,36 @@ export function SocialPage({ context }: PluginPageProps) {
         <Field label="Body"><TextArea value={templateBody} onChange={(event) => setTemplateBody(event.target.value)} required /></Field>
       </Modal>
     </Page>
+  );
+}
+
+function CalendarView({ posts }: { posts: Post[] }) {
+  const scheduled = posts
+    .filter((post) => post.status === "scheduled")
+    .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+  if (scheduled.length === 0) {
+    return <EmptyState title="Nothing scheduled" description="Approve and schedule a post to see it on the calendar." />;
+  }
+  const byDate = new Map<string, Post[]>();
+  for (const post of scheduled) {
+    const day = new Date(post.scheduledAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const list = byDate.get(day) ?? [];
+    list.push(post);
+    byDate.set(day, list);
+  }
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {[...byDate.entries()].map(([day, dayPosts]) => (
+        <div key={day} style={{ display: "grid", gap: 8, padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{day}</div>
+          {dayPosts.map((post) => (
+            <div key={post.id} style={{ fontSize: 13, lineHeight: 1.4, padding: "8px 10px", borderRadius: 8, background: "var(--secondary)" }}>
+              {post.body.slice(0, 120)}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
   );
 }
 

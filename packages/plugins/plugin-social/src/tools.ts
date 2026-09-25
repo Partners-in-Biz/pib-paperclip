@@ -57,4 +57,24 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       description: "Return the saved post templates for this workspace.",
       parametersSchema: schema([], {}),
     },
-  ];
+    {
+    name: "record-post-metrics",
+    displayName: "Record post metrics",
+    description: "Record engagement metrics for a published post. All counts are non-negative integers.",
+    parametersSchema: schema(["postId"], {
+      postId: text,
+      views: { type: "integer" },
+      likes: { type: "integer" },
+      comments: { type: "integer" },
+      shares: { type: "integer" },
+    }),
+  },
+  {
+    name: "post-analytics",
+    displayName: "Post analytics",
+    description: "Return aggregated engagement metrics for a post or for the whole workspace.",
+    parametersSchema: schema([], {
+      postId: text,
+    }),
+  },
+];

@@ -177,3 +177,42 @@ export async function insertTemplate(ctx: PluginContext, template: TemplateRow):
     [template.id, template.company_id, template.name, template.body, template.platform],
   );
 }
+
+export interface MetricsRow {
+  id: string;
+  company_id: string;
+  post_id: string;
+  views: number | string;
+  likes: number | string;
+  comments: number | string;
+  shares: number | string;
+  recorded_at: unknown;
+}
+
+export async function insertMetrics(
+  ctx: PluginContext,
+  input: { companyId: string; postId: string; views: number; likes: number; comments: number; shares: number },
+): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "post_metrics")}
+      (id, company_id, post_id, views, likes, comments, shares)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [randomUUID(), input.companyId, input.postId, input.views, input.likes, input.comments, input.shares],
+  );
+}
+
+export async function metricsForPost(ctx: PluginContext, postId: string): Promise<MetricsRow[]> {
+  return ctx.db.query<MetricsRow>(
+    `SELECT id, company_id, post_id, views, likes, comments, shares, recorded_at
+       FROM ${table(ctx, "post_metrics")} WHERE post_id = $1 ORDER BY recorded_at`,
+    [postId],
+  );
+}
+
+export async function metricsForCompany(ctx: PluginContext, companyId: string): Promise<MetricsRow[]> {
+  return ctx.db.query<MetricsRow>(
+    `SELECT id, company_id, post_id, views, likes, comments, shares, recorded_at
+       FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 ORDER BY recorded_at`,
+    [companyId],
+  );
+}

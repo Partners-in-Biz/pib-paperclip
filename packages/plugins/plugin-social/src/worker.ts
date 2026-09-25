@@ -15,11 +15,14 @@ import {
   getPost,
   insertAccount,
   insertDestination,
+  insertMetrics,
   insertPost,
   insertTemplate,
   listAccounts,
   listPosts,
   listTemplates,
+  metricsForCompany,
+  metricsForPost,
   publicAccount,
   publicPost,
   saveDestination,
@@ -30,7 +33,9 @@ import {
 import {
   assertAgentTransition,
   assertDestination,
+  assertMetric,
   assertTransition,
+  aggregateMetrics,
   createTemplate,
   publishResult,
   SocialError,
@@ -100,6 +105,8 @@ async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: 
   if (name === "schedule-post") return schedule(ctx, Promise.resolve(viewer), body);
   if (name === "create-template") return createTemplateAction(ctx, Promise.resolve(viewer), body);
   if (name === "list-templates") return listTemplatesAction(ctx, Promise.resolve(viewer));
+  if (name === "record-post-metrics") return recordMetrics(ctx, Promise.resolve(viewer), body);
+  if (name === "post-analytics") return analytics(ctx, Promise.resolve(viewer), body);
   throw new SocialError(`Unknown social tool ${name}`);
 }
 
@@ -146,6 +153,32 @@ async function listTemplatesAction(ctx: PluginContext, viewerPromise: Promise<Vi
     body: template.body,
     platform: template.platform,
   }));
+}
+
+async function recordMetrics(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const views = params.views == null ? 0 : assertMetric(params.views, "views");
+  const likes = params.likes == null ? 0 : assertMetric(params.likes, "likes");
+  const comments = params.comments == null ? 0 : assertMetric(params.comments, "comments");
+  const shares = params.shares == null ? 0 : assertMetric(params.shares, "shares");
+  await insertMetrics(ctx, { companyId: viewer.companyId, postId: post.id, views, likes, comments, shares });
+  return { postId: post.id, views, likes, comments, shares };
+}
+
+async function analytics(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
+  const viewer = await viewerPromise;
+  const postId = optionalString(params, "postId");
+  const rows = postId
+    ? await metricsForPost(ctx, postId)
+    : await metricsForCompany(ctx, viewer.companyId);
+  const totals = aggregateMetrics(rows.map((row) => ({
+    views: Number(row.views ?? 0),
+    likes: Number(row.likes ?? 0),
+    comments: Number(row.comments ?? 0),
+    shares: Number(row.shares ?? 0),
+  })));
+  return { postId: postId ?? null, ...totals, snapshots: rows.length };
 }
 
 async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

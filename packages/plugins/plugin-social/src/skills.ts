@@ -9,4 +9,5 @@ Use the \`partnersinbiz.social\` tools to draft and schedule posts.
 - Do not put account tokens or secret refs in a Paperclip issue. The publish job reads the credential reference from the account row.
 - Do not mark a post published yourself. The publish job does that when the scheduled time arrives.
 - \`create-template\` saves reusable post copy. \`list-templates\` returns the saved templates. Use a template to draft a consistent post, then edit the body for the specific post.
+- \`record-post-metrics\` records engagement (views, likes, comments, shares) for a published post. \`post-analytics\` returns the aggregated totals for a post or the whole workspace.
 `;
