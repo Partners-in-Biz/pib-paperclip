@@ -86,7 +86,6 @@ const plugin = definePlugin({
       ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
     }
     ctx.actions.register("social.load", (_params, context) => load(ctx, context));
-    ctx.actions.register("social.create-account", (params, context) => createAccount(ctx, actionViewer(ctx, context), params));
     ctx.actions.register("social.create-post", (params, context) => createPostRecord(ctx, actionViewer(ctx, context), params));
     ctx.actions.register("social.attach", (params, context) => attach(ctx, actionViewer(ctx, context), params));
     ctx.actions.register("social.review", async (params, context) => transition(ctx, await actionViewer(ctx, context), requiredString(params, "postId"), "review", "human"));
@@ -136,7 +135,6 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 }
 
 async function dispatch(ctx: PluginContext, viewer: Viewer, name: string, body: Record<string, unknown>, source: "agent" | "human") {
-  if (name === "create-account") return createAccount(ctx, Promise.resolve(viewer), body);
   if (name === "create-post") return createPostRecord(ctx, Promise.resolve(viewer), body);
   if (name === "attach-destination") return attach(ctx, Promise.resolve(viewer), body);
   if (name === "request-review") return transition(ctx, viewer, requiredString(body, "postId"), "review", source);
@@ -393,24 +391,6 @@ async function accountAnalytics(ctx: PluginContext, viewerPromise: Promise<Viewe
     comments: row.comments,
     shares: row.shares,
   }));
-}
-
-async function createAccount(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {
-  const viewer = await viewerPromise;
-  const scope = scopeOf(requiredString(params, "scope"));
-  if (scope === "personal" && !viewer.userId) throw new SocialError("A personal account needs its owner");
-  const row: AccountRow = {
-    id: randomUUID(),
-    company_id: viewer.companyId,
-    platform: requiredString(params, "platform"),
-    scope,
-    owner_user_id: scope === "personal" ? viewer.userId : null,
-    status: "connected",
-    secret_ref: optionalString(params, "secretRef") ?? null,
-    display_name: requiredString(params, "displayName"),
-  };
-  await insertAccount(ctx, row);
-  return publicAccount(row);
 }
 
 async function createPostRecord(ctx: PluginContext, viewerPromise: Promise<Viewer>, params: Record<string, unknown>) {

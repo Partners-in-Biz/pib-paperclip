@@ -7,17 +7,6 @@ function schema(required: string[], properties: Record<string, JsonSchema>): Jso
 
 export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
-    name: "create-account",
-    displayName: "Create social account",
-    description: "Record an org or personal social account. Pass a secret ref, never the token itself.",
-    parametersSchema: schema(["platform", "displayName", "scope"], {
-      platform: text,
-      displayName: text,
-      scope: text,
-      secretRef: text,
-    }),
-  },
-  {
     name: "create-post",
     displayName: "Create post",
     description: "Draft one post. Scope is org or personal.",

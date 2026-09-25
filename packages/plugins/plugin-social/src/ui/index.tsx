@@ -41,11 +41,10 @@ interface Post { id: string; body: string; status: string; scope: string; schedu
 interface Template { id: string; name: string; body: string; platform: string | null }
 interface Snapshot { accounts: Account[]; posts: Post[]; templates: Template[] }
 type TabId = "overview" | "posts" | "accounts" | "templates" | "calendar";
-type CreateKind = "account" | "post" | "attach" | "schedule" | "template" | null;
+type CreateKind = "post" | "attach" | "schedule" | "template" | null;
 
 export function SocialPage({ context }: PluginPageProps) {
   const load = usePluginAction("social.load");
-  const createAccount = usePluginAction("social.create-account");
   const createPost = usePluginAction("social.create-post");
   const attach = usePluginAction("social.attach");
   const review = usePluginAction("social.review");
@@ -58,10 +57,6 @@ export function SocialPage({ context }: PluginPageProps) {
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
   const [selectedPostId, setSelectedPostId] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [platform, setPlatform] = useState("linkedin");
-  const [scope, setScope] = useState("org");
-  const [secretRef, setSecretRef] = useState("");
   const [body, setBody] = useState("");
   const [accountId, setAccountId] = useState("");
   const [when, setWhen] = useState("");
@@ -139,7 +134,6 @@ export function SocialPage({ context }: PluginPageProps) {
       message={message}
       actions={(
         <>
-          <Button type="button" variant="secondary" onClick={() => setCreate("account")}>+ Account</Button>
           <Button type="button" onClick={() => setCreate("post")}>+ Draft</Button>
         </>
       )}
@@ -205,11 +199,9 @@ export function SocialPage({ context }: PluginPageProps) {
       {tab === "accounts" ? (
         <div style={{ display: "grid", gap: 12 }}>
           <ConnectAccounts companyId={context.companyId} onChanged={() => void refresh()} onMessage={setMessage} />
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search accounts…">
-            <Button type="button" onClick={() => setCreate("account")}>+ Account</Button>
-          </Toolbar>
+          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search accounts…" />
           {accounts.length === 0 ? (
-            <EmptyState title="No accounts yet" description="Add an org or personal destination account." action={<Button type="button" onClick={() => setCreate("account")}>+ Account</Button>} />
+            <EmptyState title="No connected accounts" description="Use the Connect accounts section above to connect a real platform via OAuth." />
           ) : (
             <DataTable
               columns={[
@@ -250,27 +242,6 @@ export function SocialPage({ context }: PluginPageProps) {
       {tab === "calendar" ? (
         <CalendarView posts={snapshot?.posts ?? []} />
       ) : null}
-
-      <Modal open={create === "account"} title="Add account" onClose={() => setCreate(null)} footer={(
-        <>
-          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" onClick={() => void run(async () => {
-            await createAccount({ displayName, platform, scope, secretRef });
-            setDisplayName("");
-            setSecretRef("");
-          }, "Account saved")}>Save</Button>
-        </>
-      )}>
-        <Field label="Name"><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></Field>
-        <Field label="Platform"><Input value={platform} onChange={(event) => setPlatform(event.target.value)} /></Field>
-        <Field label="Scope">
-          <Select value={scope} onChange={(event) => setScope(event.target.value)}>
-            <option value="org">Organisation</option>
-            <option value="personal">Personal</option>
-          </Select>
-        </Field>
-        <Field label="Secret ref"><Input value={secretRef} onChange={(event) => setSecretRef(event.target.value)} /></Field>
-      </Modal>
 
       <Modal open={create === "post"} title="New draft" onClose={() => setCreate(null)} footer={(
         <>
