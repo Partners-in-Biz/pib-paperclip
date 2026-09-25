@@ -42,4 +42,13 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     description: "Return the saved email templates for this workspace.",
     parametersSchema: schema([], {}),
   },
+  {
+    name: "list-threads",
+    displayName: "List threads",
+    description: "Return the message threads for a mailbox, grouped by subject, newest first.",
+    parametersSchema: schema([], {
+      accountId: text,
+      limit: { type: "integer" },
+    }),
+  },
 ];

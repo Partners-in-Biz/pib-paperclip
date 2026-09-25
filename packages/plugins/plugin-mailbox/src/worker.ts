@@ -23,6 +23,7 @@ const plugin = definePlugin({
     ctx.actions.register("mailbox.mark-read", (params, context) => markRead(ctx, requiredCompany(context), params));
     ctx.actions.register("mailbox.create-email-template", (params, context) => createEmailTemplateAction(ctx, requiredCompany(context), params));
     ctx.actions.register("mailbox.list-email-templates", (_params, context) => listEmailTemplates(ctx, requiredCompany(context)));
+    ctx.actions.register("mailbox.list-threads", (params, context) => listThreads(ctx, requiredCompany(context), params));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await safeReconcile(ctx, event.companyId);
     });
@@ -49,6 +50,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "mark-read") return { content: "Message marked read", data: await markRead(ctx, run.companyId, body) };
     if (name === "create-email-template") return { content: "Email template created", data: await createEmailTemplateAction(ctx, run.companyId, body) };
     if (name === "list-email-templates") return { content: "Email templates listed", data: await listEmailTemplates(ctx, run.companyId) };
+    if (name === "list-threads") return { content: "Threads listed", data: await listThreads(ctx, run.companyId, body) };
     return { error: "Unknown mailbox tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Mailbox tool failed" };
@@ -183,6 +185,30 @@ async function createEmailTemplateAction(ctx: PluginContext, companyId: string, 
     [template.id, template.companyId, template.name, template.subject, template.body],
   );
   return template;
+}
+
+async function listThreads(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const accountId = optionalString(params, "accountId");
+  const limit = params.limit == null ? 50 : integer(params.limit, "limit");
+  const rows = accountId
+    ? await ctx.db.query(
+        `SELECT id, account_id, subject, status, direction, read_at IS NOT NULL AS is_read, created_at
+           FROM ${table(ctx, "messages")} WHERE company_id = $1 AND account_id = $2 ORDER BY created_at DESC LIMIT $3`,
+        [companyId, accountId, limit],
+      )
+    : await ctx.db.query(
+        `SELECT id, account_id, subject, status, direction, read_at IS NOT NULL AS is_read, created_at
+           FROM ${table(ctx, "messages")} WHERE company_id = $1 ORDER BY created_at DESC LIMIT $2`,
+        [companyId, limit],
+      );
+  const threads = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of rows) {
+    const subject = String(row.subject ?? "No subject").replace(/^(re|fw):\s*/i, "");
+    const list = threads.get(subject) ?? [];
+    list.push(row);
+    threads.set(subject, list);
+  }
+  return [...threads.entries()].map(([subject, items]) => ({ subject, count: items.length, messages: items }));
 }
 
 async function listEmailTemplates(ctx: PluginContext, companyId: string) {
