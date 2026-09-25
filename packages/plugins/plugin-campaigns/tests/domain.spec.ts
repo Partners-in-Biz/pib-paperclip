@@ -6,6 +6,7 @@ import {
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
+  assertEventType,
   assertVariant,
   createCampaign,
   matchesAudience,
@@ -101,5 +102,13 @@ describe("campaign ab variants", () => {
     expect(assertVariant("a")).toBe("a");
     expect(assertVariant("b")).toBe("b");
     expect(() => assertVariant("c")).toThrow(/a or b/);
+  });
+});
+
+describe("campaign step events", () => {
+  it("accepts only open or click", () => {
+    expect(assertEventType("open")).toBe("open");
+    expect(assertEventType("click")).toBe("click");
+    expect(() => assertEventType("bounce")).toThrow(/open or click/);
   });
 });

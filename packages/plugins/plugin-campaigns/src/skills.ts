@@ -10,6 +10,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`campaign-stats\` reports enrolled, running, and completed counts. \`campaign-funnel\` shows how many contacts are at each step.
 - \`enroll-contact\` adds one contact to a campaign. \`complete-step\` advances an enrollment after its issue is done.
 - \`create-ab-variant\` adds a B variant to a step so contacts are split between two versions. The enrollment records which variant was sent.
+- \`record-step-event\` records an open or click on a step. \`campaign-step-analytics\` reports opens and clicks per step.
 - Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.
 - A contact is enrolled once per campaign. A second running enrollment is refused.
 `;

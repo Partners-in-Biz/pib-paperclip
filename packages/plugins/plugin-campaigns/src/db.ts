@@ -327,3 +327,37 @@ export async function campaignFunnel(ctx: PluginContext, campaignId: string): Pr
     stopped: Number(stopped[0]?.count ?? 0),
   };
 }
+
+export async function insertStepEvent(
+  ctx: PluginContext,
+  input: { companyId: string; campaignId: string; enrollmentId: string; stepPosition: number; eventType: string },
+): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "campaign_step_events")}
+      (id, company_id, campaign_id, enrollment_id, step_position, event_type)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [randomUUID(), input.companyId, input.campaignId, input.enrollmentId, input.stepPosition, input.eventType],
+  );
+}
+
+export async function stepEventStats(
+  ctx: PluginContext,
+  campaignId: string,
+): Promise<Array<{ stepPosition: number; opens: number; clicks: number }>> {
+  const rows = await ctx.db.query<{ step_position: number; event_type: string; count: string | number }>(
+    `SELECT step_position, event_type, count(*) AS count
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE campaign_id = $1
+      GROUP BY step_position, event_type
+      ORDER BY step_position`,
+    [campaignId],
+  );
+  const byStep = new Map<number, { stepPosition: number; opens: number; clicks: number }>();
+  for (const row of rows) {
+    const step = byStep.get(row.step_position) ?? { stepPosition: row.step_position, opens: 0, clicks: 0 };
+    if (row.event_type === "open") step.opens = Number(row.count ?? 0);
+    if (row.event_type === "click") step.clicks = Number(row.count ?? 0);
+    byStep.set(row.step_position, step);
+  }
+  return [...byStep.values()];
+}

@@ -118,4 +118,22 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       campaignId: text,
     }),
   },
+  {
+    name: "record-step-event",
+    displayName: "Record step event",
+    description: "Record an open or click on a campaign step for a contact's enrollment.",
+    parametersSchema: schema(["enrollmentId", "eventType"], {
+      enrollmentId: text,
+      eventType: text,
+      stepPosition: { type: "integer" },
+    }),
+  },
+  {
+    name: "campaign-step-analytics",
+    displayName: "Campaign step analytics",
+    description: "Return opens and clicks per step for a campaign.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId: text,
+    }),
+  },
 ];

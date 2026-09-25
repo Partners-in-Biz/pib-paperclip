@@ -19,10 +19,12 @@ import {
   insertCampaign,
   insertEnrollment,
   insertStep,
+  insertStepEvent,
   listCampaigns,
   listSteps,
   saveCampaign,
   saveEnrollment,
+  stepEventStats,
 } from "./db.js";
 import {
   advanceEnrollment,
@@ -30,6 +32,7 @@ import {
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
+  assertEventType,
   assertVariant,
   CampaignError,
   createCampaign,
@@ -96,6 +99,8 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
   if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
+  if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
+  if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -360,6 +365,27 @@ async function funnel(ctx: PluginContext, companyId: string, params: Record<stri
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   const funnel = await campaignFunnel(ctx, campaign.id);
   return { campaignId: campaign.id, ...funnel };
+}
+
+async function recordStepEvent(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const enrollment = await enrollmentById(ctx, requiredString(params, "enrollmentId"));
+  if (!enrollment || enrollment.companyId !== companyId) throw new CampaignError("Enrollment was not found");
+  const eventType = assertEventType(requiredString(params, "eventType"));
+  const stepPosition = params.stepPosition == null ? enrollment.stepPosition : integer(params.stepPosition, "stepPosition");
+  await insertStepEvent(ctx, {
+    companyId,
+    campaignId: enrollment.campaignId,
+    enrollmentId: enrollment.id,
+    stepPosition,
+    eventType,
+  });
+  return { enrollmentId: enrollment.id, stepPosition, eventType };
+}
+
+async function stepAnalytics(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const byStep = await stepEventStats(ctx, campaign.id);
+  return { campaignId: campaign.id, byStep };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

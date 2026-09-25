@@ -172,3 +172,8 @@ export function matchesAudience(contactTags: string[], audienceTags: string[]): 
   const contact = new Set(contactTags.map((tag) => tag.toLowerCase()));
   return audienceTags.some((tag) => contact.has(tag.toLowerCase()));
 }
+
+export function assertEventType(value: string): "open" | "click" {
+  if (value !== "open" && value !== "click") throw new CampaignError("Event type must be open or click");
+  return value;
+}
