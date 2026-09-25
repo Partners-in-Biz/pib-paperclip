@@ -19,4 +19,5 @@ Use \`partnersinbiz.billing:create-invoice\` and \`partnersinbiz.billing:add-lin
 - \`record-payment\` records a payment against an invoice. \`invoice-payments\` returns the recorded payments. Amounts are positive integers in minor units.
 - \`set-invoice-tax\` sets the tax rate (percentage) on a draft invoice. The total is recomputed with tax.
 - \`quote-html\` returns a printable HTML quote a person can open and save as PDF.
+- \`create-credit-note\` issues a credit against an invoice. \`list-credit-notes\` returns the credits. Amounts are positive integers in minor units.
 `;

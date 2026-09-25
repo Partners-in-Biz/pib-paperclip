@@ -24,9 +24,11 @@ import {
   linesFor,
   dueRecurring,
   getRecurring,
+  insertCreditNote,
   insertRecurring,
   listExpenses,
   listInvoiceNumbers,
+  listCreditNotes,
   listInvoices,
   listQuoteNumbers,
   listQuotes,
@@ -54,6 +56,7 @@ import {
   markPaid,
   markSent,
   assertTaxRate,
+  createCreditNote,
   nextNumber,
   nextRunDate,
   totalWithTax,
@@ -85,6 +88,8 @@ const plugin = definePlugin({
     ctx.actions.register("billing.record-payment", (params, context) => recordPayment(ctx, context, params));
     ctx.actions.register("billing.invoice-payments", (params, context) => invoicePayments(ctx, context, params));
     ctx.actions.register("billing.set-invoice-tax", (params, context) => setInvoiceTax(ctx, context, params));
+    ctx.actions.register("billing.create-credit-note", (params, context) => createCreditNoteAction(ctx, context, params));
+    ctx.actions.register("billing.list-credit-notes", (_params, context) => listCreditNotesAction(ctx, context));
     ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
     ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.events.on("issue.updated", (event) => onIssueDone(ctx, event.entityId, event.companyId));
@@ -123,6 +128,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "invoice-payments") return { content: "Payments listed", data: await invoicePayments(ctx, toolContext(run), body) };
     if (name === "set-invoice-tax") return { content: "Invoice tax set", data: await setInvoiceTax(ctx, toolContext(run), body) };
     if (name === "quote-html") return { content: "Quote HTML generated", data: await quoteHtml(ctx, toolContext(run), body) };
+    if (name === "create-credit-note") return { content: "Credit note created", data: await createCreditNoteAction(ctx, toolContext(run), body) };
+    if (name === "list-credit-notes") return { content: "Credit notes listed", data: await listCreditNotesAction(ctx, toolContext(run)) };
     return { error: "Unknown billing tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Billing tool failed" };
@@ -149,11 +156,19 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const quotes = await listQuotes(ctx, companyId);
   const expenses = await listExpenses(ctx, companyId);
   const recurring = await listRecurring(ctx, companyId);
+  const creditNotes = await listCreditNotes(ctx, companyId);
   return {
     invoices: visible,
     quotes: quotes.map(publicQuote),
     expenses: expenses.map(publicExpense),
     recurring: recurring.map(publicRecurring),
+    creditNotes: creditNotes.map((note) => ({
+      id: note.id,
+      invoiceId: note.invoice_id,
+      amountMinor: Number(note.amount_minor),
+      reason: note.reason,
+      status: note.status,
+    })),
   };
 }
 
@@ -610,6 +625,40 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
       dueAt: quote.valid_until == null ? null : String(quote.valid_until),
     }),
   };
+}
+
+async function createCreditNoteAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  const note = createCreditNote({
+    companyId,
+    invoiceId: invoice.id,
+    amountMinor: integer(params.amountMinor, "amountMinor"),
+    reason: optionalString(params, "reason"),
+  });
+  await insertCreditNote(ctx, {
+    id: note.id,
+    company_id: note.companyId,
+    invoice_id: note.invoiceId,
+    amount_minor: note.amountMinor,
+    reason: note.reason,
+    status: note.status,
+    created_at: null,
+  });
+  return note;
+}
+
+async function listCreditNotesAction(ctx: PluginContext, context: PluginPerformActionContext) {
+  const companyId = requiredCompany(context);
+  const rows = await listCreditNotes(ctx, companyId);
+  return rows.map((note) => ({
+    id: note.id,
+    invoiceId: note.invoice_id,
+    amountMinor: Number(note.amount_minor),
+    reason: note.reason,
+    status: note.status,
+    createdAt: note.created_at == null ? null : String(note.created_at),
+  }));
 }
 
 async function requireInvoice(ctx: PluginContext, companyId: string, id: string): Promise<InvoiceRow> {

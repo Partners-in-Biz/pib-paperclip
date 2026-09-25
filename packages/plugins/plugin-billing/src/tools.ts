@@ -151,4 +151,20 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       quoteId: text,
     }),
   },
+  {
+    name: "create-credit-note",
+    displayName: "Create credit note",
+    description: "Issue a credit note against an invoice. Amount is a positive integer in minor units.",
+    parametersSchema: schema(["invoiceId", "amountMinor"], {
+      invoiceId: text,
+      amountMinor: { type: "integer" },
+      reason: text,
+    }),
+  },
+  {
+    name: "list-credit-notes",
+    displayName: "List credit notes",
+    description: "Return the credit notes for this workspace.",
+    parametersSchema: schema([], {}),
+  },
 ];

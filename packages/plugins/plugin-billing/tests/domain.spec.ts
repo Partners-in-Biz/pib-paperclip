@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentMaySend, assertFrequency, assertQuoteStatus, assertTaxRate, buildInvoiceHtml, canSeeInvoice, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, totalWithTax, type InvoiceState } from "../src/domain.js";
+import { assertAgentMaySend, assertFrequency, assertQuoteStatus, assertTaxRate, buildInvoiceHtml, canSeeInvoice, createCreditNote, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, totalWithTax, type InvoiceState } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 const draft: InvoiceState = {
@@ -143,5 +143,19 @@ describe("billing tax", () => {
     const result = totalWithTax(100000, 15);
     expect(result.taxMinor).toBe(15000);
     expect(result.totalMinor).toBe(115000);
+  });
+});
+
+describe("billing credit notes", () => {
+  it("creates an issued credit note", () => {
+    const note = createCreditNote({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 50000, reason: "Refund" });
+    expect(note.status).toBe("issued");
+    expect(note.amountMinor).toBe(50000);
+    expect(note.reason).toBe("Refund");
+  });
+
+  it("rejects a zero or negative amount", () => {
+    expect(() => createCreditNote({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 0 })).toThrow(/positive integer/);
+    expect(() => createCreditNote({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: -5 })).toThrow(/positive integer/);
   });
 });

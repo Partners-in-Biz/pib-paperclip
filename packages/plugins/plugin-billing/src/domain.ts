@@ -310,3 +310,33 @@ export function totalWithTax(subtotalMinor: number, taxRate: number): { taxMinor
   const taxMinor = Math.round(subtotalMinor * (taxRate / 100));
   return { taxMinor, totalMinor: subtotalMinor + taxMinor };
 }
+
+export interface CreditNoteDraft {
+  id: string;
+  companyId: string;
+  invoiceId: string;
+  amountMinor: number;
+  reason: string;
+  status: "issued" | "applied";
+}
+
+export function createCreditNote(input: {
+  companyId: string;
+  invoiceId: string;
+  amountMinor: number;
+  reason?: string;
+  id?: string;
+}): CreditNoteDraft {
+  const amount = typeof input.amountMinor === "number" ? input.amountMinor : Number(input.amountMinor);
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new BillingError("Credit amount must be a positive integer in minor units");
+  }
+  return {
+    id: input.id ?? randomUUID(),
+    companyId: input.companyId,
+    invoiceId: input.invoiceId,
+    amountMinor: amount,
+    reason: (input.reason ?? "").trim(),
+    status: "issued",
+  };
+}

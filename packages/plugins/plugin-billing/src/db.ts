@@ -376,3 +376,29 @@ export async function paymentsForInvoice(ctx: PluginContext, invoiceId: string):
     [invoiceId],
   );
 }
+
+export interface CreditNoteRow {
+  id: string;
+  company_id: string;
+  invoice_id: string;
+  amount_minor: number | string;
+  reason: string;
+  status: string;
+  created_at: unknown;
+}
+
+export async function insertCreditNote(ctx: PluginContext, note: CreditNoteRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "credit_notes")} (id, company_id, invoice_id, amount_minor, reason, status)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [note.id, note.company_id, note.invoice_id, Number(note.amount_minor), note.reason, note.status],
+  );
+}
+
+export async function listCreditNotes(ctx: PluginContext, companyId: string): Promise<CreditNoteRow[]> {
+  return ctx.db.query<CreditNoteRow>(
+    `SELECT id, company_id, invoice_id, amount_minor, reason, status, created_at
+       FROM ${table(ctx, "credit_notes")} WHERE company_id = $1 ORDER BY created_at DESC`,
+    [companyId],
+  );
+}
