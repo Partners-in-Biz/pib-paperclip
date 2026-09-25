@@ -9,7 +9,9 @@ import {
   columnKeysFor,
   createAccount,
   createContact,
+  assertMergeTargets,
   createProduct,
+  isDuplicatePair,
   linkContact,
   scoreBand,
   scoreContact,
@@ -244,5 +246,17 @@ describe("crm contact scoring", () => {
     const recent = scoreContact({ ...base, activityCount: 1, lastActivityAt: "2026-09-24T12:00:00Z" });
     const old = scoreContact({ ...base, activityCount: 1, lastActivityAt: "2026-08-01T12:00:00Z" });
     expect(recent.total).toBeGreaterThan(old.total);
+  });
+});
+
+describe("crm duplicate detection and merge", () => {
+  it("flags two contacts that share an email", () => {
+    expect(isDuplicatePair({ emails: ["ada@northwind.test"] }, { emails: ["ADA@northwind.test"] })).toBe(true);
+    expect(isDuplicatePair({ emails: ["ada@northwind.test"] }, { emails: ["grace@northwind.test"] })).toBe(false);
+  });
+
+  it("refuses to merge a contact with itself", () => {
+    expect(() => assertMergeTargets("contact-1", "contact-1")).toThrow(/different contacts/);
+    expect(() => assertMergeTargets("contact-1", "contact-2")).not.toThrow();
   });
 });

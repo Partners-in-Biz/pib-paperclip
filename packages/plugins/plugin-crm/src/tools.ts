@@ -204,11 +204,26 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
-    name: "score-contact",
-    displayName: "Score contact",
-    description: "Return a 0-100 lead score for a visible contact with a plain-language breakdown of what raised or lowered it.",
-    parametersSchema: schema(["contactId"], {
-      contactId: text,
-    }),
-  },
-];
+      name: "score-contact",
+      displayName: "Score contact",
+      description: "Return a 0-100 lead score for a visible contact with a plain-language breakdown of what raised or lowered it.",
+      parametersSchema: schema(["contactId"], {
+        contactId: text,
+      }),
+    },
+    {
+      name: "find-duplicates",
+      displayName: "Find duplicate contacts",
+      description: "Return contacts in this workspace that share an email address, so a person can decide which to merge.",
+      parametersSchema: schema([], {}),
+    },
+    {
+      name: "merge-contacts",
+      displayName: "Merge contacts",
+      description: "Merge a duplicate contact into a primary. Links, deals, activities, facts, and enrollments move to the primary, then the duplicate is deleted.",
+      parametersSchema: schema(["primaryContactId", "duplicateContactId"], {
+        primaryContactId: text,
+        duplicateContactId: text,
+      }),
+    },
+  ];

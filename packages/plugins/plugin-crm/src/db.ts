@@ -808,3 +808,48 @@ export async function contactEngagement(
     lastActivityAt: row.last_at == null ? null : String(row.last_at),
   };
 }
+
+export async function findDuplicateContacts(ctx: PluginContext, companyId: string): Promise<Array<{ id: string; name: string; emails: string[] }>> {
+  const rows = await ctx.db.query<{ id: string; name: string; emails: unknown }>(
+    `SELECT id, name, emails FROM ${table(ctx, "contacts")} WHERE company_id = $1`,
+    [companyId],
+  );
+  return rows.map((row) => ({ id: row.id, name: row.name, emails: asStringList(row.emails) }));
+}
+
+export async function mergeContacts(
+  ctx: PluginContext,
+  input: { companyId: string; primaryId: string; duplicateId: string },
+): Promise<void> {
+  const { companyId, primaryId, duplicateId } = input;
+  // Move links, deals, activities, facts, and enrollments to the primary.
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "contact_companies")} SET contact_id = $1 WHERE company_id = $2 AND contact_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "deals")} SET contact_id = $1 WHERE company_id = $2 AND contact_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "activities")} SET record_id = $1 WHERE company_id = $2 AND record_type = 'contact' AND record_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "facts")} SET record_id = $1 WHERE company_id = $2 AND record_type = 'contact' AND record_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "enrollments")} SET contact_id = $1 WHERE company_id = $2 AND contact_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "record_grants")} SET record_id = $1 WHERE company_id = $2 AND record_type = 'contact' AND record_id = $3`,
+    [primaryId, companyId, duplicateId],
+  );
+  // Delete the duplicate.
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "contacts")} WHERE id = $1 AND company_id = $2`,
+    [duplicateId, companyId],
+  );
+}

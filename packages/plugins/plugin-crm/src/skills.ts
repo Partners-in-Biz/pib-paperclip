@@ -12,6 +12,7 @@ Use the \`partnersinbiz.crm\` tools to keep people and the companies they work f
 - \`share-record\` names a board user or an agent. Sharing with another Paperclip company is a partner grant, not this tool.
 - \`create-product\` and \`update-product\` keep the product or service catalog. Use it when a deal or invoice needs a line item. Amounts are integers in minor units plus a currency code.
 - \`score-contact\` returns a 0-100 lead score with a breakdown. Use it to prioritise follow-up. A score is a hint, not a fact: never overwrite a human-owned field because a score says so.
+- \`find-duplicates\` returns contacts that share an email. \`merge-contacts\` folds a duplicate into a primary, moving its links, deals, activities, facts, and enrollments. Only merge when a person confirms the two are the same person.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound

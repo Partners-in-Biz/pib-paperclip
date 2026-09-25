@@ -13,6 +13,8 @@ import {
   defineField,
   dueEnrollments,
   enrollmentByIssue,
+  findDuplicateContacts,
+  mergeContacts,
   enrollmentsForContact,
   ensurePipeline,
   getAccount,
@@ -56,7 +58,10 @@ import {
   applyFieldPatch,
   assertAmountMinor,
   assertCurrency,
+  assertMergeTargets,
   assertProductName,
+  isDuplicatePair,
+  normalizeEmail,
   assertLifecycle,
   assertNextAction,
   assertPrincipalType,
@@ -193,6 +198,10 @@ async function dispatch(
       return updateProductRecord(ctx, viewer, body);
     case "score-contact":
       return scoreContactRecord(ctx, viewer, body);
+    case "find-duplicates":
+      return findDuplicates(ctx, viewer);
+    case "merge-contacts":
+      return mergeContactsRecord(ctx, viewer, body);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -412,6 +421,36 @@ async function requireProduct(ctx: PluginContext, viewer: Viewer, id: string): P
   if (!product) throw new CrmError("Product was not found");
   if (product.companyId !== viewer.companyId) throw new CrmError("Product is not visible");
   return product;
+}
+
+async function findDuplicates(ctx: PluginContext, viewer: Viewer) {
+  const contacts = await findDuplicateContacts(ctx, viewer.companyId);
+  const groups: Array<{ email: string; contacts: Array<{ id: string; name: string }> }> = [];
+  const byEmail = new Map<string, Array<{ id: string; name: string }>>();
+  for (const contact of contacts) {
+    for (const email of contact.emails.map(normalizeEmail).filter(Boolean)) {
+      const list = byEmail.get(email) ?? [];
+      list.push({ id: contact.id, name: contact.name });
+      byEmail.set(email, list);
+    }
+  }
+  for (const [email, list] of byEmail) {
+    if (list.length > 1) groups.push({ email, contacts: list });
+  }
+  return groups;
+}
+
+async function mergeContactsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const primaryId = requiredString(params, "primaryContactId");
+  const duplicateId = requiredString(params, "duplicateContactId");
+  assertMergeTargets(primaryId, duplicateId);
+  const primary = await requireContact(ctx, viewer, primaryId);
+  const duplicate = await requireContact(ctx, viewer, duplicateId);
+  if (primary.companyId !== viewer.companyId || duplicate.companyId !== viewer.companyId) {
+    throw new CrmError("Merges stay inside this workspace");
+  }
+  await mergeContacts(ctx, { companyId: viewer.companyId, primaryId, duplicateId });
+  return { primaryId, duplicateId, merged: true };
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

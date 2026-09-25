@@ -524,6 +524,23 @@ export function assertProductName(value: string): string {
   return name;
 }
 
+export function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function isDuplicatePair(a: { emails: string[] }, b: { emails: string[] }): boolean {
+  const aEmails = new Set(a.emails.map(normalizeEmail).filter(Boolean));
+  const bEmails = new Set(b.emails.map(normalizeEmail).filter(Boolean));
+  for (const email of aEmails) {
+    if (bEmails.has(email)) return true;
+  }
+  return false;
+}
+
+export function assertMergeTargets(primaryId: string, duplicateId: string): void {
+  if (primaryId === duplicateId) throw new CrmError("Primary and duplicate must be different contacts");
+}
+
 function cleanStrings(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
