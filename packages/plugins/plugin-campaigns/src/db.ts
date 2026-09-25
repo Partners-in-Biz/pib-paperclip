@@ -35,6 +35,7 @@ export interface StepRow {
   delay_days: number;
   subject: string;
   body: string;
+  html_body: string | null;
   variant: string;
 }
 
@@ -167,7 +168,7 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
 
 export async function listSteps(ctx: PluginContext, campaignId: string): Promise<CampaignStepDraft[]> {
   const rows = await ctx.db.query<StepRow>(
-    `SELECT id, company_id, campaign_id, position, delay_days, subject, body, variant
+    `SELECT id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant
        FROM ${table(ctx, "campaign_steps")} WHERE campaign_id = $1 ORDER BY position, variant`,
     [campaignId],
   );
@@ -176,6 +177,7 @@ export async function listSteps(ctx: PluginContext, campaignId: string): Promise
     delayDays: row.delay_days,
     subject: row.subject,
     body: row.body,
+    htmlBody: row.html_body,
     variant: row.variant as "a" | "b",
   }));
 }
@@ -186,9 +188,9 @@ export async function insertStep(
 ): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaign_steps")}
-      (id, company_id, campaign_id, position, delay_days, subject, body, variant)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body, input.step.variant],
+      (id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body, input.step.htmlBody, input.step.variant],
   );
 }
 
@@ -360,4 +362,17 @@ export async function stepEventStats(
     byStep.set(row.step_position, step);
   }
   return [...byStep.values()];
+}
+
+export async function setStepHtml(
+  ctx: PluginContext,
+  input: { companyId: string; campaignId: string; position: number; variant: string; html: string },
+): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaign_steps")}
+        SET html_body = $5
+      WHERE company_id = $1 AND campaign_id = $2 AND position = $3 AND variant = $4`,
+    [input.companyId, input.campaignId, input.position, input.variant, input.html],
+  );
+  return result != null;
 }

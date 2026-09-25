@@ -136,4 +136,15 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       campaignId: text,
     }),
   },
+  {
+    name: "set-step-html",
+    displayName: "Set step HTML",
+    description: "Set the rich HTML body of a campaign step. The plain body stays as a fallback.",
+    parametersSchema: schema(["campaignId", "position", "html"], {
+      campaignId: text,
+      position: { type: "integer" },
+      html: text,
+      variant: text,
+    }),
+  },
 ];

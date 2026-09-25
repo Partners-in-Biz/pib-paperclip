@@ -30,6 +30,7 @@ export interface CampaignStepDraft {
   delayDays: number;
   subject: string;
   body: string;
+  htmlBody: string | null;
   variant: "a" | "b";
 }
 

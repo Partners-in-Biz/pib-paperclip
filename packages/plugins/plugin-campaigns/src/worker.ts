@@ -24,6 +24,7 @@ import {
   listSteps,
   saveCampaign,
   saveEnrollment,
+  setStepHtml,
   stepEventStats,
 } from "./db.js";
 import {
@@ -101,6 +102,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
+  if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -173,6 +175,7 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
     delayDays: params.delayDays == null ? 0 : integer(params.delayDays, "delayDays"),
     subject: requiredString(params, "subject"),
     body: optionalString(params, "body") ?? "",
+    htmlBody: null,
     variant: "a",
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
@@ -355,6 +358,7 @@ async function createAbVariant(ctx: PluginContext, companyId: string, params: Re
     delayDays: 0,
     subject: requiredString(params, "subject"),
     body: optionalString(params, "body") ?? "",
+    htmlBody: null,
     variant: "b",
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
@@ -386,6 +390,16 @@ async function stepAnalytics(ctx: PluginContext, companyId: string, params: Reco
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   const byStep = await stepEventStats(ctx, campaign.id);
   return { campaignId: campaign.id, byStep };
+}
+
+async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const position = integer(params.position, "position");
+  const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
+  const html = requiredString(params, "html");
+  const changed = await setStepHtml(ctx, { companyId, campaignId: campaign.id, position, variant, html });
+  if (!changed) throw new CampaignError("No step found at that position and variant");
+  return { campaignId: campaign.id, position, variant, htmlSet: true };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {

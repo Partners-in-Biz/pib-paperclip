@@ -52,8 +52,8 @@ describe("campaigns", () => {
 
 describe("campaign enrollments", () => {
   const steps = [
-    { position: 1, delayDays: 0, subject: "Welcome", body: "Hi", variant: "a" as const },
-    { position: 2, delayDays: 3, subject: "Follow up", body: "Check in", variant: "a" as const },
+    { position: 1, delayDays: 0, subject: "Welcome", body: "Hi", htmlBody: null, variant: "a" as const },
+    { position: 2, delayDays: 3, subject: "Follow up", body: "Check in", htmlBody: null, variant: "a" as const },
   ];
 
   it("refuses a second running enrollment", () => {
