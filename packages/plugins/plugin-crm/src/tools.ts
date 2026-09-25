@@ -273,4 +273,22 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       recordId: text,
     }),
   },
+  {
+    name: "bulk-tag-contacts",
+    displayName: "Bulk tag contacts",
+    description: "Add or remove tags on many visible contacts at once. action is add or remove.",
+    parametersSchema: schema(["contactIds", "tags", "action"], {
+      contactIds: textList,
+      tags: textList,
+      action: text,
+    }),
+  },
+  {
+    name: "contact-graph",
+    displayName: "Contact graph",
+    description: "Return a contact's companies, deals, and recent activity in one view.",
+    parametersSchema: schema(["contactId"], {
+      contactId: text,
+    }),
+  },
 ];

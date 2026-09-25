@@ -222,6 +222,10 @@ async function dispatch(
       return importContacts(ctx, viewer, body);
     case "field-history":
       return fieldHistory(ctx, viewer, body);
+    case "bulk-tag-contacts":
+      return bulkTagContacts(ctx, viewer, body);
+    case "contact-graph":
+      return contactGraph(ctx, viewer, body);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -565,6 +569,47 @@ async function fieldHistory(ctx: PluginContext, viewer: Viewer, params: Record<s
   await requireRecord(ctx, viewer, recordType, recordId);
   const facts = await listFacts(ctx, recordType, recordId);
   return { recordType, recordId, facts };
+}
+
+async function bulkTagContacts(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const contactIds = stringList(params, "contactIds") ?? [];
+  const tags = stringList(params, "tags") ?? [];
+  const action = requiredString(params, "action");
+  if (action !== "add" && action !== "remove") throw new CrmError("Action must be add or remove");
+  if (contactIds.length === 0) throw new CrmError("At least one contact is required");
+  if (tags.length === 0) throw new CrmError("At least one tag is required");
+  let updated = 0;
+  for (const contactId of contactIds) {
+    const contact = await requireContact(ctx, viewer, contactId);
+    const current = new Set(contact.tags.map((tag) => tag.toLowerCase()));
+    if (action === "add") {
+      for (const tag of tags) current.add(tag.toLowerCase());
+    } else {
+      for (const tag of tags) current.delete(tag.toLowerCase());
+    }
+    contact.tags = [...current];
+    await saveContact(ctx, contact);
+    updated += 1;
+  }
+  return { updated, action, tags };
+}
+
+async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
+  const links = (await listLinks(ctx, viewer.companyId)).filter((link) => link.contactId === contact.id);
+  const accounts = [];
+  for (const link of links) {
+    const account = await getAccount(ctx, link.accountId);
+    if (account) accounts.push({ id: account.id, name: account.name, role: link.roleLabel });
+  }
+  const deals = (await listDeals(ctx, viewer.companyId)).filter((deal) => deal.contactId === contact.id);
+  const activities = await listActivities(ctx, "contact", contact.id, 20);
+  return {
+    contact: { id: contact.id, name: contact.name, lifecycle: contact.lifecycle, tags: contact.tags },
+    companies: accounts,
+    deals: deals.map((deal) => ({ id: deal.id, title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency })),
+    activities,
+  };
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
