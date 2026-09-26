@@ -17,7 +17,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Campaigns",
   description: "Themed email programs that enroll contacts and open Paperclip issues for due steps.",
   author: "Partners in Biz",
@@ -38,6 +38,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.wakeup",
     "plugin.state.read",
     "plugin.state.write",
+    "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
   ],
@@ -60,6 +61,17 @@ const manifest: PaperclipPluginManifestV1 = {
     },
   ],
   skills: SKILLS,
+  apiRoutes: [
+    {
+      // Read by the CRM client workspace: GET /api/plugins/partnersinbiz.campaigns/api/client-summary?companyId=&kind=&id=
+      routeKey: "client-summary",
+      method: "GET",
+      path: "/client-summary",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
+    },
+  ],
   ui: {
     slots: [
       {

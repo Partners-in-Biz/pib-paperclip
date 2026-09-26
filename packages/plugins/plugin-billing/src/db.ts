@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { ClientRef, ClientScope } from "@partnersinbiz/pib-plugin-kit";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new Error("Unsafe identifier");
@@ -26,17 +27,28 @@ export interface InvoiceRow {
   sent_at: unknown;
 }
 
-export async function listInvoices(ctx: PluginContext, companyId: string): Promise<InvoiceRow[]> {
+/**
+ * SQL filter for one billing customer (a CRM company or contact). `n` is the
+ * next free `$` index.
+ */
+export function customerWhere(customer: ClientRef, n: number, alias = ""): { sql: string; params: unknown[] } {
+  const col = (name: string) => (alias ? `${alias}.${name}` : name);
+  return { sql: `${col("customer_kind")} = $${n} AND ${col("customer_ref")} = $${n + 1}`, params: [customer.kind, customer.id] };
+}
+
+/** Every invoice this company may see, or only one customer's when `customer` is set. */
+export async function listInvoices(ctx: PluginContext, companyId: string, customer: ClientScope = null): Promise<InvoiceRow[]> {
+  const filter = customer ? customerWhere(customer, 2) : null;
   return ctx.db.query<InvoiceRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
             sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at
        FROM ${table(ctx, "invoices")}
-      WHERE company_id = $1
+      WHERE (company_id = $1
          OR id IN (
               SELECT invoice_id FROM ${table(ctx, "invoice_grants")} WHERE grantee_company_id = $1
-            )
+            ))${filter ? ` AND ${filter.sql}` : ""}
       ORDER BY created_at DESC`,
-    [companyId],
+    [companyId, ...(filter?.params ?? [])],
   );
 }
 
@@ -187,14 +199,15 @@ export interface ExpenseRow {
   incurred_on: unknown;
 }
 
-export async function listQuotes(ctx: PluginContext, companyId: string): Promise<QuoteRow[]> {
+export async function listQuotes(ctx: PluginContext, companyId: string, customer: ClientScope = null): Promise<QuoteRow[]> {
+  const filter = customer ? customerWhere(customer, 2) : null;
   return ctx.db.query<QuoteRow>(
     `SELECT id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
             total_minor, tax_rate, valid_until, converted_invoice_id
        FROM ${table(ctx, "quotes")}
-      WHERE company_id = $1
+      WHERE company_id = $1${filter ? ` AND ${filter.sql}` : ""}
       ORDER BY created_at DESC`,
-    [companyId],
+    [companyId, ...(filter?.params ?? [])],
   );
 }
 
@@ -305,13 +318,25 @@ export interface RecurringRow {
   is_active: boolean;
 }
 
-export async function listRecurring(ctx: PluginContext, companyId: string): Promise<RecurringRow[]> {
+/** Recurring schedules; with `customer`, only those whose template invoice bills that customer. */
+export async function listRecurring(ctx: PluginContext, companyId: string, customer: ClientScope = null): Promise<RecurringRow[]> {
+  if (!customer) {
+    return ctx.db.query<RecurringRow>(
+      `SELECT id, company_id, template_invoice_id, frequency, next_run_at, is_active
+         FROM ${table(ctx, "recurring_invoices")}
+        WHERE company_id = $1
+        ORDER BY next_run_at`,
+      [companyId],
+    );
+  }
+  const filter = customerWhere(customer, 2, "i");
   return ctx.db.query<RecurringRow>(
-    `SELECT id, company_id, template_invoice_id, frequency, next_run_at, is_active
-       FROM ${table(ctx, "recurring_invoices")}
-      WHERE company_id = $1
-      ORDER BY next_run_at`,
-    [companyId],
+    `SELECT r.id, r.company_id, r.template_invoice_id, r.frequency, r.next_run_at, r.is_active
+       FROM ${table(ctx, "recurring_invoices")} r
+       JOIN ${table(ctx, "invoices")} i ON i.id = r.template_invoice_id
+      WHERE r.company_id = $1 AND ${filter.sql}
+      ORDER BY r.next_run_at`,
+    [companyId, ...filter.params],
   );
 }
 
@@ -395,10 +420,55 @@ export async function insertCreditNote(ctx: PluginContext, note: CreditNoteRow):
   );
 }
 
-export async function listCreditNotes(ctx: PluginContext, companyId: string): Promise<CreditNoteRow[]> {
+/** Credit notes; with `customer`, only those against that customer's invoices. */
+export async function listCreditNotes(ctx: PluginContext, companyId: string, customer: ClientScope = null): Promise<CreditNoteRow[]> {
+  if (!customer) {
+    return ctx.db.query<CreditNoteRow>(
+      `SELECT id, company_id, invoice_id, amount_minor, reason, status, created_at
+         FROM ${table(ctx, "credit_notes")} WHERE company_id = $1 ORDER BY created_at DESC`,
+      [companyId],
+    );
+  }
+  const filter = customerWhere(customer, 2, "i");
   return ctx.db.query<CreditNoteRow>(
-    `SELECT id, company_id, invoice_id, amount_minor, reason, status, created_at
-       FROM ${table(ctx, "credit_notes")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
+    `SELECT n.id, n.company_id, n.invoice_id, n.amount_minor, n.reason, n.status, n.created_at
+       FROM ${table(ctx, "credit_notes")} n
+       JOIN ${table(ctx, "invoices")} i ON i.id = n.invoice_id
+      WHERE n.company_id = $1 AND ${filter.sql}
+      ORDER BY n.created_at DESC`,
+    [companyId, ...filter.params],
+  );
+}
+
+export interface CustomerInvoiceBalanceRow {
+  id: string;
+  status: string;
+  currency: string;
+  total_minor: number | string;
+  due_at: unknown;
+  paid_minor: number | string | null;
+  credited_minor: number | string | null;
+  last_paid_at: unknown;
+}
+
+/**
+ * One customer's invoices (not cancelled) with what has been paid and
+ * credited against each, for the CRM client workspace summary. A paid invoice
+ * without a recorded payment counts as paid when it was last updated.
+ */
+export async function customerInvoiceBalances(ctx: PluginContext, companyId: string, customer: ClientRef): Promise<CustomerInvoiceBalanceRow[]> {
+  const filter = customerWhere(customer, 2, "i");
+  return ctx.db.query<CustomerInvoiceBalanceRow>(
+    `SELECT i.id, i.status, i.currency, i.total_minor, i.due_at,
+            COALESCE((SELECT sum(p.amount_minor) FROM ${table(ctx, "payments")} p WHERE p.invoice_id = i.id), 0) AS paid_minor,
+            COALESCE((SELECT sum(c.amount_minor) FROM ${table(ctx, "credit_notes")} c WHERE c.invoice_id = i.id), 0) AS credited_minor,
+            COALESCE(
+              (SELECT max(p.paid_at) FROM ${table(ctx, "payments")} p WHERE p.invoice_id = i.id),
+              CASE WHEN i.status = 'paid' THEN i.updated_at END
+            ) AS last_paid_at
+       FROM ${table(ctx, "invoices")} i
+      WHERE i.company_id = $1 AND ${filter.sql} AND i.status <> 'cancelled'
+      ORDER BY i.created_at DESC`,
+    [companyId, ...filter.params],
   );
 }

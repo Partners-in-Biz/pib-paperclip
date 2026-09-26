@@ -4,17 +4,23 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { openJson, sealJson, TokenKeyError, type TokenKeyring } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient, scopeColumns, scopeLabel, scopeOfRow, scopeOut, type ClientScope, type ResolvedScope } from "./clients.js";
 import type { SocialConfig } from "./config.js";
 import {
   accountMeta,
+  detachAccountFromOtherFeeds,
   getAccount,
   iso,
   lockAccountRefresh,
   saveAccountToken,
+  setAccountScope,
   setAccountState,
+  setInboxScopeForAccount,
   unlockAccountRefresh,
+  unpublishedDestinationsOutside,
   type AccountRow,
 } from "./db.js";
+import { SocialError } from "./domain.js";
 import { openReconnectIssue } from "./issues.js";
 import { isSocialPlatform, PLATFORM_LABELS, type SocialPlatform } from "./platforms.js";
 import { appPlatformFor, providerFor } from "./oauth/registry.js";
@@ -143,8 +149,7 @@ export function publicAccount(row: AccountRow): Record<string, unknown> {
     tokenExpiresAt: iso(row.token_expires_at),
     lastRefreshedAt: iso(row.last_refreshed_at),
     lastError: row.last_error ?? null,
-    clientRef: row.client_ref ?? null,
-    clientName: row.client_name ?? null,
+    ...scopeOut(row),
     kind: typeof meta.kind === "string" ? meta.kind : null,
     via: typeof meta.via === "string" ? meta.via : null,
     boardId: typeof meta.boardId === "string" ? meta.boardId : null,
@@ -155,4 +160,40 @@ export function publicAccount(row: AccountRow): Record<string, unknown> {
     scopes: Array.isArray(row.scopes) ? row.scopes : [],
     reconnectIssueId: row.reconnect_issue_id ?? null,
   };
+}
+
+// ── Scope moves ─────────────────────────────────────────────────────────────
+
+/**
+ * An account can change scope (own work ↔ a client) only when no unpublished
+ * post outside the new scope still targets it: those posts would otherwise
+ * publish one client's content to another client's account.
+ */
+export async function assertAccountMovable(ctx: PluginContext, companyId: string, account: AccountRow, target: ResolvedScope): Promise<void> {
+  if (sameClient(scopeOfRow(account), target.scope)) return;
+  const blocking = await unpublishedDestinationsOutside(ctx, companyId, account.id, target.scope);
+  if (blocking.length === 0) return;
+  const scheduled = blocking.filter((b) => b.post_status === "scheduled" || b.post_status === "publishing").length;
+  const n = blocking.length;
+  throw new SocialError(
+    `${account.display_name} cannot move to ${scopeLabel(target)}: ${n}${n === 50 ? "+" : ""} unpublished post${n === 1 ? "" : "s"} for ${scopeLabel(account)} still use${n === 1 ? "s" : ""} it` +
+      `${scheduled ? ` (${scheduled} scheduled)` : ""}. Let them publish, or remove this account from them (unschedule first), then move it.`,
+  );
+}
+
+/** Move an account and its inbox to `target`; RSS feeds of the old scope stop drafting to it. */
+export async function moveAccountScope(
+  ctx: PluginContext,
+  companyId: string,
+  account: AccountRow,
+  target: ResolvedScope,
+): Promise<{ moved: boolean; feedsDetached: number; from: ClientScope }> {
+  const from = scopeOfRow(account);
+  if (sameClient(from, target.scope)) return { moved: false, feedsDetached: 0, from };
+  await assertAccountMovable(ctx, companyId, account, target);
+  const columns = scopeColumns(target);
+  await setAccountScope(ctx, companyId, account.id, columns);
+  await setInboxScopeForAccount(ctx, companyId, account.id, columns);
+  const feedsDetached = await detachAccountFromOtherFeeds(ctx, companyId, account.id, target.scope);
+  return { moved: true, feedsDetached, from };
 }

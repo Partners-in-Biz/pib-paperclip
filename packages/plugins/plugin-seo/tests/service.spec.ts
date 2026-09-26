@@ -197,6 +197,32 @@ describe("GSC OAuth completion", () => {
   });
 });
 
+describe("GSC OAuth completion for a client sprint", () => {
+  it("returns to the sprint inside the client's workspace", async () => {
+    const config = {
+      publicBaseUrl: "https://paperclip.partnersinbiz.online",
+      encryptionKey: { type: "secret_ref", secretId: "k" },
+      google: { clientId: "cid", clientSecret: { type: "secret_ref", secretId: "s" } },
+    };
+    const host = fakeHost([
+      [/oauth_sessions/, () => [{ state: "st-1", company_id: "co-1", sprint_id: "sp-1", provider: "gsc", created_by_user_id: "user-1", return_to: null, expired: false }]],
+      [/FROM plugin_seo_8099f8879a\.sprints WHERE id = \$1/, () => [{ ...SPRINT, client_ref: "ct-1", client_kind: "contact", client_name: "Jo Soap" }]],
+      [/FROM plugin_seo_8099f8879a\.integrations/, () => [{ id: "int-1", company_id: "co-1", sprint_id: "sp-1", provider: "gsc", status: "disconnected", property_url: null, token_sealed: null, scopes: [], settings: {}, stats: {}, alert_issue_id: null }]],
+    ], config);
+    host.env.fetch = vi.fn(async (url: string) =>
+      url === "https://oauth2.googleapis.com/token"
+        ? new Response(JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600, scope: "https://www.googleapis.com/auth/webmasters" }))
+        : new Response(JSON.stringify({ siteEntry: [] })),
+    ) as never;
+    const res = await gscOauthComplete(host.env, {
+      routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", params: {}, query: {},
+      body: { companyId: "co-1", state: "st-1", params: { code: "c" } },
+      actor: { actorType: "user", actorId: "user-1", userId: "user-1" }, companyId: "co-1", headers: {},
+    } as never);
+    expect(res).toEqual({ status: 200, body: { redirectTo: "/PIB/seo?sprint=sp-1&tab=integrations&connected=gsc&pick=property&client=contact%3Act-1", propertyUrl: null } });
+  });
+});
+
 describe("GSC token refresh", () => {
   it("refreshes an expired access token and persists it", async () => {
     const keyring = buildKeyring({ purpose: "seo", companyId: "co-1", secret: "resolved:encryptionKey" });

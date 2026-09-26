@@ -1,4 +1,5 @@
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { clientScopeFromSearch, formatClientParam, parseClientParam, withClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { PLUGIN_ID } from "../platforms.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -10,16 +11,17 @@ import {
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, Page, Tabs, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ClientWorkspaceBar, EmptyState, Page, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
-import { ClientSelect, platformLabel, Row } from "./parts.js";
+import { platformLabel, Row } from "./parts.js";
 import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
 const ACTION_KEYS = [
   "social.load",
+  "social.clients",
   "social.create-post",
   "social.update-post",
   "social.get-post",
@@ -52,7 +54,7 @@ const ACTION_KEYS = [
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign"]);
 
 type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "media" | "feeds" | "templates";
 const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "media", "feeds", "templates"];
@@ -64,6 +66,26 @@ function useSocialActions(): Record<string, PluginActionFn> {
   return fns;
 }
 
+function tabFrom(search: string): TabId {
+  const value = new URLSearchParams(search).get("tab");
+  return value && (TAB_IDS as string[]).includes(value) ? (value as TabId) : "overview";
+}
+
+/** The page frame for a client workspace: the shared workspace bar replaces the page title. */
+function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: string; children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+      {bar}
+      {message ? (
+        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
+          {message}
+        </p>
+      ) : null}
+      {children}
+    </main>
+  );
+}
+
 export function SocialPage({ context }: PluginPageProps) {
   const fns = useSocialActions();
   const fnsRef = useRef(fns);
@@ -71,18 +93,35 @@ export function SocialPage({ context }: PluginPageProps) {
   const toast = usePluginToast();
   const location = useHostLocation();
   const navigation = useHostNavigation();
+  // ?client=company:<id> or contact:<id> is a client's workspace; none is PiB's own work.
+  const scopeKey = useMemo(() => {
+    const scope = clientScopeFromSearch(location.search);
+    return scope ? formatClientParam(scope) : null;
+  }, [location.search]);
+  const scope: ClientScope = useMemo(() => parseClientParam(scopeKey), [scopeKey]);
+  const tab = tabFrom(location.search);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>("overview");
-  const [clientFilter, setClientFilter] = useState("");
   const [composer, setComposer] = useState<{ post: Post | null } | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pickerId, setPickerId] = useState<string | null>(null);
+  const loadSeq = useRef(0);
+
+  /** A path on this page that keeps the current scope. */
+  const pagePath = useCallback((query: string) => withClientParam(`/social${query ? `?${query}` : ""}`, scope), [scope]);
 
   const refresh = useCallback(async () => {
-    const data = (await fnsRef.current["social.load"]!({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot;
+    const seq = ++loadSeq.current;
+    const data = (await fnsRef.current["social.load"]!({
+      uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url),
+      client: scopeKey,
+    })) as Snapshot;
+    // Ignore a slow answer for a scope the page has already left.
+    if (seq !== loadSeq.current) return;
     setSnapshot(data);
-  }, []);
+    setLoadError("");
+  }, [scopeKey]);
 
   const notify = useCallback((title: string, tone: "success" | "error" | "info", body?: string) => {
     const id = toast({ title, body, tone, ttlMs: tone === "error" ? 9000 : 4000 });
@@ -103,90 +142,127 @@ export function SocialPage({ context }: PluginPageProps) {
     }
   }, [notify, refresh]);
 
+  // A new scope is a different workspace: drop what the old one showed.
+  useEffect(() => {
+    setSnapshot(null);
+    setLoadError("");
+    setComposer(null);
+    setDetailId(null);
+  }, [scopeKey]);
+
   useEffect(() => {
     if (!context.companyId) return;
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    refresh().catch((error: unknown) => setLoadError(errorText(error)));
   }, [context.companyId, refresh]);
 
-  // Returning from the OAuth bridge: ?tab=accounts&connected=facebook or &picker=<id>.
+  // Returning from the OAuth bridge: ?tab=accounts&connected=facebook or &picker=<id> (plus ?client= for a client workspace).
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const nextTab = params.get("tab");
-    if (nextTab && (TAB_IDS as string[]).includes(nextTab)) setTab(nextTab as TabId);
     const connected = params.get("connected");
     const picker = params.get("picker");
     if (connected) notify(`${platformLabel(connected)} connected`, "success");
     if (picker) setPickerId(picker);
-    if (connected || picker) navigation.navigate(`/social?tab=${nextTab ?? "accounts"}`, { replace: true });
+    if (connected || picker) navigation.navigate(pagePath(`tab=${params.get("tab") ?? "accounts"}`), { replace: true });
   }, [location.search]);
 
-  const posts = useMemo(() => (snapshot?.posts ?? []).filter((p) =>
-    !clientFilter || (clientFilter === "__none" ? !p.clientRef : p.clientRef === clientFilter)), [snapshot, clientFilter]);
-  const detail = detailId ? snapshot?.posts.find((p) => p.id === detailId) ?? null : null;
+  const setTab = (id: TabId) => navigation.navigate(pagePath(id === "overview" ? "" : `tab=${id}`), { replace: true });
+
+  const posts = snapshot?.posts ?? [];
+  const detail = detailId ? posts.find((p) => p.id === detailId) ?? null : null;
   const newItems = snapshot?.inbox.filter((i) => i.status === "new").length ?? 0;
   const problems = (snapshot?.accounts ?? []).filter((a) => a.status === "needs_reconnect").length;
 
   if (!context.companyId) return <Page title="Social" description="Pick a company first.">{null}</Page>;
 
+  const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
+  const client = snapshot?.client ?? null;
+
+  const body = loadError ? (
+    <EmptyState
+      title={scope ? "This client's workspace could not open" : "Social could not load"}
+      description={loadError}
+      action={scope ? <a {...navigation.linkProps("/social")} style={{ fontSize: 13, color: tokens.fg }}>Go to own work</a> : undefined}
+    />
+  ) : !snapshot ? <p style={{ margin: 0, fontSize: 13 }}>Loading…</p> : (
+    <>
+      {tab !== "accounts" ? <SetupBanners snapshot={snapshot} /> : null}
+      <Tabs
+        tabs={[
+          { id: "overview", label: "Overview" },
+          { id: "posts", label: `Posts (${posts.length})` },
+          { id: "calendar", label: "Calendar" },
+          { id: "accounts", label: `Accounts (${snapshot.accounts.length})${problems ? ` · ${problems} to fix` : ""}` },
+          { id: "inbox", label: `Inbox${newItems ? ` (${newItems})` : ""}` },
+          { id: "media", label: "Media" },
+          { id: "feeds", label: "Feeds" },
+          { id: "templates", label: "Templates" },
+        ]}
+        active={tab}
+        onChange={(id) => setTab(id as TabId)}
+      />
+      {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} /> : null}
+      {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
+      {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
+      {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
+      {tab === "inbox" ? <InboxTab snapshot={snapshot} run={run} /> : null}
+      {tab === "media" ? <MediaTab snapshot={snapshot} run={run} /> : null}
+      {tab === "feeds" ? <FeedsTab snapshot={snapshot} run={run} /> : null}
+      {tab === "templates" ? <TemplatesTab snapshot={snapshot} run={run} /> : null}
+
+      {composer ? (
+        <Composer snapshot={snapshot} post={composer.post} run={run} onClose={() => setComposer(null)} />
+      ) : null}
+      {detail && !composer ? (
+        <PostDetail post={detail} snapshot={snapshot} run={run} onClose={() => setDetailId(null)} onEdit={(p) => setComposer({ post: p })} />
+      ) : null}
+      {pickerId ? (
+        <PickerModal
+          pickerId={pickerId}
+          run={run}
+          onClose={() => setPickerId(null)}
+          onDone={(n, belongsTo) => {
+            setPickerId(null);
+            notify(`${n} account${n === 1 ? "" : "s"} connected`, "success", belongsTo ? `They belong to ${belongsTo}.` : undefined);
+            refresh().catch(() => undefined);
+          }}
+        />
+      ) : null}
+    </>
+  );
+
+  if (scope) {
+    return (
+      <WorkspaceFrame
+        message={message}
+        bar={(
+          <ClientWorkspaceBar
+            client={{
+              kind: scope.kind,
+              id: scope.id,
+              name: client?.name ?? (loadError ? "Unknown client" : "Loading…"),
+              detail: client ? client.domain ?? client.email ?? null : null,
+            }}
+            active="social"
+            linkProps={navigation.linkProps}
+            ownPath="/social"
+            ownLabel="Own social"
+            actions={<Row>{newPost}</Row>}
+          />
+        )}
+      >
+        {body}
+      </WorkspaceFrame>
+    );
+  }
+
   return (
     <Page
       title="Social"
-      description="Connect client accounts, draft posts with media and per-platform copy, get them approved, and publish on schedule."
+      description="Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."
       message={message}
-      actions={(
-        <Row>
-          {snapshot ? <ClientSelect clients={snapshot.clients} value={clientFilter} onChange={setClientFilter} includeNone /> : null}
-          <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>
-        </Row>
-      )}
+      actions={<Row>{newPost}</Row>}
     >
-      {!snapshot ? <p style={{ margin: 0, fontSize: 13 }}>Loading…</p> : (
-        <>
-          {tab !== "accounts" ? <SetupBanners snapshot={snapshot} /> : null}
-          <Tabs
-            tabs={[
-              { id: "overview", label: "Overview" },
-              { id: "posts", label: `Posts (${posts.length})` },
-              { id: "calendar", label: "Calendar" },
-              { id: "accounts", label: `Accounts (${snapshot.accounts.length})${problems ? ` · ${problems} to fix` : ""}` },
-              { id: "inbox", label: `Inbox${newItems ? ` (${newItems})` : ""}` },
-              { id: "media", label: "Media" },
-              { id: "feeds", label: "Feeds" },
-              { id: "templates", label: "Templates" },
-            ]}
-            active={tab}
-            onChange={(id) => setTab(id as TabId)}
-          />
-          {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} /> : null}
-          {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
-          {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
-          {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} clientFilter={clientFilter} /> : null}
-          {tab === "inbox" ? <InboxTab snapshot={snapshot} run={run} /> : null}
-          {tab === "media" ? <MediaTab snapshot={snapshot} run={run} clientFilter={clientFilter} /> : null}
-          {tab === "feeds" ? <FeedsTab snapshot={snapshot} run={run} /> : null}
-          {tab === "templates" ? <TemplatesTab snapshot={snapshot} run={run} /> : null}
-
-          {composer ? (
-            <Composer snapshot={snapshot} post={composer.post} run={run} defaultClient={clientFilter} onClose={() => setComposer(null)} />
-          ) : null}
-          {detail && !composer ? (
-            <PostDetail post={detail} snapshot={snapshot} run={run} onClose={() => setDetailId(null)} onEdit={(p) => setComposer({ post: p })} />
-          ) : null}
-          {pickerId ? (
-            <PickerModal
-              pickerId={pickerId}
-              snapshot={snapshot}
-              run={run}
-              onClose={() => setPickerId(null)}
-              onDone={(n) => {
-                setPickerId(null);
-                notify(`${n} account${n === 1 ? "" : "s"} connected`, "success");
-                refresh().catch(() => undefined);
-              }}
-            />
-          ) : null}
-        </>
-      )}
+      {body}
     </Page>
   );
 }

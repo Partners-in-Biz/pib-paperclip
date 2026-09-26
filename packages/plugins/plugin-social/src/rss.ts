@@ -7,8 +7,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { safeFetch } from "@partnersinbiz/pib-plugin-kit";
+import { inScope, scopeOfRow } from "./clients.js";
 import {
   activeRssFeeds,
+  getAccountsByIds,
   insertDestination,
   insertPost,
   insertRssSeen,
@@ -159,7 +161,11 @@ async function pollFeed(ctx: PluginContext, feed: RssFeedRow): Promise<number> {
   const fresh = items.filter((i) => !seen.has(i.key));
   const firstPoll = !feed.last_checked_at;
   const toDraft = new Set((firstPoll ? fresh.slice(0, 1) : fresh.slice(0, 5)).map((i) => i.key));
-  const accountIds = Array.from(new Set([...(feed.account_ids ?? []), ...(feed.account_id ? [feed.account_id] : [])]));
+  const wanted = Array.from(new Set([...(feed.account_ids ?? []), ...(feed.account_id ? [feed.account_id] : [])]));
+  // Drafts only target org accounts of the feed's own scope.
+  const accountIds = toDraft.size && wanted.length
+    ? (await getAccountsByIds(ctx, feed.company_id, wanted)).filter((a) => a.scope === "org" && inScope(a, scopeOfRow(feed))).map((a) => a.id)
+    : [];
   let drafted = 0;
   for (const item of fresh) {
     let postId: string | null = null;
@@ -176,8 +182,9 @@ async function pollFeed(ctx: PluginContext, feed: RssFeedRow): Promise<number> {
         media: [],
         overrides: {},
         first_comment: null,
+        client_kind: feed.client_ref ? feed.client_kind ?? "company" : null,
         client_ref: feed.client_ref,
-        client_name: feed.client_name,
+        client_name: feed.client_ref ? feed.client_name : null,
         source: "rss",
         source_ref: feed.id,
         created_by_agent_id: null,

@@ -12,7 +12,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { textArrayParam } from "@partnersinbiz/pib-plugin-kit";
+import { clientWhere, textArrayParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import type { DestinationStatus, PlatformOverride, PostStatus, SocialPlatform } from "./platforms.js";
 
 /** SQL fragment turning a JSON-array param (`JSON.stringify(list)`) into text[]. */
@@ -42,6 +42,17 @@ function json<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
+/**
+ * `AND <scope filter>` for a query whose params already hold `params`.
+ * `undefined` scope means no filter (jobs); `null` is own work.
+ */
+function scopeClause(scope: ClientScope | undefined, params: unknown[], alias = ""): string {
+  if (scope === undefined) return "";
+  const w = clientWhere(scope, params.length + 1, alias);
+  params.push(...w.params);
+  return ` AND ${w.sql}`;
+}
+
 function num(value: unknown): number | null {
   if (value == null || value === "") return null;
   const n = Number(value);
@@ -66,6 +77,7 @@ export interface AccountRow {
   refresh_token_enc: string | null;
   token_expires_at: unknown;
   scopes: unknown;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   last_error: string | null;
@@ -80,7 +92,7 @@ export interface AccountRow {
 
 const ACCOUNT_COLS = [
   "id", "company_id", "platform", "scope", "owner_user_id", "status", "secret_ref", "display_name", "external_id", "handle",
-  "avatar_url", "token_enc", "refresh_token_enc", "token_expires_at", "scopes", "client_ref", "client_name", "last_error", "meta",
+  "avatar_url", "token_enc", "refresh_token_enc", "token_expires_at", "scopes", "client_kind", "client_ref", "client_name", "last_error", "meta",
   "key_version", "created_by_user_id", "reconnect_issue_id", "last_refreshed_at", "created_at", "updated_at",
 ].join(", ");
 
@@ -89,10 +101,21 @@ export function accountMeta(row: AccountRow): Record<string, unknown> {
   return meta && typeof meta === "object" && !Array.isArray(meta) ? meta : {};
 }
 
-export async function listAccounts(ctx: PluginContext, companyId: string): Promise<AccountRow[]> {
+/** Accounts of a company; pass a scope to keep only own work (null) or one client. */
+export async function listAccounts(ctx: PluginContext, companyId: string, scope?: ClientScope): Promise<AccountRow[]> {
+  const params: unknown[] = [companyId];
+  const where = scopeClause(scope, params);
   return ctx.db.query<AccountRow>(
-    `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")} WHERE company_id = $1 ORDER BY platform, display_name`,
-    [companyId],
+    `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")} WHERE company_id = $1${where} ORDER BY platform, display_name`,
+    params,
+  );
+}
+
+export async function getAccountsByIds(ctx: PluginContext, companyId: string, ids: string[]): Promise<AccountRow[]> {
+  if (ids.length === 0) return [];
+  return ctx.db.query<AccountRow>(
+    `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")} WHERE company_id = $1 AND id = ANY(${textArrayParam(2)})`,
+    [companyId, JSON.stringify(ids)],
   );
 }
 
@@ -150,12 +173,17 @@ export interface AccountWrite {
   scopes: string[];
   meta: Record<string, unknown>;
   key_version: number;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   created_by_user_id: string | null;
 }
 
-/** Insert or refresh an account keyed by (company, platform, external id). Keeps the row id stable across reconnects. */
+/**
+ * Insert or refresh an account keyed by (company, platform, external id).
+ * Keeps the row id stable across reconnects. The caller decides the scope
+ * (flow.saveCandidate keeps it on reconnect and checks moves).
+ */
 export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Promise<{ id: string; created: boolean }> {
   const existing = await findAccountByExternal(ctx, input.company_id, input.platform, input.external_id);
   if (existing) {
@@ -163,14 +191,14 @@ export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Pr
       `UPDATE ${table(ctx, "accounts")}
           SET display_name = $2, handle = $3, avatar_url = $4, token_enc = $5, refresh_token_enc = NULL,
               token_expires_at = $6::timestamptz, scopes = $7::jsonb, meta = $8::jsonb, key_version = $9,
-              client_ref = COALESCE($10, client_ref), client_name = COALESCE($11, client_name),
+              client_kind = $10, client_ref = $11, client_name = $12,
               status = 'connected', last_error = NULL, reconnect_issue_id = NULL, refresh_lock_until = NULL,
               last_refreshed_at = now(), updated_at = now()
         WHERE id = $1`,
       [
         existing.id, input.display_name, input.handle, input.avatar_url, input.token_enc, input.token_expires_at,
         JSON.stringify(input.scopes), JSON.stringify({ ...accountMeta(existing), ...input.meta }), input.key_version,
-        input.client_ref, input.client_name,
+        input.client_kind, input.client_ref, input.client_name,
       ],
     );
     return { id: existing.id, created: false };
@@ -179,13 +207,13 @@ export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Pr
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "accounts")}
       (id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name, external_id, handle, avatar_url,
-       token_enc, refresh_token_enc, token_expires_at, scopes, meta, key_version, client_ref, client_name, created_by_user_id,
-       last_refreshed_at)
-     VALUES ($1, $2, $3, 'org', NULL, 'connected', NULL, $4, $5, $6, $7, $8, NULL, $9::timestamptz, $10::jsonb, $11::jsonb, $12, $13, $14, $15, now())`,
+       token_enc, refresh_token_enc, token_expires_at, scopes, meta, key_version, client_kind, client_ref, client_name,
+       created_by_user_id, last_refreshed_at)
+     VALUES ($1, $2, $3, 'org', NULL, 'connected', NULL, $4, $5, $6, $7, $8, NULL, $9::timestamptz, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, now())`,
     [
       id, input.company_id, input.platform, input.display_name, input.external_id, input.handle, input.avatar_url, input.token_enc,
-      input.token_expires_at, JSON.stringify(input.scopes), JSON.stringify(input.meta), input.key_version, input.client_ref,
-      input.client_name, input.created_by_user_id,
+      input.token_expires_at, JSON.stringify(input.scopes), JSON.stringify(input.meta), input.key_version, input.client_kind,
+      input.client_ref, input.client_name, input.created_by_user_id,
     ],
   );
   return { id, created: true };
@@ -229,25 +257,81 @@ export async function setAccountState(ctx: PluginContext, id: string, fields: {
 }
 
 export async function updateAccountSettings(ctx: PluginContext, companyId: string, id: string, fields: {
-  clientRef?: string | null;
-  clientName?: string | null;
   meta?: Record<string, unknown>;
   status?: string;
 }): Promise<number> {
   const result = await ctx.db.execute(
     `UPDATE ${table(ctx, "accounts")}
-        SET client_ref = CASE WHEN $3::boolean THEN $4 ELSE client_ref END,
-            client_name = CASE WHEN $3::boolean THEN $5 ELSE client_name END,
-            meta = CASE WHEN $6::jsonb IS NULL THEN meta ELSE meta || $6::jsonb END,
-            status = COALESCE($7, status),
+        SET meta = CASE WHEN $3::jsonb IS NULL THEN meta ELSE meta || $3::jsonb END,
+            status = COALESCE($4, status),
             updated_at = now()
       WHERE id = $1 AND company_id = $2`,
-    [
-      id, companyId, fields.clientRef !== undefined, fields.clientRef ?? null, fields.clientName ?? null,
-      fields.meta ? JSON.stringify(fields.meta) : null, fields.status ?? null,
-    ],
+    [id, companyId, fields.meta ? JSON.stringify(fields.meta) : null, fields.status ?? null],
   );
   return result.rowCount;
+}
+
+export interface ScopeWrite {
+  client_kind: string | null;
+  client_ref: string | null;
+  client_name: string | null;
+}
+
+/** Move an account to another scope (own work or one client). */
+export async function setAccountScope(ctx: PluginContext, companyId: string, id: string, scope: ScopeWrite): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "accounts")} SET client_kind = $3, client_ref = $4, client_name = $5, updated_at = now()
+      WHERE id = $1 AND company_id = $2`,
+    [id, companyId, scope.client_kind, scope.client_ref, scope.client_name],
+  );
+  return result.rowCount;
+}
+
+/** Inbox items follow the account they arrived on. */
+export async function setInboxScopeForAccount(ctx: PluginContext, companyId: string, accountId: string, scope: ScopeWrite): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "inbox_items")} SET client_kind = $3, client_ref = $4, client_name = $5
+      WHERE account_id = $1 AND company_id = $2`,
+    [accountId, companyId, scope.client_kind, scope.client_ref, scope.client_name],
+  );
+  return result.rowCount;
+}
+
+/** Drop an account from RSS feeds outside `scope` (feeds only draft to accounts of their own scope). */
+export async function detachAccountFromOtherFeeds(ctx: PluginContext, companyId: string, accountId: string, scope: ClientScope): Promise<number> {
+  const params: unknown[] = [accountId, companyId];
+  const w = clientWhere(scope, params.length + 1);
+  params.push(...w.params);
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "rss_feeds")}
+        SET account_ids = array_remove(account_ids, $1),
+            account_id = CASE WHEN account_id = $1 THEN NULL ELSE account_id END
+      WHERE company_id = $2 AND ($1 = ANY(account_ids) OR account_id = $1) AND NOT COALESCE((${w.sql}), false)`,
+    params,
+  );
+  return result.rowCount;
+}
+
+/** Unpublished destinations of an account on posts outside `scope` (these block a move). */
+export async function unpublishedDestinationsOutside(
+  ctx: PluginContext,
+  companyId: string,
+  accountId: string,
+  scope: ClientScope,
+): Promise<Array<{ post_id: string; post_status: string; client_ref: string | null; client_name: string | null }>> {
+  const params: unknown[] = [accountId, companyId];
+  const w = clientWhere(scope, params.length + 1, "p");
+  params.push(...w.params);
+  return ctx.db.query(
+    `SELECT p.id AS post_id, p.status AS post_status, p.client_ref, p.client_name
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
+      WHERE d.account_id = $1 AND d.company_id = $2 AND d.status IN ('pending', 'retrying', 'publishing')
+        AND NOT COALESCE((${w.sql}), false)
+      ORDER BY p.created_at DESC
+      LIMIT 50`,
+    params,
+  );
 }
 
 /** Disconnect keeps the row (publish history) but drops the tokens. */
@@ -357,9 +441,9 @@ export async function getPickerSession(ctx: PluginContext, companyId: string, pi
 }
 
 /** Account choices waiting for this user (fallback when the bridge could not redirect to the picker). */
-export async function listPendingPickers(ctx: PluginContext, companyId: string, userId: string | null): Promise<Array<{ picker_id: string; platform: string }>> {
-  return ctx.db.query<{ picker_id: string; platform: string }>(
-    `SELECT picker_id, platform FROM ${table(ctx, "oauth_sessions")}
+export async function listPendingPickers(ctx: PluginContext, companyId: string, userId: string | null): Promise<Array<{ picker_id: string; platform: string; extra: unknown }>> {
+  return ctx.db.query<{ picker_id: string; platform: string; extra: unknown }>(
+    `SELECT picker_id, platform, extra FROM ${table(ctx, "oauth_sessions")}
       WHERE company_id = $1 AND status = 'pending_selection' AND expires_at > now() AND picker_id IS NOT NULL
         AND ($2::text IS NULL OR created_by_user_id IS NULL OR created_by_user_id = $2)
       ORDER BY created_at DESC LIMIT 5`,
@@ -454,6 +538,7 @@ export interface PostRow {
   scheduled_at: unknown;
   scope: "org" | "personal";
   owner_user_id: string | null;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   first_comment: string | null;
@@ -468,7 +553,7 @@ export interface PostRow {
 }
 
 const POST_COLS = [
-  "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_ref", "client_name",
+  "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "created_at", "updated_at",
 ].join(", ");
 
@@ -505,20 +590,18 @@ export function postOverrides(row: Pick<PostRow, "overrides">): Partial<Record<S
   return raw as Partial<Record<SocialPlatform, PlatformOverride>>;
 }
 
-export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; clientRef?: string; limit?: number } = {}): Promise<PostRow[]> {
+/** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. */
+export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
-  const where = ["company_id = $1"];
+  let where = "company_id = $1";
   if (filter.status) {
     params.push(filter.status);
-    where.push(`status = $${params.length}`);
+    where += ` AND status = $${params.length}`;
   }
-  if (filter.clientRef) {
-    params.push(filter.clientRef);
-    where.push(`client_ref = $${params.length}`);
-  }
+  where += scopeClause(filter.scope, params);
   params.push(Math.min(Math.max(filter.limit ?? 500, 1), 1000));
   return ctx.db.query<PostRow>(
-    `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT $${params.length}`,
+    `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
     params,
   );
 }
@@ -541,6 +624,7 @@ export interface PostWrite {
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
   first_comment: string | null;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   source: string;
@@ -551,12 +635,12 @@ export interface PostWrite {
 export async function insertPost(ctx: PluginContext, row: PostWrite): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "posts")}
-      (id, company_id, body, overrides, media, status, scheduled_at, scope, owner_user_id, first_comment, client_ref, client_name,
-       source, source_ref, created_by_agent_id)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, NULL, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      (id, company_id, body, overrides, media, status, scheduled_at, scope, owner_user_id, first_comment, client_kind, client_ref,
+       client_name, source, source_ref, created_by_agent_id)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, NULL, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     [
       row.id, row.company_id, row.body, JSON.stringify(row.overrides), JSON.stringify(row.media), row.status, row.scope, row.owner_user_id,
-      row.first_comment, row.client_ref, row.client_name, row.source, row.source_ref, row.created_by_agent_id,
+      row.first_comment, row.client_kind, row.client_ref, row.client_name, row.source, row.source_ref, row.created_by_agent_id,
     ],
   );
 }
@@ -566,8 +650,7 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
   media?: MediaRef[];
   overrides?: Partial<Record<SocialPlatform, PlatformOverride>>;
   firstComment?: string | null;
-  clientRef?: string | null;
-  clientName?: string | null;
+  scope?: ScopeWrite;
 }): Promise<number> {
   const result = await ctx.db.execute(
     `UPDATE ${table(ctx, "posts")}
@@ -575,8 +658,9 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
             media = COALESCE($4::jsonb, media),
             overrides = COALESCE($5::jsonb, overrides),
             first_comment = CASE WHEN $6::boolean THEN $7 ELSE first_comment END,
-            client_ref = CASE WHEN $8::boolean THEN $9 ELSE client_ref END,
-            client_name = CASE WHEN $8::boolean THEN $10 ELSE client_name END,
+            client_kind = CASE WHEN $8::boolean THEN $9 ELSE client_kind END,
+            client_ref = CASE WHEN $8::boolean THEN $10 ELSE client_ref END,
+            client_name = CASE WHEN $8::boolean THEN $11 ELSE client_name END,
             updated_at = now()
       WHERE id = $1 AND company_id = $2`,
     [
@@ -584,7 +668,7 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
       fields.media ? JSON.stringify(fields.media) : null,
       fields.overrides ? JSON.stringify(fields.overrides) : null,
       fields.firstComment !== undefined, fields.firstComment ?? null,
-      fields.clientRef !== undefined, fields.clientRef ?? null, fields.clientName ?? null,
+      fields.scope !== undefined, fields.scope?.client_kind ?? null, fields.scope?.client_ref ?? null, fields.scope?.client_name ?? null,
     ],
   );
   return result.rowCount;
@@ -706,6 +790,21 @@ export async function destinationsForCompany(ctx: PluginContext, companyId: stri
   return ctx.db.query<DestinationRow>(
     `SELECT ${DEST_COLS} FROM ${table(ctx, "destinations")} WHERE company_id = $1 ORDER BY created_at`,
     [companyId],
+  );
+}
+
+/** Destinations of the posts in one scope. */
+export async function destinationsForScope(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<DestinationRow[]> {
+  const params: unknown[] = [companyId];
+  const w = clientWhere(scope, params.length + 1, "p");
+  params.push(...w.params);
+  return ctx.db.query<DestinationRow>(
+    `SELECT ${DEST_COLS.split(", ").map((c) => `d.${c}`).join(", ")}
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
+      WHERE d.company_id = $1 AND ${w.sql}
+      ORDER BY d.created_at`,
+    params,
   );
 }
 
@@ -923,10 +1022,24 @@ export async function metricsForPost(ctx: PluginContext, companyId: string, post
   );
 }
 
-export async function metricsForCompany(ctx: PluginContext, companyId: string): Promise<MetricsRow[]> {
+/** Metric snapshots of a company; with a scope, only posts of own work (null) or one client. */
+export async function metricsForCompany(ctx: PluginContext, companyId: string, scope?: ClientScope): Promise<MetricsRow[]> {
+  if (scope === undefined) {
+    return ctx.db.query<MetricsRow>(
+      `SELECT ${METRIC_COLS} FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 ORDER BY recorded_at`,
+      [companyId],
+    );
+  }
+  const params: unknown[] = [companyId];
+  const w = clientWhere(scope, params.length + 1, "p");
+  params.push(...w.params);
   return ctx.db.query<MetricsRow>(
-    `SELECT ${METRIC_COLS} FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 ORDER BY recorded_at`,
-    [companyId],
+    `SELECT ${METRIC_COLS.split(", ").map((c) => `m.${c}`).join(", ")}
+       FROM ${table(ctx, "post_metrics")} m
+       JOIN ${table(ctx, "posts")} p ON p.id = m.post_id
+      WHERE m.company_id = $1 AND ${w.sql}
+      ORDER BY m.recorded_at`,
+    params,
   );
 }
 
@@ -972,30 +1085,33 @@ export interface MediaAssetRow {
   height: number | null;
   duration_s: number | string | null;
   alt_text: string | null;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   created_at: unknown;
 }
 
-const MEDIA_COLS = "id, company_id, name, url, kind, r2_key, mime, bytes, width, height, duration_s, alt_text, client_ref, client_name, created_at";
+const MEDIA_COLS = "id, company_id, name, url, kind, r2_key, mime, bytes, width, height, duration_s, alt_text, client_kind, client_ref, client_name, created_at";
 
 export async function insertMediaAsset(ctx: PluginContext, asset: Omit<MediaAssetRow, "created_at"> & { source_url?: string | null }): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "media_assets")}
-      (id, company_id, name, url, kind, r2_key, mime, bytes, width, height, duration_s, alt_text, client_ref, client_name, source_url)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      (id, company_id, name, url, kind, r2_key, mime, bytes, width, height, duration_s, alt_text, client_kind, client_ref, client_name, source_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
     [
       asset.id, asset.company_id, asset.name, asset.url, asset.kind, asset.r2_key, asset.mime, asset.bytes == null ? null : Number(asset.bytes),
-      asset.width, asset.height, asset.duration_s == null ? null : Number(asset.duration_s), asset.alt_text, asset.client_ref, asset.client_name,
-      asset.source_url ?? null,
+      asset.width, asset.height, asset.duration_s == null ? null : Number(asset.duration_s), asset.alt_text, asset.client_kind, asset.client_ref,
+      asset.client_name, asset.source_url ?? null,
     ],
   );
 }
 
-export async function listMediaAssets(ctx: PluginContext, companyId: string): Promise<MediaAssetRow[]> {
+export async function listMediaAssets(ctx: PluginContext, companyId: string, scope?: ClientScope): Promise<MediaAssetRow[]> {
+  const params: unknown[] = [companyId];
+  const where = scopeClause(scope, params);
   return ctx.db.query<MediaAssetRow>(
-    `SELECT ${MEDIA_COLS} FROM ${table(ctx, "media_assets")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
+    `SELECT ${MEDIA_COLS} FROM ${table(ctx, "media_assets")} WHERE company_id = $1${where} ORDER BY created_at DESC`,
+    params,
   );
 }
 
@@ -1034,12 +1150,13 @@ export interface RssFeedRow {
   last_checked_at: unknown;
   last_error: string | null;
   last_item_at: unknown;
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   created_by_user_id: string | null;
 }
 
-const FEED_COLS = "id, company_id, url, title, account_id, account_ids, is_active, last_checked_at, last_error, last_item_at, client_ref, client_name, created_by_user_id";
+const FEED_COLS = "id, company_id, url, title, account_id, account_ids, is_active, last_checked_at, last_error, last_item_at, client_kind, client_ref, client_name, created_by_user_id";
 
 export async function insertRssFeed(ctx: PluginContext, feed: {
   id: string;
@@ -1047,22 +1164,36 @@ export async function insertRssFeed(ctx: PluginContext, feed: {
   url: string;
   account_id: string | null;
   account_ids: string[];
+  client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
   created_by_user_id: string | null;
 }): Promise<void> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "rss_feeds")} (id, company_id, url, account_id, account_ids, is_active, client_ref, client_name, created_by_user_id)
-     VALUES ($1, $2, $3, $4, ${textArrayParam(5)}, true, $6, $7, $8)`,
-    [feed.id, feed.company_id, feed.url, feed.account_id, JSON.stringify(feed.account_ids), feed.client_ref, feed.client_name, feed.created_by_user_id],
+    `INSERT INTO ${table(ctx, "rss_feeds")} (id, company_id, url, account_id, account_ids, is_active, client_kind, client_ref, client_name, created_by_user_id)
+     VALUES ($1, $2, $3, $4, ${textArrayParam(5)}, true, $6, $7, $8, $9)`,
+    [
+      feed.id, feed.company_id, feed.url, feed.account_id, JSON.stringify(feed.account_ids), feed.client_kind, feed.client_ref, feed.client_name,
+      feed.created_by_user_id,
+    ],
   );
 }
 
-export async function listRssFeeds(ctx: PluginContext, companyId: string): Promise<RssFeedRow[]> {
+export async function listRssFeeds(ctx: PluginContext, companyId: string, scope?: ClientScope): Promise<RssFeedRow[]> {
+  const params: unknown[] = [companyId];
+  const where = scopeClause(scope, params);
   return ctx.db.query<RssFeedRow>(
-    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
+    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1${where} ORDER BY created_at DESC`,
+    params,
   );
+}
+
+export async function getRssFeed(ctx: PluginContext, companyId: string, id: string): Promise<RssFeedRow | null> {
+  const rows = await ctx.db.query<RssFeedRow>(
+    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [id, companyId],
+  );
+  return rows[0] ?? null;
 }
 
 export async function activeRssFeeds(ctx: PluginContext, limit = 100): Promise<RssFeedRow[]> {
@@ -1141,13 +1272,16 @@ export interface InboxItemRow {
   reply_external_id: string | null;
   replied_at: unknown;
   received_at: unknown;
+  client_kind: string | null;
   client_ref: string | null;
+  client_name: string | null;
   created_at: unknown;
 }
 
 const INBOX_COLS = [
   "id", "company_id", "account_id", "platform", "kind", "author", "body", "status", "external_id", "parent_external_id", "permalink",
-  "destination_id", "post_id", "reply_draft", "reply_body", "reply_external_id", "replied_at", "received_at", "client_ref", "created_at",
+  "destination_id", "post_id", "reply_draft", "reply_body", "reply_external_id", "replied_at", "received_at", "client_kind", "client_ref",
+  "client_name", "created_at",
 ].join(", ");
 
 export async function insertInboxItem(ctx: PluginContext, item: {
@@ -1165,30 +1299,33 @@ export async function insertInboxItem(ctx: PluginContext, item: {
   destination_id?: string | null;
   post_id?: string | null;
   received_at?: string | null;
+  client_kind?: string | null;
   client_ref?: string | null;
+  client_name?: string | null;
 }): Promise<boolean> {
   const result = await ctx.db.execute(
     `INSERT INTO ${table(ctx, "inbox_items")}
       (id, company_id, account_id, platform, kind, author, body, status, external_id, parent_external_id, permalink, destination_id,
-       post_id, received_at, client_ref)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz, $15)
+       post_id, received_at, client_kind, client_ref, client_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz, $15, $16, $17)
      ON CONFLICT (account_id, external_id) DO NOTHING`,
     [
       item.id, item.company_id, item.account_id, item.platform, item.kind, item.author, item.body, item.status, item.external_id ?? null,
       item.parent_external_id ?? null, item.permalink ?? null, item.destination_id ?? null, item.post_id ?? null, item.received_at ?? null,
-      item.client_ref ?? null,
+      item.client_ref ? item.client_kind ?? "company" : null, item.client_ref ?? null, item.client_ref ? item.client_name ?? null : null,
     ],
   );
   return result.rowCount === 1;
 }
 
-export async function listInboxItems(ctx: PluginContext, companyId: string, limit = 50, status?: string): Promise<InboxItemRow[]> {
+export async function listInboxItems(ctx: PluginContext, companyId: string, limit = 50, status?: string, scope?: ClientScope): Promise<InboxItemRow[]> {
   const params: unknown[] = [companyId];
   let where = "company_id = $1";
   if (status) {
     params.push(status);
     where += ` AND status = $${params.length}`;
   }
+  where += scopeClause(scope, params);
   params.push(Math.min(Math.max(limit, 1), 500));
   return ctx.db.query<InboxItemRow>(
     `SELECT ${INBOX_COLS} FROM ${table(ctx, "inbox_items")} WHERE ${where}
@@ -1227,4 +1364,36 @@ export async function saveInboxReply(ctx: PluginContext, companyId: string, id: 
       WHERE id = $1 AND company_id = $2`,
     [id, companyId, fields.status, fields.replyDraft ?? null, fields.replyBody ?? null, fields.replyExternalId ?? null, fields.replied],
   );
+}
+
+// ── Client summary (CRM workspace) ──────────────────────────────────────────
+
+export interface ScopeSummaryRow {
+  connected: number | string;
+  needs_reconnect: number | string;
+  scheduled_week: number | string;
+  failed: number | string;
+  last_published: unknown;
+}
+
+/** Counts for one scope, in one read. */
+export async function scopeSummary(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ScopeSummaryRow> {
+  const params: unknown[] = [companyId];
+  const w = clientWhere(scope, params.length + 1);
+  params.push(...w.params);
+  const accounts = table(ctx, "accounts");
+  const posts = table(ctx, "posts");
+  const rows = await ctx.db.query<ScopeSummaryRow>(
+    `SELECT
+       (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql}
+          AND token_enc IS NOT NULL AND status IN ('connected', 'expiring')) AS connected,
+       (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql} AND status = 'needs_reconnect') AS needs_reconnect,
+       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status = 'scheduled'
+          AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days') AS scheduled_week,
+       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published')
+          AND updated_at >= now() - interval '30 days') AS failed,
+       (SELECT max(published_at) FROM ${posts} WHERE company_id = $1 AND ${w.sql}) AS last_published`,
+    params,
+  );
+  return rows[0] ?? { connected: 0, needs_reconnect: 0, scheduled_week: 0, failed: 0, last_published: null };
 }

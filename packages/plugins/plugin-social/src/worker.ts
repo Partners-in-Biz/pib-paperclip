@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { rememberPluginUiBase, registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
 import { activateAgent } from "./agent.js";
-import { listClients } from "./clients.js";
+import { scopeFromParams } from "./clients.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { loadSocialConfig } from "./config.js";
 import { deleteExpiredOauthSessions } from "./db.js";
@@ -33,6 +33,7 @@ import {
   disconnectAccountRecord,
   getPostDetail,
   listAccountsRecord,
+  listClientsRecord,
   listInboxRecord,
   listMediaRecord,
   listPostsRecord,
@@ -58,6 +59,7 @@ import {
   validatePostRecord,
   type Viewer,
 } from "./service.js";
+import { handleClientSummary } from "./routes.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
 
@@ -105,7 +107,7 @@ async function toolViewer(ctx: PluginContext, run: ToolRunContext): Promise<View
 async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list-clients":
-      return (await listClients(ctx, viewer.companyId)).map((c) => ({ id: c.id, name: c.name, domain: c.domain, lifecycle: c.lifecycle }));
+      return listClientsRecord(ctx, viewer);
     case "list-connected-accounts":
       return listAccountsRecord(ctx, viewer, p);
     case "connect-account": {
@@ -155,7 +157,7 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
     case "create-rss-feed":
       return createRssFeedRecord(ctx, viewer, p);
     case "list-rss-feeds":
-      return listRssFeedsRecord(ctx, viewer);
+      return listRssFeedsRecord(ctx, viewer, p);
     case "pause-rss-feed":
       return setRssActiveRecord(ctx, viewer, requiredString(p, "feedId"), false);
     case "resume-rss-feed":
@@ -173,7 +175,7 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
     case "post-analytics":
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":
-      return accountAnalyticsRecord(ctx, viewer);
+      return accountAnalyticsRecord(ctx, viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -202,8 +204,10 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.load": async (ctx, v, p) => {
     // The page reports /_plugins/<installation uuid>/ui/ so redirect URIs can use it.
     await rememberPluginUiBase(ctx, p.uiBase);
-    return loadSnapshot(ctx, v);
+    // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
+    return loadSnapshot(ctx, v, { client: p.client ?? null });
   },
+  "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),
   "social.update-post": (ctx, v, p) => updatePostRecord(ctx, v, p),
   "social.get-post": (ctx, v, p) => getPostDetail(ctx, v, requiredString(p, "postId")),
@@ -222,13 +226,13 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.retry-post": (ctx, v, p) => retryPostRecord(ctx, v, requiredString(p, "postId")),
   "social.create-template": (ctx, v, p) => createTemplateRecord(ctx, v, p),
   "social.list-templates": (ctx, v) => listTemplatesRecord(ctx, v),
-  "social.oauth-start": (ctx, v, p) =>
+  "social.oauth-start": async (ctx, v, p) =>
     startOAuth(ctx, v.companyId, requireUser(v, "connect an account"), {
       platform: requiredString(p, "platform"),
       instanceUrl: optionalString(p, "instanceUrl"),
       defaultSubreddit: optionalString(p, "defaultSubreddit"),
       reconnectAccountId: optionalString(p, "reconnectAccountId"),
-      clientRef: optionalString(p, "clientRef"),
+      target: await scopeFromParams(ctx, v.companyId, p),
     }),
   "social.oauth-pending": (ctx, v, p) => pendingOptions(ctx, v.companyId, requireUser(v, "choose accounts"), requiredString(p, "pickerId")),
   "social.oauth-confirm": (ctx, v, p) => {
@@ -236,15 +240,15 @@ const ACTIONS: Record<string, ActionHandler> = {
     return confirmPicker(ctx, v.companyId, requireUser(v, "choose accounts"), {
       pickerId: requiredString(p, "pickerId"),
       selections,
-      clientRef: p.clientRef === undefined ? undefined : optionalString(p, "clientRef") ?? null,
     });
   },
-  "social.connect-bluesky": (ctx, v, p) =>
+  "social.connect-bluesky": async (ctx, v, p) =>
     connectBlueskyAccount(ctx, v.companyId, requireUser(v, "connect an account"), {
       identifier: requiredString(p, "identifier"),
       appPassword: requiredString(p, "appPassword"),
       pdsUrl: optionalString(p, "pdsUrl") ?? null,
-      clientRef: optionalString(p, "clientRef") ?? null,
+      target: await scopeFromParams(ctx, v.companyId, p),
+      reconnectAccountId: optionalString(p, "reconnectAccountId") ?? null,
     }),
   "social.disconnect-account": (ctx, v, p) => disconnectAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.update-account": (ctx, v, p) => updateAccountRecord(ctx, v, p),
@@ -265,10 +269,12 @@ const ACTIONS: Record<string, ActionHandler> = {
   },
 };
 
-// ── OAuth completion route (called by the static bridge page) ───────────────
+// ── API routes ──────────────────────────────────────────────────────────────
 
 async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
+  if (input.routeKey === "client-summary") return handleClientSummary(ctx, input);
   if (input.routeKey !== "oauth-complete") return { status: 404, body: { error: "Not found" } };
+  // OAuth completion (called by the static bridge page).
   try {
     if (input.actor.actorType !== "user") return { status: 403, body: { error: "Only a signed-in person can finish connecting an account." } };
     const body = (input.body && typeof input.body === "object" ? input.body : {}) as Record<string, unknown>;

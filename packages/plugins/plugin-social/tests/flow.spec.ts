@@ -34,7 +34,7 @@ beforeEach(() => fastNetwork());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("publish-due engine", () => {
-  function world(fbStatus: number, fbBody: unknown) {
+  function world(fbStatus: number, fbBody: unknown, accountScope: { client_kind: string | null; client_ref: string | null; client_name: string | null } = { client_kind: null, client_ref: null, client_name: null }) {
     const post = {
       id: "p1", company_id: "co", body: "Hello", overrides: {}, media: [], status: "scheduled", scheduled_at: new Date(Date.now() - 60_000),
       scope: "org", owner_user_id: "user-1", client_ref: null, client_name: "Acme", first_comment: null, source: "manual", source_ref: null,
@@ -48,7 +48,7 @@ describe("publish-due engine", () => {
     const account = {
       id: "a1", company_id: "co", platform: "facebook", scope: "org", owner_user_id: null, status: "connected", secret_ref: null, display_name: "Acme Page",
       external_id: "page-1", handle: null, avatar_url: null, token_enc: sealJson({ accessToken: "page-token" }, keyring), refresh_token_enc: null,
-      token_expires_at: null, scopes: [], client_ref: null, client_name: null, last_error: null, meta: { pageId: "page-1" }, key_version: 1,
+      token_expires_at: null, scopes: [], ...accountScope, last_error: null, meta: { pageId: "page-1" }, key_version: 1,
       created_by_user_id: "user-1", reconnect_issue_id: null, last_refreshed_at: null, created_at: new Date(), updated_at: new Date(),
     };
     let dueServed = false;
@@ -99,8 +99,8 @@ describe("publish-due engine", () => {
         return 0;
       },
     });
-    mockFetch([["POST https://graph.facebook.com/v21.0/page-1/feed", () => json(fbBody, fbStatus)]]);
-    return { ctx, post, dest };
+    const net = mockFetch([["POST https://graph.facebook.com/v21.0/page-1/feed", () => json(fbBody, fbStatus)]]);
+    return { ctx, post, dest, net };
   }
 
   it("publishes a due destination and records the external id", async () => {
@@ -141,6 +141,15 @@ describe("publish-due engine", () => {
     expect(dest.issue_id).toBe("issue-1");
   });
 
+  it("never publishes an own-work post to an account that now belongs to a client", async () => {
+    const { ctx, post, dest, net } = world(200, { id: "page-1_55" }, { client_kind: "company", client_ref: "c1", client_name: "Acme" });
+    await publishDueJob(ctx, async () => undefined);
+    expect(net.calls).toHaveLength(0);
+    expect(dest.status).toBe("failed");
+    expect(dest.last_error).toMatch(/belongs to Acme, not own work/);
+    expect(post.status).toBe("failed");
+  });
+
   it("skips companies whose settings are not saved", async () => {
     const { ctx } = world(200, { id: "x" });
     (ctx as unknown as { config: { get: () => Promise<unknown> } }).config.get = async () => ({});
@@ -151,9 +160,9 @@ describe("publish-due engine", () => {
 });
 
 describe("OAuth completion through the bridge", () => {
-  function sessionWorld() {
+  function sessionWorld(extra: Record<string, unknown> = { clientRef: null }) {
     const session = {
-      state: "st-1", company_id: "co", platform: "facebook", account_label: "Facebook", extra: { clientRef: null }, pending_options: null as string | null,
+      state: "st-1", company_id: "co", platform: "facebook", account_label: "Facebook", extra, pending_options: null as string | null,
       created_by_user_id: "user-1", picker_id: null as string | null, status: "started", expires_at: new Date(Date.now() + 600_000),
     };
     const inserted: unknown[][] = [];
@@ -214,6 +223,18 @@ describe("OAuth completion through the bridge", () => {
     expect(inserted).toHaveLength(2);
     expect(inserted.map((p) => p[2])).toEqual(["facebook", "instagram"]);
     expect(String(inserted[0]![7])).toMatch(/^v1\./);
+  });
+
+  it("returns to the client workspace and saves the accounts in the session's scope", async () => {
+    const { ctx, inserted } = sessionWorld({ clientKind: "contact", clientRef: "ct1", clientName: "Sam Sole" });
+    const result = await completeOAuth(ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c", state: "st-1" } });
+    expect(result.redirectTo).toBe(`/PIB/social?tab=accounts&picker=${result.pickerId}&client=contact%3Act1`);
+    const options = await pendingOptions(ctx, "co", "user-1", result.pickerId!);
+    expect(options).toMatchObject({ belongsTo: "Sam Sole", client: { kind: "contact", id: "ct1", name: "Sam Sole" } });
+    const confirmed = await confirmPicker(ctx, "co", "user-1", { pickerId: result.pickerId!, selections: ["page:p2"] });
+    expect(confirmed).toMatchObject({ connected: 1, belongsTo: "Sam Sole" });
+    // INSERT accounts params: ..., key_version, client_kind, client_ref, client_name, created_by_user_id
+    expect(inserted[0]!.slice(12, 16)).toEqual(["contact", "ct1", "Sam Sole", "user-1"]);
   });
 
   it("returns the provider's error when access was denied", async () => {

@@ -22,6 +22,20 @@ const urlOrSprint = {
   url: text("Absolute URL, or a path like /pricing when sprintId is given"),
 };
 
+/**
+ * Who a sprint is for. `client` is the preferred form; the flat
+ * `clientKind` + `clientRef` pair is accepted too.
+ */
+function clientProps(clientDescription: string): Record<string, JsonSchema> {
+  return {
+    client: text(clientDescription),
+    clientKind: choice(["company", "contact"], "With clientRef: the kind of CRM record (default company). Prefer client."),
+    clientRef: text("CRM company or contact id (with clientKind). Prefer client."),
+  };
+}
+
+const CLIENT_FILTER = 'Filter by who the sprint is for: "own" for Partners in Biz\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>" for one client. Omit for every sprint.';
+
 export interface SeoToolDeclaration extends PluginToolDeclaration {
   /** Group used to render references/tools.md. */
   group: string;
@@ -29,17 +43,16 @@ export interface SeoToolDeclaration extends PluginToolDeclaration {
 
 export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   // Sprints
-  { group: "Sprints", name: "list-sprints", displayName: "List SEO sprints", description: "List sprints with day/week/phase, status, autopilot and task counts.", parametersSchema: schema([], { status: choice(["pre_launch", "active", "compounding", "paused", "archived"]), clientRef: text("CRM company id") }) },
+  { group: "Sprints", name: "list-sprints", displayName: "List SEO sprints", description: "List sprints with client, day/week/phase, status, autopilot and task counts. Each sprint's `client` (null = Partners in Biz's own site) is what other tools take as `client`.", parametersSchema: schema([], { status: choice(["pre_launch", "active", "compounding", "paused", "archived"]), ...clientProps(CLIENT_FILTER) }) },
   {
     group: "Sprints",
     name: "create-sprint",
     displayName: "Create SEO sprint",
-    description: "Start a 90-day sprint for one site: seeds the 42 Outrank-90 tasks and 15 directory backlinks, creates the sprint root issue in the SEO project, and opens the tasks that are already due.",
+    description: "Start a 90-day sprint for one site: seeds the 42 Outrank-90 tasks and 15 directory backlinks, creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM).",
     parametersSchema: schema(["siteUrl"], {
       siteUrl: text("The site, e.g. https://example.co.za"),
-      clientRef: text("CRM company id of the client (preferred)"),
-      clientName: text("Client name when there is no CRM company"),
-      siteName: text("Display name for the site"),
+      ...clientProps('Who the sprint is for: "company:<CRM company id>" or "contact:<CRM contact id>" (a sole trader). Omit for Partners in Biz\'s own sites.'),
+      siteName: text("Display name for the site (default: the client name, or the domain for own sites)"),
       startDate: text("Day 0 (launch day), YYYY-MM-DD; default today"),
       ownerUserId: text("User who owns the sprint and receives human tasks; default: the person responsible for this run. 'none' for no owner"),
       autopilotMode: choice(["off", "safe"], "Agents may create sprints in off or safe mode only"),
@@ -47,9 +60,9 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Sprints", name: "get-sprint", displayName: "Get SEO sprint", description: "One sprint with integrations, keyword counts, page health, snapshots and scoreboard.", parametersSchema: schema(["sprintId"], { sprintId }) },
-  { group: "Sprints", name: "today", displayName: "Today's SEO plan", description: "What to do now: due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps. Omit sprintId for every active sprint.", parametersSchema: schema([], { sprintId }) },
+  { group: "Sprints", name: "today", displayName: "Today's SEO plan", description: "What to do now: due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps, per sprint with its client. Omit sprintId for every active sprint (narrow with client).", parametersSchema: schema([], { sprintId, ...clientProps(CLIENT_FILTER) }) },
   { group: "Sprints", name: "set-autopilot", displayName: "Set sprint autopilot", description: "off: tasks go to the owner. safe: agent works its tasks; publish/send/deploy tasks need sign-off. full: no sign-off. Agents may only lower it.", parametersSchema: schema(["sprintId", "mode"], { sprintId, mode: choice(["off", "safe", "full"]) }) },
-  { group: "Sprints", name: "update-sprint", displayName: "Update SEO sprint", description: "Change the site name or the notes the agent reads (site access, constraints).", parametersSchema: schema(["sprintId"], { sprintId, siteName: text(), notes: text() }) },
+  { group: "Sprints", name: "update-sprint", displayName: "Update SEO sprint", description: "Change the site name or the notes the agent reads (site access, constraints). People only: move the sprint to another client or back to Partners in Biz's own sites.", parametersSchema: schema(["sprintId"], { sprintId, siteName: text(), notes: text(), ...clientProps('People only: "company:<CRM company id>", "contact:<CRM contact id>", or "own" for Partners in Biz\'s own sites.') }) },
   { group: "Sprints", name: "pause-sprint", displayName: "Pause SEO sprint", description: "Stop the daily run and new task issues for a sprint.", parametersSchema: schema(["sprintId"], { sprintId, reason: text() }) },
   { group: "Sprints", name: "resume-sprint", displayName: "Resume SEO sprint", description: "Resume a paused or archived sprint; its status follows the calendar again.", parametersSchema: schema(["sprintId"], { sprintId }) },
   { group: "Sprints", name: "archive-sprint", displayName: "Archive SEO sprint", description: "End a sprint. Nothing runs for it afterwards.", parametersSchema: schema(["sprintId"], { sprintId, reason: text() }) },

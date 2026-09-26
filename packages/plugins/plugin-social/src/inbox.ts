@@ -56,7 +56,10 @@ async function pollAccount(ctx: PluginContext, config: SocialConfig, row: Accoun
       destination_id: dest?.id ?? null,
       post_id: dest?.post_id ?? null,
       received_at: item.receivedAt,
+      // Inbox items belong to the account's scope.
+      client_kind: row.client_ref ? row.client_kind ?? "company" : null,
       client_ref: row.client_ref,
+      client_name: row.client_ref ? row.client_name : null,
     });
     if (inserted) added += 1;
   }
@@ -131,8 +134,10 @@ export async function replyToInboxItem(
     media: [],
     overrides: {},
     first_comment: null,
-    client_ref: row?.client_ref ?? item.client_ref ?? null,
-    client_name: row?.client_name ?? null,
+    // The draft belongs to the account's scope (or the item's, when the account is gone).
+    client_kind: (row ?? item).client_ref ? (row ?? item).client_kind ?? "company" : null,
+    client_ref: (row ?? item).client_ref ?? null,
+    client_name: (row ?? item).client_ref ? (row ?? item).client_name ?? null : null,
     source: "inbox_reply",
     source_ref: item.id,
     created_by_agent_id: input.agentId,

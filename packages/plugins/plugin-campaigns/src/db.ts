@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { CampaignDraft, CampaignStepDraft, EnrollmentDraft } from "./domain.js";
-import { listCrmContacts } from "@partnersinbiz/pib-plugin-kit";
+import { audienceSource, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type EnrollmentDraft } from "./domain.js";
+import { clientWhere, listCrmContacts, listCrmContactsAtCompany, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace)) throw new Error("Unsafe namespace");
@@ -23,7 +23,14 @@ export interface CampaignRow {
   end_at: unknown;
   approval_issue_id: string | null;
   winner_variant: string | null;
+  client_kind: string | null;
+  client_ref: string | null;
+  client_name: string | null;
+  audience_mode: string | null;
 }
+
+const CAMPAIGN_COLUMNS =
+  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode";
 
 export interface StepRow {
   id: string;
@@ -84,6 +91,10 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     endAt: asIso(row.end_at),
     approvalIssueId: row.approval_issue_id,
     winnerVariant: row.winner_variant as "a" | "b" | null,
+    clientKind: row.client_ref ? (row.client_kind === "contact" ? "contact" : "company") : null,
+    clientRef: row.client_ref ?? null,
+    clientName: row.client_name ?? null,
+    audienceMode: (row.audience_mode ?? "tags") as AudienceMode,
   };
 }
 
@@ -101,20 +112,22 @@ function mapEnrollment(row: EnrollmentRow): EnrollmentDraft {
   };
 }
 
-export async function listCampaigns(ctx: PluginContext, companyId: string): Promise<CampaignDraft[]> {
+/** Campaigns in one scope: `null` is PiB's own work, a client is that client's work only. */
+export async function listCampaigns(ctx: PluginContext, companyId: string, scope: ClientScope = null): Promise<CampaignDraft[]> {
+  const where = clientWhere(scope, 2);
   const rows = await ctx.db.query<CampaignRow>(
-    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant
+    `SELECT ${CAMPAIGN_COLUMNS}
        FROM ${table(ctx, "campaigns")}
-      WHERE company_id = $1
+      WHERE company_id = $1 AND ${where.sql}
       ORDER BY created_at DESC`,
-    [companyId],
+    [companyId, ...where.params],
   );
   return rows.map(mapCampaign);
 }
 
 export async function getCampaign(ctx: PluginContext, id: string): Promise<CampaignDraft | null> {
   const rows = await ctx.db.query<CampaignRow>(
-    `SELECT id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant
+    `SELECT ${CAMPAIGN_COLUMNS}
        FROM ${table(ctx, "campaigns")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -124,8 +137,9 @@ export async function getCampaign(ctx: PluginContext, id: string): Promise<Campa
 export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaigns")}
-      (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)`,
+      (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant,
+       client_kind, client_ref, client_name, audience_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)`,
     [
       campaign.id,
       campaign.companyId,
@@ -140,6 +154,10 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
       campaign.endAt,
       campaign.approvalIssueId,
       campaign.winnerVariant,
+      campaign.clientRef ? campaign.clientKind : null,
+      campaign.clientRef,
+      campaign.clientRef ? campaign.clientName : null,
+      campaign.audienceMode,
     ],
   );
 }
@@ -148,7 +166,8 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
   await ctx.db.execute(
     `UPDATE ${table(ctx, "campaigns")}
         SET name = $2, description = $3, status = $4, from_name = $5, from_local = $6, reply_to = $7,
-            audience_tags = $8::jsonb, start_at = $9, end_at = $10, approval_issue_id = $11, winner_variant = $12, updated_at = now()
+            audience_tags = $8::jsonb, start_at = $9, end_at = $10, approval_issue_id = $11, winner_variant = $12,
+            client_kind = $13, client_ref = $14, client_name = $15, audience_mode = $16, updated_at = now()
       WHERE id = $1`,
     [
       campaign.id,
@@ -163,6 +182,10 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
       campaign.endAt,
       campaign.approvalIssueId,
       campaign.winnerVariant,
+      campaign.clientRef ? campaign.clientKind : null,
+      campaign.clientRef,
+      campaign.clientRef ? campaign.clientName : null,
+      campaign.audienceMode,
     ],
   );
 }
@@ -237,7 +260,8 @@ export async function dueEnrollments(ctx: PluginContext): Promise<EnrollmentDraf
   const rows = await ctx.db.query<EnrollmentRow>(
     `SELECT id, company_id, campaign_id, contact_id, status, step_position, variant, next_due_at, open_issue_id
        FROM ${table(ctx, "campaign_enrollments")}
-      WHERE status = 'running' AND open_issue_id IS NULL AND next_due_at IS NOT NULL AND next_due_at <= now()`,
+      WHERE status = 'running' AND open_issue_id IS NULL AND next_due_at IS NOT NULL AND next_due_at <= now()
+        AND campaign_id IN (SELECT id FROM ${table(ctx, "campaigns")} WHERE status = 'active')`,
   );
   return rows.map(mapEnrollment);
 }
@@ -312,6 +336,63 @@ export async function crmContactsByIds(
 ): Promise<Array<{ id: string; name: string; tags: string[]; emails: string[] }>> {
   const rows = await listCrmContacts(ctx, ctx.db.namespace, companyId, { ids });
   return rows.map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }));
+}
+
+export interface AudienceContact {
+  id: string;
+  name: string;
+  tags: string[];
+  emails: string[];
+}
+
+/**
+ * The contacts a launch enrolls, from the campaign's audience mode: tagged CRM
+ * contacts, the contacts at the client company (narrowed by tags when set),
+ * or the client contact alone.
+ */
+export async function audienceContacts(ctx: PluginContext, companyId: string, campaign: CampaignDraft): Promise<AudienceContact[]> {
+  const source = audienceSource(campaign);
+  if (source.kind === "contact") return crmContactsByIds(ctx, companyId, [source.contactId]);
+  if (source.kind === "company-contacts") {
+    const rows = await listCrmContactsAtCompany(ctx, ctx.db.namespace, companyId, source.crmCompanyId);
+    return rows
+      .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }))
+      .filter((contact) => matchesAudience(contact.tags, source.tags));
+  }
+  return crmContactsByTags(ctx, companyId, source.tags);
+}
+
+export interface ClientCampaignCounts {
+  total: number;
+  active: number;
+  enrolledContacts: number;
+  dueSteps: number;
+}
+
+/** Counts for the CRM client workspace: campaigns, distinct enrolled contacts, and steps due now. */
+export async function clientCampaignCounts(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ClientCampaignCounts> {
+  const campaignWhere = clientWhere(scope, 2);
+  const campaigns = await ctx.db.query<{ total: string | number; active: string | number }>(
+    `SELECT count(*) AS total, count(*) FILTER (WHERE status = 'active') AS active
+       FROM ${table(ctx, "campaigns")}
+      WHERE company_id = $1 AND ${campaignWhere.sql}`,
+    [companyId, ...campaignWhere.params],
+  );
+  const enrollmentWhere = clientWhere(scope, 2, "c");
+  const enrollments = await ctx.db.query<{ enrolled: string | number; due: string | number }>(
+    `SELECT count(DISTINCT e.contact_id) AS enrolled,
+            count(*) FILTER (WHERE e.status = 'running' AND e.next_due_at IS NOT NULL AND e.next_due_at <= now()) AS due
+       FROM ${table(ctx, "campaign_enrollments")} e
+       JOIN ${table(ctx, "campaigns")} c ON c.id = e.campaign_id
+      WHERE c.company_id = $1 AND ${enrollmentWhere.sql}`,
+    [companyId, ...enrollmentWhere.params],
+  );
+  return {
+    total: Number(campaigns[0]?.total ?? 0),
+    active: Number(campaigns[0]?.active ?? 0),
+    enrolledContacts: Number(enrollments[0]?.enrolled ?? 0),
+    dueSteps: Number(enrollments[0]?.due ?? 0),
+  };
 }
 
 export async function campaignFunnel(ctx: PluginContext, campaignId: string): Promise<{ byStep: Array<{ stepPosition: number; variant: string; count: number }>; completed: number; stopped: number }> {

@@ -3,6 +3,7 @@ import {
   DataTable,
   MetricCard,
   StatusBadge,
+  useHostLocation,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -10,6 +11,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import {
   Button,
+  ClientWorkspaceBar,
   EmptyState,
   Field,
   Input,
@@ -21,7 +23,11 @@ import {
   TextArea,
   Toolbar,
   errorText,
+  tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+
+type AudienceMode = "tags" | "client_contacts" | "client_contact";
 
 interface Campaign {
   id: string;
@@ -31,17 +37,73 @@ interface Campaign {
   fromName: string;
   fromLocal: string;
   audienceTags: string[];
+  audienceMode?: AudienceMode;
+  client?: { kind: ClientKind; id: string; name: string | null } | null;
   steps: Array<{ position: number; delayDays: number; subject: string; body: string }>;
   stats: { enrolled: number; running: number; done: number };
   approvalIssueId: string | null;
   approvalStatus: string | null;
 }
 
-interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean }
+interface WorkspaceClient {
+  kind: ClientKind;
+  id: string;
+  name: string | null;
+  detail: string | null;
+  found: boolean;
+  contactCount: number | null;
+}
+
+interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null }
 type TabId = "overview" | "campaigns";
 type CreateKind = "campaign" | "step" | null;
 
+const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+
+function defaultAudience(scope: ClientScope): AudienceMode {
+  if (!scope) return "tags";
+  return scope.kind === "company" ? "client_contacts" : "client_contact";
+}
+
+function audienceLabel(campaign: Campaign): string {
+  const tags = campaign.audienceTags.join(", ");
+  if (campaign.audienceMode === "client_contacts") return tags ? `Company contacts tagged ${tags}` : "Contacts at the company";
+  if (campaign.audienceMode === "client_contact") return "The client contact";
+  return tags ? `Tagged ${tags}` : "Every CRM contact";
+}
+
+/** Page layout for a client workspace: the shared client bar replaces the page header. */
+function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+      {header}
+      {message ? (
+        <p
+          role="status"
+          style={{
+            margin: 0,
+            fontSize: 13,
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: `1px solid ${tokens.border}`,
+            background: tokens.secondary,
+            color: tokens.secondaryFg,
+            lineHeight: 1.45,
+          }}
+        >
+          {message}
+        </p>
+      ) : null}
+      {children}
+    </main>
+  );
+}
+
 export function CampaignsPage({ context }: PluginPageProps) {
+  const location = useHostLocation();
+  const navigation = useHostNavigation();
+  const scope = useMemo(() => clientScopeFromSearch(location.search), [location.search]);
+  const scopeKey = scope ? formatClientParam(scope) : "own";
   const load = usePluginAction("campaigns.load");
   const createCampaign = usePluginAction("campaigns.create-campaign");
   const addStep = usePluginAction("campaigns.add-step");
@@ -59,18 +121,21 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [audienceTags, setAudienceTags] = useState("");
+  const [audienceMode, setAudienceMode] = useState<AudienceMode>(defaultAudience(scope));
   const [stepSubject, setStepSubject] = useState("");
   const [stepBody, setStepBody] = useState("");
   const [stepDelay, setStepDelay] = useState("0");
 
   async function refresh() {
-    setSnapshot((await load({})) as Snapshot);
+    setSnapshot((await load({ client: scope })) as Snapshot);
   }
 
   useEffect(() => {
     if (!context.companyId) return;
+    setSnapshot(null);
+    setMessage("");
     refresh().catch((error: unknown) => setMessage(errorText(error)));
-  }, [context.companyId]);
+  }, [context.companyId, scopeKey]);
 
   async function run(work: () => Promise<unknown>, success: string) {
     setMessage("");
@@ -84,20 +149,30 @@ export function CampaignsPage({ context }: PluginPageProps) {
     }
   }
 
+  function openNewCampaign() {
+    setAudienceMode(defaultAudience(scope));
+    setCreate("campaign");
+  }
+
+  const client = scope ? snapshot?.client ?? null : null;
+  const clientName = client?.name ?? "this client";
+  const barName = client?.name ?? (snapshot ? "Unknown client" : "Loading…");
   const q = search.trim().toLowerCase();
   const campaigns = useMemo(() => (snapshot?.campaigns ?? []).filter((c) => !q || c.name.toLowerCase().includes(q) || c.status.includes(q)), [snapshot, q]);
   const totalEnrolled = (snapshot?.campaigns ?? []).reduce((sum, c) => sum + c.stats.enrolled, 0);
   const activeCount = (snapshot?.campaigns ?? []).filter((c) => c.status === "active").length;
+  const newCampaignButton = <Button type="button" onClick={openNewCampaign}>+ New campaign</Button>;
+  const pageMessage = message
+    || (scope && client && !client.found
+      ? `${client.name ?? "This client"} is not in the Campaigns client list yet. Run the CRM "resync" action, then reload this page.`
+      : undefined)
+    || (snapshot && snapshot.settingsSaved === false
+      ? "Campaign settings are not saved for this company yet. Open Settings → Plugins → Campaigns and click Save once, or due-step issues will not open."
+      : undefined);
+  const showTags = audienceMode !== "client_contact";
 
-  return (
-    <Page
-      title="Campaigns"
-      description="Themed email programs that enroll contacts and open Paperclip issues for each due step."
-      message={message || (snapshot && snapshot.settingsSaved === false
-        ? "Campaign settings are not saved for this company yet. Open Settings → Plugins → Campaigns and click Save once, or due-step issues will not open."
-        : undefined)}
-      actions={<Button type="button" onClick={() => setCreate("campaign")}>+ New campaign</Button>}
-    >
+  const body = (
+    <>
       <Tabs
         tabs={[
           { id: "overview", label: "Overview" },
@@ -120,15 +195,22 @@ export function CampaignsPage({ context }: PluginPageProps) {
       {tab === "campaigns" ? (
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search campaigns…">
-            <Button type="button" onClick={() => setCreate("campaign")}>+ New campaign</Button>
+            {newCampaignButton}
           </Toolbar>
           {campaigns.length === 0 ? (
-            <EmptyState title="No campaigns yet" description="Create a campaign, add email steps, then launch it to enroll matching contacts." action={<Button type="button" onClick={() => setCreate("campaign")}>+ New campaign</Button>} />
+            <EmptyState
+              title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
+              description={scope
+                ? "Create a campaign for this client, add email steps, then launch it to enroll its contacts."
+                : "Create a campaign, add email steps, then launch it to enroll matching contacts."}
+              action={newCampaignButton}
+            />
           ) : (
             <DataTable
               columns={[
                 { key: "name", header: "Campaign" },
                 { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" ? "ok" : value === "draft" ? "pending" : "info"} /> },
+                { key: "audience", header: "Audience" },
                 { key: "enrolled", header: "Enrolled" },
                 { key: "steps", header: "Steps" },
                 {
@@ -163,31 +245,55 @@ export function CampaignsPage({ context }: PluginPageProps) {
                   },
                 },
               ]}
-              rows={campaigns.map((c) => ({ ...c, enrolled: c.stats.enrolled, steps: c.steps.length }))}
+              rows={campaigns.map((c) => ({ ...c, audience: audienceLabel(c), enrolled: c.stats.enrolled, steps: c.steps.length }))}
               emptyMessage="No campaigns match."
             />
           )}
         </div>
       ) : null}
 
-      <Modal open={create === "campaign"} title="New campaign" onClose={() => setCreate(null)} footer={(
-        <>
-          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" onClick={() => void run(async () => {
-            await createCampaign({
-              name,
-              description,
-              audienceTags: audienceTags.split(",").map((tag) => tag.trim()).filter(Boolean),
-            });
-            setName("");
-            setDescription("");
-            setAudienceTags("");
-          }, "Campaign created")}>Create</Button>
-        </>
-      )}>
+      <Modal
+        open={create === "campaign"}
+        title={scope ? `New campaign for ${clientName}` : "New campaign"}
+        onClose={() => setCreate(null)}
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
+            <Button type="button" onClick={() => void run(async () => {
+              await createCampaign({
+                name,
+                description,
+                audienceTags: showTags ? audienceTags.split(",").map((tag) => tag.trim()).filter(Boolean) : [],
+                ...(scope ? { client: scope, audienceMode } : {}),
+              });
+              setName("");
+              setDescription("");
+              setAudienceTags("");
+            }, "Campaign created")}>Create</Button>
+          </>
+        )}
+      >
         <Field label="Name"><Input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
         <Field label="Description"><TextArea value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
-        <Field label="Audience tags (comma separated)"><Input value={audienceTags} onChange={(event) => setAudienceTags(event.target.value)} placeholder="hot, prospect" /></Field>
+        {scope ? (
+          <Field label="Audience">
+            <Select value={audienceMode} onChange={(event) => setAudienceMode(event.target.value as AudienceMode)}>
+              {scope.kind === "company" ? (
+                <option value="client_contacts">
+                  Contacts at this company{client?.contactCount != null ? ` (${client.contactCount})` : ""}
+                </option>
+              ) : (
+                <option value="client_contact">{client?.name ? `${client.name} only` : "This contact only"}</option>
+              )}
+              <option value="tags">Tagged contacts (whole CRM)</option>
+            </Select>
+          </Field>
+        ) : null}
+        {showTags ? (
+          <Field label={audienceMode === "client_contacts" ? "Only contacts with these tags (optional, comma separated)" : "Audience tags (comma separated)"}>
+            <Input value={audienceTags} onChange={(event) => setAudienceTags(event.target.value)} placeholder="hot, prospect" />
+          </Field>
+        ) : null}
       </Modal>
 
       <Modal open={create === "step"} title="Add campaign step" onClose={() => setCreate(null)} footer={(
@@ -205,6 +311,37 @@ export function CampaignsPage({ context }: PluginPageProps) {
         <Field label="Body"><TextArea value={stepBody} onChange={(event) => setStepBody(event.target.value)} /></Field>
         <Field label="Delay (days)"><Input value={stepDelay} onChange={(event) => setStepDelay(event.target.value)} /></Field>
       </Modal>
+    </>
+  );
+
+  if (scope) {
+    return (
+      <WorkspacePage
+        header={(
+          <ClientWorkspaceBar
+            client={{ kind: scope.kind, id: scope.id, name: barName, detail: client?.detail ?? null }}
+            active="campaigns"
+            linkProps={navigation.linkProps}
+            ownPath="/campaigns"
+            ownLabel="PiB campaigns"
+            actions={newCampaignButton}
+          />
+        )}
+        message={pageMessage}
+      >
+        {body}
+      </WorkspacePage>
+    );
+  }
+
+  return (
+    <Page
+      title="Campaigns"
+      description="PiB's own email programs. A client's campaigns live in that client's workspace — open the client from the CRM."
+      message={pageMessage}
+      actions={newCampaignButton}
+    >
+      {body}
     </Page>
   );
 }

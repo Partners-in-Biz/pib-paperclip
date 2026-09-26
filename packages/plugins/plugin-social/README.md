@@ -1,6 +1,16 @@
 # Social
 
-Paperclip plugin `partnersinbiz.social`: connect client social accounts, draft posts with media and per-platform overrides, approve them, and publish on schedule with retries.
+Paperclip plugin `partnersinbiz.social`: connect social accounts, draft posts with media and per-platform overrides, approve them, and publish on schedule with retries.
+
+## Scope: own work or one client
+
+Every account, post, media asset, RSS feed and inbox item belongs to one scope: PiB's own work (no client) or one CRM client (a company, or a contact for sole traders; `client_kind` + `client_ref`).
+
+- `/social` shows own work only. A client's social work opens from the CRM client workspace as `/social?client=company:<id>` (or `contact:<id>`), with the shared workspace bar on top. New accounts, posts, media and feeds belong to the page's scope; tab changes and the OAuth return keep `?client=`.
+- Scopes never mix: a post only targets accounts and media of its own scope (checked on create/update/attach, before scheduling, and again by the publish job).
+- An account moves scope from its Edit dialog ("Belongs to"). The move is refused while unpublished posts of the old scope still target it; its inbox moves with it and the old scope's feeds stop drafting to it.
+- Agent tools take `client` ("company:<id>"/"contact:<id>") or `clientKind` + `clientRef`; omitting it means own work. Issues for client work are titled `[<client>] …`.
+- `GET /api/plugins/partnersinbiz.social/api/client-summary?companyId=&kind=&id=` (board auth) returns `{ headline, stats }` for the CRM workspace.
 
 ## Setup
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 
 export const CAMPAIGN_STATUSES = ["draft", "scheduled", "active", "paused", "completed"] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
@@ -24,6 +25,28 @@ export interface CampaignDraft {
   endAt: string | null;
   approvalIssueId: string | null;
   winnerVariant: "a" | "b" | null;
+  /** Null for PiB's own work. */
+  clientKind: ClientKind | null;
+  clientRef: string | null;
+  /** CRM name when the campaign was scoped, for issue titles. */
+  clientName: string | null;
+  audienceMode: AudienceMode;
+}
+
+/**
+ * Who a launch enrolls.
+ * - `tags`: CRM contacts matching `audienceTags` (empty = every contact).
+ * - `client_contacts`: contacts at the client company, narrowed by `audienceTags` when set.
+ * - `client_contact`: the client contact (a sole trader) alone.
+ */
+export const AUDIENCE_MODES = ["tags", "client_contacts", "client_contact"] as const;
+export type AudienceMode = (typeof AUDIENCE_MODES)[number];
+
+/** The client a campaign is for, as resolved from the CRM. */
+export interface CampaignClient {
+  kind: ClientKind;
+  id: string;
+  name: string;
 }
 
 export interface CampaignStepDraft {
@@ -67,6 +90,8 @@ export function createCampaign(input: {
   fromLocal?: string;
   replyTo?: string | null;
   audienceTags?: string[];
+  audienceMode?: string | null;
+  client?: CampaignClient | null;
   startAt?: string | null;
   endAt?: string | null;
   id?: string;
@@ -75,6 +100,7 @@ export function createCampaign(input: {
   if (!name) throw new CampaignError("Campaign name is required");
   const fromLocal = (input.fromLocal ?? "campaigns").trim().toLowerCase();
   if (!/^[a-z0-9_.-]+$/.test(fromLocal)) throw new CampaignError("From local part must be a valid email local part");
+  const client = input.client ?? null;
   return {
     id: input.id ?? randomUUID(),
     companyId: input.companyId,
@@ -89,7 +115,82 @@ export function createCampaign(input: {
     endAt: input.endAt ?? null,
     approvalIssueId: null,
     winnerVariant: null,
+    clientKind: client?.kind ?? null,
+    clientRef: client?.id ?? null,
+    clientName: client?.name ?? null,
+    audienceMode: assertAudienceMode(input.audienceMode, client),
   };
+}
+
+/** The scope a campaign row belongs to. */
+export function campaignScope(campaign: Pick<CampaignDraft, "clientKind" | "clientRef">): ClientScope {
+  if (!campaign.clientRef) return null;
+  return { kind: campaign.clientKind ?? "company", id: campaign.clientRef };
+}
+
+/** A company client enrolls its people; a contact client is the audience itself. */
+export function defaultAudienceMode(client: ClientScope): AudienceMode {
+  if (!client) return "tags";
+  return client.kind === "company" ? "client_contacts" : "client_contact";
+}
+
+/** Validates an audience mode against the campaign's client. Empty means the default for the client. */
+export function assertAudienceMode(value: string | null | undefined, client: ClientScope): AudienceMode {
+  if (value == null || value === "") return defaultAudienceMode(client);
+  if (!AUDIENCE_MODES.includes(value as AudienceMode)) {
+    throw new CampaignError("audienceMode must be tags, client_contacts, or client_contact");
+  }
+  if (value === "client_contacts" && client?.kind !== "company") {
+    throw new CampaignError("The client_contacts audience (contacts at this company) needs a company client");
+  }
+  if (value === "client_contact" && client?.kind !== "contact") {
+    throw new CampaignError("The client_contact audience needs a contact client");
+  }
+  return value as AudienceMode;
+}
+
+/**
+ * Sets the campaign's client (null = own work) and audience mode. Without an
+ * explicit mode, the mode is kept for the same client and resets to the new
+ * client's default when the client changes.
+ */
+export function withClient(campaign: CampaignDraft, client: CampaignClient | null, audienceMode?: string | null): CampaignDraft {
+  const before = campaignScope(campaign);
+  const after: ClientScope = client ? { kind: client.kind, id: client.id } : null;
+  const same = before && after ? before.kind === after.kind && before.id === after.id : before === after;
+  const mode = audienceMode != null && audienceMode !== ""
+    ? assertAudienceMode(audienceMode, after)
+    : same ? campaign.audienceMode : defaultAudienceMode(after);
+  return {
+    ...campaign,
+    clientKind: client?.kind ?? null,
+    clientRef: client?.id ?? null,
+    clientName: client?.name ?? null,
+    audienceMode: mode,
+  };
+}
+
+export type AudienceSource =
+  | { kind: "tags"; tags: string[] }
+  | { kind: "company-contacts"; crmCompanyId: string; tags: string[] }
+  | { kind: "contact"; contactId: string };
+
+/** Where launch finds the contacts to enroll. A mode that no longer fits the client falls back to tags. */
+export function audienceSource(campaign: Pick<CampaignDraft, "audienceMode" | "audienceTags" | "clientKind" | "clientRef">): AudienceSource {
+  const scope = campaignScope(campaign);
+  if (campaign.audienceMode === "client_contacts" && scope?.kind === "company") {
+    return { kind: "company-contacts", crmCompanyId: scope.id, tags: campaign.audienceTags };
+  }
+  if (campaign.audienceMode === "client_contact" && scope?.kind === "contact") {
+    return { kind: "contact", contactId: scope.id };
+  }
+  return { kind: "tags", tags: campaign.audienceTags };
+}
+
+/** `[Client name] ` for issue titles of client work, empty for own work. */
+export function clientPrefix(clientName: string | null | undefined): string {
+  const name = clientName?.trim();
+  return name ? `[${name}] ` : "";
 }
 
 export function assertCanRequestApproval(status: CampaignStatus): void {
@@ -163,9 +264,13 @@ export function advanceEnrollment(
   };
 }
 
-export function stepIssueCopy(contactName: string, step: CampaignStepDraft): { title: string; description: string } {
+export function stepIssueCopy(
+  contactName: string,
+  step: CampaignStepDraft,
+  clientName?: string | null,
+): { title: string; description: string } {
   return {
-    title: `${step.subject}: ${contactName}`,
+    title: `${clientPrefix(clientName)}${step.subject}: ${contactName}`,
     description: step.body,
   };
 }
@@ -214,5 +319,28 @@ export function createCampaignTemplate(input: {
     name,
     description: (input.description ?? "").trim(),
     steps,
+  };
+}
+
+/** What the CRM client workspace shows for Campaigns (`GET /client-summary`). */
+export interface ClientSummary {
+  headline: string;
+  stats: Array<{ label: string; value: string | number; tone?: "ok" | "warn" | "bad" }>;
+}
+
+export function campaignClientSummary(counts: { total: number; active: number; enrolledContacts: number; dueSteps: number }): ClientSummary {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const headline = counts.active > 0
+    ? plural(counts.active, "active campaign")
+    : counts.total > 0
+      ? `${plural(counts.total, "campaign")}, none active`
+      : "No campaigns";
+  return {
+    headline,
+    stats: [
+      { label: "Active campaigns", value: counts.active, ...(counts.active > 0 ? { tone: "ok" as const } : {}) },
+      { label: "Enrolled contacts", value: counts.enrolledContacts },
+      { label: "Due steps", value: counts.dueSteps, ...(counts.dueSteps > 0 ? { tone: "warn" as const } : {}) },
+    ],
   };
 }

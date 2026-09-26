@@ -3,8 +3,8 @@ import { MetricCard } from "@paperclipai/plugin-sdk/ui";
 import { BarChart, Button, EmptyState, Field, Input, Modal, StatRow, TextArea, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { SOCIAL_MEDIA_MIME } from "../platforms.js";
 import { Thumb, uploadToR2 } from "./composer.js";
-import { Banner, Card, ClientSelect, ExternalLink, fmtDate, ignore, Muted, platformLabel, Row, SmallButton } from "./parts.js";
-import type { InboxItem, MediaAsset, Post, RunAction, Snapshot } from "./types.js";
+import { Banner, Card, ExternalLink, fmtDate, ignore, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import type { InboxItem, Post, RunAction, Snapshot } from "./types.js";
 
 export function OverviewTab({ snapshot, posts, run, onOpenPicker }: { snapshot: Snapshot; posts: Post[]; run: RunAction; onOpenPicker: (id: string) => void }) {
   const byStatus = useMemo(() => {
@@ -100,14 +100,14 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
   );
 }
 
-export function MediaTab({ snapshot, run, clientFilter }: { snapshot: Snapshot; run: RunAction; clientFilter: string }) {
+export function MediaTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
   const [uploading, setUploading] = useState("");
   const [error, setError] = useState("");
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const assets = snapshot.media.filter((m: MediaAsset) => !clientFilter || (clientFilter === "__none" ? !m.clientRef : m.clientRef === clientFilter));
-  const clientRef = clientFilter && clientFilter !== "__none" ? clientFilter : null;
+  // This scope's media only; uploads and imports belong to it.
+  const assets = snapshot.media;
   return (
     <div style={{ display: "grid", gap: 12 }}>
       {!snapshot.config.r2 ? <Banner tone="warn" title="Cloudflare R2 is not configured">Fill in the R2 section of the Social settings to upload media. Instagram, Threads, TikTok and Pinterest fetch media from its public domain.</Banner> : null}
@@ -121,7 +121,7 @@ export function MediaTab({ snapshot, run, clientFilter }: { snapshot: Snapshot; 
             for (const file of files) {
               setUploading(file.name);
               try {
-                await uploadToR2(run, file, clientRef);
+                await uploadToR2(run, file, snapshot.scope);
               } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));
               }
@@ -132,10 +132,10 @@ export function MediaTab({ snapshot, run, clientFilter }: { snapshot: Snapshot; 
           <Input value={importUrl} onChange={(e) => setImportUrl(e.target.value)} placeholder="…or import from a public https URL" style={{ flex: "1 1 260px" }} />
           <SmallButton disabled={!snapshot.config.r2 || !importUrl || importing} onClick={() => {
             setImporting(true);
-            run("social.import-media", { url: importUrl, clientRef: clientRef ?? undefined }, "Imported").then(() => setImportUrl("")).catch(ignore).finally(() => setImporting(false));
+            run("social.import-media", { url: importUrl, ...scopeParams(snapshot) }, "Imported").then(() => setImportUrl("")).catch(ignore).finally(() => setImporting(false));
           }}>{importing ? "Importing…" : "Import"}</SmallButton>
         </Row>
-        <Muted>JPEG, PNG, GIF, WebP, MP4 or MOV, up to 512 MB. Uploads go straight to R2 from your browser.</Muted>
+        <Muted>JPEG, PNG, GIF, WebP, MP4 or MOV, up to 512 MB. Uploads go straight to R2 from your browser and belong to {scopeName(snapshot)}.</Muted>
       </Card>
       {assets.length === 0 ? <EmptyState title="No media yet" description="Upload images and videos to reuse them in posts." /> : (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -154,7 +154,6 @@ export function MediaTab({ snapshot, run, clientFilter }: { snapshot: Snapshot; 
 export function FeedsTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
-  const [clientRef, setClientRef] = useState("");
   const [accountIds, setAccountIds] = useState<Set<string>>(new Set());
   const accounts = new Map(snapshot.accounts.map((a) => [a.id, a]));
   return (
@@ -170,7 +169,7 @@ export function FeedsTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
           </Row>
           <Muted>{feed.url}</Muted>
           <Muted>
-            {feed.clientName ?? "No client"} · {feed.accountIds.map((id) => accounts.get(id)?.displayName ?? "removed").join(", ") || "no destinations"} · checked {fmtDate(feed.lastCheckedAt, snapshot.config.timezone)}
+            {feed.accountIds.map((id) => accounts.get(id)?.displayName ?? "removed").join(", ") || "no destinations"} · checked {fmtDate(feed.lastCheckedAt, snapshot.config.timezone)}
           </Muted>
           {feed.lastError ? <Muted style={{ color: "var(--destructive)" }}>{feed.lastError}</Muted> : null}
         </Card>
@@ -178,7 +177,7 @@ export function FeedsTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
       <Modal open={open} title="Add RSS feed" onClose={() => setOpen(false)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button type="button" disabled={!url} onClick={() => run("social.create-rss-feed", { url, clientRef: clientRef || undefined, accountIds: [...accountIds] }, "Feed added").then(() => {
+          <Button type="button" disabled={!url} onClick={() => run("social.create-rss-feed", { url, ...scopeParams(snapshot), accountIds: [...accountIds] }, "Feed added").then(() => {
             setOpen(false);
             setUrl("");
             setAccountIds(new Set());
@@ -186,10 +185,10 @@ export function FeedsTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
         </>
       )}>
         <Field label="Feed URL"><Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/feed.xml" /></Field>
-        <Field label="Client"><ClientSelect clients={snapshot.clients} value={clientRef} onChange={setClientRef} allLabel="No client" /></Field>
+        <Muted>Drafts from this feed belong to {scopeName(snapshot)}.</Muted>
         <div style={{ display: "grid", gap: 4 }}>
           <Muted>Destinations for the drafts</Muted>
-          {snapshot.accounts.filter((a) => a.connected && a.scope === "org" && (!clientRef || !a.clientRef || a.clientRef === clientRef)).map((a) => (
+          {snapshot.accounts.filter((a) => a.connected && a.scope === "org").map((a) => (
             <label key={a.id} style={{ display: "flex", gap: 8, fontSize: 12, alignItems: "center" }}>
               <input type="checkbox" checked={accountIds.has(a.id)} onChange={() => setAccountIds((prev) => {
                 const next = new Set(prev);

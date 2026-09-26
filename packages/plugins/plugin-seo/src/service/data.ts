@@ -215,7 +215,7 @@ export async function discoverKeywordsTool(env: Env, companyId: string, params: 
   const sprintId = str(params, "sprintId");
   if (sprintId) {
     const sprint = await requireSprint(env, companyId, sprintId);
-    brandTerms = [sprint.siteName, sprint.clientName ?? "", new URL(sprint.siteUrl).hostname.replace(/^www\./, "").split(".")[0] ?? ""].filter(Boolean);
+    brandTerms = [sprint.siteName, sprint.clientName ?? sprint.legacyClientName ?? "", new URL(sprint.siteUrl).hostname.replace(/^www\./, "").split(".")[0] ?? ""].filter(Boolean);
     exclude = (await db.listKeywords(env.ctx.db, companyId, sprint.id)).map((k) => k.phrase);
   }
   const candidates = await discoverKeywords(env.fetch, {

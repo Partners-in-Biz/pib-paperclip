@@ -28,7 +28,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
     if (filter === "problems" && post.status !== "failed" && post.status !== "partially_published") return false;
     if (filter === "published" && post.status !== "published") return false;
     if (!["all", "problems", "published"].includes(filter) && post.status !== filter) return false;
-    return !q || post.body.toLowerCase().includes(q) || (post.clientName ?? "").toLowerCase().includes(q);
+    return !q || post.body.toLowerCase().includes(q);
   }), [posts, filter, q]);
   return (
     <div style={{ display: "grid", gap: 12 }}>
@@ -52,7 +52,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
               <Row style={{ justifyContent: "space-between" }}>
                 <Row>
                   <PostStatus status={post.status} />
-                  <Muted>{post.clientName ?? "No client"}{post.source !== "manual" ? ` · ${post.source.replace("_", " ")}` : ""}</Muted>
+                  {post.source !== "manual" ? <Muted>{post.source.replace("_", " ")}</Muted> : null}
                 </Row>
                 <Muted>
                   {post.status === "published" || post.status === "partially_published"
@@ -103,7 +103,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     <Sheet open title="Post" onClose={onClose}>
       <Row style={{ justifyContent: "space-between" }}>
         <PostStatus status={post.status} />
-        <Muted>{post.clientName ?? "No client"}</Muted>
+        <Muted>{post.clientName ?? "Own work"}</Muted>
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
       <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>

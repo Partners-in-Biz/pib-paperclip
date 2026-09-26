@@ -35,8 +35,23 @@ export function sprintLabel(sprint: Pick<SprintCopy, "siteName" | "clientName">)
     : sprint.siteName;
 }
 
+/**
+ * Client work is recognisable in every issue list: `[<client>] ` goes in
+ * front unless the title already names the client (e.g. the root issue's
+ * "SEO sprint: <site> (<client>)"). Own sprints have no client name.
+ */
+export function withClientPrefix(title: string, clientName: string | null | undefined): string {
+  const name = clientName?.trim();
+  if (!name || title.toLowerCase().includes(name.toLowerCase())) return title;
+  return `[${name}] ${title}`;
+}
+
+function capTitle(title: string): string {
+  return title.length > 240 ? `${title.slice(0, 237)}…` : title;
+}
+
 export function rootIssueTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">): string {
-  return `SEO sprint: ${sprintLabel(sprint)}`;
+  return capTitle(withClientPrefix(`SEO sprint: ${sprintLabel(sprint)}`, sprint.clientName));
 }
 
 export function rootIssueDescription(sprint: SprintCopy, input: { startDate: string; cockpitPath: string | null }): string {
@@ -57,10 +72,9 @@ export function rootIssueDescription(sprint: SprintCopy, input: { startDate: str
     .join("\n");
 }
 
-export function taskIssueTitle(task: Pick<TaskCopy, "title" | "week" | "source">, sprint: Pick<SprintCopy, "siteName">): string {
+export function taskIssueTitle(task: Pick<TaskCopy, "title" | "week" | "source">, sprint: Pick<SprintCopy, "siteName" | "clientName">): string {
   const prefix = task.source === "optimization" ? "SEO opt" : `SEO W${task.week}`;
-  const title = `${prefix} · ${task.title} — ${sprint.siteName}`;
-  return title.length > 240 ? `${title.slice(0, 237)}…` : title;
+  return capTitle(withClientPrefix(`${prefix} · ${task.title} — ${sprint.siteName}`, sprint.clientName));
 }
 
 function toolLine(name: string): string {
@@ -162,7 +176,7 @@ export interface ProposalCopy {
 }
 
 export function approvalIssueTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">, weekLabel: string): string {
-  return `Approve SEO optimizations: ${sprintLabel(sprint)} (${weekLabel})`;
+  return capTitle(withClientPrefix(`Approve SEO optimizations: ${sprintLabel(sprint)} (${weekLabel})`, sprint.clientName));
 }
 
 export function approvalIssueDescription(sprint: SprintCopy, proposals: ProposalCopy[], cockpitPath: string | null): string {
@@ -190,7 +204,7 @@ export function approvalIssueDescription(sprint: SprintCopy, proposals: Proposal
 }
 
 export function reconnectIssueTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">): string {
-  return `Reconnect Google Search Console: ${sprintLabel(sprint)}`;
+  return capTitle(withClientPrefix(`Reconnect Google Search Console: ${sprintLabel(sprint)}`, sprint.clientName));
 }
 
 export function reconnectIssueDescription(sprint: SprintCopy, error: string, cockpitPath: string | null): string {

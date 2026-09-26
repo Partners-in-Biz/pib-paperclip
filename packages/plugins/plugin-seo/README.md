@@ -1,9 +1,11 @@
 # SEO
 
-Paperclip plugin `partnersinbiz.seo` (v0.2.0): 90-day SEO sprints for Partners in Biz clients.
+Paperclip plugin `partnersinbiz.seo` (v0.3.0): 90-day SEO sprints for Partners in Biz's own sites and its clients.
 
-- A **sprint** is one client site (client = CRM company, `client_ref`) on the Outrank-90 template: 42 tasks over weeks 0–13, then open-ended compounding. Sprints also seed 15 directory backlinks.
-- Each sprint has a **root issue** ("SEO sprint: <site> (<client>)") in the managed **SEO** project. Every task becomes a **sub-issue** on the day it is due. Agent tasks go to the managed **SEO Specialist**; tasks that need a person go to the sprint owner.
+- A **sprint** is one site on the Outrank-90 template: 42 tasks over weeks 0–13, then open-ended compounding. Sprints also seed 15 directory backlinks.
+- **Scope.** A sprint without a client is PiB's own. A client sprint references one CRM company or CRM contact (`client_kind` + `client_ref`, name from the CRM projection). `/seo` shows only own sprints; `/seo?client=company:<id>` or `?client=contact:<id>` is that client's workspace (shared client bar, opened from the CRM). Opening a sprint in the wrong scope redirects to its own.
+- Each sprint has a **root issue** ("SEO sprint: <site> (<client>)") in the managed **SEO** project. Every task becomes a **sub-issue** on the day it is due; client sprint issues start with `[<client>]` unless the title already names the client. Agent tasks go to the managed **SEO Specialist**; tasks that need a person go to the sprint owner.
+- `GET /api/plugins/partnersinbiz.seo/api/client-summary?companyId=&kind=company|contact&id=<crm id>` (board auth) returns `{ headline, stats }` for the CRM client workspace.
 - The plugin never calls a model. The agent works issues with the `partnersinbiz.seo:*` tools (skill `pib-seo-sprint`).
 
 ## Timeline
@@ -38,4 +40,4 @@ npx tsc --noEmit -p .     # typecheck (run `pnpm --filter @paperclipai/plugin-sd
 node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html + .js)
 ```
 
-Migrations 001–009 are applied on installed instances; never edit them — add `010_seo.sql` and up.
+Migrations 001–010 may be applied on installed instances; never edit them — add `011_seo.sql` and up.

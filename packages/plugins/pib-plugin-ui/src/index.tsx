@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type InputHTMLAttributes,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
@@ -164,6 +165,86 @@ export function Tabs({ tabs, active, onChange }: {
         );
       })}
     </div>
+  );
+}
+
+/** The pages that make up a client's workspace, in tab order. */
+export const CLIENT_WORKSPACE_TABS = [
+  { id: "overview", label: "Overview", path: "/crm" },
+  { id: "social", label: "Social", path: "/social" },
+  { id: "seo", label: "SEO", path: "/seo" },
+  { id: "campaigns", label: "Campaigns", path: "/campaigns" },
+  { id: "billing", label: "Billing", path: "/billing" },
+] as const;
+
+export type ClientWorkspaceTab = (typeof CLIENT_WORKSPACE_TABS)[number]["id"];
+
+type LinkPropsFn = (to: string) => { href?: string; onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void };
+
+/**
+ * Header shown on every PiB plugin page while it works for a client
+ * (`?client=company:<id>` or `?client=contact:<id>`). Each tab is a different
+ * plugin's page, so the links carry the client param across plugins.
+ * Pass the host's `useHostNavigation().linkProps`.
+ */
+export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabel = "Own work", actions }: {
+  client: { kind: "company" | "contact"; id: string; name: string; detail?: string | null };
+  active: ClientWorkspaceTab;
+  linkProps: LinkPropsFn;
+  /** Where "Own work" goes, e.g. `/social`. Defaults to the active tab's page without a client. */
+  ownPath?: string;
+  ownLabel?: string;
+  actions?: ReactNode;
+}) {
+  const param = encodeURIComponent(`${client.kind}:${client.id}`);
+  const activePath = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.path ?? "/crm";
+  const own = linkProps(ownPath ?? (active === "overview" ? "/crm" : activePath));
+  const initials = client.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]!.toUpperCase()).join("") || "?";
+  return (
+    <header style={{ display: "grid", gap: 14 }}>
+      <a {...own} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content" }}>
+        ← {active === "overview" ? "All CRM" : ownLabel}
+      </a>
+      <div style={{ display: "flex", gap: 14, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", minWidth: 0 }}>
+          <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: client.kind === "contact" ? 999 : 10, display: "grid", placeItems: "center", background: tokens.secondary, color: tokens.secondaryFg, fontWeight: 650, fontSize: 14, flexShrink: 0 }}>
+            {initials}
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 650, letterSpacing: "-0.01em", color: tokens.fg, overflowWrap: "anywhere" }}>{client.name}</h1>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: tokens.muted }}>
+              {client.kind === "company" ? "Client company" : "Client contact"}{client.detail ? ` · ${client.detail}` : ""}
+            </p>
+          </div>
+        </div>
+        {actions ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{actions}</div> : null}
+      </div>
+      <nav aria-label="Client workspace" style={{ display: "flex", gap: 2, borderBottom: `1px solid ${tokens.border}`, overflowX: "auto" }}>
+        {CLIENT_WORKSPACE_TABS.map((tab) => {
+          const selected = tab.id === active;
+          const link = linkProps(`${tab.path}?client=${param}`);
+          return (
+            <a
+              key={tab.id}
+              {...link}
+              aria-current={selected ? "page" : undefined}
+              style={{
+                color: selected ? tokens.fg : tokens.muted,
+                fontSize: 13,
+                fontWeight: selected ? 600 : 500,
+                padding: "9px 14px",
+                textDecoration: "none",
+                whiteSpace: "nowrap",
+                borderBottom: selected ? `2px solid ${tokens.fg}` : "2px solid transparent",
+                marginBottom: -1,
+              }}
+            >
+              {tab.label}
+            </a>
+          );
+        })}
+      </nav>
+    </header>
   );
 }
 

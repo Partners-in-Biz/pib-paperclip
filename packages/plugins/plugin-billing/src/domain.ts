@@ -163,6 +163,11 @@ export interface InvoiceHtmlInput {
   dueAt: string | null;
 }
 
+/** Minor units as money in the document's currency, e.g. `ZAR 12,400.00`. Used on printed invoices and summaries. */
+export function formatMoney(amountMinor: number, currency: string): string {
+  return money(amountMinor, currency);
+}
+
 function money(amountMinor: number, currency: string): string {
   try {
     return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amountMinor / 100);
@@ -400,5 +405,76 @@ export function createCreditNote(input: {
     amountMinor: amount,
     reason: (input.reason ?? "").trim(),
     status: "issued",
+  };
+}
+
+/** What the CRM client workspace shows for Billing (`GET /client-summary`). */
+export interface ClientSummary {
+  headline: string;
+  stats: Array<{ label: string; value: string | number; tone?: "ok" | "warn" | "bad" }>;
+}
+
+export interface SummaryInvoice {
+  status: string;
+  currency: string;
+  totalMinor: number;
+  paidMinor: number;
+  creditedMinor: number;
+  dueAt: string | null;
+  lastPaidAt: string | null;
+}
+
+const OPEN_INVOICE_STATUSES = new Set(["sent", "viewed", "overdue"]);
+
+/** What the customer still owes on a sent invoice: total less payments and credits, never below zero. */
+export function outstandingMinor(invoice: Pick<SummaryInvoice, "status" | "totalMinor" | "paidMinor" | "creditedMinor">): number {
+  if (!OPEN_INVOICE_STATUSES.has(invoice.status)) return 0;
+  return Math.max(0, invoice.totalMinor - invoice.paidMinor - invoice.creditedMinor);
+}
+
+/** Overdue by status, or past due before the hourly overdue job has caught up. */
+export function isOverdueInvoice(invoice: SummaryInvoice, now: Date): boolean {
+  if (outstandingMinor(invoice) <= 0) return false;
+  if (invoice.status === "overdue") return true;
+  const due = invoice.dueAt ? Date.parse(invoice.dueAt) : Number.NaN;
+  return Number.isFinite(due) && due < now.getTime();
+}
+
+/**
+ * One client's billing at a glance: outstanding per currency, overdue
+ * invoices, open quotes (draft or sent) and the last payment date.
+ */
+export function clientBillingSummary(input: {
+  invoices: SummaryInvoice[];
+  quotes: Array<{ status: string }>;
+  now: Date;
+  defaultCurrency?: string;
+}): ClientSummary {
+  const owed = new Map<string, number>();
+  for (const invoice of input.invoices) {
+    const amount = outstandingMinor(invoice);
+    if (amount > 0) owed.set(invoice.currency, (owed.get(invoice.currency) ?? 0) + amount);
+  }
+  const outstanding = [...owed.entries()].map(([currency, amount]) => formatMoney(amount, currency)).join(" + ");
+  const overdue = input.invoices.filter((invoice) => isOverdueInvoice(invoice, input.now)).length;
+  const openQuotes = input.quotes.filter((quote) => quote.status === "draft" || quote.status === "sent").length;
+  const lastPaid = input.invoices
+    .map((invoice) => invoice.lastPaidAt)
+    .filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value!)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+  const currency = input.invoices[0]?.currency ?? input.defaultCurrency ?? "ZAR";
+  const headline = outstanding
+    ? `${outstanding} outstanding`
+    : input.invoices.length > 0
+      ? "Nothing outstanding"
+      : "No invoices";
+  return {
+    headline,
+    stats: [
+      { label: "Outstanding", value: outstanding || formatMoney(0, currency), ...(outstanding ? {} : input.invoices.length > 0 ? { tone: "ok" as const } : {}) },
+      { label: "Overdue invoices", value: overdue, tone: overdue > 0 ? "bad" : "ok" },
+      { label: "Open quotes", value: openQuotes },
+      { label: "Last paid", value: lastPaid ? new Date(Date.parse(lastPaid)).toISOString().slice(0, 10) : "Never" },
+    ],
   };
 }

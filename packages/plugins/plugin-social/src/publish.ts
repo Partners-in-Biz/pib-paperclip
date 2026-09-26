@@ -22,6 +22,7 @@ import {
   refreshAccountToken,
   toProviderAccount,
 } from "./accounts.js";
+import { inScope, scopeLabel, scopeOfRow } from "./clients.js";
 import { loadSocialConfig, type SocialConfig } from "./config.js";
 import {
   claimDestinations,
@@ -109,6 +110,13 @@ async function publishDestination(
   if (!account) return { outcome: { ok: false, retryable: false, error: "The destination account was removed" }, account: null };
   const blocked = publishable(account);
   if (blocked) return { outcome: { ok: false, retryable: false, error: blocked }, account };
+  // Never publish one client's post to another client's (or own) account, e.g. after the account moved.
+  if (!inScope(account, scopeOfRow(post))) {
+    return {
+      outcome: { ok: false, retryable: false, error: `${account.display_name} belongs to ${scopeLabel(account)}, not ${scopeLabel(post)}; not published` },
+      account,
+    };
+  }
   if (!isSocialPlatform(account.platform)) return { outcome: { ok: false, retryable: false, error: `Unsupported platform ${account.platform}` }, account };
   const platform = account.platform;
   const provider = providerFor(platform);

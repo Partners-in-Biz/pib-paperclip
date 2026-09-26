@@ -1,6 +1,25 @@
 import type { PlatformOverride, SocialPlatform } from "../platforms.js";
 
-export interface Account {
+/** Scope fields every scoped record carries. `client` is "company:<id>" / "contact:<id>", null for own work. */
+export interface Scoped {
+  client: string | null;
+  clientKind: "company" | "contact" | null;
+  clientRef: string | null;
+  clientName: string | null;
+}
+
+/** A CRM company or contact, for "Belongs to" pickers. */
+export interface ClientOption {
+  kind: "company" | "contact";
+  id: string;
+  name: string;
+  domain: string | null;
+  email: string | null;
+  lifecycle: string | null;
+  client: string;
+}
+
+export interface Account extends Scoped {
   id: string;
   platform: SocialPlatform;
   scope: string;
@@ -13,8 +32,6 @@ export interface Account {
   tokenExpiresAt: string | null;
   lastRefreshedAt: string | null;
   lastError: string | null;
-  clientRef: string | null;
-  clientName: string | null;
   kind: string | null;
   via: string | null;
   boardId: string | null;
@@ -49,7 +66,7 @@ export interface Destination {
   issueId: string | null;
 }
 
-export interface Post {
+export interface Post extends Scoped {
   id: string;
   body: string;
   status: "draft" | "review" | "approved" | "scheduled" | "publishing" | "published" | "partially_published" | "failed";
@@ -57,8 +74,6 @@ export interface Post {
   ownerUserId: string | null;
   scheduledAt: string | null;
   publishedAt: string | null;
-  clientRef: string | null;
-  clientName: string | null;
   firstComment: string | null;
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
@@ -70,7 +85,7 @@ export interface Post {
   destinations: Destination[];
 }
 
-export interface MediaAsset {
+export interface MediaAsset extends Scoped {
   id: string;
   name: string;
   url: string;
@@ -78,11 +93,9 @@ export interface MediaAsset {
   mime: string | null;
   bytes: number | null;
   altText: string | null;
-  clientRef: string | null;
-  clientName: string | null;
 }
 
-export interface Feed {
+export interface Feed extends Scoped {
   id: string;
   url: string;
   title: string | null;
@@ -90,11 +103,9 @@ export interface Feed {
   isActive: boolean;
   lastCheckedAt: string | null;
   lastError: string | null;
-  clientRef: string | null;
-  clientName: string | null;
 }
 
-export interface InboxItem {
+export interface InboxItem extends Scoped {
   id: string;
   accountId: string | null;
   platform: string | null;
@@ -127,6 +138,10 @@ export interface PlatformInfo {
 }
 
 export interface Snapshot {
+  /** The page's scope as sent to the worker ("company:<id>" / "contact:<id>"), null for own work. */
+  scope: string | null;
+  /** The client this page works for, null for own work. */
+  client: ClientOption | null;
   config: {
     saved: boolean;
     publicBaseUrl: string | null;
@@ -147,7 +162,6 @@ export interface Snapshot {
   media: MediaAsset[];
   feeds: Feed[];
   inbox: InboxItem[];
-  clients: Array<{ id: string; name: string; domain: string | null }>;
   agent: { agentKey: string; agentId: string | null; status: string | null; active: boolean };
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   viewer: { userId: string | null };

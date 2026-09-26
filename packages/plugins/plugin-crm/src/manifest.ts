@@ -24,7 +24,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "CRM",
   description: "Companies, contacts, deals, and sequences for a Paperclip workspace.",
   author: "Partners in Biz",

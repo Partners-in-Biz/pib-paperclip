@@ -21,6 +21,7 @@
  *   CREATE INDEX crm_contacts_company ON NS.crm_contacts (company_id, name);
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import type { ClientKind, ClientRef } from "./client-ref.js";
 
 export const CRM_PLUGIN_ID = "partnersinbiz.crm";
 
@@ -165,6 +166,49 @@ export async function listCrmContacts(
 export async function getCrmContact(ctx: PluginContext, namespace: string, companyId: string, id: string): Promise<CrmContactRow | null> {
   const rows = await listCrmContacts(ctx, namespace, companyId, { ids: [id] });
   return rows[0] ?? null;
+}
+
+/** A client as the other plugins show it: a CRM company or a CRM contact. */
+export interface CrmClient {
+  kind: ClientKind;
+  id: string;
+  name: string;
+  domain: string | null;
+  lifecycle: string | null;
+  email: string | null;
+}
+
+/**
+ * Looks the client up in the local projection. Returns null when the CRM
+ * record is unknown or deleted, so callers can refuse work for it.
+ */
+export async function resolveCrmClient(ctx: PluginContext, namespace: string, companyId: string, ref: ClientRef): Promise<CrmClient | null> {
+  if (ref.kind === "company") {
+    const row = await getCrmCompany(ctx, namespace, companyId, ref.id);
+    return row ? { kind: "company", id: row.id, name: row.name, domain: row.domain, lifecycle: row.lifecycle, email: null } : null;
+  }
+  const row = await getCrmContact(ctx, namespace, companyId, ref.id);
+  return row ? { kind: "contact", id: row.id, name: row.name, domain: null, lifecycle: row.lifecycle, email: row.emails[0] ?? null } : null;
+}
+
+/** Every CRM company and contact, companies first, for "belongs to" pickers. */
+export async function listCrmClients(ctx: PluginContext, namespace: string, companyId: string): Promise<CrmClient[]> {
+  const [companies, contacts] = await Promise.all([
+    listCrmCompanies(ctx, namespace, companyId),
+    listCrmContacts(ctx, namespace, companyId),
+  ]);
+  return [
+    ...companies.map((row) => ({ kind: "company" as const, id: row.id, name: row.name, domain: row.domain, lifecycle: row.lifecycle, email: null })),
+    ...contacts.map((row) => ({ kind: "contact" as const, id: row.id, name: row.name, domain: null, lifecycle: row.lifecycle, email: row.emails[0] ?? null })),
+  ];
+}
+
+/** Contacts linked to a CRM company (the people at a client). */
+export async function listCrmContactsAtCompany(ctx: PluginContext, namespace: string, companyId: string, crmCompanyId: string): Promise<CrmContactRow[]> {
+  return ctx.db.query<CrmContactRow>(
+    `SELECT id, name, emails, phones, lifecycle, tags, account_ids FROM ${namespace}.crm_contacts WHERE company_id = $1 AND deleted = false AND $2 = ANY(account_ids) ORDER BY lower(name)`,
+    [companyId, crmCompanyId],
+  );
 }
 
 export function crmProjectionMigration(namespace: string): string {

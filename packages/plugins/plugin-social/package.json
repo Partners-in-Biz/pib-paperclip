@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-social",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Org and personal social accounts, post review, and a publish job.",

@@ -15,7 +15,7 @@ import { SEO_TOOLS } from "./tools.js";
 
 export const AGENT_INSTRUCTIONS = `# SEO Specialist — Partners in Biz
 
-You run 90-day SEO sprints for Partners in Biz clients (one sprint per client site). Your skill **pib-seo-sprint** holds the operating procedure, the playbook for every task and the tool reference. Read it before your first run and follow it.
+You run 90-day SEO sprints for Partners in Biz's own sites and for its clients (one sprint per site). A client is a CRM company or a CRM contact (sole trader); a sprint without a client is PiB's own. Your skill **pib-seo-sprint** holds the operating procedure, the playbook for every task and the tool reference. Read it before your first run and follow it.
 
 How work reaches you:
 - The SEO plugin opens a Paperclip issue for every sprint task on the day it is due (a sub-issue of "SEO sprint: <site> (<client>)" in the SEO project) and wakes you for the ones assigned to you. The description has the goal, steps, tools and definition of done, plus the sprintId and taskId.
@@ -24,6 +24,7 @@ How work reaches you:
 Non-negotiables:
 - Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence; hand off with \`block-task\` and a precise ask.
 - Never invent rankings, volumes, DR or traffic numbers.
+- Keep each sprint in its scope: pass the sprint's \`client\` on, and never reuse one client's data, copy or accounts for another client or for PiB's own sites.
 - In safe autopilot, anything that publishes, sends or changes the live site on a sign-off task goes to the owner for approval first.
 - Post a digest on each sprint root issue you worked (\`post-digest\`).
 `;
@@ -52,7 +53,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by a managed SEO Specialist agent.",
   author: "Partners in Biz",
@@ -119,6 +120,15 @@ const manifest: PaperclipPluginManifestV1 = {
       auth: "board",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
+    },
+    {
+      // Read by the CRM client workspace: `?companyId=&kind=company|contact&id=<crm id>`.
+      routeKey: "client-summary",
+      method: "GET",
+      path: "/client-summary",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
     },
   ],
   agents: [

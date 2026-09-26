@@ -5,6 +5,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
+import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import type { AccountRow, DestinationRow, PostRow } from "./db.js";
 import { PLATFORM_LABELS, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY, isSocialPlatform } from "./platforms.js";
 
@@ -36,6 +37,13 @@ function label(platform: string): string {
   return isSocialPlatform(platform) ? PLATFORM_LABELS[platform] : platform;
 }
 
+/** How an agent should scope its tool calls for this work. */
+export function scopeLine(row: Pick<PostRow, "client_kind" | "client_ref" | "client_name">): string {
+  const scope = scopeOfRow(row);
+  if (!scope) return "Scope: own work (PiB's own accounts). Call the Social tools without a client.";
+  return `Scope: client ${row.client_name ?? scope.id} — pass \`clientKind: "${scope.kind}"\`, \`clientRef: "${scope.id}"\` (or \`client: "${formatClientParam(scope)}"\`) to the Social tools. Use only this client's accounts and media.`;
+}
+
 export async function openPublishFailureIssue(
   ctx: PluginContext,
   input: {
@@ -58,7 +66,8 @@ export async function openPublishFailureIssue(
     "",
     ...lines,
     "",
-    `Client: ${post.client_name ?? "none"} · Post id: \`${post.id}\``,
+    scopeLine(post),
+    `Post id: \`${post.id}\``,
     "",
     "> " + excerpt.replace(/\n/g, "\n> "),
     "",
@@ -72,7 +81,7 @@ export async function openPublishFailureIssue(
     const issue = await createWorkIssue(ctx, {
       companyId,
       projectId: await socialProjectId(ctx, companyId),
-      title: `Social post failed to publish${post.client_name ? ` for ${post.client_name}` : ""}`,
+      title: `${clientPrefix(post)}Social post failed to publish`,
       description,
       priority: "high",
       originKind: ORIGIN_KIND,
@@ -101,13 +110,17 @@ export async function openReconnectIssue(ctx: PluginContext, companyId: string, 
     const issue = await createWorkIssue(ctx, {
       companyId,
       projectId: await socialProjectId(ctx, companyId),
-      title: `Reconnect ${label(account.platform)}: ${account.display_name}`,
+      title: `${clientPrefix(account)}Reconnect ${label(account.platform)}: ${account.display_name}`,
       description: [
-        `The ${label(account.platform)} account **${account.display_name}**${account.client_name ? ` (client ${account.client_name})` : ""} needs to be reconnected.`,
+        `The ${label(account.platform)} account **${account.display_name}**${account.client_ref ? ` (client ${account.client_name ?? account.client_ref})` : " (own work)"} needs to be reconnected.`,
         "",
         `Reason: ${reason}`,
         "",
-        "Open the Social page, go to Accounts and click Reconnect on this account. Scheduled posts to it retry automatically for about an hour, then fail.",
+        scopeLine(account),
+        "",
+        account.client_ref
+          ? "Open the client's workspace from the CRM, go to Social → Accounts and click Reconnect on this account. Scheduled posts to it retry automatically for about an hour, then fail."
+          : "Open the Social page, go to Accounts and click Reconnect on this account. Scheduled posts to it retry automatically for about an hour, then fail.",
       ].join("\n"),
       priority: "high",
       originKind: ORIGIN_KIND,

@@ -77,7 +77,7 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
     const description = taskIssueDescription(taskCopy(task), sprintCopy(sprint), {
       assignment,
       context: task.context,
-      cockpitPath: cockpitPath(info, sprint.id),
+      cockpitPath: cockpitPath(info, sprint),
     });
     const created = await openIssue(env, {
       companyId: sprint.companyId,

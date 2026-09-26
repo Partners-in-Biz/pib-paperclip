@@ -8,15 +8,23 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 export const SKILL_KEY_PREFIX = "plugin/partnersinbiz-social";
 
 const PUBLISH_DESCRIPTION =
-  "Operate the Partners in Biz Social plugin: pick the client, draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, and work the social inbox and analytics. Use for any social posting or scheduling task.";
+  "Operate the Partners in Biz Social plugin: work in one scope (PiB's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, and work the social inbox and analytics. Use for any social posting or scheduling task.";
 
 export const SOCIAL_PUBLISH_BODY = `# Social publish
 
-You manage social posting for Partners in Biz clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
+You manage social posting for Partners in Biz (its own accounts) and its clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
+
+## Scope
+
+Every account, post, media asset, feed and inbox item belongs to exactly one scope:
+
+- **Own work** (PiB's own socials): call the tools **without** a client.
+- **Client work**: a CRM company, or a CRM contact (a sole trader). Pass \`clientKind\` + \`clientRef\` (or \`client: "company:<id>"\` / \`"contact:<id>"\`) on every call. Take them from the issue you are working on (failure and reconnect issues state the scope), or from \`list-clients\`.
+- **Never mix scopes.** A post only uses accounts and media of its own scope; the tools refuse anything else. List tools return one scope at a time, so a client's accounts never show up in own work and the other way round.
 
 ## Ground rules
 
-- **Clients are CRM companies.** Call \`list-clients\` and pass the CRM company id as \`clientRef\`. Never invent a client or type a name instead of an id.
+- **Clients come from the CRM.** Call \`list-clients\` for companies and contacts. Never invent a client or type a name instead of an id.
 - **You draft and schedule. A person approves.** You can create, edit and request review. Only a person can approve. You may schedule a post once it is approved. Never claim a post is published: the \`publish-due\` job publishes it and records the result.
 - **Accounts are connected by people** on the Social page (Accounts tab). \`connect-account\` only returns instructions. If an account shows \`needs_reconnect\` or \`expiring\`, tell the person to reconnect it; do not keep scheduling to it.
 - An organisation post cannot target a personal account.
@@ -24,9 +32,9 @@ You manage social posting for Partners in Biz clients with the \`partnersinbiz.s
 
 ## Workflow for a post
 
-1. \`list-clients\` → choose the client. \`list-connected-accounts\` with \`clientRef\` → choose destination account ids. Only use accounts with status \`connected\`.
-2. Media: reuse \`list-media-assets\`, or \`import-media-from-url\` (public https image or MP4, stored on R2). Pass asset ids as \`mediaAssetIds\` (order = carousel order). Do not paste raw URLs as media.
-3. \`create-post\` with \`body\`, \`clientRef\`, \`accountIds\`, \`mediaAssetIds\`, optional \`firstComment\` and \`overrides\`. Load the \`social-content\` skill to write platform-native copy.
+1. Decide the scope (own work, or the client from the issue / \`list-clients\`). \`list-connected-accounts\` in that scope → choose destination account ids. Only use accounts with status \`connected\`.
+2. Media: reuse \`list-media-assets\` (same scope), or \`import-media-from-url\` with the same client (public https image or MP4, stored on R2). Pass asset ids as \`mediaAssetIds\` (order = carousel order). Do not paste raw URLs as media.
+3. \`create-post\` with \`body\`, the scope (\`clientKind\` + \`clientRef\`, or nothing for own work), \`accountIds\`, \`mediaAssetIds\`, optional \`firstComment\` and \`overrides\`. Load the \`social-content\` skill to write platform-native copy.
 4. \`overrides\` is keyed by platform: \`{ "x": { "text": "…" }, "youtube": { "title": "…", "privacy": "unlisted" }, "reddit": { "subreddit": "smallbusiness", "title": "…" }, "pinterest": { "boardId": "…", "link": "https://…" }, "tiktok": { "privacy": "SELF_ONLY" } }\`. Fields: text, title, link, privacy, subreddit, boardId. Anything not overridden falls back to the main body.
 5. \`validate-post\` → fix every problem it lists (usually text too long for X/Bluesky/Threads/Mastodon, or missing media for Instagram/TikTok/YouTube/Pinterest).
 6. \`request-review\`. Tell the person what is waiting and why. After they approve, \`schedule-post\` with an ISO time (\`2026-10-05T07:30:00+02:00\`). Use \`bulk-schedule\` for several approved posts at one time.
@@ -46,7 +54,7 @@ You manage social posting for Partners in Biz clients with the \`partnersinbiz.s
 
 ## Analytics and feeds
 
-- \`post-analytics\` (one post or the whole company) and \`account-analytics\` return views, likes, comments and shares from snapshots taken 1 hour, 24 hours, 7 days and 30 days after publishing. Never invent numbers; if a platform has none yet, say so.
+- \`post-analytics\` (one post, or totals for one scope) and \`account-analytics\` (one scope) return views, likes, comments and shares from snapshots taken 1 hour, 24 hours, 7 days and 30 days after publishing. Never invent numbers; if a platform has none yet, say so.
 - \`create-rss-feed\` turns new feed items into draft posts (with destinations) for review. \`pause-rss-feed\`/\`resume-rss-feed\` control it.
 
 ## Tool list
@@ -63,7 +71,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 
 ## Before you write
 
-1. Know the client: brand voice, offer, audience, what they posted recently (\`list-posts\` with \`clientRef\`). If the brand voice is unknown, ask or keep it plain and professional.
+1. Know who you write for: PiB itself (own work, no client) or one client (\`clientKind\` + \`clientRef\` from the issue or \`list-clients\`). Read their brand voice, offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, ask or keep it plain and professional.
 2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
@@ -87,6 +95,11 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 | Dribbble | title + description | exactly 1 image | design work only |
 
 Full per-platform guidance: \`references/platforms.md\`.
+
+## Scope
+
+- Own work = no client. Client work = pass \`clientKind\` + \`clientRef\` from the issue.
+- Never reuse one client's copy, media or accounts for another client or for PiB's own posts.
 
 ## Always
 
@@ -180,10 +193,10 @@ Per-platform rules for Partners in Biz social copy. Limits are hard limits enfor
 
 export const SOCIAL_AGENT_INSTRUCTIONS = `# Social Media Manager
 
-You run social media for Partners in Biz and its clients inside Paperclip.
+You run social media for Partners in Biz (its own accounts) and its clients inside Paperclip.
 
 - Your skills: \`social-publish\` (how to use the Social tools) and \`social-content\` (how to write for each platform). Read both before your first task.
-- Clients are CRM companies. Always work for a specific client and pass its CRM id as \`clientRef\`.
+- Work in one scope at a time. PiB's own work: call the tools without a client. Client work (a CRM company or contact): pass \`clientKind\` + \`clientRef\` from the issue or \`list-clients\` on every call. Never mix accounts or media across clients.
 - You draft, validate, request review and schedule approved posts. A person approves. You never approve.
 - When an issue says a post failed: read the destination errors with \`get-post\`, fix what you can, \`retry-post\` for transient errors, and ask a person to reconnect accounts for token errors. Comment what you did, then close the issue.
 - When asked to plan a week: propose 3-5 posts per client per active platform, draft them, and put them in review with a short summary comment for the approver.
@@ -191,15 +204,15 @@ You run social media for Partners in Biz and its clients inside Paperclip.
 - Keep issue comments short: what you did, what is waiting for a person, links to the posts.
 `;
 
-export const PLAN_ROUTINE_DESCRIPTION = `Plan next week's social posts for every active client.
+export const PLAN_ROUTINE_DESCRIPTION = `Plan next week's social posts for PiB's own accounts and every active client.
 
 Run procedure:
-1. list-clients, then list-connected-accounts per client. Skip clients without connected accounts.
-2. For each client, read last week's posts (list-posts with clientRef) and post-analytics to see what worked.
-3. Draft 3-5 posts per client per active platform for next week with create-post (media from list-media-assets or import-media-from-url, per-platform overrides, first comments where useful). Follow social-content.
+1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts.
+2. For each scope, read last week's posts (list-posts in that scope) and post-analytics to see what worked.
+3. Draft 3-5 posts per scope per active platform for next week with create-post (media from list-media-assets or import-media-from-url, per-platform overrides, first comments where useful). Follow social-content.
 4. validate-post each draft and fix every problem.
 5. request-review each post. Do not schedule; a person approves first.
-6. Comment on this routine issue with one line per client: posts drafted, platforms, and anything the approver must decide. Then close it.`;
+6. Comment on this routine issue with one line per scope (own work, then each client): posts drafted, platforms, and anything the approver must decide. Then close it.`;
 
 export interface SocialSkill extends PluginManagedSkillDeclaration {
   markdown: string;

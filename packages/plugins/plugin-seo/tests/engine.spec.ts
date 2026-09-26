@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { taskIssueDescription, taskIssueTitle, rootIssueTitle, blockComment } from "../src/engine/copy.js";
+import { taskIssueDescription, taskIssueTitle, rootIssueTitle, blockComment, withClientPrefix } from "../src/engine/copy.js";
 import { completionBlocker } from "../src/engine/guards.js";
 import {
   auditCapturePlan,
@@ -152,7 +152,14 @@ describe("issue copy", () => {
   const task = { id: "t1", title: "Check robots.txt — nothing blocking crawlers", week: 1, phase: 1, focus: "Tech Audit", taskType: "robots-check", owner: "agent" as const, autopilotEligible: true, playbookKey: "w1-robots-check", source: "template" };
   it("builds titles", () => {
     expect(rootIssueTitle(sprint)).toBe("SEO sprint: Acme (Acme Ltd)");
-    expect(taskIssueTitle(task, sprint)).toBe("SEO W1 · Check robots.txt — nothing blocking crawlers — Acme");
+    // Client sprints: the client's name leads unless the title already has it.
+    expect(taskIssueTitle(task, sprint)).toBe("[Acme Ltd] SEO W1 · Check robots.txt — nothing blocking crawlers — Acme");
+    expect(taskIssueTitle(task, { siteName: "Acme Ltd", clientName: "Acme Ltd" })).toBe("SEO W1 · Check robots.txt — nothing blocking crawlers — Acme Ltd");
+    expect(rootIssueTitle({ siteName: "Acme Ltd", clientName: "Acme Ltd" })).toBe("SEO sprint: Acme Ltd");
+    // Own sprints carry no client.
+    expect(taskIssueTitle(task, { siteName: "PiB", clientName: null })).toBe("SEO W1 · Check robots.txt — nothing blocking crawlers — PiB");
+    expect(withClientPrefix("[Acme Ltd] x", "acme ltd")).toBe("[Acme Ltd] x");
+    expect(taskIssueTitle({ ...task, title: "x".repeat(300) }, sprint)).toMatch(/^\[Acme Ltd\] SEO W1 · x+…$/);
   });
   it("puts the playbook, tools, definition of done and closing call in the description", () => {
     const text = taskIssueDescription(task, sprint, { assignment: { kind: "agent", agentId: "a", reviewGate: false, wake: true } });

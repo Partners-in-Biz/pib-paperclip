@@ -6,6 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
 import type { SiteFetcher } from "../checks/site.js";
 import { loadSeoConfig, type LoadedConfig } from "../config.js";
+import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/scope.js";
 import { localDate, localHour } from "../engine/time.js";
 import type { FetchLike } from "../integrations/google.js";
 import { SKILLS } from "../skills.js";
@@ -90,8 +91,9 @@ export async function companyInfo(env: Env, companyId: string): Promise<CompanyI
   };
 }
 
-export function cockpitPath(info: Pick<CompanyInfo, "prefix">, sprintId: string): string | null {
-  return info.prefix ? `/${info.prefix}/seo?sprint=${encodeURIComponent(sprintId)}` : null;
+/** The sprint's cockpit link, in the sprint's scope (`&client=` for client sprints). */
+export function cockpitPath(info: Pick<CompanyInfo, "prefix">, sprint: { id: string } & SprintClientFields): string | null {
+  return info.prefix ? sprintPagePath(`/${info.prefix}/seo`, sprint.id, sprintScope(sprint)) : null;
 }
 
 export function errorMessage(error: unknown): string {

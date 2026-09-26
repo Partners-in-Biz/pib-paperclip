@@ -2,24 +2,48 @@
  * Operations shared by UI actions and agent tools. Every function takes the
  * viewer (company + actor) resolved by the host; ids from params are always
  * re-checked against the viewer's company.
+ *
+ * Scope: every account, post, media asset, feed and inbox item is either own
+ * work (no client) or one CRM client's. Lists take the scope from `client`
+ * (or `clientKind` + `clientRef`); leaving it out means own work. A post only
+ * ever targets accounts and media of its own scope.
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { AccountUnavailable, publicAccount, refreshAccountToken } from "./accounts.js";
+import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { listClients, resolveClient } from "./clients.js";
+import {
+  formatClientParam,
+  inScope,
+  listClients,
+  resolveScope,
+  rowScope,
+  sameClient,
+  scopeColumns,
+  scopeFromParams,
+  scopeInput,
+  scopeLabel,
+  scopeOfRow,
+  scopeOut,
+  sessionScope,
+  type ClientScope,
+  type CrmClient,
+  type ResolvedScope,
+} from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import {
   accountMeta,
   accountMetrics,
   deleteDestination,
   deletePost,
-  destinationsForCompany,
   destinationsForPost,
+  destinationsForScope,
   disconnectAccount,
   getAccount,
+  getAccountsByIds,
   getInboxItem,
   getPost,
+  getRssFeed,
   insertDestination,
   insertInboxItem,
   insertMetrics,
@@ -38,6 +62,7 @@ import {
   metricsForPost,
   postMedia,
   postOverrides,
+  scopeSummary,
   setInboxItemStatus,
   setPostStatus,
   setRssFeedActive,
@@ -63,7 +88,7 @@ import {
   type AccountScope,
 } from "./domain.js";
 import { replyToInboxItem } from "./inbox.js";
-import { assetOut, mediaFromAssetIds } from "./media.js";
+import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
 import {
   ALL_PLATFORMS,
@@ -219,8 +244,7 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     ownerUserId: row.owner_user_id,
     scheduledAt: iso(row.scheduled_at),
     publishedAt: iso(row.published_at),
-    clientRef: row.client_ref,
-    clientName: row.client_name,
+    ...scopeOut(row),
     firstComment: row.first_comment,
     media: postMedia(row),
     overrides: postOverrides(row),
@@ -235,23 +259,40 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
 
 // ── posts ───────────────────────────────────────────────────────────────────
 
-async function attachAccounts(ctx: PluginContext, viewer: Viewer, post: PostRow, accountIds: string[]): Promise<void> {
-  for (const accountId of accountIds) {
-    const account = await requireAccount(ctx, viewer, accountId);
+/** A post and its destination account must share a scope (own work, or the same client). */
+export function assertAccountScope(post: Pick<PostRow, "client_kind" | "client_ref" | "client_name">, account: AccountRow): void {
+  if (inScope(account, scopeOfRow(post))) return;
+  throw new SocialError(
+    `${account.display_name} belongs to ${scopeLabel(account)}; this post is for ${scopeLabel(post)}. A post can only use accounts of its own client (or own work).`,
+  );
+}
+
+async function loadAccounts(ctx: PluginContext, viewer: Viewer, accountIds: string[]): Promise<AccountRow[]> {
+  const accounts: AccountRow[] = [];
+  for (const accountId of accountIds) accounts.push(await requireAccount(ctx, viewer, accountId));
+  return accounts;
+}
+
+async function attachAccounts(ctx: PluginContext, viewer: Viewer, post: PostRow, accounts: AccountRow[]): Promise<void> {
+  // Check every account first so a bad one attaches none.
+  for (const account of accounts) {
+    assertAccountScope(post, account);
     assertDestination({ postScope: post.scope, accountScope: account.scope, accountOwnerUserId: account.owner_user_id, actorUserId: viewer.userId });
-    await insertDestination(ctx, { companyId: viewer.companyId, postId: post.id, accountId: account.id });
   }
+  for (const account of accounts) await insertDestination(ctx, { companyId: viewer.companyId, postId: post.id, accountId: account.id });
 }
 
 export async function createPostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const body = requiredString(params, "body");
-  const scopeInput = optionalString(params, "scope") ?? "org";
-  if (scopeInput !== "org" && scopeInput !== "personal") throw new SocialError("scope must be org or personal");
-  const scope = scopeInput as AccountScope;
+  const visibility = optionalString(params, "scope") ?? "org";
+  if (visibility !== "org" && visibility !== "personal") throw new SocialError("scope must be org or personal");
+  const scope = visibility as AccountScope;
   if (scope === "personal" && !viewer.userId) throw new SocialError("A personal post needs its owner");
-  const client = await resolveClient(ctx, viewer.companyId, params.clientRef);
-  const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds)) ?? [];
+  // Omitting the client means own work.
+  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
   const overrides = normalizeOverrides(params.overrides) ?? {};
+  const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
   const row = {
     id: randomUUID(),
     company_id: viewer.companyId,
@@ -262,34 +303,57 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, param
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
-    client_ref: client?.clientRef ?? null,
-    client_name: client?.clientName ?? null,
+    ...scopeColumns(target),
     source: viewer.isAgent ? "agent" : "manual",
     source_ref: null,
     created_by_agent_id: viewer.agentId,
   };
+  for (const account of accounts) assertAccountScope(row, account);
   await insertPost(ctx, row);
   const post = (await getPost(ctx, viewer.companyId, row.id))!;
-  const accountIds = stringList(params, "accountIds") ?? [];
-  await attachAccounts(ctx, viewer, post, accountIds);
+  await attachAccounts(ctx, viewer, post, accounts);
   return getPostDetail(ctx, viewer, row.id);
 }
 
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   assertEditable(post.status);
-  const client = await resolveClient(ctx, viewer.companyId, params.clientRef);
+  const current = rowScope(post);
+  const requested = scopeInput(params);
+  const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
+  const moving = !sameClient(target.scope, current.scope);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
+  const media = await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope);
+  const accountIds = stringList(params, "accountIds");
+  const accounts = accountIds ? await loadAccounts(ctx, viewer, accountIds) : [];
+  const nextScope = { ...post, ...scopeColumns(target) };
+  for (const account of accounts) assertAccountScope(nextScope, account);
+  if (moving) {
+    // A post changes client only when nothing it already uses belongs to the old one.
+    const kept = (await destinationsForPost(ctx, post.id)).filter((d) => !accountIds || accountIds.includes(d.account_id) || d.status === "published");
+    for (const account of await getAccountsByIds(ctx, viewer.companyId, kept.map((d) => d.account_id))) {
+      if (!inScope(account, target.scope)) {
+        throw new SocialError(`Remove ${account.display_name} (${scopeLabel(account)}) from this post before moving it to ${scopeLabel(target)}.`);
+      }
+    }
+    if (!media) {
+      const foreign = await foreignMedia(ctx, viewer.companyId, postMedia(post), target.scope);
+      if (foreign.length) throw new SocialError(`Replace the media from ${scopeLabel(foreign[0]!)} before moving this post to ${scopeLabel(target)}.`);
+    }
+  }
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
-    media: await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds),
+    media,
     overrides: normalizeOverrides(params.overrides),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
-    clientRef: client?.clientRef,
-    clientName: client ? client.clientName : undefined,
+    scope: moving ? scopeColumns(target) : undefined,
   });
-  const accountIds = stringList(params, "accountIds");
-  if (accountIds) await attachAccounts(ctx, viewer, post, accountIds);
+  if (moving) {
+    for (const d of await destinationsForPost(ctx, post.id)) {
+      if (accountIds && !accountIds.includes(d.account_id)) await deleteDestination(ctx, viewer.companyId, post.id, d.account_id);
+    }
+  }
+  if (accounts.length) await attachAccounts(ctx, viewer, (await getPost(ctx, viewer.companyId, post.id))!, accounts);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -300,17 +364,36 @@ export async function getPostDetail(ctx: PluginContext, viewer: Viewer, postId: 
   return postOut(post, destinations, accounts);
 }
 
+/** The scope a read names (own work when left out). Unknown clients are refused. */
+export async function readScope(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<ResolvedScope> {
+  return scopeFromParams(ctx, viewer.companyId, params);
+}
+
+async function accountsFor(ctx: PluginContext, companyId: string, inScopeAccounts: AccountRow[], destinations: DestinationRow[]): Promise<Map<string, AccountRow>> {
+  const map = new Map(inScopeAccounts.map((a) => [a.id, a]));
+  // Posts from before strict scopes may still point at another scope's account.
+  const missing = Array.from(new Set(destinations.map((d) => d.account_id).filter((id) => !map.has(id))));
+  for (const a of await getAccountsByIds(ctx, companyId, missing)) map.set(a.id, a);
+  return map;
+}
+
+function groupByPost(destinations: DestinationRow[]): Map<string, DestinationRow[]> {
+  const byPost = new Map<string, DestinationRow[]>();
+  for (const d of destinations) byPost.set(d.post_id, [...(byPost.get(d.post_id) ?? []), d]);
+  return byPost;
+}
+
 export async function listPostsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
   const rows = await listPosts(ctx, viewer.companyId, {
     status: optionalString(params, "status"),
-    clientRef: optionalString(params, "clientRef"),
+    scope,
     limit: positiveInt(params.limit, "limit", 50),
   });
   const visible = rows.filter((row) => postVisible(viewer, row));
-  const destinations = await destinationsForCompany(ctx, viewer.companyId);
-  const accounts = new Map((await listAccounts(ctx, viewer.companyId)).map((a) => [a.id, a]));
-  const byPost = new Map<string, DestinationRow[]>();
-  for (const d of destinations) byPost.set(d.post_id, [...(byPost.get(d.post_id) ?? []), d]);
+  const destinations = await destinationsForScope(ctx, viewer.companyId, scope);
+  const accounts = await accountsFor(ctx, viewer.companyId, await listAccounts(ctx, viewer.companyId, scope), destinations);
+  const byPost = groupByPost(destinations);
   return visible.map((row) => postOut(row, byPost.get(row.id) ?? [], accounts));
 }
 
@@ -320,6 +403,9 @@ export async function validatePostRecord(ctx: PluginContext, viewer: Viewer, pos
   const results = [];
   const problems: string[] = [];
   if (destinations.length === 0) problems.push("Attach at least one destination account");
+  for (const asset of await foreignMedia(ctx, viewer.companyId, postMedia(post), scopeOfRow(post))) {
+    problems.push(`Media "${asset.name}" belongs to ${scopeLabel(asset)}; this post is for ${scopeLabel(post)}. Replace it.`);
+  }
   for (const d of destinations) {
     const account = await getAccount(ctx, viewer.companyId, d.account_id);
     if (!account || !isSocialPlatform(account.platform)) continue;
@@ -328,6 +414,7 @@ export async function validatePostRecord(ctx: PluginContext, viewer: Viewer, pos
       continue;
     }
     const list = validateDestination(account.platform, buildPublishRequest(post, account.platform), accountMeta(account));
+    if (!inScope(account, scopeOfRow(post))) list.unshift(`${account.display_name} belongs to ${scopeLabel(account)}, not ${scopeLabel(post)}. Remove it from this post`);
     if (!account.token_enc || account.status === "disabled") list.push(`${account.display_name} is disconnected`);
     else if (account.status === "needs_reconnect") list.push(`${account.display_name} needs to be reconnected`);
     results.push({ accountId: account.id, platform: account.platform, accountName: account.display_name, problems: list, published: false });
@@ -339,7 +426,7 @@ export async function validatePostRecord(ctx: PluginContext, viewer: Viewer, pos
 export async function attachDestination(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
-  await attachAccounts(ctx, viewer, post, [requiredString(params, "accountId")]);
+  await attachAccounts(ctx, viewer, post, await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]));
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -406,11 +493,10 @@ export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postI
 // ── accounts ────────────────────────────────────────────────────────────────
 
 export async function listAccountsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const clientRef = optionalString(params, "clientRef");
+  const { scope } = await readScope(ctx, viewer, params);
   const platform = optionalString(params, "platform");
-  return (await listAccounts(ctx, viewer.companyId))
+  return (await listAccounts(ctx, viewer.companyId, scope))
     .filter((a) => accountVisible(viewer, a))
-    .filter((a) => !clientRef || a.client_ref === clientRef)
     .filter((a) => !platform || a.platform === platform)
     .map(publicAccount);
 }
@@ -418,7 +504,9 @@ export async function listAccountsRecord(ctx: PluginContext, viewer: Viewer, par
 export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   requireUser(viewer, "change account settings");
   const account = await requireAccount(ctx, viewer, requiredString(params, "accountId"));
-  const client = await resolveClient(ctx, viewer.companyId, params.clientRef);
+  // "Belongs to": moving an account is refused while other-scope posts still target it.
+  const requested = scopeInput(params);
+  const target = requested === undefined || sameClient(requested, scopeOfRow(account)) ? null : await resolveScope(ctx, viewer.companyId, requested);
   const meta: Record<string, unknown> = {};
   if (params.defaultSubreddit !== undefined) {
     if (account.platform !== "reddit") throw new SocialError("Only Reddit accounts have a default subreddit");
@@ -436,13 +524,15 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
     if (!account.token_enc) throw new SocialError("This account has no token; reconnect it instead");
     status = "connected";
   }
+  const move = target ? await moveAccountScope(ctx, viewer.companyId, account, target) : null;
   await updateAccountSettings(ctx, viewer.companyId, account.id, {
-    clientRef: client?.clientRef,
-    clientName: client ? client.clientName : undefined,
     meta: Object.keys(meta).length ? meta : undefined,
     status,
   });
-  return publicAccount((await getAccount(ctx, viewer.companyId, account.id))!);
+  const out = publicAccount((await getAccount(ctx, viewer.companyId, account.id))!);
+  if (!move?.moved || !target) return out;
+  const feeds = move.feedsDetached ? ` It was removed from ${move.feedsDetached} RSS feed${move.feedsDetached === 1 ? "" : "s"} of ${scopeLabel(account)}.` : "";
+  return { ...out, moved: true, message: `${account.display_name} now belongs to ${scopeLabel(target)}.${feeds}` };
 }
 
 export async function disconnectAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
@@ -504,8 +594,8 @@ export async function listTemplatesRecord(ctx: PluginContext, viewer: Viewer) {
 }
 
 export async function listMediaRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const clientRef = optionalString(params, "clientRef");
-  return (await listMediaAssets(ctx, viewer.companyId)).filter((m) => !clientRef || m.client_ref === clientRef || !m.client_ref).map(assetOut);
+  const { scope } = await readScope(ctx, viewer, params);
+  return (await listMediaAssets(ctx, viewer.companyId, scope)).map(assetOut);
 }
 
 function feedOut(feed: Awaited<ReturnType<typeof listRssFeeds>>[number]) {
@@ -518,38 +608,47 @@ function feedOut(feed: Awaited<ReturnType<typeof listRssFeeds>>[number]) {
     lastCheckedAt: iso(feed.last_checked_at),
     lastError: feed.last_error,
     lastItemAt: iso(feed.last_item_at),
-    clientRef: feed.client_ref,
-    clientName: feed.client_name,
+    ...scopeOut(feed),
   };
 }
 
 export async function createRssFeedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const draft = createRssFeed({ companyId: viewer.companyId, url: requiredString(params, "url") });
   const accountIds = Array.from(new Set([...(stringList(params, "accountIds") ?? []), ...(optionalString(params, "accountId") ? [optionalString(params, "accountId")!] : [])]));
+  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  const columns = scopeColumns(target);
   for (const id of accountIds) {
     const account = await requireAccount(ctx, viewer, id);
     if (account.scope !== "org") throw new SocialError("RSS drafts can only target organisation accounts");
+    assertAccountScope(columns, account);
   }
-  const client = await resolveClient(ctx, viewer.companyId, params.clientRef);
   await insertRssFeed(ctx, {
     id: draft.id,
     company_id: viewer.companyId,
     url: draft.url,
     account_id: accountIds[0] ?? null,
     account_ids: accountIds,
-    client_ref: client?.clientRef ?? null,
-    client_name: client?.clientName ?? null,
+    ...columns,
     created_by_user_id: viewer.userId,
   });
-  return { id: draft.id, url: draft.url, accountIds, isActive: true, message: "The feed is checked every 15 minutes; new items become draft posts." };
+  return {
+    id: draft.id,
+    url: draft.url,
+    accountIds,
+    isActive: true,
+    ...scopeOut(columns),
+    message: "The feed is checked every 15 minutes; new items become draft posts.",
+  };
 }
 
-export async function listRssFeedsRecord(ctx: PluginContext, viewer: Viewer) {
-  return (await listRssFeeds(ctx, viewer.companyId)).map(feedOut);
+export async function listRssFeedsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return (await listRssFeeds(ctx, viewer.companyId, scope)).map(feedOut);
 }
 
 export async function setRssActiveRecord(ctx: PluginContext, viewer: Viewer, feedId: string, active: boolean) {
-  if (!(await setRssFeedActive(ctx, viewer.companyId, feedId, active))) throw new SocialError("RSS feed was not found");
+  const feed = await getRssFeed(ctx, viewer.companyId, feedId);
+  if (!feed || !(await setRssFeedActive(ctx, viewer.companyId, feed.id, active))) throw new SocialError("RSS feed was not found");
   return { feedId, isActive: active };
 }
 
@@ -568,17 +667,25 @@ function inboxOut(row: Awaited<ReturnType<typeof listInboxItems>>[number]) {
     replyBody: row.reply_body,
     repliedAt: iso(row.replied_at),
     receivedAt: iso(row.received_at) ?? iso(row.created_at),
+    ...scopeOut(row),
     canReply: Boolean(row.external_id && row.platform && isSocialPlatform(row.platform) && providerFor(row.platform).reply),
   };
 }
 
 export async function listInboxRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  return (await listInboxItems(ctx, viewer.companyId, positiveInt(params.limit, "limit", 50), optionalString(params, "status"))).map(inboxOut);
+  const { scope } = await readScope(ctx, viewer, params);
+  return (await listInboxItems(ctx, viewer.companyId, positiveInt(params.limit, "limit", 50), optionalString(params, "status"), scope)).map(inboxOut);
 }
 
 export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const accountId = optionalString(params, "accountId");
   const account = accountId ? await requireAccount(ctx, viewer, accountId) : null;
+  // An item on an account belongs to the account's scope; otherwise to the one named (own work by default).
+  const requested = scopeInput(params);
+  if (account && requested !== undefined && !inScope(account, requested)) {
+    throw new SocialError(`${account.display_name} belongs to ${scopeLabel(account)}; record the item without a client or with that client.`);
+  }
+  const target = account ? rowScope(account) : await resolveScope(ctx, viewer.companyId, requested ?? null);
   const item = createInboxItem({
     companyId: viewer.companyId,
     kind: requiredString(params, "kind"),
@@ -595,8 +702,9 @@ export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, para
     author: item.author,
     body: item.body,
     status: item.status,
+    ...scopeColumns(target),
   });
-  return item;
+  return { ...item, ...scopeOut(scopeColumns(target)) };
 }
 
 export async function markInboxReadRecord(ctx: PluginContext, viewer: Viewer, itemId: string) {
@@ -649,14 +757,15 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };
   }
-  const rows = await metricsForCompany(ctx, viewer.companyId);
+  const target = await readScope(ctx, viewer, params);
+  const rows = await metricsForCompany(ctx, viewer.companyId, target.scope);
   const latest = latestPerDestination(rows);
   const byPlatform: Record<string, ReturnType<typeof aggregateMetrics>> = {};
   for (const platform of ALL_PLATFORMS) {
     const list = latest.filter((r) => r.platform === platform);
     if (list.length) byPlatform[platform] = aggregateMetrics(list.map(metricNumbers));
   }
-  return { postId: null, ...aggregateMetrics(latest.map(metricNumbers)), destinations: latest.length, byPlatform };
+  return { postId: null, ...scopeOut(scopeColumns(target)), ...aggregateMetrics(latest.map(metricNumbers)), destinations: latest.length, byPlatform };
 }
 
 export async function recordMetricsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -671,9 +780,10 @@ export async function recordMetricsRecord(ctx: PluginContext, viewer: Viewer, pa
   return { postId: post.id, ...values };
 }
 
-export async function accountAnalyticsRecord(ctx: PluginContext, viewer: Viewer) {
-  const metrics = await accountMetrics(ctx, viewer.companyId);
-  const accounts = new Map((await listAccounts(ctx, viewer.companyId)).map((a) => [a.id, a]));
+export async function accountAnalyticsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const { scope } = await readScope(ctx, viewer, params);
+  const accounts = new Map((await listAccounts(ctx, viewer.companyId, scope)).map((a) => [a.id, a]));
+  const metrics = (await accountMetrics(ctx, viewer.companyId)).filter((row) => accounts.has(row.accountId));
   return metrics.map((row) => ({
     accountId: row.accountId,
     displayName: accounts.get(row.accountId)?.display_name ?? "Unknown",
@@ -687,23 +797,36 @@ export async function accountAnalyticsRecord(ctx: PluginContext, viewer: Viewer)
 
 // ── page snapshot ───────────────────────────────────────────────────────────
 
-export async function loadSnapshot(ctx: PluginContext, viewer: Viewer) {
-  const config = await loadSocialConfig(ctx, viewer.companyId);
-  const [accounts, posts, destinations, templates, media, feeds, inbox, clients, agent, pickers] = await Promise.all([
-    listAccounts(ctx, viewer.companyId),
-    listPosts(ctx, viewer.companyId, { limit: 300 }),
-    destinationsForCompany(ctx, viewer.companyId),
+function clientOut(client: CrmClient) {
+  return { kind: client.kind, id: client.id, name: client.name, domain: client.domain, email: client.email, lifecycle: client.lifecycle, client: formatClientParam(client) };
+}
+
+/** Clients for "Belongs to" pickers: CRM companies, then contacts. */
+export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
+  return (await listClients(ctx, viewer.companyId)).map(clientOut);
+}
+
+/**
+ * Everything the Social page shows for one scope: `client` names it
+ * ("company:<id>" / "contact:<id>"); without it the page is own work.
+ */
+export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  const scope: ClientScope = target.scope;
+  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers] = await Promise.all([
+    loadSocialConfig(ctx, viewer.companyId),
+    listAccounts(ctx, viewer.companyId, scope),
+    listPosts(ctx, viewer.companyId, { limit: 300, scope }),
+    destinationsForScope(ctx, viewer.companyId, scope),
     listTemplates(ctx, viewer.companyId),
-    listMediaAssets(ctx, viewer.companyId),
-    listRssFeeds(ctx, viewer.companyId),
-    listInboxItems(ctx, viewer.companyId, 100),
-    listClients(ctx, viewer.companyId),
+    listMediaAssets(ctx, viewer.companyId, scope),
+    listRssFeeds(ctx, viewer.companyId, scope),
+    listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
     agentSummary(ctx, viewer.companyId),
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
   ]);
-  const accountMap = new Map(accounts.map((a) => [a.id, a]));
-  const byPost = new Map<string, DestinationRow[]>();
-  for (const d of destinations) byPost.set(d.post_id, [...(byPost.get(d.post_id) ?? []), d]);
+  const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
+  const byPost = groupByPost(destinations);
   let redirectUri: string | null = null;
   try {
     redirectUri = config.redirectUri();
@@ -711,6 +834,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer) {
     redirectUri = null;
   }
   return {
+    scope: scope ? formatClientParam(scope) : null,
+    client: target.client ? clientOut(target.client) : null,
     config: {
       saved: config.saved,
       publicBaseUrl: config.publicBaseUrl,
@@ -734,9 +859,55 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer) {
     media: media.map(assetOut),
     feeds: feeds.map(feedOut),
     inbox: inbox.map(inboxOut),
-    clients: clients.map((c) => ({ id: c.id, name: c.name, domain: c.domain })),
     agent,
-    pendingPickers: pickers.map((p) => ({ pickerId: p.picker_id, platform: p.platform })),
+    pendingPickers: pickers
+      .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))
+      .map((p) => ({ pickerId: p.picker_id, platform: p.platform })),
     viewer: { userId: viewer.userId },
+  };
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      return jsonObject(JSON.parse(value));
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+// ── client summary (CRM client workspace) ───────────────────────────────────
+
+export interface ClientSummary {
+  headline: string;
+  stats: Array<{ label: string; value: string | number; tone?: "ok" | "warn" | "bad" }>;
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** What the CRM client workspace shows on its Social tile. */
+export async function clientSummaryRecord(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ClientSummary> {
+  const row = await scopeSummary(ctx, companyId, scope);
+  const connected = Number(row.connected ?? 0);
+  const reconnect = Number(row.needs_reconnect ?? 0);
+  const scheduled = Number(row.scheduled_week ?? 0);
+  const failed = Number(row.failed ?? 0);
+  const last = iso(row.last_published);
+  const parts = [plural(connected, "account"), `${scheduled} scheduled`];
+  if (failed) parts.push(`${failed} failed`);
+  if (reconnect) parts.push(`${reconnect} to reconnect`);
+  return {
+    headline: connected === 0 && scheduled === 0 && !last ? "No social accounts yet" : parts.join(" · "),
+    stats: [
+      { label: "Connected accounts", value: connected, tone: connected > 0 ? "ok" : undefined },
+      { label: "Needs reconnect", value: reconnect, tone: reconnect > 0 ? "warn" : undefined },
+      { label: "Scheduled (next 7 days)", value: scheduled },
+      { label: "Failed posts (30 days)", value: failed, tone: failed > 0 ? "bad" : undefined },
+      { label: "Last published", value: last ? last.slice(0, 10) : "Never" },
+    ],
   };
 }

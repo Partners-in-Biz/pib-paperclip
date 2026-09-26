@@ -3,6 +3,7 @@ import {
   definePlugin,
   runWorker,
   type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginPerformActionContext,
   type ToolResult,
@@ -10,6 +11,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import {
   asObject,
+  customerInvoiceBalances,
   table,
   getInvoice,
   getQuote,
@@ -51,6 +53,7 @@ import {
   BillingError,
   buildInvoiceHtml,
   canSeeInvoice,
+  clientBillingSummary,
   createExpense,
   createPayment,
   lineTotal,
@@ -61,18 +64,24 @@ import {
   nextNumber,
   nextRunDate,
   totalWithTax,
+  type ClientSummary,
   type InvoiceState,
 } from "./domain.js";
 import { BILLING_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import {
+  clientScopeFromInput,
   createSkillSyncer,
   createWorkIssue,
   getCrmCompany,
   getCrmContact,
-  listCrmCompanies,
+  listCrmClients,
+  parseClientParam,
   readConfig,
   registerCrmProjection,
+  resolveCrmClient,
+  type ClientRef,
+  type ClientScope,
 } from "@partnersinbiz/pib-plugin-kit";
 
 let pluginCtx: PluginContext | null = null;
@@ -150,9 +159,9 @@ const plugin = definePlugin({
         return runTool(ctx, tool.name, params, run);
       });
     }
-    ctx.actions.register("billing.load", (_params, context) => {
+    ctx.actions.register("billing.load", (params, context) => {
       if (context.companyId) void skillSync?.ensure(context.companyId);
-      return load(ctx, context);
+      return load(ctx, context, params);
     });
     ctx.actions.register("billing.invoice-html", (params, context) => invoiceHtml(ctx, context, params));
     ctx.actions.register("billing.quote-html", (params, context) => quoteHtml(ctx, context, params));
@@ -187,6 +196,7 @@ const plugin = definePlugin({
   },
   async onApiRequest(input) {
     if (!pluginCtx) return { status: 503, body: { error: "Billing plugin is not ready" } };
+    if (input.routeKey === "client-summary") return clientSummaryRoute(pluginCtx, input);
     return acceptGrant(pluginCtx, input);
   },
 });
@@ -227,9 +237,16 @@ function toolContext(run: ToolRunContext): PluginPerformActionContext {
   };
 }
 
-async function load(ctx: PluginContext, context: PluginPerformActionContext) {
+/**
+ * The Billing page. Without `client` it is PiB's whole book: every invoice,
+ * quote and expense. With `client` (a CRM company or contact) it is that
+ * customer's invoices, quotes, recurring schedules and credit notes, and no
+ * expenses (they are PiB's own costs).
+ */
+async function load(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown> = {}) {
   const companyId = requiredCompany(context);
-  const invoices = await listInvoices(ctx, companyId);
+  const scope = readClientScope(params) ?? null;
+  const invoices = await listInvoices(ctx, companyId, scope);
   const visible = [];
   for (const invoice of invoices) {
     const grants = await grantsForInvoice(ctx, invoice.id);
@@ -237,12 +254,12 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       visible.push(publicInvoice(invoice));
     }
   }
-  const quotes = await listQuotes(ctx, companyId);
-  const expenses = await listExpenses(ctx, companyId);
-  const recurring = await listRecurring(ctx, companyId);
-  const creditNotes = await listCreditNotes(ctx, companyId);
+  const quotes = await listQuotes(ctx, companyId, scope);
+  const expenses = scope ? [] : await listExpenses(ctx, companyId);
+  const recurring = await listRecurring(ctx, companyId, scope);
+  const creditNotes = await listCreditNotes(ctx, companyId, scope);
   const settings = await billingSettings(ctx, companyId);
-  const clients = await listCrmCompanies(ctx, ctx.db.namespace, companyId).catch(() => []);
+  const clients = scope ? [] : await listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []);
   return {
     settingsSaved: Object.keys(settings).length > 0,
     defaults: {
@@ -250,7 +267,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       taxRate: defaultTax(settings),
       senderName: senderFrom(settings, undefined).name,
     },
-    clients: clients.map((client) => ({ id: client.id, name: client.name })),
+    client: scope ? await clientDetails(ctx, companyId, scope, [...invoices, ...quotes]) : null,
+    clients: clients.map((client) => ({ kind: client.kind, id: client.id, name: client.name, email: client.email })),
     invoices: visible,
     quotes: quotes.map(publicQuote),
     expenses: expenses.map(publicExpense),
@@ -263,6 +281,74 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       status: note.status,
     })),
   };
+}
+
+/** The workspace header's client. `found: false` when the CRM projection does not know it (yet). */
+async function clientDetails(ctx: PluginContext, companyId: string, scope: ClientRef, documents: Array<{ customer: unknown }>) {
+  const client = await resolveCrmClient(ctx, ctx.db.namespace, companyId, scope).catch(() => null);
+  const billedAs = documents.map((doc) => customerNameOf(doc.customer)).find((name): name is string => Boolean(name)) ?? null;
+  return {
+    kind: scope.kind,
+    id: scope.id,
+    name: client?.name ?? billedAs,
+    detail: client?.email ?? client?.domain ?? null,
+    found: Boolean(client),
+  };
+}
+
+/** `client` / `clientKind`+`clientRef` from an action. A malformed value is an error, not the whole book. */
+function readClientScope(params: Record<string, unknown>): ClientScope | undefined {
+  const scope = clientScopeFromInput(params);
+  if (scope !== undefined) return scope;
+  const raw = "client" in params ? params.client : "clientRef" in params ? params.clientRef : undefined;
+  if (raw === undefined) return undefined;
+  throw new BillingError("client must be company:<crm company id> or contact:<crm contact id>");
+}
+
+// ── Cross-plugin summary for the CRM client workspace ───────────────────────
+
+async function clientSummaryRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  try {
+    const scope = parseClientParam(`${firstQuery(input.query.kind)}:${firstQuery(input.query.id)}`);
+    if (!scope) return { status: 400, body: { error: "kind (company or contact) and a valid id are required" } };
+    return { status: 200, body: await clientSummary(ctx, input.companyId, scope) };
+  } catch (error) {
+    ctx.logger.info("Billing client summary failed", { error: error instanceof Error ? error.message : String(error) });
+    return { status: 500, body: { error: error instanceof Error ? error.message : "Summary failed" } };
+  }
+}
+
+async function clientSummary(ctx: PluginContext, companyId: string, scope: ClientRef): Promise<ClientSummary> {
+  const [balances, quotes, settings] = await Promise.all([
+    customerInvoiceBalances(ctx, companyId, scope),
+    listQuotes(ctx, companyId, scope),
+    billingSettings(ctx, companyId),
+  ]);
+  return clientBillingSummary({
+    invoices: balances.map((row) => ({
+      status: row.status,
+      currency: row.currency,
+      totalMinor: Number(row.total_minor),
+      paidMinor: Number(row.paid_minor ?? 0),
+      creditedMinor: Number(row.credited_minor ?? 0),
+      dueAt: isoOrNull(row.due_at),
+      lastPaidAt: isoOrNull(row.last_paid_at),
+    })),
+    quotes: quotes.map((quote) => ({ status: quote.status })),
+    now: new Date(),
+    defaultCurrency: settings.defaultCurrency,
+  });
+}
+
+function firstQuery(value: string | string[] | undefined): string {
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === "string" ? first.trim() : "";
+}
+
+function isoOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
 }
 
 async function createInvoice(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {

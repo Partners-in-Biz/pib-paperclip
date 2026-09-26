@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-billing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Commercial invoices in minor units. Agents draft. A person approves sending and payment.",

@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { objectKeyFor, r2PutObject, r2Upload } from "@partnersinbiz/pib-plugin-kit";
-import { resolveClient } from "./clients.js";
+import { inScope, scopeColumns, scopeFromParams, scopeLabel, scopeOut, type ClientScope } from "./clients.js";
 import { loadSocialConfig, r2PublicHost, type SocialConfig } from "./config.js";
 import { getMediaAssets, insertMediaAsset, mediaRefFromAsset, type MediaAssetRow, type MediaRef } from "./db.js";
 import { mediaKindFromMime, SocialError } from "./domain.js";
@@ -52,8 +52,7 @@ function assetOut(row: MediaAssetRow) {
     durationS: row.duration_s == null ? null : Number(row.duration_s),
     altText: row.alt_text,
     r2Key: row.r2_key,
-    clientRef: row.client_ref,
-    clientName: row.client_name,
+    ...scopeOut(row),
   };
 }
 
@@ -89,7 +88,8 @@ export async function registerAsset(
     const host = r2PublicHost(cfg);
     if (host && new URL(url).host.toLowerCase() !== host) throw new SocialError("The asset URL must be on the R2 public media domain");
   }
-  const client = await resolveClient(ctx, companyId, params.clientRef);
+  // Media belongs to the scope it was added in: own work unless a client is named.
+  const target = await scopeFromParams(ctx, companyId, params);
   const row: MediaAssetRow & { source_url?: string | null } = {
     id: randomUUID(),
     company_id: companyId,
@@ -103,8 +103,7 @@ export async function registerAsset(
     height: optionalNumber(params.height),
     duration_s: optionalNumber(params.durationS),
     alt_text: typeof params.altText === "string" && params.altText.trim() ? params.altText.trim().slice(0, 1500) : null,
-    client_ref: client?.clientRef ?? null,
-    client_name: client?.clientName ?? null,
+    ...scopeColumns(target),
     created_at: null,
     source_url: typeof params.sourceUrl === "string" ? params.sourceUrl : null,
   };
@@ -116,6 +115,8 @@ export async function registerAsset(
 export async function importFromUrl(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const sourceUrl = typeof params.url === "string" ? params.url.trim() : "";
   if (!sourceUrl) throw new SocialError("url is required");
+  // Refuse an unknown client before downloading anything.
+  await scopeFromParams(ctx, companyId, params);
   const config = await loadSocialConfig(ctx, companyId);
   const r2 = await config.r2();
   const file = await downloadMedia(sourceUrl, { maxBytes: MEDIA_MAX_BYTES, label: "Import URL" });
@@ -137,8 +138,11 @@ export async function importFromUrl(ctx: PluginContext, companyId: string, param
   }, config);
 }
 
-/** Turn asset ids into the media array stored on a post (keeps the given order). */
-export async function mediaFromAssetIds(ctx: PluginContext, companyId: string, ids: unknown): Promise<MediaRef[] | undefined> {
+/**
+ * Turn asset ids into the media array stored on a post (keeps the given
+ * order). Every asset must belong to the post's scope.
+ */
+export async function mediaFromAssetIds(ctx: PluginContext, companyId: string, ids: unknown, scope: ClientScope): Promise<MediaRef[] | undefined> {
   if (ids === undefined) return undefined;
   if (ids === null) return [];
   if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new SocialError("mediaAssetIds must be a list of media asset ids");
@@ -147,5 +151,16 @@ export async function mediaFromAssetIds(ctx: PluginContext, companyId: string, i
   const byId = new Map(rows.map((row) => [row.id, row]));
   const missing = unique.filter((id) => !byId.has(id));
   if (missing.length) throw new SocialError(`Unknown media asset ${missing[0]}. Use list-media-assets or import-media-from-url.`);
+  const foreign = rows.find((row) => !inScope(row, scope));
+  if (foreign) {
+    throw new SocialError(`Media "${foreign.name}" belongs to ${scopeLabel(foreign)}. A post can only use media of its own client (or own work).`);
+  }
   return unique.map((id) => mediaRefFromAsset(byId.get(id)!));
+}
+
+/** Media on a post whose asset is outside `scope` (legacy posts from before strict scopes). */
+export async function foreignMedia(ctx: PluginContext, companyId: string, media: MediaRef[], scope: ClientScope): Promise<MediaAssetRow[]> {
+  const ids = Array.from(new Set(media.map((m) => m.assetId).filter((id): id is string => Boolean(id))));
+  if (ids.length === 0) return [];
+  return (await getMediaAssets(ctx, companyId, ids)).filter((row) => !inScope(row, scope));
 }

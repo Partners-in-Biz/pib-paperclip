@@ -7,10 +7,10 @@ import { SOCIAL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "Social",
   description:
-    "Connect client social accounts (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. " +
+    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. " +
     "OAuth redirect URI for every provider (shown on the Social page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
@@ -90,6 +90,15 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
     },
+    {
+      // Read by the CRM client workspace: ?companyId=&kind=company|contact&id=<crm id>.
+      routeKey: "client-summary",
+      method: "GET",
+      path: "/client-summary",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
+    },
   ],
   agents: [
     {
@@ -99,7 +108,7 @@ const manifest: PaperclipPluginManifestV1 = {
       title: "Social Media Manager",
       icon: "megaphone",
       capabilities:
-        "Plans, drafts and schedules social posts for Partners in Biz clients across 12 platforms, fixes failed posts, and works the social inbox through the Social plugin tools.",
+        "Plans, drafts and schedules social posts for Partners in Biz's own accounts and for its clients across 12 platforms, fixes failed posts, and works the social inbox through the Social plugin tools.",
       adapterType: "hermes_local",
       adapterPreference: ["hermes_local", "claude_local"],
       adapterConfig: {

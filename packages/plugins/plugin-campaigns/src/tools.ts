@@ -7,11 +7,29 @@ function schema(required: string[], properties: Record<string, JsonSchema>): Jso
   return { type: "object", required, properties, additionalProperties: false };
 }
 
+/** Who the campaign is for. Omit all three for PiB's own work. */
+const clientParams: Record<string, JsonSchema> = {
+  client: {
+    type: "string",
+    description: "The client this is for: company:<CRM company id> or contact:<CRM contact id> (a sole trader). Omit for PiB's own work.",
+  },
+  clientKind: { type: "string", enum: ["company", "contact"], description: "Kind of clientRef (default company). Alternative to client." },
+  clientRef: { type: "string", description: "CRM company or contact id. Alternative to client. Omit for PiB's own work." },
+};
+
+const audienceMode = {
+  type: "string",
+  enum: ["tags", "client_contacts", "client_contact"],
+  description:
+    "Who launch enrolls. tags: CRM contacts matching audienceTags (empty = everyone). client_contacts: the contacts at the client company, narrowed by audienceTags when set (default for a company client). client_contact: the client contact alone (default for a contact client).",
+} satisfies JsonSchema;
+
 export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-campaign",
     displayName: "Create campaign",
-    description: "Create a themed email program. audienceTags narrows which contacts are enrolled; empty means everyone.",
+    description:
+      "Create a draft email program. Pass client for a client's campaign (it must exist in the CRM); omit client for PiB's own work. audienceMode and audienceTags choose who launch enrolls.",
     parametersSchema: schema(["name"], {
       name: text,
       description: text,
@@ -19,9 +37,36 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       fromLocal: text,
       replyTo: text,
       audienceTags: textList,
+      audienceMode,
+      ...clientParams,
       startAt: text,
       endAt: text,
     }),
+  },
+  {
+    name: "update-campaign",
+    displayName: "Update campaign",
+    description:
+      "Edit a draft campaign. Omitted fields stay. Pass client to move it to a client, or client \"own\" to make it PiB's own work.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId: text,
+      name: text,
+      description: text,
+      fromName: text,
+      fromLocal: text,
+      replyTo: text,
+      audienceTags: textList,
+      audienceMode,
+      ...clientParams,
+      startAt: text,
+      endAt: text,
+    }),
+  },
+  {
+    name: "list-campaigns",
+    displayName: "List campaigns",
+    description: "List campaigns with status, audience and enrollment counts. Pass client for one client's campaigns; omit it for PiB's own campaigns.",
+    parametersSchema: schema([], { ...clientParams }),
   },
   {
     name: "add-campaign-step",
@@ -37,9 +82,11 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "launch-campaign",
     displayName: "Launch campaign",
-    description: "Enroll every visible contact that matches the campaign audience tags and open the first step's issue.",
+    description:
+      "Launch an approved campaign: enroll its audience (tagged contacts, the contacts at the client company, or the client contact) or the contactIds you pass. Due steps then open issues.",
     parametersSchema: schema(["campaignId"], {
       campaignId: text,
+      contactIds: textList,
     }),
   },
   {
@@ -173,10 +220,12 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-campaign-from-template",
     displayName: "Create campaign from template",
-    description: "Create a new draft campaign copying the template's steps.",
+    description: "Create a new draft campaign copying the template's steps. Pass client for a client's campaign; omit it for PiB's own work.",
     parametersSchema: schema(["templateId", "name"], {
       templateId: text,
       name: text,
+      audienceMode,
+      ...clientParams,
     }),
   },
   {

@@ -3,6 +3,7 @@ import {
   DataTable,
   MetricCard,
   StatusBadge,
+  useHostLocation,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -11,6 +12,7 @@ import {
 import {
   BarChart,
   Button,
+  ClientWorkspaceBar,
   EmptyState,
   Field,
   Input,
@@ -22,19 +24,29 @@ import {
   Toolbar,
   errorText,
   formatMinor,
+  tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { clientScopeFromSearch, formatClientParam, parseClientParam, type ClientKind } from "@partnersinbiz/pib-plugin-kit/client-ref";
 
-interface Invoice { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string; customerName?: string | null; taxRate?: number; dueAt?: string | null }
-interface Quote { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string; customerName?: string | null }
-interface Client { id: string; name: string }
+interface Invoice { id: string; number: string; status: string; currency: string; totalMinor: number; customerKind?: string; customerRef: string; customerName?: string | null; taxRate?: number; dueAt?: string | null }
+interface Quote { id: string; number: string; status: string; currency: string; totalMinor: number; customerKind?: string; customerRef: string; customerName?: string | null }
+interface Client { kind: ClientKind; id: string; name: string; email?: string | null }
+interface WorkspaceClient { kind: ClientKind; id: string; name: string | null; detail: string | null; found: boolean }
 interface Snapshot {
   invoices: Invoice[];
   quotes?: Quote[];
   expenses?: Expense[];
   clients?: Client[];
+  client?: WorkspaceClient | null;
   settingsSaved?: boolean;
   defaults?: { currency: string; taxRate: number; senderName: string };
 }
+
+/** Customer typed by hand when the CRM client list is empty. */
+interface ManualCustomer { kind: ClientKind; name: string; ref: string }
+const EMPTY_MANUAL: ManualCustomer = { kind: "company", name: "", ref: "" };
+
+const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
 
 /** "1 234,50" / "1234.5" → minor units. */
 function toMinor(value: string): number {
@@ -55,7 +67,78 @@ interface Expense { id: string; description: string; amountMinor: number; curren
 type TabId = "overview" | "invoices" | "quotes" | "expenses";
 type CreateKind = "invoice" | "line" | "quote" | "expense" | null;
 
+/** Page layout for a client workspace: the shared client bar replaces the page header. */
+function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+      {header}
+      {message ? (
+        <p
+          role="status"
+          style={{
+            margin: 0,
+            fontSize: 13,
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: `1px solid ${tokens.border}`,
+            background: tokens.secondary,
+            color: tokens.secondaryFg,
+            lineHeight: 1.45,
+          }}
+        >
+          {message}
+        </p>
+      ) : null}
+      {children}
+    </main>
+  );
+}
+
+/** Companies and contacts from the CRM, grouped, as `kind:id` option values. */
+function ClientSelect({ clients, value, onChange }: { clients: Client[]; value: string; onChange: (value: string) => void }) {
+  const companies = clients.filter((client) => client.kind === "company");
+  const contacts = clients.filter((client) => client.kind === "contact");
+  return (
+    <Field label="Client">
+      <Select value={value} onChange={(event) => onChange(event.target.value)} required>
+        <option value="">Choose a CRM company or contact…</option>
+        {companies.length > 0 ? (
+          <optgroup label="Companies">
+            {companies.map((client) => <option key={`company:${client.id}`} value={`company:${client.id}`}>{client.name}</option>)}
+          </optgroup>
+        ) : null}
+        {contacts.length > 0 ? (
+          <optgroup label="Contacts">
+            {contacts.map((client) => (
+              <option key={`contact:${client.id}`} value={`contact:${client.id}`}>{client.email ? `${client.name} (${client.email})` : client.name}</option>
+            ))}
+          </optgroup>
+        ) : null}
+      </Select>
+    </Field>
+  );
+}
+
+function ManualCustomerFields({ value, onChange }: { value: ManualCustomer; onChange: (value: ManualCustomer) => void }) {
+  return (
+    <>
+      <Field label="Customer type">
+        <Select value={value.kind} onChange={(event) => onChange({ ...value, kind: event.target.value as ClientKind })}>
+          <option value="company">Company</option>
+          <option value="contact">Contact (person or sole trader)</option>
+        </Select>
+      </Field>
+      <Field label="Customer name"><Input value={value.name} onChange={(event) => onChange({ ...value, name: event.target.value })} required /></Field>
+      <Field label="Customer reference (CRM id)"><Input value={value.ref} onChange={(event) => onChange({ ...value, ref: event.target.value })} required /></Field>
+    </>
+  );
+}
+
 export function BillingPage({ context }: PluginPageProps) {
+  const location = useHostLocation();
+  const navigation = useHostNavigation();
+  const scope = useMemo(() => clientScopeFromSearch(location.search), [location.search]);
+  const scopeKey = scope ? formatClientParam(scope) : "own";
   const load = usePluginAction("billing.load");
   const createInvoice = usePluginAction("billing.create-invoice");
   const addLine = usePluginAction("billing.add-line");
@@ -65,7 +148,9 @@ export function BillingPage({ context }: PluginPageProps) {
   const createExpense = usePluginAction("billing.create-expense");
   const invoiceHtml = usePluginAction("billing.invoice-html");
   const quoteHtml = usePluginAction("billing.quote-html");
+  const [loaded, setLoaded] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
+  const [client, setClient] = useState<WorkspaceClient | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(true);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
@@ -74,33 +159,39 @@ export function BillingPage({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>("overview");
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
-  const [customerName, setCustomerName] = useState("");
-  const [customerRef, setCustomerRef] = useState("");
+  const [invoiceCustomer, setInvoiceCustomer] = useState("");
+  const [invoiceManual, setInvoiceManual] = useState<ManualCustomer>(EMPTY_MANUAL);
   const [currency, setCurrency] = useState("ZAR");
   const [invoiceId, setInvoiceId] = useState("");
   const [description, setDescription] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [unitAmount, setUnitAmount] = useState("");
-  const [quoteName, setQuoteName] = useState("");
-  const [quoteRef, setQuoteRef] = useState("");
+  const [quoteCustomer, setQuoteCustomer] = useState("");
+  const [quoteManual, setQuoteManual] = useState<ManualCustomer>(EMPTY_MANUAL);
   const [expenseDescription, setExpenseDescription] = useState("");
   const [expenseAmount, setExpenseAmount] = useState("");
   const [expenseCategory, setExpenseCategory] = useState("other");
 
   async function refresh() {
-    const snapshot = (await load({})) as Snapshot;
+    const snapshot = (await load({ client: scope })) as Snapshot;
     setInvoices(snapshot.invoices);
     setQuotes(snapshot.quotes ?? []);
     setExpenses(snapshot.expenses ?? []);
     setClients(snapshot.clients ?? []);
+    setClient(snapshot.client ?? null);
     setSettingsSaved(snapshot.settingsSaved !== false);
     if (snapshot.defaults?.currency) setCurrency((current) => current || snapshot.defaults!.currency);
+    setLoaded(true);
   }
 
   useEffect(() => {
     if (!context.companyId) return;
+    setLoaded(false);
+    setClient(null);
+    setMessage("");
+    if (scope && tab === "expenses") setTab("overview");
     refresh().catch((error: unknown) => setMessage(errorText(error)));
-  }, [context.companyId]);
+  }, [context.companyId, scopeKey]);
 
   async function run(work: () => Promise<unknown>, success: string) {
     setMessage("");
@@ -114,6 +205,21 @@ export function BillingPage({ context }: PluginPageProps) {
     }
   }
 
+  /** The customer for a new invoice or quote: the workspace client, a picked CRM record, or typed by hand. */
+  function customerPayload(picked: string, manual: ManualCustomer): { customerKind: ClientKind; customerRef: string; customerName?: string } {
+    if (scope) {
+      return { customerKind: scope.kind, customerRef: scope.id, ...(client && !client.found && client.name ? { customerName: client.name } : {}) };
+    }
+    if (clients.length > 0) {
+      const ref = parseClientParam(picked);
+      if (!ref) throw new Error("Choose a client");
+      return { customerKind: ref.kind, customerRef: ref.id };
+    }
+    if (!manual.ref.trim()) throw new Error("Customer reference is required");
+    return { customerKind: manual.kind, customerRef: manual.ref.trim(), ...(manual.name.trim() ? { customerName: manual.name.trim() } : {}) };
+  }
+
+  const clientName = client?.name ?? "this client";
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => invoices.filter((invoice) => !q || `${invoice.number} ${invoice.status} ${invoice.customerRef} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)), [invoices, q]);
   const byStatus = useMemo(() => {
@@ -123,22 +229,26 @@ export function BillingPage({ context }: PluginPageProps) {
   }, [invoices]);
   const totalMinor = invoices.reduce((sum, invoice) => sum + invoice.totalMinor, 0);
   const currencyCode = invoices[0]?.currency ?? "ZAR";
+  const draftInvoiceButton = <Button type="button" onClick={() => setCreate("invoice")}>+ Draft invoice</Button>;
+  const pageMessage = message
+    || (scope && loaded && client && !client.found
+      ? `${client.name ?? "This client"} is not in the Billing client list yet. Run the CRM "resync" action so new invoices pick up the CRM name.`
+      : undefined)
+    || (!settingsSaved
+      ? "Billing settings are not saved for this company. Open Settings → Plugins → Billing, add your business, VAT and EFT details, and click Save — they print on every invoice."
+      : undefined);
+  const lockedClient = scope ? (
+    <Field label="Client"><Input value={client?.name ?? scope.id} readOnly disabled /></Field>
+  ) : null;
 
-  return (
-    <Page
-      title="Billing"
-      description="Draft an invoice here. Sending and payment wait for a person to finish the approval issue."
-      message={message || (!settingsSaved
-        ? "Billing settings are not saved for this company. Open Settings → Plugins → Billing, add your business, VAT and EFT details, and click Save — they print on every invoice."
-        : undefined)}
-      actions={<Button type="button" onClick={() => setCreate("invoice")}>+ Draft invoice</Button>}
-    >
+  const body = (
+    <>
       <Tabs
         tabs={[
           { id: "overview", label: "Overview" },
           { id: "invoices", label: `Invoices (${invoices.length})` },
           { id: "quotes", label: `Quotes (${quotes.length})` },
-          { id: "expenses", label: `Expenses (${expenses.length})` },
+          ...(scope ? [] : [{ id: "expenses", label: `Expenses (${expenses.length})` }]),
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -159,10 +269,14 @@ export function BillingPage({ context }: PluginPageProps) {
       {tab === "invoices" ? (
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search invoices…">
-            <Button type="button" onClick={() => setCreate("invoice")}>+ Draft invoice</Button>
+            {draftInvoiceButton}
           </Toolbar>
           {rows.length === 0 ? (
-            <EmptyState title="No invoices yet" description="Draft an invoice, add lines, then request send or payment approval." action={<Button type="button" onClick={() => setCreate("invoice")}>+ Draft invoice</Button>} />
+            <EmptyState
+              title={scope ? `No invoices for ${clientName} yet` : "No invoices yet"}
+              description="Draft an invoice, add lines, then request send or payment approval."
+              action={draftInvoiceButton}
+            />
           ) : (
             <DataTable
               columns={[
@@ -197,7 +311,11 @@ export function BillingPage({ context }: PluginPageProps) {
             <Button type="button" onClick={() => setCreate("quote")}>+ Draft quote</Button>
           </Toolbar>
           {quotes.length === 0 ? (
-            <EmptyState title="No quotes yet" description="Draft a quote, then convert it to an invoice when the customer accepts." action={<Button type="button" onClick={() => setCreate("quote")}>+ Draft quote</Button>} />
+            <EmptyState
+              title={scope ? `No quotes for ${clientName} yet` : "No quotes yet"}
+              description="Draft a quote, then convert it to an invoice when the customer accepts."
+              action={<Button type="button" onClick={() => setCreate("quote")}>+ Draft quote</Button>}
+            />
           ) : (
             <DataTable
               columns={[
@@ -221,7 +339,7 @@ export function BillingPage({ context }: PluginPageProps) {
         </div>
       ) : null}
 
-      {tab === "expenses" ? (
+      {tab === "expenses" && !scope ? (
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search expenses…">
             <Button type="button" onClick={() => setCreate("expense")}>+ Add expense</Button>
@@ -242,29 +360,19 @@ export function BillingPage({ context }: PluginPageProps) {
         </div>
       ) : null}
 
-      <Modal open={create === "invoice"} title="Draft invoice" onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "invoice"} title={scope ? `Draft invoice for ${clientName}` : "Draft invoice"} onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
-            await createInvoice({ currency, customerKind: "company", customerRef, ...(customerName ? { customerName } : {}) });
-            setCustomerName("");
-            setCustomerRef("");
+            await createInvoice({ currency, ...customerPayload(invoiceCustomer, invoiceManual) });
+            setInvoiceCustomer("");
+            setInvoiceManual(EMPTY_MANUAL);
           }, "Draft created")}>Create draft</Button>
         </>
       )}>
-        {clients.length > 0 ? (
-          <Field label="Client">
-            <Select value={customerRef} onChange={(event) => setCustomerRef(event.target.value)} required>
-              <option value="">Choose a CRM client…</option>
-              {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-            </Select>
-          </Field>
-        ) : (
-          <>
-            <Field label="Customer name"><Input value={customerName} onChange={(event) => setCustomerName(event.target.value)} required /></Field>
-            <Field label="Customer reference (CRM id)"><Input value={customerRef} onChange={(event) => setCustomerRef(event.target.value)} required /></Field>
-          </>
-        )}
+        {lockedClient ?? (clients.length > 0
+          ? <ClientSelect clients={clients} value={invoiceCustomer} onChange={setInvoiceCustomer} />
+          : <ManualCustomerFields value={invoiceManual} onChange={setInvoiceManual} />)}
         <Field label="Currency"><Input value={currency} onChange={(event) => setCurrency(event.target.value)} /></Field>
       </Modal>
 
@@ -284,33 +392,23 @@ export function BillingPage({ context }: PluginPageProps) {
         <Field label="Unit price (excl. VAT)"><Input value={unitAmount} onChange={(event) => setUnitAmount(event.target.value)} required /></Field>
       </Modal>
 
-      <Modal open={create === "quote"} title="Draft quote" onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "quote"} title={scope ? `Draft quote for ${clientName}` : "Draft quote"} onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
-            await createQuote({ currency, customerKind: "company", customerRef: quoteRef, ...(quoteName ? { customerName: quoteName } : {}) });
-            setQuoteName("");
-            setQuoteRef("");
+            await createQuote({ currency, ...customerPayload(quoteCustomer, quoteManual) });
+            setQuoteCustomer("");
+            setQuoteManual(EMPTY_MANUAL);
           }, "Quote draft created")}>Create quote</Button>
         </>
       )}>
-        {clients.length > 0 ? (
-          <Field label="Client">
-            <Select value={quoteRef} onChange={(event) => setQuoteRef(event.target.value)} required>
-              <option value="">Choose a CRM client…</option>
-              {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-            </Select>
-          </Field>
-        ) : (
-          <>
-            <Field label="Customer name"><Input value={quoteName} onChange={(event) => setQuoteName(event.target.value)} required /></Field>
-            <Field label="Customer reference (CRM id)"><Input value={quoteRef} onChange={(event) => setQuoteRef(event.target.value)} required /></Field>
-          </>
-        )}
+        {lockedClient ?? (clients.length > 0
+          ? <ClientSelect clients={clients} value={quoteCustomer} onChange={setQuoteCustomer} />
+          : <ManualCustomerFields value={quoteManual} onChange={setQuoteManual} />)}
         <Field label="Currency"><Input value={currency} onChange={(event) => setCurrency(event.target.value)} /></Field>
       </Modal>
 
-      <Modal open={create === "expense"} title="Add expense" onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "expense" && !scope} title="Add expense" onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
@@ -324,6 +422,37 @@ export function BillingPage({ context }: PluginPageProps) {
         <Field label="Amount"><Input value={expenseAmount} onChange={(event) => setExpenseAmount(event.target.value)} required /></Field>
         <Field label="Category"><Input value={expenseCategory} onChange={(event) => setExpenseCategory(event.target.value)} /></Field>
       </Modal>
+    </>
+  );
+
+  if (scope) {
+    return (
+      <WorkspacePage
+        header={(
+          <ClientWorkspaceBar
+            client={{ kind: scope.kind, id: scope.id, name: client?.name ?? (loaded ? "Unknown client" : "Loading…"), detail: client?.detail ?? null }}
+            active="billing"
+            linkProps={navigation.linkProps}
+            ownPath="/billing"
+            ownLabel="All billing"
+            actions={draftInvoiceButton}
+          />
+        )}
+        message={pageMessage}
+      >
+        {body}
+      </WorkspacePage>
+    );
+  }
+
+  return (
+    <Page
+      title="Billing"
+      description="PiB's invoices, quotes and expenses. Draft an invoice here. Sending and payment wait for a person to finish the approval issue."
+      message={pageMessage}
+      actions={draftInvoiceButton}
+    >
+      {body}
     </Page>
   );
 }

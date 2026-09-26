@@ -22,6 +22,21 @@ const overrides: JsonSchema = {
   additionalProperties: false,
 };
 
+/**
+ * Scope params: own work (no client) or one CRM client. Pass either
+ * `client: "company:<id>"` / `"contact:<id>"`, or `clientKind` + `clientRef`.
+ */
+const scope: Record<string, JsonSchema> = {
+  client: {
+    type: "string",
+    description: 'The client this is for: "company:<id>" or "contact:<id>" (the `client` value from list-clients). Omit for PiB\'s own work.',
+  },
+  clientKind: { type: "string", enum: ["company", "contact"], description: "Kind of clientRef. Default company." },
+  clientRef: { type: "string", description: "CRM company or contact id from list-clients. Omit for PiB's own work." },
+};
+
+const OWN = " Omit the client for PiB's own work; pass client (or clientKind + clientRef) for a client. Never mix clients.";
+
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
@@ -30,14 +45,15 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-clients",
     displayName: "List clients",
-    description: "Return the clients (CRM companies) this workspace posts for. Use the id as clientRef.",
+    description:
+      "Return the clients this workspace posts for: CRM companies, then CRM contacts (sole traders). Each has kind, id and client (\"company:<id>\" / \"contact:<id>\"). Pass client, or clientKind + clientRef, to the other tools. PiB's own work needs no client.",
     parametersSchema: schema([], {}),
   },
   {
     name: "list-connected-accounts",
     displayName: "List connected accounts",
-    description: "List social accounts with platform, handle, client, status (connected, expiring, needs_reconnect, disabled) and token expiry. Filter by clientRef or platform.",
-    parametersSchema: schema([], { clientRef: text, platform: text }),
+    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry. Filter by platform.${OWN}`,
+    parametersSchema: schema([], { ...scope, platform: text }),
   },
   {
     name: "connect-account",
@@ -55,11 +71,11 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      "Draft one post. Pass clientRef (CRM company id), accountIds (destinations), mediaAssetIds (order = carousel order), firstComment and per-platform overrides. Scope is org (default) or personal.",
+      `Draft one post with accountIds (destinations), mediaAssetIds (order = carousel order), firstComment and per-platform overrides. Accounts and media must belong to the same client as the post (or all be own work).${OWN} The separate scope field is org (default) or personal.`,
     parametersSchema: schema(["body"], {
       body: text,
       scope: text,
-      clientRef: text,
+      ...scope,
       accountIds: ids,
       mediaAssetIds: ids,
       firstComment: text,
@@ -69,11 +85,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "update-post",
     displayName: "Update post",
-    description: "Change a draft or in-review post: body, clientRef, mediaAssetIds (replaces the list), firstComment, overrides (replaces them).",
+    description:
+      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, overrides (replaces them). Leave the client out to keep the post's client. Moving a post to another client (client: \"own\" for own work) only works once it has no accounts or media of the old one.",
     parametersSchema: schema(["postId"], {
       postId: text,
       body: text,
-      clientRef: text,
+      ...scope,
+      accountIds: ids,
       mediaAssetIds: ids,
       firstComment: text,
       overrides,
@@ -88,8 +106,8 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-posts",
     displayName: "List posts",
-    description: "List posts, newest first. Filter by status or clientRef.",
-    parametersSchema: schema([], { status: text, clientRef: text, limit: { type: "integer" } }),
+    description: `List the posts of one scope, newest first. Filter by status.${OWN}`,
+    parametersSchema: schema([], { status: text, ...scope, limit: { type: "integer" } }),
   },
   {
     name: "validate-post",
@@ -100,7 +118,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "attach-destination",
     displayName: "Attach destination",
-    description: "Add an account as a destination of a post. An org post cannot target a personal account.",
+    description: "Add an account as a destination of a post. The account must belong to the post's client (or both be own work). An org post cannot target a personal account.",
     parametersSchema: schema(["postId", "accountId"], { postId: text, accountId: text }),
   },
   {
@@ -148,32 +166,32 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-media-assets",
     displayName: "List media assets",
-    description: "Return media assets (id, url, kind, size, alt text, client). Use ids as mediaAssetIds.",
-    parametersSchema: schema([], { clientRef: text }),
+    description: `Return the media assets of one scope (id, url, kind, size, alt text). Use ids as mediaAssetIds on posts of the same scope.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
   },
   {
     name: "create-media-asset",
     displayName: "Create media asset",
-    description: "Register an image or video that is already hosted on a public https URL (prefer import-media-from-url so platforms can fetch it from R2).",
-    parametersSchema: schema(["url"], { url: text, name: text, kind: text, altText: text, clientRef: text }),
+    description: `Register an image or video that is already hosted on a public https URL (prefer import-media-from-url so platforms can fetch it from R2).${OWN}`,
+    parametersSchema: schema(["url"], { url: text, name: text, kind: text, altText: text, ...scope }),
   },
   {
     name: "import-media-from-url",
     displayName: "Import media from URL",
-    description: "Download a public https image (JPEG, PNG, GIF, WebP) or video (MP4, MOV) up to 512 MB and store it on the R2 media domain. Returns the asset id.",
-    parametersSchema: schema(["url"], { url: text, name: text, altText: text, clientRef: text }),
+    description: `Download a public https image (JPEG, PNG, GIF, WebP) or video (MP4, MOV) up to 512 MB and store it on the R2 media domain. Returns the asset id.${OWN}`,
+    parametersSchema: schema(["url"], { url: text, name: text, altText: text, ...scope }),
   },
   {
     name: "create-rss-feed",
     displayName: "Create RSS feed",
-    description: "Track an RSS or Atom feed. New items become draft posts (with the given destination accounts) for review.",
-    parametersSchema: schema(["url"], { url: text, accountIds: ids, accountId: text, clientRef: text }),
+    description: `Track an RSS or Atom feed. New items become draft posts (with the given destination accounts, all of the feed's scope) for review.${OWN}`,
+    parametersSchema: schema(["url"], { url: text, accountIds: ids, accountId: text, ...scope }),
   },
   {
     name: "list-rss-feeds",
     displayName: "List RSS feeds",
-    description: "Return tracked RSS feeds with their last check and error.",
-    parametersSchema: schema([], {}),
+    description: `Return the tracked RSS feeds of one scope with their last check and error.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
   },
   {
     name: "pause-rss-feed",
@@ -190,14 +208,14 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "record-inbox-item",
     displayName: "Record inbox item",
-    description: "Record a mention, comment or message by hand.",
-    parametersSchema: schema(["kind", "body"], { kind: text, body: text, accountId: text, author: text }),
+    description: `Record a mention, comment or message by hand. With accountId it belongs to that account's scope.${OWN}`,
+    parametersSchema: schema(["kind", "body"], { kind: text, body: text, accountId: text, author: text, ...scope }),
   },
   {
     name: "list-inbox",
     displayName: "List social inbox",
-    description: "Return comments and mentions, newest first. Filter by status (new, read, replied).",
-    parametersSchema: schema([], { status: text, limit: { type: "integer" } }),
+    description: `Return the comments and mentions of one scope, newest first. Filter by status (new, read, replied).${OWN}`,
+    parametersSchema: schema([], { status: text, limit: { type: "integer" }, ...scope }),
   },
   {
     name: "mark-inbox-read",
@@ -227,13 +245,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "post-analytics",
     displayName: "Post analytics",
-    description: "Latest engagement per destination for one post, or totals for the workspace, from snapshots at 1h, 24h, 7d and 30d.",
-    parametersSchema: schema([], { postId: text }),
+    description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,
+    parametersSchema: schema([], { postId: text, ...scope }),
   },
   {
     name: "account-analytics",
     displayName: "Account analytics",
-    description: "Engagement totals per account (latest snapshot per destination).",
-    parametersSchema: schema([], {}),
+    description: `Engagement totals per account of one scope (latest snapshot per destination).${OWN}`,
+    parametersSchema: schema([], { ...scope }),
   },
 ];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataTable,
   MetricCard,
@@ -11,8 +11,10 @@ import {
   type StatusBadgeVariant,
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { clientScopeFromSearch, parseClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   Button,
+  ClientWorkspaceBar,
   EmptyState,
   Field,
   Input,
@@ -27,6 +29,7 @@ import {
   errorText,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
 
 // ---------------------------------------------------------------------------
 // Types (type aliases so DataTable accepts them as records)
@@ -38,8 +41,12 @@ type SprintSummary = {
   sprintId: string;
   siteName: string;
   siteUrl: string;
+  /** `company:<id>` / `contact:<id>`; null = Partners in Biz's own site. */
+  client: string | null;
+  clientKind: "company" | "contact" | null;
   clientRef: string | null;
   clientName: string | null;
+  legacyClientName?: string;
   status: string;
   legacy: boolean;
   startDate: string;
@@ -74,9 +81,14 @@ type LoadResult = {
     dailyHourLocal: number;
   };
   agent: { id: string; status: string } | null;
-  clients: Array<{ id: string; name: string; domain: string | null }>;
+  /** The page's scope: null = Partners in Biz's own sites. */
+  scope: string | null;
+  client: ScopeClient | null;
+  clientError: string | null;
   sprints: SprintSummary[];
 };
+
+type ScopeClient = { kind: "company" | "contact"; id: string; name: string; domain: string | null; email: string | null; known: boolean };
 
 type Task = {
   id: string;
@@ -188,6 +200,34 @@ function useSearch(): URLSearchParams {
   return useMemo(() => new URLSearchParams(location.search), [location.search]);
 }
 
+/** `?client=company:<id>` / `contact:<id>` opens a client's workspace; no param is PiB's own sites. */
+function useScope(): ClientScope {
+  const location = useHostLocation();
+  return useMemo(() => clientScopeFromSearch(location.search), [location.search]);
+}
+
+function siteUrlFromDomain(domain: string | null): string {
+  if (!domain) return "";
+  return /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+}
+
+const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+
+/** A client's workspace: the shared client bar replaces the page header. */
+function ClientPage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+      {header}
+      {message ? (
+        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
+          {message}
+        </p>
+      ) : null}
+      {children}
+    </main>
+  );
+}
+
 function Sparkline({ values }: { values: number[] }) {
   if (values.length < 2) return <span style={{ color: tokens.muted, fontSize: 12 }}>—</span>;
   const width = 90;
@@ -245,29 +285,44 @@ export function SeoPage({ context }: PluginPageProps) {
   const load = usePluginAction("seo.load");
   const nav = useHostNavigation();
   const search = useSearch();
+  const scope = useScope();
+  const scopeKey = scopeParamValue(scope) ?? "own";
   const sprintId = search.get("sprint");
   const [data, setData] = useState<LoadResult | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [activation, setActivation] = useState<{ instructions: string[]; grant: string; agent: { status: string | null } } | null>(null);
   const activate = usePluginAction("seo.activate-agent");
+  const request = useRef(0);
 
   const refresh = useCallback(async () => {
-    const result = (await load({ uiBase: await resolvePluginUiBase("partnersinbiz.seo", import.meta.url) })) as LoadResult;
-    setData(result);
-  }, [load]);
+    const mine = ++request.current;
+    const result = (await load({ uiBase: await resolvePluginUiBase("partnersinbiz.seo", import.meta.url), client: scopeParamValue(scope) })) as LoadResult;
+    // A slower load for a scope the page has left must not overwrite the current one.
+    if (mine === request.current) setData(result);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, scopeKey]);
 
   useEffect(() => {
     if (!context.companyId) return;
+    setData(null);
     refresh().catch((error: unknown) => setMessage(errorText(error)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [context.companyId]);
+  }, [context.companyId, scopeKey]);
 
   useEffect(() => {
     if (search.get("connected") === "gsc") setMessage(search.get("pick") ? "Google Search Console connected. Pick the property for this sprint below." : "Google Search Console connected.");
   }, [search]);
 
-  const goTo = (id: string | null, tab?: TabId) => nav.navigate(id ? `/seo?sprint=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ""}` : "/seo");
+  // Every link keeps the page in its scope (own sites or this client).
+  const goTo = (id: string | null, tab?: TabId) => nav.navigate(sprintPagePath("/seo", id, scope, tab ? { tab } : {}));
+
+  // A sprint opened from the wrong workspace reopens in the one it belongs to.
+  const reopenIn = (id: string, client: string | null, clientName: string | null) => {
+    const tab = search.get("tab");
+    setMessage(client ? `This sprint belongs to ${clientName ?? "a client"}, so it is shown in that client's workspace.` : "This sprint is one of Partners in Biz's own sites, so it is shown under own SEO.");
+    nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), tab ? { tab } : {}), { replace: true });
+  };
 
   async function activateAgent() {
     setBusy(true);
@@ -284,19 +339,9 @@ export function SeoPage({ context }: PluginPageProps) {
   }
 
   const settings = data?.settings;
-  return (
-    <Page
-      title="SEO"
-      description="90-day SEO sprints per client site. Every due task is a Paperclip issue under the sprint's root issue; the SEO Specialist works agent tasks, people get the rest."
-      message={message}
-      actions={
-        <>
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => void activateAgent()}>
-            {busy ? "Activating…" : data?.agent ? "Re-sync SEO agent" : "Activate SEO agent"}
-          </Button>
-        </>
-      }
-    >
+  const client = scope ? data?.client ?? null : null;
+  const body = (
+    <>
       {settings && !settings.saved ? (
         <Banner tone="warn">
           <strong>SEO settings are not saved for this company.</strong>
@@ -311,19 +356,25 @@ export function SeoPage({ context }: PluginPageProps) {
           </span>
         </Banner>
       ) : null}
-      {settings?.redirectUri ? (
+      {!scope && settings?.redirectUri ? (
         <Banner tone="info">
           <span>
             Google OAuth redirect URI to register in Google Cloud (Credentials → your Web client → Authorized redirect URIs): <code>{settings.redirectUri}</code>
           </span>
         </Banner>
       ) : null}
-      {activation ? (
+      {!scope && activation ? (
         <Banner tone="info">
           <strong>SEO agent: {activation.agent.status ?? "created"} · tool access {activation.grant.replace(/_/g, " ")}</strong>
           <ol style={{ margin: 0, paddingLeft: 18 }}>
             {activation.instructions.map((line) => <li key={line}>{line}</li>)}
           </ol>
+        </Banner>
+      ) : null}
+      {scope && data?.clientError ? (
+        <Banner tone="warn">
+          <strong>Client not found in the CRM list.</strong>
+          <span>{data.clientError}</span>
         </Banner>
       ) : null}
 
@@ -334,16 +385,47 @@ export function SeoPage({ context }: PluginPageProps) {
           key={sprintId}
           companyId={context.companyId ?? ""}
           sprintId={sprintId}
+          scope={scope}
           load={data}
           initialTab={(search.get("tab") as TabId | null) ?? "plan"}
           onTab={(tab) => goTo(sprintId, tab)}
           onBack={() => goTo(null)}
+          onRedirect={(target, name) => reopenIn(sprintId, target, name)}
           onMessage={setMessage}
           onChanged={refresh}
         />
       ) : (
-        <SprintList data={data} onOpen={(id) => goTo(id)} onMessage={setMessage} onChanged={refresh} />
+        <SprintList data={data} client={client} onOpen={(id) => goTo(id)} onMessage={setMessage} onChanged={refresh} />
       )}
+    </>
+  );
+
+  if (scope) {
+    const header = client ? (
+      <ClientWorkspaceBar
+        client={{ kind: client.kind, id: client.id, name: client.name, detail: client.domain ?? client.email }}
+        active="seo"
+        linkProps={nav.linkProps}
+        ownPath="/seo"
+      />
+    ) : null;
+    return <ClientPage header={header} message={message}>{body}</ClientPage>;
+  }
+
+  return (
+    <Page
+      title="SEO"
+      description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. Every due task is a Paperclip issue under the sprint's root issue; the SEO Specialist works agent tasks, people get the rest."
+      message={message}
+      actions={
+        <>
+          <Button type="button" variant="secondary" disabled={busy} onClick={() => void activateAgent()}>
+            {busy ? "Activating…" : data?.agent ? "Re-sync SEO agent" : "Activate SEO agent"}
+          </Button>
+        </>
+      }
+    >
+      {body}
     </Page>
   );
 }
@@ -352,13 +434,16 @@ export function SeoPage({ context }: PluginPageProps) {
 // Sprint list + create
 // ---------------------------------------------------------------------------
 
-function SprintList({ data, onOpen, onMessage, onChanged }: { data: LoadResult; onOpen: (id: string) => void; onMessage: (m: string) => void; onChanged: () => Promise<void> }) {
+function SprintList({ data, client, onOpen, onMessage, onChanged }: { data: LoadResult; client: ScopeClient | null; onOpen: (id: string) => void; onMessage: (m: string) => void; onChanged: () => Promise<void> }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const upgrade = usePluginAction("seo.upgrade-legacy");
   const q = query.trim().toLowerCase();
-  const rows = data.sprints.filter((s) => !q || `${s.siteName} ${s.clientName ?? ""} ${s.siteUrl}`.toLowerCase().includes(q));
+  const rows = data.sprints.filter((s) => !q || `${s.siteName} ${s.legacyClientName ?? ""} ${s.siteUrl}`.toLowerCase().includes(q));
   const active = data.sprints.filter((s) => ["pre_launch", "active", "compounding"].includes(s.status) && !s.legacy);
+  // A client workspace can only start sprints for a client the CRM list knows.
+  const canCreate = !client || client.known;
+  const newButton = <Button type="button" disabled={!canCreate} onClick={() => setCreating(true)}>+ Sprint</Button>;
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <StatRow>
@@ -368,13 +453,17 @@ function SprintList({ data, onOpen, onMessage, onChanged }: { data: LoadResult; 
         <MetricCard label="Proposals" value={active.reduce((n, s) => n + (s.tasks?.proposals ?? 0), 0)} />
       </StatRow>
       <Toolbar search={query} onSearchChange={setQuery} searchPlaceholder="Search sprints…">
-        <Button type="button" onClick={() => setCreating(true)}>+ Sprint</Button>
+        {newButton}
       </Toolbar>
-      {rows.length === 0 ? (
+      {data.sprints.length === 0 ? (
         <EmptyState
-          title="No SEO sprints yet"
-          description="A sprint is one client site on the Outrank-90 plan: 42 tasks over 13 weeks, then compounding."
-          action={<Button type="button" onClick={() => setCreating(true)}>+ Sprint</Button>}
+          title={client ? `No SEO sprint for ${client.name} yet` : "No SEO sprints for PiB's own sites yet"}
+          description={
+            client
+              ? "A sprint is one site on the Outrank-90 plan: 42 tasks over 13 weeks, then compounding."
+              : "A sprint is one site on the Outrank-90 plan: 42 tasks over 13 weeks, then compounding. Client sprints live in each client's workspace (CRM → client → SEO)."
+          }
+          action={newButton}
         />
       ) : (
         <DataTable
@@ -386,10 +475,12 @@ function SprintList({ data, onOpen, onMessage, onChanged }: { data: LoadResult; 
                 <button type="button" onClick={() => onOpen(String(row.sprintId))} style={{ all: "unset", cursor: "pointer", display: "grid", gap: 2 }}>
                   <strong style={{ fontSize: 13 }}>{String(row.siteName)}</strong>
                   <span style={{ fontSize: 12, color: tokens.muted }}>{String(row.siteUrl)}</span>
+                  {row.legacyClientName ? (
+                    <span style={{ fontSize: 12, color: tokens.muted }}>Names client “{String(row.legacyClientName)}” but is not linked to the CRM</span>
+                  ) : null}
                 </button>
               ),
             },
-            { key: "clientName", header: "Client", render: (v) => (v ? String(v) : <span style={{ color: tokens.muted }}>—</span>) },
             { key: "day", header: "Day", render: (_v, row) => (row.legacy ? "—" : `${Math.max(Number(row.day), 0)}/90`) },
             { key: "phaseName", header: "Phase", render: (v, row) => (row.legacy ? "—" : String(v)) },
             { key: "status", header: "Status", render: (v, row) => (row.legacy ? <Badge status="paused" label="legacy" /> : <Badge status={String(v)} />) },
@@ -423,17 +514,19 @@ function SprintList({ data, onOpen, onMessage, onChanged }: { data: LoadResult; 
           emptyMessage="No sprints match."
         />
       )}
-      <CreateSprintModal open={creating} data={data} onClose={() => setCreating(false)} onCreated={async (id, note) => { setCreating(false); await onChanged(); onMessage(note); onOpen(id); }} onError={onMessage} />
+      <CreateSprintModal open={creating} data={data} client={client} onClose={() => setCreating(false)} onCreated={async (id, note) => { setCreating(false); await onChanged(); onMessage(note); onOpen(id); }} onError={onMessage} />
     </div>
   );
 }
 
-function CreateSprintModal({ open, data, onClose, onCreated, onError }: { open: boolean; data: LoadResult; onClose: () => void; onCreated: (id: string, note: string) => Promise<void>; onError: (m: string) => void }) {
+/**
+ * In a client's workspace the sprint is locked to that client (name and
+ * domain prefilled). On the own page it is a Partners in Biz site: no client.
+ */
+function CreateSprintModal({ open, data, client, onClose, onCreated, onError }: { open: boolean; data: LoadResult; client: ScopeClient | null; onClose: () => void; onCreated: (id: string, note: string) => Promise<void>; onError: (m: string) => void }) {
   const create = usePluginAction("seo.create-sprint");
-  const [clientRef, setClientRef] = useState("");
-  const [clientName, setClientName] = useState("");
-  const [siteUrl, setSiteUrl] = useState("");
-  const [siteName, setSiteName] = useState("");
+  const [siteUrl, setSiteUrl] = useState(siteUrlFromDomain(client?.domain ?? null));
+  const [siteName, setSiteName] = useState(client?.name ?? "");
   const [startDate, setStartDate] = useState(data.today);
   const [owner, setOwner] = useState<"me" | "none">("me");
   const [mode, setMode] = useState(data.settings.defaultAutopilotMode);
@@ -441,22 +534,12 @@ function CreateSprintModal({ open, data, onClose, onCreated, onError }: { open: 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    const client = data.clients.find((c) => c.id === clientRef);
-    if (client) {
-      if (!siteName) setSiteName(client.name);
-      if (!siteUrl && client.domain) setSiteUrl(`https://${client.domain}`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientRef]);
-
   async function submit() {
     setSaving(true);
     setError("");
     try {
       const result = (await create({
-        clientRef: clientRef || undefined,
-        clientName: clientRef ? undefined : clientName || undefined,
+        client: client ? `${client.kind}:${client.id}` : null,
         siteUrl,
         siteName: siteName || undefined,
         startDate,
@@ -476,31 +559,29 @@ function CreateSprintModal({ open, data, onClose, onCreated, onError }: { open: 
   return (
     <Modal
       open={open}
-      title="New SEO sprint"
+      title={client ? `New SEO sprint for ${client.name}` : "New SEO sprint for a PiB site"}
       description="Seeds the 42 Outrank-90 tasks and 15 directory backlinks, creates the sprint root issue, and opens the tasks that are due."
       onClose={onClose}
       footer={(
         <>
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button type="button" disabled={saving || !siteUrl.trim() || (!clientRef && !clientName.trim() && !siteName.trim())} onClick={() => void submit()}>
+          <Button type="button" disabled={saving || !siteUrl.trim() || (client ? !client.known : false)} onClick={() => void submit()}>
             {saving ? "Creating…" : "Create sprint"}
           </Button>
         </>
       )}
     >
-      <Field label="Client (CRM company)">
-        <Select value={clientRef} onChange={(e) => setClientRef(e.target.value)}>
-          <option value="">No CRM company — type a name</option>
-          {data.clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </Select>
-      </Field>
-      {!clientRef ? (
-        <Field label="Client name">
-          <Input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder={data.clients.length === 0 ? "No CRM companies yet (run CRM resync)" : "Client name"} />
+      {client ? (
+        <Field label="Client">
+          <span style={{ fontSize: 13 }}>
+            {client.name} <span style={{ color: tokens.muted }}>· CRM {client.kind}{client.domain ? ` · ${client.domain}` : ""}</span>
+          </span>
         </Field>
-      ) : null}
+      ) : (
+        <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>For one of Partners in Biz's own sites. To start a sprint for a client, open the client in the CRM, then SEO.</p>
+      )}
       <Field label="Site URL"><Input value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} placeholder="https://example.co.za" required /></Field>
-      <Field label="Site name"><Input value={siteName} onChange={(e) => setSiteName(e.target.value)} /></Field>
+      <Field label="Site name"><Input value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder={client ? client.name : "Default: the domain"} /></Field>
       <Field label="Start date (day 0, launch day)"><Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
       <Field label="Owner (receives human tasks and sign-offs)">
         <Select value={owner} onChange={(e) => setOwner(e.target.value as "me" | "none")}>
@@ -528,19 +609,24 @@ function CreateSprintModal({ open, data, onClose, onCreated, onError }: { open: 
 function SprintCockpit({
   companyId,
   sprintId,
+  scope,
   load,
   initialTab,
   onTab,
   onBack,
+  onRedirect,
   onMessage,
   onChanged,
 }: {
   companyId: string;
   sprintId: string;
+  scope: ClientScope;
   load: LoadResult;
   initialTab: TabId;
   onTab: (tab: TabId) => void;
   onBack: () => void;
+  /** The sprint belongs to another scope (a client, or PiB's own sites). */
+  onRedirect: (client: string | null, clientName: string | null) => void;
   onMessage: (m: string) => void;
   onChanged: () => Promise<void>;
 }) {
@@ -551,10 +637,18 @@ function SprintCockpit({
   const [bundle, setBundle] = useState<SprintBundle | null>(null);
   const [tab, setTab] = useState<TabId>(TABS.some((t) => t.id === initialTab) ? initialTab : "plan");
   const [working, setWorking] = useState<string | null>(null);
+  const [linking, setLinking] = useState(false);
+  const client = scopeParamValue(scope);
 
   const reload = useCallback(async () => {
-    setBundle((await fetchSprint({ sprintId })) as SprintBundle);
-  }, [fetchSprint, sprintId]);
+    const result = (await fetchSprint({ sprintId, client })) as SprintBundle | { redirect: { client: string | null; clientName: string | null } };
+    if ("redirect" in result) {
+      onRedirect(result.redirect.client, result.redirect.clientName);
+      return;
+    }
+    setBundle(result);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchSprint, sprintId, client]);
 
   useEffect(() => {
     reload().catch((error: unknown) => onMessage(errorText(error)));
@@ -604,8 +698,8 @@ function SprintCockpit({
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 4 }}>
-          <button type="button" onClick={onBack} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: tokens.muted }}>← All sprints</button>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 650 }}>{s.siteName}{s.clientName && s.clientName !== s.siteName ? <span style={{ color: tokens.muted, fontWeight: 500 }}> · {s.clientName}</span> : null}</h2>
+          <button type="button" onClick={onBack} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: tokens.muted }}>← {scope ? "This client's sprints" : "All PiB sprints"}</button>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 650 }}>{s.siteName}</h2>
           <span style={{ fontSize: 12, color: tokens.muted }}>
             {s.siteUrl} · start {s.startDate} · root issue <IssueLink id={s.rootIssueId} identifier={s.rootIssueIdentifier} />
           </span>
@@ -637,6 +731,14 @@ function SprintCockpit({
           ) : null}
         </div>
       </div>
+      {!scope && s.legacyClientName ? (
+        <Banner tone="warn">
+          <strong>This sprint names a client (“{s.legacyClientName}”) but is not linked to a CRM record, so it shows under PiB's own sites.</strong>
+          <span>Link it to the client's CRM company or contact to move it into that client's workspace.</span>
+          <span><Button type="button" variant="secondary" style={small} onClick={() => setLinking(true)}>Link to CRM client</Button></span>
+        </Banner>
+      ) : null}
+      <LinkClientModal open={linking} sprint={s} onClose={() => setLinking(false)} call={call} />
       <StatRow>
         <MetricCard label="Day" value={s.legacy ? "—" : `${Math.max(s.day, 0)} / 90`} />
         <MetricCard label="Week · phase" value={`${s.week} · ${s.phaseName}`} />
@@ -657,6 +759,55 @@ function SprintCockpit({
 }
 
 type CallFn = (tool: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;
+
+type CrmClientOption = { client: string; kind: "company" | "contact"; id: string; name: string; detail: string | null };
+
+/** People only: move an own sprint that names a client into that client's workspace. */
+function LinkClientModal({ open, sprint, onClose, call }: { open: boolean; sprint: SprintSummary; onClose: () => void; call: CallFn }) {
+  const listClients = usePluginAction("seo.clients");
+  const [clients, setClients] = useState<CrmClientOption[] | null>(null);
+  const [choice, setChoice] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open || clients) return;
+    listClients({})
+      .then((result) => {
+        const list = (result as { clients: CrmClientOption[] }).clients;
+        setClients(list);
+        const legacy = sprint.legacyClientName?.trim().toLowerCase();
+        const match = legacy ? list.find((c) => c.name.trim().toLowerCase() === legacy) : undefined;
+        if (match) setChoice(match.client);
+      })
+      .catch((e: unknown) => setError(errorText(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  return (
+    <Modal
+      open={open}
+      title="Link sprint to a CRM client"
+      description="The sprint, its issues and its data move into the client's workspace. New task issues start with the client's name."
+      onClose={onClose}
+      footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={!choice} onClick={() => void call("update-sprint", { sprintId: sprint.sprintId, client: choice }, "Sprint linked to the CRM client.").then(onClose)}>Link</Button>
+        </>
+      )}
+    >
+      <Field label="CRM client">
+        <Select value={choice} onChange={(e) => setChoice(e.target.value)}>
+          <option value="">{clients ? (clients.length === 0 ? "No CRM clients yet (run CRM resync)" : "Choose a company or contact") : "Loading…"}</option>
+          {(clients ?? []).map((c) => (
+            <option key={c.client} value={c.client}>{c.name} · {c.kind}{c.detail ? ` · ${c.detail}` : ""}</option>
+          ))}
+        </Select>
+      </Field>
+      {error ? <p style={{ margin: 0, color: tokens.destructive, fontSize: 13 }}>{error}</p> : null}
+    </Modal>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Plan
@@ -1186,7 +1337,8 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
 
   async function connect() {
     try {
-      const returnTo = `${window.location.pathname}?sprint=${encodeURIComponent(sprintId)}&tab=integrations`;
+      // Back to this sprint in its own scope (a client's workspace keeps its client).
+      const returnTo = sprintPagePath(window.location.pathname, sprintId, parseClientParam(bundle.sprint.client), { tab: "integrations" });
       const result = (await start({ sprintId, returnTo })) as { authorizeUrl: string; state: string };
       rememberOAuthStart(result.state, {
         companyId,

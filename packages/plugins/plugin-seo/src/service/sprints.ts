@@ -3,7 +3,7 @@
  * issue), read, today's plan, autopilot and status changes, digests.
  */
 import { randomUUID } from "node:crypto";
-import { getCrmCompany } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
 import { digestComment, rootIssueDescription, rootIssueTitle } from "../engine/copy.js";
@@ -16,8 +16,8 @@ import {
   type AutopilotMode,
   type SprintStatus,
 } from "../engine/sprint.js";
+import { scopeParamValue, sprintScope } from "../engine/scope.js";
 import { addDays } from "../engine/time.js";
-import { NAMESPACE } from "../namespace.js";
 import { DEFAULT_DIRECTORIES, dueDayFor, OUTRANK_90, PHASE_NAMES, TEMPLATE_ID, TEMPLATE_VERSION, type SprintPhase } from "../templates/outrank-90.js";
 import { ensureProject, resolveAgent } from "./agent.js";
 import {
@@ -38,7 +38,8 @@ import {
   type Params,
 } from "./common.js";
 import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy } from "./context.js";
-import { commentOn, getIssue, openIssue } from "./issues.js";
+import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
+import { requireClient, scopeParam } from "./scope.js";
 import { materialiseDueTasks } from "./tasks.js";
 
 export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks: number; backlinks: number }> {
@@ -107,7 +108,7 @@ export async function ensureRootIssue(env: Env, info: CompanyInfo, sprint: db.Sp
   const created = await openIssue(env, {
     companyId: sprint.companyId,
     title: rootIssueTitle(sprint),
-    description: rootIssueDescription(sprintCopy(sprint), { startDate: sprint.startDate, cockpitPath: cockpitPath(info, sprint.id) }),
+    description: rootIssueDescription(sprintCopy(sprint), { startDate: sprint.startDate, cockpitPath: cockpitPath(info, sprint) }),
     originKind: ORIGIN.sprint,
     originId: sprint.id,
     projectId: projectId ?? sprint.projectId,
@@ -132,15 +133,15 @@ async function responsibleUser(env: Env, companyId: string, actor: Actor): Promi
 export async function createSprint(env: Env, companyId: string, actor: Actor, params: Params) {
   const info = await companyInfo(env, companyId);
   const siteUrl = canonicalSiteUrl(reqStr(params, "siteUrl", { max: 500 }));
-  const clientRef = str(params, "clientRef", { max: 120 }) ?? null;
-  let clientName = str(params, "clientName", { max: 200 }) ?? null;
-  if (clientRef) {
-    const crm = await getCrmCompany(env.ctx, NAMESPACE, companyId, clientRef);
-    if (crm) clientName = crm.name;
-    else if (!clientName) {
-      throw new SeoError("That CRM company is not in the SEO plugin's client list yet. Ask a person to run CRM resync, or pass clientName.");
-    }
+  // No client = Partners in Biz's own site. A client must be a real CRM company or contact.
+  const scope = scopeParam(params) ?? null;
+  if (!scope && str(params, "clientName", { max: 200 })) {
+    throw new SeoError('clientName is not accepted. For client work pass client "company:<CRM company id>" or "contact:<CRM contact id>"; for a Partners in Biz site omit client and use siteName.');
   }
+  const client = scope ? await requireClient(env, companyId, scope) : null;
+  const clientKind = client?.kind ?? null;
+  const clientRef = client?.id ?? null;
+  const clientName = client?.name ?? null;
   const host = new URL(siteUrl).hostname.replace(/^www\./, "");
   const siteName = str(params, "siteName", { max: 200 }) ?? clientName ?? host;
   const startDate = isoDateParam(params, "startDate") ?? info.today;
@@ -156,6 +157,7 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     name: siteName,
     siteUrl,
     siteName,
+    clientKind,
     clientRef,
     clientName,
     status: clock.runningStatus,
@@ -190,6 +192,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     sprintId: id,
     siteUrl,
     siteName,
+    client: scopeParamValue(sprintScope({ clientKind, clientRef })),
+    clientKind,
     clientRef,
     clientName,
     startDate,
@@ -234,8 +238,12 @@ export function sprintView(sprint: db.Sprint, today: string, counts?: { open: nu
     sprintId: sprint.id,
     siteName: sprint.siteName,
     siteUrl: sprint.siteUrl,
+    /** Pass this as `client` to tools; null = Partners in Biz's own site. */
+    client: scopeParamValue(sprintScope(sprint)),
+    clientKind: sprint.clientKind,
     clientRef: sprint.clientRef,
     clientName: sprint.clientName,
+    ...(sprint.legacyClientName ? { legacyClientName: sprint.legacyClientName } : {}),
     status: sprint.status,
     legacy: !sprint.seededAt,
     startDate: sprint.startDate,
@@ -258,7 +266,7 @@ export function sprintView(sprint: db.Sprint, today: string, counts?: { open: nu
 export async function listSprintsTool(env: Env, companyId: string, params: Params) {
   const info = await companyInfo(env, companyId);
   const status = str(params, "status");
-  const sprints = await db.listSprints(env.ctx.db, companyId, { status, clientRef: str(params, "clientRef") });
+  const sprints = await db.listSprints(env.ctx.db, companyId, { status, scope: scopeParam(params) });
   const counts = await db.sprintCounts(env.ctx.db, companyId);
   return { today: info.today, sprints: sprints.map((s) => sprintView(s, info.today, counts[s.id])) };
 }
@@ -274,7 +282,7 @@ export async function getSprintTool(env: Env, companyId: string, params: Params)
   ]);
   return {
     ...sprintView(ctx.sprint, ctx.info.today, counts),
-    cockpit: cockpitPath(ctx.info, ctx.sprint.id),
+    cockpit: cockpitPath(ctx.info, ctx.sprint),
     integrations: integrations.map(integrationView),
     keywords: { tracked: keywords.length, top10: keywords.filter((k) => (k.currentPosition ?? 999) <= 10).length, priority: keywords.filter((k) => k.isPriority).map((k) => k.phrase) },
     pageHealth: health.map((h) => ({ url: h.url, strategy: h.strategy, performance: h.performance, seo: h.seo, lcpMs: h.lcpMs, cls: h.cls, inpMs: h.inpMs, source: h.source, pulledOn: h.pulledOn })),
@@ -298,9 +306,10 @@ export function integrationView(i: db.Integration) {
 export async function todayTool(env: Env, companyId: string, params: Params) {
   const info = await companyInfo(env, companyId);
   const sprintId = str(params, "sprintId");
+  const scope = scopeParam(params);
   const sprints = sprintId
     ? [await requireSprint(env, companyId, sprintId)]
-    : (await db.listSprints(env.ctx.db, companyId)).filter((s) => s.status !== "archived" && s.seededAt);
+    : (await db.listSprints(env.ctx.db, companyId, { scope })).filter((s) => s.status !== "archived" && s.seededAt);
   const out = [];
   for (const sprint of sprints) out.push(await sprintToday(env, info, sprint));
   return { today: info.today, timezone: info.timezone, sprints: out };
@@ -346,7 +355,8 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     sprintId: sprint.id,
     site: sprint.siteName,
     siteUrl: sprint.siteUrl,
-    client: sprint.clientName,
+    client: scopeParamValue(sprintScope(sprint)),
+    clientName: sprint.clientName,
     status: sprint.status,
     day: clock.day,
     week: clock.week,
@@ -418,9 +428,27 @@ export async function updateSprintTool(env: Env, companyId: string, actor: Actor
     if (actor.kind !== "user") throw new SeoError("Only a person can change the sprint owner");
     patch.owner_user_id = owner === "me" ? actor.userId : owner === "none" ? null : owner;
   }
+  // Moving a sprint between Partners in Biz's own sites and a client (or between clients).
+  const scope = scopeParam(params);
+  const from = sprintScope(sprint);
+  let moved: { client: string | null; clientName: string | null } | null = null;
+  if (scope !== undefined && !sameClient(scope, from)) {
+    if (actor.kind !== "user") throw new SeoError("Only a person can move a sprint to another client or back to Partners in Biz's own sites.");
+    const client = scope ? await requireClient(env, companyId, scope) : null;
+    patch.client_kind = client?.kind ?? null;
+    patch.client_ref = client?.id ?? null;
+    patch.client_name = client?.name ?? null;
+    moved = { client: scopeParamValue(scope), clientName: client?.name ?? null };
+  }
   if (Object.keys(patch).length === 0) throw new SeoError("Nothing to update");
   await db.updateSprint(env.ctx.db, companyId, sprint.id, patch);
-  return { sprintId: sprint.id, updated: Object.keys(patch) };
+  if (moved && sprint.rootIssueId) {
+    const fresh = await requireSprint(env, companyId, sprint.id);
+    await patchIssue(env, companyId, sprint.rootIssueId, { title: rootIssueTitle(fresh) });
+    const before = sprint.clientName ?? (from ? scopeParamValue(from) : "Partners in Biz's own sites");
+    await commentOn(env, companyId, sprint.rootIssueId, `Sprint moved from ${before} to ${moved.clientName ?? "Partners in Biz's own sites"} by ${actorLabel(actor)}. Open sub-issues keep their titles.`);
+  }
+  return { sprintId: sprint.id, updated: Object.keys(patch), ...(moved ? { client: moved.client, clientName: moved.clientName } : {}) };
 }
 
 export async function postDigest(env: Env, companyId: string, actor: Actor, params: Params) {

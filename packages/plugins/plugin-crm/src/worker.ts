@@ -107,7 +107,13 @@ import { PLUGIN_ID } from "./namespace.js";
 import { CRM_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
-import { createSkillSyncer, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
+import {
+  clientScopeFromInput,
+  createSkillSyncer,
+  createWorkIssue,
+  readConfig,
+  type ClientRef,
+} from "@partnersinbiz/pib-plugin-kit";
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
@@ -131,8 +137,11 @@ const plugin = definePlugin({
       ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
     }
     registerAction("crm.load", (_params, context) => load(ctx, context));
+    registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
+    registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
     registerAction("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
+    registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
     registerAction("crm.link-contact", (params, context) => linkAction(ctx, context, params));
     registerAction("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
     registerAction("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
@@ -265,17 +274,16 @@ async function dispatch(
   }
 }
 
-async function load(ctx: PluginContext, context: PluginPerformActionContext) {
-  const viewer = await actionViewer(ctx, context);
+/** Every company, contact, deal and link this viewer may see, plus the pipeline. */
+async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const [accounts, contacts, deals, links, sequences, stages, products] = await Promise.all([
+  const [accounts, contacts, deals, links, sequences, stages] = await Promise.all([
     listAccounts(ctx, viewer.companyId),
     listContacts(ctx, viewer.companyId),
     listDeals(ctx, viewer.companyId),
     listLinks(ctx, viewer.companyId),
     listSequences(ctx, viewer.companyId),
     listStages(ctx, pipeline.pipelineId),
-    listProducts(ctx, viewer.companyId),
   ]);
   const [accountGrants, contactGrants, dealGrants] = await Promise.all([
     grantsFor(ctx, "company", viewer.companyId),
@@ -287,6 +295,16 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
   const contactIds = new Set(visibleContacts.map((row) => row.id));
   const visibleLinks = links.filter((link) => contactIds.has(link.contactId));
+  return { pipeline, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
+}
+
+async function load(ctx: PluginContext, context: PluginPerformActionContext) {
+  const viewer = await actionViewer(ctx, context);
+  const [records, products] = await Promise.all([
+    visibleRecords(ctx, viewer),
+    listProducts(ctx, viewer.companyId),
+  ]);
+  const { visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages } = records;
 
   const linkedContactIds = new Set(visibleLinks.map((link) => link.contactId));
   const openStageIds = new Set(stages.filter((stage) => stage.kind === "open").map((stage) => stage.id));
@@ -363,6 +381,105 @@ async function createCompanyAction(ctx: PluginContext, context: PluginPerformAct
 
 async function createContactAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   return createContactRecord(ctx, await actionViewer(ctx, context), params);
+}
+
+/** A person editing in the UI writes as a human; anything else is held to human-owned fields. */
+function actionSource(context: PluginPerformActionContext): "agent" | "human" {
+  return context.actor.type === "user" ? "human" : "agent";
+}
+
+async function updateCompanyAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  return updateCompany(ctx, await actionViewer(ctx, context), params, actionSource(context));
+}
+
+async function updateContactAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  return updateContact(ctx, await actionViewer(ctx, context), params, actionSource(context));
+}
+
+async function clientWorkspaceAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  return clientWorkspace(ctx, await actionViewer(ctx, context), workspaceRef(params));
+}
+
+/** Accepts `{ kind, id }`, `{ client: {kind,id} }` or `{ client: "company:<id>" }`. */
+function workspaceRef(params: Record<string, unknown>): ClientRef {
+  const fromInput = clientScopeFromInput(params);
+  if (fromInput) return fromInput;
+  const kind = params.kind;
+  const id = typeof params.id === "string" ? params.id.trim() : "";
+  if ((kind === "company" || kind === "contact") && id) return { kind, id };
+  throw new CrmError("kind (company or contact) and id are required");
+}
+
+/**
+ * Everything the client workspace Overview shows for one CRM company or
+ * contact. An unknown, deleted or hidden id returns `found: false` so the
+ * page can show an empty state instead of an error.
+ */
+async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRef) {
+  const records = await visibleRecords(ctx, viewer);
+  const { visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages } = records;
+  const base = { kind: ref.kind, id: ref.id };
+  const account = ref.kind === "company" ? visibleAccounts.find((row) => row.id === ref.id) ?? null : null;
+  const contact = ref.kind === "contact" ? visibleContacts.find((row) => row.id === ref.id) ?? null : null;
+  if (!account && !contact) return { ...base, found: false as const };
+
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  const accountById = new Map(visibleAccounts.map((row) => [row.id, row]));
+  const contactById = new Map(visibleContacts.map((row) => [row.id, row]));
+
+  const contacts = account
+    ? visibleLinks
+      .filter((link) => link.accountId === account.id)
+      .flatMap((link) => {
+        const row = contactById.get(link.contactId);
+        return row ? [{ id: row.id, name: row.name, emails: row.emails, lifecycle: row.lifecycle, roleLabel: link.roleLabel }] : [];
+      })
+    : [];
+  const companies = contact
+    ? visibleLinks
+      .filter((link) => link.contactId === contact.id)
+      .flatMap((link) => {
+        const row = accountById.get(link.accountId);
+        return row ? [{ id: row.id, name: row.name, domain: row.domain, lifecycle: row.lifecycle, roleLabel: link.roleLabel }] : [];
+      })
+    : [];
+
+  // A company's deals include those logged against its people without a company set.
+  const linkedContactIds = new Set(contacts.map((row) => row.id));
+  const deals = visibleDeals
+    .filter((deal) => account
+      ? deal.accountId === account.id || (deal.accountId == null && deal.contactId != null && linkedContactIds.has(deal.contactId))
+      : deal.contactId === contact!.id)
+    .map((deal) => ({
+      id: deal.id,
+      title: deal.title,
+      amountMinor: deal.amountMinor,
+      currency: deal.currency,
+      stageId: deal.stageId,
+      stageName: stageById.get(deal.stageId)?.name ?? deal.stageId,
+      stageKind: stageById.get(deal.stageId)?.kind ?? "open",
+      contactId: deal.contactId,
+      contactName: deal.contactId ? contactById.get(deal.contactId)?.name ?? null : null,
+      accountId: deal.accountId,
+    }));
+
+  const activities = await listActivities(ctx, ref.kind, ref.id, 50);
+  return {
+    ...base,
+    found: true as const,
+    company: account,
+    contact,
+    contacts,
+    companies,
+    deals,
+    activities,
+    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position })),
+    sequences: sequences.map((row) => ({ id: row.id, name: row.name, completionMode: row.completion_mode })),
+    options: {
+      companies: visibleAccounts.map((row) => ({ id: row.id, name: row.name })),
+      contacts: visibleContacts.map((row) => ({ id: row.id, name: row.name })),
+    },
+  };
 }
 
 async function linkAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {

@@ -28,10 +28,19 @@ describe("manifest", () => {
     }
   });
 
-  it("registers the OAuth completion route with body company resolution and no start route", () => {
+  it("registers the OAuth completion and client summary routes, and no start route", () => {
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
+      expect.objectContaining({
+        routeKey: "client-summary",
+        method: "GET",
+        path: "/client-summary",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      }),
     ]);
+    expect(manifest.version).toBe("0.3.0");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {

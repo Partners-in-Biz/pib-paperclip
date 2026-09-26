@@ -141,7 +141,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
     const issue = await getIssue(env, sprint.companyId, existingIssueId);
     if (issue && OPEN_ISSUE_STATUSES.has(String(issue.status))) {
       issueId = existingIssueId;
-      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint.id)));
+      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)));
     }
   }
   if (!issueId) {
@@ -150,7 +150,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
       const opened = await openIssue(env, {
         companyId: sprint.companyId,
         title: approvalIssueTitle(sprint, `week ${clock.week}`),
-        description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint.id)),
+        description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)),
         originKind: ORIGIN.approval,
         originId: sprint.id,
         projectId: sprint.projectId,

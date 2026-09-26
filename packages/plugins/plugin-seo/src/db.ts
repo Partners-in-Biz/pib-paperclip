@@ -10,6 +10,7 @@
  *   with `$n::jsonb` (never JS arrays); dates are selected as text.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { NAMESPACE } from "./namespace.js";
 import type { AutopilotMode, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
 import type { TaskOwner } from "./templates/outrank-90.js";
@@ -149,8 +150,13 @@ export interface Sprint {
   name: string;
   siteUrl: string;
   siteName: string;
+  /** Set for client sprints; null for Partners in Biz's own sites. */
+  clientKind: ClientKind | null;
   clientRef: string | null;
+  /** The CRM client's name (client sprints only). */
   clientName: string | null;
+  /** A free-text client name from before sprints had to reference the CRM (own sprints only). */
+  legacyClientName: string | null;
   status: SprintStatus;
   startDate: string;
   templateId: string;
@@ -177,7 +183,7 @@ export interface Sprint {
   updatedAt: string | null;
 }
 
-const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_ref, client_name, status, start_date::text AS start_date,
+const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, client_ref, client_name, status, start_date::text AS start_date,
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
   last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, created_at, updated_at`;
@@ -189,8 +195,7 @@ function sprintFrom(row: Row): Sprint {
     name: String(row.name ?? ""),
     siteUrl: String(row.site_url ?? ""),
     siteName: String(row.site_name ?? row.name ?? ""),
-    clientRef: s(row.client_ref),
-    clientName: s(row.client_name),
+    ...sprintClientFrom(row),
     status: String(row.status) as SprintStatus,
     startDate: String(row.start_date ?? "").slice(0, 10),
     templateId: String(row.template_id ?? "outrank-90"),
@@ -218,10 +223,18 @@ function sprintFrom(row: Row): Sprint {
   };
 }
 
+function sprintClientFrom(row: Row): Pick<Sprint, "clientKind" | "clientRef" | "clientName" | "legacyClientName"> {
+  const ref = s(row.client_ref);
+  const name = s(row.client_name);
+  if (!ref) return { clientKind: null, clientRef: null, clientName: null, legacyClientName: name };
+  return { clientKind: isClientKind(row.client_kind) ? row.client_kind : "company", clientRef: ref, clientName: name, legacyClientName: null };
+}
+
 const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   name: "text",
   site_url: "text",
   site_name: "text",
+  client_kind: "text",
   client_ref: "text",
   client_name: "text",
   status: "text",
@@ -249,16 +262,21 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   updated_at: "ts",
 };
 
-export async function listSprints(db: SeoDb, companyId: string, filter: { status?: string; clientRef?: string } = {}): Promise<Sprint[]> {
+/**
+ * `scope` undefined lists every sprint; `null` only Partners in Biz's own
+ * sites (no client); a client ref only that CRM company's or contact's.
+ */
+export async function listSprints(db: SeoDb, companyId: string, filter: { status?: string; scope?: ClientScope } = {}): Promise<Sprint[]> {
   const where = ["company_id = $1"];
   const params: unknown[] = [companyId];
   if (filter.status) {
     params.push(filter.status);
     where.push(`status = $${params.length}`);
   }
-  if (filter.clientRef) {
-    params.push(filter.clientRef);
-    where.push(`client_ref = $${params.length}`);
+  if (filter.scope !== undefined) {
+    const clause = clientWhere(filter.scope, params.length + 1);
+    params.push(...clause.params);
+    where.push(clause.sql);
   }
   const rows = await db.query(`SELECT ${SPRINT_SELECT} FROM ${t("sprints")} WHERE ${where.join(" AND ")} ORDER BY created_at DESC`, params);
   return rows.map(sprintFrom);
@@ -290,6 +308,7 @@ export async function insertSprint(db: SeoDb, sprint: {
   name: string;
   siteUrl: string;
   siteName: string;
+  clientKind: ClientKind | null;
   clientRef: string | null;
   clientName: string | null;
   status: SprintStatus;
@@ -301,15 +320,16 @@ export async function insertSprint(db: SeoDb, sprint: {
   notes: string | null;
 }): Promise<void> {
   await db.execute(
-    `INSERT INTO ${t("sprints")} (id, company_id, name, site_url, site_name, client_ref, client_name, status, start_date,
+    `INSERT INTO ${t("sprints")} (id, company_id, name, site_url, site_name, client_kind, client_ref, client_name, status, start_date,
        template_id, template_version, autopilot_mode, owner_user_id, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::date, $10, $11::int, $12, $13, $14)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12::int, $13, $14, $15)`,
     [
       sprint.id,
       sprint.companyId,
       sprint.name,
       sprint.siteUrl,
       sprint.siteName,
+      sprint.clientRef ? sprint.clientKind ?? "company" : null,
       sprint.clientRef,
       sprint.clientName,
       sprint.status,

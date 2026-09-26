@@ -74,11 +74,15 @@ describe("runtime SQL passes the host guard", () => {
     const { fake, calls } = guardedDb();
     const c = "co-1";
     const s = "sp-1";
-    await db.listSprints(fake, c, { status: "active", clientRef: "crm-1" });
+    await db.listSprints(fake, c, { status: "active", scope: { kind: "company", id: "crm-1" } });
+    await db.listSprints(fake, c, { scope: { kind: "contact", id: "ct-1" } });
+    await db.listSprints(fake, c, { scope: null });
+    await db.listSprints(fake, c);
     await db.getSprint(fake, c, s);
     await db.listRunnableSprints(fake);
     await db.listSprintCompanies(fake);
-    await db.insertSprint(fake, { id: s, companyId: c, name: "n", siteUrl: "https://a", siteName: "n", clientRef: null, clientName: null, status: "active", startDate: "2026-09-26", templateId: "outrank-90", templateVersion: 2, autopilotMode: "safe", ownerUserId: null, notes: null });
+    await db.insertSprint(fake, { id: s, companyId: c, name: "n", siteUrl: "https://a", siteName: "n", clientKind: null, clientRef: null, clientName: null, status: "active", startDate: "2026-09-26", templateId: "outrank-90", templateVersion: 2, autopilotMode: "safe", ownerUserId: null, notes: null });
+    await db.insertSprint(fake, { id: s, companyId: c, name: "n", siteUrl: "https://a", siteName: "n", clientKind: "contact", clientRef: "ct-1", clientName: "Jo", status: "active", startDate: "2026-09-26", templateId: "outrank-90", templateVersion: 2, autopilotMode: "safe", ownerUserId: null, notes: null });
     await db.updateSprint(fake, c, s, { status: "paused", health: { score: 90 }, audit_days_done: [0, 30], last_daily_on: "2026-09-26", current_day: 3, seeded_at: new Date().toISOString() });
     await db.setAgentForCompany(fake, c, "agent");
     await db.insertTasks(fake, [
@@ -141,6 +145,28 @@ describe("runtime SQL passes the host guard", () => {
     await db.sprintCounts(fake, c);
     expect(calls.length).toBeGreaterThan(60);
     expect(calls.every((call) => !/\bundefined\b/.test(call.sql))).toBe(true);
+  });
+
+  it("filters sprints by scope in SQL", async () => {
+    const { fake, calls } = guardedDb();
+    await db.listSprints(fake, "co-1", { scope: null });
+    expect(calls[0]!.sql).toContain("client_ref IS NULL");
+    expect(calls[0]!.params).toEqual(["co-1"]);
+    await db.listSprints(fake, "co-1", { status: "active", scope: { kind: "contact", id: "ct-1" } });
+    expect(calls[1]!.sql).toContain("client_ref = $4 AND COALESCE(client_kind, 'company') = $3");
+    expect(calls[1]!.params).toEqual(["co-1", "active", "contact", "ct-1"]);
+    await db.listSprints(fake, "co-1");
+    expect(calls[2]!.sql).toMatch(/WHERE company_id = \$1 ORDER BY/);
+  });
+
+  it("reads the client kind and hides a legacy free-text client on own sprints", async () => {
+    const base = { id: "s", company_id: "c", name: "n", site_url: "https://a", site_name: "n", status: "active", start_date: "2026-09-01" };
+    const own = await db.getSprint(guardedDb([{ ...base, client_ref: null, client_kind: null, client_name: "Acme Ltd" }]).fake, "c", "s");
+    expect(own).toMatchObject({ clientKind: null, clientRef: null, clientName: null, legacyClientName: "Acme Ltd" });
+    const contact = await db.getSprint(guardedDb([{ ...base, client_ref: "ct-1", client_kind: "contact", client_name: "Jo" }]).fake, "c", "s");
+    expect(contact).toMatchObject({ clientKind: "contact", clientRef: "ct-1", clientName: "Jo", legacyClientName: null });
+    const older = await db.getSprint(guardedDb([{ ...base, client_ref: "crm-1", client_kind: null, client_name: "Acme" }]).fake, "c", "s");
+    expect(older?.clientKind).toBe("company");
   });
 
   it("sends lists and objects as JSON strings", async () => {

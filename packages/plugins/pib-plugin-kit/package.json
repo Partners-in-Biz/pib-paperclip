@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./oauth-client": "./src/oauth-bridge/client.ts",
+    "./client-ref": "./src/client-ref.ts",
     "./build": "./src/build.mjs"
   },
   "scripts": {

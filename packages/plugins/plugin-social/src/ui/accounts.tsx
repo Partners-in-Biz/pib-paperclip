@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { Button, EmptyState, Field, Input, Modal, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, type SocialPlatform } from "../platforms.js";
-import { AccountStatus, Avatar, Banner, Card, ClientSelect, Code, fmtDate, ignore, Muted, platformLabel, Row, SmallButton } from "./parts.js";
-import type { Account, RunAction, Snapshot } from "./types.js";
+import { AccountStatus, Avatar, Banner, BelongsToSelect, Card, Code, fmtDate, ignore, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import type { Account, ClientOption, RunAction, Snapshot } from "./types.js";
 
 function expectedRedirect(snapshot: Snapshot): string {
   return snapshot.config.redirectUri ?? `${typeof window !== "undefined" ? window.location.origin : ""}/_plugins/<plugin installation id>/ui/oauth-callback.html`;
@@ -47,27 +47,36 @@ export async function startConnect(
   rememberOAuthStart(result.state, {
     companyId,
     completeUrl: COMPLETE_ROUTE_PATH,
+    // Includes ?client= in a client workspace, so a failed connection lands back there.
     returnTo: window.location.href,
     label: result.label ?? platformLabel(platform),
   });
   window.location.assign(result.authorizeUrl);
 }
 
-export function PickerModal({ pickerId, snapshot, run, onClose, onDone }: {
+export function PickerModal({ pickerId, run, onClose, onDone }: {
   pickerId: string;
-  snapshot: Snapshot;
   run: RunAction;
   onClose: () => void;
-  onDone: (connected: number) => void;
+  onDone: (connected: number, belongsTo: string | null) => void;
 }) {
   const [data, setData] = useState<{
     label: string;
-    clientRef: string | null;
-    options: Array<{ key: string; platform: string; kind: string; displayName: string; handle: string | null; avatarUrl: string | null; alreadyConnected: boolean; detail: string | null }>;
+    belongsTo: string;
+    options: Array<{
+      key: string;
+      platform: string;
+      kind: string;
+      displayName: string;
+      handle: string | null;
+      avatarUrl: string | null;
+      alreadyConnected: boolean;
+      belongsElsewhere: string | null;
+      detail: string | null;
+    }>;
   } | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [clientRef, setClientRef] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -77,8 +86,8 @@ export function PickerModal({ pickerId, snapshot, run, onClose, onDone }: {
         if (cancelled) return;
         const value = res as typeof data;
         setData(value);
-        setClientRef(value?.clientRef ?? "");
-        setSelected(new Set((value?.options ?? []).filter((o) => o.alreadyConnected).map((o) => o.key)));
+        // Pre-tick accounts already connected here; never pre-tick one that would move from elsewhere.
+        setSelected(new Set((value?.options ?? []).filter((o) => o.alreadyConnected && !o.belongsElsewhere).map((o) => o.key)));
       })
       .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -108,8 +117,8 @@ export function PickerModal({ pickerId, snapshot, run, onClose, onDone }: {
             onClick={async () => {
               setBusy(true);
               try {
-                const res = (await run("social.oauth-confirm", { pickerId, selections: [...selected], clientRef: clientRef || null })) as { connected?: number };
-                onDone(res?.connected ?? selected.size);
+                const res = (await run("social.oauth-confirm", { pickerId, selections: [...selected] })) as { connected?: number; belongsTo?: string };
+                onDone(res?.connected ?? selected.size, res?.belongsTo ?? data?.belongsTo ?? null);
               } catch (e) {
                 setError(e instanceof Error ? e.message : String(e));
               } finally {
@@ -137,15 +146,16 @@ export function PickerModal({ pickerId, snapshot, run, onClose, onDone }: {
                     {platformLabel(option.platform)} · {option.kind.replace(/_/g, " ")}
                     {option.handle ? ` · ${option.handle}` : ""}
                     {option.detail ? ` · ${option.detail}` : ""}
-                    {option.alreadyConnected ? " · already connected" : ""}
+                    {option.alreadyConnected && !option.belongsElsewhere ? " · already connected" : ""}
                   </Muted>
+                  {option.belongsElsewhere ? (
+                    <Muted style={{ color: "#b45309" }}>Connected under {option.belongsElsewhere}. Choosing it moves it to {data.belongsTo}.</Muted>
+                  ) : null}
                 </span>
               </label>
             ))}
           </div>
-          <Field label="Client for these accounts">
-            <ClientSelect clients={snapshot.clients} value={clientRef} onChange={setClientRef} allLabel="No client" />
-          </Field>
+          <Muted>The accounts you add belong to <strong>{data.belongsTo}</strong>.</Muted>
         </>
       ) : null}
     </Modal>
@@ -162,7 +172,6 @@ function BlueskyModal({ snapshot, run, account, onClose, onDone }: {
   const [identifier, setIdentifier] = useState(account?.handle ?? "");
   const [appPassword, setAppPassword] = useState("");
   const [pdsUrl, setPdsUrl] = useState("");
-  const [clientRef, setClientRef] = useState(account?.clientRef ?? "");
   const [busy, setBusy] = useState(false);
   return (
     <Modal
@@ -179,7 +188,11 @@ function BlueskyModal({ snapshot, run, account, onClose, onDone }: {
             onClick={async () => {
               setBusy(true);
               try {
-                await run("social.connect-bluesky", { identifier, appPassword, pdsUrl: pdsUrl || undefined, clientRef: clientRef || undefined }, "Bluesky connected");
+                await run(
+                  "social.connect-bluesky",
+                  { identifier, appPassword, pdsUrl: pdsUrl || undefined, ...scopeParams(snapshot), reconnectAccountId: account?.id },
+                  "Bluesky connected",
+                );
                 onDone();
               } catch {
                 // shown by run()
@@ -196,15 +209,33 @@ function BlueskyModal({ snapshot, run, account, onClose, onDone }: {
       <Field label="Handle"><Input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="you.bsky.social" autoComplete="username" /></Field>
       <Field label="App password"><Input type="password" value={appPassword} onChange={(e) => setAppPassword(e.target.value)} placeholder="xxxx-xxxx-xxxx-xxxx" autoComplete="off" /></Field>
       <Field label="PDS URL (optional)"><Input value={pdsUrl} onChange={(e) => setPdsUrl(e.target.value)} placeholder={snapshot.config.blueskyDefaultPds} /></Field>
-      <Field label="Client"><ClientSelect clients={snapshot.clients} value={clientRef} onChange={setClientRef} allLabel="No client" /></Field>
+      <Muted>{account ? `${account.displayName} stays where it is.` : `The account belongs to ${scopeName(snapshot)}.`}</Muted>
     </Modal>
   );
 }
 
 function EditAccountModal({ account, snapshot, run, onClose }: { account: Account; snapshot: Snapshot; run: RunAction; onClose: () => void }) {
-  const [clientRef, setClientRef] = useState(account.clientRef ?? "");
+  const current = account.client ?? "";
+  const [belongsTo, setBelongsTo] = useState(current);
+  const [clients, setClients] = useState<ClientOption[] | null>(null);
+  const [clientsError, setClientsError] = useState("");
   const [subreddit, setSubreddit] = useState(account.defaultSubreddit ?? "");
   const [boardId, setBoardId] = useState(account.boardId ?? "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    run("social.clients", {})
+      .then((res) => !cancelled && setClients((res as ClientOption[]) ?? []))
+      .catch((e: unknown) => !cancelled && setClientsError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const moving = belongsTo !== current;
+  const targetName = belongsTo === "" ? "own work" : clients?.find((c) => c.client === belongsTo)?.name ?? "that client";
   return (
     <Modal
       open
@@ -215,24 +246,43 @@ function EditAccountModal({ account, snapshot, run, onClose }: { account: Accoun
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button
             type="button"
+            disabled={busy}
             onClick={async () => {
-              const params: Record<string, unknown> = { accountId: account.id, clientRef: clientRef || null };
+              const params: Record<string, unknown> = { accountId: account.id };
+              if (moving) params.client = belongsTo || null;
               if (account.platform === "reddit") params.defaultSubreddit = subreddit || null;
               if (account.platform === "pinterest") params.boardId = boardId || null;
+              setBusy(true);
+              setError("");
               try {
-                await run("social.update-account", params, "Account updated");
+                const res = (await run("social.update-account", params, moving ? undefined : "Account updated")) as { message?: string } | undefined;
+                if (moving) window.alert(res?.message ?? `${account.displayName} moved to ${targetName}.`);
                 onClose();
-              } catch {
-                // shown by run()
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setBusy(false);
               }
             }}
           >
-            Save
+            {busy ? "Saving…" : moving ? `Move to ${targetName}` : "Save"}
           </Button>
         </>
       )}
     >
-      <Field label="Client"><ClientSelect clients={snapshot.clients} value={clientRef} onChange={setClientRef} allLabel="No client" /></Field>
+      {error ? <Banner tone="error" title="Not saved">{error}</Banner> : null}
+      <Field label="Belongs to">
+        <BelongsToSelect clients={clients ?? []} value={belongsTo} onChange={setBelongsTo} disabled={!clients} />
+      </Field>
+      {clientsError ? <Muted style={{ color: "var(--destructive)" }}>Could not load CRM clients: {clientsError}</Muted> : null}
+      {moving ? (
+        <Banner tone="warn" title={`Move to ${targetName}?`}>
+          The account, its inbox and its token move to {targetName} and disappear from {scopeName(snapshot)}. The move is refused while
+          unpublished posts of {scopeName(snapshot)} (drafts or scheduled) still use it: remove it from those posts first. RSS feeds here stop drafting to it.
+        </Banner>
+      ) : (
+        <Muted>Posts can only use accounts of their own client, so an account belongs to exactly one client or to own work.</Muted>
+      )}
       {account.platform === "reddit" ? (
         <Field label="Default subreddit"><Input value={subreddit} onChange={(e) => setSubreddit(e.target.value)} placeholder="smallbusiness" /></Field>
       ) : null}
@@ -243,13 +293,11 @@ function EditAccountModal({ account, snapshot, run, onClose }: { account: Accoun
   );
 }
 
-export function AccountsTab({ snapshot, companyId, run, clientFilter }: {
+export function AccountsTab({ snapshot, companyId, run }: {
   snapshot: Snapshot;
   companyId: string;
   run: RunAction;
-  clientFilter: string;
 }) {
-  const [connectClient, setConnectClient] = useState("");
   const [mastodonInstance, setMastodonInstance] = useState(snapshot.config.mastodonDefaultInstance ?? "https://mastodon.social");
   const [redditSubreddit, setRedditSubreddit] = useState("");
   const [bluesky, setBluesky] = useState<{ account: Account | null } | null>(null);
@@ -257,15 +305,14 @@ export function AccountsTab({ snapshot, companyId, run, clientFilter }: {
   const [busy, setBusy] = useState("");
   const ready = snapshot.config.saved && !snapshot.config.publicBaseUrlError && snapshot.config.encryptionKey;
 
-  const accounts = useMemo(
-    () => snapshot.accounts.filter((a) => !clientFilter || (clientFilter === "__none" ? !a.clientRef : a.clientRef === clientFilter)),
-    [snapshot.accounts, clientFilter],
-  );
+  // The snapshot holds this scope's accounts only.
+  const accounts = snapshot.accounts;
 
   async function connect(platform: SocialPlatform, extra: Record<string, unknown> = {}) {
     setBusy(platform);
     try {
-      await startConnect(run, companyId, platform, { clientRef: connectClient || undefined, ...extra });
+      // New accounts belong to this page's scope; a reconnect keeps the account's own.
+      await startConnect(run, companyId, platform, { ...scopeParams(snapshot), ...extra });
     } catch {
       // run() already showed the error
     } finally {
@@ -290,10 +337,7 @@ export function AccountsTab({ snapshot, companyId, run, clientFilter }: {
       <Card>
         <Row style={{ justifyContent: "space-between" }}>
           <strong style={{ fontSize: 13 }}>Connect an account</strong>
-          <Row>
-            <Muted>New accounts belong to</Muted>
-            <ClientSelect clients={snapshot.clients} value={connectClient} onChange={setConnectClient} allLabel="No client" />
-          </Row>
+          <Muted>New accounts belong to <strong>{scopeName(snapshot)}</strong></Muted>
         </Row>
         <Muted>
           Redirect URI to register with every provider: <Code>{expectedRedirect(snapshot)}</Code>
@@ -344,7 +388,10 @@ export function AccountsTab({ snapshot, companyId, run, clientFilter }: {
       </Card>
 
       {accounts.length === 0 ? (
-        <EmptyState title="No accounts yet" description="Connect a platform above. Facebook lets you pick several Pages and their Instagram accounts at once." />
+        <EmptyState
+          title="No accounts yet"
+          description={`Connect a platform above; accounts added here belong to ${scopeName(snapshot)}. Facebook lets you pick several Pages and their Instagram accounts at once.`}
+        />
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {accounts.map((account) => {
@@ -365,7 +412,7 @@ export function AccountsTab({ snapshot, companyId, run, clientFilter }: {
                         {account.pageName ? ` · via ${account.pageName}` : ""}
                       </Muted>
                       <Muted>
-                        Client: {account.clientName ?? "none"} · Token {account.tokenExpiresAt ? `expires ${fmtDate(account.tokenExpiresAt, snapshot.config.timezone, false)}` : "does not expire"}
+                        Token {account.tokenExpiresAt ? `expires ${fmtDate(account.tokenExpiresAt, snapshot.config.timezone, false)}` : "does not expire"}
                       </Muted>
                     </div>
                   </Row>

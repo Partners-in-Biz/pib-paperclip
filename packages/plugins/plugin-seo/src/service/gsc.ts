@@ -10,6 +10,7 @@ import { pluginUiBase, buildKeyring, openJson, requirePublicBaseUrl, sealJson, s
 import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
 import { reconnectIssueDescription, reconnectIssueTitle } from "../engine/copy.js";
+import { sprintPagePath, sprintScope } from "../engine/scope.js";
 import { keywordStatusForPosition } from "../engine/sprint.js";
 import { addDays } from "../engine/time.js";
 import { gscRedirectUri } from "../config.js";
@@ -112,7 +113,7 @@ export async function gscConnectUrl(env: Env, companyId: string, params: Params)
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const integration = await db.getIntegration(env.ctx.db, companyId, sprint.id, "gsc");
-  const path = cockpitPath(info, sprint.id);
+  const path = cockpitPath(info, sprint);
   const base = info.loaded.config.publicBaseUrl?.replace(/\/$/, "") ?? null;
   return {
     sprintId: sprint.id,
@@ -195,7 +196,12 @@ export async function gscOauthComplete(env: Env, input: PluginApiRequestInput): 
       await db.updateIntegration(env.ctx.db, sprint.companyId, integration.id, { alert_issue_id: null });
     }
     const prefix = info.prefix ?? "";
-    const redirectTo = `/${prefix}/seo?sprint=${encodeURIComponent(sprint.id)}&tab=integrations&connected=gsc${propertyUrl ? "" : "&pick=property"}`;
+    // Back to the sprint in its own scope, so a client sprint reopens inside that client's workspace.
+    const redirectTo = sprintPagePath(`/${prefix}/seo`, sprint.id, sprintScope(sprint), {
+      tab: "integrations",
+      connected: "gsc",
+      ...(propertyUrl ? {} : { pick: "property" }),
+    });
     return { status: 200, body: { redirectTo, propertyUrl } };
   } catch (error) {
     const message = error instanceof SeoError || error instanceof GoogleApiError || error instanceof TokenKeyError ? error.message : `Connection failed: ${errorMessage(error)}`;
@@ -266,7 +272,7 @@ export async function markNeedsReconnect(env: Env, info: CompanyInfo, sprint: db
     const created = await openIssue(env, {
       companyId: sprint.companyId,
       title: reconnectIssueTitle(sprint),
-      description: reconnectIssueDescription(sprintCopy(sprint), error, cockpitPath(info, sprint.id)),
+      description: reconnectIssueDescription(sprintCopy(sprint), error, cockpitPath(info, sprint)),
       originKind: ORIGIN.alert,
       originId: integration.id,
       projectId: sprint.projectId,

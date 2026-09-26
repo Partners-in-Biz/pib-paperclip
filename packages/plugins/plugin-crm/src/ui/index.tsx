@@ -1,9 +1,18 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import {
   DataTable,
   KeyValueList,
   MetricCard,
   StatusBadge,
+  useHostLocation,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -12,6 +21,7 @@ import {
 import {
   BarChart,
   Button,
+  ClientWorkspaceBar,
   EmptyState,
   Field,
   Form,
@@ -20,14 +30,18 @@ import {
   Page,
   PipelineBoard,
   PipelineCard,
+  Section,
   Select,
   Sheet,
   StatRow,
   Tabs,
+  TextArea,
   Toolbar,
   errorText,
   formatMinor,
+  tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 
 interface Account {
   id: string;
@@ -119,25 +133,37 @@ interface Snapshot {
 type TabId = "overview" | "companies" | "contacts" | "deals" | "sequences" | "products";
 type CreateKind = "company" | "contact" | "deal" | "sequence" | "link" | "product" | null;
 type Detail =
-  | { kind: "company"; id: string }
-  | { kind: "contact"; id: string }
   | { kind: "deal"; id: string }
   | { kind: "sequence"; id: string }
   | null;
 
-export function CrmPage({ context }: PluginPageProps) {
+const LIFECYCLE_OPTIONS = ["lead", "prospect", "customer", "churned"] as const;
+const NEXT_ACTION_OPTIONS = ["call", "email", "meet"] as const;
+
+/** `/crm` is the CRM list; `/crm?client=company:<id>` (or `contact:<id>`) is that client's workspace. */
+export function CrmPage(props: PluginPageProps) {
+  const location = useHostLocation();
+  const client = clientScopeFromSearch(location.search);
+  if (client) {
+    return <ClientWorkspace key={`${client.kind}:${client.id}`} companyId={props.context.companyId ?? null} client={client} />;
+  }
+  return <CrmList {...props} />;
+}
+
+function clientPath(kind: ClientRef["kind"], id: string): string {
+  return withClientParam("/crm", { kind, id });
+}
+
+function CrmList({ context }: PluginPageProps) {
+  const navigation = useHostNavigation();
   const load = usePluginAction("crm.load");
   const createCompany = usePluginAction("crm.create-company");
   const createContact = usePluginAction("crm.create-contact");
   const linkContact = usePluginAction("crm.link-contact");
   const createDeal = usePluginAction("crm.create-deal");
   const moveDeal = usePluginAction("crm.move-deal");
-  const setHumanOwned = usePluginAction("crm.set-human-owned");
   const createSequence = usePluginAction("crm.create-sequence");
-  const enroll = usePluginAction("crm.enroll");
   const createProduct = usePluginAction("crm.create-product");
-  const updateProduct = usePluginAction("crm.update-product");
-  const scoreContact = usePluginAction("crm.score-contact");
   const activities = usePluginAction("crm.activities");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -161,10 +187,7 @@ export function CrmPage({ context }: PluginPageProps) {
   const [productName, setProductName] = useState("");
   const [productAmount, setProductAmount] = useState("");
   const [productCurrency, setProductCurrency] = useState("ZAR");
-  const [humanOwned, setHumanOwnedFields] = useState("name");
-  const [enrollSequenceId, setEnrollSequenceId] = useState("");
   const [timeline, setTimeline] = useState<Activity[]>([]);
-  const [score, setScore] = useState<{ total: number; band: string; parts: Array<{ label: string; points: number }> } | null>(null);
 
   async function refresh() {
     setSnapshot((await load({})) as Snapshot);
@@ -239,8 +262,6 @@ export function CrmPage({ context }: PluginPageProps) {
       .join(", ");
   }
 
-  const detailCompany = detail?.kind === "company" ? snapshot?.accounts.find((row) => row.id === detail.id) : null;
-  const detailContact = detail?.kind === "contact" ? snapshot?.contacts.find((row) => row.id === detail.id) : null;
   const detailDeal = detail?.kind === "deal" ? snapshot?.deals.find((row) => row.id === detail.id) : null;
   const detailSequence = detail?.kind === "sequence" ? snapshot?.sequences.find((row) => row.id === detail.id) : null;
 
@@ -310,7 +331,7 @@ export function CrmPage({ context }: PluginPageProps) {
               items={(summary?.unlinkedContactIds ?? []).map((id) => ({
                 id,
                 label: contactNameOf(id),
-                onClick: () => setDetail({ kind: "contact", id }),
+                onClick: () => navigation.navigate(clientPath("contact", id)),
               }))}
             />
             <AttentionCard
@@ -347,11 +368,7 @@ export function CrmPage({ context }: PluginPageProps) {
                   key: "id",
                   header: "",
                   width: "90px",
-                  render: (_value, row) => (
-                    <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setDetail({ kind: "company", id: String(row.id) })}>
-                      Open
-                    </Button>
-                  ),
+                  render: (_value, row) => <OpenLink to={clientPath("company", String(row.id))} label={`Open ${String(row.name)}`} />,
                 },
               ]}
               rows={accounts.map((row) => ({ ...row, domain: row.domain ?? "—" }))}
@@ -384,11 +401,7 @@ export function CrmPage({ context }: PluginPageProps) {
                   key: "id",
                   header: "",
                   width: "90px",
-                  render: (_value, row) => (
-                    <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setDetail({ kind: "contact", id: String(row.id) })}>
-                      Open
-                    </Button>
-                  ),
+                  render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
                 },
               ]}
               rows={contacts.map((row) => ({
@@ -464,7 +477,7 @@ export function CrmPage({ context }: PluginPageProps) {
           {sequences.length === 0 ? (
             <EmptyState
               title="No sequences yet"
-              description="Create a sequence, then enroll contacts from their detail sheet."
+              description="Create a sequence, then enroll contacts from their client workspace."
               action={<Button type="button" onClick={() => setCreate("sequence")}>+ Add sequence</Button>}
             />
           ) : (
@@ -716,107 +729,9 @@ export function CrmPage({ context }: PluginPageProps) {
 
       <Sheet
         open={detail != null}
-        title={
-          detailCompany?.name
-          ?? detailContact?.name
-          ?? detailDeal?.title
-          ?? detailSequence?.name
-          ?? "Record"
-        }
+        title={detailDeal?.title ?? detailSequence?.name ?? "Record"}
         onClose={() => setDetail(null)}
       >
-        {detailCompany ? (
-          <>
-            <KeyValueList pairs={[
-              { label: "Domain", value: detailCompany.domain ?? "—" },
-              { label: "Lifecycle", value: <StatusBadge label={detailCompany.lifecycle} status="info" /> },
-            ]} />
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)" }}>Activity</div>
-            <Timeline items={timeline} />
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)" }}>Contacts</div>
-            <DataTable
-              columns={[{ key: "name", header: "Name" }, { key: "role", header: "Role" }]}
-              rows={(snapshot?.links ?? [])
-                .filter((link) => link.accountId === detailCompany.id)
-                .map((link) => ({ id: link.contactId, name: contactNameOf(link.contactId), role: link.roleLabel }))}
-              emptyMessage="No linked contacts."
-            />
-          </>
-        ) : null}
-
-        {detailContact ? (
-          <>
-            <KeyValueList pairs={[
-              { label: "Email", value: detailContact.emails[0] ?? "—" },
-              { label: "Lifecycle", value: <StatusBadge label={detailContact.lifecycle} status="info" /> },
-              { label: "Roles", value: rolesFor(detailContact.id) || "—" },
-              { label: "Human-owned", value: detailContact.humanOwned.join(", ") || "—" },
-            ]} />
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)" }}>Activity</div>
-            <Timeline items={timeline} />
-            <div style={{ display: "grid", gap: 8 }}>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => void scoreContact({ contactId: detailContact.id })
-                  .then((result) => setScore(result as { total: number; band: string; parts: Array<{ label: string; points: number }> }))
-                  .catch((error: unknown) => setMessage(errorText(error)))}
-              >
-                Score this contact
-              </Button>
-              {score ? (
-                <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "var(--card)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <strong style={{ fontSize: 20 }}>{score.total}<span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>/100</span></strong>
-                    <StatusBadge label={score.band} status={score.band === "hot" ? "ok" : score.band === "warm" ? "warning" : "info"} />
-                  </div>
-                  {score.parts.length > 0 ? (
-                    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 12 }}>
-                      {score.parts.map((part) => (
-                        <li key={part.label} style={{ display: "flex", justifyContent: "space-between", color: "var(--muted-foreground)" }}>
-                          <span>{part.label}</span>
-                          <span>+{part.points}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <Form onSubmit={(event) => {
-              event.preventDefault();
-              void run(() => setHumanOwned({
-                recordType: "contact",
-                recordId: detailContact.id,
-                humanOwned: humanOwned.split(",").map((part) => part.trim()).filter(Boolean),
-              }), "Human-owned fields saved");
-            }}>
-              <Field label="Mark human-owned fields">
-                <Input value={humanOwned} onChange={(event) => setHumanOwnedFields(event.target.value)} placeholder="name, plan" />
-              </Field>
-              <Button type="submit" variant="secondary">Save ownership</Button>
-            </Form>
-            <Form onSubmit={(event) => {
-              event.preventDefault();
-              void run(() => enroll({ sequenceId: enrollSequenceId, contactId: detailContact.id }), "Contact enrolled");
-            }}>
-              <Field label="Enroll in sequence">
-                <Select value={enrollSequenceId} onChange={(event) => setEnrollSequenceId(event.target.value)} required>
-                  <option value="">Sequence</option>
-                  {(snapshot?.sequences ?? []).map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
-                </Select>
-              </Field>
-              <Button type="submit">Enroll</Button>
-            </Form>
-            <Button type="button" variant="secondary" onClick={() => {
-              setLinkContactId(detailContact.id);
-              setCreate("link");
-            }}>
-              Link to company
-            </Button>
-          </>
-        ) : null}
-
         {detailDeal ? (
           <>
             <KeyValueList pairs={[
@@ -915,6 +830,997 @@ function AttentionCard({ title, empty, items }: {
       )}
     </div>
   );
+}
+
+function OpenLink({ to, label, text = "Open" }: { to: string; label?: string; text?: string }) {
+  const navigation = useHostNavigation();
+  return (
+    <a {...navigation.linkProps(to)} aria-label={label} style={linkButtonStyle}>
+      {text}
+    </a>
+  );
+}
+
+const linkButtonStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: 28,
+  padding: "0 12px",
+  borderRadius: 9,
+  fontSize: 12,
+  fontWeight: 600,
+  background: tokens.secondary,
+  color: tokens.secondaryFg,
+  border: `1px solid ${tokens.border}`,
+  textDecoration: "none",
+  whiteSpace: "nowrap",
+};
+
+const smallButton: CSSProperties = { height: 28, fontSize: 12 };
+
+// ---------------------------------------------------------------------------
+// Client workspace: /crm?client=company:<id> or /crm?client=contact:<id>
+// ---------------------------------------------------------------------------
+
+interface WorkspaceCompany {
+  id: string;
+  name: string;
+  domain: string | null;
+  lifecycle: string;
+  currency: string;
+  tags: string[];
+  humanOwned: string[];
+}
+
+interface WorkspaceContact {
+  id: string;
+  name: string;
+  emails: string[];
+  phones: string[];
+  lifecycle: string;
+  tags: string[];
+  humanOwned: string[];
+  nextActionKind: string | null;
+  nextActionDueAt: string | null;
+}
+
+interface WorkspaceDeal {
+  id: string;
+  title: string;
+  amountMinor: number;
+  currency: string;
+  stageId: string;
+  stageName: string;
+  stageKind: string;
+  contactId: string | null;
+  contactName: string | null;
+  accountId: string | null;
+}
+
+interface WorkspaceData {
+  found: boolean;
+  kind: ClientRef["kind"];
+  id: string;
+  company?: WorkspaceCompany | null;
+  contact?: WorkspaceContact | null;
+  contacts?: Array<{ id: string; name: string; emails: string[]; lifecycle: string; roleLabel: string }>;
+  companies?: Array<{ id: string; name: string; domain: string | null; lifecycle: string; roleLabel: string }>;
+  deals?: WorkspaceDeal[];
+  activities?: Activity[];
+  stages?: Stage[];
+  sequences?: Sequence[];
+  options?: { companies: Array<{ id: string; name: string }>; contacts: Array<{ id: string; name: string }> };
+}
+
+/** What `GET /api/plugins/<key>/api/client-summary` returns for one client. */
+interface ClientSummary {
+  headline: string;
+  stats: Array<{ label: string; value: string | number; tone?: "ok" | "warn" | "bad" }>;
+}
+
+type SummaryState = { status: "loading" } | { status: "ok"; summary: ClientSummary } | { status: "error" };
+type ScoreResult = { total: number; band: string; parts: Array<{ label: string; points: number }> };
+type WorkspaceModal = "add-contact" | "link-company" | "deal" | null;
+type Patch = Record<string, unknown>;
+
+const WORK_SOURCES = [
+  { tab: "social", label: "Social", pluginKey: "partnersinbiz.social", path: "/social" },
+  { tab: "seo", label: "SEO", pluginKey: "partnersinbiz.seo", path: "/seo" },
+  { tab: "campaigns", label: "Campaigns", pluginKey: "partnersinbiz.campaigns", path: "/campaigns" },
+  { tab: "billing", label: "Billing", pluginKey: "partnersinbiz.billing", path: "/billing" },
+] as const;
+
+type WorkTab = (typeof WORK_SOURCES)[number]["tab"];
+
+function ClientWorkspace({ companyId, client }: { companyId: string | null; client: ClientRef }) {
+  const navigation = useHostNavigation();
+  const load = usePluginAction("crm.client-workspace");
+  const updateCompany = usePluginAction("crm.update-company");
+  const updateContact = usePluginAction("crm.update-contact");
+  const createCompany = usePluginAction("crm.create-company");
+  const createContact = usePluginAction("crm.create-contact");
+  const linkContact = usePluginAction("crm.link-contact");
+  const createDeal = usePluginAction("crm.create-deal");
+  const moveDeal = usePluginAction("crm.move-deal");
+  const logActivity = usePluginAction("crm.log-activity");
+  const setHumanOwned = usePluginAction("crm.set-human-owned");
+  const enroll = usePluginAction("crm.enroll");
+  const scoreContact = usePluginAction("crm.score-contact");
+  const summaries = useClientSummaries(companyId, client);
+
+  const [data, setData] = useState<WorkspaceData | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [message, setMessage] = useState("");
+  const [modal, setModal] = useState<WorkspaceModal>(null);
+
+  const [pickMode, setPickMode] = useState<"new" | "existing">("new");
+  const [pickName, setPickName] = useState("");
+  const [pickEmail, setPickEmail] = useState("");
+  const [pickId, setPickId] = useState("");
+  const [pickRole, setPickRole] = useState("staff");
+  const [dealTitle, setDealTitle] = useState("");
+  const [dealAmount, setDealAmount] = useState("");
+  const [dealCurrency, setDealCurrency] = useState("ZAR");
+  const [dealPartyId, setDealPartyId] = useState("");
+  const [note, setNote] = useState("");
+  const [humanOwned, setHumanOwnedFields] = useState("");
+  const [enrollSequenceId, setEnrollSequenceId] = useState("");
+  const [score, setScore] = useState<ScoreResult | null>(null);
+
+  function apply(next: WorkspaceData) {
+    setData(next);
+    const record = next.company ?? next.contact;
+    if (record) setHumanOwnedFields(record.humanOwned.join(", "));
+  }
+
+  async function refresh() {
+    apply((await load({ kind: client.kind, id: client.id })) as WorkspaceData);
+  }
+
+  useEffect(() => {
+    if (!companyId) return;
+    let live = true;
+    setLoadError("");
+    load({ kind: client.kind, id: client.id })
+      .then((result) => {
+        if (live) apply(result as WorkspaceData);
+      })
+      .catch((error: unknown) => {
+        if (live) setLoadError(errorText(error));
+      });
+    return () => {
+      live = false;
+    };
+  }, [companyId, client.kind, client.id]);
+
+  async function run(work: () => Promise<unknown>, success: string): Promise<boolean> {
+    setMessage("");
+    try {
+      await work();
+      await refresh();
+      setMessage(success);
+      setModal(null);
+      return true;
+    } catch (error) {
+      setMessage(errorText(error));
+      return false;
+    }
+  }
+
+  const back = navigation.linkProps("/crm");
+  const backLink = (
+    <a {...back} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content" }}>← All CRM</a>
+  );
+
+  if (!data) {
+    return (
+      <WorkspaceShell>
+        {backLink}
+        {loadError ? (
+          <EmptyState
+            title="Could not load this client"
+            description={loadError}
+            action={(
+              <Button type="button" onClick={() => {
+                setLoadError("");
+                refresh().catch((error: unknown) => setLoadError(errorText(error)));
+              }}>
+                Try again
+              </Button>
+            )}
+          />
+        ) : (
+          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading client…</p>
+        )}
+      </WorkspaceShell>
+    );
+  }
+
+  if (!data.found || (!data.company && !data.contact)) {
+    return (
+      <WorkspaceShell>
+        {backLink}
+        <EmptyState
+          title={client.kind === "company" ? "Company not found" : "Contact not found"}
+          description="This client may have been deleted or merged into another record, or it has not been shared with you."
+          action={<a {...back} style={{ ...linkButtonStyle, height: 36, padding: "0 14px", fontSize: 13 }}>Back to CRM</a>}
+        />
+      </WorkspaceShell>
+    );
+  }
+
+  const company = data.company ?? null;
+  const contact = data.contact ?? null;
+  const name = company?.name ?? contact?.name ?? "Client";
+  const detail = company
+    ? [company.domain, company.lifecycle].filter(Boolean).join(" · ")
+    : [contact?.emails[0], contact?.lifecycle].filter(Boolean).join(" · ");
+  const contacts = data.contacts ?? [];
+  const companies = data.companies ?? [];
+  const deals = data.deals ?? [];
+  const stages = data.stages ?? [];
+  const sequences = data.sequences ?? [];
+  const options = data.options ?? { companies: [], contacts: [] };
+  const linkedIds = new Set((company ? contacts : companies).map((row) => row.id));
+  const pickChoices = (company ? options.contacts : options.companies).filter((row) => !linkedIds.has(row.id));
+  const pickReady = pickMode === "new" ? pickName.trim() !== "" : pickId !== "";
+
+  function openModal(next: Exclude<WorkspaceModal, null>) {
+    setPickMode(next === "link-company" && pickChoices.length > 0 ? "existing" : "new");
+    setPickName("");
+    setPickEmail("");
+    setPickId("");
+    setPickRole("staff");
+    setDealTitle("");
+    setDealAmount("");
+    setDealCurrency(company?.currency ?? "ZAR");
+    setDealPartyId(contact && companies.length === 1 ? companies[0]!.id : "");
+    setModal(next);
+  }
+
+  async function saveDetails(patch: Patch): Promise<boolean> {
+    let refused: string[] = [];
+    const ok = await run(async () => {
+      const result = company
+        ? await updateCompany({ companyRecordId: company.id, ...patch })
+        : await updateContact({ contactId: contact!.id, ...patch });
+      refused = (result as { refused?: string[] } | null)?.refused ?? [];
+    }, "Details saved");
+    if (ok && refused.length > 0) setMessage(`Saved. These human-owned fields were kept: ${refused.join(", ")}`);
+    return ok;
+  }
+
+  function submitPick() {
+    if (company) {
+      void run(async () => {
+        let contactId = pickId;
+        if (pickMode === "new") {
+          const created = (await createContact({
+            name: pickName,
+            emails: pickEmail.trim() ? [pickEmail.trim()] : [],
+          })) as { id: string };
+          contactId = created.id;
+        }
+        await linkContact({ contactId, companyRecordId: company.id, roleLabel: pickRole });
+      }, "Contact added");
+      return;
+    }
+    if (contact) {
+      void run(async () => {
+        let accountId = pickId;
+        if (pickMode === "new") {
+          const created = (await createCompany({ name: pickName })) as { id: string };
+          accountId = created.id;
+        }
+        await linkContact({ contactId: contact.id, companyRecordId: accountId, roleLabel: pickRole });
+      }, "Linked to company");
+    }
+  }
+
+  return (
+    <WorkspaceShell>
+      <ClientWorkspaceBar
+        client={{ kind: client.kind, id: client.id, name, detail }}
+        active="overview"
+        linkProps={navigation.linkProps}
+        actions={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => openModal(company ? "add-contact" : "link-company")}>
+              {company ? "+ Contact" : "Link to company"}
+            </Button>
+            <Button type="button" onClick={() => openModal("deal")}>+ Deal</Button>
+          </>
+        )}
+      />
+      {message ? <StatusLine>{message}</StatusLine> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+        {WORK_SOURCES.map((source) => (
+          <WorkCard
+            key={source.tab}
+            label={source.label}
+            state={summaries[source.tab]}
+            link={navigation.linkProps(withClientParam(source.path, client))}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          {company ? <CompanyDetails company={company} onSave={saveDetails} /> : null}
+          {contact ? <ContactDetails contact={contact} onSave={saveDetails} /> : null}
+
+          {company ? (
+            <Section
+              title={`Contacts (${contacts.length})`}
+              actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("add-contact")}>+ Add contact</Button>}
+            >
+              {contacts.length === 0 ? (
+                <Muted>No one is linked to this company yet.</Muted>
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: "name", header: "Name" },
+                    { key: "email", header: "Email" },
+                    { key: "roleLabel", header: "Role" },
+                    {
+                      key: "id",
+                      header: "",
+                      width: "80px",
+                      render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
+                    },
+                  ]}
+                  rows={contacts.map((row) => ({ ...row, email: row.emails[0] ?? "—" }))}
+                  emptyMessage="No contacts."
+                />
+              )}
+            </Section>
+          ) : null}
+
+          {contact ? (
+            <Section
+              title={`Companies (${companies.length})`}
+              actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("link-company")}>Link to company</Button>}
+            >
+              {companies.length === 0 ? (
+                <Muted>Not linked to a company. A sole trader can stay that way.</Muted>
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: "name", header: "Company" },
+                    { key: "roleLabel", header: "Role" },
+                    { key: "lifecycle", header: "Lifecycle", render: (value) => <StatusBadge label={String(value)} status={lifecycleStatus(String(value))} /> },
+                    {
+                      key: "id",
+                      header: "",
+                      width: "80px",
+                      render: (_value, row) => <OpenLink to={clientPath("company", String(row.id))} label={`Open ${String(row.name)}`} />,
+                    },
+                  ]}
+                  rows={companies as unknown as Record<string, unknown>[]}
+                  emptyMessage="No companies."
+                />
+              )}
+            </Section>
+          ) : null}
+
+          <Section
+            title={`Deals (${deals.length})`}
+            actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("deal")}>+ Deal</Button>}
+          >
+            {deals.length === 0 ? (
+              <Muted>No deals for this client yet.</Muted>
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "title", header: "Deal" },
+                  { key: "amount", header: "Amount" },
+                  ...(company ? [{ key: "contactName", header: "Contact" }] : []),
+                  {
+                    key: "stageId",
+                    header: "Stage",
+                    width: "170px",
+                    render: (_value, row) => {
+                      const deal = row as unknown as WorkspaceDeal;
+                      return (
+                        <Select
+                          aria-label={`Move ${deal.title}`}
+                          value={deal.stageId}
+                          onChange={(event) => void run(() => moveDeal({ dealId: deal.id, stageId: event.target.value }), "Deal moved")}
+                          style={smallButton}
+                        >
+                          {stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}
+                        </Select>
+                      );
+                    },
+                  },
+                ]}
+                rows={deals.map((deal) => ({
+                  ...deal,
+                  amount: formatMinor(deal.amountMinor, deal.currency),
+                  contactName: deal.contactName ?? "—",
+                }))}
+                emptyMessage="No deals."
+              />
+            )}
+          </Section>
+        </div>
+
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          <Section title="Activity">
+            <Form onSubmit={(event) => {
+              event.preventDefault();
+              void run(async () => {
+                await logActivity({ recordType: client.kind, recordId: client.id, kind: "note", body: note });
+                setNote("");
+              }, "Note logged");
+            }}>
+              <TextArea
+                aria-label="Note"
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                placeholder="Log a note, a call summary or the next step…"
+              />
+              <div>
+                <Button type="submit" variant="secondary" disabled={!note.trim()}>Log note</Button>
+              </div>
+            </Form>
+            <Timeline items={data.activities ?? []} />
+          </Section>
+
+          {contact ? (
+            <Section title="Contact tools">
+              <div style={{ display: "grid", gap: 8 }}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void scoreContact({ contactId: contact.id })
+                    .then((result) => setScore(result as ScoreResult))
+                    .catch((error: unknown) => setMessage(errorText(error)))}
+                >
+                  Score this contact
+                </Button>
+                {score ? <ScoreCard score={score} /> : null}
+              </div>
+              {sequences.length === 0 ? (
+                <Muted>No sequences yet. Create one on the CRM Sequences tab to enroll this contact.</Muted>
+              ) : (
+                <Form onSubmit={(event) => {
+                  event.preventDefault();
+                  void run(() => enroll({ sequenceId: enrollSequenceId, contactId: contact.id }), "Contact enrolled");
+                }}>
+                  <Field label="Enroll in sequence">
+                    <Select value={enrollSequenceId} onChange={(event) => setEnrollSequenceId(event.target.value)} required>
+                      <option value="">Sequence</option>
+                      {sequences.map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
+                    </Select>
+                  </Field>
+                  <div>
+                    <Button type="submit" disabled={!enrollSequenceId}>Enroll</Button>
+                  </div>
+                </Form>
+              )}
+            </Section>
+          ) : null}
+
+          <Section title="Human-owned fields">
+            <Muted>Agents cannot overwrite these fields once they have a value.</Muted>
+            <Form onSubmit={(event) => {
+              event.preventDefault();
+              void run(() => setHumanOwned({
+                recordType: client.kind,
+                recordId: client.id,
+                humanOwned: splitList(humanOwned),
+              }), "Human-owned fields saved");
+            }}>
+              <Field label="Fields (comma separated)">
+                <Input value={humanOwned} onChange={(event) => setHumanOwnedFields(event.target.value)} placeholder="name, lifecycle" />
+              </Field>
+              <div>
+                <Button type="submit" variant="secondary">Save ownership</Button>
+              </div>
+            </Form>
+          </Section>
+        </div>
+      </div>
+
+      <Modal
+        open={modal === "add-contact" || modal === "link-company"}
+        title={company ? `Add a contact to ${name}` : `Link ${name} to a company`}
+        description={company
+          ? "Create a new person or link someone already in the CRM."
+          : "Pick a company this person works for, or create one."}
+        onClose={() => setModal(null)}
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setModal(null)}>Cancel</Button>
+            <Button type="button" disabled={!pickReady} onClick={submitPick}>{company ? "Add contact" : "Save link"}</Button>
+          </>
+        )}
+      >
+        <Field label="Add">
+          <Select
+            value={pickMode}
+            onChange={(event) => {
+              setPickMode(event.target.value === "existing" ? "existing" : "new");
+              setPickId("");
+            }}
+          >
+            <option value="new">{company ? "A new contact" : "A new company"}</option>
+            <option value="existing">{company ? "Someone already in the CRM" : "A company already in the CRM"}</option>
+          </Select>
+        </Field>
+        {pickMode === "new" ? (
+          <>
+            <Field label={company ? "Name" : "Company name"}>
+              <Input value={pickName} onChange={(event) => setPickName(event.target.value)} placeholder={company ? "Ada Lovelace" : "Northwind"} required />
+            </Field>
+            {company ? (
+              <Field label="Email">
+                <Input value={pickEmail} onChange={(event) => setPickEmail(event.target.value)} placeholder="ada@northwind.test" />
+              </Field>
+            ) : null}
+          </>
+        ) : (
+          <Field label={company ? "Contact" : "Company"}>
+            <Select value={pickId} onChange={(event) => setPickId(event.target.value)} required>
+              <option value="">{pickChoices.length === 0 ? "Nothing left to link" : "Select…"}</option>
+              {pickChoices.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </Select>
+          </Field>
+        )}
+        <Field label="Role">
+          <Input value={pickRole} onChange={(event) => setPickRole(event.target.value)} placeholder="buyer, staff, owner" />
+        </Field>
+      </Modal>
+
+      <Modal
+        open={modal === "deal"}
+        title={`New deal for ${name}`}
+        description="Amount is in minor units (cents)."
+        onClose={() => setModal(null)}
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setModal(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={!dealTitle.trim()}
+              onClick={() => void run(() => createDeal({
+                title: dealTitle,
+                amountMinor: Number(dealAmount || 0),
+                currency: dealCurrency,
+                companyRecordId: company ? company.id : dealPartyId || undefined,
+                contactId: contact ? contact.id : dealPartyId || undefined,
+              }), "Deal saved")}
+            >
+              Save deal
+            </Button>
+          </>
+        )}
+      >
+        <Field label="Title">
+          <Input value={dealTitle} onChange={(event) => setDealTitle(event.target.value)} placeholder="Website rebuild" required />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+          <Field label="Amount (minor units)">
+            <Input value={dealAmount} inputMode="numeric" onChange={(event) => setDealAmount(event.target.value)} placeholder="15000000" />
+          </Field>
+          <Field label="Currency">
+            <Input value={dealCurrency} maxLength={3} onChange={(event) => setDealCurrency(event.target.value)} placeholder="ZAR" />
+          </Field>
+        </div>
+        {company ? (
+          <Field label="Contact">
+            <Select value={dealPartyId} onChange={(event) => setDealPartyId(event.target.value)}>
+              <option value="">Optional</option>
+              {contacts.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </Select>
+          </Field>
+        ) : (
+          <Field label="Company">
+            <Select value={dealPartyId} onChange={(event) => setDealPartyId(event.target.value)}>
+              <option value="">Optional</option>
+              {companies.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+            </Select>
+          </Field>
+        )}
+      </Modal>
+    </WorkspaceShell>
+  );
+}
+
+function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave: (patch: Patch) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState("");
+  const [domain, setDomain] = useState("");
+  const [lifecycle, setLifecycle] = useState("lead");
+  const [currency, setCurrency] = useState("ZAR");
+  const [tags, setTags] = useState("");
+
+  function startEdit() {
+    setName(company.name);
+    setDomain(company.domain ?? "");
+    setLifecycle(company.lifecycle);
+    setCurrency(company.currency);
+    setTags(company.tags.join(", "));
+    setEditing(true);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    const ok = await onSave({ name, domain, lifecycle, currency, tags: splitList(tags) });
+    setSaving(false);
+    if (ok) setEditing(false);
+  }
+
+  return (
+    <Section
+      title="Details"
+      actions={editing ? undefined : <Button type="button" variant="secondary" style={smallButton} onClick={startEdit}>Edit</Button>}
+    >
+      {editing ? (
+        <Form onSubmit={(event) => void submit(event)}>
+          <Field label="Company name">
+            <Input value={name} onChange={(event) => setName(event.target.value)} required />
+          </Field>
+          <Field label="Domain">
+            <Input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="northwind.test" />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+            <Field label="Lifecycle">
+              <LifecycleSelect value={lifecycle} onChange={setLifecycle} />
+            </Field>
+            <Field label="Currency">
+              <Input value={currency} maxLength={3} onChange={(event) => setCurrency(event.target.value)} />
+            </Field>
+          </div>
+          <Field label="Tags (comma separated)">
+            <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="retainer, priority" />
+          </Field>
+          <EditButtons saving={saving} onCancel={() => setEditing(false)} />
+        </Form>
+      ) : (
+        <KeyValueList pairs={[
+          { label: "Name", value: company.name },
+          { label: "Domain", value: company.domain ?? "—" },
+          { label: "Lifecycle", value: <StatusBadge label={company.lifecycle} status={lifecycleStatus(company.lifecycle)} /> },
+          { label: "Currency", value: company.currency },
+          { label: "Tags", value: company.tags.join(", ") || "—" },
+          { label: "Human-owned", value: company.humanOwned.join(", ") || "—" },
+        ]} />
+      )}
+    </Section>
+  );
+}
+
+function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave: (patch: Patch) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState("");
+  const [emails, setEmails] = useState("");
+  const [phones, setPhones] = useState("");
+  const [lifecycle, setLifecycle] = useState("lead");
+  const [tags, setTags] = useState("");
+  const [nextKind, setNextKind] = useState("");
+  const [nextDue, setNextDue] = useState("");
+
+  function startEdit() {
+    setName(contact.name);
+    setEmails(contact.emails.join(", "));
+    setPhones(contact.phones.join(", "));
+    setLifecycle(contact.lifecycle);
+    setTags(contact.tags.join(", "));
+    setNextKind(contact.nextActionKind ?? "");
+    setNextDue(dateInputValue(contact.nextActionDueAt));
+    setEditing(true);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    const ok = await onSave({
+      name,
+      emails: splitList(emails),
+      phones: splitList(phones),
+      lifecycle,
+      tags: splitList(tags),
+      nextActionKind: nextKind || null,
+      nextActionDueAt: nextKind && nextDue ? nextDue : null,
+    });
+    setSaving(false);
+    if (ok) setEditing(false);
+  }
+
+  const nextAction = contact.nextActionKind
+    ? [contact.nextActionKind, formatDate(contact.nextActionDueAt)].filter(Boolean).join(" · ")
+    : "—";
+
+  return (
+    <Section
+      title="Details"
+      actions={editing ? undefined : <Button type="button" variant="secondary" style={smallButton} onClick={startEdit}>Edit</Button>}
+    >
+      {editing ? (
+        <Form onSubmit={(event) => void submit(event)}>
+          <Field label="Name">
+            <Input value={name} onChange={(event) => setName(event.target.value)} required />
+          </Field>
+          <Field label="Emails (comma separated)">
+            <Input value={emails} onChange={(event) => setEmails(event.target.value)} placeholder="ada@northwind.test" />
+          </Field>
+          <Field label="Phones (comma separated)">
+            <Input value={phones} onChange={(event) => setPhones(event.target.value)} placeholder="+27 82 000 0000" />
+          </Field>
+          <Field label="Lifecycle">
+            <LifecycleSelect value={lifecycle} onChange={setLifecycle} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Next action">
+              <Select value={nextKind} onChange={(event) => setNextKind(event.target.value)}>
+                <option value="">None</option>
+                {NEXT_ACTION_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+              </Select>
+            </Field>
+            <Field label="Due">
+              <Input type="date" value={nextDue} disabled={!nextKind} onChange={(event) => setNextDue(event.target.value)} />
+            </Field>
+          </div>
+          <Field label="Tags (comma separated)">
+            <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="decision-maker" />
+          </Field>
+          <EditButtons saving={saving} onCancel={() => setEditing(false)} />
+        </Form>
+      ) : (
+        <KeyValueList pairs={[
+          { label: "Name", value: contact.name },
+          { label: "Emails", value: contact.emails.join(", ") || "—" },
+          { label: "Phones", value: contact.phones.join(", ") || "—" },
+          { label: "Lifecycle", value: <StatusBadge label={contact.lifecycle} status={lifecycleStatus(contact.lifecycle)} /> },
+          { label: "Next action", value: nextAction },
+          { label: "Tags", value: contact.tags.join(", ") || "—" },
+          { label: "Human-owned", value: contact.humanOwned.join(", ") || "—" },
+        ]} />
+      )}
+    </Section>
+  );
+}
+
+function LifecycleSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <Select value={value} onChange={(event) => onChange(event.target.value)}>
+      {LIFECYCLE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+    </Select>
+  );
+}
+
+function EditButtons({ saving, onCancel }: { saving: boolean; onCancel: () => void }) {
+  return (
+    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+      <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
+      <Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+    </div>
+  );
+}
+
+function ScoreCard({ score }: { score: ScoreResult }) {
+  return (
+    <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <strong style={{ fontSize: 20 }}>{score.total}<span style={{ fontSize: 12, color: tokens.muted }}>/100</span></strong>
+        <StatusBadge label={score.band} status={score.band === "hot" ? "ok" : score.band === "warm" ? "warning" : "info"} />
+      </div>
+      {score.parts.length > 0 ? (
+        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 12 }}>
+          {score.parts.map((part) => (
+            <li key={part.label} style={{ display: "flex", justifyContent: "space-between", color: tokens.muted }}>
+              <span>{part.label}</span>
+              <span>+{part.points}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkCard({ label, state, link }: {
+  label: string;
+  state: SummaryState;
+  link: { href?: string; onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void };
+}) {
+  return (
+    <a
+      {...link}
+      aria-label={`Open ${label} for this client`}
+      style={{
+        display: "grid",
+        gap: 10,
+        alignContent: "start",
+        minHeight: 96,
+        padding: 14,
+        borderRadius: 14,
+        border: `1px solid ${tokens.border}`,
+        background: tokens.card,
+        color: tokens.fg,
+        textDecoration: "none",
+        boxShadow: "0 1px 2px color-mix(in oklab, black 4%, transparent)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>{label}</span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Open →</span>
+      </div>
+      {state.status === "loading" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>Loading…</span> : null}
+      {state.status === "ok" ? (
+        <>
+          {state.summary.headline ? (
+            <div style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35 }}>{state.summary.headline}</div>
+          ) : null}
+          {state.summary.stats.length > 0 ? (
+            <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 8 }}>
+              {state.summary.stats.map((stat) => (
+                <div key={stat.label} style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                  <dt style={{ fontSize: 11, color: tokens.muted, overflowWrap: "anywhere" }}>{stat.label}</dt>
+                  <dd style={{
+                    margin: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    fontSize: 15,
+                    fontWeight: 650,
+                    fontVariantNumeric: "tabular-nums",
+                    color: stat.tone === "bad" ? tokens.destructive : tokens.fg,
+                  }}>
+                    {stat.tone ? <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: TONE_DOT[stat.tone] }} /> : null}
+                    {stat.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+        </>
+      ) : null}
+    </a>
+  );
+}
+
+const TONE_DOT: Record<"ok" | "warn" | "bad", string> = {
+  ok: "#22c55e",
+  warn: "#f59e0b",
+  bad: tokens.destructive,
+};
+
+function initialSummaries(): Record<WorkTab, SummaryState> {
+  return {
+    social: { status: "loading" },
+    seo: { status: "loading" },
+    campaigns: { status: "loading" },
+    billing: { status: "loading" },
+  };
+}
+
+/** Fetches each plugin's client summary in parallel. A missing or failing plugin shows as `error`. */
+function useClientSummaries(companyId: string | null, client: ClientRef): Record<WorkTab, SummaryState> {
+  const [states, setStates] = useState<Record<WorkTab, SummaryState>>(initialSummaries);
+  useEffect(() => {
+    setStates(initialSummaries());
+    if (!companyId) {
+      setStates({ social: { status: "error" }, seo: { status: "error" }, campaigns: { status: "error" }, billing: { status: "error" } });
+      return;
+    }
+    const controller = new AbortController();
+    for (const source of WORK_SOURCES) {
+      fetchClientSummary(source.pluginKey, companyId, client, controller.signal)
+        .then((summary) => {
+          if (controller.signal.aborted) return;
+          setStates((prev) => ({ ...prev, [source.tab]: summary ? { status: "ok", summary } : { status: "error" } }));
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setStates((prev) => ({ ...prev, [source.tab]: { status: "error" } }));
+        });
+    }
+    return () => controller.abort();
+  }, [companyId, client.kind, client.id]);
+  return states;
+}
+
+async function fetchClientSummary(
+  pluginKey: string,
+  companyId: string,
+  client: ClientRef,
+  signal: AbortSignal,
+): Promise<ClientSummary | null> {
+  const query = new URLSearchParams({ companyId, kind: client.kind, id: client.id });
+  const response = await fetch(`/api/plugins/${encodeURIComponent(pluginKey)}/api/client-summary?${query.toString()}`, {
+    credentials: "include",
+    headers: { accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) return null;
+  return asClientSummary(await response.json().catch(() => null));
+}
+
+/** Accepts the summary as the body, or wrapped in `{ summary }`. Anything malformed is null. */
+function asClientSummary(body: unknown): ClientSummary | null {
+  const root = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const source = root && root.summary && typeof root.summary === "object" ? (root.summary as Record<string, unknown>) : root;
+  if (!source) return null;
+  const headline = typeof source.headline === "string" ? source.headline.trim() : "";
+  const stats: ClientSummary["stats"] = [];
+  if (Array.isArray(source.stats)) {
+    for (const item of source.stats) {
+      if (!item || typeof item !== "object") continue;
+      const stat = item as Record<string, unknown>;
+      if (typeof stat.label !== "string" || (typeof stat.value !== "string" && typeof stat.value !== "number")) continue;
+      const tone = stat.tone === "ok" || stat.tone === "warn" || stat.tone === "bad" ? stat.tone : undefined;
+      stats.push(tone ? { label: stat.label, value: stat.value, tone } : { label: stat.label, value: stat.value });
+      if (stats.length === 6) break;
+    }
+  }
+  if (!headline && stats.length === 0) return null;
+  return { headline, stats };
+}
+
+const shellFont = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+
+/** Same frame as `Page`, without its header: the workspace bar is the header. */
+function WorkspaceShell({ children }: { children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: shellFont, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+      {children}
+    </main>
+  );
+}
+
+function StatusLine({ children }: { children: ReactNode }) {
+  return (
+    <p
+      role="status"
+      style={{
+        margin: 0,
+        fontSize: 13,
+        padding: "10px 14px",
+        borderRadius: 10,
+        border: `1px solid ${tokens.border}`,
+        background: tokens.secondary,
+        color: tokens.secondaryFg,
+        lineHeight: 1.45,
+      }}
+    >
+      {children}
+    </p>
+  );
+}
+
+function Muted({ children }: { children: ReactNode }) {
+  return <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.45 }}>{children}</p>;
+}
+
+function lifecycleStatus(lifecycle: string): "ok" | "warning" | "error" | "info" | "pending" {
+  if (lifecycle === "customer") return "ok";
+  if (lifecycle === "prospect") return "pending";
+  if (lifecycle === "churned") return "error";
+  return "info";
+}
+
+/** Splits "a, b; c" into a de-duplicated list. */
+function splitList(value: string): string[] {
+  return [...new Set(value.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean))];
+}
+
+function dateInputValue(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
 }
 
 export function CrmSidebar(_props: PluginSidebarProps) {

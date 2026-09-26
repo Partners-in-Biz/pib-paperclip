@@ -116,7 +116,9 @@ export const CRM_MUTATIONS = new Set([
   "import-contacts",
   "bulk-tag-contacts",
   "crm.create-company",
+  "crm.update-company",
   "crm.create-contact",
+  "crm.update-contact",
   "crm.link-contact",
   "crm.set-human-owned",
 ]);

@@ -45,7 +45,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Billing",
   description: "Commercial invoices. Agents draft. A person approves sending and payment.",
   author: "Partners in Biz",
@@ -95,6 +95,15 @@ const manifest: PaperclipPluginManifestV1 = {
       auth: "board",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
+    },
+    {
+      // Read by the CRM client workspace: GET /api/plugins/partnersinbiz.billing/api/client-summary?companyId=&kind=&id=
+      routeKey: "client-summary",
+      method: "GET",
+      path: "/client-summary",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
     },
   ],
   ui: {

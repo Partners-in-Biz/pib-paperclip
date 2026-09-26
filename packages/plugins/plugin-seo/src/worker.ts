@@ -8,11 +8,12 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { configSaved, listCrmCompanies, pluginUiBase, registerCrmProjection, rememberPluginUiBase } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, listCrmClients, pluginUiBase, registerCrmProjection, rememberPluginUiBase } from "@partnersinbiz/pib-plugin-kit";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
 import { DAILY_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary } from "./dispatch.js";
+import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
 import { NAMESPACE } from "./namespace.js";
 import { activateAgent, resolveAgent } from "./service/agent.js";
 import { asParams, companyInfo, createEnv, errorMessage, reqStr, SeoError, type Actor, type Env } from "./service/common.js";
@@ -20,7 +21,9 @@ import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
 import { detectSignals } from "./service/optimize.js";
 import { ensureProject } from "./service/agent.js";
+import { findClient, scopeParam } from "./service/scope.js";
 import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
+import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
 import { SEO_TOOLS } from "./tools.js";
 
@@ -55,7 +58,8 @@ const plugin = definePlugin({
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);
     });
-    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: false });
+    // Clients are CRM companies or CRM contacts (sole traders).
+    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     ctx.logger.info("SEO plugin ready");
   },
 
@@ -88,6 +92,7 @@ const plugin = definePlugin({
     if (!env) return { status: 503, body: { error: "SEO plugin is not ready" } };
     try {
       if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
+      if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
       if (input.routeKey === "oauth-start") {
         const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
         const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
@@ -161,11 +166,13 @@ function registerActions(e: Env) {
 
   action("seo.load", async (companyId, actor, params) => {
     const uiBase = (await rememberPluginUiBase(ctx, params.uiBase)) ?? (await pluginUiBase(ctx));
+    // The page is either Partners in Biz's own sites (no client) or one client's workspace.
+    const scope = scopeParam(params) ?? null;
     const info = await companyInfo(e, companyId);
-    const [sprints, counts, clients, agent] = await Promise.all([
-      db.listSprints(ctx.db, companyId),
+    const [sprints, counts, client, agent] = await Promise.all([
+      db.listSprints(ctx.db, companyId, { scope }),
       db.sprintCounts(ctx.db, companyId),
-      listCrmCompanies(ctx, NAMESPACE, companyId).catch(() => []),
+      scope ? findClient(e, companyId, scope) : Promise.resolve(null),
       resolveAgent(e, companyId),
     ]);
     const secretSet = async (path: string) => {
@@ -194,9 +201,29 @@ function registerActions(e: Env) {
       },
       agent,
       skillKey: SKILL_CANONICAL_KEY,
-      clients: clients.map((c) => ({ id: c.id, name: c.name, domain: c.domain })),
+      scope: scopeParamValue(scope),
+      client: scope
+        ? {
+            kind: scope.kind,
+            id: scope.id,
+            name: client?.name ?? sprints.find((s) => s.clientName)?.clientName ?? "Unknown client",
+            domain: client?.domain ?? null,
+            email: client?.email ?? null,
+            known: Boolean(client),
+          }
+        : null,
+      clientError: scope && !client
+        ? "This client is not in the SEO plugin's CRM list (deleted, or the CRM has not synced it yet). Run CRM resync, then reload. New sprints need the CRM record."
+        : null,
       sprints: sprints.map((s) => sprintView(s, info.today, counts[s.id])),
     };
+  });
+
+  // Every CRM client, for moving an own sprint (with a legacy free-text client name) to its CRM record.
+  action("seo.clients", async (companyId, actor) => {
+    requireUser(actor);
+    const clients = await listCrmClients(ctx, NAMESPACE, companyId);
+    return { clients: clients.map((c) => ({ client: `${c.kind}:${c.id}`, kind: c.kind, id: c.id, name: c.name, detail: c.domain ?? c.email })) };
   });
 
   action("seo.sprint", async (companyId, _actor, params) => {
@@ -204,6 +231,10 @@ function registerActions(e: Env) {
     const info = await companyInfo(e, companyId);
     const sprint = await db.getSprint(ctx.db, companyId, sprintId);
     if (!sprint) throw new SeoError("Sprint not found");
+    // Opened from the wrong workspace: tell the page which scope the sprint lives in.
+    const requested = scopeParam(params);
+    const redirect = requested === undefined ? null : scopeRedirect(requested, sprintScope(sprint));
+    if (redirect) return { redirect: { ...redirect, clientName: sprint.clientName } };
     const [tasks, keywords, backlinks, content, snapshots, findings, optimizations, integrations, health, counts] = await Promise.all([
       db.listTasks(ctx.db, companyId, sprintId),
       db.listKeywords(ctx.db, companyId, sprintId, { includeRetired: true }),

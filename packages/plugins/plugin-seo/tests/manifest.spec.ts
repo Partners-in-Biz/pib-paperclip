@@ -24,11 +24,13 @@ describe("manifest", () => {
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-weekly", "0 5 * * 1"]]);
   });
 
-  it("declares the OAuth routes with company resolution", () => {
+  it("declares the OAuth and client-summary routes with company resolution", () => {
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-start", method: "GET", path: "/oauth/start", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
+      expect.objectContaining({ routeKey: "client-summary", method: "GET", path: "/client-summary", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }),
     ]);
+    expect(manifest.version).toBe("0.3.0");
   });
 
   it("uses secret-ref fields without a type", () => {

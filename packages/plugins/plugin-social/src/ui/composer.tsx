@@ -9,7 +9,7 @@ import {
   type PlatformOverride,
   type SocialPlatform,
 } from "../platforms.js";
-import { Avatar, ClientSelect, Muted, Row, SmallButton, platformLabel } from "./parts.js";
+import { Avatar, Muted, Row, scopeName, scopeParams, SmallButton, platformLabel } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
 type Overrides = Partial<Record<SocialPlatform, PlatformOverride>>;
@@ -23,8 +23,8 @@ const FIELD_LABEL: Record<keyof PlatformOverride, string> = {
   boardId: "Board id",
 };
 
-/** Upload a file straight to R2 with a presigned PUT, then register it. */
-export async function uploadToR2(run: RunAction, file: File, clientRef: string | null, altText?: string): Promise<MediaAsset> {
+/** Upload a file straight to R2 with a presigned PUT, then register it in `client`'s scope (null = own work). */
+export async function uploadToR2(run: RunAction, file: File, client: string | null, altText?: string): Promise<MediaAsset> {
   if (!SOCIAL_MEDIA_MIME.includes(file.type)) throw new Error(`${file.name}: use JPEG, PNG, GIF, WebP, MP4 or MOV`);
   const presign = (await run("social.media-presign", { fileName: file.name, mime: file.type, bytes: file.size })) as {
     uploadUrl: string;
@@ -45,7 +45,7 @@ export async function uploadToR2(run: RunAction, file: File, clientRef: string |
     height: dims?.height,
     durationS: dims?.durationS,
     altText: altText || undefined,
-    clientRef: clientRef || undefined,
+    client,
   })) as MediaAsset;
 }
 
@@ -102,16 +102,18 @@ export function Thumb({ asset, selected, order, onClick }: { asset: { url: strin
   );
 }
 
-export function Composer({ snapshot, post, run, defaultClient, onClose }: {
+export function Composer({ snapshot, post, run, onClose }: {
   snapshot: Snapshot;
   post: Post | null;
   run: RunAction;
-  defaultClient: string;
   onClose: () => void;
 }) {
   const [body, setBody] = useState(post?.body ?? "");
-  const [clientRef, setClientRef] = useState(post?.clientRef ?? (defaultClient && defaultClient !== "__none" ? defaultClient : ""));
-  const [accountIds, setAccountIds] = useState<Set<string>>(new Set(post?.destinations.map((d) => d.accountId) ?? []));
+  // Posts from before strict scopes may target another scope's account: those are dropped on save.
+  const foreign = (post?.destinations ?? []).filter((d) => !snapshot.accounts.some((a) => a.id === d.accountId) && d.status !== "published");
+  const [accountIds, setAccountIds] = useState<Set<string>>(
+    new Set(post?.destinations.map((d) => d.accountId).filter((id) => !foreign.some((d) => d.accountId === id)) ?? []),
+  );
   const [mediaIds, setMediaIds] = useState<string[]>(post?.media.map((m) => m.assetId).filter((id): id is string => Boolean(id)) ?? []);
   const [firstComment, setFirstComment] = useState(post?.firstComment ?? "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
@@ -121,11 +123,12 @@ export function Composer({ snapshot, post, run, defaultClient, onClose }: {
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // The snapshot holds this scope's accounts and media only: a post never mixes clients.
   const accounts = useMemo(
-    () => snapshot.accounts.filter((a) => a.connected && a.status !== "needs_reconnect" && (!clientRef || !a.clientRef || a.clientRef === clientRef)),
-    [snapshot.accounts, clientRef],
+    () => snapshot.accounts.filter((a) => a.connected && a.status !== "needs_reconnect"),
+    [snapshot.accounts],
   );
-  const assets = useMemo(() => snapshot.media.filter((m) => !clientRef || !m.clientRef || m.clientRef === clientRef), [snapshot.media, clientRef]);
+  const assets = snapshot.media;
   const [extraAssets, setExtraAssets] = useState<MediaAsset[]>([]);
   const allAssets = useMemo(() => [...extraAssets.filter((e) => !assets.some((a) => a.id === e.id)), ...assets], [assets, extraAssets]);
   const selectedPlatforms = useMemo(() => {
@@ -151,7 +154,7 @@ export function Composer({ snapshot, post, run, defaultClient, onClose }: {
     for (const file of Array.from(files)) {
       setUploading(file.name);
       try {
-        const asset = await uploadToR2(run, file, clientRef || null);
+        const asset = await uploadToR2(run, file, snapshot.scope);
         setExtraAssets((prev) => [asset, ...prev]);
         setMediaIds((prev) => [...prev, asset.id]);
       } catch (e) {
@@ -174,7 +177,6 @@ export function Composer({ snapshot, post, run, defaultClient, onClose }: {
       }
       const params = {
         body,
-        clientRef: clientRef || null,
         accountIds: [...accountIds],
         mediaAssetIds: mediaIds,
         firstComment: firstComment || null,
@@ -182,7 +184,7 @@ export function Composer({ snapshot, post, run, defaultClient, onClose }: {
       };
       const saved = (post
         ? await run("social.update-post", { postId: post.id, ...params }, sendToReview ? undefined : "Post saved")
-        : await run("social.create-post", params, sendToReview ? undefined : "Draft saved")) as Post;
+        : await run("social.create-post", { ...params, ...scopeParams(snapshot) }, sendToReview ? undefined : "Draft saved")) as Post;
       if (post) {
         for (const d of post.destinations) {
           if (!accountIds.has(d.accountId) && (d.status === "pending" || d.status === "failed")) await run("social.detach", { postId: post.id, accountId: d.accountId });
@@ -216,14 +218,19 @@ export function Composer({ snapshot, post, run, defaultClient, onClose }: {
       )}
     >
       {error ? <div role="alert" style={{ fontSize: 12, color: "var(--destructive)" }}>{error}</div> : null}
-      <Field label="Client"><ClientSelect clients={snapshot.clients} value={clientRef} onChange={setClientRef} allLabel="No client" /></Field>
+      <Muted>For <strong>{scopeName(snapshot)}</strong>. Only this {snapshot.client ? "client's" : "workspace's own"} accounts and media can be used.</Muted>
       <Field label={`Post (${Array.from(body).length} characters)`}>
         <TextArea value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="What do you want to say?" />
       </Field>
 
       <div style={{ display: "grid", gap: 6 }}>
         <span style={{ fontSize: 12, color: tokens.muted, fontWeight: 500 }}>Destinations</span>
-        {accounts.length === 0 ? <Muted>No connected accounts{clientRef ? " for this client" : ""}. Connect one on the Accounts tab.</Muted> : null}
+        {accounts.length === 0 ? <Muted>No connected accounts for {scopeName(snapshot)}. Connect one on the Accounts tab.</Muted> : null}
+        {foreign.length ? (
+          <Muted style={{ color: "#b45309" }}>
+            {foreign.map((d) => d.accountName).join(", ")} belong{foreign.length === 1 ? "s" : ""} to another client and will be removed from this post when you save.
+          </Muted>
+        ) : null}
         <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
           {accounts.map((account) => (
             <label key={account.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", borderRadius: 10, border: `1px solid ${accountIds.has(account.id) ? tokens.primary : tokens.border}`, cursor: "pointer" }}>

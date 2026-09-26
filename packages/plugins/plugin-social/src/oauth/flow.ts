@@ -7,9 +7,20 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { openJson, sealJson } from "@partnersinbiz/pib-plugin-kit";
-import { envFor, sealToken } from "../accounts.js";
-import { resolveClient } from "../clients.js";
+import { openJson, sealJson, withClientParam } from "@partnersinbiz/pib-plugin-kit";
+import { assertAccountMovable, envFor, moveAccountScope, sealToken } from "../accounts.js";
+import {
+  OWN,
+  rowScope,
+  sameClient,
+  scopeColumns,
+  scopeLabel,
+  scopeOfRow,
+  sessionScope,
+  sessionScopeExtra,
+  type ClientScope,
+  type ResolvedScope,
+} from "../clients.js";
 import { loadSocialConfig, type ProviderApp, type SocialConfig } from "../config.js";
 import {
   consumeOauthSession,
@@ -21,6 +32,7 @@ import {
   getOauthSession,
   getPickerSession,
   saveMastodonApp,
+  type AccountRow,
   sessionExtra,
   setSessionPending,
   upsertAccount,
@@ -70,7 +82,8 @@ export interface StartInput {
   instanceUrl?: string;
   defaultSubreddit?: string;
   reconnectAccountId?: string;
-  clientRef?: string;
+  /** The page's scope: new accounts belong to it. A reconnect keeps the account's own scope. */
+  target?: ResolvedScope;
 }
 
 export async function startOAuth(ctx: PluginContext, companyId: string, userId: string | null, input: StartInput) {
@@ -96,16 +109,15 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
     }
     app = { platform, clientId: status.clientId!, apiVersion: status.apiVersion ?? undefined, scopes: status.scopes ?? undefined };
   }
+  let target = input.target ?? OWN;
   if (input.reconnectAccountId) {
     const existing = await getAccount(ctx, companyId, input.reconnectAccountId);
     if (!existing) throw new SocialError("The account to reconnect was not found");
     sessionExtraInput.reconnectAccountId = existing.id;
+    target = rowScope(existing);
   }
   if (input.defaultSubreddit) sessionExtraInput.defaultSubreddit = input.defaultSubreddit;
-  if (input.clientRef) {
-    const client = await resolveClient(ctx, companyId, input.clientRef);
-    if (client?.clientRef) sessionExtraInput.clientRef = client.clientRef;
-  }
+  Object.assign(sessionExtraInput, sessionScopeExtra(target));
   const env: ProviderEnv = { app, redirectUri, linkedinOrgPages: config.linkedinOrgPages };
   const state = randomBytes(24).toString("base64url");
   const result = await provider.authorize(env, state, authorizeInput);
@@ -121,24 +133,49 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
   return { authorizeUrl: result.url, state, platform, label: PLATFORM_LABELS[platform], redirectUri };
 }
 
-async function socialPath(ctx: PluginContext, companyId: string, query: Record<string, string>): Promise<string | null> {
+/**
+ * Where the bridge sends the person back: the Social page in the scope the
+ * connection was started from (`?client=` for a client workspace).
+ */
+export async function socialPath(ctx: PluginContext, companyId: string, query: Record<string, string>, scope: ClientScope = null): Promise<string | null> {
   try {
     const company = await ctx.companies.get(companyId);
     if (!company?.issuePrefix) return null;
-    return `/${company.issuePrefix}/social?${new URLSearchParams({ tab: "accounts", ...query }).toString()}`;
+    return withClientParam(`/${company.issuePrefix}/social?${new URLSearchParams({ tab: "accounts", ...query }).toString()}`, scope);
   } catch {
     return null;
   }
 }
 
+/**
+ * The scope a candidate is saved in. A reconnect keeps the account where it
+ * is; connecting an account that already exists elsewhere moves it here,
+ * unless unpublished posts of its old scope still use it.
+ */
+async function candidateScope(
+  ctx: PluginContext,
+  companyId: string,
+  candidate: ConnectCandidate,
+  target: ResolvedScope,
+  keepScope: boolean,
+): Promise<{ existing: AccountRow | null; target: ResolvedScope }> {
+  const existing = await findAccountByExternal(ctx, companyId, candidate.platform, candidate.externalId);
+  if (!existing) return { existing: null, target };
+  if (keepScope) return { existing, target: rowScope(existing) };
+  if (!sameClient(scopeOfRow(existing), target.scope)) await assertAccountMovable(ctx, companyId, existing, target);
+  return { existing, target };
+}
+
 async function saveCandidate(
   ctx: PluginContext,
   config: SocialConfig,
-  input: { companyId: string; userId: string | null; candidate: ConnectCandidate; clientRef?: string | null },
-): Promise<{ id: string; created: boolean; platform: SocialPlatform; displayName: string }> {
+  input: { companyId: string; userId: string | null; candidate: ConnectCandidate; target: ResolvedScope; keepScope?: boolean },
+): Promise<{ id: string; created: boolean; platform: SocialPlatform; displayName: string; belongsTo: string }> {
   const keyring = await config.keyring();
-  const client = input.clientRef ? await resolveClient(ctx, input.companyId, input.clientRef) : undefined;
   const c = input.candidate;
+  const { existing, target } = await candidateScope(ctx, input.companyId, c, input.target, input.keepScope ?? false);
+  // Moving also carries the inbox and drops the account from the old scope's feeds.
+  if (existing) await moveAccountScope(ctx, input.companyId, existing, target);
   const saved = await upsertAccount(ctx, {
     company_id: input.companyId,
     platform: c.platform,
@@ -151,11 +188,10 @@ async function saveCandidate(
     scopes: c.scopes,
     meta: { ...c.meta, kind: c.meta.kind ?? c.kind },
     key_version: keyring.currentVersion,
-    client_ref: client?.clientRef ?? null,
-    client_name: client?.clientName ?? null,
+    ...scopeColumns(target),
     created_by_user_id: input.userId,
   });
-  return { ...saved, platform: c.platform, displayName: c.displayName };
+  return { ...saved, platform: c.platform, displayName: c.displayName, belongsTo: scopeLabel(target) };
 }
 
 /** Called by the `oauth-complete` API route (the bridge page). */
@@ -190,27 +226,27 @@ export async function completeOAuth(
     }
     const { candidates } = await provider.exchange(env, input.params, extra);
     if (candidates.length === 0) throw new OAuthFlowError(`No ${PLATFORM_LABELS[platform]} accounts were returned.`);
-    const clientRef = typeof extra.clientRef === "string" ? extra.clientRef : null;
+    const target = sessionScope(extra);
 
     const reconnectId = typeof extra.reconnectAccountId === "string" ? extra.reconnectAccountId : null;
     if (reconnectId) {
       const existing = await getAccount(ctx, input.companyId, reconnectId);
       const match = existing && candidates.find((c) => c.platform === existing.platform && c.externalId === existing.external_id);
       if (match) {
-        await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: match, clientRef });
+        await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: match, target, keepScope: true });
         await deleteOauthSession(ctx, input.state);
-        return { redirectTo: await socialPath(ctx, input.companyId, { connected: platform }), platform, connected: 1, pickerId: null };
+        return { redirectTo: await socialPath(ctx, input.companyId, { connected: platform }, target.scope), platform, connected: 1, pickerId: null };
       }
     }
     if (candidates.length === 1) {
-      await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: candidates[0]!, clientRef });
+      await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: candidates[0]!, target });
       await deleteOauthSession(ctx, input.state);
-      return { redirectTo: await socialPath(ctx, input.companyId, { connected: candidates[0]!.platform }), platform, connected: 1, pickerId: null };
+      return { redirectTo: await socialPath(ctx, input.companyId, { connected: candidates[0]!.platform }, target.scope), platform, connected: 1, pickerId: null };
     }
     const keyring = await config.keyring();
     const pickerId = randomUUID();
     await setSessionPending(ctx, input.state, pickerId, sealJson(candidates, keyring));
-    return { redirectTo: await socialPath(ctx, input.companyId, { picker: pickerId }), platform, connected: 0, pickerId };
+    return { redirectTo: await socialPath(ctx, input.companyId, { picker: pickerId }, target.scope), platform, connected: 0, pickerId };
   } catch (error) {
     await deleteOauthSession(ctx, input.state).catch(() => undefined);
     throw error;
@@ -229,9 +265,11 @@ async function openPicker(ctx: PluginContext, companyId: string, userId: string 
 /** Options for the picker. Tokens never leave the worker. */
 export async function pendingOptions(ctx: PluginContext, companyId: string, userId: string | null, pickerId: string) {
   const { session, candidates } = await openPicker(ctx, companyId, userId, pickerId);
+  const target = sessionScope(sessionExtra(session));
   const options = [];
   for (const c of candidates) {
     const existing = await findAccountByExternal(ctx, companyId, c.platform, c.externalId);
+    const elsewhere = existing && !sameClient(scopeOfRow(existing), target.scope) ? scopeLabel(existing) : null;
     options.push({
       key: c.key,
       platform: c.platform,
@@ -241,15 +279,17 @@ export async function pendingOptions(ctx: PluginContext, companyId: string, user
       handle: c.handle,
       avatarUrl: c.avatarUrl,
       alreadyConnected: Boolean(existing && existing.token_enc && existing.status !== "disabled"),
+      /** Set when the account exists in another scope; choosing it moves it here. */
+      belongsElsewhere: elsewhere,
       detail: typeof c.meta.pageName === "string" ? `Linked to ${c.meta.pageName}` : typeof c.meta.boardName === "string" ? `Board: ${c.meta.boardName}` : null,
     });
   }
-  const extra = sessionExtra(session);
   return {
     pickerId,
     platform: session.platform,
     label: isSocialPlatform(session.platform) ? PLATFORM_LABELS[session.platform] : session.platform,
-    clientRef: typeof extra.clientRef === "string" ? extra.clientRef : null,
+    client: target.scope ? { kind: target.scope.kind, id: target.scope.id, name: target.client?.name ?? target.scope.id } : null,
+    belongsTo: scopeLabel(target),
     options,
   };
 }
@@ -258,29 +298,33 @@ export async function confirmPicker(
   ctx: PluginContext,
   companyId: string,
   userId: string | null,
-  input: { pickerId: string; selections: string[]; clientRef?: string | null },
+  input: { pickerId: string; selections: string[] },
 ) {
   if (input.selections.length === 0) throw new SocialError("Choose at least one account");
   const { session, config, candidates } = await openPicker(ctx, companyId, userId, input.pickerId);
   const chosen = candidates.filter((c) => input.selections.includes(c.key));
   if (chosen.length === 0) throw new SocialError("None of the chosen accounts are in this sign-in");
-  const extra = sessionExtra(session);
-  const clientRef = input.clientRef !== undefined ? input.clientRef : typeof extra.clientRef === "string" ? extra.clientRef : null;
+  // The accounts belong to the scope the connection was started in.
+  const target = sessionScope(sessionExtra(session));
+  // Check every move first so a refused one saves none.
+  for (const candidate of chosen) await candidateScope(ctx, companyId, candidate, target, false);
   const saved = [];
-  for (const candidate of chosen) saved.push(await saveCandidate(ctx, config, { companyId, userId, candidate, clientRef }));
+  for (const candidate of chosen) saved.push(await saveCandidate(ctx, config, { companyId, userId, candidate, target }));
   await deleteOauthSession(ctx, session.state);
-  return { connected: saved.length, accounts: saved };
+  return { connected: saved.length, accounts: saved, belongsTo: scopeLabel(target) };
 }
 
 export async function connectBlueskyAccount(
   ctx: PluginContext,
   companyId: string,
   userId: string | null,
-  input: { identifier: string; appPassword: string; pdsUrl?: string | null; clientRef?: string | null },
+  input: { identifier: string; appPassword: string; pdsUrl?: string | null; target?: ResolvedScope; reconnectAccountId?: string | null },
 ) {
   const config = await loadSocialConfig(ctx, companyId);
   await config.keyring();
   const candidate = await connectBluesky({ identifier: input.identifier, appPassword: input.appPassword, pdsUrl: input.pdsUrl, defaultPds: config.blueskyDefaultPds });
-  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, clientRef: input.clientRef ?? null });
+  const reconnect = input.reconnectAccountId ? await getAccount(ctx, companyId, input.reconnectAccountId) : null;
+  const keepScope = Boolean(reconnect && reconnect.platform === candidate.platform && reconnect.external_id === candidate.externalId);
+  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, target: input.target ?? OWN, keepScope });
   return { ...saved, handle: candidate.handle };
 }
