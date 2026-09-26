@@ -40,7 +40,7 @@ describe("manifest", () => {
         companyResolution: { from: "query", key: "companyId" },
       }),
     ]);
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.4.0");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {

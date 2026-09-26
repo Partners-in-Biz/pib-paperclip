@@ -822,7 +822,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     listMediaAssets(ctx, viewer.companyId, scope),
     listRssFeeds(ctx, viewer.companyId, scope),
     listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
-    agentSummary(ctx, viewer.companyId),
+    // Hire status (open task, candidates) is only shown on the own page.
+    agentSummary(ctx, viewer.companyId, { hire: !scope }),
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);

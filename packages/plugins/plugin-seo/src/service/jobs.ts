@@ -3,7 +3,8 @@
  * company explicitly, company ids come from our own sprint rows, and a company
  * whose SEO settings are not saved is skipped (the host would refuse anyway).
  *
- * seo-daily (hourly at :05): once per sprint per local day after the
+ * seo-daily (hourly at :05): links a pending SEO agent hire (backstop for
+ * missed agent events), then once per sprint per local day after the
  * configured hour — clock/status, root issue, GSC/PageSpeed/Bing pulls,
  * scheduled audit snapshots, due-task sub-issues, measurements, issue heal,
  * today's plan.
@@ -16,7 +17,8 @@ import { isRunning, nextSprintStatus, type AgentAvailability } from "../engine/s
 import { daysBetween } from "../engine/time.js";
 import { fetchBingLinkCounts } from "../integrations/bing.js";
 import { runPagespeed } from "../integrations/pagespeed.js";
-import { ensureProject, resolveAgent } from "./agent.js";
+import { configSaved } from "@partnersinbiz/pib-plugin-kit";
+import { ensureProject, linkPendingHire, resolveAgent } from "./agent.js";
 import { savePageHealth } from "./checks.js";
 import { companyInfo, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { clockFor } from "./context.js";
@@ -222,8 +224,37 @@ export async function runDailyForSprint(
   return { sprintId: sprint.id, status, day: clock.day, issuesOpened, snapshotDay, measured, healed, warnings };
 }
 
-export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; skipped: number; errors: string[] }> {
+/**
+ * Agent events are delivered at most once, so the hourly job also links a
+ * pending hire, for every company with sprints or saved SEO settings.
+ */
+export async function linkPendingHires(env: Env): Promise<number> {
+  const companies = new Set<string>();
+  try {
+    for (const id of await db.listSprintCompanies(env.ctx.db)) companies.add(id);
+  } catch (error) {
+    env.ctx.logger.info("SEO hire check: sprint companies unavailable", { error: errorMessage(error) });
+  }
+  try {
+    for (const company of await env.ctx.companies.list({ limit: 100 })) {
+      if (!companies.has(company.id) && (await configSaved(env.ctx, company.id))) companies.add(company.id);
+    }
+  } catch (error) {
+    env.ctx.logger.info("SEO hire check: company list unavailable", { error: errorMessage(error) });
+  }
+  let linked = 0;
+  for (const companyId of companies) {
+    if (await linkPendingHire(env, companyId)) linked += 1;
+  }
+  return linked;
+}
+
+export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; skipped: number; errors: string[]; hiresLinked: number }> {
   const started = Date.now();
+  const hiresLinked = await linkPendingHires(env).catch((error: unknown) => {
+    env.ctx.logger.info("SEO hire check failed", { error: errorMessage(error) });
+    return 0;
+  });
   const sprints = await db.listRunnableSprints(env.ctx.db);
   let processed = 0;
   let skipped = 0;
@@ -259,7 +290,7 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
     }
   }
   await db.deleteExpiredOAuthSessions(env.ctx.db).catch(() => undefined);
-  return { processed, skipped, errors };
+  return { processed, skipped, errors, hiresLinked };
 }
 
 export async function runWeeklyForSprint(env: Env, info: CompanyInfo, sprint: db.Sprint) {

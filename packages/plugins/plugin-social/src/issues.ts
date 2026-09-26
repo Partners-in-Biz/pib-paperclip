@@ -4,9 +4,10 @@
  * woken (kit createWorkIssue); plugin-created issues do not wake on their own.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, linkedAgentId } from "@partnersinbiz/pib-plugin-kit";
 import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import type { AccountRow, DestinationRow, PostRow } from "./db.js";
+import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLATFORM_LABELS, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY, isSocialPlatform } from "./platforms.js";
 
 export { SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY };
@@ -14,11 +15,23 @@ export const ORIGIN_KIND = `plugin:${PLUGIN_ID}` as const;
 
 const INACTIVE_AGENT = new Set(["paused", "terminated", "pending_approval", "archived", "deleted"]);
 
+/** True when an agent in this status picks up work. */
+export function agentStatusActive(status: string | null | undefined): boolean {
+  return Boolean(status && !INACTIVE_AGENT.has(status));
+}
+
+/**
+ * The agent Social work goes to: the one linked through the hire flow (or by
+ * hand), else one the host created from the manifest before hiring moved to
+ * tasks.
+ */
 export async function socialAgent(ctx: PluginContext, companyId: string): Promise<{ agentId: string | null; active: boolean; status: string | null }> {
   try {
-    const res = await ctx.agents.managed.get(SOCIAL_AGENT_KEY, companyId);
-    const status = res.agent?.status ?? null;
-    return { agentId: res.agentId, active: Boolean(res.agentId && status && !INACTIVE_AGENT.has(status)), status };
+    const agentId = await linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx));
+    if (!agentId) return { agentId: null, active: false, status: null };
+    const agent = await ctx.agents.get(agentId, companyId);
+    const status = agent?.status ?? null;
+    return { agentId, active: agentStatusActive(status), status };
   } catch {
     return { agentId: null, active: false, status: null };
   }

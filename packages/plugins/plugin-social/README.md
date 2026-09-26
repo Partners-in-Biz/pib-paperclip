@@ -19,7 +19,18 @@ Every account, post, media asset, RSS feed and inbox item belongs to one scope: 
    `<publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html`.
    The host serves plugin files only by installation id (not by plugin key); the id changes only if the plugin is uninstalled and installed again.
 3. R2 bucket CORS must allow the Paperclip origin to `PUT` with a `Content-Type` header.
-4. Social page → Overview → **Activate agent**, then Resume the "Social Media Manager" agent.
+4. Social page → Overview → **Hire Social agent** (or **Use an existing agent**), then Resume the agent once its adapter has a working model key. See "The Social agent" below.
+
+## The Social agent
+
+The plugin never creates its agent. Every agent is hired the same way, through a normal Paperclip task:
+
+- **Hire Social agent** opens a New task popup prefilled with the hire request (`src/hire.ts`: name "Social Media Manager", role `general`, adapter `hermes_local` then `claude_local`, skills `pib-social-publish` + `pib-social-content`, budget $0, a short AGENTS.md). The person picks the assignee (usually the CEO / hiring agent, or themselves) and a task is created with `originId: hire:social-media-manager`.
+- When an agent matching the spec appears (created after the task, with a social skill or the name/title "Social Media Manager"), the plugin links it automatically: on `agent.created` / `agent.updated` / `agent.status_changed` / `approval.decided`, on the Social page load, and from the hourly `refresh-tokens` job. It comments on the hire task with what it did.
+- **Use an existing agent** / **Link agent** / **Change agent** links any agent by hand (for example an existing "Outbound & Social Specialist"). The plugin cannot attach skills to an agent it did not create, so the page and the link result say which of `pib-social-publish` / `pib-social-content` still have to be attached on the agent's Skills tab.
+- Wiring a linked agent (`wireAgent`): merges a `tools:use` grant for plugin tools (Social + CRM), reconciles the Social project and assigns the weekly "Plan next week's social" routine to it (an existing routine owned by another agent is reassigned and keeps its status; the Monday trigger stays off until enabled). Failed-post issues go to the linked agent from then on.
+- **Re-sync** (`social.activate-agent`) wires the linked agent again. Agents activated before 0.4.0 (host-managed from the manifest `agents` declaration) are still found through `ctx.agents.managed.get` and keep working.
+- Actions (people only): `social.hire-options`, `social.start-hire`, `social.link-agent` `{ agentId }`, `social.unlink-agent`, `social.activate-agent`. The link lives in plugin state (`pib-hire` / `role:social-media-manager`, company scope).
 
 ## How it works
 

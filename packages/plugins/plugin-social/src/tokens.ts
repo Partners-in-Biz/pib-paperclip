@@ -93,10 +93,16 @@ export async function refreshCompanyTokens(ctx: PluginContext, config: SocialCon
   return summary;
 }
 
-export async function refreshTokensJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>): Promise<RefreshRunSummary> {
+export async function refreshTokensJob(
+  ctx: PluginContext,
+  ensureCompany: (companyId: string) => Promise<void>,
+  /** Extra per-company work (the hourly hire link check). Errors are swallowed. */
+  eachCompany?: (companyId: string) => Promise<void>,
+): Promise<RefreshRunSummary> {
   const total: RefreshRunSummary = { checked: 0, refreshed: 0, warned: 0, needsReconnect: 0, errors: 0 };
   for (const companyId of await companiesWithAccounts(ctx)) {
     await ensureCompany(companyId).catch(() => undefined);
+    if (eachCompany) await eachCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
     if (!config.saved) continue;
     try {

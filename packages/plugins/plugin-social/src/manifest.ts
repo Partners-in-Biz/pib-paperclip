@@ -1,5 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
+import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
 import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, SKILLS, SOCIAL_AGENT_INSTRUCTIONS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
@@ -7,7 +8,7 @@ import { SOCIAL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.0",
+  version: "0.4.0",
   displayName: "Social",
   description:
     "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. " +
@@ -100,17 +101,19 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "query", key: "companyId" },
     },
   ],
+  // Kept so agents activated before hiring moved to tasks are still found
+  // (ctx.agents.managed.get). New agents are hired through a task (src/hire.ts);
+  // the plugin never calls managed.reconcile.
   agents: [
     {
       agentKey: SOCIAL_AGENT_KEY,
-      displayName: "Social Media Manager",
+      displayName: SOCIAL_AGENT_NAME,
       role: "general",
-      title: "Social Media Manager",
-      icon: "megaphone",
-      capabilities:
-        "Plans, drafts and schedules social posts for Partners in Biz's own accounts and for its clients across 12 platforms, fixes failed posts, and works the social inbox through the Social plugin tools.",
+      title: SOCIAL_AGENT_NAME,
+      icon: SOCIAL_AGENT_ICON,
+      capabilities: SOCIAL_AGENT_CAPABILITIES,
       adapterType: "hermes_local",
-      adapterPreference: ["hermes_local", "claude_local"],
+      adapterPreference: SOCIAL_HIRE_ROLE.adapterPreference,
       adapterConfig: {
         paperclipSkillSync: { desiredSkills: DESIRED_SKILLS },
       },

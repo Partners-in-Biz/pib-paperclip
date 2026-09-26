@@ -5,6 +5,13 @@ export const PROJECT_KEY = "seo";
 export const DAILY_ROUTINE_KEY = "seo-run-today";
 export const WEEKLY_ROUTINE_KEY = "seo-weekly-review";
 export const ROUTINE_KEYS = [DAILY_ROUTINE_KEY, WEEKLY_ROUTINE_KEY] as const;
+export const ROUTINE_TITLES: Record<(typeof ROUTINE_KEYS)[number], string> = {
+  [DAILY_ROUTINE_KEY]: "Run today's SEO",
+  [WEEKLY_ROUTINE_KEY]: "Weekly SEO review",
+};
+export const AGENT_DISPLAY_NAME = "SEO Specialist";
+export const AGENT_CAPABILITIES =
+  "Runs Partners in Biz 90-day SEO sprints with the SEO plugin tools: site checks, keyword and content work, Search Console data, evidence and hand-offs.";
 export const SKILL_KEY = "seo-sprint";
 export const SKILL_SLUG = "pib-seo-sprint";
 export const DAILY_JOB_KEY = "seo-daily";

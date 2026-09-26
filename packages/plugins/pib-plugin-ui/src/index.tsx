@@ -2,6 +2,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type FormEvent,
@@ -491,6 +492,203 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         </div>
         <div style={{ display: "grid", gap: 14 }}>{children}</div>
         {footer ? <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>{footer}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+export interface TaskAssigneeOption {
+  kind: "agent" | "user";
+  id: string;
+  name: string;
+  detail?: string | null;
+  status?: string | null;
+}
+
+/**
+ * A "New task" dialog that looks and behaves like Paperclip's own (plugins
+ * cannot open the host's dialog). Title and description arrive prefilled and
+ * stay editable; the person picks who the task is for.
+ */
+export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle, initialDescription, assignees, defaultAssignee, onClose, onCreate, note }: {
+  open: boolean;
+  /** Company issue prefix shown in the header chip, e.g. `PAR`. */
+  prefix?: string | null;
+  heading?: string;
+  initialTitle: string;
+  initialDescription: string;
+  assignees: TaskAssigneeOption[];
+  /** `agent:<id>` or `user:<id>`. */
+  defaultAssignee?: string;
+  onClose: () => void;
+  onCreate: (task: { title: string; description: string; assigneeAgentId: string | null; assigneeUserId: string | null }) => Promise<void>;
+  note?: ReactNode;
+}) {
+  const [title, setTitle] = useState(initialTitle);
+  const [description, setDescription] = useState(initialDescription);
+  const [assignee, setAssignee] = useState(defaultAssignee ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setTitle(initialTitle);
+    setDescription(initialDescription);
+    setAssignee(defaultAssignee ?? "");
+    setError("");
+    setBusy(false);
+  }, [open, initialTitle, initialDescription, defaultAssignee]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    titleRef.current?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose, busy]);
+
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [title, open]);
+
+  if (!open) return null;
+
+  const [kind, id] = assignee.includes(":") ? (assignee.split(":", 2) as ["agent" | "user", string]) : [null, ""];
+  const selected = assignees.find((a) => a.kind === kind && a.id === id) ?? null;
+  const agents = assignees.filter((a) => a.kind === "agent");
+  const people = assignees.filter((a) => a.kind === "user");
+
+  async function submit() {
+    if (!title.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onCreate({
+        title: title.trim(),
+        description,
+        assigneeAgentId: kind === "agent" ? id : null,
+        assigneeUserId: kind === "user" ? id : null,
+      });
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  }
+
+  const bar: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", flexShrink: 0 };
+  const ghost: CSSProperties = { appearance: "none", border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", fontFamily: "inherit", fontSize: 13, borderRadius: 6, padding: "4px 8px" };
+
+  return (
+    <div
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose();
+      }}
+      style={{ position: "fixed", inset: 0, zIndex: 80, background: "color-mix(in oklab, black 50%, transparent)", display: "grid", placeItems: "start center", padding: "10vh 16px 16px" }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={heading}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            void submit();
+          }
+        }}
+        style={{ width: "min(720px, 100%)", maxHeight: "80vh", display: "flex", flexDirection: "column", borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.bg, color: tokens.fg, boxShadow: "0 24px 60px color-mix(in oklab, black 40%, transparent)", fontFamily: font, overflow: "hidden" }}
+      >
+        <div style={{ ...bar, borderBottom: `1px solid ${tokens.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: tokens.muted }}>
+            {prefix ? <span style={{ borderRadius: 4, background: tokens.secondary, padding: "2px 6px", fontSize: 12, fontWeight: 600, color: tokens.fg }}>{prefix}</span> : null}
+            {prefix ? <span style={{ opacity: 0.6 }}>›</span> : null}
+            <span>{heading}</span>
+          </div>
+          <button type="button" aria-label="Close" onClick={onClose} disabled={busy} style={{ ...ghost, fontSize: 18, lineHeight: 1, padding: "2px 8px" }}>×</button>
+        </div>
+        <div style={{ minHeight: 0, flex: 1, overflowY: "auto" }}>
+          <div style={{ padding: "16px 16px 8px" }}>
+            <textarea
+              ref={titleRef}
+              value={title}
+              rows={1}
+              placeholder={initialTitle || initialDescription ? "Task title" : "Loading…"}
+              disabled={busy}
+              onChange={(event) => setTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) event.preventDefault();
+              }}
+              style={{ width: "100%", fontSize: 18, fontWeight: 600, background: "transparent", color: tokens.fg, border: "none", outline: "none", resize: "none", overflow: "hidden", fontFamily: "inherit", padding: 0 }}
+            />
+          </div>
+          <div style={{ padding: "0 16px 8px", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: tokens.muted, flexWrap: "wrap" }}>
+            <span style={{ width: 24, textAlign: "center" }}>For</span>
+            <select
+              aria-label="Assignee"
+              value={assignee}
+              disabled={busy}
+              onChange={(event) => setAssignee(event.target.value)}
+              style={{ height: 30, borderRadius: 6, border: `1px solid ${tokens.border}`, background: tokens.bg, color: selected ? tokens.fg : tokens.muted, fontSize: 13, padding: "0 8px", fontFamily: "inherit", maxWidth: 360 }}
+            >
+              <option value="">No assignee</option>
+              {people.length ? (
+                <optgroup label="People">
+                  {people.map((p) => <option key={`user:${p.id}`} value={`user:${p.id}`}>{p.name}{p.detail ? ` · ${p.detail}` : ""}</option>)}
+                </optgroup>
+              ) : null}
+              {agents.length ? (
+                <optgroup label="Agents">
+                  {agents.map((a) => <option key={`agent:${a.id}`} value={`agent:${a.id}`}>{a.name}{a.detail ? ` · ${a.detail}` : ""}{a.status === "paused" ? " (paused)" : ""}</option>)}
+                </optgroup>
+              ) : null}
+            </select>
+          </div>
+          {selected?.kind === "agent" && selected.status === "paused" ? (
+            <div style={{ margin: "0 16px 8px", fontSize: 12.5, borderRadius: 6, padding: "8px 10px", border: "1px solid color-mix(in oklab, orange 45%, transparent)", background: "color-mix(in oklab, orange 10%, transparent)" }}>
+              <strong>{selected.name}</strong> is paused and will not start on this task until it is resumed.
+            </div>
+          ) : null}
+          {!assignee ? (
+            <div style={{ margin: "0 16px 8px", fontSize: 12.5, color: tokens.muted }}>Without an assignee the task is parked in Backlog.</div>
+          ) : null}
+          {note ? <div style={{ margin: "0 16px 8px", fontSize: 12.5, color: tokens.muted }}>{note}</div> : null}
+          <div style={{ padding: "4px 16px 16px" }}>
+            <textarea
+              value={description}
+              placeholder="Add description..."
+              disabled={busy}
+              onChange={(event) => setDescription(event.target.value)}
+              style={{ width: "100%", minHeight: 260, fontSize: 13, lineHeight: 1.55, background: "transparent", color: tokens.muted, border: "none", outline: "none", resize: "vertical", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", padding: 0 }}
+            />
+          </div>
+        </div>
+        <div style={{ ...bar, borderTop: `1px solid ${tokens.border}` }}>
+          <button
+            type="button"
+            style={ghost}
+            disabled={busy || (title === initialTitle && description === initialDescription)}
+            onClick={() => {
+              setTitle(initialTitle);
+              setDescription(initialDescription);
+            }}
+          >
+            Reset to template
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {error ? <span style={{ fontSize: 12, color: tokens.destructive }}>{error}</span> : null}
+            <Button type="button" disabled={!title.trim() || busy} aria-busy={busy} onClick={() => void submit()} style={{ minWidth: 136 }}>
+              {busy ? "Creating..." : "Create Task"}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

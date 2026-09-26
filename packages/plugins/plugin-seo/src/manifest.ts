@@ -1,6 +1,8 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { instanceConfigSchema } from "./config.js";
 import {
+  AGENT_CAPABILITIES,
+  AGENT_DISPLAY_NAME,
   AGENT_KEY,
   DAILY_JOB_KEY,
   DAILY_ROUTINE_KEY,
@@ -53,9 +55,9 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.0",
+  version: "0.4.0",
   displayName: "SEO",
-  description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by a managed SEO Specialist agent.",
+  description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
@@ -131,14 +133,16 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "query", key: "companyId" },
     },
   ],
+  // Kept so agents activated before hiring moved to tasks (host-managed) are
+  // still found. New agents are hired through a task; see service/hire.ts.
   agents: [
     {
       agentKey: AGENT_KEY,
-      displayName: "SEO Specialist",
+      displayName: AGENT_DISPLAY_NAME,
       role: "general",
-      title: "SEO Specialist",
+      title: AGENT_DISPLAY_NAME,
       icon: "search",
-      capabilities: "Runs Partners in Biz 90-day SEO sprints with the SEO plugin tools: site checks, keyword and content work, Search Console data, evidence and hand-offs.",
+      capabilities: AGENT_CAPABILITIES,
       adapterType: "hermes_local",
       adapterPreference: ["hermes_local", "claude_local"],
       adapterConfig: { paperclipSkillSync: { desiredSkills: [SKILL_CANONICAL_KEY] } },

@@ -1,9 +1,9 @@
 {
   "name": "@partnersinbiz/plugin-seo",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "90-day SEO sprints worked as Paperclip issues by a managed SEO agent.",
+  "description": "90-day SEO sprints worked as Paperclip issues by an SEO agent hired through a normal Paperclip task.",
   "files": [
     "dist",
     "migrations",

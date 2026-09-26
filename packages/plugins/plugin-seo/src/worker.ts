@@ -8,19 +8,41 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { configSaved, listCrmClients, pluginUiBase, registerCrmProjection, rememberPluginUiBase } from "@partnersinbiz/pib-plugin-kit";
+import {
+  configSaved,
+  hireTaskDraft,
+  linkAgent,
+  listCompanyAgents,
+  listCrmClients,
+  pluginUiBase,
+  registerCrmProjection,
+  registerHireWatch,
+  rememberPluginUiBase,
+  startHire,
+  unlinkAgent,
+} from "@partnersinbiz/pib-plugin-kit";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
 import { DAILY_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
 import { NAMESPACE } from "./namespace.js";
-import { activateAgent, resolveAgent } from "./service/agent.js";
-import { asParams, companyInfo, createEnv, errorMessage, reqStr, SeoError, type Actor, type Env } from "./service/common.js";
+import {
+  defaultHireAssignee,
+  ensureProject,
+  linkPendingHire,
+  resolveAgent,
+  resyncAgent,
+  seoHireStatus,
+  seoHireView,
+  seoOnLinked,
+  type WireResult,
+} from "./service/agent.js";
+import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
+import { SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
-import { ensureProject } from "./service/agent.js";
 import { findClient, scopeParam } from "./service/scope.js";
 import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
 import { clientSummaryRoute } from "./service/summary.js";
@@ -58,6 +80,8 @@ const plugin = definePlugin({
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);
     });
+    // Links the agent hired through the hire task as soon as it appears.
+    registerHireWatch(ctx, [{ role: SEO_ROLE, onLinked: seoOnLinked(e) }]);
     // Clients are CRM companies or CRM contacts (sole traders).
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     ctx.logger.info("SEO plugin ready");
@@ -169,11 +193,21 @@ function registerActions(e: Env) {
     // The page is either Partners in Biz's own sites (no client) or one client's workspace.
     const scope = scopeParam(params) ?? null;
     const info = await companyInfo(e, companyId);
-    const [sprints, counts, client, agent] = await Promise.all([
+    // Backstop for missed agent events: link a pending hire that now has its agent.
+    await linkPendingHire(e, companyId);
+    const userId = actor.kind === "user" ? actor.userId : null;
+    const [sprints, counts, client, agent, hire] = await Promise.all([
       db.listSprints(ctx.db, companyId, { scope }),
       db.sprintCounts(ctx.db, companyId),
       scope ? findClient(e, companyId, scope) : Promise.resolve(null),
       resolveAgent(e, companyId),
+      // The agent banner lives on the own page only.
+      scope
+        ? Promise.resolve(null)
+        : seoHireView(e, companyId, userId).catch((error: unknown) => {
+            ctx.logger.info("SEO hire status failed", { companyId, error: errorMessage(error) });
+            return null;
+          }),
     ]);
     const secretSet = async (path: string) => {
       try {
@@ -186,7 +220,7 @@ function registerActions(e: Env) {
     return {
       today: info.today,
       timezone: info.timezone,
-      userId: actor.kind === "user" ? actor.userId : null,
+      userId,
       settings: {
         saved: info.loaded.config.saved,
         publicBaseUrl: base,
@@ -200,6 +234,7 @@ function registerActions(e: Env) {
         dailyHourLocal: info.loaded.config.dailyHourLocal,
       },
       agent,
+      hire,
       skillKey: SKILL_CANONICAL_KEY,
       scope: scopeParamValue(scope),
       client: scope
@@ -299,7 +334,55 @@ function registerActions(e: Env) {
     return { provider, enabled };
   });
 
-  action("seo.activate-agent", async (companyId, actor) => activateAgent(e, companyId, requireUser(actor)));
+  // Hiring the SEO agent through a normal Paperclip task (see service/hire.ts).
+  action("seo.hire-options", async (companyId, actor) => {
+    requireUser(actor);
+    const [agents, status] = await Promise.all([listCompanyAgents(ctx, companyId), seoHireStatus(e, companyId)]);
+    return { draft: hireTaskDraft(SEO_ROLE), agents, defaultAssigneeAgentId: defaultHireAssignee(agents), status };
+  });
+
+  action("seo.start-hire", async (companyId, actor, params) => {
+    const user = requireUser(actor);
+    const assigneeAgentId = str(params, "assigneeAgentId") ?? null;
+    if (assigneeAgentId && !(await ctx.agents.get(assigneeAgentId, companyId))) throw new SeoError("That assignee is not an agent in this company");
+    const assigneeUserId = assigneeAgentId ? null : assignableUser(str(params, "assigneeUserId"));
+    const hire = await startHire(ctx, companyId, SEO_ROLE, {
+      title: str(params, "title", { max: 250 }),
+      description: str(params, "description", { max: 50_000 }),
+      assigneeAgentId,
+      assigneeUserId,
+      actorUserId: assignableUser(user.userId),
+    });
+    return { hire };
+  });
+
+  action("seo.link-agent", async (companyId, actor, params) => {
+    const user = requireUser(actor);
+    const agentId = reqStr(params, "agentId");
+    const wired: { result: WireResult | null } = { result: null };
+    let linked: Awaited<ReturnType<typeof linkAgent>>;
+    try {
+      linked = await linkAgent(ctx, companyId, SEO_ROLE, agentId, {
+        by: "manual",
+        userId: user.userId,
+        onLinked: seoOnLinked(e, (result) => {
+          wired.result = result;
+        }),
+      });
+    } catch (error) {
+      throw new SeoError(errorMessage(error));
+    }
+    return { agent: linked.agent, steps: linked.steps, instructions: wired.result?.instructions ?? [] };
+  });
+
+  action("seo.unlink-agent", async (companyId, actor) => {
+    requireUser(actor);
+    await unlinkAgent(ctx, companyId, SEO_ROLE);
+    return { status: await seoHireStatus(e, companyId) };
+  });
+
+  // "Re-sync": wires the linked agent again. It never creates an agent.
+  action("seo.activate-agent", async (companyId, actor) => resyncAgent(e, companyId, requireUser(actor)));
   action("seo.sync-skills", async (companyId, actor) => {
     requireUser(actor);
     return { results: await e.skills.force(companyId) };

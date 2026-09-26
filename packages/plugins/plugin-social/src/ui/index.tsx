@@ -51,10 +51,14 @@ const ACTION_KEYS = [
   "social.mark-inbox-read",
   "social.reply-inbox",
   "social.activate-agent",
+  "social.hire-options",
+  "social.start-hire",
+  "social.link-agent",
+  "social.unlink-agent",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.hire-options"]);
 
 type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "media" | "feeds" | "templates";
 const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "media", "feeds", "templates"];

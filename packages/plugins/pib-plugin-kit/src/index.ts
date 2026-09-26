@@ -6,6 +6,7 @@ export * from "./safe-fetch.js";
 export * from "./issues.js";
 export * from "./crm-projection.js";
 export * from "./client-ref.js";
+export * from "./agent-hire.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

@@ -3,6 +3,7 @@ import {
   DataTable,
   MetricCard,
   StatusBadge,
+  useHostContext,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
@@ -19,6 +20,7 @@ import {
   Field,
   Input,
   Modal,
+  NewTaskDialog,
   Page,
   Section,
   Select,
@@ -28,6 +30,7 @@ import {
   Toolbar,
   errorText,
   tokens,
+  type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
 
@@ -81,6 +84,8 @@ type LoadResult = {
     dailyHourLocal: number;
   };
   agent: { id: string; status: string } | null;
+  /** The SEO agent's hire state; own page only (null in a client workspace). */
+  hire: HireView | null;
   /** The page's scope: null = Partners in Biz's own sites. */
   scope: string | null;
   client: ScopeClient | null;
@@ -89,6 +94,30 @@ type LoadResult = {
 };
 
 type ScopeClient = { kind: "company" | "contact"; id: string; name: string; domain: string | null; email: string | null; known: boolean };
+
+type HireAgent = { id: string; name: string; title: string | null; role: string | null; status: string; icon: string | null; createdAt: string | null };
+type HireRecord = {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  createdAt: string;
+  status: "open" | "linked" | "cancelled";
+};
+type HireView = {
+  agent: HireAgent | null;
+  linkedBy: "auto" | "manual" | "managed" | null;
+  hire: (HireRecord & { issueStatus: string | null; assigneeName: string | null }) | null;
+  candidates: HireAgent[];
+};
+type HireOptions = {
+  draft: { title: string; description: string };
+  agents: HireAgent[];
+  defaultAssigneeAgentId: string | null;
+  status: { agent: HireAgent | null; linkedBy: HireView["linkedBy"]; hire: HireRecord | null; candidates: HireAgent[] };
+};
+type WireSummary = { title: string; steps: string[]; instructions: string[] };
 
 type Task = {
   id: string;
@@ -278,6 +307,264 @@ function IssueLink({ id, identifier, label }: { id: string | null; identifier?: 
 const small: CSSProperties = { height: 28, fontSize: 12, padding: "0 10px" };
 
 // ---------------------------------------------------------------------------
+// SEO agent: hired through a normal Paperclip task, then linked and wired
+// ---------------------------------------------------------------------------
+
+/** The local-board sentinel is not a real member, so it cannot be assigned. */
+const LOCAL_BOARD_USER_ID = "local-board";
+const CLOSED_ISSUE_STATUSES = ["done", "cancelled"];
+
+function words(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function agentDetail(agent: HireAgent): string | null {
+  return agent.title && agent.title !== agent.name ? agent.title : agent.role ? words(agent.role) : null;
+}
+
+function WireResultNote({ result, onClose }: { result: WireSummary; onClose: () => void }) {
+  return (
+    <Banner tone="info">
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <strong>{result.title}</strong>
+        <button type="button" onClick={onClose} aria-label="Dismiss" style={{ appearance: "none", border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 18 }}>
+        {result.steps.map((line) => <li key={line}>{line}</li>)}
+      </ul>
+      {result.instructions.length > 0 ? (
+        <>
+          <span style={{ fontWeight: 600 }}>Next:</span>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            {result.instructions.map((line) => <li key={line}>{line}</li>)}
+          </ol>
+        </>
+      ) : null}
+    </Banner>
+  );
+}
+
+function LinkAgentModal({ options, currentAgentId, canUnlink, busy, onClose, onLink, onUnlink }: {
+  options: HireOptions;
+  currentAgentId: string | null;
+  canUnlink: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onLink: (agentId: string) => void;
+  onUnlink: () => void;
+}) {
+  const candidates = options.status.candidates;
+  const candidateIds = new Set(candidates.map((c) => c.id));
+  const others = options.agents.filter((a) => !candidateIds.has(a.id));
+  const [agentId, setAgentId] = useState(candidates[0]?.id ?? "");
+  const label = (a: HireAgent) => `${a.name}${agentDetail(a) ? ` · ${agentDetail(a)}` : ""}${a.status === "paused" ? " (paused)" : ""}${a.id === currentAgentId ? " (linked now)" : ""}`;
+  return (
+    <Modal
+      open
+      title={currentAgentId ? "Change SEO agent" : "Link SEO agent"}
+      description="Pick the agent that does SEO work. The plugin gives it SEO tool access, assigns the SEO routines to it, points every sprint at it and hands it waiting SEO tasks. The agent's own settings are not changed."
+      onClose={onClose}
+      footer={
+        <>
+          {canUnlink ? <Button type="button" variant="secondary" disabled={busy} onClick={onUnlink}>Unlink</Button> : null}
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={!agentId || agentId === currentAgentId || busy} onClick={() => onLink(agentId)}>{busy ? "Linking…" : "Link agent"}</Button>
+        </>
+      }
+    >
+      <Field label="Agent">
+        <Select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+          <option value="">Choose an agent…</option>
+          {candidates.length > 0 ? (
+            <optgroup label="Looks like the new SEO agent">
+              {candidates.map((a) => <option key={a.id} value={a.id}>{label(a)}</option>)}
+            </optgroup>
+          ) : null}
+          {others.length > 0 ? (
+            <optgroup label={candidates.length > 0 ? "Other agents" : "Agents"}>
+              {others.map((a) => <option key={a.id} value={a.id}>{label(a)}</option>)}
+            </optgroup>
+          ) : null}
+        </Select>
+      </Field>
+      {options.agents.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>This company has no agents yet. Open a hire task instead.</p> : null}
+      <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>
+        The agent needs the <code>pib-seo-sprint</code> skill attached (Agents → agent → Skills). The plugin keeps the skill up to date and tells you if it is missing.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * State and UI for the SEO agent on the own SEO page: open a hire task, show
+ * the open hire, link an agent by hand, re-sync the linked agent.
+ */
+function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refresh: () => Promise<void>; onMessage: (message: string) => void }) {
+  const host = useHostContext();
+  const loadOptions = usePluginAction("seo.hire-options");
+  const startHire = usePluginAction("seo.start-hire");
+  const linkAgent = usePluginAction("seo.link-agent");
+  const unlinkAgent = usePluginAction("seo.unlink-agent");
+  const resync = usePluginAction("seo.activate-agent");
+  const [busy, setBusy] = useState<"" | "hire" | "link" | "resync">("");
+  const [hireOptions, setHireOptions] = useState<HireOptions | null>(null);
+  const [linkOptions, setLinkOptions] = useState<HireOptions | null>(null);
+  const [result, setResult] = useState<WireSummary | null>(null);
+  const [createdIssueId, setCreatedIssueId] = useState<string | null>(null);
+
+  async function run(kind: "hire" | "link" | "resync", fn: () => Promise<void>) {
+    setBusy(kind);
+    onMessage("");
+    try {
+      await fn();
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const openHire = () => run("hire", async () => setHireOptions((await loadOptions({})) as HireOptions));
+  const openLink = () => run("link", async () => setLinkOptions((await loadOptions({})) as HireOptions));
+  const doResync = () =>
+    run("resync", async () => {
+      const r = (await resync({})) as { agent: { name: string }; steps: string[]; instructions: string[] };
+      setResult({ title: `Re-synced ${r.agent.name}`, steps: r.steps, instructions: r.instructions });
+      await refresh();
+    });
+
+  async function link(agentId: string) {
+    await run("link", async () => {
+      const r = (await linkAgent({ agentId })) as { agent: HireAgent; steps: string[]; instructions: string[] };
+      setLinkOptions(null);
+      setResult({ title: `Linked ${r.agent.name} as the SEO agent`, steps: r.steps, instructions: r.instructions });
+      await refresh();
+    });
+  }
+
+  async function unlink() {
+    await run("link", async () => {
+      await unlinkAgent({});
+      setLinkOptions(null);
+      setResult(null);
+      onMessage("The SEO agent was unlinked. The agent itself, its routines and its tasks were not changed.");
+      await refresh();
+    });
+  }
+
+  const agent = hire?.agent ?? null;
+  const openRequest = !agent && hire?.hire?.status === "open" ? hire.hire : null;
+  const requestClosed = Boolean(openRequest && CLOSED_ISSUE_STATUSES.includes(openRequest.issueStatus ?? ""));
+  const candidates = hire?.candidates ?? [];
+
+  const me = host.userId && host.userId !== LOCAL_BOARD_USER_ID ? host.userId : null;
+  const assignees: TaskAssigneeOption[] = [
+    ...(me ? [{ kind: "user" as const, id: me, name: "Me" }] : []),
+    ...(hireOptions?.agents ?? []).map((a) => ({ kind: "agent" as const, id: a.id, name: a.name, detail: agentDetail(a), status: a.status })),
+  ];
+
+  const headerAction = hire && !agent && !openRequest ? (
+    <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void openHire()}>
+      {busy === "hire" ? "Opening…" : "Activate SEO agent"}
+    </Button>
+  ) : null;
+
+  const actions = (buttons: ReactNode) => <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>{buttons}</div>;
+
+  let banner: ReactNode = null;
+  if (hire && agent) {
+    const how = hire.linkedBy === "auto" ? "linked from the hire task" : hire.linkedBy === "manual" ? "linked by hand" : hire.linkedBy === "managed" ? "set up before hiring moved to tasks" : null;
+    banner = (
+      <Banner tone={agent.status === "paused" || agent.status === "pending_approval" ? "warn" : "info"}>
+        <span>
+          <strong>SEO agent: {agent.name}</strong> ({words(agent.status || "unknown")}){how ? <span style={{ color: tokens.muted }}> · {how}</span> : null}
+        </span>
+        {agent.status === "pending_approval" ? <span>Approve the hire in Approvals, then check its adapter has a working model key and click Resume on the agent.</span> : null}
+        {agent.status === "paused" ? <span>Open Agents → {agent.name}, check its adapter has a working model key, then click Resume. It does not pick up SEO work while paused.</span> : null}
+        {actions(
+          <>
+            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void doResync()}>{busy === "resync" ? "Re-syncing…" : "Re-sync"}</Button>
+            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>{busy === "link" ? "Loading…" : "Change agent"}</Button>
+          </>,
+        )}
+      </Banner>
+    );
+  } else if (hire && openRequest) {
+    const taskLink = <IssueLink id={openRequest.issueId} identifier={openRequest.identifier} label={openRequest.identifier ?? "the hire task"} />;
+    const assigned = openRequest.assigneeName ? `assigned to ${openRequest.assigneeName}` : "not assigned yet, so it waits in Backlog";
+    banner = (
+      <Banner tone={requestClosed ? "warn" : "info"}>
+        {requestClosed ? (
+          <span><strong>Hire request {taskLink} is {words(openRequest.issueStatus ?? "closed")}, but no SEO agent was linked.</strong> If the agent exists, link it; otherwise open a new hire task.</span>
+        ) : (
+          <span>
+            <strong>{createdIssueId === openRequest.issueId ? <>Hire task {taskLink} created</> : <>Hire request {taskLink} is open</>}</strong> ({assigned}). The plugin links the new agent automatically when it appears.
+          </span>
+        )}
+        {!requestClosed && candidates.length > 1 ? (
+          <span>More than one new agent looks like the SEO agent ({candidates.map((c) => c.name).join(", ")}). Pick the right one with Link agent.</span>
+        ) : null}
+        {actions(
+          <>
+            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>{busy === "link" ? "Loading…" : "Link agent"}</Button>
+            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openHire()}>{busy === "hire" ? "Opening…" : "Open a new hire task"}</Button>
+          </>,
+        )}
+      </Banner>
+    );
+  } else if (hire) {
+    banner = (
+      <Banner tone="info">
+        <span>
+          <strong>No SEO agent yet.</strong> Activate SEO agent opens a hire task with the agent's spec for whoever hires for this company (usually the CEO agent). When the new agent appears, the plugin links it and sets it up.
+        </span>
+        {actions(
+          <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>{busy === "link" ? "Loading…" : "Link an existing agent"}</Button>,
+        )}
+      </Banner>
+    );
+  }
+
+  const panel = (
+    <>
+      {banner}
+      {result ? <WireResultNote result={result} onClose={() => setResult(null)} /> : null}
+      <NewTaskDialog
+        open={!!hireOptions}
+        prefix={host.companyPrefix}
+        initialTitle={hireOptions?.draft.title ?? ""}
+        initialDescription={hireOptions?.draft.description ?? ""}
+        assignees={assignees}
+        defaultAssignee={hireOptions?.defaultAssigneeAgentId ? `agent:${hireOptions.defaultAssigneeAgentId}` : undefined}
+        note="Give it to the agent that hires for this company (usually the CEO), or to yourself. When the new agent appears, the SEO plugin links it, grants its tools and assigns the SEO routines."
+        onClose={() => setHireOptions(null)}
+        onCreate={async (task) => {
+          const r = (await startHire(task)) as { hire: HireRecord };
+          setHireOptions(null);
+          setCreatedIssueId(r.hire.issueId);
+          setResult(null);
+          await refresh();
+        }}
+      />
+      {linkOptions ? (
+        <LinkAgentModal
+          options={linkOptions}
+          currentAgentId={agent?.id ?? null}
+          canUnlink={Boolean(agent && (hire?.linkedBy === "auto" || hire?.linkedBy === "manual"))}
+          busy={busy === "link"}
+          onClose={() => setLinkOptions(null)}
+          onLink={(id) => void link(id)}
+          onUnlink={() => void unlink()}
+        />
+      ) : null}
+    </>
+  );
+
+  return { headerAction, panel };
+}
+
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -290,9 +577,6 @@ export function SeoPage({ context }: PluginPageProps) {
   const sprintId = search.get("sprint");
   const [data, setData] = useState<LoadResult | null>(null);
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [activation, setActivation] = useState<{ instructions: string[]; grant: string; agent: { status: string | null } } | null>(null);
-  const activate = usePluginAction("seo.activate-agent");
   const request = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -324,19 +608,8 @@ export function SeoPage({ context }: PluginPageProps) {
     nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), tab ? { tab } : {}), { replace: true });
   };
 
-  async function activateAgent() {
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = (await activate({})) as { instructions: string[]; grant: string; agent: { status: string | null } };
-      setActivation(result);
-      await refresh();
-    } catch (error) {
-      setMessage(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  }
+  // The agent banner and hire flow live on the own page only; client workspaces do not show them.
+  const seoAgent = useSeoAgent({ hire: scope ? null : data?.hire ?? null, refresh, onMessage: setMessage });
 
   const settings = data?.settings;
   const client = scope ? data?.client ?? null : null;
@@ -363,14 +636,7 @@ export function SeoPage({ context }: PluginPageProps) {
           </span>
         </Banner>
       ) : null}
-      {!scope && activation ? (
-        <Banner tone="info">
-          <strong>SEO agent: {activation.agent.status ?? "created"} · tool access {activation.grant.replace(/_/g, " ")}</strong>
-          <ol style={{ margin: 0, paddingLeft: 18 }}>
-            {activation.instructions.map((line) => <li key={line}>{line}</li>)}
-          </ol>
-        </Banner>
-      ) : null}
+      {!scope ? seoAgent.panel : null}
       {scope && data?.clientError ? (
         <Banner tone="warn">
           <strong>Client not found in the CRM list.</strong>
@@ -415,15 +681,9 @@ export function SeoPage({ context }: PluginPageProps) {
   return (
     <Page
       title="SEO"
-      description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. Every due task is a Paperclip issue under the sprint's root issue; the SEO Specialist works agent tasks, people get the rest."
+      description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. Every due task is a Paperclip issue under the sprint's root issue; the SEO agent works agent tasks, people get the rest."
       message={message}
-      actions={
-        <>
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => void activateAgent()}>
-            {busy ? "Activating…" : data?.agent ? "Re-sync SEO agent" : "Activate SEO agent"}
-          </Button>
-        </>
-      }
+      actions={seoAgent.headerAction}
     >
       {body}
     </Page>

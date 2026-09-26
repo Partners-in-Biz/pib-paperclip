@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { MetricCard } from "@paperclipai/plugin-sdk/ui";
 import { BarChart, Button, EmptyState, Field, Input, Modal, StatRow, TextArea, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { SOCIAL_MEDIA_MIME } from "../platforms.js";
+import { AgentCard } from "./agent.js";
 import { Thumb, uploadToR2 } from "./composer.js";
 import { Banner, Card, ExternalLink, fmtDate, ignore, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import type { InboxItem, Post, RunAction, Snapshot } from "./types.js";
@@ -13,7 +14,6 @@ export function OverviewTab({ snapshot, posts, run, onOpenPicker }: { snapshot: 
     return counts;
   }, [posts]);
   const needsAttention = snapshot.accounts.filter((a) => a.status === "needs_reconnect" || a.status === "expiring");
-  const agent = snapshot.agent;
   return (
     <div style={{ display: "grid", gap: 16 }}>
       {snapshot.pendingPickers.map((p) => (
@@ -32,22 +32,7 @@ export function OverviewTab({ snapshot, posts, run, onOpenPicker }: { snapshot: 
         <MetricCard label="Scheduled" value={byStatus.scheduled ?? 0} />
         <MetricCard label="Failed" value={(byStatus.failed ?? 0) + (byStatus.partially_published ?? 0)} />
       </StatRow>
-      <Card>
-        <Row style={{ justifyContent: "space-between" }}>
-          <div style={{ display: "grid", gap: 2 }}>
-            <strong style={{ fontSize: 13 }}>Social Media Manager agent</strong>
-            <Muted>
-              {agent.agentId ? `Status: ${agent.status ?? "unknown"}.` : "Not created yet."} Activating creates the agent (paused), grants it the plugin tools and prepares the weekly planning routine.
-            </Muted>
-          </div>
-          <Button type="button" onClick={() => run("social.activate-agent", {}).then((res) => {
-            const message = (res as { message?: string })?.message;
-            if (message) window.alert(message);
-          }).catch(ignore)}>
-            {agent.agentId ? "Re-check access" : "Activate agent"}
-          </Button>
-        </Row>
-      </Card>
+      <AgentCard agent={snapshot.agent} run={run} ownPage={!snapshot.scope} />
       <BarChart title="Posts by status" items={Object.entries(byStatus).map(([label, value]) => ({ label: label.replace("_", " "), value }))} />
     </div>
   );

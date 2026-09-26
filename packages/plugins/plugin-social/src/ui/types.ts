@@ -162,9 +162,56 @@ export interface Snapshot {
   media: MediaAsset[];
   feeds: Feed[];
   inbox: InboxItem[];
-  agent: { agentKey: string; agentId: string | null; status: string | null; active: boolean };
+  agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   viewer: { userId: string | null };
+}
+
+/** An agent in the company (hire popup assignees, link picker). */
+export interface AgentOption {
+  id: string;
+  name: string;
+  title: string | null;
+  role: string | null;
+  status: string;
+  icon: string | null;
+  createdAt: string | null;
+  /** Social skill slugs the agent does not have (hire-options only). */
+  missingSkills?: string[];
+}
+
+/** The hire task the plugin opened (kit agent-hire). */
+export interface HireRecord {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  createdAt: string;
+  status: "open" | "linked" | "cancelled";
+}
+
+export type LinkedBy = "auto" | "manual" | "managed" | null;
+
+/** The Social agent card. `hire` and `candidates` are only filled on the own page. */
+export interface SocialAgent {
+  agentKey: string;
+  agentId: string | null;
+  name: string | null;
+  status: string | null;
+  active: boolean;
+  linkedBy: LinkedBy;
+  hire: HireRecord | null;
+  candidates: AgentOption[];
+  missingSkills: string[];
+}
+
+/** `social.hire-options`. */
+export interface HireOptions {
+  draft: { title: string; description: string };
+  agents: AgentOption[];
+  defaultAssigneeAgentId: string | null;
+  status: { agent: AgentOption | null; linkedBy: LinkedBy; hire: HireRecord | null; candidates: AgentOption[] };
 }
 
 export type RunAction = (key: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;

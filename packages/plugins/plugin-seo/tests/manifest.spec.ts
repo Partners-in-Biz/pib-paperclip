@@ -30,7 +30,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
       expect.objectContaining({ routeKey: "client-summary", method: "GET", path: "/client-summary", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.4.0");
   });
 
   it("uses secret-ref fields without a type", () => {

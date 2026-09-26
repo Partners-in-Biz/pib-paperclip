@@ -7,13 +7,14 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { rememberPluginUiBase, registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
-import { activateAgent } from "./agent.js";
+import { linkAgent, registerCrmProjection, registerHireWatch, rememberPluginUiBase, startHire, unlinkAgent } from "@partnersinbiz/pib-plugin-kit";
+import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
 import { scopeFromParams } from "./clients.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { loadSocialConfig } from "./config.js";
 import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
+import { SOCIAL_HIRE_ROLE } from "./hire.js";
 import { pollInboxJob } from "./inbox.js";
 import { importFromUrl, presignUpload, registerAsset } from "./media.js";
 import { collectMetricsJob } from "./metrics.js";
@@ -205,6 +206,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     // The page reports /_plugins/<installation uuid>/ui/ so redirect URIs can use it.
     await rememberPluginUiBase(ctx, p.uiBase);
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
+    // The own page shows the agent card, so it also links a hire whose agent has appeared.
+    if (!p.client && !v.isAgent) await tryLinkSocialHire(ctx, v.companyId);
     return loadSnapshot(ctx, v, { client: p.client ?? null });
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
@@ -262,7 +265,37 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
   "social.reply-inbox": (ctx, v, p) => replyInboxRecord(ctx, v, p),
   "social.post-analytics": (ctx, v, p) => postAnalyticsRecord(ctx, v, p),
-  "social.activate-agent": (ctx, v) => activateAgent(ctx, v.companyId, requireUser(v, "activate the agent")),
+  // Hiring: a normal task spells out the agent; the plugin links it when it appears, or a person links one by hand.
+  "social.hire-options": (ctx, v) => {
+    requireUser(v, "hire the Social agent");
+    return hireOptions(ctx, v.companyId);
+  },
+  "social.start-hire": (ctx, v, p) => {
+    const actorUserId = requireUser(v, "hire the Social agent");
+    return startHire(ctx, v.companyId, SOCIAL_HIRE_ROLE, {
+      title: optionalString(p, "title"),
+      description: optionalString(p, "description"),
+      assigneeAgentId: optionalString(p, "assigneeAgentId") ?? null,
+      assigneeUserId: optionalString(p, "assigneeUserId") ?? null,
+      actorUserId,
+    });
+  },
+  "social.link-agent": async (ctx, v, p) => {
+    const userId = requireUser(v, "link the Social agent");
+    const { agent, steps } = await linkAgent(ctx, v.companyId, SOCIAL_HIRE_ROLE, requiredString(p, "agentId"), {
+      by: "manual",
+      userId,
+      onLinked: onSocialAgentLinked(ctx),
+    });
+    return { agent, steps, message: [...steps, resumeHint(agent.name, agent.status)].filter(Boolean).join(" ") };
+  },
+  "social.unlink-agent": async (ctx, v) => {
+    requireUser(v, "unlink the Social agent");
+    await unlinkAgent(ctx, v.companyId, SOCIAL_HIRE_ROLE);
+    return { ok: true, message: "The agent is no longer the Social agent. Its routine stays assigned to it until you link another agent." };
+  },
+  // "Re-sync": wire the linked agent again (tool grant, routine, skills check). Never creates an agent.
+  "social.activate-agent": (ctx, v) => resyncAgent(ctx, v.companyId, requireUser(v, "re-sync the Social agent")),
   "social.sync-skills": async (ctx, v) => {
     requireUser(v, "sync skills");
     return { results: await bootstrap!.skills.force(v.companyId) };
@@ -330,7 +363,8 @@ const plugin = definePlugin({
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {
-      const summary = await refreshTokensJob(ctx, ensure);
+      // Hourly fallback for hire links (agent events are delivered at most once).
+      const summary = await refreshTokensJob(ctx, ensure, (companyId) => tryLinkSocialHire(ctx, companyId));
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
       return summary;
     });
@@ -338,6 +372,7 @@ const plugin = definePlugin({
     registerJob(ctx, "poll-inbox", () => pollInboxJob(ctx, ensure));
     registerJob(ctx, "poll-rss", () => pollRssJob(ctx));
 
+    registerHireWatch(ctx, [{ role: SOCIAL_HIRE_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await ensure(event.companyId);
     });
