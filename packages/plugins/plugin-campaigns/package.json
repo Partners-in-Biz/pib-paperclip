@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Partners in Biz campaigns plugin. Themed email programs that enroll contacts and open Paperclip issues for due steps.",
-  "files": ["dist", "migrations", "README.md"],
+  "files": [
+    "dist",
+    "migrations",
+    "README.md"
+  ],
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
@@ -18,6 +22,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
     "@partnersinbiz/pib-plugin-ui": "workspace:*"
   },
   "devDependencies": {

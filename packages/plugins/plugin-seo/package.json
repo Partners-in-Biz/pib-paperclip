@@ -1,9 +1,9 @@
 {
   "name": "@partnersinbiz/plugin-seo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "SEO sprints whose tasks are Paperclip issues.",
+  "description": "90-day SEO sprints worked as Paperclip issues by a managed SEO agent.",
   "files": [
     "dist",
     "migrations",
@@ -36,6 +36,7 @@
     "node": ">=24.11.0"
   },
   "dependencies": {
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
     "@partnersinbiz/pib-plugin-ui": "workspace:*"
   }
 }

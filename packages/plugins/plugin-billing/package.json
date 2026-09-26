@@ -36,6 +36,7 @@
     "node": ">=24.11.0"
   },
   "dependencies": {
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
     "@partnersinbiz/pib-plugin-ui": "workspace:*"
   }
 }

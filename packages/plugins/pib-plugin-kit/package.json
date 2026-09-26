@@ -1,0 +1,26 @@
+{
+  "name": "@partnersinbiz/pib-plugin-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Worker-side helpers shared by the Partners in Biz Paperclip plugins.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./oauth-client": "./src/oauth-bridge/client.ts",
+    "./build": "./src/build.mjs"
+  },
+  "scripts": {
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
