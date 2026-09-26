@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Select, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleCheck, EmptyState, Field, FileText, Input, Modal, Select, Timeline, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { statusTone } from "./series.js";
 import { Card, Muted, Row, SmallButton, Status, fmtDate, minorToInput, money, openBase64Pdf, openUrl, today, toMinor, useBilling, words } from "./parts.js";
 import type { Pop } from "./types.js";
 
@@ -29,9 +30,9 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <Card title={`Proof of payment to check (${pending.length})`}>
+      <Card title={`Proof of payment to check (${pending.length})`} icon={FileText} tone={pending.length ? "warn" : "ok"} strip={pending.length > 0}>
         <Muted>Proofs of payment come in by email (the Mailbox) or by upload. Billing never records money from a proof alone: check the bank, then confirm or reject.</Muted>
-        {pending.length === 0 ? <Muted>Nothing to check.</Muted> : (
+        {pending.length === 0 ? <EmptyState compact tone="ok" icon={CircleCheck} title="Nothing to check" description="New proofs of payment from the Mailbox land here." /> : (
           <DataTable
             columns={[
               { key: "received", header: "Received" },
@@ -67,12 +68,13 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
 
       {done.length > 0 ? (
         <Card title="Checked">
-          {done.map((pop) => (
-            <Row key={pop.id} style={{ justifyContent: "space-between", fontSize: 13 }}>
-              <span>{fmtDate(pop.receivedAt)} · {pop.fromEmail ?? "Upload"}{pop.invoiceNumber ? ` · ${pop.invoiceNumber}` : ""}{pop.rejectReason ? ` · ${pop.rejectReason}` : ""}</span>
-              <Status status={pop.status} />
-            </Row>
-          ))}
+          <Timeline dense limit={20} items={done.map((pop) => ({
+            id: pop.id,
+            at: pop.receivedAt,
+            title: `${pop.invoiceNumber ?? "Proof of payment"} · ${words(pop.status)}`,
+            detail: `${pop.fromEmail ?? "Upload"}${pop.rejectReason ? ` · ${pop.rejectReason}` : ""}`,
+            tone: statusTone(pop.status),
+          }))} />
         </Card>
       ) : null}
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, ResponsiveGrid, Select, TextArea, Toolbar, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleCheck, CircleX, EmptyState, Field, Input, Mail, Modal, Receipt, ResponsiveGrid, Select, Send, TextArea, Timeline, Toolbar, errorText, fluidColumns, tokens, tone, type TimelineItem } from "@partnersinbiz/pib-plugin-ui";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   Card,
@@ -10,6 +10,7 @@ import {
   EMPTY_MANUAL,
   FilePicker,
   ManualCustomerFields,
+  Money,
   Muted,
   Row,
   SmallButton,
@@ -30,6 +31,7 @@ import {
   words,
   type ManualCustomer,
 } from "./parts.js";
+import { OPEN_STATUSES, isOverdue } from "./series.js";
 import type { Invoice, InvoiceDetail } from "./types.js";
 
 const FILTERS = [
@@ -41,12 +43,7 @@ const FILTERS = [
   { id: "paid", label: "Paid" },
 ] as const;
 
-const OPEN = new Set(["sent", "viewed", "overdue", "partially_paid", "payment_pending_verification"]);
-
-function isOverdue(invoice: Invoice): boolean {
-  if (!OPEN.has(invoice.status) || (invoice.outstandingMinor ?? 0) <= 0) return false;
-  return invoice.status === "overdue" || (Boolean(invoice.dueAt) && Date.parse(invoice.dueAt!) < Date.now());
-}
+const OPEN = OPEN_STATUSES;
 
 export function customerPayload(scope: ReturnType<typeof useBilling>["scope"], clientsCount: number, picked: string, manual: ManualCustomer, workspaceName: string | null, found: boolean) {
   if (scope) return { customerKind: scope.kind, customerRef: scope.id, ...(!found && workspaceName ? { customerName: workspaceName } : {}) };
@@ -113,16 +110,27 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
     return true;
   }), [snapshot.invoices, q, filter]);
   const newButton = <Button type="button" onClick={() => setCreating(true)}>+ Draft invoice</Button>;
+  const countOf = (id: (typeof FILTERS)[number]["id"]) => snapshot.invoices.filter((invoice) => {
+    if (id === "draft") return invoice.status === "draft";
+    if (id === "open") return OPEN.has(invoice.status);
+    if (id === "checking") return invoice.status === "payment_pending_verification";
+    if (id === "overdue") return isOverdue(invoice);
+    if (id === "paid") return invoice.status === "paid";
+    return true;
+  }).length;
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search invoices…">{newButton}</Toolbar>
       <Row>
         {FILTERS.map((f) => (
-          <SmallButton key={f.id} variant={filter === f.id ? "primary" : "secondary"} onClick={() => setFilter(f.id)}>{f.label}</SmallButton>
+          <SmallButton key={f.id} variant={filter === f.id ? "primary" : "secondary"} onClick={() => setFilter(f.id)}>
+            {f.label}
+            {f.id !== "all" && countOf(f.id) > 0 ? <span style={{ marginLeft: 6, fontWeight: 650, color: filter === f.id ? undefined : f.id === "overdue" ? tone("bad").fg : f.id === "checking" ? tone("warn").fg : tokens.muted }}>{countOf(f.id)}</span> : null}
+          </SmallButton>
         ))}
       </Row>
       {snapshot.invoices.length === 0 ? (
-        <EmptyState title={scope ? `No invoices for ${clientName} yet` : "No invoices yet"} description="Draft an invoice, add its lines with VAT codes, then ask for send approval. It is emailed with its PDF from the Mailbox." action={newButton} />
+        <EmptyState icon={Receipt} title={scope ? `No invoices for ${clientName} yet` : "No invoices yet"} description="Draft an invoice, add its lines with VAT codes, then ask for send approval. It is emailed with its PDF from the Mailbox." action={newButton} />
       ) : (
         <DataTable
           columns={[
@@ -130,15 +138,18 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
             { key: "status", header: "Status", render: (value, row) => <div style={{ display: "grid", gap: 2 }}><Status status={String(value)} />{row.deliveryStatus === "queued" || row.deliveryStatus === "failed" ? <DeliveryNote status={String(row.deliveryStatus)} error={row.deliveryError as string | null} /> : null}</div> },
             { key: "customer", header: "Customer" },
             { key: "total", header: "Total" },
-            { key: "owed", header: "Owed" },
-            { key: "due", header: "Due" },
+            { key: "owed", header: "Owed", render: (_value, row) => {
+              const invoice = row as unknown as Invoice;
+              if (!OPEN.has(invoice.status)) return <span style={{ color: tokens.muted }}>—</span>;
+              return <Money minor={invoice.outstandingMinor ?? 0} currency={invoice.currency} kind={isOverdue(invoice) ? "overdue" : null} />;
+            } },
+            { key: "due", header: "Due", render: (value, row) => <span style={{ color: isOverdue(row as unknown as Invoice) ? tone("bad").fg : undefined, fontWeight: isOverdue(row as unknown as Invoice) ? 600 : undefined }}>{String(value)}</span> },
             { key: "id", header: "", width: "80px", render: (_value, row) => <SmallButton onClick={() => setOpenId(String(row.id))}>Open</SmallButton> },
           ]}
           rows={rows.map((invoice) => ({
             ...invoice,
             customer: invoice.customerName ?? invoice.customerRef,
             total: money(invoice.totalMinor, invoice.currency),
-            owed: OPEN.has(invoice.status) ? money(invoice.outstandingMinor ?? 0, invoice.currency) : "—",
             due: isOverdue(invoice) ? `${fmtDate(invoice.dueAt)} (overdue)` : fmtDate(invoice.dueAt),
           }))}
           emptyMessage="No invoices match."
@@ -148,6 +159,21 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
       {openId ? <InvoiceDrawer invoiceId={openId} onClose={() => setOpenId(null)} /> : null}
     </div>
   );
+}
+
+function emailTimeline(detail: InvoiceDetail): TimelineItem[] {
+  const items: TimelineItem[] = detail.deliveries.map((d) => ({
+    id: d.key,
+    at: d.sentAt ?? d.createdAt,
+    title: d.subject,
+    detail: d.status === "sent" ? `Sent ${fmtDate(d.sentAt)}` : d.status === "queued" ? (d.error ?? "Queued in the Mailbox") : `Failed: ${d.error ?? "no reason given"}`,
+    tone: d.status === "sent" ? "ok" : d.status === "queued" ? "info" : "bad",
+    icon: d.status === "sent" ? CircleCheck : d.status === "queued" ? Send : CircleX,
+  }));
+  for (const r of detail.reminders) {
+    items.push({ id: `reminder:${r.stage}`, at: r.createdAt, title: `Reminder ${r.stage}`, detail: `${words(r.status)}${r.error ? ` · ${r.error}` : ""}`, tone: r.status === "failed" ? "bad" : "ok", icon: Mail });
+  }
+  return items.sort((a, b) => Date.parse(String(b.at ?? 0)) - Date.parse(String(a.at ?? 0)));
 }
 
 type Dialog = null | "pay" | "credit" | "pop" | "writeoff" | "cancel" | "apply" | "send";
@@ -323,7 +349,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
           {detail.payments.map((p) => (
             <Row key={p.id} style={{ justifyContent: "space-between", fontSize: 13 }}>
               <span>{fmtDate(p.paidAt)} · {words(p.source)}{p.reference ? ` · ${p.reference}` : ""}{p.bankTxId ? " · matched to the bank" : ""}</span>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{money(p.amountMinor, cur)}{p.creditMinor > 0 ? ` (${money(p.creditMinor, cur)} to credit)` : ""}{p.journalNumber ? ` · ${p.journalNumber}` : ""}</span>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}><Money minor={p.amountMinor} currency={cur} kind="in" />{p.creditMinor > 0 ? ` (${money(p.creditMinor, cur)} to credit)` : ""}{p.journalNumber ? ` · ${p.journalNumber}` : ""}</span>
             </Row>
           ))}
           {detail.credits.map((c) => (
@@ -351,14 +377,8 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
       ) : null}
 
       {detail.deliveries.length > 0 || detail.reminders.length > 0 ? (
-        <Card title="Emails">
-          {detail.deliveries.map((d) => (
-            <Row key={d.key} style={{ justifyContent: "space-between", fontSize: 13 }}>
-              <span>{d.subject}</span>
-              <span style={{ color: d.status === "failed" ? tokens.destructive : tokens.muted }}>{d.status === "sent" ? `Sent ${fmtDate(d.sentAt)}` : d.status === "queued" ? (d.error ?? "Queued") : `Failed: ${d.error ?? ""}`}</span>
-            </Row>
-          ))}
-          {detail.reminders.map((r) => <Muted key={r.stage}>Reminder {r.stage}: {words(r.status)} {fmtDate(r.createdAt)}{r.error ? ` · ${r.error}` : ""}</Muted>)}
+        <Card title="Emails" icon={Mail} tone={detail.deliveries.some((d) => d.status === "failed") ? "bad" : undefined}>
+          <Timeline dense items={emailTimeline(detail)} />
         </Card>
       ) : null}
 

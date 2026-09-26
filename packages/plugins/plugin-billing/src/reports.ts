@@ -289,3 +289,30 @@ export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: 
     unconverted,
   };
 }
+
+/**
+ * MRR at the end of each month (for the Overview trend). A retainer counts in
+ * a month when it started on or before the month's last day and was not
+ * cancelled by then. Paused retainers are left out of every month, because
+ * the pause date is not stored.
+ */
+export function mrrTrend(input: { items: RecurringRevenue[]; months: string[]; book: string; convert: Convert }) {
+  return input.months.map((month) => {
+    const [y, m] = month.split("-").map(Number) as [number, number];
+    const end = Date.UTC(y, m, 1) - 1;
+    let mrrMinor = 0;
+    let active = 0;
+    for (const item of input.items) {
+      if (item.status === "paused") continue;
+      const started = Date.parse(item.startedAt);
+      const cancelled = item.cancelledAt ? Date.parse(item.cancelledAt) : null;
+      if (!Number.isFinite(started) || started > end) continue;
+      if (cancelled != null && Number.isFinite(cancelled) && cancelled <= end) continue;
+      const monthly = input.convert(monthlyMinor(item.priceMinor, item.period), item.currency);
+      if (monthly == null) continue;
+      mrrMinor += monthly;
+      active += 1;
+    }
+    return { month, mrrMinor, active };
+  });
+}

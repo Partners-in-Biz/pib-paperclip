@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
-import { Button, Page, Tabs, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Blocks, BookOpen, Button, CalendarCheck, ChartColumn, Landmark, LayoutDashboard, Package, Page, Stamp, Tabs, Target, errorText, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
 import { BudgetsTab } from "./budgets.js";
@@ -19,16 +19,16 @@ const PLUGIN_ID = "partnersinbiz.accounting";
 
 type TabId = "overview" | "bank" | "journals" | "chart" | "vat" | "reports" | "assets" | "budgets" | "cutover";
 
-const TABS: Array<{ id: TabId; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "bank", label: "Bank" },
-  { id: "journals", label: "Journals" },
-  { id: "chart", label: "Chart & roles" },
-  { id: "vat", label: "VAT" },
-  { id: "reports", label: "Reports" },
-  { id: "assets", label: "Assets & FX" },
-  { id: "budgets", label: "Budgets & forecast" },
-  { id: "cutover", label: "Cut-over" },
+const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "bank", label: "Bank", icon: Landmark },
+  { id: "journals", label: "Journals", icon: BookOpen },
+  { id: "chart", label: "Chart & roles", icon: Blocks },
+  { id: "vat", label: "VAT", icon: Stamp },
+  { id: "reports", label: "Reports", icon: ChartColumn },
+  { id: "assets", label: "Assets & FX", icon: Package },
+  { id: "budgets", label: "Budgets & forecast", icon: Target },
+  { id: "cutover", label: "Cut-over", icon: CalendarCheck },
 ];
 
 /** `?tab=bank` etc. (links from the Setup checklist); anything else is the overview. */
@@ -56,7 +56,7 @@ function useModuleEnabled(companyId: string | null | undefined): boolean | null 
 function ModuleOff() {
   const nav = useHostNavigation();
   return (
-    <Page title="Accounting" description="Partners in Biz's books.">
+    <Page title="Accounting" description="Partners in Biz's books." accent="accounting">
       <Banner tone="info">
         <span>
           This module is switched off for this company. Turn it on in <a {...nav.linkProps("/setup")} style={{ fontWeight: 600 }}>Setup</a>.
@@ -132,11 +132,21 @@ export function AccountingPage({ context }: PluginPageProps) {
       title="Accounting"
       description="Partners in Biz's books. Billing and Payroll post here; the bank is reconciled here; VAT201 and reports come from the journals."
       message={message || undefined}
+      accent="accounting"
     >
       {settingsBanner}
       {gapsBanner}
       <Tabs
-        tabs={TABS}
+        tabs={TABS.map((t) => {
+          const o = data?.overview;
+          if (!o) return t;
+          const openLines = (o.bankLines.unreconciled ?? 0) + (o.bankLines.matching ?? 0);
+          if (t.id === "bank") return { ...t, count: openLines || null, countTone: "warn" as const };
+          if (t.id === "journals") return { ...t, count: o.rejectedPostings + o.pendingApprovals || null, countTone: o.rejectedPostings ? ("bad" as const) : ("warn" as const) };
+          if (t.id === "chart") return { ...t, count: data.roleGaps.length || null, countTone: "bad" as const };
+          if (t.id === "overview") return { ...t, count: o.rejectedPostings + openLines + o.pendingApprovals || null, countTone: o.rejectedPostings ? ("bad" as const) : ("warn" as const) };
+          return t;
+        })}
         active={tab}
         onChange={(id) => {
           setTab(id as TabId);

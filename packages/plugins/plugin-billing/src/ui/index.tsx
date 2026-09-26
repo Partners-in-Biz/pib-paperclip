@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { MetricCard, useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
-import { BarChart, Button, ClientWorkspaceBar, Page, PageFrame, PageMessage, StatRow, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { Banknote, Button, ChartColumn, ClientWorkspaceBar, Coins, CreditCard, FileText, LayoutDashboard, Mail, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, type TabItem } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
-import { BillingContext, Muted, money, useCall, type BillingApi } from "./parts.js";
+import { Overview } from "./overview.js";
+import { BillingContext, Muted, useCall, type BillingApi } from "./parts.js";
 import { PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
 import { RemindersTab, ReportsTab } from "./reports.js";
 import { RetainersTab } from "./retainers.js";
 import { TimeTab } from "./time.js";
+import { isOverdue } from "./series.js";
 import type { Snapshot } from "./types.js";
 
 type TabId = "overview" | "invoices" | "quotes" | "payments" | "bills" | "expenses" | "time" | "retainers" | "reports" | "reminders";
@@ -43,59 +45,14 @@ function useModuleEnabled(companyId: string | null | undefined): boolean | null 
   return enabled;
 }
 
-const OPEN = new Set(["sent", "viewed", "overdue", "partially_paid", "payment_pending_verification"]);
-
 /** Page layout for a client workspace: the shared client bar replaces the page header. */
 function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <PageFrame>
+    <PageFrame accent="billing">
       {header}
       <PageMessage message={message} />
       {children}
     </PageFrame>
-  );
-}
-
-function Overview({ snapshot, go }: { snapshot: Snapshot; go: (tab: TabId) => void }) {
-  const currency = snapshot.defaults?.currency ?? "ZAR";
-  const invoices = snapshot.invoices;
-  const owed = invoices.filter((i) => OPEN.has(i.status) && i.currency === currency).reduce((sum, i) => sum + (i.outstandingMinor ?? 0), 0);
-  const overdue = invoices.filter((i) => OPEN.has(i.status) && (i.outstandingMinor ?? 0) > 0 && (i.status === "overdue" || (i.dueAt && Date.parse(i.dueAt) < Date.now())));
-  const checking = (snapshot.pops ?? []).filter((p) => p.status === "pending").length;
-  const drafts = invoices.filter((i) => i.status === "draft").length;
-  const failed = invoices.filter((i) => i.deliveryStatus === "failed").length;
-  const byStatus = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const invoice of invoices) counts[invoice.status] = (counts[invoice.status] ?? 0) + 1;
-    return counts;
-  }, [invoices]);
-  const todo: Array<{ text: string; tab: TabId }> = [];
-  if (checking) todo.push({ text: `${checking} proof${checking === 1 ? "" : "s"} of payment to check`, tab: "payments" });
-  if (failed) todo.push({ text: `${failed} invoice email${failed === 1 ? "" : "s"} failed`, tab: "invoices" });
-  if (overdue.length) todo.push({ text: `${overdue.length} overdue invoice${overdue.length === 1 ? "" : "s"}`, tab: "invoices" });
-  if (drafts) todo.push({ text: `${drafts} draft invoice${drafts === 1 ? "" : "s"}`, tab: "invoices" });
-  const draftExpenses = (snapshot.expenses ?? []).filter((e) => e.status === "draft" || e.needsReview).length;
-  if (draftExpenses) todo.push({ text: `${draftExpenses} expense${draftExpenses === 1 ? "" : "s"} to check`, tab: "expenses" });
-  const billsDue = (snapshot.bills ?? []).filter((b) => b.outstandingMinor > 0 && b.dueDate && Date.parse(b.dueDate) < Date.now() + 7 * 86_400_000).length;
-  if (billsDue) todo.push({ text: `${billsDue} bill${billsDue === 1 ? "" : "s"} due within a week`, tab: "bills" });
-  return (
-    <div style={{ display: "grid", gap: 16 }}>
-      <StatRow>
-        <MetricCard label="Owed to you" value={money(owed, currency)} />
-        <MetricCard label="Overdue" value={overdue.length} />
-        <MetricCard label="Checking payment" value={checking} />
-        <MetricCard label="Invoices" value={invoices.length} />
-      </StatRow>
-      {todo.length > 0 ? (
-        <section style={{ display: "grid", gap: 6, padding: 14, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.card }}>
-          <h3 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>Needs you</h3>
-          {todo.map((item) => (
-            <button key={item.text} type="button" onClick={() => go(item.tab)} style={{ textAlign: "left", background: tokens.secondary, border: 0, borderRadius: 8, padding: "8px 10px", fontSize: 13, color: tokens.fg, cursor: "pointer", fontFamily: "inherit" }}>{item.text} →</button>
-          ))}
-        </section>
-      ) : null}
-      <BarChart title="Invoices by status" items={Object.entries(byStatus).map(([label, value]) => ({ label: label.replace(/_/g, " "), value }))} />
-    </div>
   );
 }
 
@@ -130,7 +87,7 @@ export function BillingPage({ context }: PluginPageProps) {
 
   if (enabled === false) {
     return (
-      <Page title="Billing" description="Invoices, quotes, payments, bills, expenses, time and retainers.">
+      <Page title="Billing" description="Invoices, quotes, payments, bills, expenses, time and retainers." accent="billing">
         <p style={{ margin: 0, fontSize: 14, color: tokens.fg, lineHeight: 1.5 }}>
           This module is switched off for this company. Turn it on in{" "}
           <a {...navigation.linkProps("/setup")} style={{ color: tokens.primary, fontWeight: 600 }}>Setup</a>.
@@ -168,15 +125,23 @@ export function BillingPage({ context }: PluginPageProps) {
   };
 
   const pending = (snapshot.pops ?? []).filter((p) => p.status === "pending").length;
-  const tabs: Array<{ id: TabId; label: string }> = [
-    { id: "overview", label: "Overview" },
-    { id: "invoices", label: `Invoices (${snapshot.invoices.length})` },
-    { id: "quotes", label: `Quotes (${snapshot.quotes?.length ?? 0})` },
-    { id: "payments", label: pending ? `Payments (${pending} to check)` : "Payments" },
-    ...(scope ? [] : [{ id: "bills" as const, label: `Bills (${snapshot.bills?.length ?? 0})` }, { id: "expenses" as const, label: `Expenses (${snapshot.expenses?.length ?? 0})` }]),
-    { id: "time", label: "Time" },
-    { id: "retainers", label: "Retainers" },
-    ...(scope ? [] : [{ id: "reports" as const, label: "Reports" }, { id: "reminders" as const, label: "Reminders" }]),
+  const overdueCount = snapshot.invoices.filter((i) => isOverdue(i)).length;
+  const failedCount = snapshot.invoices.filter((i) => i.deliveryStatus === "failed").length;
+  const billsDue = (snapshot.bills ?? []).filter((b) => b.outstandingMinor > 0 && b.dueDate && Date.parse(b.dueDate) < Date.now() + 7 * 86_400_000).length;
+  const expensesToCheck = (snapshot.expenses ?? []).filter((e) => e.status === "draft" || e.needsReview).length;
+  const running = (snapshot.time ?? []).filter((t) => t.running).length;
+  const tabs: Array<TabItem & { id: TabId }> = [
+    { id: "overview", label: "Overview", icon: LayoutDashboard, count: overdueCount + failedCount + pending || null, countTone: overdueCount + failedCount ? "bad" : "warn" },
+    { id: "invoices", label: "Invoices", icon: Receipt, count: snapshot.invoices.length, countTone: overdueCount || failedCount ? "bad" : undefined },
+    { id: "quotes", label: "Quotes", icon: FileText, count: snapshot.quotes?.length ?? 0 },
+    { id: "payments", label: "Payments", icon: Banknote, count: pending || null, countTone: "warn" },
+    ...(scope ? [] : [
+      { id: "bills" as const, label: "Bills", icon: CreditCard, count: snapshot.bills?.length ?? 0, countTone: billsDue ? "warn" as const : undefined },
+      { id: "expenses" as const, label: "Expenses", icon: Coins, count: snapshot.expenses?.length ?? 0, countTone: expensesToCheck ? "warn" as const : undefined },
+    ]),
+    { id: "time", label: "Time", icon: Timer, count: running || null, countTone: "info" },
+    { id: "retainers", label: "Retainers", icon: RefreshCw },
+    ...(scope ? [] : [{ id: "reports" as const, label: "Reports", icon: ChartColumn }, { id: "reminders" as const, label: "Reminders", icon: Mail }]),
   ];
 
   const draftInvoiceButton = <Button type="button" onClick={() => setCreating(true)}>+ Draft invoice</Button>;
@@ -188,7 +153,7 @@ export function BillingPage({ context }: PluginPageProps) {
     <BillingContext.Provider value={api}>
       <Tabs tabs={tabs} active={tab} onChange={(id) => setTab(id as TabId)} />
       {!loaded ? <Muted>Loading…</Muted> : null}
-      {loaded && tab === "overview" ? <Overview snapshot={snapshot} go={setTab} /> : null}
+      {loaded && tab === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setTab} onOpenInvoice={openInvoiceTab} /> : null}
       {loaded && tab === "invoices" ? <InvoicesTab openId={openInvoice} setOpenId={setOpenInvoice} /> : null}
       {loaded && tab === "quotes" ? <QuotesTab onOpenInvoice={openInvoiceTab} /> : null}
       {loaded && tab === "payments" ? <PaymentsTab onOpenInvoice={openInvoiceTab} /> : null}
@@ -228,6 +193,7 @@ export function BillingPage({ context }: PluginPageProps) {
       description="PiB's invoices, quotes, payments, bills, expenses, time and retainers. Agents draft; a person approves sending and confirms money."
       message={pageMessage}
       actions={draftInvoiceButton}
+      accent="billing"
     >
       {body}
     </Page>

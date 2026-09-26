@@ -33,6 +33,7 @@ interface LinkRow {
   accepted_a: boolean;
   accepted_b: boolean;
   status: LinkStatus;
+  created_at?: unknown;
 }
 
 interface GrantRow {
@@ -43,6 +44,7 @@ interface GrantRow {
   source_company_id: string;
   grantee_company_id: string;
   status: "proposed" | "active" | "revoked";
+  created_at?: unknown;
 }
 
 const plugin = definePlugin({
@@ -113,14 +115,14 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 async function load(ctx: PluginContext, companyId: string) {
   const links = await ctx.db.query<LinkRow>(
-    `SELECT id, company_a_id, company_b_id, accepted_a, accepted_b, status
+    `SELECT id, company_a_id, company_b_id, accepted_a, accepted_b, status, created_at
        FROM ${table(ctx, "links")}
       WHERE company_a_id = $1 OR company_b_id = $1
       ORDER BY created_at DESC`,
     [companyId],
   );
   const grants = await ctx.db.query<GrantRow>(
-    `SELECT id, link_id, record_type, record_id, source_company_id, grantee_company_id, status
+    `SELECT id, link_id, record_type, record_id, source_company_id, grantee_company_id, status, created_at
        FROM ${table(ctx, "grants")}
       WHERE source_company_id = $1 OR grantee_company_id = $1
       ORDER BY created_at DESC`,

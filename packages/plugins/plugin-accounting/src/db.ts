@@ -1132,6 +1132,15 @@ export async function lineCounts(db: Db, companyId: string): Promise<Record<stri
   return Object.fromEntries(rows.map((r) => [String(r.status), num(r.n)]));
 }
 
+/** Bank lines per bank account and status (for the reconciliation bars). */
+export async function lineCountsByAccount(db: Db, companyId: string): Promise<Array<{ bankAccountId: string; status: string; count: number }>> {
+  const rows = await db.query<{ bank_account_id: string; status: string; n: string }>(
+    `SELECT bank_account_id, status, count(*)::text AS n FROM ${N}.bank_lines WHERE company_id = $1 GROUP BY bank_account_id, status`,
+    [companyId],
+  );
+  return rows.map((r) => ({ bankAccountId: String(r.bank_account_id), status: String(r.status), count: num(r.n) }));
+}
+
 export async function unreconciledInMonth(db: Db, companyId: string, from: string, to: string): Promise<number> {
   const rows = await db.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM ${N}.bank_lines WHERE company_id = $1 AND date >= $2::date AND date <= $3::date AND status IN ('unreconciled', 'matching')`,

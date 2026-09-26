@@ -1,10 +1,8 @@
 import {
   useEffect,
   useId,
-  useInsertionEffect,
   useRef,
   useState,
-  useSyncExternalStore,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type FormEvent,
@@ -14,26 +12,47 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import type { LucideIcon } from "lucide-react";
+import { breakAnywhere, fluidColumns, font, mediaMatches, NARROW_QUERY, oneColumn, useIsNarrow, useMediaQuery, usePibBaseStyles } from "./base.js";
+import { Icon, IconBadge } from "./icons.js";
+import { Inbox } from "lucide-react";
+import { PluginThemeProvider, accentVars, resolveAccent, useResolvedAccent, type AccentInput } from "./theme.js";
+import { tokens, tone, type ToneInput } from "./tokens.js";
 
-/** Host theme tokens — same CSS variables Paperclip uses in the board UI. */
-export const tokens = {
-  border: "var(--border)",
-  card: "var(--card)",
-  bg: "var(--background)",
-  fg: "var(--foreground)",
-  muted: "var(--muted-foreground)",
-  accent: "var(--accent)",
-  primary: "var(--primary)",
-  primaryFg: "var(--primary-foreground)",
-  destructive: "var(--destructive)",
-  input: "var(--input)",
-  ring: "var(--ring)",
-  secondary: "var(--secondary)",
-  secondaryFg: "var(--secondary-foreground)",
-  chart: ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"],
-};
-
-const font = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+export { breakAnywhere, fluidColumns, NARROW_QUERY, oneColumn, useIsNarrow, useMediaQuery, usePibBaseStyles };
+export {
+  MODULE_ACCENT_HUES,
+  MODULE_KEYS,
+  SERIES,
+  TONE_NAMES,
+  TONES,
+  THEME_CSS,
+  derivedColors,
+  moduleKeyOf,
+  seriesColor,
+  tokens,
+  tone,
+  toneName,
+  type AccentColors,
+  type ModuleKey,
+  type ToneColors,
+  type ToneInput,
+  type ToneName,
+} from "./tokens.js";
+export * from "./icons.js";
+export {
+  AccentContext,
+  PluginThemeProvider,
+  accentVars,
+  moduleAccent,
+  resolveAccent,
+  useAccent,
+  useResolvedAccent,
+  type AccentInput,
+  type ModuleAccent,
+} from "./theme.js";
+export * from "./charts.js";
+export * from "./display.js";
 
 const focusRing: CSSProperties = {
   outline: "none",
@@ -54,96 +73,6 @@ const fieldBase: CSSProperties = {
   maxWidth: "100%",
   transition: "border-color 120ms ease, box-shadow 120ms ease",
 };
-
-// ── Mobile support ──────────────────────────────────────────────────────────
-
-/** Phones (and very narrow windows). Pages, dialogs and sheets switch layout below this width. */
-export const NARROW_QUERY = "(max-width: 640px)";
-
-function subscribeMedia(query: string) {
-  return (onChange: () => void) => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => undefined;
-    const list = window.matchMedia(query);
-    list.addEventListener?.("change", onChange);
-    return () => list.removeEventListener?.("change", onChange);
-  };
-}
-
-function mediaMatches(query: string): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches;
-}
-
-const mediaSubscribers = new Map<string, (onChange: () => void) => () => void>();
-
-/** True while `query` matches (default: a phone-sized viewport). False where `matchMedia` is missing (tests, SSR). */
-export function useMediaQuery(query: string): boolean {
-  let subscribe = mediaSubscribers.get(query);
-  if (!subscribe) {
-    subscribe = subscribeMedia(query);
-    mediaSubscribers.set(query, subscribe);
-  }
-  return useSyncExternalStore(subscribe, () => mediaMatches(query), () => false);
-}
-
-/** True on a phone-sized viewport (`max-width: 640px`). */
-export function useIsNarrow(): boolean {
-  return useMediaQuery(NARROW_QUERY);
-}
-
-/** For URLs, ids, keys, email addresses and other long strings without spaces. */
-export const breakAnywhere: CSSProperties = { overflowWrap: "anywhere", wordBreak: "break-word" };
-
-/** Grid template for one column that may shrink below its content (a plain `display: grid` column never does). */
-export const oneColumn = "minmax(0, 1fr)";
-
-/** `repeat(auto-fill|auto-fit, minmax(<min>, 1fr))` that never forces a column wider than its container. */
-export function fluidColumns(min: number, mode: "auto-fill" | "auto-fit" = "auto-fit"): string {
-  return `repeat(${mode}, minmax(min(${min}px, 100%), 1fr))`;
-}
-
-const STYLE_ID = "pib-plugin-ui-base";
-const TEXT_INPUTS = "input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color])";
-
-/**
- * Base rules for everything inside `.pib-ui` (pages, dialogs, sheets). `:where()` keeps them at zero
- * specificity, so any inline style still wins. They stop wide content from stretching the page on a
- * phone: boxes may shrink below their content, long words wrap, media and fields never exceed their box.
- */
-const BASE_CSS = `
-.pib-ui{min-width:0;max-width:100%;overflow-wrap:break-word;-webkit-text-size-adjust:100%;text-size-adjust:100%}
-.pib-ui,.pib-ui *,.pib-ui *::before,.pib-ui *::after{box-sizing:border-box}
-.pib-ui :where(div,section,article,aside,header,footer,main,nav,form,fieldset,label,ul,ol,li,dl,dt,dd,p,h1,h2,h3,h4,h5,h6,span,strong,em,small,a,code,figure,blockquote,details,summary){min-width:0}
-.pib-ui :where(img,video,canvas,iframe,svg){max-width:100%}
-.pib-ui :where(input,select,textarea){max-width:100%}
-.pib-ui :where(pre){max-width:100%;overflow-x:auto}
-.pib-ui :where(table){border-collapse:collapse}
-.pib-scroll-x{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;max-width:100%;min-width:0}
-.pib-span-first > :first-child{grid-column:1 / -1}
-.pib-tabs{scrollbar-width:none;-ms-overflow-style:none}
-.pib-tabs::-webkit-scrollbar{display:none}
-@media ${NARROW_QUERY}{
-  .pib-ui :where(${TEXT_INPUTS},select,textarea){font-size:16px !important}
-}
-@media (pointer:coarse){
-  .pib-ui :where(button,[role=tab],select,${TEXT_INPUTS}){min-height:40px}
-  .pib-ui :where(input[type=checkbox],input[type=radio]){width:20px;height:20px}
-  .pib-tabs > :where(a,button){min-height:40px}
-}
-`;
-
-/**
- * Adds the shared base rules (see `BASE_CSS`) to the document once. Page, PageFrame, Modal, Sheet and
- * NewTaskDialog call it; call it yourself in a custom page root that has `className="pib-ui"`.
- */
-export function usePibBaseStyles(): void {
-  useInsertionEffect(() => {
-    if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-    const el = document.createElement("style");
-    el.id = STYLE_ID;
-    el.textContent = BASE_CSS;
-    document.head.appendChild(el);
-  }, []);
-}
 
 /**
  * Horizontal scroller for tables, week grids and anything else wider than a phone. The page stays put;
@@ -197,14 +126,16 @@ export function ResponsiveGrid({ columns, narrowColumns = 1, spanFirst = false, 
 
 /**
  * The page root every PiB plugin page uses (`Page` wraps it). Full width on a phone (the host already
- * pads the screen), one shrinkable grid column, and the shared base rules.
+ * pads the screen), one shrinkable grid column, and the shared base rules. `accent` gives the page its
+ * module colour (see `PluginThemeProvider`).
  */
-export function PageFrame({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+export function PageFrame({ children, style, accent }: { children: ReactNode; style?: CSSProperties; accent?: AccentInput }) {
   usePibBaseStyles();
   const narrow = useIsNarrow();
-  return (
+  const frame = (
     <main
       className="pib-ui"
+      data-pib-accent={resolveAccent(accent)?.key ?? undefined}
       style={{
         fontFamily: font,
         color: tokens.fg,
@@ -215,17 +146,20 @@ export function PageFrame({ children, style }: { children: ReactNode; style?: CS
         display: "grid",
         gridTemplateColumns: oneColumn,
         gap: narrow ? 16 : 22,
+        ...accentVars(accent),
         ...style,
       }}
     >
       {children}
     </main>
   );
+  return accent ? <PluginThemeProvider accent={accent}>{frame}</PluginThemeProvider> : frame;
 }
 
-/** The status line a page shows under its header. */
-export function PageMessage({ message }: { message?: string }) {
+/** The status line a page shows under its header. `tone` tints it (e.g. `bad` for an error). */
+export function PageMessage({ message, tone: t }: { message?: string; tone?: ToneInput }) {
   if (!message) return null;
+  const colors = t ? tone(t) : null;
   return (
     <p
       role="status"
@@ -234,9 +168,9 @@ export function PageMessage({ message }: { message?: string }) {
         fontSize: 13,
         padding: "10px 14px",
         borderRadius: 10,
-        border: `1px solid ${tokens.border}`,
-        background: tokens.secondary,
-        color: tokens.secondaryFg,
+        border: `1px solid ${colors ? colors.border : tokens.border}`,
+        background: colors ? colors.soft : tokens.secondary,
+        color: colors ? colors.fg : tokens.secondaryFg,
         lineHeight: 1.45,
         overflowWrap: "anywhere",
       }}
@@ -246,41 +180,57 @@ export function PageMessage({ message }: { message?: string }) {
   );
 }
 
-export function Page({ title, description, children, message, actions }: {
+export function Page({ title, description, children, message, messageTone, actions, accent, icon }: {
   title: string;
   description: string;
   children: ReactNode;
   message?: string;
+  messageTone?: ToneInput;
   actions?: ReactNode;
+  /** Module accent, e.g. `"billing"`: tints the header icon, active tabs and charts. */
+  accent?: AccentInput;
+  /** Header icon; defaults to the module's icon when `accent` is a module. */
+  icon?: LucideIcon;
 }) {
   return (
-    <PageFrame>
-      <PageHeader title={title} description={description} actions={actions} />
-      <PageMessage message={message} />
+    <PageFrame accent={accent}>
+      <PageHeader title={title} description={description} actions={actions} accent={accent} icon={icon} />
+      <PageMessage message={message} tone={messageTone} />
       {children}
     </PageFrame>
   );
 }
 
-export function PageHeader({ title, description, actions }: {
+export function PageHeader({ title, description, actions, accent, icon }: {
   title: string;
   description: string;
   actions?: ReactNode;
+  /** Module accent for the icon badge (falls back to the surrounding `PluginThemeProvider`). */
+  accent?: AccentInput;
+  /** Header icon; defaults to the accent module's icon. No accent and no icon: no badge. */
+  icon?: LucideIcon;
 }) {
   const narrow = useIsNarrow();
+  const resolved = useResolvedAccent(accent);
+  const glyph = icon ?? (resolved?.key ? resolved.icon : undefined);
   return (
     <header style={{ display: "flex", gap: narrow ? 12 : 16, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", minWidth: 0 }}>
-      <div style={{ display: "grid", gap: 5, minWidth: 0, flex: "1 1 320px", maxWidth: "100%" }}>
-        <h1 style={{ margin: 0, fontSize: narrow ? 22 : 24, fontWeight: 650, letterSpacing: "-0.025em", lineHeight: 1.2, overflowWrap: "anywhere" }}>{title}</h1>
-        <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, maxWidth: 640 }}>{description}</p>
+      <div style={{ display: "flex", gap: narrow ? 12 : 14, alignItems: "flex-start", minWidth: 0, flex: "1 1 320px", maxWidth: "100%" }}>
+        {glyph ? <IconBadge icon={glyph} accent={resolved ?? undefined} size={narrow ? "md" : "lg"} style={{ marginTop: narrow ? 0 : 1 }} /> : null}
+        <div style={{ display: "grid", gap: 5, minWidth: 0 }}>
+          <h1 style={{ margin: 0, fontSize: narrow ? 22 : 24, fontWeight: 650, letterSpacing: "-0.025em", lineHeight: 1.2, overflowWrap: "anywhere" }}>{title}</h1>
+          <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, maxWidth: 640 }}>{description}</p>
+        </div>
       </div>
       {actions ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap", minWidth: 0, maxWidth: "100%" }}>{actions}</div> : null}
     </header>
   );
 }
 
-export function Section({ title, children, actions }: { title: string; children: ReactNode; actions?: ReactNode }) {
+/** A card section with a small uppercase title. For a richer header (icon, subtitle, strip) use `SectionCard`. */
+export function Section({ title, children, actions, icon }: { title: string; children: ReactNode; actions?: ReactNode; icon?: LucideIcon }) {
   const narrow = useIsNarrow();
+  const accent = useResolvedAccent();
   return (
     <section style={{
       display: "grid",
@@ -294,7 +244,8 @@ export function Section({ title, children, actions }: { title: string; children:
       minWidth: 0,
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h2 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>
+        <h2 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted, display: "flex", alignItems: "center", gap: 8 }}>
+          {icon ? <Icon icon={icon} size={14} color={accent?.solid ?? tokens.muted} /> : null}
           {title}
         </h2>
         {actions}
@@ -304,16 +255,27 @@ export function Section({ title, children, actions }: { title: string; children:
   );
 }
 
+export interface TabItem {
+  id: string;
+  label: string;
+  icon?: LucideIcon;
+  /** A small count after the label; `countTone` colours it. */
+  count?: number | null;
+  countTone?: ToneInput;
+}
+
 /**
  * A row of tabs. It never wraps: on a narrow screen it scrolls sideways (no visible scrollbar) and keeps
- * the selected tab in view.
+ * the selected tab in view. The selected tab is underlined in the page accent when there is one.
  */
-export function Tabs({ tabs, active, onChange }: {
-  tabs: Array<{ id: string; label: string }>;
+export function Tabs({ tabs, active, onChange, accent }: {
+  tabs: TabItem[];
   active: string;
   onChange: (id: string) => void;
+  accent?: AccentInput;
 }) {
   usePibBaseStyles();
+  const resolved = useResolvedAccent(accent);
   const rowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const row = rowRef.current;
@@ -323,6 +285,7 @@ export function Tabs({ tabs, active, onChange }: {
     if (left < row.scrollLeft) row.scrollLeft = Math.max(left - 16, 0);
     else if (left + tab.offsetWidth > row.scrollLeft + row.clientWidth) row.scrollLeft = left + tab.offsetWidth - row.clientWidth + 16;
   }, [active, tabs.length]);
+  const line = resolved?.solid ?? tokens.fg;
   return (
     <div
       ref={rowRef}
@@ -360,15 +323,34 @@ export function Tabs({ tabs, active, onChange }: {
               fontWeight: selected ? 600 : 500,
               padding: "9px 14px",
               cursor: "pointer",
-              borderBottom: selected ? `2px solid ${tokens.fg}` : "2px solid transparent",
+              borderBottom: selected ? `2px solid ${line}` : "2px solid transparent",
               fontFamily: "inherit",
               transition: "color 120ms ease",
               borderRadius: "8px 8px 0 0",
               flexShrink: 0,
               whiteSpace: "nowrap",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
             }}
           >
+            {tab.icon ? <Icon icon={tab.icon} size={14} color={selected ? (resolved?.solid ?? "currentColor") : "currentColor"} /> : null}
             {tab.label}
+            {tab.count !== undefined && tab.count !== null ? (
+              <span style={{
+                minWidth: 18,
+                height: 18,
+                padding: "0 5px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 650,
+                display: "inline-grid",
+                placeItems: "center",
+                fontVariantNumeric: "tabular-nums",
+                background: tab.countTone ? tone(tab.countTone).soft : tokens.secondary,
+                color: tab.countTone ? tone(tab.countTone).fg : tokens.secondaryFg,
+              }}>{tab.count}</span>
+            ) : null}
           </button>
         );
       })}
@@ -404,6 +386,7 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
   ownLabel?: string;
   actions?: ReactNode;
 }) {
+  const workspaceAccent = useResolvedAccent();
   const param = encodeURIComponent(`${client.kind}:${client.id}`);
   const activePath = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.path ?? "/crm";
   const own = linkProps(ownPath ?? (active === "overview" ? "/crm" : activePath));
@@ -451,7 +434,7 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
                 flexShrink: 0,
                 display: "inline-flex",
                 alignItems: "center",
-                borderBottom: selected ? `2px solid ${tokens.fg}` : "2px solid transparent",
+                borderBottom: selected ? `2px solid ${workspaceAccent?.solid ?? tokens.fg}` : "2px solid transparent",
               }}
             >
               {tab.label}
@@ -485,11 +468,22 @@ export function Toolbar({ children, search, onSearchChange, searchPlaceholder = 
   );
 }
 
-export function EmptyState({ title, description, action }: {
+/**
+ * Nothing to show yet. Shows an icon in a tinted square (the page accent, or `tone`), a title, an
+ * optional line and an action. `compact` for use inside a card.
+ */
+export function EmptyState({ title, description, action, icon, tone: t, compact = false }: {
   title: string;
   description?: string;
   action?: ReactNode;
+  icon?: LucideIcon;
+  tone?: ToneInput;
+  compact?: boolean;
 }) {
+  usePibBaseStyles();
+  const accent = useResolvedAccent();
+  const colors = t ? tone(t) : accent;
+  const glyph = icon ?? (accent?.key ? accent.icon : Inbox);
   return (
     <div style={{
       display: "grid",
@@ -497,21 +491,12 @@ export function EmptyState({ title, description, action }: {
       gap: 10,
       placeItems: "center",
       textAlign: "center",
-      padding: "44px 20px",
+      padding: compact ? "24px 16px" : "44px 20px",
       borderRadius: 14,
-      border: `1px dashed ${tokens.border}`,
-      background: tokens.bg,
+      border: `1px dashed ${colors ? colors.border : tokens.border}`,
+      background: colors ? `radial-gradient(120% 90% at 50% 0%, ${colors.soft}, transparent 70%), ${tokens.bg}` : tokens.bg,
     }}>
-      <div style={{
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        display: "grid",
-        placeItems: "center",
-        background: tokens.secondary,
-        color: tokens.muted,
-        fontSize: 18,
-      }} aria-hidden="true">◇</div>
+      <IconBadge icon={glyph} accent={colors ?? undefined} size={compact ? "md" : "lg"} />
       <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div>
       {description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, maxWidth: 380, lineHeight: 1.5, overflowWrap: "anywhere" }}>{description}</p> : null}
       {action}
@@ -523,51 +508,6 @@ export function StatRow({ children }: { children: ReactNode }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: fluidColumns(140), gap: 12, minWidth: 0 }}>
       {children}
-    </div>
-  );
-}
-
-export function BarChart({ title, items }: {
-  title: string;
-  items: Array<{ label: string; value: number; color?: string }>;
-}) {
-  const max = Math.max(...items.map((item) => item.value), 1);
-  return (
-    <div style={{
-      display: "grid",
-      gap: 12,
-      padding: 16,
-      borderRadius: 14,
-      border: `1px solid ${tokens.border}`,
-      background: tokens.card,
-      boxShadow: "0 1px 2px color-mix(in oklab, black 4%, transparent)",
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-        {title}
-      </div>
-      {items.length === 0 ? (
-        <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No data yet.</p>
-      ) : (
-        <div style={{ display: "grid", gap: 10 }}>
-          {items.map((item, index) => (
-            <div key={item.label} style={{ display: "grid", gap: 5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
-                <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.label}</span>
-                <span style={{ color: tokens.muted, fontVariantNumeric: "tabular-nums" }}>{item.value}</span>
-              </div>
-              <div style={{ height: 8, borderRadius: 999, background: tokens.secondary, overflow: "hidden" }}>
-                <div style={{
-                  width: `${Math.max((item.value / max) * 100, item.value > 0 ? 4 : 0)}%`,
-                  height: "100%",
-                  background: item.color ?? tokens.chart[index % tokens.chart.length],
-                  borderRadius: 999,
-                  transition: "width 300ms ease",
-                }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

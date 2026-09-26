@@ -90,6 +90,8 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { abSuggestionFor, onMailReceived, onSendResult, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { eventCounts, eventDays } from "./db.js";
+import { eventTotals, weeklySends } from "./series.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 
@@ -227,8 +229,15 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null });
   }
   const config = await readConfig(ctx, companyId).catch(() => ({}));
+  const now = new Date();
+  const ids = new Set(campaigns.map((campaign) => campaign.id));
+  const [counts, days] = await Promise.all([
+    eventCounts(ctx, companyId).catch(() => []),
+    eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
+  ]);
   return {
     campaigns: result,
+    series: { weeks: weeklySends(days, now, 12, ids), byCampaign: eventTotals(counts, ids) },
     settingsSaved: Object.keys(config).length > 0,
     client: scope ? await clientDetails(ctx, companyId, scope, campaigns) : null,
   };

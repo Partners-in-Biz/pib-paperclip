@@ -84,7 +84,7 @@ import { dismissRejection, receiveMail, receiveMatchResult, receiveOpenItem, rec
 import { buildPack } from "./service/pack.js";
 import { publishStatusThrottled, setupStatus } from "./service/setup.js";
 import { approveReconciliation, onReconciliationIssue, prepareReconciliation, requestReconciliationApproval } from "./service/reconcile.js";
-import { forecast, overview, runReport } from "./service/reports.js";
+import { forecast, overview, runReport, trends } from "./service/reports.js";
 import { approveVatReturn, computeForPeriod, onVatIssue, prepareVatReturn, requestVatApproval, vatCsv, vatPeriods } from "./service/vat.js";
 import { SKILLS } from "./skills.js";
 import { ACCOUNTING_TOOLS } from "./tools.js";
@@ -294,6 +294,7 @@ const ACTIONS: Record<string, Handler> = {
 
   // Reports
   "accounting.report": (ctx, companyId, _a, p) => runReport(ctx, companyId, p.kind, p),
+  "accounting.trends": (ctx, companyId, _a, p) => trends(ctx, companyId, p.months),
 
   // Assets and FX
   "accounting.assets": async (ctx, companyId, _a, p) => {

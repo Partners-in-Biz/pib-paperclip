@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Button, Field, Input, Modal, Select, Tabs, TextArea, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Modal, Select, Tabs, TextArea, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import {
   OVERRIDE_FIELDS,
   PLATFORM_LABELS,
@@ -10,7 +10,7 @@ import {
   type SocialPlatform,
 } from "../platforms.js";
 import { ExperimentSelect } from "./growth.js";
-import { Avatar, Muted, Row, scopeName, scopeParams, SmallButton, platformLabel } from "./parts.js";
+import { Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
 type Overrides = Partial<Record<SocialPlatform, PlatformOverride>>;
@@ -225,7 +225,7 @@ export function Composer({ snapshot, post, run, onClose }: {
         </>
       )}
     >
-      {error ? <div role="alert" style={{ fontSize: 12, color: "var(--destructive)" }}>{error}</div> : null}
+      {error ? <div role="alert" style={{ fontSize: 12, color: tone("bad").fg }}>{error}</div> : null}
       <Muted>For <strong>{scopeName(snapshot)}</strong>. Only this {snapshot.client ? "client's" : "workspace's own"} accounts and media can be used.</Muted>
       <Field label={`Post (${Array.from(body).length} characters)`}>
         <TextArea value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="What do you want to say?" />
@@ -235,7 +235,7 @@ export function Composer({ snapshot, post, run, onClose }: {
         <span style={{ fontSize: 12, color: tokens.muted, fontWeight: 500 }}>Destinations</span>
         {accounts.length === 0 ? <Muted>No connected accounts for {scopeName(snapshot)}. Connect one on the Accounts tab.</Muted> : null}
         {foreign.length ? (
-          <Muted style={{ color: "#b45309" }}>
+          <Muted style={{ color: tone("warn").fg }}>
             {foreign.map((d) => d.accountName).join(", ")} belong{foreign.length === 1 ? "s" : ""} to another client and will be removed from this post when you save.
           </Muted>
         ) : null}
@@ -243,7 +243,7 @@ export function Composer({ snapshot, post, run, onClose }: {
           {accounts.map((account) => (
             <label key={account.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", borderRadius: 10, border: `1px solid ${accountIds.has(account.id) ? tokens.primary : tokens.border}`, cursor: "pointer" }}>
               <input type="checkbox" checked={accountIds.has(account.id)} onChange={() => toggleAccount(account.id)} />
-              <Avatar url={account.avatarUrl} label={account.displayName} />
+              <PlatformBadge platform={account.platform} size={24} />
               <span style={{ display: "grid", minWidth: 0 }}>
                 <span style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{account.displayName}</span>
                 <Muted style={{ fontSize: 11 }}>{platformLabel(account.platform)}</Muted>

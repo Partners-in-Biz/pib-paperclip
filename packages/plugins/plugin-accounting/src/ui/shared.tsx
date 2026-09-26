@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
-import { errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { KpiCard, Pill, errorText, tokens, tone, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 
 export interface Account {
   id: string;
@@ -69,11 +69,10 @@ export const small: CSSProperties = { height: 28, fontSize: 12, padding: "0 10px
 
 export const num: CSSProperties = { textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
 
-export function Banner({ tone = "info", children }: { tone?: "warn" | "info" | "ok"; children: ReactNode }) {
-  const border = tone === "warn" ? "color-mix(in oklab, #d97706 45%, transparent)" : tone === "ok" ? "color-mix(in oklab, #16a34a 40%, transparent)" : tokens.border;
-  const background = tone === "warn" ? "color-mix(in oklab, #d97706 10%, transparent)" : tone === "ok" ? "color-mix(in oklab, #16a34a 8%, transparent)" : tokens.secondary;
+export function Banner({ tone: t = "info", children }: { tone?: "warn" | "info" | "ok" | "bad"; children: ReactNode }) {
+  const colors = t === "info" ? null : tone(t);
   return (
-    <div role="status" style={{ fontSize: 13, lineHeight: 1.5, padding: "10px 14px", borderRadius: 10, border: `1px solid ${border}`, background, display: "grid", gap: 4 }}>
+    <div role="status" style={{ fontSize: 13, lineHeight: 1.5, padding: "10px 14px", borderRadius: 10, border: `1px solid ${colors ? colors.border : tokens.border}`, borderLeft: `3px solid ${colors ? colors.solid : tokens.border}`, background: colors ? colors.soft : tokens.secondary, display: "grid", gap: 4, minWidth: 0, overflowWrap: "anywhere" }}>
       {children}
     </div>
   );
@@ -113,7 +112,13 @@ export function Table({ head, children, footer }: { head: Array<string | { label
   );
 }
 
-export function Td({ children, right, strong, muted, colSpan }: { children?: ReactNode; right?: boolean; strong?: boolean; muted?: boolean; colSpan?: number }) {
+/** Green for a positive amount, red for a negative one (profit, cash, variance). */
+export function signTone(minor: number | null | undefined): "ok" | "bad" | undefined {
+  if (minor == null || !Number.isFinite(minor) || minor === 0) return undefined;
+  return minor > 0 ? "ok" : "bad";
+}
+
+export function Td({ children, right, strong, muted, colSpan, tone: t }: { children?: ReactNode; right?: boolean; strong?: boolean; muted?: boolean; colSpan?: number; tone?: ToneInput }) {
   return (
     <td
       colSpan={colSpan}
@@ -121,7 +126,7 @@ export function Td({ children, right, strong, muted, colSpan }: { children?: Rea
         padding: "7px 10px",
         borderTop: `1px solid ${tokens.border}`,
         fontWeight: strong ? 650 : 400,
-        color: muted ? tokens.muted : tokens.fg,
+        color: t ? tone(t).fg : muted ? tokens.muted : tokens.fg,
         ...(right ? num : {}),
       }}
     >
@@ -130,14 +135,8 @@ export function Td({ children, right, strong, muted, colSpan }: { children?: Rea
   );
 }
 
-export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
-  return (
-    <div style={{ border: `1px solid ${tokens.border}`, borderRadius: 12, padding: "12px 14px", background: tokens.card, display: "grid", gap: 4, minWidth: "min(150px, 100%)" }}>
-      <span style={{ fontSize: 12, color: tokens.muted }}>{label}</span>
-      <span style={{ fontSize: 20, fontWeight: 650, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}>{value}</span>
-      {hint ? <span style={{ fontSize: 12, color: tokens.muted }}>{hint}</span> : null}
-    </div>
-  );
+export function Stat({ label, value, hint, tone: t }: { label: string; value: ReactNode; hint?: ReactNode; tone?: ToneInput }) {
+  return <KpiCard label={label} value={value} hint={hint} tone={t} size="sm" />;
 }
 
 export function Row({ children, gap = 8, wrap = true }: { children: ReactNode; gap?: number; wrap?: boolean }) {
@@ -226,10 +225,21 @@ export function AccountSelect({ accounts, value, onChange, filter, placeholder =
   );
 }
 
-export function statusTone(status: string): "ok" | "warning" | "error" | "info" | "pending" {
-  if (["reconciled", "posted", "locked", "open", "settled", "resolved"].includes(status)) return "ok";
-  if (["matching", "pending_approval", "soft_closed"].includes(status)) return "warning";
-  if (["rejected", "closed", "failed"].includes(status)) return "error";
-  if (["draft", "unreconciled", "not_prepared"].includes(status)) return "pending";
-  return "info";
+/**
+ * One status → tone mapping for every Accounting list: green done (reconciled,
+ * posted, locked), amber waiting (matching, pending approval, to prepare), red
+ * rejected or failed, blue draft, grey closed, excluded or reversed.
+ */
+export function statusTone(status: string): "ok" | "warn" | "bad" | "info" | "neutral" {
+  if (["reconciled", "posted", "locked", "open", "settled", "resolved", "approved", "submitted", "ok", "in_use", "active"].includes(status)) return "ok";
+  if (["matching", "pending_approval", "soft_closed", "unreconciled", "not_prepared", "pending", "due", "to_do", "review"].includes(status)) return "warn";
+  if (["rejected", "failed", "overdue", "blocked"].includes(status)) return "bad";
+  if (["draft", "prepared", "scheduled", "in_progress"].includes(status)) return "info";
+  return "neutral";
+}
+
+/** A toned status pill. */
+export function StatusPill({ status, label }: { status: string; label?: string }) {
+  const text = label ?? words(status);
+  return <Pill tone={statusTone(status)} dot size="sm">{text.charAt(0).toUpperCase() + text.slice(1)}</Pill>;
 }

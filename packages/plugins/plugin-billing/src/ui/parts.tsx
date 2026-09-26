@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
-import { StatusBadge, usePluginAction, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Select, fluidColumns, oneColumn, tokens, useIsNarrow, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { Button, Field, Input, Pill, SectionCard, Select, fluidColumns, oneColumn, tokens, tone, useIsNarrow, usePibBaseStyles, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { statusTone } from "./series.js";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import type { Client, Snapshot } from "./types.js";
 
@@ -100,50 +101,27 @@ export function words(value: string): string {
 
 // ── Status ─────────────────────────────────────────────────────────────────
 
-const TONE: Record<string, StatusBadgeVariant> = {
-  draft: "pending",
-  sent: "info",
-  viewed: "info",
-  payment_pending_verification: "warning",
-  partially_paid: "warning",
-  paid: "ok",
-  overdue: "error",
-  cancelled: "pending",
-  written_off: "error",
-  accepted: "ok",
-  declined: "error",
-  converted: "ok",
-  expired: "pending",
-  approved: "info",
-  pending: "warning",
-  confirmed: "ok",
-  rejected: "error",
-  recorded: "ok",
-  void: "pending",
-  active: "ok",
-  paused: "pending",
-  queued: "info",
-  failed: "error",
-  posted: "ok",
-  issued: "info",
-  applied: "ok",
-};
-
 const LABEL: Record<string, string> = {
   payment_pending_verification: "Checking payment",
   partially_paid: "Part paid",
   written_off: "Written off",
 };
 
+export function statusLabel(status: string): string {
+  return LABEL[status] ?? words(status);
+}
+
+/** A toned status pill; one mapping for every Billing list (see `statusTone`). */
 export function Status({ status }: { status: string }) {
-  return <StatusBadge label={LABEL[status] ?? words(status)} status={TONE[status] ?? "pending"} />;
+  return <Pill tone={statusTone(status)} dot size="sm">{statusLabel(status)}</Pill>;
 }
 
 /** Email / books state for a document, in plain words. */
 export function DeliveryNote({ status, error }: { status?: string | null; error?: string | null }) {
   if (!status) return null;
   const text = status === "queued" ? (error ? `Email: ${error}` : "Email queued in the Mailbox") : status === "sent" ? "Emailed" : status === "manual" ? "Marked sent (no email)" : `Email failed${error ? `: ${error}` : ""}`;
-  return <span style={{ fontSize: 12, color: status === "failed" ? tokens.destructive : tokens.muted }}>{text}</span>;
+  const t = status === "failed" ? "bad" : status === "sent" ? "ok" : status === "queued" ? "info" : "neutral";
+  return <span style={{ fontSize: 12, color: t === "neutral" ? tokens.muted : tone(t).fg, overflowWrap: "anywhere" }}>{text}</span>;
 }
 
 // ── Layout helpers ─────────────────────────────────────────────────────────
@@ -164,18 +142,20 @@ export function SmallButton(props: Parameters<typeof Button>[0]) {
   return <Button type="button" variant="secondary" {...props} style={{ height: 28, fontSize: 12, padding: "0 10px", ...(props.style ?? {}) }} />;
 }
 
-export function Card({ title, children, actions }: { title?: string; children: ReactNode; actions?: ReactNode }) {
+export function Card({ title, children, actions, icon, subtitle, tone: t, strip }: { title?: string; children: ReactNode; actions?: ReactNode; icon?: LucideIcon; subtitle?: ReactNode; tone?: ToneInput; strip?: boolean }) {
+  if (title) return <SectionCard title={title} icon={icon} subtitle={subtitle} tone={t} strip={strip} actions={actions}>{children}</SectionCard>;
   return (
     <section style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 10, padding: 14, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.card, minWidth: 0 }}>
-      {title || actions ? (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {title ? <h3 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>{title}</h3> : <span />}
-          {actions}
-        </div>
-      ) : null}
+      {actions ? <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, flexWrap: "wrap" }}>{actions}</div> : null}
       {children}
     </section>
   );
+}
+
+/** Money coloured by meaning: `in` (received) green, `overdue` red, otherwise plain. */
+export function Money({ minor, currency, kind }: { minor: number | null | undefined; currency: string; kind?: "in" | "overdue" | null }) {
+  const color = kind === "in" ? tone("ok").fg : kind === "overdue" ? tone("bad").fg : undefined;
+  return <span style={{ fontVariantNumeric: "tabular-nums", color, fontWeight: kind ? 600 : undefined }}>{money(minor, currency)}</span>;
 }
 
 export function Totals({ rows }: { rows: Array<{ label: string; value: string; strong?: boolean }> }) {

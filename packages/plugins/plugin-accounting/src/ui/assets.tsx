@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { StatusBadge, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Modal, Section, Sheet, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
-import { AccountSelect, accountLabel, Muted, rand, Row, small, Table, Td, toCents, today, useRunner } from "./shared.js";
+import { AccountSelect, accountLabel, Muted, rand, Row, small, StatusPill, Table, Td, toCents, today, useRunner } from "./shared.js";
 
 interface Asset {
   id: string;
@@ -82,7 +82,7 @@ export function AssetsTab({ data, onMessage }: { data: LoadResult; onMessage: (m
                 <Td right>{rand(a.costMinor)}</Td>
                 <Td>{a.lifeMonths} months</Td>
                 <Td>{a.depreciationStart}</Td>
-                <Td><StatusBadge label={a.status === "disposed" ? `disposed ${a.disposedDate}` : "in use"} status={a.status === "disposed" ? "info" : "ok"} /></Td>
+                <Td><StatusPill status={a.status === "disposed" ? "disposed" : "in_use"} label={a.status === "disposed" ? `disposed ${a.disposedDate}` : "in use"} /></Td>
                 <Td>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <Button type="button" variant="secondary" style={small} onClick={() => void run("detail", async () => setDetail((await list({ assetId: a.id })) as { asset: Asset; schedule: ScheduleRow[] }))}>Schedule</Button>

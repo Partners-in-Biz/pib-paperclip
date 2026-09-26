@@ -4,9 +4,36 @@
  * pending changes), experiments, and the program settings.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DataTable, MarkdownBlock, MetricCard, StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Select, StatRow, TextArea, Toolbar, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
-import { Banner, Card, fmtDate, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import { DataTable, MarkdownBlock } from "@paperclipai/plugin-sdk/ui";
+import {
+  Button,
+  ChartPie,
+  CircleCheck,
+  DonutChart,
+  EmptyState,
+  Field,
+  Gavel,
+  Input,
+  KpiCard,
+  Lightbulb,
+  Modal,
+  Pill,
+  ProgressBar,
+  Scale,
+  SectionCard,
+  Select,
+  Target,
+  TextArea,
+  Toolbar,
+  TrendingUp,
+  errorText,
+  fluidColumns,
+  tokens,
+  tone,
+  type ToneInput,
+} from "@partnersinbiz/pib-plugin-ui";
+import { Banner, Card, chipStyle, fmtDate, Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import { EXPERIMENT_TONE, VERDICT_TONE, toneOf, verdictSegments } from "./series.js";
 import type { GrowthChange, GrowthExperiment, GrowthPost, GrowthSnapshot, RunAction, Snapshot } from "./types.js";
 
 export function fmtLift(value: number | null | undefined): string {
@@ -14,30 +41,47 @@ export function fmtLift(value: number | null | undefined): string {
   return `${value >= 0 ? "+" : ""}${Math.round(value * 100)}%`;
 }
 
-const EXPERIMENT_TONE: Record<string, StatusBadgeVariant> = {
-  proposed: "warning",
-  running: "info",
-  measured: "ok",
-  rejected: "pending",
-  abandoned: "pending",
-};
-
-const VERDICT_TONE: Record<string, StatusBadgeVariant> = {
-  win: "ok",
-  loss: "error",
-  no_change: "pending",
-  inconclusive: "warning",
-};
-
 const AUTOPILOT_HELP: Record<string, string> = {
   off: "Agents only read the review and the playbook. Scores and measurements still run.",
   safe: "Agents propose; a person approves experiments and keeps or discards playbook changes (one approval issue a week).",
   full: "Agent proposals start at once, the agent may decide playbook changes, and wins are kept automatically.",
 };
 
-function Chip({ children, tone }: { children: string; tone?: "good" | "bad" }) {
-  const color = tone === "good" ? "#15803d" : tone === "bad" ? "var(--destructive)" : tokens.muted;
-  return <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: `1px solid ${tokens.border}`, color }}>{children}</span>;
+function Chip({ children, tone: t }: { children: string; tone?: ToneInput }) {
+  return <Pill size="sm" tone={t ?? "neutral"} variant={t ? "soft" : "outline"}>{children}</Pill>;
+}
+
+function liftTone(value: number | null | undefined): "ok" | "bad" | "neutral" {
+  if (value === null || value === undefined || !Number.isFinite(value) || value === 0) return "neutral";
+  return value > 0 ? "ok" : "bad";
+}
+
+/** Median lift per feature value as bars either side of zero: green right for positive, red left for negative. */
+export function LiftBars({ items }: { items: Array<{ key: string; label: string; lift: number; count: number }> }) {
+  if (items.length === 0) return <Muted>Not enough scored posts yet.</Muted>;
+  const max = Math.max(...items.map((i) => Math.abs(i.lift)), 0.01);
+  const summary = `Feature lifts: ${items.map((i) => `${i.label} ${fmtLift(i.lift)} over ${i.count} posts`).join(", ")}`;
+  return (
+    <div role="img" aria-label={summary} style={{ display: "grid", gap: 10, minWidth: 0 }}>
+      {items.map((item) => {
+        const t = tone(liftTone(item.lift));
+        const width = `${Math.max((Math.abs(item.lift) / max) * 100, item.lift ? 4 : 0)}%`;
+        return (
+          <div key={item.key} aria-hidden="true" style={{ display: "grid", gap: 4, minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, minWidth: 0 }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.label} <span style={{ color: tokens.muted }}>· {item.count} posts</span></span>
+              <span style={{ color: t.fg, fontWeight: 650, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmtLift(item.lift)}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", height: 8, borderRadius: 999, background: tokens.track, overflow: "hidden", position: "relative" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>{item.lift < 0 ? <div style={{ width, height: "100%", background: t.solid, borderRadius: "999px 0 0 999px" }} /> : null}</div>
+              <div style={{ display: "flex" }}>{item.lift > 0 ? <div style={{ width, height: "100%", background: t.solid, borderRadius: "0 999px 999px 0" }} /> : null}</div>
+              <span style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: tokens.muted, opacity: 0.6 }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function PostRow({ post, tz }: { post: GrowthPost; tz: string }) {
@@ -45,10 +89,11 @@ function PostRow({ post, tz }: { post: GrowthPost; tz: string }) {
     <div style={{ display: "grid", gap: 4, paddingTop: 8, borderTop: `1px solid ${tokens.border}` }}>
       <Row style={{ justifyContent: "space-between" }}>
         <Row>
-          <strong style={{ fontSize: 13, color: post.lift !== null && post.lift < 0 ? "var(--destructive)" : "#15803d" }}>{fmtLift(post.lift)}</strong>
-          <Muted>{post.platforms.map(platformLabel).join(", ")} · {fmtDate(post.publishedAt, tz, false)}</Muted>
+          <Pill tone={liftTone(post.lift)} variant="solid" size="sm">{fmtLift(post.lift)}</Pill>
+          <Row style={{ gap: 4 }}>{post.platforms.map((p) => <PlatformBadge key={p} platform={p} size={20} />)}</Row>
+          <Muted>{fmtDate(post.publishedAt, tz, false)}</Muted>
         </Row>
-        {post.arm ? <Chip>{`experiment · ${post.arm}`}</Chip> : null}
+        {post.arm ? <Chip tone="info">{`experiment · ${post.arm}`}</Chip> : null}
       </Row>
       <div style={{ fontSize: 12, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{post.caption}</div>
       <Row>{Object.entries(post.features).map(([k, v]) => <Chip key={k}>{`${k}: ${v.replace(/_/g, " ")}`}</Chip>)}</Row>
@@ -62,10 +107,13 @@ function ArmLine({ experiment }: { experiment: GrowthExperiment }) {
       {experiment.arms.map((arm) => {
         const c = experiment.counts?.[arm.key];
         return (
-          <Muted key={arm.key}>
-            <strong>{arm.key}</strong>: {arm.description}
-            {c ? ` · ${c.posts} tagged, ${c.published} published, ${c.scored}/${experiment.minPerArm} scored` : ""}
-          </Muted>
+          <div key={arm.key} style={{ display: "grid", gap: 4 }}>
+            <Muted>
+              <strong>{arm.key}</strong>: {arm.description}
+              {c ? ` · ${c.posts} tagged, ${c.published} published` : ""}
+            </Muted>
+            {c ? <ProgressBar done={Math.min(c.scored, experiment.minPerArm)} total={experiment.minPerArm} size="xs" label={`${arm.key} scored`} valueText={`${c.scored}/${experiment.minPerArm} scored`} /> : null}
+          </div>
         );
       })}
     </div>
@@ -75,11 +123,11 @@ function ArmLine({ experiment }: { experiment: GrowthExperiment }) {
 function ExperimentCard({ experiment, canDecide, act }: { experiment: GrowthExperiment; canDecide: boolean; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
   const [reason, setReason] = useState("");
   return (
-    <Card style={{ gap: 6 }}>
+    <Card style={{ gap: 6, borderLeft: `3px solid ${tone(experiment.verdict ? toneOf(VERDICT_TONE, experiment.verdict) : toneOf(EXPERIMENT_TONE, experiment.status)).solid}` }}>
       <Row style={{ justifyContent: "space-between" }}>
         <Row>
-          <StatusBadge label={experiment.status} status={EXPERIMENT_TONE[experiment.status] ?? "pending"} />
-          {experiment.verdict ? <StatusBadge label={experiment.verdict.replace("_", " ")} status={VERDICT_TONE[experiment.verdict] ?? "pending"} /> : null}
+          <Pill tone={toneOf(EXPERIMENT_TONE, experiment.status)} dot>{experiment.status}</Pill>
+          {experiment.verdict ? <Pill tone={toneOf(VERDICT_TONE, experiment.verdict)} variant="solid">{experiment.verdict.replace("_", " ")}</Pill> : null}
           <Muted>{experiment.hypothesisType}</Muted>
         </Row>
         <Muted>{experiment.startedAt ? `started ${fmtDate(experiment.startedAt, undefined, false)}` : `proposed ${fmtDate(experiment.createdAt, undefined, false)}`}</Muted>
@@ -188,13 +236,15 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
     await load();
   }, [run, load]);
 
-  if (error) return <EmptyState title="Growth could not load" description={error} />;
+  if (error) return <EmptyState tone="bad" title="Growth could not load" description={error} />;
   if (!data) return <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>;
 
   const waiting = data.proposedExperiments.length + data.pendingChanges.length;
   const version = viewVersion !== null ? data.versions.find((v) => v.version === viewVersion) ?? null : null;
   const open = data.experiments.filter((e) => e.status === "proposed" || e.status === "running");
   const done = data.experiments.filter((e) => e.status !== "proposed" && e.status !== "running");
+  const measured = data.experiments.filter((e) => e.verdict);
+  const verdicts = verdictSegments(data.experiments);
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -206,15 +256,26 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
       {data.notes.map((note) => <Banner key={note} tone="info" title="Note">{note}</Banner>)}
       <Toolbar>
         {[7, 28, 90].map((days) => (
-          <SmallButton key={days} onClick={() => setPeriod(days)} style={period === days ? { background: tokens.primary, color: tokens.primaryFg } : undefined}>Last {days} days</SmallButton>
+          <SmallButton key={days} aria-pressed={period === days} onClick={() => setPeriod(days)} style={chipStyle(period === days)}>Last {days} days</SmallButton>
         ))}
       </Toolbar>
-      <StatRow>
-        <MetricCard label="Posts scored" value={data.summary.postsScored} />
-        <MetricCard label="Median lift" value={fmtLift(data.summary.medianLift)} />
-        <MetricCard label="Running experiments" value={data.runningExperiments.length} />
-        <MetricCard label="Waiting for a decision" value={waiting} />
-      </StatRow>
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: fluidColumns(150), minWidth: 0 }}>
+        <KpiCard label="Posts scored" value={data.summary.postsScored} icon={CircleCheck} hint={`${data.summary.postsWithLift} with a lift · last ${data.periodDays} days`} />
+        <KpiCard label="Median lift" value={fmtLift(data.summary.medianLift)} icon={TrendingUp} tone={data.summary.medianLift !== null && data.summary.medianLift < 0 ? "bad" : undefined} hint="vs each account's usual" />
+        <KpiCard label="Running experiments" value={data.runningExperiments.length} icon={Target} />
+        <KpiCard label="Waiting for a decision" value={waiting} icon={Gavel} tone={waiting ? "warn" : undefined} hint={waiting ? "Experiments or playbook changes" : "Nothing waiting"} />
+      </div>
+
+      <div style={{ display: "grid", gap: 16, gridTemplateColumns: fluidColumns(340), minWidth: 0 }}>
+        <SectionCard title="Experiment verdicts" subtitle={`${measured.length} measured`} icon={ChartPie}>
+          {measured.length ? (
+            <DonutChart title="Experiment verdicts" segments={verdicts} centerValue={measured.length} centerLabel="measured" />
+          ) : <EmptyState compact icon={Scale} title="No verdicts yet" description="An experiment gets a verdict once each arm has enough scored posts." />}
+        </SectionCard>
+        <SectionCard title="Feature lifts" subtitle="Median 7-day lift of posts with each feature value (at least 3 posts)" icon={Lightbulb}>
+          <LiftBars items={data.featureLifts.map((f) => ({ key: f.key, label: f.key.replace("=", ": ").replace(/_/g, " "), lift: f.medianLift, count: f.count }))} />
+        </SectionCard>
+      </div>
 
       {waiting ? (
         <div style={{ display: "grid", gap: 8 }}>
@@ -268,20 +329,6 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
             observed: r.observedPosts ? `${fmtLift(r.observedLift)} over ${r.observedPosts} posts` : "—",
           }))}
           emptyMessage="Nothing to rank yet."
-        />
-      </Card>
-
-      <Card>
-        <strong style={{ fontSize: 13 }}>Feature lifts</strong>
-        <Muted>Median 7-day lift of posts with each feature value (at least 3 posts).</Muted>
-        <DataTable
-          columns={[
-            { key: "feature", header: "Feature" },
-            { key: "count", header: "Posts" },
-            { key: "lift", header: "Median lift" },
-          ]}
-          rows={data.featureLifts.map((f) => ({ id: f.key, feature: f.key.replace("=", ": ").replace(/_/g, " "), count: f.count, lift: fmtLift(f.medianLift) }))}
-          emptyMessage="Not enough scored posts yet."
         />
       </Card>
 

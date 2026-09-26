@@ -2,8 +2,7 @@
  * Setup checklist, Needs you items and the site repo link (0.6.0).
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Section, Select, breakAnywhere, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, ListChecks, Pill, UserRound, ProgressBar, Section, SectionCard, Select, breakAnywhere, fluidColumns, tokens, type ToneName } from "@partnersinbiz/pib-plugin-ui";
 
 export type UiLink = { label: string; url: string };
 
@@ -50,11 +49,11 @@ type CallFn = (tool: string, params: Record<string, unknown>, success?: string) 
 
 const small: CSSProperties = { height: 28, fontSize: 12, padding: "0 10px" };
 
-const STATUS: Record<SetupItem["status"], { variant: StatusBadgeVariant; label: string }> = {
-  done: { variant: "ok", label: "done" },
-  todo: { variant: "pending", label: "to do" },
-  warn: { variant: "warning", label: "check" },
-  unknown: { variant: "info", label: "not checkable" },
+const STATUS: Record<SetupItem["status"], { tone: ToneName; label: string }> = {
+  done: { tone: "ok", label: "done" },
+  todo: { tone: "warn", label: "to do" },
+  warn: { tone: "bad", label: "check" },
+  unknown: { tone: "neutral", label: "not checkable" },
 };
 
 function LinkList({ links }: { links: UiLink[] }) {
@@ -87,13 +86,14 @@ export function SetupChecklist({ title, items }: { title: string; items: SetupIt
   const done = items.filter((i) => i.status === "done").length;
   const countable = items.filter((i) => i.status !== "unknown").length;
   return (
-    <Section title={title} actions={<span style={{ fontSize: 12, color: tokens.muted }}>{done}/{countable} done</span>}>
+    <SectionCard title={title} icon={ListChecks} subtitle={done === countable ? "Everything is set up" : `${countable - done} left to do`} tone={done === countable ? "ok" : undefined} actions={<Pill tone={done === countable ? "ok" : "warn"}>{done}/{countable} done</Pill>}>
+      <ProgressBar done={done} total={countable} size="sm" ariaLabel={`${done} of ${countable} setup steps done`} />
       <div style={{ display: "grid", gap: 8 }}>
         {items.map((item) => (
           <div key={item.key} style={{ display: "grid", gap: 6, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
               <span style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
-                <StatusBadge status={STATUS[item.status].variant} label={STATUS[item.status].label} />
+                <Pill tone={STATUS[item.status].tone} dot>{STATUS[item.status].label}</Pill>
                 <strong style={{ fontSize: 13 }}>{item.label}</strong>
               </span>
               {item.steps.length > 0 ? (
@@ -112,7 +112,7 @@ export function SetupChecklist({ title, items }: { title: string; items: SetupIt
           </div>
         ))}
       </div>
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -128,8 +128,12 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
     }
   };
   return (
-    <Section
-      title="Needs you"
+    <SectionCard
+      title={`Needs you${view.open.length ? ` (${view.open.length})` : ""}`}
+      subtitle="What only a person can do this week, batched in one issue"
+      icon={UserRound}
+      tone={view.open.length ? "warn" : "ok"}
+      strip={view.open.length > 0}
       actions={issueLink ?? null}
     >
       {view.open.length === 0 ? (
@@ -139,8 +143,8 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
           {view.open.map((item, index) => (
             <div key={item.key} style={{ display: "grid", gap: 6, padding: "8px 0", borderTop: index ? `1px solid ${tokens.border}` : undefined }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ fontSize: 13 }}>
-                  {index + 1}. {item.title}
+                <strong style={{ fontSize: 13, display: "inline-flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill size="sm" tone={item.optional ? "neutral" : "warn"}>{index + 1}</Pill>{item.title}
                   {item.optional ? <span style={{ color: tokens.muted, fontWeight: 400 }}> (optional)</span> : null}
                 </strong>
                 <Button type="button" variant="secondary" style={small} disabled={busy === item.key} onClick={() => void done(item.key)}>
@@ -167,7 +171,7 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
         </div>
       )}
       {view.done.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>Done this week: {view.done.map((d) => d.title).join(" · ")}</span> : null}
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -205,7 +209,7 @@ export function SiteRepoSection({ sprintId, site, projects, prefix, call }: { sp
   return (
     <Section
       title="Site repo"
-      actions={<StatusBadge status={site.siteAccess === "unlinked" ? "pending" : "ok"} label={site.siteAccess === "repo" ? "linked" : site.siteAccess === "none" ? "no repo" : "not linked"} />}
+      actions={<Pill dot tone={site.siteAccess === "unlinked" ? "warn" : site.siteAccess === "repo" ? "ok" : "neutral"}>{site.siteAccess === "repo" ? "linked" : site.siteAccess === "none" ? "no repo" : "not linked"}</Pill>}
     >
       <span style={{ fontSize: 13, color: tokens.muted }}>
         Code and content tasks open in this project, so the agent works in its repo workspace: branch, PR, checks, preview, merge.

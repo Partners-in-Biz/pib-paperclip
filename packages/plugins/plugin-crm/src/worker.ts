@@ -63,7 +63,9 @@ import {
   enrollmentById,
   sequenceDelivery,
   sequenceEmailApproved,
+  recordDates,
 } from "./db.js";
+import { crmSeries } from "./series.js";
 import {
   advanceEnrollment,
   applyFieldPatch,
@@ -400,8 +402,21 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   }
 
   const settingsSaved = Object.keys(await readConfig(ctx, viewer.companyId).catch(() => ({}))).length > 0;
+  const [dealDates, contactDates] = await Promise.all([
+    recordDates(ctx, "deals", visibleDeals.map((deal) => deal.id)).catch(() => []),
+    recordDates(ctx, "contacts", visibleContacts.map((contact) => contact.id)).catch(() => []),
+  ]);
+  const series = crmSeries({
+    deals: visibleDeals,
+    stages,
+    dealDates,
+    contactDates,
+    visibleContactIds: new Set(visibleContacts.map((contact) => contact.id)),
+    now: new Date(),
+  });
   return {
     settingsSaved,
+    series,
     accounts: visibleAccounts,
     contacts: visibleContacts,
     deals: visibleDeals,

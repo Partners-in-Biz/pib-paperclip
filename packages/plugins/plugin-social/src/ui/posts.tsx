@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, EmptyState, Field, Input, Sheet, Toolbar, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ChartLegend, EmptyState, Field, FileText, Input, Pill, Sheet, Toolbar, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
 import { Thumb } from "./composer.js";
-import { Banner, Card, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, platformLabel, PostStatus, Row, SmallButton } from "./parts.js";
+import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton } from "./parts.js";
+import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
 const FILTERS = [
@@ -24,6 +25,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
+  const count = (id: string) => id === "all" ? posts.length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
   const rows = useMemo(() => posts.filter((post) => {
     if (filter === "problems" && post.status !== "failed" && post.status !== "partially_published") return false;
     if (filter === "published" && post.status !== "published") return false;
@@ -34,12 +36,12 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
     <div style={{ display: "grid", gap: 12 }}>
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
-          <SmallButton key={f.id} onClick={() => setFilter(f.id)} style={filter === f.id ? { background: tokens.primary, color: tokens.primaryFg } : undefined}>{f.label}</SmallButton>
+          <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
         <Button type="button" onClick={onNew}>+ New post</Button>
       </Toolbar>
       {rows.length === 0 ? (
-        <EmptyState title="No posts here" description="Write a post, pick destinations, and send it for review." action={<Button type="button" onClick={onNew}>+ New post</Button>} />
+        <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={<Button type="button" onClick={onNew}>+ New post</Button>} />
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {rows.map((post) => (
@@ -47,7 +49,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
               key={post.id}
               type="button"
               onClick={() => onOpen(post)}
-              style={{ appearance: "none", textAlign: "left", display: "grid", gap: 6, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, cursor: "pointer", fontFamily: "inherit" }}
+              style={{ appearance: "none", textAlign: "left", display: "grid", gap: 6, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, borderLeft: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tokens.card, color: tokens.fg, cursor: "pointer", fontFamily: "inherit", minWidth: 0 }}
             >
               <Row style={{ justifyContent: "space-between" }}>
                 <Row>
@@ -63,9 +65,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
               <div style={{ fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{post.body}</div>
               <Row>
                 {post.destinations.map((d) => (
-                  <span key={d.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: `1px solid ${tokens.border}`, color: d.status === "failed" ? "var(--destructive)" : tokens.muted }}>
-                    {platformLabel(d.platform)} · {d.status}
-                  </span>
+                  <Pill key={d.id} size="sm" variant="outline" tone={toneOf(DEST_TONE, d.status)} dot>{platformLabel(d.platform)} · {d.status}</Pill>
                 ))}
                 {post.media.length ? <Muted>{post.media.length} media</Muted> : null}
               </Row>
@@ -131,7 +131,10 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         {post.destinations.map((d) => (
           <div key={d.id} style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: `1px solid ${tokens.border}` }}>
             <Row style={{ justifyContent: "space-between" }}>
-              <span style={{ fontSize: 12, fontWeight: 600 }}>{platformLabel(d.platform)} · {d.accountName}</span>
+              <Row style={{ flexWrap: "nowrap", minWidth: 0, flex: "1 1 180px" }}>
+                <PlatformBadge platform={d.platform} size={22} />
+                <span style={{ fontSize: 12, fontWeight: 600, overflowWrap: "anywhere", minWidth: 0 }}>{platformLabel(d.platform)} · {d.accountName}</span>
+              </Row>
               <DestinationStatus status={d.status} />
             </Row>
             <Muted>
@@ -140,7 +143,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
               {d.publishedAt ? ` · published ${fmtDate(d.publishedAt, tz)}` : ""}
             </Muted>
             {d.externalUrl ? <ExternalLink href={d.externalUrl}>View on {platformLabel(d.platform)}</ExternalLink> : null}
-            {d.lastError ? <Muted style={{ color: "var(--destructive)" }}>{d.lastError}</Muted> : null}
+            {d.lastError ? <Muted style={{ color: tone("bad").fg }}>{d.lastError}</Muted> : null}
           </div>
         ))}
       </Card>
@@ -194,6 +197,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - start.getDay() + 1 + offset * 14);
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86_400_000));
+  const todayKey = dayKey(new Date().toISOString());
   const byDay = new Map<string, Post[]>();
   for (const post of posts) {
     const when = post.status === "published" || post.status === "partially_published" ? post.publishedAt ?? post.scheduledAt : post.scheduledAt;
@@ -208,15 +212,19 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
         <Muted>{fmtDate(days[0]!.toISOString(), tz, false)} – {fmtDate(days[13]!.toISOString(), tz, false)} ({tz})</Muted>
         <SmallButton onClick={() => setOffset((o) => o + 1)}>Later →</SmallButton>
       </Row>
+      <ChartLegend items={[{ label: "Scheduled", tone: "info" }, { label: "Published", tone: "ok" }, { label: "Failed", tone: "bad" }]} />
       <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(150, "auto-fill") }}>
         {days.map((day) => {
           const key = dayKey(day.toISOString());
           const list = (byDay.get(key) ?? []).sort((a, b) => String(a.scheduledAt).localeCompare(String(b.scheduledAt)));
           return (
-            <div key={key} style={{ display: "grid", gap: 6, alignContent: "start", minHeight: 90, padding: 8, borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.card }}>
-              <Muted style={{ fontWeight: 600 }}>{day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</Muted>
+            <div key={key} style={{ display: "grid", gap: 6, alignContent: "start", minHeight: 90, padding: 8, borderRadius: 10, border: `1px solid ${key === todayKey ? tone("accent").border : tokens.border}`, background: key === todayKey ? `linear-gradient(180deg, ${tone("accent").soft}, transparent 60%), ${tokens.card}` : tokens.card, minWidth: 0 }}>
+              <Row style={{ justifyContent: "space-between" }}>
+                <Muted style={{ fontWeight: 600, color: key === todayKey ? tone("accent").fg : undefined }}>{day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</Muted>
+                {list.length ? <Pill size="sm" tone="accent">{list.length}</Pill> : null}
+              </Row>
               {list.map((post) => (
-                <button key={post.id} type="button" onClick={() => onOpen(post)} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", background: tokens.secondary, color: tokens.fg, cursor: "pointer", fontFamily: "inherit" }}>
+                <button key={post.id} type="button" onClick={() => onOpen(post)} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", borderLeft: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tone(toneOf(POST_TONE, post.status)).soft, color: tokens.fg, cursor: "pointer", fontFamily: "inherit", overflowWrap: "anywhere", minWidth: 0 }}>
                   <strong>{post.scheduledAt ? new Date(post.scheduledAt).toLocaleTimeString(undefined, { timeZone: tz, hour: "2-digit", minute: "2-digit" }) : ""}</strong>{" "}
                   {post.body.slice(0, 60)}
                   <div style={{ color: tokens.muted }}>{post.status.replace("_", " ")} · {post.destinations.map((d) => platformLabel(d.platform)).join(", ")}</div>

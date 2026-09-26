@@ -5,7 +5,7 @@ import { reportingCurrency, type BillingSettings } from "./config.js";
 import { asObject, listRecurring, table } from "./db.js";
 import { storedRates, rateFrom } from "./fx.js";
 import { billBalanceSelect, billOutstanding, type BillBalanceRow } from "./openitems.js";
-import { ageing, converterFor, expenseSummary, mrrMetrics, revenueByClient, revenueByMonth, type ExpenseItem, type RecurringRevenue, type RevenuePayment } from "./reports.js";
+import { ageing, converterFor, expenseSummary, monthsBetween, mrrMetrics, mrrTrend, revenueByClient, revenueByMonth, type ExpenseItem, type RecurringRevenue, type RevenuePayment } from "./reports.js";
 import { allSubscriptions } from "./retainers.js";
 
 export async function latestRates(ctx: PluginContext, book: string, currencies: string[]): Promise<Record<string, number | null>> {
@@ -145,5 +145,6 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
     agedCreditors: creditors,
     expenses: expenseSummary({ items: expenseItems, from: range.from, to: range.to, book, convert }),
     mrr: mrrMetrics({ items: recurringItems, now, book, convert }),
+    mrrTrend: mrrTrend({ items: recurringItems, months: monthsBetween(range.from, range.to), book, convert }),
   };
 }

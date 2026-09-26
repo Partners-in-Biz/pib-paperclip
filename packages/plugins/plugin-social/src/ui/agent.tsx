@@ -5,21 +5,13 @@
  * is linked (tool access, weekly routine, failed-post issues).
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { StatusBadge, useHostContext, useHostNavigation, usePluginAction, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Modal, NewTaskDialog, Select, errorText, tokens, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
+import { useHostContext, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { Button, Field, Modal, NewTaskDialog, Pill, Select, errorText, tokens, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
+import { AGENT_TONE, toneOf } from "./series.js";
 import { Banner, Card, Code, ignore, Muted, Row, SmallButton } from "./parts.js";
 import type { AgentOption, HireOptions, HireRecord, LinkedBy, RunAction, SocialAgent } from "./types.js";
 
 const SKILL_SLUGS = ["pib-social-publish", "pib-social-content"];
-
-const AGENT_TONE: Record<string, StatusBadgeVariant> = {
-  active: "ok",
-  idle: "ok",
-  running: "info",
-  paused: "warning",
-  pending_approval: "warning",
-  error: "error",
-};
 
 /** Renders `code` spans in step lines. */
 function Inline({ text }: { text: string }) {
@@ -197,7 +189,7 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
             <strong style={{ fontSize: 13 }}>Social agent</strong>
             <Row>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{agentLink("", agent.name ?? "Agent")}</span>
-              <StatusBadge label={statusLabel(agent.status)} status={AGENT_TONE[agent.status ?? ""] ?? "pending"} />
+              <Pill tone={toneOf(AGENT_TONE, agent.status)} dot>{statusLabel(agent.status)}</Pill>
             </Row>
             <Muted>{linkedByText(agent.linkedBy)} It gets the Social tools, the weekly planning routine and failed-post issues.</Muted>
           </div>

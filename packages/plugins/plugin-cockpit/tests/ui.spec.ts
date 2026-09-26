@@ -52,7 +52,7 @@ describe("Cockpit page", () => {
     expect(html).toContain('href="/PIB/issues/PIB-3"');
     expect(html).toContain('href="/PIB/issues/issue-9"');
     // Phone-friendly: wrapping grids and a scrollable table, no fixed page widths.
-    expect(html).toContain("minmax(min(320px, 100%), 1fr)");
+    expect(html).toContain("minmax(min(420px, 100%), 1fr)");
     expect(html).toContain("overflow-x:auto");
     // Only the agents table has a minimum width, and it sits in the scroll wrapper.
     expect(html.match(/(?<![-\w])width:\s?(1[0-9]{3}|[4-9][0-9]{2})px/g)).toBeNull();

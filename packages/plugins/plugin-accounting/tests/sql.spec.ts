@@ -83,6 +83,7 @@ describe("runtime SQL", () => {
     await db.accountTotals(d, c, { to: "2026-12-31" });
     await db.accountTotals(d, c);
     await db.monthlyTotals(d, c, "2026-01-01", "2026-12-31");
+    await db.lineCountsByAccount(d, c);
     await db.glEntries(d, c, "a", "2026-01-01", "2026-12-31");
     await db.vatLines(d, c, "2026-01-01", "2026-02-28", ["a"]);
     await db.unlinkedBankJournals(d, c, "a", "2026-01-01", "2026-12-31");

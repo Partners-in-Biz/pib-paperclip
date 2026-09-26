@@ -7,6 +7,7 @@ import { allModulesOn } from "../src/modules.js";
 import { planCopy } from "../src/copy.js";
 import { CopyPreview, GuideStep, ModuleChecklist, ModulesStep, SetupProgressCard, resolveModuleViews } from "../src/ui/index.js";
 import type { LoadResult } from "../src/ui/data.js";
+import { ModuleCard, ProgressOverview, StatusChip, moduleCounts } from "../src/ui/components.js";
 
 const linkFor = (href: string) => ({ href: `/PIB${href}` });
 const crm: SetupStatus = {
@@ -129,5 +130,20 @@ describe("setup UI render", () => {
     expect(renderToStaticMarkup(createElement(SetupProgressCard, { data: { load, views: doneViews }, linkFor }))).toBe("");
     const first = renderToStaticMarkup(createElement(SetupProgressCard, { data: { load: { ...load, modules: null }, views: [] }, linkFor }));
     expect(first).toContain("Start setup");
+  });
+
+  it("colours progress by module and item status by tone", () => {
+    const html = renderToStaticMarkup(createElement(ProgressOverview, { done: 1, total: 3, modules: [{ key: "crm", module: "crm", ...moduleCounts(crm) }, { key: "seo", module: "seo", done: null, total: null }] }));
+    expect(html).toContain("1 of 3");
+    expect(html).toContain("2 left");
+    expect(html).toContain('aria-label="Required setup items done"');
+    expect(html).toContain("--pib-accent-crm");
+    expect(html).toContain("1/2");
+    expect(html).toContain("checking…");
+    expect(renderToStaticMarkup(createElement(StatusChip, { status: "missing" }))).toContain("var(--pib-bad-fg");
+    expect(renderToStaticMarkup(createElement(StatusChip, { status: "done" }))).toContain("var(--pib-ok-fg");
+    const card = renderToStaticMarkup(createElement(ModuleCard, { title: "Billing", description: "d", installed: false, enabled: true, onToggle: () => undefined, module: "billing" }));
+    expect(card).toContain("--pib-accent-billing");
+    expect(card).toContain("Not installed");
   });
 });

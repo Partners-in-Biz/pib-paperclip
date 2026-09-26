@@ -1,34 +1,61 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
-  MetricCard,
-  StatusBadge,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
+  Activity,
   BarChart,
   Button,
+  Building2,
   EmptyState,
   Field,
+  Handshake,
   Input,
+  KeyRound,
+  KpiCard,
+  LayoutDashboard,
+  Hourglass,
   Modal,
   Page,
-  Select,
-  StatRow,
+  Pill,
+  SectionCard,
+  StackedBar,
+  Timeline,
   Tabs,
   Toolbar,
   errorText,
+  fluidColumns,
+  tokens,
+  type TimelineItem,
+  type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+import { acceptedByMe, partnerSummary, recordKind } from "../series.js";
 
 const PLUGIN_ID = "partnersinbiz.partners";
 
-interface LinkRow { id: string; company_a_id: string; company_b_id: string; status: string }
-interface GrantRow { id: string; record_type: string; record_id: string; status: string; grantee_company_id: string }
+interface LinkRow { id: string; company_a_id: string; company_b_id: string; status: string; accepted_a?: boolean; accepted_b?: boolean; created_at?: string | null }
+interface GrantRow { id: string; record_type: string; record_id: string; status: string; source_company_id?: string; grantee_company_id: string; created_at?: string | null }
+
+/** Active: done (green). Pending or proposed: waiting (amber). Revoked: gone (grey). */
+const STATUS_TONE: Record<string, ToneInput> = { active: "ok", accepted: "ok", pending: "warn", proposed: "warn", revoked: "neutral" };
+const STATUS_LABEL: Record<string, string> = { active: "Active", accepted: "Accepted", pending: "Pending", proposed: "Proposed", revoked: "Revoked" };
+const KIND_LABEL: Record<string, string> = { company: "Companies", contact: "Contacts", deal: "Deals", invoice: "Invoices" };
+
+function StatusPill({ status }: { status: string }) {
+  return <Pill tone={STATUS_TONE[status] ?? "neutral"} dot>{STATUS_LABEL[status] ?? status}</Pill>;
+}
+
+/** A company id as a short, readable label. */
+function companyLabel(id: string, me: string | null | undefined): string {
+  if (id === me) return "This company";
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
 interface ShareResult {
   share: { plugin: "crm"; recordType: string; recordId: string; granteeCompanyId: string } | { plugin: "billing"; invoiceId: string; granteeCompanyId: string };
 }
@@ -75,12 +102,34 @@ export function PartnersPage({ context }: PluginPageProps) {
   const q = search.trim().toLowerCase();
   const linkRows = useMemo(() => links.filter((row) => !q || `${row.status} ${row.company_a_id} ${row.company_b_id}`.toLowerCase().includes(q)), [links, q]);
   const grantRows = useMemo(() => grants.filter((row) => !q || `${row.status} ${row.record_type} ${row.record_id}`.toLowerCase().includes(q)), [grants, q]);
-  const pendingLinks = links.filter((row) => row.status === "pending" || row.status === "proposed").length;
-  const openGrants = grants.filter((row) => row.status === "proposed").length;
+  const summary = useMemo(() => partnerSummary(links, grants, context.companyId), [links, grants, context.companyId]);
+  const me = context.companyId;
+  const other = (row: LinkRow) => (row.company_a_id === me ? row.company_b_id : row.company_a_id);
+  const recent: TimelineItem[] = [
+    ...links.map((row) => ({
+      id: `l:${row.id}`,
+      at: row.created_at ?? null,
+      title: `Link with ${companyLabel(other(row), me)}`,
+      meta: <StatusPill status={row.status} />,
+      tone: STATUS_TONE[row.status] ?? "neutral",
+      icon: Handshake,
+    })),
+    ...grants.map((row) => ({
+      id: `g:${row.id}`,
+      at: row.created_at ?? null,
+      title: `${row.grantee_company_id === me ? "Shared with you" : `Shared with ${companyLabel(row.grantee_company_id, me)}`}: ${recordKind(row.record_type)}`,
+      meta: <StatusPill status={row.status} />,
+      detail: <span title={row.record_id}>{companyLabel(row.record_id, null)}</span>,
+      tone: STATUS_TONE[row.status] ?? "neutral",
+      icon: KeyRound,
+    })),
+  ].sort((a, b) => (Date.parse(String(b.at ?? "")) || 0) - (Date.parse(String(a.at ?? "")) || 0));
+  const toAccept = summary.linksToAccept + summary.grantsToAccept;
 
   return (
     <Page
       title="Partners"
+      accent="partners"
       description="Both companies accept a link. A grant names one record. The record stays where it is."
       message={message}
       actions={<Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>}
@@ -88,30 +137,52 @@ export function PartnersPage({ context }: PluginPageProps) {
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview" },
-          { id: "links", label: `Links (${links.length})` },
-          { id: "grants", label: `Grants (${grants.length})` },
+          { id: "overview", label: "Overview", icon: LayoutDashboard, count: toAccept || null, countTone: "warn" },
+          { id: "links", label: "Links", icon: Handshake, count: links.length, countTone: summary.linksToAccept ? "warn" : undefined },
+          { id: "grants", label: "Grants", icon: KeyRound, count: grants.length, countTone: summary.grantsToAccept ? "warn" : undefined },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
       />
 
       {tab === "overview" ? (
-        <div style={{ display: "grid", gap: 16 }}>
-          <StatRow>
-            <MetricCard label="Links" value={links.length} />
-            <MetricCard label="Pending links" value={pendingLinks} />
-            <MetricCard label="Grants" value={grants.length} />
-            <MetricCard label="Open grants" value={openGrants} />
-          </StatRow>
-          <BarChart
-            title="Link status"
-            items={Object.entries(links.reduce<Record<string, number>>((acc, row) => {
-              acc[row.status] = (acc[row.status] ?? 0) + 1;
-              return acc;
-            }, {})).map(([label, value]) => ({ label, value }))}
+        links.length === 0 && grants.length === 0 ? (
+          <EmptyState
+            title="No partners yet"
+            description="Propose a link with another Paperclip company. Once both accept, you can share named records."
+            action={<Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>}
           />
-        </div>
+        ) : (
+          <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+            <div style={{ display: "grid", gridTemplateColumns: fluidColumns(150), gap: 10 }}>
+              <KpiCard label="Active links" value={summary.activeLinks} tone={summary.activeLinks ? "ok" : "neutral"} hint={`${links.length} in total`} icon={Handshake} />
+              <KpiCard label="Links to accept" value={summary.linksToAccept} tone={summary.linksToAccept ? "warn" : "neutral"} hint={summary.pendingLinks ? `${summary.pendingLinks} pending` : "None pending"} icon={Hourglass} />
+              <KpiCard label="Records shared" value={summary.activeGrants} hint={summary.revokedGrants ? `${summary.revokedGrants} revoked` : "Active grants"} icon={KeyRound} />
+              <KpiCard label="Grants to accept" value={summary.grantsToAccept} tone={summary.grantsToAccept ? "warn" : "neutral"} hint={summary.grantsToAccept ? "Shared with you" : "Nothing waiting"} icon={KeyRound} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: fluidColumns(300), gap: 16, alignItems: "start" }}>
+              <SectionCard title="Shared records" icon={KeyRound} subtitle="Active grants by record type and by partner.">
+                <StackedBar
+                  title="Grants by status"
+                  segments={[
+                    { key: "active", label: "Active", value: summary.activeGrants, tone: "ok" },
+                    { key: "proposed", label: "Proposed", value: grants.filter((g) => g.status === "proposed").length, tone: "warn" },
+                    { key: "revoked", label: "Revoked", value: summary.revokedGrants, tone: "neutral" },
+                  ]}
+                />
+                {summary.byType.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No record is shared yet.</p> : (
+                  <>
+                    <BarChart bare title="By type" items={summary.byType.map((row) => ({ label: KIND_LABEL[row.type] ?? row.type, value: row.count }))} />
+                    <BarChart bare title="By partner" items={summary.byPartner.slice(0, 8).map((row) => ({ label: companyLabel(row.companyId, me), value: row.count, tone: "accent" as const }))} />
+                  </>
+                )}
+              </SectionCard>
+              <SectionCard title="Recent" icon={Activity} subtitle="Links and grants, newest first.">
+                <Timeline items={recent} limit={8} empty="Nothing yet." />
+              </SectionCard>
+            </div>
+          </div>
+        )
       ) : null}
 
       {tab === "links" ? (
@@ -120,18 +191,23 @@ export function PartnersPage({ context }: PluginPageProps) {
             <Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>
           </Toolbar>
           {linkRows.length === 0 ? (
-            <EmptyState title="No partner links yet" description="Propose a link with another Paperclip company." action={<Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>} />
+            <EmptyState title="No partner links yet" icon={Handshake} description="Propose a link with another Paperclip company." action={<Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>} />
           ) : (
             <DataTable
               columns={[
-                { key: "company_a_id", header: "Company A" },
-                { key: "company_b_id", header: "Company B" },
-                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" || value === "accepted" ? "ok" : "pending"} /> },
+                { key: "company_a_id", header: "Company A", render: (value) => <CompanyId id={String(value)} me={me} /> },
+                { key: "company_b_id", header: "Company B", render: (value) => <CompanyId id={String(value)} me={me} /> },
+                { key: "status", header: "Status", render: (value, row) => (
+                  <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                    <StatusPill status={String(value)} />
+                    {value !== "active" && acceptedByMe(row as unknown as LinkRow, me) ? <Pill size="sm">Waiting for partner</Pill> : null}
+                  </span>
+                ) },
                 {
                   key: "id",
                   header: "",
                   width: "110px",
-                  render: (_value, row) => (
+                  render: (_value, row) => row.status === "active" ? null : (
                     <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => acceptLink({ linkId: String(row.id) }), "Link acceptance saved")}>
                       Accept
                     </Button>
@@ -149,13 +225,13 @@ export function PartnersPage({ context }: PluginPageProps) {
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search grants…" />
           {grantRows.length === 0 ? (
-            <EmptyState title="No grants yet" description="Grants appear when a partner proposes a named record share." />
+            <EmptyState title="No grants yet" icon={KeyRound} description="Grants appear when a partner proposes a named record share." />
           ) : (
             <DataTable
               columns={[
-                { key: "record_type", header: "Type" },
-                { key: "record_id", header: "Record" },
-                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" || value === "accepted" ? "ok" : value === "revoked" ? "info" : "pending"} /> },
+                { key: "record_type", header: "Type", render: (value) => <Pill tone="accent">{recordKind(String(value))}</Pill> },
+                { key: "record_id", header: "Record", render: (value) => <span style={{ overflowWrap: "anywhere", fontVariantNumeric: "tabular-nums" }}>{String(value)}</span> },
+                { key: "status", header: "Status", render: (value) => <StatusPill status={String(value)} /> },
                 {
                   key: "id",
                   header: "",
@@ -205,6 +281,15 @@ export function PartnersPage({ context }: PluginPageProps) {
         </Field>
       </Modal>
     </Page>
+  );
+}
+
+function CompanyId({ id, me }: { id: string; me: string | null | undefined }) {
+  return (
+    <span title={id} style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0, overflowWrap: "anywhere" }}>
+      <Building2 size={13} color={tokens.muted} aria-hidden="true" style={{ flexShrink: 0 }} />
+      {id === me ? <strong>This company</strong> : id}
+    </span>
   );
 }
 

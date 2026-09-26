@@ -21,6 +21,8 @@ import {
   type AgedItem,
 } from "../domain/reports.js";
 import { AccountingError, addDays, addMonths, firstDayOfMonth, lastDayOfMonth, monthOf, monthsBetween, requireDate, todayIso } from "../domain/util.js";
+import { expenseSplit, monthlyTrend, reconciliationByAccount, vatDueDate } from "../domain/trends.js";
+import { vatPeriodFor } from "../domain/periods.js";
 import { ensureBook, loadChart, roleAccount } from "./books.js";
 import { BOOK_CURRENCY, readSettings } from "./common.js";
 
@@ -181,5 +183,35 @@ export async function overview(ctx: PluginContext, companyId: string) {
     bankLines: lineCounts,
     rejectedPostings: rejections.length,
     pendingApprovals: drafts.length,
+  };
+}
+
+/**
+ * Read-only series for the Overview charts: income, expenses, profit and
+ * closing cash for the last `months` months, the largest expense accounts in
+ * the financial year so far, reconciliation per bank account and the current
+ * VAT period with its due date.
+ */
+export async function trends(ctx: PluginContext, companyId: string, monthsInput: unknown = 12, today = todayIso()) {
+  await ensureBook(ctx, companyId);
+  const count = Math.min(24, Math.max(2, Math.floor(Number(monthsInput) || 12)));
+  const settings = await readSettings(ctx, companyId);
+  const chart = await loadChart(ctx, companyId);
+  const last = monthOf(today);
+  const months = monthsBetween(addMonths(last, -(count - 1)), last);
+  const from = firstDayOfMonth(months[0]!);
+  const fy = financialYear(today, settings.yearEndMonth);
+  const [opening, monthly, yearTotals, lineRows] = await Promise.all([
+    db.accountTotals(ctx.db, companyId, { to: addDays(from, -1) }),
+    db.monthlyTotals(ctx.db, companyId, from, lastDayOfMonth(last)),
+    db.accountTotals(ctx.db, companyId, { from: fy.start, to: today }),
+    db.lineCountsByAccount(ctx.db, companyId),
+  ]);
+  const period = vatPeriodFor(today, settings.vatCategory, settings.yearEndMonth);
+  return {
+    months: monthlyTrend(chart.accounts, opening, monthly, months),
+    expenses: { from: fy.start, to: today, split: expenseSplit(chart.accounts, yearTotals) },
+    reconciliation: reconciliationByAccount(lineRows),
+    vat: period ? { start: period.start, end: period.end, dueDate: vatDueDate(period.end) } : null,
   };
 }

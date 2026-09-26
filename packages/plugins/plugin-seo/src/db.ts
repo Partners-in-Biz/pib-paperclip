@@ -796,6 +796,37 @@ export async function sprintHistory(db: SeoDb, sprintId: string, since: string):
   return rows.map(positionFrom);
 }
 
+export interface TrafficDay {
+  on: string;
+  impressions: number;
+  clicks: number;
+  /** Tracked keywords with Search Console data that day. */
+  keywords: number;
+}
+
+/**
+ * Search Console impressions and clicks of the sprint's tracked keywords per
+ * day (the page's traffic chart), oldest first. Read only.
+ */
+export async function sprintTraffic(db: SeoDb, companyId: string, sprintId: string, days = 56): Promise<TrafficDay[]> {
+  const rows = await db.query(
+    `SELECT h.recorded_on::text AS on_day, COALESCE(sum(h.impressions), 0)::int AS impressions,
+            COALESCE(sum(h.clicks), 0)::int AS clicks, count(DISTINCT h.keyword_id)::int AS keywords
+       FROM ${t("rank_history")} h JOIN ${t("keywords")} k ON k.id = h.keyword_id
+      WHERE k.sprint_id = $1 AND h.company_id = $2 AND h.source = 'gsc' AND h.recorded_on IS NOT NULL
+        AND h.recorded_on >= current_date - $3::int
+      GROUP BY h.recorded_on
+      ORDER BY h.recorded_on`,
+    [sprintId, companyId, days],
+  );
+  return rows.map((row) => ({
+    on: String(row.on_day).slice(0, 10),
+    impressions: n(row.impressions) ?? 0,
+    clicks: n(row.clicks) ?? 0,
+    keywords: n(row.keywords) ?? 0,
+  }));
+}
+
 export async function recordPosition(db: SeoDb, row: {
   id: string;
   companyId: string;

@@ -317,7 +317,11 @@ function registerActions(e: Env) {
       db.latestPageHealth(ctx.db, sprintId),
       db.sprintCounts(ctx.db, companyId),
     ]);
-    const history = await db.sprintHistory(ctx.db, sprintId, "2000-01-01");
+    const [history, traffic] = await Promise.all([
+      db.sprintHistory(ctx.db, sprintId, "2000-01-01"),
+      // Chart series: Search Console clicks and impressions of tracked keywords per day.
+      db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
+    ]);
     const [needsYou, setup, projects] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
@@ -339,6 +343,7 @@ function registerActions(e: Env) {
       optimizations,
       integrations: integrations.map(integrationView),
       pageHealth: health,
+      traffic,
       needsYou,
       setup,
       projects,

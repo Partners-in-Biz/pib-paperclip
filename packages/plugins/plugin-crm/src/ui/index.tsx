@@ -10,8 +10,6 @@ import {
 import {
   DataTable,
   KeyValueList,
-  MetricCard,
-  StatusBadge,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
@@ -19,34 +17,55 @@ import {
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
-  BarChart,
+  Activity as ActivityIcon,
+  Briefcase,
+  Building2,
   Button,
   ClientWorkspaceBar,
+  Clock,
+  Contact as ContactIcon,
   EmptyState,
   Field,
   Form,
+  Funnel,
   Input,
+  KpiCard,
+  LayoutDashboard,
+  MailCheck,
   Modal,
+  Package,
   Page,
+  PageMessage,
   PipelineBoard,
   PipelineCard,
-  Section,
+  Pill,
+  SectionCard,
   Select,
+  ShieldCheck,
   Sheet,
-  StatRow,
   Tabs,
+  Target,
   TextArea,
   Toolbar,
   PageFrame,
+  UserRound,
+  Users,
+  Workflow,
   errorText,
   fluidColumns,
   formatMinor,
+  moduleAccent,
+  relativeTime,
   tokens,
+  tone,
+  IconBadge,
 } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
-import { LEAD_DIMENSION_LABELS, LEAD_DIMENSIONS, leadBand, leadLevelLabel, type LeadScore } from "../lead-levels.js";
+import { leadBand, type LeadScore } from "../lead-levels.js";
+import type { CrmSeries } from "../series.js";
+import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LifecyclePill, Muted, StagePill } from "./overview.js";
 
 interface Account {
   id: string;
@@ -61,6 +80,7 @@ interface Contact {
   emails: string[];
   lifecycle: string;
   humanOwned: string[];
+  leadScore?: LeadScore | null;
 }
 
 interface Deal {
@@ -106,12 +126,6 @@ interface Activity {
   threadId?: string | null;
 }
 
-const ACTIVITY_LABELS: Record<string, string> = {
-  email_received: "Email received",
-  email_sent: "Email sent",
-  reply_classified: "Reply read",
-};
-
 interface Stage {
   id: string;
   name: string;
@@ -143,6 +157,7 @@ interface Snapshot {
   stages: Stage[];
   products: Product[];
   summary: Summary;
+  series?: CrmSeries;
 }
 
 type TabId = "overview" | "companies" | "contacts" | "deals" | "sequences" | "products";
@@ -267,7 +282,8 @@ function CrmList({ context }: PluginPageProps) {
 
   const stages = snapshot?.stages ?? [];
   const summary = snapshot?.summary;
-  const openCurrency = summary ? Object.entries(summary.openPipelineByCurrency)[0] : null;
+  const awaitingApproval = (snapshot?.sequences ?? []).filter((row) => row.delivery === "email" && !row.emailApproved).length;
+  const attention = (summary?.unlinkedContactIds.length ?? 0) + (summary?.dealsWithoutAmountIds.length ?? 0);
 
   const accountName = (id: string | null) => snapshot?.accounts.find((row) => row.id === id)?.name ?? "—";
   const contactNameOf = (id: string | null) => snapshot?.contacts.find((row) => row.id === id)?.name ?? "—";
@@ -286,7 +302,9 @@ function CrmList({ context }: PluginPageProps) {
   return (
     <Page
       title="CRM"
+      accent="crm"
       description="People, the companies they work for, and the deals between them."
+      messageTone={message ? undefined : "warn"}
       message={message || (snapshot && snapshot.settingsSaved === false
         ? "CRM settings are not saved for this company yet. Open Settings → Plugins → CRM and click Save once, or sequence steps will not open issues and other plugins will not see your clients."
         : undefined)}
@@ -301,12 +319,12 @@ function CrmList({ context }: PluginPageProps) {
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview" },
-          { id: "companies", label: `Companies (${snapshot?.accounts.length ?? 0})` },
-          { id: "contacts", label: `Contacts (${snapshot?.contacts.length ?? 0})` },
-          { id: "deals", label: `Deals (${snapshot?.deals.length ?? 0})` },
-          { id: "sequences", label: `Sequences (${snapshot?.sequences.length ?? 0})` },
-          { id: "products", label: `Products (${snapshot?.products.length ?? 0})` },
+          { id: "overview", label: "Overview", icon: LayoutDashboard, count: attention || null, countTone: "warn" },
+          { id: "companies", label: "Companies", icon: Building2, count: snapshot?.accounts.length ?? 0 },
+          { id: "contacts", label: "Contacts", icon: ContactIcon, count: snapshot?.contacts.length ?? 0, countTone: summary?.unlinkedContactIds.length ? "warn" : undefined },
+          { id: "deals", label: "Deals", icon: Briefcase, count: snapshot?.deals.length ?? 0, countTone: summary?.dealsWithoutAmountIds.length ? "warn" : undefined },
+          { id: "sequences", label: "Sequences", icon: Workflow, count: snapshot?.sequences.length ?? 0, countTone: awaitingApproval ? "warn" : undefined },
+          { id: "products", label: "Products", icon: Package, count: snapshot?.products.length ?? 0 },
         ]}
         active={tab}
         onChange={(id) => {
@@ -316,54 +334,25 @@ function CrmList({ context }: PluginPageProps) {
       />
 
       {tab === "overview" ? (
-        <div style={{ display: "grid", gap: 16 }}>
-          <StatRow>
-            <MetricCard label="Companies" value={summary?.companyCount ?? 0} />
-            <MetricCard label="Contacts" value={summary?.contactCount ?? 0} />
-            <MetricCard
-              label="Open pipeline"
-              value={openCurrency ? formatMinor(openCurrency[1], openCurrency[0]) : "—"}
-            />
-            <MetricCard label="Deals" value={summary?.dealCount ?? 0} />
-          </StatRow>
-          <div style={{ display: "grid", gridTemplateColumns: fluidColumns(240), gap: 12 }}>
-            <BarChart
-              title="Pipeline by stage"
-              items={stages.map((stage) => ({
-                label: stage.name,
-                value: summary?.byStage[stage.id]?.count ?? 0,
-              }))}
-            />
-            <BarChart
-              title="Company lifecycle"
-              items={Object.entries(summary?.accountLifecycle ?? {}).map(([label, value]) => ({ label, value }))}
-            />
-            <BarChart
-              title="Contact lifecycle"
-              items={Object.entries(summary?.contactLifecycle ?? {}).map(([label, value]) => ({ label, value }))}
-            />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: fluidColumns(260), gap: 12 }}>
-            <AttentionCard
-              title="Contacts without a company"
-              empty="Every contact is linked."
-              items={(summary?.unlinkedContactIds ?? []).map((id) => ({
-                id,
-                label: contactNameOf(id),
-                onClick: () => navigation.navigate(clientPath("contact", id)),
-              }))}
-            />
-            <AttentionCard
-              title="Deals without an amount"
-              empty="Every deal has an amount."
-              items={(summary?.dealsWithoutAmountIds ?? []).map((id) => ({
-                id,
-                label: snapshot?.deals.find((deal) => deal.id === id)?.title ?? id,
-                onClick: () => setDetail({ kind: "deal", id }),
-              }))}
-            />
-          </div>
-        </div>
+        snapshot ? (
+          <CrmOverview
+            summary={summary}
+            series={snapshot.series}
+            stages={stages}
+            contacts={snapshot.contacts}
+            onTab={(next) => { setTab(next); setSearch(""); }}
+            unlinked={(summary?.unlinkedContactIds ?? []).map((id) => ({
+              id,
+              label: contactNameOf(id),
+              onClick: () => navigation.navigate(clientPath("contact", id)),
+            }))}
+            noAmount={(summary?.dealsWithoutAmountIds ?? []).map((id) => ({
+              id,
+              label: snapshot.deals.find((deal) => deal.id === id)?.title ?? id,
+              onClick: () => setDetail({ kind: "deal", id }),
+            }))}
+          />
+        ) : <Muted>{message ? "The CRM could not load." : "Loading the CRM…"}</Muted>
       ) : null}
 
       {tab === "companies" ? (
@@ -374,6 +363,7 @@ function CrmList({ context }: PluginPageProps) {
           {accounts.length === 0 ? (
             <EmptyState
               title="No companies yet"
+              icon={Building2}
               description="Add the accounts your contacts work for."
               action={<Button type="button" onClick={() => setCreate("company")}>+ Add company</Button>}
             />
@@ -382,7 +372,7 @@ function CrmList({ context }: PluginPageProps) {
               columns={[
                 { key: "name", header: "Company" },
                 { key: "domain", header: "Domain" },
-                { key: "lifecycle", header: "Lifecycle", render: (value) => <StatusBadge label={String(value)} status="info" /> },
+                { key: "lifecycle", header: "Lifecycle", render: (value) => <LifecyclePill lifecycle={String(value)} /> },
                 {
                   key: "id",
                   header: "",
@@ -406,6 +396,7 @@ function CrmList({ context }: PluginPageProps) {
           {contacts.length === 0 ? (
             <EmptyState
               title="No contacts yet"
+              icon={ContactIcon}
               description="Add people, then link them to companies."
               action={<Button type="button" onClick={() => setCreate("contact")}>+ Add contact</Button>}
             />
@@ -414,8 +405,13 @@ function CrmList({ context }: PluginPageProps) {
               columns={[
                 { key: "name", header: "Contact" },
                 { key: "email", header: "Email" },
-                { key: "roles", header: "Company roles" },
-                { key: "lifecycle", header: "Lifecycle", render: (value) => <StatusBadge label={String(value)} status="info" /> },
+                { key: "roles", header: "Company roles", render: (value) => value === "—" ? <Pill tone="warn" size="sm" dot>No company</Pill> : String(value) },
+                { key: "lifecycle", header: "Lifecycle", render: (value, row) => (
+                  <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                    <LifecyclePill lifecycle={String(value)} />
+                    {(row as unknown as Contact).leadScore ? <BandPill band={leadBandOf((row as unknown as Contact).leadScore!)} /> : null}
+                  </span>
+                ) },
                 {
                   key: "id",
                   header: "",
@@ -442,6 +438,7 @@ function CrmList({ context }: PluginPageProps) {
           {deals.length === 0 ? (
             <EmptyState
               title="No deals yet"
+              icon={Briefcase}
               description="Track opportunities across your sales stages."
               action={<Button type="button" onClick={() => setCreate("deal")}>+ Add deal</Button>}
             />
@@ -453,15 +450,15 @@ function CrmList({ context }: PluginPageProps) {
                 const currency = stageDeals[0]?.currency ?? "ZAR";
                 return {
                   id: stage.id,
-                  title: stage.name,
+                  title: stage.kind === "open" ? stage.name : `${stage.name} (${stage.kind === "won" ? "won" : "lost"})`,
                   meta: `${stageDeals.length} · ${formatMinor(amount, currency)}`,
                   children: stageDeals.length === 0
-                    ? <p style={{ margin: 0, fontSize: 12, color: "var(--muted-foreground)" }}>Empty</p>
+                    ? <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Empty</p>
                     : stageDeals.map((deal) => (
                       <PipelineCard
                         key={deal.id}
                         title={deal.title}
-                        subtitle={`${formatMinor(deal.amountMinor, deal.currency)} · ${contactNameOf(deal.contactId)}`}
+                        subtitle={`${deal.amountMinor > 0 ? formatMinor(deal.amountMinor, deal.currency) : "No amount"} · ${contactNameOf(deal.contactId)}`}
                         onClick={() => setDetail({ kind: "deal", id: deal.id })}
                         footer={(
                           <Select
@@ -496,6 +493,7 @@ function CrmList({ context }: PluginPageProps) {
           {sequences.length === 0 ? (
             <EmptyState
               title="No sequences yet"
+              icon={Workflow}
               description="Create a sequence, then enroll contacts from their client workspace."
               action={<Button type="button" onClick={() => setCreate("sequence")}>+ Add sequence</Button>}
             />
@@ -503,7 +501,8 @@ function CrmList({ context }: PluginPageProps) {
             <DataTable
               columns={[
                 { key: "name", header: "Sequence" },
-                { key: "completionMode", header: "Completion", render: (value) => <StatusBadge label={String(value)} status="pending" /> },
+                { key: "completionMode", header: "Completion", render: (value) => <Pill>{String(value).replace(/_/g, " ")}</Pill> },
+                { key: "delivery", header: "Due steps", render: (_value, row) => <SequenceDelivery sequence={row as unknown as Sequence} /> },
                 {
                   key: "id",
                   header: "",
@@ -530,6 +529,7 @@ function CrmList({ context }: PluginPageProps) {
           {products.length === 0 ? (
             <EmptyState
               title="No products yet"
+              icon={Package}
               description="Add the products and services you sell, then reference them in deals and invoices."
               action={<Button type="button" onClick={() => setCreate("product")}>+ Add product</Button>}
             />
@@ -539,7 +539,7 @@ function CrmList({ context }: PluginPageProps) {
                 { key: "name", header: "Product" },
                 { key: "description", header: "Description" },
                 { key: "price", header: "Price", render: (_value, row) => formatMinor((row as unknown as Product).unitAmountMinor, (row as unknown as Product).currency) },
-                { key: "isActive", header: "Status", render: (value) => <StatusBadge label={value ? "Active" : "Inactive"} status={value ? "ok" : "info"} /> },
+                { key: "isActive", header: "Status", render: (value) => <Pill tone={value ? "ok" : "neutral"} dot>{value ? "Active" : "Inactive"}</Pill> },
               ]}
               rows={products.map((row) => ({ ...row, price: "" }))}
               emptyMessage="No products match."
@@ -760,13 +760,13 @@ function CrmList({ context }: PluginPageProps) {
         {detailDeal ? (
           <>
             <KeyValueList pairs={[
-              { label: "Amount", value: formatMinor(detailDeal.amountMinor, detailDeal.currency) },
-              { label: "Stage", value: stageName(detailDeal.stageId) },
+              { label: "Amount", value: detailDeal.amountMinor > 0 ? formatMinor(detailDeal.amountMinor, detailDeal.currency) : <Pill tone="warn" size="sm" dot>No amount</Pill> },
+              { label: "Stage", value: <StagePill name={stageName(detailDeal.stageId)} kind={stages.find((stage) => stage.id === detailDeal.stageId)?.kind ?? "open"} /> },
               { label: "Contact", value: contactNameOf(detailDeal.contactId) },
               { label: "Company", value: accountName(detailDeal.accountId) },
             ]} />
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)" }}>Activity</div>
-            <Timeline items={timeline} />
+            <div style={{ fontSize: 12, fontWeight: 600, color: tokens.muted }}>Activity</div>
+            <ActivityTimeline items={timeline} />
             <Field label="Move stage">
               <Select
                 value={detailDeal.stageId}
@@ -781,16 +781,8 @@ function CrmList({ context }: PluginPageProps) {
         {detailSequence ? (
           <>
             <KeyValueList pairs={[
-              { label: "Completion", value: <StatusBadge label={detailSequence.completionMode} status="pending" /> },
-              { label: "Due steps", value: detailSequence.delivery === "email" ? "Sent as email" : "Open an issue" },
-              ...(detailSequence.delivery === "email"
-                ? [{
-                  label: "Email approval",
-                  value: detailSequence.emailApproved
-                    ? <StatusBadge label="Approved" status="ok" />
-                    : <StatusBadge label="Waiting for approval" status="pending" />,
-                }]
-                : []),
+              { label: "Completion", value: <Pill>{detailSequence.completionMode.replace(/_/g, " ")}</Pill> },
+              { label: "Due steps", value: <SequenceDelivery sequence={detailSequence} /> },
             ]} />
             {detailSequence.delivery === "email" && !detailSequence.emailApproved ? (
               <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted }}>
@@ -815,83 +807,16 @@ function CrmList({ context }: PluginPageProps) {
   );
 }
 
-function Timeline({ items }: { items: Activity[] }) {
-  if (items.length === 0) {
-    return <p style={{ margin: 0, fontSize: 13, color: "var(--muted-foreground)" }}>No activity yet.</p>;
-  }
-  return (
-    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
-      {items.map((item) => (
-        <li key={item.id} style={{ display: "grid", gap: 2, padding: "8px 10px", borderRadius: 8, background: "var(--secondary)", fontSize: 13 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{ACTIVITY_LABELS[item.kind] ?? item.kind}</span>
-            <span style={{ color: "var(--muted-foreground)", fontSize: 11 }}>{new Date(item.createdAt).toLocaleString()}</span>
-          </div>
-          <div style={{ color: "var(--foreground)", lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{item.body}</div>
-          {item.threadId ? (
-            <a
-              href={`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(item.threadId)}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{ fontSize: 12, color: "var(--muted-foreground)", width: "fit-content" }}
-            >
-              Open in Gmail
-            </a>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  );
+/** How due steps go out, and whether email is approved yet. */
+function SequenceDelivery({ sequence }: { sequence: Sequence }) {
+  if (sequence.delivery !== "email") return <Pill tone="info" icon={Workflow}>Opens an issue</Pill>;
+  return sequence.emailApproved
+    ? <Pill tone="ok" icon={MailCheck} dot>Email · approved</Pill>
+    : <Pill tone="warn" dot>Email · awaiting approval</Pill>;
 }
 
-function AttentionCard({ title, empty, items }: {
-  title: string;
-  empty: string;
-  items: Array<{ id: string; label: string; onClick: () => void }>;
-}) {
-  return (
-    <div style={{
-      display: "grid",
-      gap: 8,
-      padding: 14,
-      borderRadius: 12,
-      border: "1px solid var(--border)",
-      background: "var(--card)",
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted-foreground)", textTransform: "uppercase", letterSpacing: "0.02em" }}>
-        {title}
-      </div>
-      {items.length === 0 ? (
-        <p style={{ margin: 0, fontSize: 13, color: "var(--muted-foreground)" }}>{empty}</p>
-      ) : (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
-          {items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                onClick={item.onClick}
-                style={{
-                  appearance: "none",
-                  border: "1px solid var(--border)",
-                  background: "var(--secondary)",
-                  color: "var(--foreground)",
-                  borderRadius: 8,
-                  padding: "8px 10px",
-                  width: "100%",
-                  textAlign: "left",
-                  fontSize: 13,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                {item.label}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+function leadBandOf(score: LeadScore): string {
+  return leadBand(score);
 }
 
 function OpenLink({ to, label, text = "Open" }: { to: string; label?: string; text?: string }) {
@@ -1203,13 +1128,16 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
           </>
         )}
       />
-      {message ? <StatusLine>{message}</StatusLine> : null}
+      <PageMessage message={message || undefined} />
+
+      <WorkspaceKpis company={company} contact={contact} deals={deals} contacts={contacts} activities={data.activities ?? []} score={score?.jev ?? contact?.leadScore ?? null} />
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 12 }}>
         {WORK_SOURCES.map((source) => (
           <WorkCard
             key={source.tab}
             label={source.label}
+            module={source.tab}
             state={summaries[source.tab]}
             link={navigation.linkProps(withClientParam(source.path, client))}
           />
@@ -1222,8 +1150,9 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
           {contact ? <ContactDetails contact={contact} onSave={saveDetails} /> : null}
 
           {company ? (
-            <Section
+            <SectionCard
               title={`Contacts (${contacts.length})`}
+              icon={Users}
               actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("add-contact")}>+ Add contact</Button>}
             >
               {contacts.length === 0 ? (
@@ -1245,12 +1174,13 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                   emptyMessage="No contacts."
                 />
               )}
-            </Section>
+            </SectionCard>
           ) : null}
 
           {contact ? (
-            <Section
+            <SectionCard
               title={`Companies (${companies.length})`}
+              icon={Building2}
               actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("link-company")}>Link to company</Button>}
             >
               {companies.length === 0 ? (
@@ -1260,7 +1190,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                   columns={[
                     { key: "name", header: "Company" },
                     { key: "roleLabel", header: "Role" },
-                    { key: "lifecycle", header: "Lifecycle", render: (value) => <StatusBadge label={String(value)} status={lifecycleStatus(String(value))} /> },
+                    { key: "lifecycle", header: "Lifecycle", render: (value) => <LifecyclePill lifecycle={String(value)} /> },
                     {
                       key: "id",
                       header: "",
@@ -1272,11 +1202,12 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                   emptyMessage="No companies."
                 />
               )}
-            </Section>
+            </SectionCard>
           ) : null}
 
-          <Section
+          <SectionCard
             title={`Deals (${deals.length})`}
+            icon={Briefcase}
             actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("deal")}>+ Deal</Button>}
           >
             {deals.length === 0 ? (
@@ -1286,6 +1217,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                 columns={[
                   { key: "title", header: "Deal" },
                   { key: "amount", header: "Amount" },
+                  { key: "stageKind", header: "Status", render: (value) => <StagePill name={STAGE_WORD[String(value)] ?? String(value)} kind={String(value)} size="sm" /> },
                   ...(company ? [{ key: "contactName", header: "Contact" }] : []),
                   {
                     key: "stageId",
@@ -1314,11 +1246,11 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                 emptyMessage="No deals."
               />
             )}
-          </Section>
+          </SectionCard>
         </div>
 
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          <Section title="Activity">
+          <SectionCard title="Activity" icon={ActivityIcon} subtitle="Emails, notes and deal moves, newest first.">
             <Form onSubmit={(event) => {
               event.preventDefault();
               void run(async () => {
@@ -1336,15 +1268,15 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                 <Button type="submit" variant="secondary" disabled={!note.trim()}>Log note</Button>
               </div>
             </Form>
-            <Timeline items={data.activities ?? []} />
-          </Section>
+            <ActivityTimeline items={data.activities ?? []} limit={12} />
+          </SectionCard>
 
           {contact ? (
-            <Section title="Contact tools">
+            <SectionCard title="Contact tools" icon={Target}>
               {contact.emailStatus && contact.emailStatus !== "ok" ? (
-                <StatusBadge label={contact.emailStatus === "bounced" ? "Email bounced" : "Unsubscribed"} status="error" />
+                <Pill tone={contact.emailStatus === "bounced" ? "bad" : "warn"} dot>{contact.emailStatus === "bounced" ? "Email bounced" : "Unsubscribed"}</Pill>
               ) : null}
-              {(score?.jev ?? contact.leadScore) ? <LeadScoreCard score={(score?.jev ?? contact.leadScore)!} /> : null}
+              {(score?.jev ?? contact.leadScore) ? <LeadScoreCard score={(score?.jev ?? contact.leadScore)!} when={formatDate((score?.jev ?? contact.leadScore)!.scoredAt)} /> : null}
               <div style={{ display: "grid", gap: 8 }}>
                 <Button
                   type="button"
@@ -1375,10 +1307,10 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                   </div>
                 </Form>
               )}
-            </Section>
+            </SectionCard>
           ) : null}
 
-          <Section title="Human-owned fields">
+          <SectionCard title="Human-owned fields" icon={ShieldCheck}>
             <Muted>Agents cannot overwrite these fields once they have a value.</Muted>
             <Form onSubmit={(event) => {
               event.preventDefault();
@@ -1395,7 +1327,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
                 <Button type="submit" variant="secondary">Save ownership</Button>
               </div>
             </Form>
-          </Section>
+          </SectionCard>
         </div>
       </div>
 
@@ -1531,8 +1463,9 @@ function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave
   }
 
   return (
-    <Section
+    <SectionCard
       title="Details"
+      icon={Building2}
       actions={editing ? undefined : <Button type="button" variant="secondary" style={smallButton} onClick={startEdit}>Edit</Button>}
     >
       {editing ? (
@@ -1560,13 +1493,13 @@ function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave
         <KeyValueList pairs={[
           { label: "Name", value: company.name },
           { label: "Domain", value: company.domain ?? "—" },
-          { label: "Lifecycle", value: <StatusBadge label={company.lifecycle} status={lifecycleStatus(company.lifecycle)} /> },
+          { label: "Lifecycle", value: <LifecyclePill lifecycle={company.lifecycle} /> },
           { label: "Currency", value: company.currency },
           { label: "Tags", value: company.tags.join(", ") || "—" },
           { label: "Human-owned", value: company.humanOwned.join(", ") || "—" },
         ]} />
       )}
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -1613,8 +1546,9 @@ function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave
     : "—";
 
   return (
-    <Section
+    <SectionCard
       title="Details"
+      icon={UserRound}
       actions={editing ? undefined : <Button type="button" variant="secondary" style={smallButton} onClick={startEdit}>Edit</Button>}
     >
       {editing ? (
@@ -1652,13 +1586,13 @@ function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave
           { label: "Name", value: contact.name },
           { label: "Emails", value: contact.emails.join(", ") || "—" },
           { label: "Phones", value: contact.phones.join(", ") || "—" },
-          { label: "Lifecycle", value: <StatusBadge label={contact.lifecycle} status={lifecycleStatus(contact.lifecycle)} /> },
-          { label: "Next action", value: nextAction },
+          { label: "Lifecycle", value: <LifecyclePill lifecycle={contact.lifecycle} /> },
+          { label: "Next action", value: contact.nextActionKind ? <Pill tone={dueTone(contact.nextActionDueAt)} icon={Clock}>{nextAction}</Pill> : nextAction },
           { label: "Tags", value: contact.tags.join(", ") || "—" },
           { label: "Human-owned", value: contact.humanOwned.join(", ") || "—" },
         ]} />
       )}
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -1679,35 +1613,12 @@ function EditButtons({ saving, onCancel }: { saving: boolean; onCancel: () => vo
   );
 }
 
-function LeadScoreCard({ score }: { score: LeadScore }) {
-  const band = leadBand(score);
-  return (
-    <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <strong style={{ fontSize: 13 }}>Lead score</strong>
-        <StatusBadge label={band} status={band === "hot" ? "ok" : band === "warm" ? "warning" : "info"} />
-      </div>
-      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 12 }}>
-        {LEAD_DIMENSIONS.map((dimension) => (
-          <li key={dimension} style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: tokens.muted }}>{LEAD_DIMENSION_LABELS[dimension]}</span>
-            <span>{leadLevelLabel(dimension, score[dimension])} <span style={{ color: tokens.muted }}>({score[dimension].toFixed(1)}/3)</span></span>
-          </li>
-        ))}
-      </ul>
-      <span style={{ fontSize: 11.5, color: tokens.muted }}>
-        Jev, {Math.round(score.confidence * 100)}% sure · {formatDate(score.scoredAt)}
-      </span>
-    </div>
-  );
-}
-
 function ScoreCard({ score }: { score: ScoreResult }) {
   return (
-    <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <strong style={{ fontSize: 20 }}>{score.total}<span style={{ fontSize: 12, color: tokens.muted }}>/100</span></strong>
-        <StatusBadge label={score.band} status={score.band === "hot" ? "ok" : score.band === "warm" ? "warning" : "info"} />
+    <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <strong style={{ fontSize: 20, fontVariantNumeric: "tabular-nums" }}>{score.total}<span style={{ fontSize: 12, color: tokens.muted }}>/100</span></strong>
+        <BandPill band={score.band} />
       </div>
       {score.parts.length > 0 ? (
         <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 12 }}>
@@ -1724,8 +1635,9 @@ function ScoreCard({ score }: { score: ScoreResult }) {
   );
 }
 
-function WorkCard({ label, state, link }: {
+function WorkCard({ label, module, state, link }: {
   label: string;
+  module: string;
   state: SummaryState;
   link: { href?: string; onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void };
 }) {
@@ -1747,11 +1659,15 @@ function WorkCard({ label, state, link }: {
         boxShadow: "0 1px 2px color-mix(in oklab, black 4%, transparent)",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>{label}</span>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>Open →</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <IconBadge icon={moduleAccent(module).icon} accent={moduleAccent(module)} size="sm" />
+          <span style={{ fontSize: 13.5, fontWeight: 650 }}>{label}</span>
+        </span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: tokens.primary }}>Open →</span>
       </div>
       {state.status === "loading" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>Loading…</span> : null}
+      {state.status === "error" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>No summary yet. Open to see this client's work.</span> : null}
       {state.status === "ok" ? (
         <>
           {state.summary.headline ? (
@@ -1770,9 +1686,9 @@ function WorkCard({ label, state, link }: {
                     fontSize: 15,
                     fontWeight: 650,
                     fontVariantNumeric: "tabular-nums",
-                    color: stat.tone === "bad" ? tokens.destructive : tokens.fg,
+                    color: stat.tone === "bad" ? tone("bad").fg : tokens.fg,
                   }}>
-                    {stat.tone ? <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: TONE_DOT[stat.tone] }} /> : null}
+                    {stat.tone ? <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: tone(stat.tone).solid }} /> : null}
                     {stat.value}
                   </dd>
                 </div>
@@ -1784,12 +1700,6 @@ function WorkCard({ label, state, link }: {
     </a>
   );
 }
-
-const TONE_DOT: Record<"ok" | "warn" | "bad", string> = {
-  ok: "#22c55e",
-  warn: "#f59e0b",
-  bad: tokens.destructive,
-};
 
 function initialSummaries(): Record<WorkTab, SummaryState> {
   return {
@@ -1864,39 +1774,61 @@ function asClientSummary(body: unknown): ClientSummary | null {
 
 /** Same frame as `Page`, without its header: the workspace bar is the header. */
 function WorkspaceShell({ children }: { children: ReactNode }) {
-  return <PageFrame>{children}</PageFrame>;
+  return <PageFrame accent="crm">{children}</PageFrame>;
 }
 
-function StatusLine({ children }: { children: ReactNode }) {
-  return (
-    <p
-      role="status"
-      style={{
-        margin: 0,
-        fontSize: 13,
-        padding: "10px 14px",
-        borderRadius: 10,
-        border: `1px solid ${tokens.border}`,
-        background: tokens.secondary,
-        color: tokens.secondaryFg,
-        lineHeight: 1.45,
-        overflowWrap: "anywhere",
-      }}
-    >
-      {children}
-    </p>
-  );
-}
+const STAGE_WORD: Record<string, string> = { open: "Open", won: "Won", lost: "Lost" };
 
-function Muted({ children }: { children: ReactNode }) {
-  return <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.45 }}>{children}</p>;
-}
-
-function lifecycleStatus(lifecycle: string): "ok" | "warning" | "error" | "info" | "pending" {
-  if (lifecycle === "customer") return "ok";
-  if (lifecycle === "prospect") return "pending";
-  if (lifecycle === "churned") return "error";
+/** Overdue next actions are bad, due within two days warn, later ones scheduled. */
+function dueTone(due: string | null, now = Date.now()): "bad" | "warn" | "info" {
+  const t = due ? Date.parse(due) : Number.NaN;
+  if (Number.isNaN(t)) return "info";
+  if (t < now - 86_400_000) return "bad";
+  if (t < now + 2 * 86_400_000) return "warn";
   return "info";
+}
+
+/** The KPI row at the top of a client workspace. */
+function WorkspaceKpis({ company, contact, deals, contacts, activities, score }: {
+  company: WorkspaceCompany | null;
+  contact: WorkspaceContact | null;
+  deals: WorkspaceDeal[];
+  contacts: Array<{ id: string }>;
+  activities: Activity[];
+  score: LeadScore | null;
+}) {
+  const currency = company?.currency ?? deals[0]?.currency ?? "ZAR";
+  const open = deals.filter((deal) => deal.stageKind === "open");
+  const won = deals.filter((deal) => deal.stageKind === "won");
+  const openAmount = open.filter((deal) => deal.currency === currency).reduce((sum, deal) => sum + deal.amountMinor, 0);
+  const wonAmount = won.filter((deal) => deal.currency === currency).reduce((sum, deal) => sum + deal.amountMinor, 0);
+  const last = activities.map((item) => Date.parse(item.createdAt)).filter((t) => !Number.isNaN(t)).sort((a, b) => b - a)[0];
+  const quietDays = last ? Math.floor((Date.now() - last) / 86_400_000) : null;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: fluidColumns(150), gap: 10 }}>
+      <KpiCard size="sm" label="Open deals" value={open.length} hint={open.length ? formatMinor(openAmount, currency) : "Nothing open"} icon={Funnel} tone={open.length ? "neutral" : "neutral"} />
+      <KpiCard size="sm" label="Won" value={won.length ? formatMinor(wonAmount, currency) : "—"} tone={won.length ? "ok" : "neutral"} hint={`${won.length} ${won.length === 1 ? "deal" : "deals"}`} icon={Target} />
+      <KpiCard
+        size="sm"
+        label="Last activity"
+        value={last ? relativeTime(last) ?? "—" : "Never"}
+        tone={quietDays === null || quietDays > 30 ? "warn" : "neutral"}
+        hint={quietDays === null ? "Log a note or email" : quietDays > 30 ? "Quiet for a month" : `${activities.length} logged`}
+        icon={Clock}
+      />
+      {company ? <KpiCard size="sm" label="Contacts" value={contacts.length} tone={contacts.length ? "neutral" : "warn"} hint={contacts.length ? "Linked people" : "Add a contact"} icon={Users} /> : null}
+      {contact ? (
+        <KpiCard
+          size="sm"
+          label="Lead score"
+          value={score ? `${Math.round(((score.fit + score.intent + score.urgency) / 9) * 100)}%` : "—"}
+          tone={score ? (leadBand(score) === "hot" ? "ok" : "neutral") : "neutral"}
+          hint={score ? `${leadBand(score) === "hot" ? "Hot" : leadBand(score) === "warm" ? "Warm" : "Cold"} lead` : "Not scored yet"}
+          icon={Target}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 /** Splits "a, b; c" into a de-duplicated list. */

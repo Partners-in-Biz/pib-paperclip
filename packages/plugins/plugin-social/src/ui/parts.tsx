@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
-import { StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Select, breakAnywhere, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleAlert, Icon, Info, Pill, Select, TriangleAlert, breakAnywhere, seriesColor, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
+import { ACCOUNT_TONE, DEST_TONE, PLATFORM_MONOGRAM, POST_TONE, platformIndex, toneOf } from "./series.js";
 import type { ClientOption, Snapshot } from "./types.js";
 
 /** Swallow an error that run() already showed. */
@@ -30,43 +30,47 @@ export function fmtDate(value: string | null | undefined, timeZone?: string, wit
   }
 }
 
-const POST_TONE: Record<string, StatusBadgeVariant> = {
-  draft: "pending",
-  review: "warning",
-  approved: "info",
-  scheduled: "info",
-  publishing: "info",
-  published: "ok",
-  partially_published: "warning",
-  failed: "error",
-};
-
-const DEST_TONE: Record<string, StatusBadgeVariant> = {
-  pending: "pending",
-  publishing: "info",
-  retrying: "warning",
-  published: "ok",
-  failed: "error",
-};
-
-const ACCOUNT_TONE: Record<string, StatusBadgeVariant> = {
-  connected: "ok",
-  expiring: "warning",
-  needs_reconnect: "error",
-  disabled: "pending",
-};
-
 export function PostStatus({ status }: { status: string }) {
-  return <StatusBadge label={status.replace("_", " ")} status={POST_TONE[status] ?? "pending"} />;
+  return <Pill tone={toneOf(POST_TONE, status)} dot>{status === "review" ? "in review" : status.replace(/_/g, " ")}</Pill>;
 }
 
 export function DestinationStatus({ status }: { status: string }) {
-  return <StatusBadge label={status} status={DEST_TONE[status] ?? "pending"} />;
+  return <Pill tone={toneOf(DEST_TONE, status)} dot size="sm">{status}</Pill>;
 }
 
 export function AccountStatus({ status }: { status: string }) {
-  const label = status === "needs_reconnect" ? "reconnect" : status;
-  return <StatusBadge label={label} status={ACCOUNT_TONE[status] ?? "pending"} />;
+  const label = status === "needs_reconnect" ? "needs reconnect" : status;
+  return <Pill tone={toneOf(ACCOUNT_TONE, status)} dot>{label}</Pill>;
+}
+
+/** A platform monogram in its categorical colour, e.g. "in" for LinkedIn. */
+export function PlatformBadge({ platform, size = 28 }: { platform: string | null | undefined; size?: number }) {
+  const key = platform ?? "";
+  const color = seriesColor(platformIndex(key));
+  return (
+    <span
+      role="img"
+      aria-label={platformLabel(platform)}
+      title={platformLabel(platform)}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: Math.round(size / 3.5),
+        display: "inline-grid",
+        placeItems: "center",
+        flexShrink: 0,
+        background: `color-mix(in srgb, ${color} 14%, transparent)`,
+        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 34%, transparent)`,
+        color,
+        fontSize: Math.round(size * 0.4),
+        fontWeight: 750,
+        letterSpacing: "-0.02em",
+        lineHeight: 1,
+      }}
+    >
+      {PLATFORM_MONOGRAM[key] ?? (key.slice(0, 1).toUpperCase() || "?")}
+    </span>
+  );
 }
 
 export function Card({ children, style }: { children: ReactNode; style?: CSSProperties }) {
@@ -75,6 +79,12 @@ export function Card({ children, style }: { children: ReactNode; style?: CSSProp
       {children}
     </div>
   );
+}
+
+/** Selected / unselected look for a filter button. */
+export function chipStyle(selected: boolean) {
+  const a = tone("accent");
+  return selected ? { background: a.soft, color: a.fg, borderColor: a.border } : undefined;
 }
 
 export function Muted({ children, style }: { children: ReactNode; style?: CSSProperties }) {
@@ -89,11 +99,12 @@ export function SmallButton(props: Parameters<typeof Button>[0]) {
   return <Button type="button" variant="secondary" {...props} style={{ height: 28, fontSize: 12, padding: "0 10px", ...(props.style ?? {}) }} />;
 }
 
-export function Banner({ tone, title, children }: { tone: "warn" | "error" | "info"; title: string; children?: ReactNode }) {
-  const color = tone === "error" ? "var(--destructive)" : tone === "warn" ? "#b45309" : tokens.muted;
+export function Banner({ tone: t, title, children }: { tone: "warn" | "error" | "info"; title: string; children?: ReactNode }) {
+  const colors = tone(t === "error" ? "bad" : t);
+  const glyph = t === "error" ? CircleAlert : t === "warn" ? TriangleAlert : Info;
   return (
-    <div role="status" style={{ display: "grid", gap: 6, padding: "12px 14px", borderRadius: 12, border: `1px solid ${tokens.border}`, borderLeft: `3px solid ${color}`, background: tokens.card }}>
-      <strong style={{ fontSize: 13 }}>{title}</strong>
+    <div role="status" style={{ display: "grid", gap: 6, padding: "12px 14px", borderRadius: 12, border: `1px solid ${colors.border}`, borderLeft: `3px solid ${colors.solid}`, background: `linear-gradient(90deg, ${colors.soft}, transparent 60%), ${tokens.card}`, minWidth: 0 }}>
+      <strong style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8, color: tokens.fg }}><Icon icon={glyph} size={15} color={colors.solid} />{title}</strong>
       {children ? <div style={{ fontSize: 12, color: tokens.muted, lineHeight: 1.55 }}>{children}</div> : null}
     </div>
   );

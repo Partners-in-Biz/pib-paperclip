@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
-  MetricCard,
-  StatusBadge,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
@@ -10,6 +8,29 @@ import {
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
+  Banknote,
+  CalendarCheck,
+  ChartColumn,
+  ChartPie,
+  CircleCheck,
+  ColumnChart,
+  DonutChart,
+  FileText,
+  KpiCard,
+  LayoutDashboard,
+  Pill,
+  ProgressBar,
+  ProgressRing,
+  Receipt,
+  SectionCard,
+  Stamp,
+  Sun,
+  TriangleAlert,
+  Users,
+  Bot,
+  Wallet,
+  tone,
+  type ToneInput,
   Button,
   EmptyState,
   Field,
@@ -18,7 +39,6 @@ import {
   Page,
   Section,
   Select,
-  StatRow,
   Tabs,
   ScrollX,
   TextArea,
@@ -29,6 +49,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { costPerRun, costSplit, daysUntil, emp201Month, leaveUsed, runTone, statusTone } from "./series.js";
 
 const PLUGIN_ID = "partnersinbiz.payroll";
 
@@ -246,12 +267,14 @@ function words(value: string): string {
   return value.replace(/_/g, " ");
 }
 
-function runBadge(status: string): "ok" | "warning" | "error" | "info" | "pending" {
-  if (status === "locked") return "ok";
-  if (status === "approved") return "info";
-  if (status === "pending_approval" || status === "calculated" || status === "draft") return "pending";
-  if (status === "cancelled" || status === "reversed") return "warning";
-  return "info";
+/** A toned status pill (see `runTone` / `statusTone`). */
+function StatusPill({ status, label, tone: t }: { status: string; label?: string; tone?: ToneInput }) {
+  const text = label ?? words(status);
+  return <Pill tone={t ?? statusTone(status)} dot size="sm">{text.charAt(0).toUpperCase() + text.slice(1)}</Pill>;
+}
+
+function RunStatus({ status }: { status: string }) {
+  return <StatusPill status={status} tone={runTone(status)} />;
 }
 
 function memberLabel(m: { userId: string; role: string | null; isYou: boolean }): string {
@@ -276,18 +299,21 @@ function download(result: { url?: string | null; content?: string | null; fileNa
 
 const small = { height: 28, fontSize: 12 } as const;
 
-function Notice({ tone, children }: { tone: "warn" | "info"; children: ReactNode }) {
+function Notice({ tone: t, children }: { tone: "warn" | "info" | "bad"; children: ReactNode }) {
+  const colors = t === "info" ? null : tone(t);
   return (
     <div
-      role={tone === "warn" ? "alert" : "status"}
+      role={t === "info" ? "status" : "alert"}
       style={{
         fontSize: 13,
         lineHeight: 1.5,
         padding: "10px 14px",
         borderRadius: 10,
-        border: `1px solid ${tone === "warn" ? "color-mix(in oklab, var(--destructive) 45%, transparent)" : tokens.border}`,
-        background: tone === "warn" ? "color-mix(in oklab, var(--destructive) 8%, transparent)" : tokens.secondary,
+        border: `1px solid ${colors ? colors.border : tokens.border}`,
+        borderLeft: `3px solid ${colors ? colors.solid : tokens.border}`,
+        background: colors ? colors.soft : tokens.secondary,
         color: tokens.fg,
+        overflowWrap: "anywhere",
       }}
     >
       {children}
@@ -316,7 +342,7 @@ export function PayrollPage({ context }: PluginPageProps) {
 function ModuleOff() {
   const hostNavigation = useHostNavigation();
   return (
-    <Page title="Payroll" description="South African payroll for your own staff.">
+    <Page title="Payroll" description="South African payroll for your own staff." accent="payroll">
       <Notice tone="info">
         This module is switched off for this company. Turn it on in <a {...hostNavigation.linkProps("/setup")}>Setup</a>.
       </Notice>
@@ -389,16 +415,17 @@ function PayrollWorkspace({ context }: PluginPageProps) {
       title="Payroll"
       description="South African payroll for your own staff: pay runs with separate approval, payslips, leave and SARS evidence packs. Nothing is paid or submitted automatically."
       message={message || undefined}
+      accent="payroll"
     >
       {banners}
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview" },
-          { id: "employees", label: `Employees (${s?.employees.length ?? 0})` },
-          { id: "runs", label: "Pay runs" },
-          { id: "payslips", label: "Payslips" },
-          { id: "leave", label: `Leave${s?.counts.pendingLeave ? ` (${s.counts.pendingLeave})` : ""}` },
-          { id: "statutory", label: "Statutory" },
+          { id: "overview", label: "Overview", icon: LayoutDashboard },
+          { id: "employees", label: "Employees", icon: Users, count: s?.employees.length ?? null, countTone: s && (s.counts.withoutTerms || s.counts.withoutBank || s.counts.withoutTax) ? "warn" : undefined },
+          { id: "runs", label: "Pay runs", icon: Banknote, count: s?.openRuns.filter((r) => r.status === "pending_approval").length || null, countTone: "warn" },
+          { id: "payslips", label: "Payslips", icon: FileText },
+          { id: "leave", label: "Leave", icon: Sun, count: s?.counts.pendingLeave || null, countTone: "warn" },
+          { id: "statutory", label: "Statutory", icon: Stamp },
         ]}
         active={tab}
         onChange={(id) => {
@@ -407,7 +434,7 @@ function PayrollWorkspace({ context }: PluginPageProps) {
         }}
       />
       {!s ? <p style={{ fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
-      {s && tab === "overview" ? <OverviewTab s={s} run={run} openRun={(id) => { setTab("runs"); setOpenRunId(id); }} /> : null}
+      {s && tab === "overview" ? <OverviewTab s={s} run={run} openRun={(id) => { setTab("runs"); setOpenRunId(id); }} go={(id) => { setTab(id); setOpenRunId(null); }} /> : null}
       {s && tab === "employees" ? <EmployeesTab s={s} run={run} /> : null}
       {s && tab === "runs" ? <RunsTab s={s} run={run} openRunId={openRunId} setOpenRunId={setOpenRunId} setMessage={setMessage} /> : null}
       {s && tab === "payslips" ? <PayslipsTab run={run} setMessage={setMessage} /> : null}
@@ -423,44 +450,150 @@ type RunFn = <T>(work: () => Promise<T>, success?: string) => Promise<T | null>;
 // Overview
 // ---------------------------------------------------------------------------
 
-function OverviewTab({ s, run, openRun }: { s: Snapshot; run: RunFn; openRun: (id: string) => void }) {
+/** Short rand for chart axes and tooltips: R 36.1k. */
+function randShort(minor: number): string {
+  const v = Math.abs(minor) / 100;
+  const sign = minor < 0 ? "-" : "";
+  if (v >= 1_000_000) return `${sign}R ${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+  if (v >= 1_000) return `${sign}R ${(v / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${sign}R ${Math.round(v)}`;
+}
+
+function OverviewTab({ s, run, openRun, go }: { s: Snapshot; run: RunFn; openRun: (id: string) => void; go: (tab: TabId) => void }) {
   const hireOptions = usePluginAction("payroll.hire-options");
   const startHire = usePluginAction("payroll.start-hire");
+  const loadEmp201 = usePluginAction("payroll.emp201");
+  const [e201, setE201] = useState<Emp201View | null>(null);
+  const e201Month = emp201Month(s.today);
+  useEffect(() => {
+    let live = true;
+    loadEmp201({ month: e201Month }).then((r) => { if (live) setE201((r as { emp201: Emp201View }).emp201); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [e201Month]);
+
   const last = s.lastLocked;
   const next = s.openRuns[0] ?? null;
-  const steps: string[] = [];
-  if (!s.settings.saved) steps.push("Save the Payroll settings (employer details, PAYE, UIF and SDL numbers, encryption key, private storage).");
-  if (!s.counts.employees) steps.push("Add your employees on the Employees tab.");
-  if (s.counts.withoutTerms) steps.push(`${s.counts.withoutTerms} employee(s) need employment terms (salary and pay frequency).`);
-  if (s.counts.withoutBank) steps.push(`${s.counts.withoutBank} employee(s) have no bank details (needed for the net pay file).`);
-  if (s.counts.withoutTax) steps.push(`${s.counts.withoutTax} employee(s) have no tax reference number (needed for the IRP5).`);
-  if (!s.settings.defaultApproverSet) steps.push("Choose a default approver in the Payroll settings (someone other than the person who prepares runs).");
+  const series = costPerRun(s.runs, 12);
+  const prevRun = series.length > 1 ? series[series.length - 2] : undefined;
+  const lastCost = series.length ? series[series.length - 1]!.employerCostMinor : null;
+  const costDelta = lastCost != null && prevRun && prevRun.employerCostMinor ? Math.round(((lastCost - prevRun.employerCostMinor) / prevRun.employerCostMinor) * 100) : null;
+  const active = s.employees.filter((e) => e.status === "active").length;
+  const steps: Array<{ text: string; tone: "warn" | "bad" | "info"; tab?: TabId }> = [];
+  if (!s.settings.saved) steps.push({ text: "Save the Payroll settings (employer details, PAYE, UIF and SDL numbers, encryption key, private storage).", tone: "bad" });
+  if (!s.counts.employees) steps.push({ text: "Add your employees on the Employees tab.", tone: "info", tab: "employees" });
+  if (s.counts.withoutTerms) steps.push({ text: `${s.counts.withoutTerms} employee(s) need employment terms (salary and pay frequency).`, tone: "warn", tab: "employees" });
+  if (s.counts.withoutBank) steps.push({ text: `${s.counts.withoutBank} employee(s) have no bank details (needed for the net pay file).`, tone: "warn", tab: "employees" });
+  if (s.counts.withoutTax) steps.push({ text: `${s.counts.withoutTax} employee(s) have no tax reference number (needed for the IRP5).`, tone: "warn", tab: "employees" });
+  if (s.counts.pendingLeave) steps.push({ text: `${s.counts.pendingLeave} leave request(s) waiting for a decision.`, tone: "warn", tab: "leave" });
+  if (!s.settings.defaultApproverSet) steps.push({ text: "Choose a default approver in the Payroll settings (someone other than the person who prepares runs).", tone: "warn" });
+  const worst = steps.some((x) => x.tone === "bad") ? "bad" : steps.some((x) => x.tone === "warn") ? "warn" : "info";
+
+  const e201Days = e201 ? daysUntil(s.today, e201.dueDate) : null;
+  const e201Tone = e201 && e201.totalPayableMinor > 0 && e201Days != null ? (e201Days < 0 ? "neutral" : e201Days <= 7 ? "warn" : "info") : "neutral";
+  const monthStart = `${e201Month}-01`;
+  const e201Elapsed = e201 ? Math.min(1, Math.max(0, daysUntil(monthStart, s.today) / Math.max(1, daysUntil(monthStart, e201.dueDate)))) : 0;
+  const split = last ? costSplit(last.totals) : [];
+
   return (
-    <div style={{ display: "grid", gap: 16 }}>
-      <StatRow>
-        <MetricCard label="Employees" value={s.counts.employees} />
-        <MetricCard label="Monthly basic pay (estimate)" value={rand(s.estimatedMonthlyBasicMinor)} />
-        <MetricCard label="Last run net pay" value={last ? rand(last.totals.netPayMinor) : "—"} />
-        <MetricCard label="Last run cost to company" value={last ? rand(last.totals.employerCostMinor) : "—"} />
-      </StatRow>
-      <Section title="Next pay run">
-        {next ? (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <div style={{ fontSize: 13 }}>
-              <strong>{next.number}</strong> · {next.periodStart} to {next.periodEnd} · paid {next.payDate} · <StatusBadge label={words(next.status)} status={runBadge(next.status)} />
+    <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(150), gap: 10 }}>
+        <KpiCard label="Headcount" value={active} icon={Users} hint={s.counts.employees !== active ? `${s.counts.employees} on record` : "Active employees"} tone={s.counts.withoutTerms ? "warn" : undefined} link={{ href: "?tab=employees", onClick: (e) => { e.preventDefault(); go("employees"); } }} />
+        <KpiCard
+          label="Last run cost to company"
+          value={last ? rand(last.totals.employerCostMinor) : "—"}
+          icon={Wallet}
+          delta={costDelta != null ? `${costDelta > 0 ? "+" : costDelta < 0 ? "−" : ""}${Math.abs(costDelta)}% vs previous run` : null}
+          invert
+          sparkline={series.map((r) => r.employerCostMinor)}
+          hint={last ? last.number : "No locked run yet"}
+        />
+        <KpiCard label="Last run net pay" value={last ? rand(last.totals.netPayMinor) : "—"} icon={Banknote} hint={last ? `Paid ${last.payDate}` : undefined} />
+        <KpiCard label="Monthly basic pay" value={rand(s.estimatedMonthlyBasicMinor)} icon={Receipt} hint="Estimate from current terms" />
+        <KpiCard label="Leave to decide" value={s.counts.pendingLeave} icon={Sun} tone={s.counts.pendingLeave ? "warn" : undefined} hint={s.counts.pendingLeave ? "Waiting for approval" : "Nothing waiting"} link={{ href: "?tab=leave", onClick: (e) => { e.preventDefault(); go("leave"); } }} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(320), gap: 16, alignItems: "start" }}>
+        <SectionCard title="Next pay run" icon={CalendarCheck} tone={next ? (next.status === "pending_approval" ? "warn" : "info") : undefined}>
+          {next ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <strong style={{ fontSize: 15 }}>{next.number}</strong>
+                <RunStatus status={next.status} />
+              </div>
+              <span style={{ fontSize: 13, color: tokens.muted }}>{next.periodStart} to {next.periodEnd} · paid {next.payDate} · {next.totals.employeeCount} staff</span>
+              {next.totals.employerCostMinor ? <span style={{ fontSize: 13 }}>Cost to company <strong style={{ fontVariantNumeric: "tabular-nums" }}>{rand(next.totals.employerCostMinor)}</strong> · net pay {rand(next.totals.netPayMinor)}</span> : null}
+              <div><Button type="button" onClick={() => openRun(next.id)}>Open</Button></div>
             </div>
-            <Button type="button" onClick={() => openRun(next.id)}>Open</Button>
-          </div>
-        ) : (
-          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No open pay run. Start one on the Pay runs tab.</p>
-        )}
-      </Section>
+          ) : (
+            <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No open pay run. Start one on the Pay runs tab.</p>
+          )}
+        </SectionCard>
+
+        <SectionCard title={`EMP201 ${e201Month}`} icon={Stamp} tone={e201Tone === "warn" ? "warn" : undefined} subtitle="PAYE, UIF and SDL from locked runs, less ETI. File it on eFiling.">
+          {e201 ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", minWidth: 0 }}>
+              <ProgressRing value={e201Elapsed} size={84} tone={e201Tone === "neutral" ? undefined : e201Tone} label={`EMP201 for ${e201Month} due ${e201.dueDate}`}>
+                <div style={{ display: "grid", lineHeight: 1.1 }}>
+                  <strong style={{ fontSize: 18 }}>{e201Days != null ? Math.abs(e201Days) : "—"}</strong>
+                  <span style={{ fontSize: 10.5, color: tokens.muted }}>{e201Days != null && e201Days < 0 ? "days ago" : "days left"}</span>
+                </div>
+              </ProgressRing>
+              <div style={{ display: "grid", gap: 4, flex: "1 1 150px", minWidth: 0 }}>
+                <span style={{ fontSize: 12, color: tokens.muted }}>Total payable</span>
+                <strong style={{ fontSize: 20, fontVariantNumeric: "tabular-nums", color: e201.totalPayableMinor > 0 ? tone("warn").fg : tokens.fg }}>{rand(e201.totalPayableMinor)}</strong>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: e201Tone === "neutral" ? tokens.muted : tone(e201Tone).fg }}>Due {e201.dueDate}{e201Days != null && e201Days >= 0 ? ` · in ${e201Days} day${e201Days === 1 ? "" : "s"}` : ""}</span>
+                <span style={{ fontSize: 11.5, color: tokens.muted }}>{e201.runs.length ? `From ${e201.runs.join(", ")}` : "No locked runs this month yet."}</span>
+              </div>
+            </div>
+          ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p>}
+        </SectionCard>
+      </div>
+
       {steps.length ? (
-        <Section title="To do">
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.7 }}>{steps.map((step) => <li key={step}>{step}</li>)}</ul>
-        </Section>
+        <SectionCard title="To do" icon={TriangleAlert} tone={worst} strip={worst === "bad"}>
+          <div style={{ display: "grid", gap: 6 }}>
+            {steps.map((step) => (
+              <div key={step.text} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 10px", borderRadius: 9, border: `1px solid ${tokens.border}`, borderLeft: `3px solid ${tone(step.tone).solid}`, background: tokens.bg, minWidth: 0 }}>
+                <span style={{ flex: "1 1 220px", minWidth: 0, fontSize: 13, lineHeight: 1.45, overflowWrap: "anywhere" }}>{step.text}</span>
+                {step.tab ? <Button type="button" variant="secondary" style={small} onClick={() => go(step.tab!)}>Open</Button> : null}
+              </div>
+            ))}
+          </div>
+        </SectionCard>
       ) : null}
-      <Section title="Payroll Clerk (optional agent)">
+
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(360), gap: 16, alignItems: "start" }}>
+        <SectionCard title="Payroll cost per run" icon={ChartColumn} subtitle="Locked runs, all staff together: what they take home, tax, deductions and employer costs.">
+          <ColumnChart
+            title="Payroll cost per run"
+            data={series.map((r) => ({ label: r.label, title: r.title, values: r.values }))}
+            series={[
+              { key: "net", label: "Net pay", tone: "ok" },
+              { key: "tax", label: "PAYE and UIF", tone: "info" },
+              { key: "deductions", label: "Deductions", tone: "neutral" },
+              { key: "employer", label: "Employer costs", tone: "accent" },
+            ]}
+            height={130}
+            axis="all"
+            formatValue={randShort}
+            emptyText="No locked pay runs yet."
+          />
+        </SectionCard>
+        <SectionCard title="Where the money goes" icon={ChartPie} subtitle={last ? `${last.number}, cost to company.` : "The last locked run."}>
+          {split.length ? (
+            <DonutChart
+              title="Cost split of the last run"
+              size={120}
+              centerValue={randShort(last!.totals.employerCostMinor)}
+              centerLabel="cost"
+              segments={split.map((x) => ({ ...x, ...(x.key === "net" ? { tone: "ok" as const } : {}) }))}
+              formatValue={randShort}
+            />
+          ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No locked pay run yet.</p>}
+        </SectionCard>
+      </div>
+
+      <SectionCard title="Payroll Clerk (optional agent)" icon={Bot}>
         {s.hire?.agent ? (
           <p style={{ margin: 0, fontSize: 13 }}>{s.hire.agent.name} prepares pay runs and checks variances ({s.hire.agent.status}). It never approves runs or sees personal details.</p>
         ) : s.hire?.hire ? (
@@ -480,11 +613,11 @@ function OverviewTab({ s, run, openRun }: { s: Snapshot; run: RunFn; openRun: (i
             </Button>
           </div>
         )}
-      </Section>
+      </SectionCard>
       {s.rules.notes.length ? (
-        <Section title={`Rules ${s.rules.taxYear}: notes`}>
+        <SectionCard title={`Rules ${s.rules.taxYear}: notes`} icon={CircleCheck}>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6, color: tokens.muted }}>{s.rules.notes.map((n) => <li key={n}>{n}</li>)}</ul>
-        </Section>
+        </SectionCard>
       ) : null}
     </div>
   );
@@ -563,11 +696,11 @@ function EmployeesTab({ s, run }: { s: Snapshot; run: RunFn }) {
         <DataTable
           columns={[
             { key: "name", header: "Employee", render: (_v, row) => { const e = row as unknown as EmployeeView; return <div><div style={{ fontWeight: 600 }}>{e.name}</div><div style={{ fontSize: 12, color: tokens.muted }}>{e.employeeNumber}{e.jobTitle ? ` · ${e.jobTitle}` : ""}</div></div>; } },
-            { key: "pay", header: "Pay", render: (_v, row) => { const e = row as unknown as EmployeeView; return e.terms ? <span>{rand(e.terms.rateMinor)} {e.terms.workerCategory === "hourly" ? "/ hour" : `/ ${e.terms.frequency.replace("ly", "")}`}</span> : <StatusBadge label="No terms" status="warning" />; } },
+            { key: "pay", header: "Pay", render: (_v, row) => { const e = row as unknown as EmployeeView; return e.terms ? <span>{rand(e.terms.rateMinor)} {e.terms.workerCategory === "hourly" ? "/ hour" : `/ ${e.terms.frequency.replace("ly", "")}`}</span> : <StatusPill status="pending" label="No terms" />; } },
             { key: "idText", header: "ID / passport" },
             { key: "taxText", header: "Tax number" },
             { key: "bankText", header: "Bank" },
-            { key: "status", header: "Status", render: (v) => <StatusBadge label={String(v)} status={v === "active" ? "ok" : "warning"} /> },
+            { key: "status", header: "Status", render: (v) => <StatusPill status={String(v)} tone={v === "active" ? "ok" : v === "terminated" ? "neutral" : "warn"} /> },
             {
               key: "id",
               header: "Actions",
@@ -856,7 +989,7 @@ function RunsTab({ s, run, openRunId, setOpenRunId, setMessage }: { s: Snapshot;
             { key: "number", header: "Pay run", render: (_v, row) => { const r = row as unknown as RunSummary; return <div><div style={{ fontWeight: 600 }}>{r.number}</div><div style={{ fontSize: 12, color: tokens.muted }}>{r.kind !== "regular" ? `${r.kind} · ` : ""}{r.frequency}</div></div>; } },
             { key: "period", header: "Period" },
             { key: "payDate", header: "Pay date" },
-            { key: "status", header: "Status", render: (v) => <StatusBadge label={words(String(v))} status={runBadge(String(v))} /> },
+            { key: "status", header: "Status", render: (v) => <RunStatus status={String(v)} /> },
             { key: "employees", header: "Staff" },
             { key: "net", header: "Net pay", render: (_v, row) => <Money minor={(row as unknown as RunSummary).totals.netPayMinor} /> },
             { key: "ledgerText", header: "Accounting" },
@@ -1003,7 +1136,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
       <a href="#" onClick={(e) => { e.preventDefault(); back(); }} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none" }}>← All pay runs</a>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 18 }}>{r.number} <StatusBadge label={words(r.status)} status={runBadge(r.status)} /></h2>
+          <h2 style={{ margin: 0, fontSize: 18 }}>{r.number} <RunStatus status={r.status} /></h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: tokens.muted }}>
             {r.kind !== "regular" ? `${r.kind} · ` : ""}{r.frequency} · {r.periodStart} to {r.periodEnd} · paid {r.payDate} · tax year {r.taxYear}
             {r.status === "pending_approval" ? ` · approval ${detail.approvalStatus ?? "requested"}${iPrepared ? " (you prepared it, so someone else approves)" : ""}` : ""}
@@ -1013,15 +1146,20 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{buttons}</div>
       </div>
       {r.warnings.length ? <Notice tone="warn"><ul style={{ margin: 0, paddingLeft: 18 }}>{r.warnings.map((w) => <li key={w}>{w}</li>)}</ul></Notice> : null}
-      <StatRow>
-        <MetricCard label="Gross pay" value={rand(t.grossMinor)} />
-        <MetricCard label="PAYE" value={rand(t.payeMinor)} />
-        <MetricCard label="UIF (both)" value={rand(t.uifEmployeeMinor + t.uifEmployerMinor)} />
-        <MetricCard label="SDL" value={rand(t.sdlMinor)} />
-        <MetricCard label="ETI" value={rand(t.etiMinor)} />
-        <MetricCard label="Net pay" value={rand(t.netPayMinor)} />
-        <MetricCard label="Cost to company" value={rand(t.employerCostMinor)} />
-      </StatRow>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(140), gap: 10 }}>
+        <KpiCard size="sm" label="Gross pay" value={rand(t.grossMinor)} />
+        <KpiCard size="sm" label="PAYE" value={rand(t.payeMinor)} />
+        <KpiCard size="sm" label="UIF (both)" value={rand(t.uifEmployeeMinor + t.uifEmployerMinor)} />
+        <KpiCard size="sm" label="SDL" value={rand(t.sdlMinor)} />
+        <KpiCard size="sm" label="ETI" value={rand(t.etiMinor)} tone={t.etiMinor > 0 ? "ok" : undefined} hint={t.etiMinor > 0 ? "Reduces PAYE payable" : undefined} />
+        <KpiCard size="sm" label="Net pay" value={rand(t.netPayMinor)} />
+        <KpiCard size="sm" label="Cost to company" value={rand(t.employerCostMinor)} />
+      </div>
+      {costSplit(t).length ? (
+        <SectionCard title="Where the money goes" icon={ChartPie} subtitle="This run's cost to company, all staff together.">
+          <DonutChart title="Cost split" size={120} centerValue={randShort(t.employerCostMinor)} centerLabel="cost" segments={costSplit(t).map((x) => ({ ...x, ...(x.key === "net" ? { tone: "ok" as const } : {}) }))} formatValue={randShort} />
+        </SectionCard>
+      ) : null}
       <DataTable
         columns={[
           { key: "name", header: "Employee", render: (_v, row) => { const i = row as unknown as ItemView; return <div><div style={{ fontWeight: 600 }}>{i.name}</div><div style={{ fontSize: 12, color: tokens.muted }}>{i.employeeNumber}{i.bank ? ` · ${i.bank}` : " · no bank details"}</div>{i.error ? <div style={{ fontSize: 12, color: tokens.destructive }}>{i.error}</div> : null}</div>; } },
@@ -1070,7 +1208,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
           <DataTable
             columns={[
               { key: "number", header: "Payslip" },
-              { key: "status", header: "Status", render: (v) => <StatusBadge label={String(v)} status={v === "sent" ? "ok" : v === "failed" ? "error" : "pending"} /> },
+              { key: "status", header: "Status", render: (v) => <StatusPill status={String(v)} /> },
               { key: "emailedTo", header: "Emailed to" },
               { key: "error", header: "Note" },
             ]}
@@ -1222,7 +1360,7 @@ function PayslipsTab({ run, setMessage }: { run: RunFn; setMessage: (m: string) 
         { key: "number", header: "Payslip" },
         { key: "employee", header: "Employee" },
         { key: "payDate", header: "Pay date" },
-        { key: "status", header: "Status", render: (v) => <StatusBadge label={String(v)} status={v === "sent" ? "ok" : v === "failed" ? "error" : v === "ready" ? "info" : "pending"} /> },
+        { key: "status", header: "Status", render: (v) => <StatusPill status={String(v)} /> },
         { key: "emailedTo", header: "Emailed to" },
         {
           key: "id",
@@ -1289,7 +1427,7 @@ function LeaveTab({ s, run }: { s: Snapshot; run: RunFn }) {
               { key: "label", header: "Type" },
               { key: "dates", header: "Dates" },
               { key: "days", header: "Days" },
-              { key: "status", header: "Status", render: (v) => <StatusBadge label={String(v)} status={v === "approved" ? "ok" : v === "pending" ? "pending" : "warning"} /> },
+              { key: "status", header: "Status", render: (v) => <StatusPill status={String(v)} /> },
               {
                 key: "id",
                 header: "",
@@ -1312,20 +1450,27 @@ function LeaveTab({ s, run }: { s: Snapshot; run: RunFn }) {
       </Section>
       <Section title={`Balances on ${data?.asOf ?? s.today} (days)`}>
         {data?.balances.length ? (
-          <DataTable
-            columns={[
-              { key: "name", header: "Employee" },
-              { key: "annual", header: "Annual" },
-              { key: "sick", header: "Sick" },
-              { key: "family", header: "Family resp." },
-              { key: "unpaid", header: "Unpaid taken" },
-            ]}
-            rows={data.balances.map((b) => {
-              const get = (type: string) => b.balances.find((x) => x.type === type);
-              const show = (type: string) => { const x = get(type); return x ? `${days(x.balanceCenti)}${x.pendingCenti ? ` (${days(x.pendingCenti)} pending)` : ""}` : "—"; };
-              return { id: b.employeeId, name: b.name, annual: show("annual"), sick: show("sick"), family: show("family"), unpaid: days(get("unpaid")?.takenCenti ?? 0) };
-            })}
-          />
+          <div style={{ display: "grid", gridTemplateColumns: fluidColumns(260), gap: 12 }}>
+            {data.balances.map((b) => (
+              <div key={b.employeeId} style={{ display: "grid", gap: 10, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.bg, minWidth: 0 }}>
+                <strong style={{ fontSize: 13.5, overflowWrap: "anywhere" }}>{b.name}</strong>
+                {b.balances.filter((x) => x.type !== "unpaid").map((x) => {
+                  const used = leaveUsed(x);
+                  return (
+                    <ProgressBar
+                      key={x.type}
+                      value={used.entitlementCenti ? 1 - used.ratio : 0}
+                      label={x.label}
+                      valueText={`${days(x.balanceCenti)} left${x.pendingCenti ? ` · ${days(x.pendingCenti)} pending` : ""}`}
+                      tone={x.balanceCenti <= 0 ? "bad" : used.ratio >= 0.8 ? "warn" : "ok"}
+                      size="sm"
+                    />
+                  );
+                })}
+                {(() => { const u = b.balances.find((x) => x.type === "unpaid"); return u && u.takenCenti ? <span style={{ fontSize: 12, color: tokens.muted }}>Unpaid leave taken: {days(u.takenCenti)} day{u.takenCenti === 100 ? "" : "s"}</span> : null; })()}
+              </div>
+            ))}
+          </div>
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Add employees to see balances.</p>}
         <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>BCEA minimums: annual leave 21 consecutive days a year (days per week × 3 working days), sick leave 6 weeks' working days per 36 months, family responsibility 3 days a year after 4 months.</p>
       </Section>
@@ -1447,13 +1592,13 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
       </div>}>
         {e201 ? (
           <div style={{ display: "grid", gap: 10 }}>
-            <StatRow>
-              <MetricCard label="PAYE" value={rand(e201.payeMinor)} />
-              <MetricCard label="ETI used" value={rand(e201.etiUsedMinor)} />
-              <MetricCard label="SDL" value={rand(e201.sdlMinor)} />
-              <MetricCard label="UIF" value={rand(e201.uifMinor)} />
-              <MetricCard label="Total payable" value={rand(e201.totalPayableMinor)} />
-            </StatRow>
+            <div style={{ display: "grid", gridTemplateColumns: fluidColumns(140), gap: 10 }}>
+              <KpiCard size="sm" label="PAYE" value={rand(e201.payeMinor)} />
+              <KpiCard size="sm" label="ETI used" value={rand(e201.etiUsedMinor)} tone={e201.etiUsedMinor > 0 ? "ok" : undefined} />
+              <KpiCard size="sm" label="SDL" value={rand(e201.sdlMinor)} />
+              <KpiCard size="sm" label="UIF" value={rand(e201.uifMinor)} />
+              <KpiCard size="sm" label="Total payable" value={rand(e201.totalPayableMinor)} tone={e201.totalPayableMinor > 0 ? "warn" : undefined} hint={`Due ${e201.dueDate}`} />
+            </div>
             <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted }}>
               Due {e201.dueDate} · {e201.employees} employee(s) · runs {e201.runs.join(", ") || "none"} · ETI calculated {rand(e201.etiCalculatedMinor)}, brought forward {rand(e201.etiBroughtForwardMinor)}, carried forward {rand(e201.etiCarriedForwardMinor)}
             </p>
@@ -1495,7 +1640,7 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
       </div>}>
         {e501 ? (
           <div style={{ fontSize: 13, display: "grid", gap: 6 }}>
-            <div><StatusBadge label={e501.reconciled ? "Reconciled" : "Differences"} status={e501.reconciled ? "ok" : "warning"} /></div>
+            <div><StatusPill status={e501.reconciled ? "ok" : "pending"} label={e501.reconciled ? "Reconciled" : "Differences"} /></div>
             <div>Declared: PAYE {rand(e501.declared.payeMinor)}, SDL {rand(e501.declared.sdlMinor)}, UIF {rand(e501.declared.uifMinor)}, ETI {rand(e501.declared.etiMinor)}</div>
             <div>Certificates: {e501.certificates.count} ({e501.certificates.irp5} IRP5, {e501.certificates.it3a} IT3(a)), PAYE {rand(e501.certificates.payeMinor)}</div>
             <div>Difference: PAYE {rand(e501.difference.payeMinor)}, SDL {rand(e501.difference.sdlMinor)}, UIF {rand(e501.difference.uifMinor)}</div>

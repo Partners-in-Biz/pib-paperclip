@@ -838,6 +838,27 @@ export class SqlStore implements GmailStore {
     );
   }
 
+  /**
+   * Chart series for the page (read only): inbound mail per UTC day and
+   * category, and send requests per UTC day and status, for the last `days` days.
+   */
+  async dailyCounts(companyId: string, days = 14) {
+    return this.db.query<{ kind: string; day: string; key: string | null; n: string | number }>(
+      `SELECT 'received' AS kind, to_char(COALESCE(received_at, created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, category AS key, count(*)::int AS n
+         FROM ${this.t("messages")}
+        WHERE company_id = $1 AND direction = 'inbound'
+          AND COALESCE(received_at, created_at) >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - make_interval(days => $2::int - 1)
+        GROUP BY 2, 3
+       UNION ALL
+       SELECT 'send', to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), status, count(*)::int
+         FROM ${this.t("send_requests")}
+        WHERE company_id = $1
+          AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - make_interval(days => $2::int - 1)
+        GROUP BY 2, 3`,
+      [companyId, days],
+    );
+  }
+
   async categoryCounts(companyId: string) {
     return this.db.query<{ category: string | null; n: string | number }>(
       `SELECT category, count(*) AS n FROM ${this.t("messages")}

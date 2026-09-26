@@ -698,3 +698,36 @@ export async function markDecisionActed(ctx: PluginContext, decisionId: string):
 export async function noteOutboxError(ctx: PluginContext, key: string, error: string): Promise<void> {
   await ctx.db.execute(`UPDATE ${table(ctx, "outbox")} SET last_error = $2 WHERE key = $1 AND status = 'pending'`, [key, error.slice(0, 500)]);
 }
+
+// ---------------------------------------------------------------------------
+// Overview charts (read only)
+// ---------------------------------------------------------------------------
+
+/** Step events per campaign, type and variant, all time. */
+export async function eventCounts(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<Array<{ campaign_id: string; event_type: string; variant: string | null; count: string | number }>> {
+  return ctx.db.query(
+    `SELECT campaign_id, event_type, variant, count(*) AS count
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE company_id = $1
+      GROUP BY campaign_id, event_type, variant`,
+    [companyId],
+  );
+}
+
+/** Sends, replies and bounces per campaign and UTC day since `sinceIso`. */
+export async function eventDays(
+  ctx: PluginContext,
+  companyId: string,
+  sinceIso: string,
+): Promise<Array<{ campaign_id: string; event_type: string; day: string; count: string | number }>> {
+  return ctx.db.query(
+    `SELECT campaign_id, event_type, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, count(*) AS count
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE company_id = $1 AND event_type IN ('sent', 'reply', 'bounce') AND occurred_at >= $2::timestamptz
+      GROUP BY campaign_id, event_type, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
+    [companyId, sinceIso],
+  );
+}

@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
-  MetricCard,
-  StatusBadge,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
@@ -10,26 +8,34 @@ import {
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
+  BarChart,
   Button,
+  CircleCheckBig,
   ClientWorkspaceBar,
   EmptyState,
   Field,
   Input,
+  KpiCard,
+  LayoutDashboard,
   Modal,
   Page,
   PageFrame,
   PageMessage,
+  Pill,
   Select,
-  StatRow,
+  Send,
   Tabs,
   TextArea,
   Toolbar,
   errorText,
+  fluidColumns,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+import type { CampaignSeries } from "../series.js";
+import { CampaignsOverview, StatusPill, awaitingApproval, percent } from "./overview.js";
 
 const PLUGIN_ID = "partnersinbiz.campaigns";
 
@@ -72,7 +78,7 @@ interface WorkspaceClient {
   contactCount: number | null;
 }
 
-interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null }
+interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null; series?: CampaignSeries }
 type TabId = "overview" | "campaigns";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
@@ -91,7 +97,7 @@ function audienceLabel(campaign: Campaign): string {
 /** Page layout for a client workspace: the shared client bar replaces the page header. */
 function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <PageFrame>
+    <PageFrame accent="campaigns">
       {header}
       <PageMessage message={message} />
       {children}
@@ -173,8 +179,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const barName = client?.name ?? (snapshot ? "Unknown client" : "Loading…");
   const q = search.trim().toLowerCase();
   const campaigns = useMemo(() => (snapshot?.campaigns ?? []).filter((c) => !q || c.name.toLowerCase().includes(q) || c.status.includes(q)), [snapshot, q]);
-  const totalEnrolled = (snapshot?.campaigns ?? []).reduce((sum, c) => sum + c.stats.enrolled, 0);
-  const activeCount = (snapshot?.campaigns ?? []).filter((c) => c.status === "active").length;
+  const waitingCount = (snapshot?.campaigns ?? []).filter(awaitingApproval).length;
+  const byCampaign = snapshot?.series?.byCampaign ?? {};
   const newCampaignButton = <Button type="button" onClick={openNewCampaign}>+ New campaign</Button>;
   const pageMessage = message
     || (scope && client && !client.found
@@ -190,21 +196,23 @@ export function CampaignsPage({ context }: PluginPageProps) {
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview" },
-          { id: "campaigns", label: `Campaigns (${snapshot?.campaigns.length ?? 0})` },
+          { id: "overview", label: "Overview", icon: LayoutDashboard, count: waitingCount || null, countTone: "warn" },
+          { id: "campaigns", label: "Campaigns", icon: Send, count: snapshot?.campaigns.length ?? 0, countTone: waitingCount ? "warn" : undefined },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
       />
 
       {tab === "overview" ? (
-        <div style={{ display: "grid", gap: 16 }}>
-          <StatRow>
-            <MetricCard label="Campaigns" value={snapshot?.campaigns.length ?? 0} />
-            <MetricCard label="Active" value={activeCount} />
-            <MetricCard label="Contacts enrolled" value={totalEnrolled} />
-          </StatRow>
-        </div>
+        snapshot ? (
+          <CampaignsOverview
+            campaigns={snapshot.campaigns}
+            series={snapshot.series}
+            onNew={newCampaignButton}
+            onList={() => { setTab("campaigns"); setSearch(""); }}
+            onAb={openAb}
+          />
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{message ? "Campaigns could not load." : "Loading campaigns…"}</p>
       ) : null}
 
       {tab === "campaigns" ? (
@@ -214,7 +222,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
           </Toolbar>
           {campaigns.length === 0 ? (
             <EmptyState
-              title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
+              title={scope ? `No campaigns for ${clientName} yet` : q ? "No campaigns match" : "No campaigns yet"}
+              icon={Send}
               description={scope
                 ? "Create a campaign for this client, add email steps, then launch it to enroll its contacts."
                 : "Create a campaign, add email steps, then launch it to enroll matching contacts."}
@@ -224,10 +233,14 @@ export function CampaignsPage({ context }: PluginPageProps) {
             <DataTable
               columns={[
                 { key: "name", header: "Campaign" },
-                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" ? "ok" : value === "draft" ? "pending" : "info"} /> },
+                { key: "status", header: "Status", render: (value) => <StatusPill status={String(value)} /> },
                 { key: "audience", header: "Audience" },
                 { key: "deliveryLabel", header: "Sends by" },
                 { key: "enrolled", header: "Enrolled" },
+                { key: "replyRate", header: "Replies", render: (_value, row) => {
+                  const counts = byCampaign[String(row.id)];
+                  return counts?.sent ? <span style={{ fontVariantNumeric: "tabular-nums" }}>{percent(counts.replies / counts.sent)} <span style={{ color: tokens.muted }}>of {counts.sent}</span></span> : <span style={{ color: tokens.muted }}>—</span>;
+                } },
                 { key: "stepCount", header: "Steps" },
                 {
                   key: "id",
@@ -247,7 +260,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                           <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => requestApproval({ campaignId: campaign.id }), "Approval requested — mark the approval issue done to approve")}>Request approval</Button>
                         ) : null}
                         {campaign.status === "draft" && campaign.approvalIssueId && campaign.approvalStatus !== "done" ? (
-                          <StatusBadge label="Awaiting approval" status="pending" />
+                          <Pill tone="warn" dot>Awaiting approval</Pill>
                         ) : null}
                         {(campaign.status === "draft" && campaign.approvalStatus === "done") || campaign.status === "paused" ? (
                           <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => launch({ campaignId: campaign.id }), "Campaign launched")}>Launch</Button>
@@ -349,10 +362,25 @@ export function CampaignsPage({ context }: PluginPageProps) {
       )}>
         {ab ? (
           <div style={{ display: "grid", gap: 10, fontSize: 13 }}>
-            <StatRow>
-              <MetricCard label="A replies" value={`${ab.replies.a}/${ab.sends.a}`} />
-              <MetricCard label="B replies" value={`${ab.replies.b}/${ab.sends.b}`} />
-            </StatRow>
+            <div style={{ display: "grid", gridTemplateColumns: fluidColumns(130), gap: 10 }}>
+              {(["a", "b"] as const).map((variant) => (
+                <KpiCard
+                  key={variant}
+                  size="sm"
+                  label={`Variant ${variant.toUpperCase()}`}
+                  value={percent(ab.replyRate[variant])}
+                  tone={(ab.winnerVariant ?? ab.suggestion) === variant ? "ok" : "neutral"}
+                  hint={`${ab.replies[variant]} of ${ab.sends[variant]} replied`}
+                  icon={(ab.winnerVariant ?? ab.suggestion) === variant ? CircleCheckBig : undefined}
+                />
+              ))}
+            </div>
+            <BarChart
+              bare
+              title="Reply rate"
+              items={(["a", "b"] as const).map((variant) => ({ label: `Variant ${variant.toUpperCase()}`, value: (ab.replyRate[variant] ?? 0) * 100, tone: (ab.winnerVariant ?? ab.suggestion) === variant ? "ok" as const : "neutral" as const }))}
+              formatValue={(v) => `${v.toFixed(1).replace(/\.0$/, "")}%`}
+            />
             <p style={{ margin: 0 }}>{ab.reason}</p>
             <p style={{ margin: 0, color: tokens.muted }}>
               {ab.suggestion ? `Suggested winner: ${ab.suggestion.toUpperCase()}. You decide.` : "No winner suggested yet."}
@@ -389,6 +417,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
   return (
     <Page
       title="Campaigns"
+      accent="campaigns"
+      messageTone={message ? undefined : "warn"}
       description="PiB's own email programs. A client's campaigns live in that client's workspace — open the client from the CRM."
       message={pageMessage}
       actions={newCampaignButton}

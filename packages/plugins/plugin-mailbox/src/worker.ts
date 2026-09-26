@@ -1,4 +1,5 @@
 import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { DAILY_DAYS, shapeDaily } from "./daily.js";
 import { randomUUID } from "node:crypto";
 import {
   definePlugin,
@@ -259,7 +260,7 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
   } catch {
     redirectUri = null;
   }
-  const [accounts, delegations, messages, templates, unreadCount, sendCounts, categoryCounts] = await Promise.all([
+  const [accounts, delegations, messages, templates, unreadCount, sendCounts, categoryCounts, dailyRows] = await Promise.all([
     s.listAccounts(companyId),
     s.listDelegations(companyId),
     s.recentMessages(companyId, 50),
@@ -267,6 +268,8 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     s.unreadCount(companyId),
     s.sendCounts(companyId),
     s.categoryCounts(companyId),
+    // Chart series; a failed read leaves the charts empty, the page still loads.
+    s.dailyCounts(companyId, DAILY_DAYS).catch(() => []),
   ]);
   const raw = loaded.raw;
   return {
@@ -290,6 +293,7 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     sendCounts: Object.fromEntries(sendCounts.map((row) => [row.status, Number(row.n)])),
     categoryCounts: Object.fromEntries(categoryCounts.map((row) => [row.category ?? "untriaged", Number(row.n)])),
     categories: MAIL_CATEGORIES,
+    daily: shapeDaily(dailyRows, DAILY_DAYS),
   };
 }
 

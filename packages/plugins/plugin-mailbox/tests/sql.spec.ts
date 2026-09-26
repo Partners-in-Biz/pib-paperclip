@@ -142,6 +142,7 @@ describe("runtime SQL passes the host guard", () => {
     await s.insertTemplate({ id: "t", companyId: c, name: "n", subject: "s", body: "b" });
     await s.sendCounts(c);
     await s.categoryCounts(c);
+    await s.dailyCounts(c, 14);
     expect(calls.length).toBeGreaterThan(60);
   });
 

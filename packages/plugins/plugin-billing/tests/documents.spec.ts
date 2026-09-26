@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { copyInvoiceFields } from "../src/invoices.js";
 import { docTitle, documentPdfSpec, renderDocument, statementPdfSpec, statementRows, type DocView } from "../src/documents.js";
 import { invoiceEmail, isEmail, mailKey, parseAddresses, parseMailKey, reminderEmail, renderTemplate } from "../src/mail.js";
-import { ageBucket, ageing, converterFor, expenseSummary, mrrMetrics, revenueByClient, revenueByMonth } from "../src/reports.js";
+import { ageBucket, ageing, converterFor, expenseSummary, mrrMetrics, mrrTrend, revenueByClient, revenueByMonth } from "../src/reports.js";
 import { extractReceipt, expenseQuestions, expenseState, normaliseReceipt, ruleVatClaimable } from "../src/receipts.js";
 import { computeDocument } from "../src/money.js";
 import { renderDocumentPdf } from "@partnersinbiz/pib-plugin-kit";
@@ -182,6 +182,30 @@ describe("reports", () => {
       convert,
     });
     expect(mrr).toMatchObject({ mrrMinor: 400_000, arrMinor: 4_800_000, active: 2, newMrrMinor: 100_000, churnedMrrMinor: 30_000, churned: 1, churnRate: 0.5 });
+  });
+});
+
+describe("MRR trend", () => {
+  const convert = converterFor("ZAR", { USD: 18 });
+  it("counts each retainer from its start month until it is cancelled, per month end", () => {
+    const trend = mrrTrend({
+      items: [
+        { status: "active", priceMinor: 300_000, currency: "ZAR", period: "monthly", startedAt: "2026-07-15T00:00:00Z", cancelledAt: null },
+        { status: "cancelled", priceMinor: 1_200_000, currency: "ZAR", period: "yearly", startedAt: "2026-06-01T00:00:00Z", cancelledAt: "2026-08-10T00:00:00Z" },
+        { status: "active", priceMinor: 100, currency: "USD", period: "monthly", startedAt: "2026-09-01T00:00:00Z", cancelledAt: null },
+        { status: "active", priceMinor: 500, currency: "EUR", period: "monthly", startedAt: "2026-09-01T00:00:00Z", cancelledAt: null },
+        { status: "paused", priceMinor: 999_999, currency: "ZAR", period: "monthly", startedAt: "2026-01-01T00:00:00Z", cancelledAt: null },
+      ],
+      months: ["2026-06", "2026-07", "2026-08", "2026-09"],
+      book: "ZAR",
+      convert,
+    });
+    expect(trend).toEqual([
+      { month: "2026-06", mrrMinor: 100_000, active: 1 },
+      { month: "2026-07", mrrMinor: 400_000, active: 2 },
+      { month: "2026-08", mrrMinor: 300_000, active: 1 },
+      { month: "2026-09", mrrMinor: 301_800, active: 2 },
+    ]);
   });
 });
 

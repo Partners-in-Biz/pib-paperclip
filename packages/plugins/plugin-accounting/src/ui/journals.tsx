@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DataTable, StatusBadge, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Modal, Section, Select, Sheet, Tabs, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import {
@@ -11,7 +11,6 @@ import {
   rand,
   Row,
   small,
-  statusTone,
   Table,
   TAX_OPTIONS,
   Td,
@@ -19,6 +18,7 @@ import {
   today,
   useRunner,
   words,
+  StatusPill,
 } from "./shared.js";
 
 interface JLine {
@@ -160,7 +160,7 @@ function JournalList({ accounts, onMessage }: { accounts: LoadResult["accounts"]
           { key: "memo", header: "Memo" },
           { key: "kind", header: "Kind", width: "110px", render: (v) => words(String(v)) },
           { key: "total", header: "Amount", width: "120px" },
-          { key: "status", header: "Status", width: "100px", render: (v) => <StatusBadge label={String(v)} status={v === "reversed" ? "warning" : "ok"} /> },
+          { key: "status", header: "Status", width: "100px", render: (v) => <StatusPill status={String(v)} /> },
           { key: "id", header: "", width: "70px", render: (_v, row) => <Button type="button" variant="secondary" style={small} onClick={() => { setOpen(row as unknown as Journal); setReverseDate(""); }}>Open</Button> },
         ]}
         rows={rows.map((j) => ({ ...j, total: rand(j.totalMinor) }))}
@@ -266,7 +266,7 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
                 {d.createdBy?.kind === "agent" ? <div style={{ fontSize: 12, color: tokens.muted }}>Prepared by an agent</div> : null}
               </Td>
               <Td right>{rand(d.lines.reduce((s, l) => s + Number(l.debitMinor ?? 0), 0))}</Td>
-              <Td><StatusBadge label={words(d.status)} status={statusTone(d.status)} /></Td>
+              <Td><StatusPill status={d.status} /></Td>
               <Td>{d.approvalIssueId ? <IssueLink id={d.approvalIssueId} /> : "—"}</Td>
               <Td>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -433,7 +433,7 @@ function Periods({ onMessage }: { onMessage: (m: string) => void }) {
           <Table head={["", "Check", "Detail"]}>
             {check.items.map((i) => (
               <tr key={i.key}>
-                <Td><StatusBadge label={i.ok ? "ok" : "to do"} status={i.ok ? "ok" : "warning"} /></Td>
+                <Td><StatusPill status={i.ok ? "ok" : "to_do"} label={i.ok ? "done" : "to do"} /></Td>
                 <Td>{i.label}</Td>
                 <Td muted>{i.detail}</Td>
               </tr>

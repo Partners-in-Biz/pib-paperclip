@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { DataTable, StatusBadge, usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Section, Select, Sheet, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { Button, EmptyState, Field, Input, Modal, Section, Select, Sheet, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import {
   AccountSelect,
@@ -12,7 +12,6 @@ import {
   rand,
   Row,
   small,
-  statusTone,
   Table,
   TAX_OPTIONS,
   Td,
@@ -20,6 +19,7 @@ import {
   useRunner,
   words,
   type BankAccount,
+  StatusPill,
 } from "./shared.js";
 
 type Suggestion =
@@ -312,8 +312,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                   </div>
                 ),
               },
-              { key: "amount", header: "Amount", width: "120px", render: (_v, row) => <span style={{ fontVariantNumeric: "tabular-nums", color: Number(row.amountMinor) < 0 ? tokens.fg : "var(--chart-2)" }}>{rand(Number(row.amountMinor))}</span> },
-              { key: "status", header: "Status", width: "120px", render: (v) => <StatusBadge label={words(String(v))} status={statusTone(String(v))} /> },
+              { key: "amount", header: "Amount", width: "120px", render: (_v, row) => <span style={{ fontVariantNumeric: "tabular-nums", color: Number(row.amountMinor) < 0 ? tokens.fg : tone("ok").fg, fontWeight: Number(row.amountMinor) > 0 ? 600 : undefined }}>{rand(Number(row.amountMinor))}</span> },
+              { key: "status", header: "Status", width: "120px", render: (v) => <StatusPill status={String(v)} /> },
               {
                 key: "suggestion",
                 header: "Suggestion",
@@ -400,7 +400,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                 <Td>{`${r.periodStart} to ${r.periodEnd}`}</Td>
                 <Td right>{rand(r.closingMinor)}</Td>
                 <Td right>{rand(r.differenceMinor)}</Td>
-                <Td><StatusBadge label={words(r.status)} status={statusTone(r.status)} /></Td>
+                <Td><StatusPill status={r.status} /></Td>
                 <Td>
                   {r.status !== "locked" ? (
                     <Button type="button" variant="secondary" style={small} onClick={() => {

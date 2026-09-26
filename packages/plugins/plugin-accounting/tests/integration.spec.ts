@@ -26,7 +26,7 @@ import { receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, r
 import { buildPack } from "../src/service/pack.js";
 import { setupStatus } from "../src/service/setup.js";
 import { approveReconciliation, prepareReconciliation, requestReconciliationApproval } from "../src/service/reconcile.js";
-import { runReport } from "../src/service/reports.js";
+import { runReport, trends } from "../src/service/reports.js";
 import { approveVatReturn, prepareVatReturn, requestVatApproval } from "../src/service/vat.js";
 import * as guard from "./helpers/sql-guard.js";
 
@@ -451,6 +451,13 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     expect(typeof pnl.netProfitMinor).toBe("number");
     const cmp = (await runReport(ctx, CO, "comparison", { month: "2026-09" })) as { netProfit: number[] };
     expect(cmp.netProfit).toHaveLength(3);
+    // Overview series agree with the reports: closing cash with the cash flow, profit with the P&L.
+    const series = await trends(ctx, CO, 7, "2026-09-30");
+    expect(series.months.map((m) => m.month)).toEqual(["2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]);
+    expect(series.months.at(-1)!.closingCashMinor).toBe(cf.closingCashMinor);
+    const halfYear = (await runReport(ctx, CO, "profit_and_loss", { from: "2026-03-01", to: "2026-09-30" })) as { netProfitMinor: number };
+    expect(series.months.reduce((s, m) => s + m.profitMinor, 0)).toBe(halfYear.netProfitMinor);
+    expect(series.vat).toMatchObject({ end: expect.stringMatching(/^2026-/), dueDate: expect.stringMatching(/^2026-/) });
   });
 
   it("posts opening balances once at cut-over and checks they balance", async () => {
@@ -559,6 +566,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       ["accounting.fx", {}],
       ["accounting.budgets", {}],
       ["accounting.forecast", { months: 3 }],
+      ["accounting.trends", {}],
       ["accounting.decisions", {}],
       ["accounting.verify-chain", {}],
       ["accounting.close-checklist", { month: "2026-09" }],
@@ -622,7 +630,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.2" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.3" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");

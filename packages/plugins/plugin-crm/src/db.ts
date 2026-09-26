@@ -497,6 +497,18 @@ export async function listDeals(ctx: PluginContext, companyId: string): Promise<
   return rows.map(mapDeal);
 }
 
+/** Created and last-updated times of these deals or contacts, for the overview charts (read only). */
+export async function recordDates(ctx: PluginContext, kind: "deals" | "contacts", ids: string[]): Promise<Array<{ id: string; createdAt: string | null; updatedAt: string | null }>> {
+  if (ids.length === 0) return [];
+  const rows = await ctx.db.query<{ id: string; created_at: unknown; updated_at: unknown }>(
+    `SELECT id, created_at, updated_at
+       FROM ${table(ctx, kind)}
+      WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))`,
+    [JSON.stringify(ids)],
+  );
+  return rows.map((row) => ({ id: row.id, createdAt: asIso(row.created_at), updatedAt: asIso(row.updated_at) }));
+}
+
 export async function getDeal(ctx: PluginContext, id: string): Promise<DealDraft | null> {
   const rows = await ctx.db.query<DealRow>(
     `SELECT id, company_id, pipeline_id, stage_id, account_id, contact_id, title, amount_minor, currency,

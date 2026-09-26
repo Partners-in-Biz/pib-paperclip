@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Section, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
-import { AccountSelect, Banner, base64ToBytes, download, Muted, rand, Row, Table, Td, today, useRunner } from "./shared.js";
+import { AccountSelect, Banner, base64ToBytes, download, Muted, rand, Row, signTone, Table, Td, today, useRunner } from "./shared.js";
 
 type Kind =
   | "trial_balance"
@@ -36,6 +36,9 @@ interface Line {
 
 type AnyReport = Record<string, unknown> & { kind: Kind };
 
+/** Ageing columns: current plain, 31–60 amber, older red. */
+const AGED_TONE: Record<string, "warn" | "bad" | undefined> = { current: undefined, "1_30": undefined, "31_60": "warn", "61_90": "bad", over_90: "bad", total: undefined };
+
 function Section2({ title, lines, total }: { title: string; lines: Line[]; total: number }) {
   if (!lines.length && !total) return null;
   return (
@@ -55,8 +58,8 @@ function Render({ report }: { report: AnyReport }): ReactNode {
     case "trial_balance":
       return (
         <>
-          {!r.balanced ? <Banner tone="warn"><span>The trial balance does not balance. Check the audit chain in Journals.</span></Banner> : null}
-          <Table head={["Account", { label: "Debit", right: true }, { label: "Credit", right: true }]} footer={<tr><Td strong>Total</Td><Td right strong>{rand(r.totalDebitMinor)}</Td><Td right strong>{rand(r.totalCreditMinor)}</Td></tr>}>
+          {!r.balanced ? <Banner tone="bad"><span>The trial balance does not balance. Check the audit chain in Journals.</span></Banner> : null}
+          <Table head={["Account", { label: "Debit", right: true }, { label: "Credit", right: true }]} footer={<tr><Td strong>Total</Td><Td right strong tone={r.balanced ? "ok" : "bad"}>{rand(r.totalDebitMinor)}</Td><Td right strong tone={r.balanced ? "ok" : "bad"}>{rand(r.totalCreditMinor)}</Td></tr>}>
             {r.lines.map((l: any) => <tr key={l.accountId}><Td>{`${l.code} ${l.name}`}</Td><Td right>{l.debitMinor ? rand(l.debitMinor) : ""}</Td><Td right>{l.creditMinor ? rand(l.creditMinor) : ""}</Td></tr>)}
           </Table>
         </>
@@ -66,16 +69,16 @@ function Render({ report }: { report: AnyReport }): ReactNode {
         <Table head={[`${r.from} to ${r.to}`, { label: "Amount", right: true }]}>
           <Section2 title="Revenue" lines={r.revenue} total={r.totalRevenueMinor} />
           <Section2 title="Cost of sales" lines={r.costOfSales} total={r.totalCostOfSalesMinor} />
-          <tr><Td strong>Gross profit</Td><Td right strong>{rand(r.grossProfitMinor)}</Td></tr>
+          <tr><Td strong>Gross profit</Td><Td right strong tone={signTone(r.grossProfitMinor)}>{rand(r.grossProfitMinor)}</Td></tr>
           <Section2 title="Other income" lines={r.otherIncome} total={r.totalOtherIncomeMinor} />
           <Section2 title="Expenses" lines={r.expenses} total={r.totalExpensesMinor} />
-          <tr><Td strong>Net profit</Td><Td right strong>{rand(r.netProfitMinor)}</Td></tr>
+          <tr><Td strong>Net profit</Td><Td right strong tone={signTone(r.netProfitMinor)}>{rand(r.netProfitMinor)}</Td></tr>
         </Table>
       );
     case "balance_sheet":
       return (
         <>
-          {!r.balanced ? <Banner tone="warn"><span>Assets do not equal liabilities plus equity.</span></Banner> : <Banner tone="ok"><span>Assets = liabilities + equity.</span></Banner>}
+          {!r.balanced ? <Banner tone="bad"><span>Assets do not equal liabilities plus equity.</span></Banner> : <Banner tone="ok"><span>Assets = liabilities + equity.</span></Banner>}
           <Table head={[`At ${r.asOf}`, { label: "Amount", right: true }]}>
             <Section2 title="Current assets" lines={r.currentAssets} total={r.currentAssets.reduce((s: number, l: Line) => s + l.amountMinor, 0)} />
             <Section2 title="Non-current assets" lines={r.nonCurrentAssets} total={r.nonCurrentAssets.reduce((s: number, l: Line) => s + l.amountMinor, 0)} />
@@ -88,7 +91,7 @@ function Render({ report }: { report: AnyReport }): ReactNode {
             <tr><Td>Profit of earlier years</Td><Td right>{rand(r.retainedEarningsMinor)}</Td></tr>
             <tr><Td>Current year earnings (from {r.financialYearStart})</Td><Td right>{rand(r.currentYearEarningsMinor)}</Td></tr>
             <tr><Td strong>Total equity</Td><Td right strong>{rand(r.totalEquityMinor)}</Td></tr>
-            <tr><Td strong>Liabilities + equity</Td><Td right strong>{rand(r.totalLiabilitiesMinor + r.totalEquityMinor)}</Td></tr>
+            <tr><Td strong>Liabilities + equity</Td><Td right strong tone={r.balanced ? "ok" : "bad"}>{rand(r.totalLiabilitiesMinor + r.totalEquityMinor)}</Td></tr>
           </Table>
         </>
       );
@@ -102,9 +105,9 @@ function Render({ report }: { report: AnyReport }): ReactNode {
           <Section2 title="Investing activities" lines={r.investing} total={r.investingTotalMinor} />
           <Section2 title="Financing activities" lines={r.financing} total={r.financingTotalMinor} />
           <Section2 title="Other movements" lines={r.other} total={r.otherTotalMinor} />
-          <tr><Td strong>Net change in cash</Td><Td right strong>{rand(r.netChangeMinor)}</Td></tr>
+          <tr><Td strong>Net change in cash</Td><Td right strong tone={signTone(r.netChangeMinor)}>{rand(r.netChangeMinor)}</Td></tr>
           <tr><Td>Cash at the start</Td><Td right>{rand(r.openingCashMinor)}</Td></tr>
-          <tr><Td strong>Cash at the end</Td><Td right strong>{rand(r.closingCashMinor)}</Td></tr>
+          <tr><Td strong>Cash at the end</Td><Td right strong tone={r.closingCashMinor < 0 ? "bad" : undefined}>{rand(r.closingCashMinor)}</Td></tr>
           {!r.reconciles ? <tr><Td colSpan={2}>This does not agree with the bank and cash accounts; check the cash-flow class of the accounts.</Td></tr> : null}
         </Table>
       );
@@ -124,16 +127,16 @@ function Render({ report }: { report: AnyReport }): ReactNode {
       return (
         <Table head={["Account", ...r.labels.map((l: string, i: number) => ({ label: `${l} (${r.ranges[i].start.slice(0, 7)})`, right: true }))]}>
           {r.rows.map((row: any) => <tr key={row.accountId}><Td>{`${row.code} ${row.name}`}</Td>{row.values.map((v: number, i: number) => <Td key={i} right>{rand(v)}</Td>)}</tr>)}
-          <tr><Td strong>Net profit</Td>{r.netProfit.map((v: number, i: number) => <Td key={i} right strong>{rand(v)}</Td>)}</tr>
+          <tr><Td strong>Net profit</Td>{r.netProfit.map((v: number, i: number) => <Td key={i} right strong tone={signTone(v)}>{rand(v)}</Td>)}</tr>
         </Table>
       );
     case "budget_vs_actual":
       return (
         <Table
           head={["Account", { label: "Budget", right: true }, { label: "Actual", right: true }, { label: "Better / (worse)", right: true }]}
-          footer={<tr><Td strong>Total</Td><Td right strong>{rand(r.totals.budgetMinor)}</Td><Td right strong>{rand(r.totals.actualMinor)}</Td><Td right strong>{rand(r.totals.varianceMinor)}</Td></tr>}
+          footer={<tr><Td strong>Total</Td><Td right strong>{rand(r.totals.budgetMinor)}</Td><Td right strong>{rand(r.totals.actualMinor)}</Td><Td right strong tone={signTone(r.totals.varianceMinor)}>{rand(r.totals.varianceMinor)}</Td></tr>}
         >
-          {r.rows.map((row: any) => <tr key={row.accountCode}><Td>{`${row.accountCode} ${row.name}`}</Td><Td right>{rand(row.budgetMinor)}</Td><Td right>{rand(row.actualMinor)}</Td><Td right>{rand(row.varianceMinor)}</Td></tr>)}
+          {r.rows.map((row: any) => <tr key={row.accountCode}><Td>{`${row.accountCode} ${row.name}`}</Td><Td right>{rand(row.budgetMinor)}</Td><Td right>{rand(row.actualMinor)}</Td><Td right tone={signTone(row.varianceMinor)}>{rand(row.varianceMinor)}</Td></tr>)}
         </Table>
       );
     case "aged_receivables":
@@ -141,10 +144,10 @@ function Render({ report }: { report: AnyReport }): ReactNode {
       return (
         <Table
           head={[report.kind === "aged_receivables" ? "Customer" : "Supplier", { label: "Current", right: true }, { label: "1–30", right: true }, { label: "31–60", right: true }, { label: "61–90", right: true }, { label: "90+", right: true }, { label: "Total", right: true }]}
-          footer={<tr><Td strong>Total</Td>{["current", "1_30", "31_60", "61_90", "over_90", "total"].map((k) => <Td key={k} right strong>{rand(r.totals[k])}</Td>)}</tr>}
+          footer={<tr><Td strong>Total</Td>{["current", "1_30", "31_60", "61_90", "over_90", "total"].map((k) => <Td key={k} right strong tone={r.totals[k] > 0 ? AGED_TONE[k] : undefined}>{rand(r.totals[k])}</Td>)}</tr>}
         >
           {r.rows.map((row: any) => (
-            <tr key={row.counterpartyName}><Td>{row.counterpartyName}</Td>{["current", "1_30", "31_60", "61_90", "over_90"].map((k) => <Td key={k} right>{row.buckets[k] ? rand(row.buckets[k]) : ""}</Td>)}<Td right strong>{rand(row.totalMinor)}</Td></tr>
+            <tr key={row.counterpartyName}><Td>{row.counterpartyName}</Td>{["current", "1_30", "31_60", "61_90", "over_90"].map((k) => <Td key={k} right tone={row.buckets[k] ? AGED_TONE[k] : undefined}>{row.buckets[k] ? rand(row.buckets[k]) : ""}</Td>)}<Td right strong>{rand(row.totalMinor)}</Td></tr>
           ))}
         </Table>
       );

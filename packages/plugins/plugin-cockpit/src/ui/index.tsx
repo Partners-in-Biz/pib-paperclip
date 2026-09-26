@@ -8,12 +8,12 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, NewTaskDialog, PageHeader, Select, Tabs, errorText, tokens, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Button, EmptyState, Field, HeartPulse, Inbox, NewTaskDialog, PageFrame, PageHeader, PageMessage, Select, Tabs, Users, errorText, tokens, tone, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
 import { assignableUser, type RoleKind } from "../constants.js";
-import type { AgentLite } from "../merge.js";
+import type { AgentLite, RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
 import { fetchUsers, savePluginConfig, type UserLite } from "./api.js";
-import { ActivityList, AgentsTable, Card, HealthList, KpiGroup, Light, Muted, TodayCard, WaitingList, grid, type LinkPropsFor } from "./components.js";
+import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
 import { useCockpitData } from "./data.js";
 
 export { buildView } from "../view.js";
@@ -24,11 +24,7 @@ function useLinkFor(): LinkPropsFor {
 }
 
 function Shell({ children }: { children: ReactNode }) {
-  return (
-    <main style={{ fontFamily: `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`, color: tokens.fg, padding: "clamp(14px, 4vw, 28px)", maxWidth: 1160, display: "grid", gap: 18, minWidth: 0, boxSizing: "border-box", width: "100%" }}>
-      {children}
-    </main>
-  );
+  return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
 type TabId = "overview" | "team";
@@ -59,14 +55,17 @@ export function CockpitPage({ context }: PluginPageProps) {
         description="What waits on you, what the agents did, the numbers, agent cost and quality, and system health."
         actions={<Button type="button" variant="secondary" onClick={() => void data.reload()} disabled={data.loading}>{data.loading ? "Loading…" : "Refresh"}</Button>}
       />
-      {message || data.error ? (
-        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
-          {message || data.error}
-        </p>
-      ) : null}
-      <Tabs tabs={[{ id: "overview", label: "Overview" }, { id: "team", label: "Team" }]} active={tab} onChange={(id) => setTab(id as TabId)} />
+      <PageMessage message={message || data.error || undefined} tone={!message && data.error ? "bad" : undefined} />
+      <Tabs
+        tabs={[
+          { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
+          { id: "team", label: "Team", icon: Users },
+        ]}
+        active={tab}
+        onChange={(id) => setTab(id as TabId)}
+      />
       {tab === "overview" ? (
-        view ? <Overview view={view} load={data.raw!.load} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onTeam={() => setTab("team")} /> : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>
+        view ? <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onTeam={() => setTab("team")} /> : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>
       ) : data.raw ? (
         <TeamPanel companyId={companyId} load={data.raw.load} agents={data.raw.agents} onSaved={async (note) => { setMessage(note); await data.reload(); }} onMessage={setMessage} />
       ) : <Muted>Loading…</Muted>}
@@ -74,15 +73,18 @@ export function CockpitPage({ context }: PluginPageProps) {
   );
 }
 
-export function Overview({ view, load, linkFor, windowHours, onWindow, onTeam, now = new Date() }: {
+export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onTeam, now = new Date() }: {
   view: CockpitView;
   load: LoadResult;
+  /** Host heartbeat runs, for the runs-per-day chart. */
+  runs?: RunLite[];
   linkFor: LinkPropsFor;
   windowHours: number;
   onWindow: (hours: number) => void;
   onTeam?: () => void;
   now?: Date;
 }) {
+  const accent = tone("accent");
   const toggle = (
     <div role="group" aria-label="Period" style={{ display: "inline-flex", border: `1px solid ${tokens.border}`, borderRadius: 9, overflow: "hidden" }}>
       {[{ h: 24, label: "24 hours" }, { h: 168, label: "7 days" }].map(({ h, label }) => (
@@ -91,42 +93,65 @@ export function Overview({ view, load, linkFor, windowHours, onWindow, onTeam, n
           type="button"
           aria-pressed={windowHours === h}
           onClick={() => onWindow(h)}
-          style={{ appearance: "none", border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", background: windowHours === h ? tokens.secondary : "transparent", color: windowHours === h ? tokens.fg : tokens.muted }}
+          style={{ appearance: "none", border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", background: windowHours === h ? accent.soft : "transparent", color: windowHours === h ? accent.fg : tokens.muted }}
         >
           {label}
         </button>
       ))}
     </div>
   );
+  const agentAlerts = view.agents.filter((a) => a.alert).length;
+  const activeAgents = view.agents.length ? view.agents.filter((a) => ["active", "running", "idle"].includes(a.status)).length : null;
+  const failing = view.healthGroups.reduce((sum, g) => sum + g.checks.filter((c) => c.status !== "ok").length, 0);
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <Card title="Today" actions={<Light status={view.health} />}>
-        <p style={{ margin: 0, fontSize: 15, fontWeight: 600, lineHeight: 1.45 }}>{view.today}</p>
+      <TodayHero health={view.health} today={view.today} waiting={view.waiting} problems={view.problems} agentAlerts={agentAlerts} activeAgents={activeAgents}>
         {!load.roles?.operatorAgentId ? (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <Muted>No Operator yet. The Operator checks all of this every morning and sends you one short brief.</Muted>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: accent.soft, border: `1px solid ${accent.border}` }}>
+            <Bot size={16} color={accent.solid} aria-hidden="true" style={{ flexShrink: 0 }} />
+            <span style={{ fontSize: 13, color: tokens.fg, lineHeight: 1.5, flex: "1 1 220px" }}>No Operator yet. The Operator checks all of this every morning and sends you one short brief.</span>
             {onTeam ? <Button type="button" variant="secondary" onClick={onTeam}>Set up the team</Button> : null}
           </div>
         ) : null}
-      </Card>
+      </TodayHero>
 
-      <Card title={`Waiting on you${view.waiting.length ? ` (${view.waiting.length})` : ""}`}>
+      <Card
+        id="waiting"
+        title={`Waiting on you${view.waiting.length ? ` (${view.waiting.length})` : ""}`}
+        icon={Inbox}
+        tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.length ? "warn" : "ok"}
+        subtitle="Decisions only you can make, most urgent first."
+        actions={<WaitingKinds items={view.waiting} />}
+      >
         <WaitingList items={view.waiting} linkFor={linkFor} now={now} />
       </Card>
 
-      <div style={grid(320, 16)}>
+      <div style={grid(420, 16)}>
         {(["money", "pipeline", "marketing", "delivery"] as const).map((group) => <KpiGroup key={group} group={group} kpis={view.kpis[group]} linkFor={linkFor} />)}
       </div>
 
-      <Card title="What the agents did" actions={toggle}>
-        <ActivityList groups={view.activity} linkFor={linkFor} now={now} />
+      <Card title="What the agents did" icon={Activity} subtitle={windowHours === 24 ? "The last 24 hours" : "The last 7 days"} actions={toggle}>
+        <ActivityList groups={view.activity} linkFor={linkFor} now={now} runs={runs} />
       </Card>
 
-      <Card title="Agents" actions={<a {...linkFor("/costs")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Costs →</a>}>
+      <Card
+        title="Agents"
+        icon={Bot}
+        subtitle="Status, spend against budget, and quality this month."
+        actions={<a {...linkFor("/costs")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Costs →</a>}
+      >
         <AgentsTable rows={view.agents} linkFor={linkFor} now={now} />
       </Card>
 
-      <Card title="System health" actions={<Light status={view.health} />}>
+      <Card
+        title="System health"
+        icon={HeartPulse}
+        tone={view.health}
+        strip={view.health !== "ok"}
+        subtitle={failing ? `${failing} ${failing === 1 ? "check needs" : "checks need"} attention.` : "Every check passes."}
+        actions={<Light status={view.health} />}
+      >
+        <HealthSummary groups={view.healthGroups} />
         {load.healthIssueId ? (
           <a {...linkFor(`/issues/${load.healthIssueId}`)} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Open the System health issue →</a>
         ) : null}
@@ -261,7 +286,7 @@ export function TeamPanel({ companyId, load, agents, onSaved, onMessage }: {
 
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <Card title="Team">
+      <Card title="Team" icon={Users} subtitle="The Operator runs the day; the Reviewer checks outward-facing work.">
         <Muted>Pick an existing agent for each role, or hire one (opens a hire task for whoever hires for this company). Save sends the team to every PiB plugin.</Muted>
         <div style={grid(300, 12)}>
           {roleRow("operator", operator, setOperator)}
@@ -346,14 +371,14 @@ export function CockpitSidebar({ context }: PluginSidebarProps) {
           <path d="M12 7v1M7 12h1M16 12h1" />
         </svg>
         {health !== "ok" ? (
-          <span style={{ position: "absolute", top: -2, right: -2, width: 7, height: 7, borderRadius: 999, background: health === "bad" ? "var(--destructive)" : "var(--chart-4)" }} />
+          <span style={{ position: "absolute", top: -2, right: -2, width: 7, height: 7, borderRadius: 999, background: tone(health).solid }} />
         ) : null}
       </span>
       <span className="flex-1 truncate">Cockpit</span>
       {waiting ? (
         <span
           aria-label={`${waiting} waiting on you`}
-          style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tokens.secondary, color: tokens.secondaryFg }}
+          style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tone("warn").soft, color: tone("warn").fg }}
         >
           {waiting}
         </span>

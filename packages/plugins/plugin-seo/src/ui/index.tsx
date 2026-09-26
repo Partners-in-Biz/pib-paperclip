@@ -1,42 +1,74 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   DataTable,
-  MetricCard,
-  StatusBadge,
   useHostContext,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
-  type StatusBadgeVariant,
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { clientScopeFromSearch, parseClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
+  Activity,
+  BarList,
   Button,
+  CalendarCheck,
+  ChartColumn,
+  ChartLine,
+  ChartPie,
+  ChartLegend,
+  CircleAlert,
+  CircleCheck,
   ClientWorkspaceBar,
+  DonutChart,
   EmptyState,
+  Eye,
   Field,
+  FileText,
+  Gauge,
+  HeartPulse,
+  Info,
   Input,
+  KpiCard,
+  Lightbulb,
+  ListChecks,
   Modal,
   NewTaskDialog,
   Page,
   PageFrame,
   PageMessage,
+  Pill,
+  Plug,
+  ProgressBar,
+  ProgressRing,
+  Rocket,
   ScrollX,
+  Search,
   Section,
+  SectionCard,
   Select,
-  StatRow,
+  Share2,
+  StackedBar,
+  StatusDot,
   Tabs,
+  Target,
   TextArea,
   Toolbar,
+  TrendChart,
+  TriangleAlert,
   breakAnywhere,
   errorText,
+  fluidColumns,
+  formatCompact,
   tokens,
+  tone,
   useIsNarrow,
+  type LucideIcon,
   type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
+import { CHIP_LABEL, CHIP_TONE, backlinkSegments, dueOpen, changeText, chipState, healthTone, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone, taskSegments, trafficSeries, type ChipState, type TrafficDay } from "./series.js";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { NeedsYouSection, SetupChecklist, SiteRepoSection, type NeedsYouView, type ProjectOption, type SetupItem, type SiteLink } from "./autonomy.js";
@@ -189,46 +221,35 @@ type SprintBundle = {
   optimizations: Optimization[];
   integrations: Integration[];
   pageHealth: PageHealth[];
+  /** Search Console impressions/clicks of tracked keywords per day (worker 0.6.3+). */
+  traffic?: TrafficDay[];
   needsYou: NeedsYouView | null;
   setup: SetupItem[];
   projects: ProjectOption[];
 };
 
 type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "integrations";
-const TABS: Array<{ id: TabId; label: string }> = [
-  { id: "plan", label: "Plan" },
-  { id: "keywords", label: "Keywords" },
-  { id: "backlinks", label: "Backlinks" },
-  { id: "content", label: "Content" },
-  { id: "audits", label: "Audits" },
-  { id: "optimizations", label: "Optimizations" },
-  { id: "integrations", label: "Integrations" },
+const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
+  { id: "plan", label: "Plan", icon: ListChecks },
+  { id: "keywords", label: "Keywords", icon: Target },
+  { id: "backlinks", label: "Backlinks", icon: Share2 },
+  { id: "content", label: "Content", icon: FileText },
+  { id: "audits", label: "Audits", icon: HeartPulse },
+  { id: "optimizations", label: "Optimizations", icon: Lightbulb },
+  { id: "integrations", label: "Integrations", icon: Plug },
 ];
 
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function statusVariant(status: string): StatusBadgeVariant {
-  if (["done", "live", "active", "connected", "enabled", "win", "top_3", "top_10", "measured"].includes(status)) return "ok";
-  if (["blocked", "needs_reconnect", "error", "loss", "rejected", "lost", "critical", "high"].includes(status)) return "error";
-  if (["in_progress", "submitted", "proposed", "approved", "pre_launch", "compounding", "review", "medium"].includes(status)) return "info";
-  if (["paused", "not_started", "disconnected", "disabled", "low"].includes(status)) return "pending";
-  return "warning";
+function Badge({ status, label, dot = true }: { status: string; label?: string; dot?: boolean }) {
+  return <Pill tone={statusTone(status)} dot={dot}>{(label ?? status).replace(/_/g, " ")}</Pill>;
 }
 
-function Badge({ status, label }: { status: string; label?: string }) {
-  return <StatusBadge label={(label ?? status).replace(/_/g, " ")} status={statusVariant(status)} />;
-}
-
-const chipColors: Record<string, string> = {
-  done: "#16a34a",
-  in_progress: "#2563eb",
-  blocked: "#dc2626",
-  due: "#d97706",
-  future: "#71717a",
-  skipped: "#a1a1aa",
-};
+/** Cards in a row share its height; keep their content at the top. */
+const top = { alignContent: "start" } as const;
+const grid = (min: number, gap = 16) => ({ display: "grid", gap, gridTemplateColumns: fluidColumns(min), minWidth: 0 }) as const;
 
 function fmt(value: number | null | undefined, digits = 1): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -258,7 +279,7 @@ function siteUrlFromDomain(domain: string | null): string {
 /** A client's workspace: the shared client bar replaces the page header. */
 function ClientPage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <PageFrame>
+    <PageFrame accent="seo">
       {header}
       <PageMessage message={message} />
       {children}
@@ -275,14 +296,19 @@ function Sparkline({ values }: { values: number[] }) {
   const span = max - min || 1;
   // Lower position is better: draw position 1 at the top.
   const points = values.map((v, i) => `${(i / (values.length - 1)) * width},${((v - min) / span) * (height - 4) + 2}`).join(" ");
+  const trend = positionTrendTone(values);
+  const first = values[0]!;
+  const last = values[values.length - 1]!;
   return (
-    <svg width={width} height={height} aria-label="Position trend" role="img">
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth={1.5} style={{ color: tokens.chart[0] }} />
+    <svg width={width} height={height} aria-label={`Position ${fmt(first)} → ${fmt(last)}`} role="img">
+      <polyline points={points} fill="none" stroke={trend === "neutral" ? tone("accent").solid : tone(trend).solid} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }
 
-function Banner({ tone, children }: { tone: "warn" | "info"; children: ReactNode }) {
+function Banner({ tone: t, children }: { tone: "warn" | "info" | "bad"; children: ReactNode }) {
+  const colors = tone(t);
+  const glyph = t === "bad" ? CircleAlert : t === "warn" ? TriangleAlert : Info;
   return (
     <div
       role="status"
@@ -291,15 +317,23 @@ function Banner({ tone, children }: { tone: "warn" | "info"; children: ReactNode
         lineHeight: 1.5,
         padding: "10px 14px",
         borderRadius: 10,
-        border: `1px solid ${tone === "warn" ? "color-mix(in oklab, #d97706 45%, transparent)" : tokens.border}`,
-        background: tone === "warn" ? "color-mix(in oklab, #d97706 10%, transparent)" : tokens.secondary,
+        border: `1px solid ${colors.border}`,
+        borderLeft: `3px solid ${colors.solid}`,
+        background: `linear-gradient(90deg, ${colors.soft}, transparent 70%), ${tokens.card}`,
         display: "grid",
-        gap: 4,
+        gridTemplateColumns: `18px minmax(0, 1fr)`,
+        columnGap: 8,
+        minWidth: 0,
       }}
     >
-      {children}
+      <Glyph icon={glyph} color={colors.solid} />
+      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>{children}</div>
     </div>
   );
+}
+
+function Glyph({ icon: I, color }: { icon: LucideIcon; color: string }) {
+  return <I size={15} color={color} aria-hidden="true" style={{ marginTop: 2 }} />;
 }
 
 function IssueLink({ id, identifier, label }: { id: string | null; identifier?: string | null; label?: string }) {
@@ -690,6 +724,7 @@ export function SeoPage({ context }: PluginPageProps) {
       title="SEO"
       description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. The SEO agent works every task (code changes through the site repo); what only a person can do is batched in one weekly Needs you issue per sprint."
       message={message}
+      accent="seo"
       actions={off ? undefined : seoAgent.headerAction}
     >
       {body}
@@ -708,22 +743,29 @@ function SprintList({ data, client, onOpen, onMessage, onChanged }: { data: Load
   const q = query.trim().toLowerCase();
   const rows = data.sprints.filter((s) => !q || `${s.siteName} ${s.legacyClientName ?? ""} ${s.siteUrl}`.toLowerCase().includes(q));
   const active = data.sprints.filter((s) => ["pre_launch", "active", "compounding"].includes(s.status) && !s.legacy);
+  const dueCount = active.reduce((n, s) => n + (s.tasks?.due ?? 0), 0);
+  const blockedCount = active.reduce((n, s) => n + (s.tasks?.blocked ?? 0), 0);
+  const proposalCount = active.reduce((n, s) => n + (s.tasks?.proposals ?? 0), 0);
+  const scored = active.map((s) => s.health?.score).filter((v): v is number => typeof v === "number");
+  const avgHealth = scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : null;
   // A client workspace can only start sprints for a client the CRM list knows.
   const canCreate = !client || client.known;
   const newButton = <Button type="button" disabled={!canCreate} onClick={() => setCreating(true)}>+ Sprint</Button>;
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <StatRow>
-        <MetricCard label="Active sprints" value={active.length} />
-        <MetricCard label="Due tasks" value={active.reduce((n, s) => n + (s.tasks?.due ?? 0), 0)} />
-        <MetricCard label="Blocked" value={active.reduce((n, s) => n + (s.tasks?.blocked ?? 0), 0)} />
-        <MetricCard label="Proposals" value={active.reduce((n, s) => n + (s.tasks?.proposals ?? 0), 0)} />
-      </StatRow>
+      <div style={grid(150, 10)}>
+        <KpiCard label="Active sprints" value={active.length} icon={Rocket} hint={`${data.sprints.length} in total`} />
+        <KpiCard label="Due tasks" value={dueCount} icon={CalendarCheck} tone={dueCount ? "warn" : undefined} hint={dueCount ? "Open in the sprint's plan" : "Nothing due"} />
+        <KpiCard label="Blocked" value={blockedCount} icon={CircleAlert} tone={blockedCount ? "bad" : undefined} hint={blockedCount ? "Needs a person" : "Nothing blocked"} />
+        <KpiCard label="Proposals" value={proposalCount} icon={Lightbulb} tone={proposalCount ? "warn" : undefined} hint={proposalCount ? "Waiting for approval" : "None waiting"} />
+        <KpiCard label="Average health" value={avgHealth == null ? "—" : avgHealth} icon={HeartPulse} tone={avgHealth != null && healthTone(avgHealth) !== "ok" ? healthTone(avgHealth) : undefined} hint="Across active sprints" />
+      </div>
       <Toolbar search={query} onSearchChange={setQuery} searchPlaceholder="Search sprints…">
         {newButton}
       </Toolbar>
       {data.sprints.length === 0 ? (
         <EmptyState
+          icon={Rocket}
           title={client ? `No SEO sprint for ${client.name} yet` : "No SEO sprints for PiB's own sites yet"}
           description={
             client
@@ -748,11 +790,20 @@ function SprintList({ data, client, onOpen, onMessage, onChanged }: { data: Load
                 </button>
               ),
             },
-            { key: "day", header: "Day", render: (_v, row) => (row.legacy ? "—" : `${Math.max(Number(row.day), 0)}/90`) },
+            {
+              key: "day",
+              header: "Day",
+              render: (_v, row) => (row.legacy ? "—" : (
+                <span style={{ display: "grid", gap: 4, minWidth: 70 }}>
+                  <span style={{ fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{Math.min(Math.max(Number(row.day), 0), 90)}/90</span>
+                  <ProgressBar value={Math.min(Math.max(Number(row.day), 0), 90) / 90} size="xs" ariaLabel={`Day ${Math.max(Number(row.day), 0)} of 90`} />
+                </span>
+              )),
+            },
             { key: "phaseName", header: "Phase", render: (v, row) => (row.legacy ? "—" : String(v)) },
             { key: "status", header: "Status", render: (v, row) => (row.legacy ? <Badge status="paused" label="legacy" /> : <Badge status={String(v)} />) },
-            { key: "health", header: "Health", render: (v) => fmt((v as { score?: number })?.score ?? null, 0) },
-            { key: "tasks", header: "Due / open issues", render: (v) => { const c = v as TaskCounts | undefined; return c ? `${c.due} / ${c.open}` : "—"; } },
+            { key: "health", header: "Health", render: (v) => { const score = (v as { score?: number })?.score ?? null; return score == null ? "—" : <Pill tone={healthTone(score)} variant="soft">{fmt(score, 0)}</Pill>; } },
+            { key: "tasks", header: "Due / open issues", render: (v) => { const c = v as TaskCounts | undefined; return c ? <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}><Pill tone={c.due ? "warn" : "neutral"} size="sm">{c.due} due</Pill>{c.blocked ? <Pill tone="bad" size="sm">{c.blocked} blocked</Pill> : null}<span style={{ fontSize: 12, color: tokens.muted }}>{c.open} open</span></span> : "—"; } },
             {
               key: "sprintId",
               header: "",
@@ -1006,14 +1057,8 @@ function SprintCockpit({
         </Banner>
       ) : null}
       <LinkClientModal open={linking} sprint={s} onClose={() => setLinking(false)} call={call} />
-      <StatRow>
-        <MetricCard label="Day" value={s.legacy ? "—" : `${Math.max(s.day, 0)} / 90`} />
-        <MetricCard label="Week · phase" value={`${s.week} · ${s.phaseName}`} />
-        <MetricCard label="Status" value={s.status.replace(/_/g, " ")} />
-        <MetricCard label="Health" value={s.health?.score != null ? s.health.score : "—"} />
-        <MetricCard label="Tasks done" value={s.tasks ? `${s.tasks.done}/${s.tasks.total}` : "—"} />
-      </StatRow>
-      <Tabs tabs={TABS.map((t) => ({ id: t.id, label: t.id === "optimizations" && (s.tasks?.proposals ?? 0) > 0 ? `${t.label} (${s.tasks?.proposals})` : t.label }))} active={tab} onChange={(id) => selectTab(id as TabId)} />
+      <Tabs tabs={TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon, ...tabCount(t.id, bundle) }))} active={tab} onChange={(id) => selectTab(id as TabId)} />
+      {tab === "plan" ? <SprintOverview bundle={bundle} today={load.today} /> : null}
       {tab === "plan" ? <PlanTab bundle={bundle} call={call} /> : null}
       {tab === "keywords" ? <KeywordsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "backlinks" ? <BacklinksTab bundle={bundle} call={call} /> : null}
@@ -1026,6 +1071,104 @@ function SprintCockpit({
 }
 
 type CallFn = (tool: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;
+
+/** Count and tone on each sprint tab: what needs action is amber or red. */
+function tabCount(id: TabId, bundle: SprintBundle): { count?: number | null; countTone?: "ok" | "warn" | "bad" | "info" } {
+  const day = bundle.sprint.day;
+  switch (id) {
+    case "plan": {
+      const blocked = bundle.tasks.filter((t) => t.status === "blocked").length;
+      const due = dueOpen(bundle.tasks, day);
+      return blocked ? { count: blocked, countTone: "bad" } : due ? { count: due, countTone: "warn" } : {};
+    }
+    case "keywords": return { count: bundle.keywords.filter((k) => !k.retiredAt).length || null };
+    case "backlinks": { const live = bundle.backlinks.filter((b) => b.status === "live").length; return { count: live || null, countTone: live ? "ok" : undefined }; }
+    case "content": return { count: bundle.content.length || null };
+    case "audits": {
+      const serious = bundle.findings.filter((f) => f.severity === "critical" || f.severity === "high").length;
+      return serious ? { count: serious, countTone: "bad" } : { count: bundle.findings.length || null, countTone: bundle.findings.length ? "warn" : undefined };
+    }
+    case "optimizations": { const p = bundle.optimizations.filter((o) => o.status === "proposed").length; return { count: p || null, countTone: p ? "warn" : undefined }; }
+    case "integrations": {
+      const broken = bundle.integrations.filter((i) => statusTone(i.status) === "bad" || i.lastError).length;
+      const needs = bundle.needsYou?.open.length ?? 0;
+      return broken ? { count: broken, countTone: "bad" } : needs ? { count: needs, countTone: "warn" } : {};
+    }
+    default: return {};
+  }
+}
+
+/** The sprint at a glance: day X/90, health, tasks by state, and Search Console traffic. */
+function SprintOverview({ bundle, today }: { bundle: SprintBundle; today: string }) {
+  const s = bundle.sprint;
+  const day = Math.min(Math.max(s.day, 0), 90);
+  const segments = taskSegments(bundle.tasks.filter((t) => t.source === "template" || t.week <= 13), s.day);
+  const done = bundle.tasks.filter((t) => t.status === "done").length;
+  const score = s.health?.score ?? null;
+  const hTone = healthTone(score);
+  const signals = s.health?.signals ?? [];
+  const traffic = trafficSeries(bundle.traffic, today, 28);
+  const tracked = bundle.keywords.filter((k) => !k.retiredAt);
+  const top10 = tracked.filter((k) => (k.currentPosition ?? 999) <= 10).length;
+  const due = dueOpen(bundle.tasks, s.day);
+  const blocked = bundle.tasks.filter((t) => t.status === "blocked").length;
+  return (
+    <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+      <div style={grid(300)}>
+        <SectionCard style={top} title="Sprint progress" subtitle={s.legacy ? "Legacy sprint without the 90-day plan" : `Week ${s.week} · ${s.phaseName}`} icon={Rocket} actions={<Badge status={s.status} />}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+            <ProgressRing value={s.legacy ? 0 : day / 90} size={96} label={`Day ${day} of 90`}>
+              <span style={{ display: "grid", placeItems: "center", lineHeight: 1.1 }}>
+                <strong style={{ fontSize: 20, fontVariantNumeric: "tabular-nums" }}>{s.legacy ? "—" : day}</strong>
+                <span style={{ fontSize: 11, color: tokens.muted }}>of 90 days</span>
+              </span>
+            </ProgressRing>
+            <div style={{ display: "grid", gap: 8, flex: "1 1 180px", minWidth: 0 }}>
+              <ProgressBar done={done} total={bundle.tasks.length} label="Tasks done" size="sm" />
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {due ? <Pill tone="warn" size="sm" dot>{due} due</Pill> : <Pill tone="ok" size="sm" dot>nothing due</Pill>}
+                {blocked ? <Pill tone="bad" size="sm" dot>{blocked} blocked</Pill> : null}
+              </div>
+            </div>
+          </div>
+          <StackedBar title="Plan tasks by state" segments={segments} height={10} />
+        </SectionCard>
+        <SectionCard style={top} title="Health" subtitle={signals.length ? `${signals.length} signal${signals.length === 1 ? "" : "s"} from the weekly review` : "No signals this week"} icon={HeartPulse} tone={score == null ? undefined : hTone} strip={hTone === "bad"}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+            <ProgressRing value={score == null ? 0 : score / 100} size={96} tone={score == null ? "neutral" : hTone} label={`Health score ${score ?? "not measured"}`}>
+              <span style={{ display: "grid", placeItems: "center", lineHeight: 1.1 }}>
+                <strong style={{ fontSize: 20, fontVariantNumeric: "tabular-nums", color: score == null ? tokens.muted : tone(hTone).fg }}>{score == null ? "—" : Math.round(score)}</strong>
+                <span style={{ fontSize: 11, color: tokens.muted }}>score</span>
+              </span>
+            </ProgressRing>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: "1 1 160px", minWidth: 0 }}>
+              {signals.length ? signals.slice(0, 8).map((sig, i) => <Pill key={`${sig.type}-${i}`} tone={statusTone(sig.severity)} size="sm">{sig.type.replace(/_/g, " ")}</Pill>) : <span style={{ fontSize: 12.5, color: tokens.muted }}>The weekly review scores traffic, rankings, links and content against the plan.</span>}
+            </div>
+          </div>
+        </SectionCard>
+      </div>
+      <div style={grid(150, 10)}>
+        <KpiCard label="Clicks (28 days)" value={formatCompact(traffic.totals.clicks)} icon={Eye} delta={changeText(traffic.totals.clicks, traffic.previous.clicks, "the 28 days before")} sparkline={traffic.hasData ? traffic.clicks : undefined} hint={traffic.hasData ? "Tracked keywords, Search Console" : "No Search Console data yet"} />
+        <KpiCard label="Impressions (28 days)" value={formatCompact(traffic.totals.impressions)} icon={ChartLine} delta={changeText(traffic.totals.impressions, traffic.previous.impressions, "the 28 days before")} sparkline={traffic.hasData ? traffic.impressions : undefined} />
+        <KpiCard label="Top 10 keywords" value={`${top10} / ${tracked.length}`} icon={Target} tone={tracked.length && !top10 && s.day > 45 ? "warn" : undefined} hint={tracked.length ? "Tracked keywords on page 1" : "No keywords yet"} />
+        <KpiCard label="Live backlinks" value={bundle.backlinks.filter((b) => b.status === "live").length} icon={Share2} hint={`${bundle.backlinks.filter((b) => b.status === "submitted").length} submitted`} />
+      </div>
+      {traffic.hasData ? (
+        <SectionCard title="Search Console" subtitle={`Tracked keywords, 28 days to ${traffic.end}: ${formatCompact(traffic.totals.impressions)} impressions, ${formatCompact(traffic.totals.clicks)} clicks`} icon={ChartLine}>
+          <TrendChart
+            labels={traffic.labels}
+            series={[
+              { key: "impressions", label: "Impressions", values: traffic.impressions },
+              { key: "clicks", label: "Clicks", values: traffic.clicks, tone: "info" },
+            ]}
+            title="Search Console impressions and clicks"
+            height={130}
+          />
+        </SectionCard>
+      ) : null}
+    </div>
+  );
+}
 
 type CrmClientOption = { client: string; kind: "company" | "contact"; id: string; name: string; detail: string | null };
 
@@ -1080,14 +1223,6 @@ function LinkClientModal({ open, sprint, onClose, call }: { open: boolean; sprin
 // Plan
 // ---------------------------------------------------------------------------
 
-function chipState(task: Task, day: number): keyof typeof chipColors {
-  if (task.status === "done") return "done";
-  if (task.status === "skipped" || task.status === "na") return "skipped";
-  if (task.status === "blocked") return "blocked";
-  if (task.status === "in_progress") return "in_progress";
-  return task.dueDay == null || task.dueDay <= day ? "due" : "future";
-}
-
 function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
   const [selected, setSelected] = useState<Task | null>(null);
   const narrow = useIsNarrow();
@@ -1100,22 +1235,22 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
   const todayInfo = bundle.today as { next?: string[]; warnings?: string[]; asOf?: string };
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <Section title={`Today — ${due.length} due`}>
+      <SectionCard title={`Today: ${due.length} due`} subtitle="What the daily run opened, and who it waits on" icon={CalendarCheck} tone={due.some((t) => t.status === "blocked") ? "bad" : due.length ? "warn" : "ok"}>
         {todayInfo.next && todayInfo.next.length > 0 ? (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: tokens.muted }}>
             {todayInfo.next.map((line) => <li key={line}>{line}</li>)}
           </ul>
         ) : null}
         {todayInfo.warnings && todayInfo.warnings.length > 0 ? (
-          <p style={{ margin: 0, fontSize: 12, color: tokens.destructive }}>Last daily run: {todayInfo.warnings.join(" · ")}</p>
+          <Banner tone="bad"><span>Last daily run: {todayInfo.warnings.join(" · ")}</span></Banner>
         ) : null}
         {due.length === 0 ? (
-          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Nothing due right now.</p>
+          <EmptyState compact icon={CircleCheck} tone="ok" title="Nothing due right now" description="The next daily run opens the tasks that come due." />
         ) : (
           <DataTable
             columns={[
               { key: "title", header: "Task", render: (v, row) => <span>{String(v)} <span style={{ color: tokens.muted, fontSize: 12 }}>· W{String(row.week)}</span></span> },
-              { key: "owner", header: "Owner", render: (v) => (v === "human" ? "Person" : "Agent") },
+              { key: "owner", header: "Owner", render: (v) => <Pill size="sm" tone={v === "human" ? "warn" : "neutral"} variant="outline">{v === "human" ? "Person" : "Agent"}</Pill> },
               { key: "status", header: "Status", render: (v) => <Badge status={String(v)} /> },
               { key: "issueId", header: "Issue", render: (v, row) => (v ? <IssueLink id={String(v)} identifier={row.issueIdentifier as string | null} /> : <span style={{ color: tokens.muted, fontSize: 12 }}>next daily run</span>) },
               { key: "humanAsk", header: "Waiting on", render: (v, row) => (v ? String(v) : row.blockerReason ? String(row.blockerReason) : "") },
@@ -1123,16 +1258,9 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             rows={due}
           />
         )}
-      </Section>
-      <Section title="13-week plan">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: tokens.muted }}>
-          {Object.entries({ done: "Done", in_progress: "In progress", blocked: "Blocked", due: "Due", future: "Upcoming", skipped: "Skipped" }).map(([k, label]) => (
-            <span key={k} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, background: chipColors[k] }} />
-              {label}
-            </span>
-          ))}
-        </div>
+      </SectionCard>
+      <SectionCard title="13-week plan" subtitle={`${bundle.tasks.filter((t) => t.status === "done").length} of ${bundle.tasks.length} tasks done · tap a task for details`} icon={ListChecks}>
+        <ChartLegend items={(Object.keys(CHIP_LABEL) as ChipState[]).map((k) => ({ label: CHIP_LABEL[k], tone: CHIP_TONE[k], value: bundle.tasks.filter((t) => chipState(t, day) === k).length }))} />
         <ScrollX label="13-week plan">
         <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
           {weeks.map((w) => {
@@ -1141,7 +1269,9 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             const current = bundle.sprint.week === w;
             return (
               <div key={w} style={{ display: "grid", gridTemplateColumns: weekColumns, gap: narrow ? 8 : 10, alignItems: "start" }}>
-                <div style={{ fontSize: 12, fontWeight: current ? 700 : 500, color: current ? tokens.fg : tokens.muted, paddingTop: 5 }}>Week {w}{current ? " ◂" : ""}</div>
+                <div style={{ fontSize: 12, fontWeight: current ? 700 : 500, color: current ? tone("accent").fg : tokens.muted, paddingTop: 5, display: "flex", alignItems: "center", gap: 5 }}>
+                  {current ? <StatusDot tone="accent" pulse label="This week" /> : null}Week {w}
+                </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {items.map((t) => <TaskChip key={t.id} task={t} state={chipState(t, day)} onClick={() => setSelected(t)} />)}
                 </div>
@@ -1158,14 +1288,15 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
           ) : null}
         </div>
         </ScrollX>
-      </Section>
+      </SectionCard>
       <TaskSheet task={selected} onClose={() => setSelected(null)} call={call} />
     </div>
   );
 }
 
-function TaskChip({ task, state, onClick }: { task: Task; state: keyof typeof chipColors; onClick: () => void }) {
-  const color = chipColors[state];
+function TaskChip({ task, state, onClick }: { task: Task; state: ChipState; onClick: () => void }) {
+  const colors = tone(CHIP_TONE[state]);
+  const future = state === "future" || state === "skipped";
   return (
     <button
       type="button"
@@ -1173,9 +1304,10 @@ function TaskChip({ task, state, onClick }: { task: Task; state: keyof typeof ch
       title={`${task.title} — ${task.status.replace(/_/g, " ")}${task.owner === "human" ? " (person)" : ""}`}
       style={{
         appearance: "none",
-        border: `1px solid color-mix(in oklab, ${color} 45%, transparent)`,
-        background: `color-mix(in oklab, ${color} 14%, transparent)`,
-        color: tokens.fg,
+        border: `1px solid ${future ? tokens.border : colors.border}`,
+        borderLeft: `3px solid ${colors.solid}`,
+        background: future ? "transparent" : colors.soft,
+        color: future ? tokens.muted : tokens.fg,
         borderRadius: 8,
         padding: "4px 8px",
         fontSize: 12,
@@ -1229,14 +1361,28 @@ function KeywordsTab({ bundle, call, working }: { bundle: SprintBundle; call: Ca
   const keywords = bundle.keywords.filter((k) => showRetired || !k.retiredAt);
   const top10 = keywords.filter((k) => !k.retiredAt && (k.currentPosition ?? 999) <= 10).length;
   const impressions = keywords.filter((k) => !k.retiredAt).reduce((n, k) => n + (k.impressions ?? 0), 0);
+  const trends = bundle.keywords.filter((k) => !k.retiredAt).map((k) => positionTrendTone(k.history.map((h) => h.position).filter((p): p is number => p != null)));
+  const improved = trends.filter((t) => t === "ok").length;
+  const declined = trends.filter((t) => t === "bad").length;
+  const steady = trends.length - improved - declined;
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <StatRow>
-        <MetricCard label="Tracked" value={bundle.keywords.filter((k) => !k.retiredAt).length} />
-        <MetricCard label="Top 10" value={top10} />
-        <MetricCard label="Impressions (8 days)" value={impressions} />
-        <MetricCard label="Priority" value={bundle.keywords.filter((k) => k.isPriority && !k.retiredAt).length} />
-      </StatRow>
+      <div style={grid(150, 10)}>
+        <KpiCard label="Tracked" value={bundle.keywords.filter((k) => !k.retiredAt).length} icon={Target} />
+        <KpiCard label="Top 10" value={top10} icon={CircleCheck} tone={top10 ? "ok" : undefined} hint={improved || declined ? `${improved} up · ${declined} down` : undefined} />
+        <KpiCard label="Impressions (8 days)" value={formatCompact(impressions)} icon={Eye} />
+        <KpiCard label="Priority" value={bundle.keywords.filter((k) => k.isPriority && !k.retiredAt).length} icon={Rocket} />
+      </div>
+      {bundle.keywords.some((k) => !k.retiredAt) ? (
+        <div style={grid(320)}>
+          <SectionCard style={top} title="Positions" subtitle="Tracked keywords by where they rank in Google" icon={ChartColumn}>
+            <BarList bare title="Keywords by position" items={positionBuckets(bundle.keywords)} formatValue={(v) => String(v)} />
+          </SectionCard>
+          <SectionCard style={top} title="Movement" subtitle="First to latest position in the tracked history" icon={Activity}>
+            <StackedBar title="Keyword movement" segments={[{ label: "Moved up", value: improved, tone: "ok" }, { label: "Steady", value: steady, tone: "neutral" }, { label: "Moved down", value: declined, tone: "bad" }]} height={12} />
+          </SectionCard>
+        </div>
+      ) : null}
       <Toolbar>
         <label style={{ fontSize: 12, color: tokens.muted, display: "inline-flex", gap: 6, alignItems: "center", minHeight: 36 }}>
           <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} /> Show retired
@@ -1244,7 +1390,7 @@ function KeywordsTab({ bundle, call, working }: { bundle: SprintBundle; call: Ca
         <Button type="button" onClick={() => setAdding(true)}>+ Keywords</Button>
       </Toolbar>
       {keywords.length === 0 ? (
-        <EmptyState title="No keywords yet" description="Week 2 of the plan picks 20–30 winnable keywords. Positions arrive daily from Search Console." />
+        <EmptyState icon={Target} title="No keywords yet" description="Week 2 of the plan picks 20–30 winnable keywords. Positions arrive daily from Search Console." />
       ) : (
         <DataTable
           columns={[
@@ -1261,7 +1407,7 @@ function KeywordsTab({ bundle, call, working }: { bundle: SprintBundle; call: Ca
                 </Select>
               ),
             },
-            { key: "currentPosition", header: "Position", render: (v) => fmt(v as number | null) },
+            { key: "currentPosition", header: "Position", render: (v) => { const p = v as number | null; return p == null ? "—" : <Pill size="sm" tone={p <= 3 ? "ok" : p <= 10 ? "info" : p <= 20 ? "warn" : "neutral"}>{fmt(p)}</Pill>; } },
             { key: "history", header: "Trend", render: (v) => <Sparkline values={((v as Keyword["history"]) ?? []).map((h) => h.position).filter((p): p is number => p != null)} /> },
             { key: "impressions", header: "Impr.", render: (v) => fmt(v as number | null, 0) },
             { key: "clicks", header: "Clicks", render: (v) => fmt(v as number | null, 0) },
@@ -1316,12 +1462,17 @@ function BacklinksTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) 
   const counts = bundle.backlinks.reduce<Record<string, number>>((acc, b) => { acc[b.status] = (acc[b.status] ?? 0) + 1; return acc; }, {});
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <StatRow>
-        <MetricCard label="Live" value={counts.live ?? 0} />
-        <MetricCard label="Submitted" value={counts.submitted ?? 0} />
-        <MetricCard label="Not started" value={counts.not_started ?? 0} />
-        <MetricCard label="Rejected / lost" value={(counts.rejected ?? 0) + (counts.lost ?? 0)} />
-      </StatRow>
+      <div style={grid(150, 10)}>
+        <KpiCard label="Live" value={counts.live ?? 0} icon={CircleCheck} tone={counts.live ? "ok" : undefined} />
+        <KpiCard label="Submitted" value={counts.submitted ?? 0} icon={Activity} tone={counts.submitted ? "warn" : undefined} hint="Waiting for the site" />
+        <KpiCard label="Not started" value={counts.not_started ?? 0} icon={ListChecks} />
+        <KpiCard label="Rejected / lost" value={(counts.rejected ?? 0) + (counts.lost ?? 0)} icon={CircleAlert} tone={(counts.rejected ?? 0) + (counts.lost ?? 0) ? "bad" : undefined} />
+      </div>
+      {bundle.backlinks.length ? (
+        <SectionCard title="Backlinks by status" subtitle={`${bundle.backlinks.length} in the plan`} icon={Share2}>
+          <StackedBar title="Backlinks by status" segments={backlinkSegments(bundle.backlinks)} height={12} />
+        </SectionCard>
+      ) : null}
       <Toolbar><Button type="button" onClick={() => setAdding(true)}>+ Backlink</Button></Toolbar>
       <DataTable
         columns={[
@@ -1332,9 +1483,12 @@ function BacklinksTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) 
             key: "status",
             header: "Status",
             render: (v, row) => (
+              <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+              <StatusDot tone={statusTone(String(v))} label={String(v).replace(/_/g, " ")} />
               <Select value={String(v)} style={{ height: 28, fontSize: 12, width: 130, minWidth: 0 }} onChange={(e) => { setNotes(""); setUrl(String(row.url ?? "")); setEditing({ link: row as unknown as Backlink, status: e.target.value }); }}>
                 {["not_started", "in_progress", "submitted", "live", "rejected", "lost"].map((st) => <option key={st} value={st}>{st.replace(/_/g, " ")}</option>)}
               </Select>
+              </span>
             ),
           },
           { key: "notes", header: "Notes", render: (v) => <span style={{ fontSize: 12, color: tokens.muted, whiteSpace: "pre-wrap" }}>{String(v ?? "")}</span> },
@@ -1390,6 +1544,14 @@ function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
   const pillars = bundle.content.filter((c) => c.type === "pillar");
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      {bundle.content.length ? (
+        <div style={grid(150, 10)}>
+          <KpiCard label="Live" value={bundle.content.filter((c) => c.status === "live").length} icon={CircleCheck} tone={bundle.content.some((c) => c.status === "live") ? "ok" : undefined} />
+          <KpiCard label="In the works" value={bundle.content.filter((c) => ["idea", "drafting", "scheduled"].includes(c.status)).length} icon={FileText} />
+          <KpiCard label="In review" value={bundle.content.filter((c) => c.status === "review").length} icon={Eye} tone={bundle.content.some((c) => c.status === "review") ? "warn" : undefined} />
+          <KpiCard label="Clicks" value={formatCompact(bundle.content.reduce((n, c) => n + (c.clicks ?? 0), 0))} icon={ChartLine} hint="Live content, Search Console" />
+        </div>
+      ) : null}
       <Toolbar><Button type="button" onClick={() => setAdding(true)}>+ Content</Button></Toolbar>
       <DataTable
         columns={[
@@ -1399,12 +1561,15 @@ function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             key: "status",
             header: "Status",
             render: (v, row) => (
+              <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+              <StatusDot tone={statusTone(String(v))} label={String(v)} />
               <Select value={String(v)} style={{ height: 28, fontSize: 12, width: 120, minWidth: 0 }} onChange={(e) => {
                 if (e.target.value === "live" && !row.targetUrl) { setLiveUrl(""); setLiveFor(row as unknown as Content); return; }
                 void call("update-content", { contentId: row.id, status: e.target.value });
               }}>
                 {["idea", "drafting", "review", "scheduled", "live", "archived"].map((st) => <option key={st} value={st}>{st}</option>)}
               </Select>
+              </span>
             ),
           },
           { key: "impressions", header: "Impr.", render: (v) => fmt(v as number | null, 0) },
@@ -1468,7 +1633,7 @@ function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; call: Call
   const bySeverity = bundle.findings.reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc; }, {});
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <Section title="Snapshots" actions={<Button type="button" variant="secondary" style={small} disabled={working === "run-audit-snapshot"} onClick={() => void call("run-audit-snapshot", { sprintId: bundle.sprint.sprintId }, "Snapshot recorded.")}>Take snapshot now</Button>}>
+      <SectionCard title="Snapshots" subtitle="Day 0, 30, 60 and 90, then monthly" icon={Gauge} actions={<Button type="button" variant="secondary" style={small} disabled={working === "run-audit-snapshot"} onClick={() => void call("run-audit-snapshot", { sprintId: bundle.sprint.sprintId }, "Snapshot recorded.")}>Take snapshot now</Button>}>
         {bundle.snapshots.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>The daily run records snapshots on days 0, 30, 60 and 90, then monthly.</p>
         ) : (
@@ -1486,13 +1651,11 @@ function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; call: Call
             rows={bundle.snapshots}
           />
         )}
-      </Section>
-      <Section title={`Open findings (${bundle.findings.length})`}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {["critical", "high", "medium", "low"].map((sev) => <Badge key={sev} status={sev} label={`${sev}: ${bySeverity[sev] ?? 0}`} />)}
-        </div>
+      </SectionCard>
+      <SectionCard title={`Open findings (${bundle.findings.length})`} subtitle="From the site checks; resolved when a re-run no longer reports them" icon={HeartPulse} tone={(bySeverity.critical ?? 0) + (bySeverity.high ?? 0) ? "bad" : bundle.findings.length ? "warn" : "ok"} strip={(bySeverity.critical ?? 0) > 0}>
+        {bundle.findings.length ? <StackedBar title="Open findings by severity" segments={severitySegments(bundle.findings)} height={10} /> : null}
         {bundle.findings.length === 0 ? (
-          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No open findings. Site checks with a sprint record findings here and resolve them when a re-run no longer reports them.</p>
+          <EmptyState compact tone="ok" icon={CircleCheck} title="No open findings" description="Site checks with a sprint record findings here and resolve them when a re-run no longer reports them." />
         ) : (
           <DataTable
             columns={[
@@ -1505,7 +1668,7 @@ function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; call: Call
             rows={bundle.findings}
           />
         )}
-      </Section>
+      </SectionCard>
     </div>
   );
 }
@@ -1520,15 +1683,26 @@ function OptimizationsTab({ bundle, call }: { bundle: SprintBundle; call: CallFn
   const proposed = bundle.optimizations.filter((o) => o.status === "proposed");
   const others = bundle.optimizations.filter((o) => o.status !== "proposed");
   const board = Object.entries(bundle.scoreboard ?? {});
+  const results = optimizationSegments(bundle.scoreboard, bundle.optimizations);
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <Section title={`Proposals (${proposed.length})`}>
+      {results.some((r) => r.value > 0) ? (
+        <div style={grid(320)}>
+          <SectionCard style={top} title="Results" subtitle="Approved changes measured after 14 days" icon={ChartPie}>
+            <DonutChart title="Optimization results" segments={results} centerValue={results.reduce((n, r) => n + r.value, 0)} centerLabel="measured" />
+          </SectionCard>
+          <SectionCard style={top} title="Win rate by type" subtitle="Wins out of measured changes, per hypothesis type" icon={ChartColumn}>
+            <BarList bare title="Win rate by hypothesis type" items={board.map(([type, e]) => { const n = e.wins + e.losses + e.noChange + (e.inconclusive ?? 0); return { label: type.replace(/_/g, " "), value: n ? Math.round((e.wins / n) * 100) : 0, tone: e.wins > e.losses ? "ok" as const : e.losses > e.wins ? "bad" as const : "neutral" as const }; })} formatValue={(v) => `${v}%`} />
+          </SectionCard>
+        </div>
+      ) : null}
+      <SectionCard title={`Proposals (${proposed.length})`} subtitle="Changes the weekly review suggests" icon={Lightbulb} tone={proposed.length ? "warn" : undefined}>
         {proposed.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>No proposals. The weekly review (Mondays) proposes at most 2 per week in the first 4 weeks.</p>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
             {proposed.map((o) => (
-              <div key={o.id} style={{ border: `1px solid ${tokens.border}`, borderRadius: 12, padding: 12, display: "grid", gap: 6 }}>
+              <div key={o.id} style={{ border: `1px solid ${tokens.border}`, borderLeft: `3px solid ${tone(statusTone(o.severity)).solid}`, borderRadius: 12, padding: 12, display: "grid", gap: 6, minWidth: 0 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                   <strong style={{ fontSize: 14, minWidth: 0 }}>{o.hypothesis}</strong>
                   <span style={{ display: "inline-flex", gap: 6 }}><Badge status={o.severity} label={o.signalType} /></span>
@@ -1544,8 +1718,8 @@ function OptimizationsTab({ bundle, call }: { bundle: SprintBundle; call: CallFn
             ))}
           </div>
         )}
-      </Section>
-      <Section title="History">
+      </SectionCard>
+      <SectionCard title="History" icon={Activity}>
         <DataTable
           columns={[
             { key: "hypothesis", header: "Hypothesis" },
@@ -1556,8 +1730,8 @@ function OptimizationsTab({ bundle, call }: { bundle: SprintBundle; call: CallFn
           rows={others}
           emptyMessage="Nothing approved or rejected yet."
         />
-      </Section>
-      <Section title="Scoreboard">
+      </SectionCard>
+      <SectionCard title="Scoreboard" icon={ListChecks}>
         {board.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Results appear after the first 14-day measurement.</p>
         ) : (
@@ -1572,7 +1746,7 @@ function OptimizationsTab({ bundle, call }: { bundle: SprintBundle; call: CallFn
             rows={board.map(([type, e]) => ({ id: type, type, wins: e.wins, losses: e.losses, noChange: e.noChange, inconclusive: e.inconclusive ?? 0 }))}
           />
         )}
-      </Section>
+      </SectionCard>
       <Modal open={!!rejecting} title="Reject proposal" onClose={() => setRejecting(null)}
         footer={(
           <>
@@ -1648,7 +1822,7 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
       />
       {bundle.sprint.site ? <SiteRepoSection sprintId={sprintId} site={bundle.sprint.site} projects={bundle.projects ?? []} prefix={bundle.prefix} call={call} /> : null}
       <SetupChecklist title="Setup for this sprint" items={bundle.setup ?? []} />
-      <Section title="Google Search Console" actions={gsc ? <Badge status={gsc.status} label={gsc.auth === "service_account" ? `${gsc.status} · service account` : gsc.auth === "oauth" ? `${gsc.status} · OAuth` : gsc.status} /> : null}>
+      <Section title="Google Search Console" icon={Search} actions={gsc ? <Badge status={gsc.status} label={gsc.auth === "service_account" ? `${gsc.status} · service account` : gsc.auth === "oauth" ? `${gsc.status} · OAuth` : gsc.status} /> : null}>
         <div style={{ fontSize: 13, display: "grid", gap: 4 }}>
           <span style={{ color: tokens.muted }}>
             {load.settings.serviceAccountEmail
@@ -1657,7 +1831,7 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
           </span>
           <span style={breakAnywhere}>Property: {gsc?.propertyUrl ?? <em style={{ color: tokens.muted }}>none selected</em>}</span>
           <span style={{ color: tokens.muted }}>Last pull: {gsc?.lastPullAt ? gsc.lastPullAt.slice(0, 16).replace("T", " ") : "never"}</span>
-          {gsc?.lastError ? <span style={{ color: tokens.destructive }}>{gsc.lastError}</span> : null}
+          {gsc?.lastError ? <span style={{ color: tone("bad").fg }}>{gsc.lastError}</span> : null}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {load.settings.serviceAccountEmail ? (
@@ -1691,7 +1865,7 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
           </div>
         ) : null}
       </Section>
-      <Section title="PageSpeed Insights" actions={pagespeed ? <Badge status={pagespeed.status} /> : null}>
+      <Section title="PageSpeed Insights" icon={Gauge} actions={pagespeed ? <Badge status={pagespeed.status} /> : null}>
         <span style={{ fontSize: 13, color: tokens.muted }}>Daily: home page plus up to 3 rotating target pages (mobile). {load.settings.pagespeedApiKey ? "API key set." : "No API key set — Google may rate-limit."}</span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button type="button" variant="secondary" onClick={() => void toggle("pagespeed", pagespeed?.status !== "enabled")}>{pagespeed?.status === "enabled" ? "Disable" : "Enable"}</Button>
@@ -1702,8 +1876,8 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
             columns={[
               { key: "url", header: "URL", render: (v) => <span style={{ fontSize: 12, wordBreak: "break-all" }}>{String(v)}</span> },
               { key: "strategy", header: "Device" },
-              { key: "performance", header: "Perf." },
-              { key: "seo", header: "SEO" },
+              { key: "performance", header: "Perf.", render: (v) => scorePill(v as number | null) },
+              { key: "seo", header: "SEO", render: (v) => scorePill(v as number | null) },
               { key: "lcpMs", header: "LCP", render: (v) => (v == null ? "—" : `${(Number(v) / 1000).toFixed(1)} s`) },
               { key: "cls", header: "CLS", render: (v) => fmt(v as number | null, 2) },
               { key: "inpMs", header: "INP", render: (v) => (v == null ? "—" : `${Math.round(Number(v))} ms`) },
@@ -1714,12 +1888,12 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
           />
         ) : null}
       </Section>
-      <Section title="Bing Webmaster Tools" actions={bing ? <Badge status={bing.status} /> : null}>
+      <Section title="Bing Webmaster Tools" icon={Share2} actions={bing ? <Badge status={bing.status} /> : null}>
         <span style={{ fontSize: 13, color: tokens.muted }}>
           The agent adds and verifies the site through the Bing API (bing-add-site → BingSiteAuth.xml via the repo → bing-verify-site), then pulls inbound link counts daily. {load.settings.bingApiKey ? "API key set." : "Needs the Bing API key (see Setup)."}
           {typeof bing?.stats?.totalInboundLinks === "number" ? ` Inbound links: ${String(bing.stats.totalInboundLinks)}.` : ""}
         </span>
-        {bing?.lastError ? <span style={{ color: tokens.destructive, fontSize: 13 }}>{bing.lastError}</span> : null}
+        {bing?.lastError ? <span style={{ color: tone("bad").fg, fontSize: 13 }}>{bing.lastError}</span> : null}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <Input value={bingUrl} onChange={(e) => setBingUrl(e.target.value)} style={{ maxWidth: 320, flex: "1 1 220px", minWidth: 0 }} aria-label="Bing site URL" />
           <Button type="button" variant="secondary" onClick={() => void toggle("bing", bing?.status !== "enabled")}>{bing?.status === "enabled" ? "Disable" : "Enable"}</Button>
@@ -1727,6 +1901,13 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
       </Section>
     </div>
   );
+}
+
+/** Lighthouse-style score: 90+ green, 50+ amber, below red. */
+function scorePill(value: number | null) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const score = value <= 1 ? Math.round(value * 100) : Math.round(value);
+  return <Pill size="sm" tone={score >= 90 ? "ok" : score >= 50 ? "warn" : "bad"}>{score}</Pill>;
 }
 
 export function SeoSidebar({ context }: PluginSidebarProps) {

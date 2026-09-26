@@ -1,10 +1,28 @@
 /**
  * Presentational pieces of the Setup page (no host hooks, so they render in
- * tests). Links come in as `linkFor(href)` → anchor props.
+ * tests). Links come in as `linkFor(href)` → anchor props. Colours come from
+ * the pib-plugin-ui palette: status tones for items, module accents for
+ * modules.
  */
 import type { AnchorHTMLAttributes, ReactNode } from "react";
-import { Button, tokens } from "@partnersinbiz/pib-plugin-ui";
-import type { SetupItem, SetupItemStatus } from "../kit-setup.js";
+import {
+  Button,
+  CircleAlert,
+  CircleCheck,
+  CircleDot,
+  CircleQuestionMark,
+  Hourglass,
+  IconBadge,
+  Pill,
+  ProgressBar as UiProgressBar,
+  ProgressRing,
+  moduleAccent,
+  tokens,
+  tone,
+  type LucideIcon,
+  type ToneInput,
+} from "@partnersinbiz/pib-plugin-ui";
+import { MODULES, setupProgress, type ModuleKey, type SetupItem, type SetupItemStatus } from "../kit-setup.js";
 
 export type LinkPropsFor = (href: string) => AnchorHTMLAttributes<HTMLAnchorElement>;
 
@@ -16,62 +34,86 @@ export const STATUS_LABEL: Record<SetupItemStatus, string> = {
   unknown: "Unknown",
 };
 
-function statusColors(status: SetupItemStatus): { bg: string; fg: string } {
-  if (status === "done") return { bg: "color-mix(in oklab, var(--chart-2) 18%, transparent)", fg: tokens.fg };
-  if (status === "missing") return { bg: "color-mix(in oklab, var(--destructive) 16%, transparent)", fg: tokens.fg };
-  if (status === "blocked") return { bg: "color-mix(in oklab, var(--chart-4) 20%, transparent)", fg: tokens.fg };
-  return { bg: tokens.secondary, fg: tokens.secondaryFg };
-}
+export const STATUS_TONE: Record<SetupItemStatus, ToneInput> = { done: "ok", missing: "bad", blocked: "warn", optional: "neutral", unknown: "neutral" };
+export const STATUS_ICON: Record<SetupItemStatus, LucideIcon> = { done: CircleCheck, missing: CircleAlert, blocked: Hourglass, optional: CircleDot, unknown: CircleQuestionMark };
 
-export function Chip({ children, tone = "neutral" }: { children: ReactNode; tone?: SetupItemStatus | "neutral" }) {
-  const colors = tone === "neutral" ? { bg: tokens.secondary, fg: tokens.secondaryFg } : statusColors(tone);
-  return (
-    <span style={{
-      display: "inline-flex",
-      alignItems: "center",
-      height: 22,
-      padding: "0 8px",
-      borderRadius: 999,
-      fontSize: 11.5,
-      fontWeight: 600,
-      background: colors.bg,
-      color: colors.fg,
-      whiteSpace: "nowrap",
-    }}>
-      {children}
-    </span>
-  );
+export function Chip({ children, tone: t = "neutral", icon }: { children: ReactNode; tone?: SetupItemStatus | "neutral"; icon?: LucideIcon }) {
+  return <Pill tone={t === "neutral" ? "neutral" : STATUS_TONE[t]} icon={icon}>{children}</Pill>;
 }
 
 export function StatusChip({ status }: { status: SetupItemStatus }) {
-  return <Chip tone={status}>{STATUS_LABEL[status]}</Chip>;
+  return <Chip tone={status} icon={STATUS_ICON[status]}>{STATUS_LABEL[status]}</Chip>;
 }
 
-export function ProgressBar({ done, total, label, size = "md" }: { done: number; total: number; label?: string; size?: "sm" | "md" }) {
+/** Progress with the Setup wording ("3 of 5 done · 60%"). Green when complete; `module` tints it with the module accent. */
+export function ProgressBar({ done, total, label, size = "md", module }: { done: number; total: number; label?: string; size?: "sm" | "md"; module?: ModuleKey }) {
   const percent = total === 0 ? 100 : Math.round((done / total) * 100);
-  const height = size === "sm" ? 6 : 10;
+  const color = percent === 100 ? tone("ok").solid : module ? moduleAccent(module).solid : undefined;
   return (
-    <div style={{ display: "grid", gap: 6 }}>
-      {label ? (
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: tokens.muted }}>
-          <span>{label}</span>
-          <span>{total === 0 ? "Nothing required" : `${done} of ${total} done · ${percent}%`}</span>
+    <UiProgressBar
+      done={done}
+      total={total}
+      label={label}
+      showValue={!!label}
+      valueText={total === 0 ? "Nothing required" : `${done} of ${total} done · ${percent}%`}
+      size={size === "sm" ? "sm" : "lg"}
+      color={color}
+      ariaLabel={label ?? "Progress"}
+    />
+  );
+}
+
+/** Overall ring plus one bar per module, each in its module's accent. */
+export function ProgressOverview({ done, total, modules }: {
+  done: number;
+  total: number;
+  modules: Array<{ key: string; module: ModuleKey; done: number | null; total: number | null }>;
+}) {
+  const left = total - done;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "center", minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flex: "0 1 240px", minWidth: 0 }}>
+        <ProgressRing done={done} total={total} size={84} label="Required setup items done" />
+        <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+          <strong style={{ fontSize: 22, fontWeight: 650, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>{done} of {total}</strong>
+          <span style={{ fontSize: 12.5, color: tokens.muted }}>required items done</span>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: left ? tone("warn").fg : tone("ok").fg }}>{total === 0 ? "Nothing required" : left ? `${left} left` : "All done"}</span>
         </div>
-      ) : null}
-      <div
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        style={{ height, borderRadius: 999, background: tokens.secondary, overflow: "hidden" }}
-      >
-        <div style={{ width: `${percent}%`, height: "100%", borderRadius: 999, background: percent === 100 ? "var(--chart-2)" : tokens.primary, transition: "width 200ms ease" }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(220px, 100%), 1fr))", gap: "10px 16px", flex: "1 1 320px", minWidth: 0 }}>
+        {modules.map((m) => <ModuleProgressRow key={m.key} module={m.module} done={m.done} total={m.total} />)}
       </div>
     </div>
   );
 }
 
-export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean }) {
+export function ModuleProgressRow({ module, done, total }: { module: ModuleKey; done: number | null; total: number | null }) {
+  const accent = moduleAccent(module);
+  const complete = done !== null && total !== null && done >= total;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr)", gap: 10, alignItems: "center", minWidth: 0 }}>
+      <IconBadge icon={accent.icon} accent={accent} size="xs" />
+      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
+          <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{MODULES[module].title}</span>
+          <span style={{ color: complete ? tone("ok").fg : tokens.muted, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", fontWeight: complete ? 600 : 400 }}>
+            {done === null || total === null ? "checking…" : complete ? "Done" : `${done}/${total}`}
+          </span>
+        </div>
+        <UiProgressBar done={done ?? 0} total={total ?? 1} size="xs" color={complete ? tone("ok").solid : accent.solid} ariaLabel={`${MODULES[module].title} setup`} />
+      </div>
+    </div>
+  );
+}
+
+/** Done/total for a module view, or nulls while checking. */
+export function moduleCounts(status: { items: SetupItem[] } | null): { done: number | null; total: number | null } {
+  if (!status) return { done: null, total: null };
+  const p = setupProgress(status.items);
+  return { done: p.done, total: p.total };
+}
+
+export function Switch({ checked, onChange, label, disabled, color }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; color?: string }) {
   return (
     <button
       type="button"
@@ -83,9 +125,10 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
       style={{
         width: 40,
         height: 22,
+        minHeight: 22,
         borderRadius: 999,
         border: `1px solid ${checked ? "transparent" : tokens.border}`,
-        background: checked ? tokens.primary : tokens.secondary,
+        background: checked ? (color ?? tokens.primary) : tokens.secondary,
         position: "relative",
         cursor: disabled ? "not-allowed" : "pointer",
         padding: 0,
@@ -100,7 +143,7 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
         width: 16,
         height: 16,
         borderRadius: 999,
-        background: checked ? tokens.primaryFg : tokens.bg,
+        background: checked ? "#fff" : tokens.bg,
         boxShadow: "0 1px 2px color-mix(in oklab, black 20%, transparent)",
         transition: "left 120ms ease",
       }} />
@@ -108,42 +151,51 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
   );
 }
 
-export function Card({ children, highlight }: { children: ReactNode; highlight?: boolean }) {
+export function Card({ children, highlight, module }: { children: ReactNode; highlight?: boolean; module?: ModuleKey }) {
+  const accent = module ? moduleAccent(module) : null;
   return (
     <div style={{
+      position: "relative",
       display: "grid",
       gap: 10,
       padding: 14,
       borderRadius: 12,
-      border: `1px solid ${highlight ? tokens.ring : tokens.border}`,
-      background: tokens.bg,
+      border: `1px solid ${highlight ? (accent?.border ?? tokens.ring) : tokens.border}`,
+      background: highlight && accent ? `linear-gradient(180deg, ${accent.soft}, transparent 60%), ${tokens.bg}` : tokens.bg,
+      minWidth: 0,
     }}>
+      {highlight && accent ? <span aria-hidden="true" style={{ position: "absolute", top: -1, left: -1, right: -1, height: 3, borderRadius: "12px 12px 0 0", background: accent.solid }} /> : null}
       {children}
     </div>
   );
 }
 
-export function ModuleCard({ title, description, installed, enabled, onToggle, hint }: {
+export function ModuleCard({ title, description, installed, enabled, onToggle, hint, module }: {
   title: string;
   description: string;
   installed: boolean | null;
   enabled: boolean;
   onToggle: (next: boolean) => void;
   hint?: string | null;
+  module?: ModuleKey;
 }) {
+  const accent = module ? moduleAccent(module) : null;
   return (
-    <Card highlight={enabled}>
+    <Card highlight={enabled} module={module}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-        <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <strong style={{ fontSize: 14 }}>{title}</strong>
-            {installed === null ? null : <Chip>{installed ? "Installed" : "Not installed"}</Chip>}
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", minWidth: 0 }}>
+          {accent ? <IconBadge icon={accent.icon} accent={enabled ? accent : undefined} size="md" /> : null}
+          <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 14 }}>{title}</strong>
+              {installed === null ? null : <Pill tone={installed ? "neutral" : "warn"} size="sm">{installed ? "Installed" : "Not installed"}</Pill>}
+            </div>
+            <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{description}</p>
           </div>
-          <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{description}</p>
         </div>
-        <Switch checked={enabled} onChange={onToggle} label={`Use ${title}`} />
+        <Switch checked={enabled} onChange={onToggle} label={`Use ${title}`} color={accent?.solid} />
       </div>
-      {hint ? <p style={{ margin: 0, fontSize: 12, color: tokens.fg, lineHeight: 1.4 }}>{hint}</p> : null}
+      {hint ? <p style={{ margin: 0, fontSize: 12, color: tone("info").fg, lineHeight: 1.4 }}>{hint}</p> : null}
     </Card>
   );
 }
@@ -165,32 +217,36 @@ export function ItemRow({ item, linkFor, onAction, busy }: {
   busy?: boolean;
 }) {
   const done = item.status === "done";
+  const t = tone(STATUS_TONE[item.status]);
   return (
-    <div style={{ display: "grid", gap: 8, padding: "12px 0", borderTop: `1px solid ${tokens.border}` }}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <StatusChip status={item.status} />
-        <strong style={{ fontSize: 13.5 }}>{item.title}</strong>
-        {item.required ? null : <Chip>Optional</Chip>}
-        <span style={{ flex: 1 }} />
-        {item.href ? <ItemLink href={item.href} label={item.hrefLabel} linkFor={linkFor} /> : null}
-        {!done && item.action && onAction ? (
-          <Button type="button" onClick={() => onAction(item)} disabled={busy}>
-            {busy ? "Working…" : item.action.label || "Do it for me"}
-          </Button>
+    <div style={{ display: "grid", gridTemplateColumns: "3px minmax(0, 1fr)", gap: 12, padding: "12px 0", borderTop: `1px solid ${tokens.border}` }}>
+      <span aria-hidden="true" style={{ borderRadius: 999, background: t.solid, opacity: done ? 0.45 : item.status === "optional" || item.status === "unknown" ? 0.35 : 1 }} />
+      <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <StatusChip status={item.status} />
+          <strong style={{ fontSize: 13.5, color: done ? tokens.muted : tokens.fg }}>{item.title}</strong>
+          {item.required ? null : <Chip>Optional</Chip>}
+          <span style={{ flex: 1 }} />
+          {item.href ? <ItemLink href={item.href} label={item.hrefLabel} linkFor={linkFor} /> : null}
+          {!done && item.action && onAction ? (
+            <Button type="button" onClick={() => onAction(item)} disabled={busy}>
+              {busy ? "Working…" : item.action.label || "Do it for me"}
+            </Button>
+          ) : null}
+        </div>
+        {item.detail ? <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.5 }}>{item.detail}</p> : null}
+        {!done && item.steps?.length ? (
+          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12.5, lineHeight: 1.6 }}>
+            {item.steps.map((step, index) => <li key={index}>{step}</li>)}
+          </ol>
+        ) : null}
+        {item.agentNext ? (
+          <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5 }}>
+            <span style={{ color: tokens.muted }}>{done ? "The agent now: " : "Once done, the agent: "}</span>
+            {item.agentNext}
+          </p>
         ) : null}
       </div>
-      {item.detail ? <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.5 }}>{item.detail}</p> : null}
-      {!done && item.steps?.length ? (
-        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12.5, lineHeight: 1.6 }}>
-          {item.steps.map((step, index) => <li key={index}>{step}</li>)}
-        </ol>
-      ) : null}
-      {item.agentNext ? (
-        <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5 }}>
-          <span style={{ color: tokens.muted }}>{done ? "The agent now: " : "Once done, the agent: "}</span>
-          {item.agentNext}
-        </p>
-      ) : null}
     </div>
   );
 }

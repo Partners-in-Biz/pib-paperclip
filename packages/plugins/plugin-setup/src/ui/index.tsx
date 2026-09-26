@@ -6,7 +6,7 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Modal, Page, Section, Select, Tabs, breakAnywhere, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, SectionCard, Select, Tabs, breakAnywhere, errorText, fluidColumns, moduleAccent, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, SETUP_PLUGIN, setupProgress, type ModuleKey, type SetupItem } from "../kit-setup.js";
 import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupMissing } from "../finish-issue.js";
@@ -14,7 +14,7 @@ import { guidedOrder, overallProgress, PHASES, entryId, type GuideEntry } from "
 import { crmHint, effectiveModules, ORDERED_MODULES, type ModuleChoice } from "../modules.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { fetchCompanies, fetchPluginConfig, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
-import { Card, Chip, ItemLink, ItemRow, ModuleCard, ProgressBar, type LinkPropsFor } from "./components.js";
+import { Card, Chip, ItemLink, ItemRow, ModuleCard, ModuleProgressRow, ProgressBar, ProgressOverview, moduleCounts, type LinkPropsFor } from "./components.js";
 import { useSetupData, type ModuleView, type SetupData } from "./data.js";
 
 export { resolveModuleViews } from "./data.js";
@@ -121,7 +121,7 @@ export function SetupPage({ context }: PluginPageProps) {
   }
 
   if (!companyId) {
-    return <Page title="Setup" description="Open a company first."><EmptyState title="No company selected" /></Page>;
+    return <Page title="Setup" description="Open a company first." accent="setup"><EmptyState title="No company selected" /></Page>;
   }
 
   const actions = (
@@ -136,31 +136,35 @@ export function SetupPage({ context }: PluginPageProps) {
       title="Setup"
       description="What this company uses, and what each module still needs before its agents can run on their own."
       message={message || data.error || undefined}
+      messageTone={!message && data.error ? "bad" : undefined}
       actions={actions}
+      accent="setup"
     >
       {data.load && !firstVisit ? (
-        <Section title="Progress" actions={(
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {data.load.finishIssueId ? <a {...linkFor(`/issues/${data.load.finishIssueId}`)} style={{ fontSize: 13, color: tokens.primary, textDecoration: "none" }}>Finish setup issue →</a> : null}
-            <Button type="button" variant="secondary" onClick={doRefreshIssue} disabled={busy === "issue"}>{busy === "issue" ? "Updating…" : "Update issue now"}</Button>
-          </div>
-        )}>
-          <ProgressBar done={overall.done} total={overall.total} label="Required items" />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {views.map((view) => {
-              const progress = view.status ? setupProgress(view.status.items) : null;
-              return (
-                <Chip key={view.pluginKey} tone={progress ? (progress.missing.length === 0 ? "done" : "missing") : "neutral"}>
-                  {MODULES[view.module].title}: {progress ? `${progress.done}/${progress.total}` : "checking…"}
-                </Chip>
-              );
-            })}
-          </div>
-        </Section>
+        <SectionCard
+          title="Progress"
+          icon={ListChecks}
+          subtitle="Required items across the modules this company uses."
+          actions={(
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {data.load.finishIssueId ? <a {...linkFor(`/issues/${data.load.finishIssueId}`)} style={{ fontSize: 13, color: tokens.primary, textDecoration: "none" }}>Finish setup issue →</a> : null}
+              <Button type="button" variant="secondary" onClick={doRefreshIssue} disabled={busy === "issue"}>{busy === "issue" ? "Updating…" : "Update issue now"}</Button>
+            </div>
+          )}
+        >
+          <ProgressOverview
+            done={overall.done}
+            total={overall.total}
+            modules={views.map((view) => ({ key: view.pluginKey, module: view.module, ...moduleCounts(view.status) }))}
+          />
+        </SectionCard>
       ) : null}
 
       <Tabs
-        tabs={[{ id: "modules", label: "1. Modules" }, { id: "checklist", label: "2. Checklist" }]}
+        tabs={[
+          { id: "modules", label: "1. Modules", icon: Blocks },
+          { id: "checklist", label: "2. Checklist", icon: ListChecks, count: data.load && !firstVisit ? overall.total - overall.done || null : null, countTone: "warn" },
+        ]}
         active={tab}
         onChange={(id) => setTab(id as TabId)}
       />
@@ -233,8 +237,9 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
 }) {
   const hint = crmHint(draft);
   return (
-    <Section
+    <SectionCard
       title="What does this company use?"
+      icon={Blocks}
       actions={<Button type="button" onClick={onSave} disabled={busy || (!dirty && !firstVisit)}>{busy ? "Saving…" : firstVisit ? "Save and continue" : "Save modules"}</Button>}
     >
       <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5 }}>
@@ -255,11 +260,12 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
               enabled={draft[key]}
               onToggle={(next) => onChange({ ...draft, [key]: next })}
               hint={key === "crm" && hint ? hint : null}
+              module={key}
             />
           );
         })}
       </div>
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -311,12 +317,20 @@ export function ModuleChecklist({ view, checking, linkFor, busy, onRecheck, onAc
       ? `Last reported ${view.receivedAt ? new Date(view.receivedAt).toLocaleString() : "earlier"}${view.note ? ` · live check failed: ${view.note}` : ""}`
       : view.source === "stand-in" ? "No setup check available" : "Checking…";
   return (
-    <Section
+    <SectionCard
       title={`${MODULES[view.module].title}${progress ? ` · ${progress.done} of ${progress.total}` : ""}`}
-      actions={<Button type="button" variant="secondary" onClick={onRecheck} disabled={checking}>{checking ? "Checking…" : "Check again"}</Button>}
+      subtitle={source}
+      icon={moduleAccent(view.module).icon}
+      accent={view.module}
+      strip={!!progress && progress.missing.length > 0}
+      actions={(
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {progress ? (progress.missing.length === 0 ? <Pill tone="ok" dot>All done</Pill> : <Pill tone="bad" dot>{progress.missing.length} missing</Pill>) : null}
+          <Button type="button" variant="secondary" onClick={onRecheck} disabled={checking}>{checking ? "Checking…" : "Check again"}</Button>
+        </div>
+      )}
     >
-      {progress ? <ProgressBar done={progress.done} total={progress.total} size="sm" /> : null}
-      <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>{source}</p>
+      {progress ? <ProgressBar done={progress.done} total={progress.total} size="sm" module={view.module} /> : null}
       {items.length === 0 && status ? <p style={{ margin: 0, fontSize: 13 }}>Nothing to set up.</p> : null}
       <div>
         {items.map((item) => (
@@ -329,7 +343,7 @@ export function ModuleChecklist({ view, checking, linkFor, busy, onRecheck, onAc
           />
         ))}
       </div>
-    </Section>
+    </SectionCard>
   );
 }
 
@@ -372,7 +386,12 @@ function GuidedSetup({ open, data, linkFor, busy, onAction, onClose }: {
   return (
     <Modal open={open} title="Guided setup" description="One missing item at a time: settings, then keys and connections, then agents, then first data." onClose={onClose}>
       <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-        <ProgressBar done={overall.done} total={overall.total} label={`${entries.length} left${skipped.size ? ` · ${skipped.size} skipped` : ""}`} />
+        <div style={{ display: "flex", gap: 14, alignItems: "center", minWidth: 0 }}>
+          <ProgressRing done={overall.done} total={overall.total} size={56} thickness={10} label="Required setup items done" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ProgressBar done={overall.done} total={overall.total} label={`${entries.length} left${skipped.size ? ` · ${skipped.size} skipped` : ""}`} />
+          </div>
+        </div>
         {current ? (
           <GuideStep
             entry={current}
@@ -417,10 +436,10 @@ export function GuideStep({ entry, linkFor, busy, checking, note, onAction, onCh
   const item = entry.item;
   const external = item.href ? /^https?:\/\//i.test(item.href) : false;
   return (
-    <Card highlight>
+    <Card highlight module={entry.module}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Chip>{entry.moduleTitle}</Chip>
-        <Chip>{PHASES[entry.phase] ?? "Setup"}</Chip>
+        <Pill tone="neutral" icon={moduleAccent(entry.module).icon} style={{ color: moduleAccent(entry.module).fg, background: moduleAccent(entry.module).soft, borderColor: moduleAccent(entry.module).border }}>{entry.moduleTitle}</Pill>
+        <Pill tone="info" size="md">{`Step ${(entry.phase ?? 0) + 1} · ${PHASES[entry.phase] ?? "Setup"}`}</Pill>
         {item.status === "blocked" ? <Chip tone="blocked">Waiting on another item</Chip> : null}
       </div>
       <strong style={{ fontSize: 16 }}>{item.title}</strong>
@@ -643,10 +662,17 @@ export function SetupProgressCard({ data, linkFor }: { data: Pick<SetupData, "lo
   const overall = overallProgress(views.map((view) => view.status));
   const pending = views.some((view) => !view.status);
   if (load.modules !== null && !pending && overall.total > 0 && overall.done === overall.total) return null;
+  const accent = moduleAccent("setup");
   return (
-    <div style={{ display: "grid", gap: 12, padding: 16, borderRadius: 14, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}>
+    <div style={{ position: "relative", display: "grid", gap: 12, padding: 16, borderRadius: 14, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, minWidth: 0 }}>
+      <span aria-hidden="true" style={{ position: "absolute", top: -1, left: -1, right: -1, height: 3, borderRadius: "14px 14px 0 0", background: accent.solid }} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <strong style={{ fontSize: 14 }}>Setup progress</strong>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <span aria-hidden="true" style={{ width: 28, height: 28, borderRadius: 8, display: "inline-grid", placeItems: "center", background: accent.soft, boxShadow: `inset 0 0 0 1px ${accent.border}` }}>
+            <ListChecks size={15} color={accent.solid} strokeWidth={2} />
+          </span>
+          <strong style={{ fontSize: 14 }}>Setup progress</strong>
+        </span>
         <a {...linkFor("/setup")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>
           {load.modules === null ? "Start setup →" : "Continue setup →"}
         </a>
@@ -654,22 +680,13 @@ export function SetupProgressCard({ data, linkFor }: { data: Pick<SetupData, "lo
       {load.modules === null ? (
         <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Choose the modules this company uses, then work through what each still needs.</p>
       ) : (
-        <>
-          <ProgressBar done={overall.done} total={overall.total} />
-          <div style={{ display: "grid", gap: 6 }}>
-            {views.map((view) => {
-              const progress = view.status ? setupProgress(view.status.items) : null;
-              return (
-                <div key={view.pluginKey} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
-                  <span>{MODULES[view.module].title}</span>
-                  <span style={{ color: progress && progress.missing.length === 0 ? tokens.muted : tokens.fg }}>
-                    {progress ? (progress.missing.length === 0 ? "Done" : `${progress.done} of ${progress.total}`) : "Checking…"}
-                  </span>
-                </div>
-              );
-            })}
+        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+          <ProgressRing done={overall.done} total={overall.total} size={64} thickness={10} label="Required setup items done" color={overall.done >= overall.total ? tone("ok").solid : accent.solid} />
+          <div style={{ display: "grid", gap: 8, flex: "1 1 200px", minWidth: 0 }}>
+            <span style={{ fontSize: 12.5, color: tokens.muted }}>{overall.done} of {overall.total} required items done</span>
+            {views.map((view) => <ModuleProgressRow key={view.pluginKey} module={view.module} {...moduleCounts(view.status)} />)}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

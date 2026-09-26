@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { StatusBadge, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Section, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
-import { Banner, centsToInput, download, IssueLink, Muted, rand, Row, small, statusTone, Table, Td, toCents, useRunner, words } from "./shared.js";
+import { Banner, centsToInput, download, IssueLink, Muted, rand, Row, small, StatusPill, Table, Td, toCents, useRunner } from "./shared.js";
 
 interface VatReturn {
   id: string;
@@ -75,7 +75,7 @@ export function VatTab({ data, onMessage }: { data: LoadResult; onMessage: (m: s
           {vat.periods.map((p) => (
             <tr key={p.start}>
               <Td>{`${p.start} to ${p.end}`}{p.current ? <span style={{ color: tokens.muted }}> · current</span> : null}</Td>
-              <Td><StatusBadge label={words(p.status)} status={statusTone(p.status)} /></Td>
+              <Td><StatusPill status={p.status} /></Td>
               <Td right>{p.payableMinor == null ? "—" : rand(p.payableMinor)}</Td>
               <Td><Button type="button" variant="secondary" style={small} onClick={() => choose(p)}>Open</Button></Td>
             </tr>
@@ -85,7 +85,7 @@ export function VatTab({ data, onMessage }: { data: LoadResult; onMessage: (m: s
       </Section>
 
       {period ? (
-        <Section title={`VAT201 ${period.start} to ${period.end}`} actions={ret ? <StatusBadge label={words(ret.status)} status={statusTone(ret.status)} /> : null}>
+        <Section title={`VAT201 ${period.start} to ${period.end}`} actions={ret ? <StatusPill status={ret.status} /> : null}>
           {(!ret || ret.status === "draft") ? (
             <>
               <strong style={{ fontSize: 13 }}>Adjustments (entered by hand, rand)</strong>

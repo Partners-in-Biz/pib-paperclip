@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { Button, EmptyState, Field, Input, Modal, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Modal, Plug, SectionCard, StatusDot, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, type SocialPlatform } from "../platforms.js";
-import { AccountStatus, Avatar, Banner, BelongsToSelect, Card, Code, fmtDate, ignore, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import { AccountStatus, Avatar, Banner, BelongsToSelect, Card, Code, fmtDate, ignore, Muted, PlatformBadge, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import { ACCOUNT_TONE, toneOf } from "./series.js";
 import type { Account, ClientOption, RunAction, Snapshot } from "./types.js";
 
 function expectedRedirect(snapshot: Snapshot): string {
@@ -149,7 +150,7 @@ export function PickerModal({ pickerId, run, onClose, onDone }: {
                     {option.alreadyConnected && !option.belongsElsewhere ? " · already connected" : ""}
                   </Muted>
                   {option.belongsElsewhere ? (
-                    <Muted style={{ color: "#b45309" }}>Connected under {option.belongsElsewhere}. Choosing it moves it to {data.belongsTo}.</Muted>
+                    <Muted style={{ color: tone("warn").fg }}>Connected under {option.belongsElsewhere}. Choosing it moves it to {data.belongsTo}.</Muted>
                   ) : null}
                 </span>
               </label>
@@ -274,7 +275,7 @@ function EditAccountModal({ account, snapshot, run, onClose }: { account: Accoun
       <Field label="Belongs to">
         <BelongsToSelect clients={clients ?? []} value={belongsTo} onChange={setBelongsTo} disabled={!clients} />
       </Field>
-      {clientsError ? <Muted style={{ color: "var(--destructive)" }}>Could not load CRM clients: {clientsError}</Muted> : null}
+      {clientsError ? <Muted style={{ color: tone("bad").fg }}>Could not load CRM clients: {clientsError}</Muted> : null}
       {moving ? (
         <Banner tone="warn" title={`Move to ${targetName}?`}>
           The account, its inbox and its token move to {targetName} and disappear from {scopeName(snapshot)}. The move is refused while
@@ -307,6 +308,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
 
   // The snapshot holds this scope's accounts only.
   const accounts = snapshot.accounts;
+  const connectedCount = (platform: string) => accounts.filter((a) => a.platform === platform && a.connected).length;
 
   async function connect(platform: SocialPlatform, extra: Record<string, unknown> = {}) {
     setBusy(platform);
@@ -334,11 +336,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <SetupBanners snapshot={snapshot} />
-      <Card>
-        <Row style={{ justifyContent: "space-between" }}>
-          <strong style={{ fontSize: 13 }}>Connect an account</strong>
-          <Muted>New accounts belong to <strong>{scopeName(snapshot)}</strong></Muted>
-        </Row>
+      <SectionCard title="Connect an account" icon={Plug} subtitle={<>New accounts belong to <strong>{scopeName(snapshot)}</strong></>}>
         <Muted>
           Redirect URI to register with every provider: <Code>{expectedRedirect(snapshot)}</Code>
         </Muted>
@@ -359,9 +357,13 @@ export function AccountsTab({ snapshot, companyId, run }: {
                       ? "Pages and linked Instagram"
                       : "OAuth";
             return (
-              <div key={p.platform} style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}` }}>
+              <div key={p.platform} style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}`, minWidth: 0 }}>
                 <Row style={{ justifyContent: "space-between" }}>
-                  <strong style={{ fontSize: 13 }}>{p.label}</strong>
+                  <Row style={{ flexWrap: "nowrap", minWidth: 0 }}>
+                    <PlatformBadge platform={p.platform} size={24} />
+                    <strong style={{ fontSize: 13 }}>{p.label}</strong>
+                    {connectedCount(p.platform) ? <StatusDot tone="ok" label={`${connectedCount(p.platform)} connected`} /> : null}
+                  </Row>
                   <SmallButton
                     disabled={disabled}
                     onClick={() => {
@@ -374,7 +376,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
                     {busy === p.platform ? "Opening…" : "Connect"}
                   </SmallButton>
                 </Row>
-                <Muted>{hint}</Muted>
+                <Muted style={!ready || (p.mode === "oauth" && !p.configured) ? { color: tone("warn").fg } : undefined}>{hint}</Muted>
                 {p.mode === "instance" ? (
                   <Input value={mastodonInstance} onChange={(e) => setMastodonInstance(e.target.value)} placeholder="https://mastodon.social" style={{ height: 30, fontSize: 12 }} />
                 ) : null}
@@ -385,10 +387,11 @@ export function AccountsTab({ snapshot, companyId, run }: {
             );
           })}
         </div>
-      </Card>
+      </SectionCard>
 
       {accounts.length === 0 ? (
         <EmptyState
+          icon={Plug}
           title="No accounts yet"
           description={`Connect a platform above; accounts added here belong to ${scopeName(snapshot)}. Facebook lets you pick several Pages and their Instagram accounts at once.`}
         />
@@ -397,10 +400,10 @@ export function AccountsTab({ snapshot, companyId, run }: {
           {accounts.map((account) => {
             const canRefresh = account.connected && !["bluesky", "mastodon", "dribbble"].includes(account.platform);
             return (
-              <Card key={account.id} style={{ gap: 8 }}>
+              <Card key={account.id} style={{ gap: 8, borderLeft: `3px solid ${tone(toneOf(ACCOUNT_TONE, account.status)).solid}` }}>
                 <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
                   <Row style={{ minWidth: 0, flex: "1 1 240px", flexWrap: "nowrap" }}>
-                    <Avatar url={account.avatarUrl} label={account.displayName} />
+                    {account.avatarUrl ? <Avatar url={account.avatarUrl} label={account.displayName} /> : <PlatformBadge platform={account.platform} size={30} />}
                     <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
                       <strong style={{ fontSize: 13 }}>{account.displayName}</strong>
                       <Muted>
@@ -418,7 +421,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
                   </Row>
                   <AccountStatus status={account.status} />
                 </Row>
-                {account.lastError ? <Muted style={{ color: account.status === "connected" ? tokens.muted : "var(--destructive)" }}>{account.lastError}</Muted> : null}
+                {account.lastError ? <Muted style={{ color: account.status === "connected" ? tokens.muted : tone("bad").fg }}>{account.lastError}</Muted> : null}
                 <Row>
                   <SmallButton disabled={!ready || busy !== ""} onClick={() => void reconnect(account)}>Reconnect</SmallButton>
                   {canRefresh ? <SmallButton onClick={() => run("social.refresh-account", { accountId: account.id }, "Token refreshed").catch(ignore)}>Refresh token</SmallButton> : null}

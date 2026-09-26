@@ -11,7 +11,26 @@ import {
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, ClientWorkspaceBar, EmptyState, Page, PageFrame, PageMessage, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import {
+  Button,
+  Calendar,
+  ClientWorkspaceBar,
+  EmptyState,
+  FileText,
+  Inbox,
+  LayoutDashboard,
+  Megaphone,
+  Package,
+  Page,
+  PageFrame,
+  PageMessage,
+  Plug,
+  Radio,
+  Tabs,
+  TrendingUp,
+  errorText,
+  tokens,
+} from "@partnersinbiz/pib-plugin-ui";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
 import { platformLabel, Row } from "./parts.js";
@@ -89,7 +108,7 @@ function tabFrom(search: string): TabId {
 /** The page frame for a client workspace: the shared workspace bar replaces the page title. */
 function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <PageFrame>
+    <PageFrame accent="social">
       {bar}
       <PageMessage message={message} />
       {children}
@@ -185,14 +204,18 @@ export function SocialPage({ context }: PluginPageProps) {
   const detail = detailId ? posts.find((p) => p.id === detailId) ?? null : null;
   const newItems = snapshot?.inbox.filter((i) => i.status === "new").length ?? 0;
   const problems = (snapshot?.accounts ?? []).filter((a) => a.status === "needs_reconnect").length;
+  const failedPosts = posts.filter((p) => p.status === "failed" || p.status === "partially_published").length;
+  const inReview = posts.filter((p) => p.status === "review").length;
+  const tabLink = (id: string) => navigation.linkProps(pagePath(id === "overview" ? "" : `tab=${id}`));
 
-  if (!context.companyId) return <Page title="Social" description="Pick a company first.">{null}</Page>;
+  if (!context.companyId) return <Page title="Social" description="Pick a company first." accent="social">{null}</Page>;
 
   const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
 
   const body = off ? <ModuleOffBanner /> : loadError ? (
     <EmptyState
+      tone="bad"
       title={scope ? "This client's workspace could not open" : "Social could not load"}
       description={loadError}
       action={scope ? <a {...navigation.linkProps("/social")} style={{ fontSize: 13, color: tokens.fg }}>Go to own work</a> : undefined}
@@ -202,20 +225,20 @@ export function SocialPage({ context }: PluginPageProps) {
       {tab !== "accounts" ? <SetupBanners snapshot={snapshot} /> : null}
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview" },
-          { id: "posts", label: `Posts (${posts.length})` },
-          { id: "calendar", label: "Calendar" },
-          { id: "accounts", label: `Accounts (${snapshot.accounts.length})${problems ? ` · ${problems} to fix` : ""}` },
-          { id: "inbox", label: `Inbox${newItems ? ` (${newItems})` : ""}` },
-          { id: "growth", label: "Growth" },
-          { id: "media", label: "Media" },
-          { id: "feeds", label: "Feeds" },
-          { id: "templates", label: "Templates" },
+          { id: "overview", label: "Overview", icon: LayoutDashboard },
+          { id: "posts", label: "Posts", icon: Megaphone, count: posts.length, countTone: failedPosts ? "bad" : inReview ? "warn" : undefined },
+          { id: "calendar", label: "Calendar", icon: Calendar },
+          { id: "accounts", label: "Accounts", icon: Plug, count: snapshot.accounts.length, countTone: problems ? "bad" : undefined },
+          { id: "inbox", label: "Inbox", icon: Inbox, count: newItems || null, countTone: newItems ? "warn" : undefined },
+          { id: "growth", label: "Growth", icon: TrendingUp },
+          { id: "media", label: "Media", icon: Package, count: snapshot.media.length || null },
+          { id: "feeds", label: "Feeds", icon: Radio, count: snapshot.feeds.length || null, countTone: snapshot.feeds.some((f) => f.lastError) ? "bad" : undefined },
+          { id: "templates", label: "Templates", icon: FileText, count: snapshot.templates.length || null },
         ]}
         active={tab}
         onChange={(id) => setTab(id as TabId)}
       />
-      {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} /> : null}
+      {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} onOpenPost={(p) => setDetailId(p.id)} tabLink={tabLink} /> : null}
       {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
       {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
       {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
@@ -276,6 +299,7 @@ export function SocialPage({ context }: PluginPageProps) {
       title="Social"
       description="Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."
       message={message}
+      accent="social"
       actions={off ? undefined : <Row>{newPost}</Row>}
     >
       {body}

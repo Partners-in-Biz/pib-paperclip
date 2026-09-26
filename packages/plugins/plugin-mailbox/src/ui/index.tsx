@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
-  MetricCard,
-  StatusBadge,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -12,22 +10,46 @@ import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plug
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import {
   BarChart,
+  BarList,
   Button,
+  ChartColumn,
+  ChartPie,
+  CircleAlert,
+  DonutChart,
   EmptyState,
   Field,
+  FileText,
+  IconBadge,
+  Inbox,
+  Info,
   Input,
+  KpiCard,
+  LayoutDashboard,
+  ListChecks,
+  Mail,
+  MailCheck,
   Modal,
   Page,
-  Section,
+  Pill,
   Select,
-  StatRow,
+  SectionCard,
+  Send,
+  Sparkles,
+  StatusDot,
   Tabs,
   TextArea,
   Toolbar,
+  TriangleAlert,
   breakAnywhere,
   errorText,
+  fluidColumns,
+  seriesColor,
   tokens,
+  tone,
+  type Segment,
 } from "@partnersinbiz/pib-plugin-ui";
+import type { DailySeries } from "../daily.js";
+import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
 
@@ -65,6 +87,8 @@ interface Snapshot {
   sendCounts: Record<string, number>;
   categoryCounts: Record<string, number>;
   categories: string[];
+  /** Per-day counts for the charts (worker 0.2.3+). */
+  daily?: DailySeries;
 }
 interface InboxMessage {
   id: string;
@@ -106,23 +130,9 @@ interface TriageStats {
   categories: Record<string, number>;
 }
 
-type TabId = "inbox" | "sent" | "drafts" | "mailboxes" | "triage";
+type TabId = "overview" | "inbox" | "sent" | "drafts" | "mailboxes" | "triage";
 type CreateKind = "mailbox" | "delegation" | "draft" | null;
 
-const CATEGORY_NAMES: Record<string, string> = {
-  lead: "Lead",
-  client: "Client",
-  reply: "Reply",
-  proof_of_payment: "Proof of payment",
-  invoice_or_bill: "Invoice or bill",
-  bank_statement: "Bank statement",
-  support: "Support",
-  newsletter: "Newsletter",
-  notification: "Notification",
-  spam: "Spam",
-  personal: "Personal",
-  other: "Other",
-};
 const URGENCY_NAMES = ["Can wait", "Normal", "Soon", "Urgent"];
 
 function when(value: string | null | undefined): string {
@@ -136,7 +146,9 @@ function when(value: string | null | undefined): string {
   return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-function Banner({ tone, children }: { tone: "warn" | "info"; children: ReactNode }) {
+function Banner({ tone: t, children }: { tone: "warn" | "info" | "bad"; children: ReactNode }) {
+  const colors = tone(t);
+  const Glyph = t === "bad" ? CircleAlert : t === "warn" ? TriangleAlert : Info;
   return (
     <div
       role="status"
@@ -145,66 +157,53 @@ function Banner({ tone, children }: { tone: "warn" | "info"; children: ReactNode
         lineHeight: 1.5,
         padding: "10px 14px",
         borderRadius: 10,
-        border: `1px solid ${tone === "warn" ? "color-mix(in oklab, #d97706 45%, transparent)" : tokens.border}`,
-        background: tone === "warn" ? "color-mix(in oklab, #d97706 10%, transparent)" : tokens.secondary,
+        border: `1px solid ${colors.border}`,
+        borderLeft: `3px solid ${colors.solid}`,
+        background: `linear-gradient(90deg, ${colors.soft}, transparent 70%), ${tokens.card}`,
         display: "grid",
-        gap: 4,
+        gridTemplateColumns: "18px minmax(0, 1fr)",
+        columnGap: 8,
+        minWidth: 0,
       }}
     >
-      {children}
+      <Glyph size={15} color={colors.solid} aria-hidden="true" style={{ marginTop: 2 }} />
+      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>{children}</div>
     </div>
   );
 }
 
-function Chip({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" | "danger" | "ok" | "info" }) {
-  const color = { neutral: tokens.muted, warn: "#d97706", danger: "#dc2626", ok: "#16a34a", info: "#2563eb" }[tone];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        fontSize: 11,
-        fontWeight: 600,
-        lineHeight: 1,
-        padding: "4px 7px",
-        borderRadius: 999,
-        whiteSpace: "nowrap",
-        color: tone === "neutral" ? tokens.fg : color,
-        border: `1px solid color-mix(in oklab, ${color} 35%, transparent)`,
-        background: `color-mix(in oklab, ${color} 10%, transparent)`,
-      }}
-    >
-      {children}
-    </span>
-  );
+function Chip({ children, tone: t = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" | "danger" | "bad" | "ok" | "info" | "accent" }) {
+  return <Pill size="sm" tone={t === "danger" ? "bad" : t}>{children}</Pill>;
+}
+
+/** Colour for a category in charts (stable per category). */
+function categoryFill(category: string): Pick<Segment, "color" | "tone"> {
+  const c = categoryColor(category);
+  return c === "neutral" ? { tone: "neutral" } : { color: seriesColor(c) };
 }
 
 function TriageChips({ row }: { row: InboxMessage }) {
   const urgency = row.urgency == null ? null : Math.max(0, Math.min(3, Math.round(row.urgency)));
   return (
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-      {row.category ? <Chip tone={row.category === "lead" || row.category === "proof_of_payment" ? "info" : "neutral"}>{CATEGORY_NAMES[row.category] ?? row.category}</Chip> : <Chip>Not triaged</Chip>}
+      {row.category ? <Chip tone={categoryTone(row.category)}>{CATEGORY_NAMES[row.category] ?? row.category}</Chip> : <Chip>Not triaged</Chip>}
       {urgency != null && urgency >= 2 ? <Chip tone={urgency === 3 ? "danger" : "warn"}>{URGENCY_NAMES[urgency]}</Chip> : null}
       {row.needs_reply != null && row.needs_reply >= 0.7 ? <Chip tone="warn">Needs reply</Chip> : null}
       {row.phishing != null && row.phishing >= 0.9 ? <Chip tone="danger">Suspicious</Chip> : null}
-      {row.client_ref ? <Chip tone="ok">{row.client_name || (row.client_kind === "contact" ? "Client (person)" : "Client")}</Chip> : null}
+      {row.client_ref ? <Chip tone="info">{row.client_name || (row.client_kind === "contact" ? "Client (person)" : "Client")}</Chip> : null}
       {row.reply_to ? <Chip>Reply to {row.reply_to.kind}</Chip> : null}
     </div>
   );
 }
 
 function accountBadge(account: Account) {
-  if (account.status === "connected") return <StatusBadge label="connected" status="ok" />;
-  if (account.status === "needs_reconnect") return <StatusBadge label="needs reconnect" status="error" />;
-  if (account.status === "disconnected") return <StatusBadge label="disconnected" status="pending" />;
-  return <StatusBadge label="not connected" status="pending" />;
+  const label = account.status === "connected" ? "connected" : account.status === "needs_reconnect" ? "needs reconnect" : account.status === "disconnected" ? "disconnected" : "not connected";
+  return <Pill tone={accountTone(account.status)} dot>{label}</Pill>;
 }
 
 function sendBadge(status: SendRequest["status"], permanent: boolean) {
-  if (status === "sent") return <StatusBadge label="sent" status="ok" />;
-  if (status === "failed") return <StatusBadge label={permanent ? "failed" : "failed, can retry"} status="error" />;
-  if (status === "retrying") return <StatusBadge label="waiting to retry" status="warning" />;
-  return <StatusBadge label="sending" status="info" />;
+  const label = status === "sent" ? "sent" : status === "failed" ? (permanent ? "failed" : "failed, can retry") : status === "retrying" ? "waiting to retry" : "sending";
+  return <Pill tone={sendTone(status)} dot>{label}</Pill>;
 }
 
 export function MailboxPage({ context }: PluginPageProps) {
@@ -229,7 +228,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   const [stats, setStats] = useState<TriageStats | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<TabId>("inbox");
+  const [tab, setTab] = useState<TabId>("overview");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
@@ -327,40 +326,25 @@ export function MailboxPage({ context }: PluginPageProps) {
   const accounts = useMemo(() => (snapshot?.accounts ?? []).filter((row) => !q || row.address.toLowerCase().includes(q)), [snapshot, q]);
   const failedSends = (snapshot?.sendCounts.failed ?? 0) + (snapshot?.sendCounts.retrying ?? 0);
 
-  function openCorrection(row: InboxMessage) {
-    setCorrecting(row);
-    setFix({ category: row.category ?? "", urgency: "", needsReply: "", client: "" });
-  }
-
-  return (
-    <Page
-      title="Mailbox"
-      description="The company's Gmail. Plugins send invoices, reminders and payslips through it. New mail is triaged and labelled in Gmail."
-      message={message}
-      actions={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
-    >
-      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} />
-      {settings && !settings.saved ? (
-        <Banner tone="warn">
-          <strong>Mailbox settings are not saved for this company.</strong>
-          <span>Open Settings → Plugins → Mailbox and click Save once. Until then Gmail does not sync and plugins cannot send for this company.</span>
-        </Banner>
-      ) : null}
-      {settings && settings.saved && missing.length > 0 ? (
-        <Banner tone="info">
-          <strong>Gmail connection is not configured yet.</strong>
-          <span>Needed in the Mailbox settings: {missing.join(", ")}.</span>
-        </Banner>
-      ) : null}
-
-      <Section
+  const now = new Date();
+  const received = receivedColumns(snapshot?.daily, now, 14);
+  const sends = sendColumns(snapshot?.daily, now, 14);
+  const categories = categorySegments(snapshot?.categoryCounts).map((c) => ({ ...c, ...(c.key === "rest" ? {} : categoryFill(c.key ?? "")) }));
+  const gmailSection = (
+      <SectionCard
         title="Gmail"
+        subtitle={gmailAccounts.length ? `${gmailAccounts.filter((a) => a.status === "connected").length} of ${gmailAccounts.length} connected · synced every 2 minutes` : "Not connected yet"}
+        icon={Mail}
+        tone={gmailAccounts.some((a) => a.status === "needs_reconnect") ? "bad" : undefined}
+        strip={gmailAccounts.some((a) => a.status === "needs_reconnect")}
         actions={gmailAccounts.some((a) => a.status === "connected") ? (
           <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => syncNow({}), "Sync finished")}>Sync now</Button>
         ) : undefined}
       >
         {gmailAccounts.length === 0 ? (
           <EmptyState
+            compact
+            icon={Mail}
             title="No Gmail account connected"
             description="Connect the Gmail account that sends invoices and receives client mail. Sign in with that Google account."
             action={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
@@ -370,11 +354,14 @@ export function MailboxPage({ context }: PluginPageProps) {
             {gmailAccounts.map((account) => (
               <div
                 key={account.id}
-                style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${tokens.border}`, borderRadius: 10 }}
+                style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${accountTone(account.status) === "bad" ? tone("bad").border : tokens.border}`, background: accountTone(account.status) === "bad" ? tone("bad").soft : "transparent", borderRadius: 10, minWidth: 0 }}
               >
+                <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0, flex: "1 1 260px" }}>
+                <IconBadge icon={Mail} accent={tone(account.status === "connected" ? "accent" : accountTone(account.status))} size="sm" />
                 <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong style={{ fontSize: 14 }}>{account.address}</strong>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                    <StatusDot tone={accountTone(account.status, account.last_error)} pulse={account.status === "connected" && isSyncing(account.last_sync_at, new Date())} halo label={account.status === "connected" ? (isSyncing(account.last_sync_at, new Date()) ? "Syncing" : "Connected") : account.status.replace(/_/g, " ")} />
+                    <strong style={{ fontSize: 14, overflowWrap: "anywhere", minWidth: 0 }}>{account.address}</strong>
                     {accountBadge(account)}
                     {account.is_default ? <Chip tone="info">Default sender</Chip> : null}
                   </div>
@@ -382,7 +369,8 @@ export function MailboxPage({ context }: PluginPageProps) {
                     Last sync {when(account.last_sync_at)}
                     {account.sync_stats?.stored ? ` · ${account.sync_stats.stored} new` : ""}
                   </span>
-                  {account.last_error ? <span style={{ fontSize: 12, color: "#dc2626", overflowWrap: "anywhere" }}>{account.last_error}</span> : null}
+                  {account.last_error ? <span style={{ fontSize: 12, color: tone("bad").fg, overflowWrap: "anywhere" }}>{account.last_error}</span> : null}
+                </div>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {account.status !== "connected" ? <Button type="button" onClick={() => void connect(account.address)}>Reconnect</Button> : null}
@@ -421,26 +409,84 @@ export function MailboxPage({ context }: PluginPageProps) {
         {settings && !settings.jev ? (
           <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Triage uses built-in rules. Add a TypeSafe (Jev) key in the settings for better categories, urgency and client matching.</p>
         ) : null}
-      </Section>
+      </SectionCard>
+  );
 
-      <StatRow>
-        <MetricCard label="Unread" value={snapshot?.unreadCount ?? 0} />
-        <MetricCard label="Sent (30 days)" value={snapshot?.sendCounts.sent ?? 0} />
-        <MetricCard label="Failed or waiting" value={failedSends} />
-        <MetricCard label="Leads (30 days)" value={snapshot?.categoryCounts.lead ?? 0} />
-      </StatRow>
+  function openCorrection(row: InboxMessage) {
+    setCorrecting(row);
+    setFix({ category: row.category ?? "", urgency: "", needsReply: "", client: "" });
+  }
+
+  return (
+    <Page
+      accent="mailbox"
+      title="Mailbox"
+      description="The company's Gmail. Plugins send invoices, reminders and payslips through it. New mail is triaged and labelled in Gmail."
+      message={message}
+      actions={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
+    >
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} />
+      {settings && !settings.saved ? (
+        <Banner tone="warn">
+          <strong>Mailbox settings are not saved for this company.</strong>
+          <span>Open Settings → Plugins → Mailbox and click Save once. Until then Gmail does not sync and plugins cannot send for this company.</span>
+        </Banner>
+      ) : null}
+      {settings && settings.saved && missing.length > 0 ? (
+        <Banner tone="info">
+          <strong>Gmail connection is not configured yet.</strong>
+          <span>Needed in the Mailbox settings: {missing.join(", ")}.</span>
+        </Banner>
+      ) : null}
 
       <Tabs
         tabs={[
-          { id: "inbox", label: "Inbox" },
-          { id: "sent", label: failedSends > 0 ? `Sent (${failedSends} need attention)` : "Sent" },
-          { id: "drafts", label: `Drafts (${drafts.length})` },
-          { id: "mailboxes", label: `Mailboxes (${snapshot?.accounts.length ?? 0})` },
-          { id: "triage", label: "Triage" },
+          { id: "overview", label: "Overview", icon: LayoutDashboard },
+          { id: "inbox", label: "Inbox", icon: Inbox, count: snapshot?.unreadCount || null, countTone: snapshot?.unreadCount ? "warn" : undefined },
+          { id: "sent", label: "Sent", icon: Send, count: failedSends || null, countTone: failedSends ? "bad" : undefined },
+          { id: "drafts", label: "Drafts", icon: FileText, count: drafts.length || null },
+          { id: "mailboxes", label: "Mailboxes", icon: Mail, count: snapshot?.accounts.length ?? null, countTone: (snapshot?.accounts ?? []).some((a) => a.status === "needs_reconnect") ? "bad" : undefined },
+          { id: "triage", label: "Triage", icon: Sparkles },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
       />
+
+      {tab === "overview" ? (
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: fluidColumns(150), minWidth: 0 }}>
+            <KpiCard label="Unread" value={snapshot?.unreadCount ?? 0} icon={Inbox} tone={(snapshot?.unreadCount ?? 0) > 0 ? "warn" : undefined} hint={(snapshot?.unreadCount ?? 0) > 0 ? "Open the inbox" : "All read"} />
+            <KpiCard label="Received (14 days)" value={received.total} icon={Mail} sparkline={received.total ? received.totals : undefined} hint={received.total ? undefined : "No mail yet"} />
+            <KpiCard label="Sent (30 days)" value={snapshot?.sendCounts.sent ?? 0} icon={MailCheck} sparkline={sends.sent ? sends.sentPerDay : undefined} tone={undefined} hint="Invoices, reminders, payslips…" />
+            <KpiCard label="Failed or waiting" value={failedSends} icon={CircleAlert} tone={failedSends ? "bad" : undefined} hint={failedSends ? "Retry them on the Sent tab" : "Nothing stuck"} />
+            <KpiCard label="Leads (30 days)" value={snapshot?.categoryCounts.lead ?? 0} icon={Sparkles} tone={undefined} hint="Triaged as a lead" />
+          </div>
+          <div style={{ display: "grid", gap: 16, gridTemplateColumns: fluidColumns(360), minWidth: 0 }}>
+            <SectionCard style={{ alignContent: "start" }} title="Mail received per day" subtitle="Inbound mail by triage category, last 14 days" icon={ChartColumn}>
+              {received.total ? (
+                <BarChart
+                  data={received.data}
+                  series={received.series.map((sr) => ({ key: sr.key, label: sr.label, ...(sr.colorIndex === "neutral" ? { tone: "neutral" as const } : { color: seriesColor(sr.colorIndex) }) }))}
+                  unit="emails"
+                  title="Mail received per day"
+                  height={120}
+                />
+              ) : <EmptyState compact icon={Inbox} title="No mail in 14 days" description={gmailAccounts.length ? "New mail shows up after the next sync." : "Connect Gmail to start."} />}
+            </SectionCard>
+            <SectionCard style={{ alignContent: "start" }} title="Categories" subtitle="How triage sorted the last 30 days" icon={ChartPie}>
+              {categories.length ? (
+                <DonutChart title="Mail by category, 30 days" segments={categories} centerValue={categories.reduce((n, c) => n + c.value, 0)} centerLabel="emails" />
+              ) : <EmptyState compact icon={Sparkles} title="Nothing triaged yet" description="Each new email gets a category, urgency and client." />}
+            </SectionCard>
+          </div>
+          <SectionCard title="Sent vs failed per day" subtitle={`Mail the plugins sent, last 14 days${sends.failed ? ` · ${sends.failed} failed or waiting` : ""}`} icon={Send} tone={sends.failed ? "bad" : undefined}>
+            {sends.totals.some((n) => n > 0) ? (
+              <BarChart data={sends.data} series={SEND_SERIES} unit="emails" title="Send requests per day" height={96} />
+            ) : <EmptyState compact icon={Send} title="Nothing sent in 14 days" description="Invoices, reminders, payslips and campaigns go out through this mailbox." />}
+          </SectionCard>
+          {gmailSection}
+        </div>
+      ) : null}
 
       {tab === "inbox" ? (
         <div style={{ display: "grid", gap: 12 }}>
@@ -456,7 +502,7 @@ export function MailboxPage({ context }: PluginPageProps) {
             <Button type="button" variant="secondary" onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))}>Refresh</Button>
           </Toolbar>
           {inboxRows.length === 0 ? (
-            <EmptyState title="No mail here" description={gmailAccounts.length === 0 ? "Connect Gmail to see new mail here." : "New mail shows up after the next sync."} />
+            <EmptyState icon={Inbox} title="No mail here" description={gmailAccounts.length === 0 ? "Connect Gmail to see new mail here." : "New mail shows up after the next sync."} />
           ) : (
             <DataTable
               columns={[
@@ -507,7 +553,7 @@ export function MailboxPage({ context }: PluginPageProps) {
             <Button type="button" variant="secondary" onClick={() => void refreshSent().catch((error: unknown) => setMessage(errorText(error)))}>Refresh</Button>
           </Toolbar>
           {(sent ?? []).length === 0 ? (
-            <EmptyState title="Nothing sent yet" description="Mail the plugins send (invoices, reminders, payslips, campaigns) is listed here." />
+            <EmptyState icon={Send} title="Nothing sent yet" description="Mail the plugins send (invoices, reminders, payslips, campaigns) is listed here." />
           ) : (
             <DataTable
               columns={[
@@ -559,7 +605,7 @@ export function MailboxPage({ context }: PluginPageProps) {
             <Button type="button" onClick={() => setCreate("draft")}>+ Draft</Button>
           </Toolbar>
           {drafts.length === 0 ? (
-            <EmptyState title="No drafts yet" description="Agents save drafts on delegated mailboxes. You can also write one here." action={<Button type="button" onClick={() => setCreate("draft")}>+ Draft</Button>} />
+            <EmptyState icon={FileText} title="No drafts yet" description="Agents save drafts on delegated mailboxes. You can also write one here." action={<Button type="button" onClick={() => setCreate("draft")}>+ Draft</Button>} />
           ) : (
             <DataTable
               columns={[
@@ -567,7 +613,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                 { key: "toText", header: "To" },
                 { key: "status", header: "Status", render: (value, row) => (
                   <div style={{ display: "grid", gap: 3 }}>
-                    <StatusBadge label={String(value)} status={value === "sent" ? "ok" : "pending"} />
+                    <Pill tone={draftTone(String(value))} dot>{String(value)}</Pill>
                     {(row as unknown as DraftRow).send_error ? <span style={{ fontSize: 11, color: tokens.muted }}>{(row as unknown as DraftRow).send_error}</span> : null}
                   </div>
                 ) },
@@ -592,12 +638,13 @@ export function MailboxPage({ context }: PluginPageProps) {
 
       {tab === "mailboxes" ? (
         <div style={{ display: "grid", gap: 12 }}>
+          {gmailSection}
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search mailboxes…">
             <Button type="button" variant="secondary" onClick={() => setCreate("delegation")}>Delegate</Button>
             <Button type="button" variant="secondary" onClick={() => setCreate("mailbox")}>+ Mailbox</Button>
           </Toolbar>
           {accounts.length === 0 ? (
-            <EmptyState title="No mailboxes yet" description="Connect Gmail, then delegate an agent." />
+            <EmptyState icon={Mail} title="No mailboxes yet" description="Connect Gmail, then delegate an agent." />
           ) : (
             <>
               <DataTable
@@ -613,7 +660,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                 columns={[
                   { key: "agent_id", header: "Agent" },
                   { key: "account", header: "Mailbox" },
-                  { key: "send", header: "Send", render: (value) => <StatusBadge label={String(value)} status={value === "can send" ? "ok" : "pending"} /> },
+                  { key: "send", header: "Send", render: (value) => <Pill tone={value === "can send" ? "ok" : "neutral"} dot>{String(value)}</Pill> },
                 ]}
                 rows={(snapshot?.delegations ?? []).map((delegation) => ({
                   ...delegation,
@@ -629,21 +676,32 @@ export function MailboxPage({ context }: PluginPageProps) {
 
       {tab === "triage" ? (
         <div style={{ display: "grid", gap: 16 }}>
-          <BarChart
-            title="Mail by category (30 days)"
-            items={Object.entries(stats?.categories ?? snapshot?.categoryCounts ?? {})
-              .sort((a, b) => b[1] - a[1])
-              .map(([key, value]) => ({ label: CATEGORY_NAMES[key] ?? key, value }))}
-          />
+          <SectionCard title="Mail by category" subtitle="Last 30 days" icon={ChartColumn}>
+            <BarList
+              bare
+              title="Mail by category (30 days)"
+              items={Object.entries(stats?.categories ?? snapshot?.categoryCounts ?? {})
+                .sort((a, b) => b[1] - a[1])
+                .map(([key, value]) => ({ label: CATEGORY_NAMES[key] ?? key, value, ...categoryFill(key) }))}
+            />
+          </SectionCard>
           {(stats?.questions ?? []).length === 0 ? (
-            <EmptyState title="No Jev decisions yet" description={settings?.jev ? "Stats appear after the first triaged mail." : "Triage uses built-in rules until a TypeSafe (Jev) key is added in the settings."} />
+            <EmptyState icon={Sparkles} title="No Jev decisions yet" description={settings?.jev ? "Stats appear after the first triaged mail." : "Triage uses built-in rules until a TypeSafe (Jev) key is added in the settings."} />
           ) : (
+            <SectionCard title="How well triage does" subtitle="Jev decisions and your corrections, last 30 days" icon={ListChecks}>
             <DataTable
               columns={[
                 { key: "questionName", header: "Question" },
                 { key: "total", header: "Decisions" },
-                { key: "corrected", header: "Corrected" },
-                { key: "accuracyText", header: "Accuracy" },
+                { key: "corrected", header: "Corrected", render: (value) => (Number(value) > 0 ? <Pill size="sm" tone="warn">{String(value)}</Pill> : "0") },
+                {
+                  key: "accuracyText",
+                  header: "Accuracy",
+                  render: (value, row) => {
+                    const a = (row as { accuracy: number | null }).accuracy;
+                    return a == null ? "—" : <Pill size="sm" tone={a >= 0.9 ? "ok" : a >= 0.75 ? "warn" : "bad"}>{String(value)}</Pill>;
+                  },
+                },
                 { key: "confidenceText", header: "Avg confidence" },
               ]}
               rows={(stats?.questions ?? []).map((row) => ({
@@ -655,6 +713,7 @@ export function MailboxPage({ context }: PluginPageProps) {
               })) as unknown as Record<string, unknown>[]}
               emptyMessage="No decisions yet."
             />
+            </SectionCard>
           )}
         </div>
       ) : null}

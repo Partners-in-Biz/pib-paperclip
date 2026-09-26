@@ -104,6 +104,7 @@ describe("runtime SQL passes the host guard", () => {
     await db.updateKeyword(fake, c, "k", { current_position: 12.5, rank: 13, is_priority: false, retired_at: null });
     await db.keywordHistory(fake, c, "k", 30);
     await db.sprintHistory(fake, s, "2026-01-01");
+    await db.sprintTraffic(fake, c, s, 56);
     await db.recordPosition(fake, { id: "h1", companyId: c, sprintId: s, keywordId: "k", position: 12.3, impressions: 10, clicks: 1, ctr: 0.1, source: "gsc", recordedOn: "2026-09-25" });
     await db.recordPosition(fake, { id: "h2", companyId: c, sprintId: s, keywordId: "k", position: null, impressions: null, clicks: null, ctr: null, source: "manual", recordedOn: "2026-09-25" });
     await db.insertBacklinks(fake, [{ id: "b", companyId: c, sprintId: s, source: "g2", domain: "g2.com", url: null, submitUrl: null, type: "directory", dr: 90, status: "not_started", notes: null, discoveredVia: "template" }]);

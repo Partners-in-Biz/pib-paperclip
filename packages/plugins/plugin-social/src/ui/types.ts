@@ -1,4 +1,5 @@
 import type { PlatformOverride, SocialPlatform } from "../platforms.js";
+import type { ScopeStats } from "../stats.js";
 
 /** Scope fields every scoped record carries. `client` is "company:<id>" / "contact:<id>", null for own work. */
 export interface Scoped {
@@ -184,6 +185,8 @@ export interface Snapshot {
   inbox: InboxItem[];
   /** Proposed and running Growth Lab experiments a post in this scope can be tagged with. */
   experiments: ExperimentOption[];
+  /** Chart series (worker `stats.ts`); missing from an older worker. */
+  stats?: ScopeStats;
   agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   viewer: { userId: string | null };

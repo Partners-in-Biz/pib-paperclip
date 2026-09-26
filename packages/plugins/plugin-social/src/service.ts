@@ -104,6 +104,7 @@ import {
 import { buildPublishRequest, retryPost, validateDestination } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { jevKeySet, triageOut } from "./triage.js";
+import { scopeStats } from "./stats.js";
 
 export interface Viewer {
   companyId: string;
@@ -831,7 +832,7 @@ export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
 export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
   const target = await scopeFromParams(ctx, viewer.companyId, params);
   const scope: ClientScope = target.scope;
-  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments] = await Promise.all([
+  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),
     listAccounts(ctx, viewer.companyId, scope),
     listPosts(ctx, viewer.companyId, { limit: 300, scope }),
@@ -845,6 +846,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
     // Growth Lab experiments a post in this scope can be tagged with.
     experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
+    // Chart series (published per day, destination statuses, weekly lift).
+    scopeStats(ctx, viewer.companyId, scope),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
@@ -882,6 +885,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     feeds: feeds.map(feedOut),
     inbox: inbox.map(inboxOut),
     experiments,
+    stats,
     agent,
     pendingPickers: pickers
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))
