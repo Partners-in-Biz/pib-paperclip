@@ -1,7 +1,25 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
-import { CRM_OUTBOUND_SKILL, CRM_RECORDS_SKILL } from "./skills.js";
+import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
+
+const instanceConfigSchema: JsonSchema = {
+  type: "object",
+  title: "CRM settings",
+  description:
+    "Save these settings once for each Paperclip company that uses the CRM. Saving is what lets the scheduled jobs (sequence steps, client sync) act on the company.",
+  properties: {
+    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
+    defaultCurrency: { type: "string", title: "Default currency", default: "ZAR", minLength: 3, maxLength: 3 },
+    sequenceIssueAssignee: {
+      type: "string",
+      title: "Who gets sequence step issues",
+      description: "contact: the contact's agent or owner (default). none: leave the issue unassigned.",
+      enum: ["contact", "none"],
+      default: "contact",
+    },
+  },
+};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -11,6 +29,7 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Companies, contacts, deals, and sequences for a Paperclip workspace.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
+  instanceConfigSchema,
   capabilities: [
     "companies.read",
     "access.members.read",
@@ -21,8 +40,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed",
     "jobs.schedule",
     "events.subscribe",
+    "events.emit",
+    "plugin.state.read",
+    "plugin.state.write",
     "issues.read",
     "issues.create",
+    "issues.wakeup",
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
@@ -44,23 +67,20 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Opens a Paperclip issue for each sequence step that is due.",
       schedule: "*/5 * * * *",
     },
-  ],
-  skills: [
     {
-      skillKey: "crm-records",
-      displayName: "CRM records",
-      slug: "crm-records",
-      description: "Create and update people and companies without overwriting human-owned fields.",
-      markdown: CRM_RECORDS_SKILL,
+      jobKey: "emit-recent",
+      displayName: "Share recent client changes",
+      description: "Re-sends companies and contacts changed in the last 30 minutes to the other PiB plugins.",
+      schedule: "*/15 * * * *",
     },
     {
-      skillKey: "crm-outbound",
-      displayName: "CRM outbound",
-      slug: "crm-outbound",
-      description: "Enroll contacts in sequences and complete steps only by the sequence rule.",
-      markdown: CRM_OUTBOUND_SKILL,
+      jobKey: "emit-all",
+      displayName: "Share all clients (nightly)",
+      description: "Re-sends every company and contact to the other PiB plugins so their client lists stay complete.",
+      schedule: "30 1 * * *",
     },
   ],
+  skills: SKILLS,
   apiRoutes: [
     {
       routeKey: "record-grant",

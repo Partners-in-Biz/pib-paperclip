@@ -105,36 +105,58 @@ import {
 } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { CRM_TOOLS } from "./tools.js";
+import { SKILLS } from "./skills.js";
+import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
+import { createSkillSyncer, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
 
 let pluginCtx: PluginContext | null = null;
+let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
+    skillSync = createSkillSyncer(ctx, SKILLS);
+    const registerAction = (
+      key: string,
+      handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+    ) => {
+      ctx.actions.register(key, async (params, context) => {
+        if (context.companyId) void skillSync?.ensure(context.companyId);
+        const result = await handler(params, context);
+        if (context.companyId && CRM_MUTATIONS.has(key)) await afterMutation(ctx, context.companyId, key, params);
+        return result;
+      });
+    };
     for (const tool of CRM_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
     }
-    ctx.actions.register("crm.load", (_params, context) => load(ctx, context));
-    ctx.actions.register("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
-    ctx.actions.register("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
-    ctx.actions.register("crm.link-contact", (params, context) => linkAction(ctx, context, params));
-    ctx.actions.register("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
-    ctx.actions.register("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
-    ctx.actions.register("crm.log-activity", (params, context) => activityAction(ctx, context, params));
-    ctx.actions.register("crm.share-record", (params, context) => shareAction(ctx, context, params));
-    ctx.actions.register("crm.set-human-owned", (params, context) => humanOwnedAction(ctx, context, params));
-    ctx.actions.register("crm.create-sequence", (params, context) => createSequenceAction(ctx, context, params));
-    ctx.actions.register("crm.enroll", (params, context) => enrollAction(ctx, context, params));
-    ctx.actions.register("crm.create-product", (params, context) => createProductAction(ctx, context, params));
-    ctx.actions.register("crm.update-product", (params, context) => updateProductAction(ctx, context, params));
-    ctx.actions.register("crm.score-contact", (params, context) => scoreContactAction(ctx, context, params));
-    ctx.actions.register("crm.activities", (params, context) => activitiesAction(ctx, context, params));
+    registerAction("crm.load", (_params, context) => load(ctx, context));
+    registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
+    registerAction("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
+    registerAction("crm.link-contact", (params, context) => linkAction(ctx, context, params));
+    registerAction("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
+    registerAction("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
+    registerAction("crm.log-activity", (params, context) => activityAction(ctx, context, params));
+    registerAction("crm.share-record", (params, context) => shareAction(ctx, context, params));
+    registerAction("crm.set-human-owned", (params, context) => humanOwnedAction(ctx, context, params));
+    registerAction("crm.create-sequence", (params, context) => createSequenceAction(ctx, context, params));
+    registerAction("crm.enroll", (params, context) => enrollAction(ctx, context, params));
+    registerAction("crm.create-product", (params, context) => createProductAction(ctx, context, params));
+    registerAction("crm.update-product", (params, context) => updateProductAction(ctx, context, params));
+    registerAction("crm.score-contact", (params, context) => scoreContactAction(ctx, context, params));
+    registerAction("crm.activities", (params, context) => activitiesAction(ctx, context, params));
+    registerAction("crm.resync", (_params, context) => resyncAction(ctx, context));
+    registerAction("crm.sync-skills", (_params, context) => syncSkillsAction(ctx, context));
+    registerAction("crm.settings-status", (_params, context) => settingsStatusAction(ctx, context));
     ctx.jobs.register("open-due-steps", () => openDueSteps(ctx));
+    ctx.jobs.register("emit-recent", () => emitForAllCompanies(ctx, 1800));
+    ctx.jobs.register("emit-all", () => emitForAllCompanies(ctx, null));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event.entityId, event.companyId));
+    ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+      if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await reconcileInstalledCompanies(ctx);
+    await syncKnownCompanies(ctx);
     ctx.logger.info("CRM plugin ready");
   },
 
@@ -160,7 +182,9 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       runId: run.runId,
     });
     const body = objectParams(params);
+    void skillSync?.ensure(run.companyId);
     const data = await dispatch(ctx, viewer, name, body, "agent");
+    if (CRM_MUTATIONS.has(name)) await afterMutation(ctx, run.companyId, name, body);
     if (data && typeof data === "object" && "refused" in data && Array.isArray(data.refused) && data.refused.length > 0) {
       return { error: `Refused to overwrite human-owned fields: ${data.refused.join(", ")}`, data };
     }
@@ -290,7 +314,9 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
     contactLifecycle[contact.lifecycle] = (contactLifecycle[contact.lifecycle] ?? 0) + 1;
   }
 
+  const settingsSaved = Object.keys(await readConfig(ctx, viewer.companyId).catch(() => ({}))).length > 0;
   return {
+    settingsSaved,
     accounts: visibleAccounts,
     contacts: visibleContacts,
     deals: visibleDeals,
@@ -908,30 +934,119 @@ async function completeStep(ctx: PluginContext, viewer: Viewer, params: Record<s
 
 async function openDueSteps(ctx: PluginContext) {
   const due = await dueEnrollments(ctx);
+  const assigneeModeByCompany = new Map<string, string>();
   for (const enrollment of due) {
     try {
       const steps = await listSteps(ctx, enrollment.sequenceId);
       const step = steps.find((item) => item.position === enrollment.stepPosition);
       const contact = await getContact(ctx, enrollment.contactId);
       if (!step || !contact) continue;
+      if (!assigneeModeByCompany.has(enrollment.companyId)) {
+        const config = await readConfig(ctx, enrollment.companyId);
+        assigneeModeByCompany.set(enrollment.companyId, String(config.sequenceIssueAssignee ?? "contact"));
+      }
+      const assignToContact = assigneeModeByCompany.get(enrollment.companyId) !== "none";
       const copy = sequenceIssueCopy(contact.name, step);
-      const issue = await ctx.issues.create({
+      // Explicit companyId: jobs have no invocation scope, and the host only
+      // allows a job's call for a company that has saved CRM settings.
+      const issue = await createWorkIssue(ctx, {
         companyId: enrollment.companyId,
         title: copy.title,
         description: copy.description,
-        status: "todo",
         originKind: "plugin:partnersinbiz.crm",
         originId: enrollment.id,
+        ...(assignToContact && contact.assigneeAgentId
+          ? { assigneeAgentId: contact.assigneeAgentId }
+          : assignToContact && contact.ownerUserId && contact.ownerUserId !== LOCAL_BOARD_USER_ID
+            ? { assigneeUserId: contact.ownerUserId }
+            : {}),
+        wakeReason: "CRM sequence step is due",
       });
       enrollment.openIssueId = issue.id;
       await saveEnrollment(ctx, enrollment);
     } catch (error) {
       ctx.logger.error("CRM due step failed", {
         enrollmentId: enrollment.id,
+        companyId: enrollment.companyId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
+}
+
+async function afterMutation(ctx: PluginContext, companyId: string, name: string, params: Record<string, unknown>) {
+  try {
+    if ((name === "link-contact" || name === "crm.link-contact") && typeof params.contactId === "string") {
+      await touchContact(ctx, params.contactId);
+    }
+    if (name === "merge-contacts" && typeof params.duplicateContactId === "string") {
+      await emitContactDeleted(ctx, companyId, params.duplicateContactId);
+    }
+    await emitChanges(ctx, companyId, 120);
+  } catch (error) {
+    ctx.logger.info("CRM change broadcast deferred", {
+      companyId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | null) {
+  for (const companyId of await crmCompanyIds(ctx)) {
+    try {
+      await emitChanges(ctx, companyId, sinceSeconds);
+    } catch (error) {
+      ctx.logger.info("CRM change broadcast skipped", {
+        companyId,
+        hint: "Save the CRM plugin settings for this company so scheduled jobs may act on it.",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+async function syncKnownCompanies(ctx: PluginContext) {
+  try {
+    for (const companyId of await crmCompanyIds(ctx)) await skillSync?.ensure(companyId);
+  } catch (error) {
+    ctx.logger.info("CRM skill sync deferred", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** A partner grant was revoked: drop the company share written when it was accepted. */
+async function onPartnerGrantRevoked(ctx: PluginContext, companyId: string, payload: unknown) {
+  const body = asRecord(payload);
+  const recordType = String(body.recordType ?? "");
+  const recordId = String(body.recordId ?? "");
+  const granteeCompanyId = String(body.granteeCompanyId ?? "");
+  if (!companyId || !recordId || !granteeCompanyId || recordType === "invoice") return;
+  try {
+    await ctx.db.execute(
+      `DELETE FROM ${table(ctx, "record_grants")}
+        WHERE company_id = $1 AND record_type = $2 AND record_id = $3 AND principal_type = 'company' AND principal_id = $4`,
+      [companyId, recordType, recordId, granteeCompanyId],
+    );
+  } catch (error) {
+    ctx.logger.error("CRM partner share removal failed", { recordId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function resyncAction(ctx: PluginContext, context: PluginPerformActionContext) {
+  const viewer = await actionViewer(ctx, context);
+  const counts = await emitChanges(ctx, viewer.companyId, null);
+  return { ok: true, ...counts };
+}
+
+async function syncSkillsAction(ctx: PluginContext, context: PluginPerformActionContext) {
+  const viewer = await actionViewer(ctx, context);
+  const results = skillSync ? await skillSync.force(viewer.companyId) : [];
+  return { ok: results.every((result) => result.action !== "failed"), results };
+}
+
+async function settingsStatusAction(ctx: PluginContext, context: PluginPerformActionContext) {
+  const viewer = await actionViewer(ctx, context);
+  const config = await readConfig(ctx, viewer.companyId);
+  return { saved: Object.keys(config).length > 0 };
 }
 
 async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, companyId: string) {
@@ -1074,27 +1189,6 @@ async function enrollmentById(ctx: PluginContext, id: string) {
     nextDueAt: row.next_due_at == null ? null : String(row.next_due_at),
     openIssueId: row.open_issue_id,
   };
-}
-
-async function reconcileInstalledCompanies(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("CRM skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("crm-records", companyId);
-    await ctx.skills.managed.reconcile("crm-outbound", companyId);
-  } catch (error) {
-    ctx.logger.info("CRM skill reconcile skipped", {
-      companyId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 }
 
 function objectParams(value: unknown): Record<string, unknown> {

@@ -1,3 +1,6 @@
+import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
+import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+
 export const CRM_RECORDS_SKILL = `# CRM records
 
 Use the \`partnersinbiz.crm\` tools to keep people and the companies they work for.
@@ -19,6 +22,7 @@ Use the \`partnersinbiz.crm\` tools to keep people and the companies they work f
 - \`bulk-tag-contacts\` adds or removes tags on many visible contacts at once. \`contact-graph\` returns a contact's companies, deals, and recent activity in one view.
 - \`pipeline-forecast\` returns the open pipeline value by stage with a weighted forecast. Use it to report expected revenue, not a guarantee.
 - \`add-deal-product\` / \`list-deal-products\` attach product lines to a deal. Use them to itemise what a deal sells.
+- A CRM company is also a PiB **client**. Social accounts, posts and SEO sprints point at it by id (\`clientRef\`), so use the real CRM company id, never a name.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound
@@ -30,4 +34,28 @@ Use \`partnersinbiz.crm:enroll-contact\` and \`partnersinbiz.crm:complete-step\`
 - \`manual\` sequences complete when a person marks that issue done. Call \`complete-step\` only after the issue status is done.
 - \`sent\` sequences complete when you set \`sentConfirmed\` after the message has actually been sent.
 - Won or lost deals stop running enrollments for the contact. Do not re-enroll them in the same sequence while it is still running.
+- A due step's issue is assigned to the contact's agent when it has one (you are woken), otherwise to the contact owner.
 `;
+
+export const SKILLS: PluginManagedSkillDeclaration[] = [
+  {
+    skillKey: "crm-records",
+    displayName: "CRM records",
+    slug: "pib-crm-records",
+    description: "Create and update people and companies without overwriting human-owned fields.",
+    markdown: withFrontmatter(
+      { name: "pib-crm-records", description: "Create and update CRM people and companies (PiB clients) without overwriting human-owned fields." },
+      CRM_RECORDS_SKILL,
+    ),
+  },
+  {
+    skillKey: "crm-outbound",
+    displayName: "CRM outbound",
+    slug: "pib-crm-outbound",
+    description: "Enroll contacts in sequences and complete steps only by the sequence rule.",
+    markdown: withFrontmatter(
+      { name: "pib-crm-outbound", description: "Enroll CRM contacts in sequences and complete steps only by the sequence rule." },
+      CRM_OUTBOUND_SKILL,
+    ),
+  },
+];

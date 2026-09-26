@@ -124,7 +124,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                   { key: "address", header: "Address" },
                   { key: "provider", header: "Provider" },
                 ]}
-                rows={accounts}
+                rows={accounts as unknown as Record<string, unknown>[]}
                 emptyMessage="No mailboxes match."
               />
               <DataTable
@@ -158,7 +158,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                 { key: "subject", header: "Subject" },
                 { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status="pending" /> },
               ]}
-              rows={messages}
+              rows={messages as unknown as Record<string, unknown>[]}
               emptyMessage="No drafts match."
             />
           )}

@@ -1,7 +1,18 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
-import { CAMPAIGN_SKILL } from "./skills.js";
+import { SKILLS } from "./skills.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+
+const instanceConfigSchema: JsonSchema = {
+  type: "object",
+  title: "Campaign settings",
+  description:
+    "Save these settings once for each Paperclip company that runs campaigns. Saving is what lets the scheduled job open due-step issues for the company.",
+  properties: {
+    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
+    defaultFromName: { type: "string", title: "Default sender name", default: "Partners in Biz" },
+  },
+};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -11,6 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Themed email programs that enroll contacts and open Paperclip issues for due steps.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
+  instanceConfigSchema,
   capabilities: [
     "companies.read",
     "access.members.read",
@@ -23,6 +35,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "issues.read",
     "issues.create",
+    "issues.wakeup",
+    "plugin.state.read",
+    "plugin.state.write",
     "ui.page.register",
     "ui.sidebar.register",
   ],
@@ -44,15 +59,7 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "*/5 * * * *",
     },
   ],
-  skills: [
-    {
-      skillKey: "campaigns",
-      displayName: "Campaigns",
-      slug: "campaigns",
-      description: "Run themed email programs that enroll contacts and open issues for due steps.",
-      markdown: CAMPAIGN_SKILL,
-    },
-  ],
+  skills: SKILLS,
   ui: {
     slots: [
       {

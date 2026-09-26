@@ -1,7 +1,20 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
-import { PARTNER_SHARE_SKILL } from "./skills.js";
+import { SKILLS } from "./skills.js";
 import { PARTNER_TOOLS } from "./tools.js";
+
+const instanceConfigSchema: JsonSchema = {
+  type: "object",
+  title: "Partner settings",
+  description: "Save once for each Paperclip company that shares records with partners.",
+  properties: {
+    requireOwnerForGrants: {
+      type: "boolean",
+      title: "Only owners and admins accept grants",
+      default: true,
+    },
+  },
+};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -11,6 +24,7 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Bilateral company links and named record grants.",
   author: "Partners in Biz",
   categories: ["workspace"],
+  instanceConfigSchema,
   capabilities: [
     "companies.read",
     "database.namespace.migrate",
@@ -19,21 +33,16 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "skills.managed",
     "events.subscribe",
+    "events.emit",
+    "plugin.state.read",
+    "plugin.state.write",
     "ui.page.register",
     "ui.sidebar.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "partners", migrationsDir: "migrations" },
   tools: PARTNER_TOOLS,
-  skills: [
-    {
-      skillKey: "partner-share",
-      displayName: "Partner share",
-      slug: "partner-share",
-      description: "Propose a named grant. Do not copy the record into the other company.",
-      markdown: PARTNER_SHARE_SKILL,
-    },
-  ],
+  skills: SKILLS,
   ui: {
     slots: [
       { type: "page", id: "partners-page", displayName: "Partners", exportName: "PartnersPage", routePath: "partners" },

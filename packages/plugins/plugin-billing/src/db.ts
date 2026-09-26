@@ -84,9 +84,9 @@ export async function insertLine(
   );
 }
 
-export async function linesFor(ctx: PluginContext, invoiceId: string): Promise<Array<{ quantity: number; unit_amount_minor: number | string }>> {
+export async function linesFor(ctx: PluginContext, invoiceId: string): Promise<Array<{ description: string; quantity: number; unit_amount_minor: number | string }>> {
   return ctx.db.query(
-    `SELECT quantity, unit_amount_minor FROM ${table(ctx, "invoice_lines")} WHERE invoice_id = $1`,
+    `SELECT description, quantity, unit_amount_minor FROM ${table(ctx, "invoice_lines")} WHERE invoice_id = $1 ORDER BY created_at, id`,
     [invoiceId],
   );
 }
@@ -242,9 +242,9 @@ export async function insertQuoteLine(
   );
 }
 
-export async function quoteLinesFor(ctx: PluginContext, quoteId: string): Promise<Array<{ quantity: number; unit_amount_minor: number | string }>> {
+export async function quoteLinesFor(ctx: PluginContext, quoteId: string): Promise<Array<{ description: string; quantity: number; unit_amount_minor: number | string }>> {
   return ctx.db.query(
-    `SELECT quantity, unit_amount_minor FROM ${table(ctx, "quote_lines")} WHERE quote_id = $1`,
+    `SELECT description, quantity, unit_amount_minor FROM ${table(ctx, "quote_lines")} WHERE quote_id = $1 ORDER BY created_at, id`,
     [quoteId],
   );
 }

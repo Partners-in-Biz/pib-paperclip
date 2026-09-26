@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   definePlugin,
   runWorker,
@@ -10,6 +10,7 @@ import {
 import {
   campaignFunnel,
   campaignStats,
+  crmContactsByIds,
   crmContactsByTags,
   dueEnrollments,
   enrollmentById,
@@ -48,15 +49,28 @@ import {
   type CampaignDraft,
   type CampaignStepDraft,
 } from "./domain.js";
-import { NAMESPACE } from "./namespace.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+import { SKILLS } from "./skills.js";
+import { createSkillSyncer, createWorkIssue, getCrmContact as projectedContact, readConfig, registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
+
+let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    skillSync = createSkillSyncer(ctx, SKILLS);
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     for (const tool of CAMPAIGN_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, (params, run) => {
+        void skillSync?.ensure(run.companyId);
+        return runTool(ctx, tool.name, params, run);
+      });
     }
-    ctx.actions.register("campaigns.load", (_params, context) => load(ctx, context));
+    ctx.actions.register("campaigns.load", (_params, context) => {
+      if (context.companyId) void skillSync?.ensure(context.companyId);
+      return load(ctx, context);
+    });
+    ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
+    ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
     ctx.actions.register("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
     ctx.actions.register("campaigns.launch", (params, context) => launchAction(ctx, context, params));
@@ -68,9 +82,8 @@ const plugin = definePlugin({
     ctx.jobs.register("open-due-steps", () => openDueSteps(ctx));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event.entityId, event.companyId));
     ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+      if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await reconcileInstalledCompanies(ctx);
     ctx.logger.info("Campaigns plugin ready");
   },
   async onHealth() {
@@ -122,9 +135,11 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   for (const campaign of campaigns) {
     const steps = await listSteps(ctx, campaign.id);
     const stats = await campaignStats(ctx, campaign.id);
-    result.push({ ...publicCampaign(campaign), steps, stats });
+    const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
+    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null });
   }
-  return { campaigns: result };
+  const config = await readConfig(ctx, companyId).catch(() => ({}));
+  return { campaigns: result, settingsSaved: Object.keys(config).length > 0 };
 }
 
 async function createCampaignAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -194,7 +209,10 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
 async function launch(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanLaunch(campaign.status);
-  if (campaign.approvalIssueId) {
+  if (campaign.status === "draft") {
+    if (!campaign.approvalIssueId) {
+      throw new CampaignError("Request approval first (request-campaign-approval). A person approves by marking that issue done.");
+    }
     const approval = await ctx.issues.get(campaign.approvalIssueId, companyId);
     if (approval?.status !== "done") throw new CampaignError("The campaign has not been approved yet");
   }
@@ -202,11 +220,16 @@ async function launch(ctx: PluginContext, companyId: string, params: Record<stri
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch");
   const explicitIds = stringList(params, "contactIds");
   const contacts = explicitIds.length > 0
-    ? explicitIds.map((id) => ({ id, name: id, tags: [] as string[] }))
+    ? await crmContactsByIds(ctx, companyId, explicitIds)
     : await crmContactsByTags(ctx, companyId, campaign.audienceTags);
+  if (explicitIds.length > 0 && contacts.length < explicitIds.length) {
+    const known = new Set(contacts.map((contact) => contact.id));
+    const missing = explicitIds.filter((id) => !known.has(id));
+    throw new CampaignError(`Unknown CRM contact ids: ${missing.join(", ")}. Run the CRM "resync" action if they were just created.`);
+  }
   let enrolled = 0;
   for (const contact of contacts) {
-    if (!matchesAudience(contact.tags, campaign.audienceTags)) continue;
+    if (explicitIds.length === 0 && !matchesAudience(contact.tags, campaign.audienceTags)) continue;
     const existing = await enrollmentsForContact(ctx, campaign.id, contact.id);
     try {
       const enrollment = startEnrollment({
@@ -285,13 +308,15 @@ async function openDueSteps(ctx: PluginContext) {
       const steps = await listSteps(ctx, enrollment.campaignId);
       const step = steps.find((item) => item.position === enrollment.stepPosition && item.variant === enrollment.variant);
       if (!step) continue;
-      const contact = await getCrmContact(ctx, enrollment.companyId, enrollment.contactId);
+      const contact = await projectedContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
       const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, step);
-      const issue = await ctx.issues.create({
+      const to = contact?.emails?.[0] ? `\n\nSend to: ${contact.name} <${contact.emails[0]}>` : "";
+      // Explicit companyId: jobs have no invocation scope; the host allows the
+      // call only for a company with saved Campaigns settings.
+      const issue = await createWorkIssue(ctx, {
         companyId: enrollment.companyId,
         title: copy.title,
-        description: copy.description,
-        status: "todo",
+        description: `${copy.description}${to}`,
         originKind: "plugin:partnersinbiz.campaigns",
         originId: enrollment.id,
       });
@@ -316,33 +341,14 @@ async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, c
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }
 
-async function getCrmContact(ctx: PluginContext, companyId: string, contactId: string): Promise<{ name: string } | null> {
-  try {
-    const rows = await ctx.db.query<{ name: string }>(
-      `SELECT name FROM ${crmNamespace()} WHERE id = $1 AND company_id = $2 LIMIT 1`,
-      [contactId, companyId],
-    );
-    return rows[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function crmNamespace(): string {
-  // Derived identically to the CRM plugin's namespace.
-  const hash = createHash("sha256").update("partnersinbiz.crm").digest("hex").slice(0, 10);
-  return `plugin_crm_${hash}`;
-}
-
 async function requestApproval(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanRequestApproval(campaign.status);
   if (campaign.approvalIssueId) throw new CampaignError("Approval was already requested for this campaign");
-  const issue = await ctx.issues.create({
+  const issue = await createWorkIssue(ctx, {
     companyId,
     title: `Approve campaign ${campaign.name}`,
     description: `A person marks this issue done to approve launching campaign ${campaign.name}.`,
-    status: "todo",
     originKind: "plugin:partnersinbiz.campaigns",
     originId: campaign.id,
   });
@@ -494,23 +500,6 @@ async function requireCampaign(ctx: PluginContext, companyId: string, id: string
   return campaign;
 }
 
-async function reconcileInstalledCompanies(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("Campaign skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("campaigns", companyId);
-  } catch (error) {
-    ctx.logger.info("Campaign skill reconcile skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
 function publicCampaign(campaign: CampaignDraft) {
   return {
     id: campaign.id,
@@ -523,6 +512,7 @@ function publicCampaign(campaign: CampaignDraft) {
     audienceTags: campaign.audienceTags,
     startAt: campaign.startAt,
     endAt: campaign.endAt,
+    approvalIssueId: campaign.approvalIssueId,
   };
 }
 

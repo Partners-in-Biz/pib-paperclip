@@ -17,6 +17,10 @@ export function assertMayDraft(delegation: Delegation | null): void {
   if (!delegation?.canDraft) throw new MailboxError("This agent is not allowed to draft on that mailbox");
 }
 
+export function assertMayRead(delegation: Delegation | null): void {
+  if (!delegation?.canRead) throw new MailboxError("This agent is not allowed to read that mailbox");
+}
+
 export function assertMaySend(delegation: Delegation | null): void {
   if (!delegation?.canSend) throw new MailboxError("This delegation is draft-only");
 }

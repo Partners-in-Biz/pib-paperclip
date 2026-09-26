@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import {
   asObject,
+  table,
   getInvoice,
   getQuote,
   grantsForInvoice,
@@ -63,16 +64,99 @@ import {
   type InvoiceState,
 } from "./domain.js";
 import { BILLING_TOOLS } from "./tools.js";
+import { SKILLS } from "./skills.js";
+import {
+  createSkillSyncer,
+  createWorkIssue,
+  getCrmCompany,
+  getCrmContact,
+  listCrmCompanies,
+  readConfig,
+  registerCrmProjection,
+} from "@partnersinbiz/pib-plugin-kit";
 
 let pluginCtx: PluginContext | null = null;
+let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+
+interface BillingSettings {
+  sender?: Record<string, unknown>;
+  payment?: Record<string, unknown>;
+  defaultCurrency?: string;
+  defaultDueDays?: number;
+  defaultTaxRate?: number;
+  invoiceNotes?: string;
+}
+
+async function billingSettings(ctx: PluginContext, companyId: string): Promise<BillingSettings> {
+  try {
+    return (await readConfig(ctx, companyId)) as BillingSettings;
+  } catch {
+    return {};
+  }
+}
+
+function senderFrom(settings: BillingSettings, override: string | undefined): Record<string, unknown> {
+  const base = settings.sender && typeof settings.sender === "object" ? { ...settings.sender } : {};
+  if (override) base.name = override;
+  if (typeof base.name !== "string" || !base.name.trim()) base.name = "Partners in Biz";
+  return base;
+}
+
+/** Customer name + details from the CRM projection, falling back to what the caller passed. */
+async function customerFrom(
+  ctx: PluginContext,
+  companyId: string,
+  kind: "company" | "contact",
+  ref: string,
+  explicitName: string | undefined,
+): Promise<Record<string, unknown>> {
+  const customer: Record<string, unknown> = { refKind: kind, refId: ref };
+  if (kind === "company") {
+    const record = await getCrmCompany(ctx, ctx.db.namespace, companyId, ref).catch(() => null);
+    if (record) customer.name = record.name;
+  } else {
+    const record = await getCrmContact(ctx, ctx.db.namespace, companyId, ref).catch(() => null);
+    if (record) {
+      customer.name = record.name;
+      if (record.emails[0]) customer.email = record.emails[0];
+    }
+  }
+  if (explicitName) customer.name = explicitName;
+  if (typeof customer.name !== "string" || !customer.name) {
+    throw new BillingError("customerName is required (the customer is not in the CRM client list yet)");
+  }
+  return customer;
+}
+
+function defaultDueAt(settings: BillingSettings): string | null {
+  const days = Number(settings.defaultDueDays ?? 0);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  return new Date(Date.now() + days * 86_400_000).toISOString();
+}
+
+function defaultTax(settings: BillingSettings): number {
+  const rate = Number(settings.defaultTaxRate ?? 0);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : 0;
+}
 
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
+    skillSync = createSkillSyncer(ctx, SKILLS);
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     for (const tool of BILLING_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, (params, run) => {
+        void skillSync?.ensure(run.companyId);
+        return runTool(ctx, tool.name, params, run);
+      });
     }
-    ctx.actions.register("billing.load", (_params, context) => load(ctx, context));
+    ctx.actions.register("billing.load", (_params, context) => {
+      if (context.companyId) void skillSync?.ensure(context.companyId);
+      return load(ctx, context);
+    });
+    ctx.actions.register("billing.invoice-html", (params, context) => invoiceHtml(ctx, context, params));
+    ctx.actions.register("billing.quote-html", (params, context) => quoteHtml(ctx, context, params));
+    ctx.actions.register("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("billing.create-invoice", (params, context) => createInvoice(ctx, context, params));
     ctx.actions.register("billing.add-line", (params, context) => addLine(ctx, context, params));
     ctx.actions.register("billing.request-send", (params, context) => requestDecision(ctx, context, params, "send"));
@@ -93,10 +177,10 @@ const plugin = definePlugin({
     ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
     ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.events.on("issue.updated", (event) => onIssueDone(ctx, event.entityId, event.companyId));
+    ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+      if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await reconcileAll(ctx);
   },
   async onHealth() {
     return { status: "ok", message: "Billing plugin ready" };
@@ -157,7 +241,16 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const expenses = await listExpenses(ctx, companyId);
   const recurring = await listRecurring(ctx, companyId);
   const creditNotes = await listCreditNotes(ctx, companyId);
+  const settings = await billingSettings(ctx, companyId);
+  const clients = await listCrmCompanies(ctx, ctx.db.namespace, companyId).catch(() => []);
   return {
+    settingsSaved: Object.keys(settings).length > 0,
+    defaults: {
+      currency: settings.defaultCurrency ?? "ZAR",
+      taxRate: defaultTax(settings),
+      senderName: senderFrom(settings, undefined).name,
+    },
+    clients: clients.map((client) => ({ id: client.id, name: client.name })),
     invoices: visible,
     quotes: quotes.map(publicQuote),
     expenses: expenses.map(publicExpense),
@@ -179,6 +272,8 @@ async function createInvoice(ctx: PluginContext, context: PluginPerformActionCon
   const customerKind = requiredString(params, "customerKind");
   if (customerKind !== "company" && customerKind !== "contact") throw new BillingError("Customer is a company or a contact");
   const existingNumbers = await listInvoiceNumbers(ctx, companyId);
+  const settings = await billingSettings(ctx, companyId);
+  const customerRef = requiredString(params, "customerRef");
   const row: InvoiceRow = {
     id: randomUUID(),
     company_id: companyId,
@@ -186,14 +281,14 @@ async function createInvoice(ctx: PluginContext, context: PluginPerformActionCon
     status: "draft",
     currency,
     customer_kind: customerKind,
-    customer_ref: requiredString(params, "customerRef"),
-    sender: { name: optionalString(params, "senderName") ?? "Workspace" },
-    customer: { name: requiredString(params, "customerName"), refKind: customerKind, refId: requiredString(params, "customerRef") },
+    customer_ref: customerRef,
+    sender: senderFrom(settings, optionalString(params, "senderName")),
+    customer: await customerFrom(ctx, companyId, customerKind, customerRef, optionalString(params, "customerName")),
     sender_snapshot: null,
     customer_snapshot: null,
     total_minor: 0,
-    tax_rate: 0,
-    due_at: optionalString(params, "dueAt") ?? null,
+    tax_rate: defaultTax(settings),
+    due_at: optionalString(params, "dueAt") ?? defaultDueAt(settings),
     approval_issue_id: null,
     pending_action: null,
     sent_at: null,
@@ -215,11 +310,7 @@ async function addLine(ctx: PluginContext, context: PluginPerformActionContext, 
     quantity,
     unitAmountMinor,
   });
-  const lines = await linesFor(ctx, invoice.id);
-  invoice.total_minor = lineTotal(lines.map((line) => ({
-    quantity: Number(line.quantity),
-    unitAmountMinor: Number(line.unit_amount_minor),
-  })));
+  await recomputeInvoiceTotal(ctx, invoice);
   await saveTotalsAndStatus(ctx, invoice);
   return publicInvoice(invoice);
 }
@@ -237,11 +328,12 @@ async function requestDecision(
   if (action === "pay" && invoice.status !== "sent" && invoice.status !== "viewed" && invoice.status !== "overdue") {
     throw new BillingError("This invoice cannot be marked paid");
   }
-  const issue = await ctx.issues.create({
+  const issue = await createWorkIssue(ctx, {
     companyId: invoice.company_id,
     title: action === "send" ? `Approve sending invoice ${invoice.number}` : `Approve payment of invoice ${invoice.number}`,
-    description: `A person marks this issue done to ${action} invoice ${invoice.number}.`,
-    status: "todo",
+    description: action === "send"
+      ? `Open the invoice on the Billing page, check it, send it to the customer, then mark this issue done. The plugin then records invoice ${invoice.number} as sent and freezes the sender and customer details.`
+      : `Confirm the payment for invoice ${invoice.number} has cleared (EFT proof or bank statement), then mark this issue done. The plugin then records the invoice as paid.`,
     originKind: "plugin:partnersinbiz.billing",
     originId: invoice.id,
   });
@@ -294,6 +386,8 @@ async function createQuote(ctx: PluginContext, context: PluginPerformActionConte
   const customerKind = requiredString(params, "customerKind");
   if (customerKind !== "company" && customerKind !== "contact") throw new BillingError("Customer is a company or a contact");
   const existingNumbers = await listQuoteNumbers(ctx, companyId);
+  const settings = await billingSettings(ctx, companyId);
+  const customerRef = requiredString(params, "customerRef");
   const row: QuoteRow = {
     id: randomUUID(),
     company_id: companyId,
@@ -301,11 +395,11 @@ async function createQuote(ctx: PluginContext, context: PluginPerformActionConte
     status: "draft",
     currency,
     customer_kind: customerKind,
-    customer_ref: requiredString(params, "customerRef"),
-    sender: { name: optionalString(params, "senderName") ?? "Workspace" },
-    customer: { name: requiredString(params, "customerName"), refKind: customerKind, refId: requiredString(params, "customerRef") },
+    customer_ref: customerRef,
+    sender: senderFrom(settings, optionalString(params, "senderName")),
+    customer: await customerFrom(ctx, companyId, customerKind, customerRef, optionalString(params, "customerName")),
     total_minor: 0,
-    tax_rate: 0,
+    tax_rate: defaultTax(settings),
     valid_until: optionalString(params, "validUntil") ?? null,
     converted_invoice_id: null,
   };
@@ -327,10 +421,11 @@ async function addQuoteLine(ctx: PluginContext, context: PluginPerformActionCont
     unitAmountMinor,
   });
   const lines = await quoteLinesFor(ctx, quote.id);
-  quote.total_minor = lineTotal(lines.map((line) => ({
+  const subtotal = lineTotal(lines.map((line) => ({
     quantity: Number(line.quantity),
     unitAmountMinor: Number(line.unit_amount_minor),
   })));
+  quote.total_minor = totalWithTax(subtotal, Number(quote.tax_rate ?? 0)).totalMinor;
   await saveQuoteStatus(ctx, quote);
   return publicQuote(quote);
 }
@@ -414,6 +509,7 @@ function publicQuote(quote: QuoteRow) {
     currency: quote.currency,
     customerKind: quote.customer_kind,
     customerRef: quote.customer_ref,
+    customerName: customerNameOf(quote.customer),
     totalMinor: Number(quote.total_minor),
     validUntil: quote.valid_until == null ? null : String(quote.valid_until),
     convertedInvoiceId: quote.converted_invoice_id,
@@ -435,19 +531,25 @@ async function invoiceHtml(ctx: PluginContext, context: PluginPerformActionConte
   const companyId = requiredCompany(context);
   const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   const lines = await linesFor(ctx, invoice.id);
+  const settings = await billingSettings(ctx, companyId);
   return {
     invoiceId: invoice.id,
     html: buildInvoiceHtml({
+      kind: "Invoice",
       number: invoice.number,
       status: invoice.status,
       currency: invoice.currency,
-      sender: asObject(invoice.sender),
-      customer: asObject(invoice.customer),
+      sender: asObject(invoice.sender_snapshot ?? invoice.sender),
+      customer: asObject(invoice.customer_snapshot ?? invoice.customer),
       lines: lines.map((line) => ({
-        description: "Line item",
+        description: line.description,
         quantity: Number(line.quantity),
         unitAmountMinor: Number(line.unit_amount_minor),
       })),
+      taxRate: Number(invoice.tax_rate ?? 0),
+      payment: settings.payment ?? null,
+      notes: settings.invoiceNotes ?? null,
+      issuedAt: invoice.sent_at == null ? null : String(invoice.sent_at),
       dueAt: invoice.due_at == null ? null : String(invoice.due_at),
     }),
   };
@@ -522,7 +624,7 @@ async function runRecurring(ctx: PluginContext) {
         await insertLine(ctx, {
           companyId: schedule.company_id,
           invoiceId: invoice.id,
-          description: "Recurring line",
+          description: line.description,
           quantity: Number(line.quantity),
           unitAmountMinor: Number(line.unit_amount_minor),
         });
@@ -601,8 +703,9 @@ async function setInvoiceTax(ctx: PluginContext, context: PluginPerformActionCon
   if (invoice.status !== "draft") throw new BillingError("Tax can only be set on a draft invoice");
   const taxRate = assertTaxRate(params.taxRate);
   invoice.tax_rate = taxRate;
+  await recomputeInvoiceTotal(ctx, invoice);
   await saveTotalsAndStatus(ctx, invoice);
-  return { invoiceId: invoice.id, taxRate };
+  return { invoiceId: invoice.id, taxRate, totalMinor: Number(invoice.total_minor) };
 }
 
 async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -612,16 +715,18 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
   return {
     quoteId: quote.id,
     html: buildInvoiceHtml({
+      kind: "Quote",
       number: quote.number,
       status: quote.status,
       currency: quote.currency,
       sender: asObject(quote.sender),
       customer: asObject(quote.customer),
       lines: lines.map((line) => ({
-        description: "Line item",
+        description: line.description,
         quantity: Number(line.quantity),
         unitAmountMinor: Number(line.unit_amount_minor),
       })),
+      taxRate: Number(quote.tax_rate ?? 0),
       dueAt: quote.valid_until == null ? null : String(quote.valid_until),
     }),
   };
@@ -682,6 +787,38 @@ function toState(invoice: InvoiceRow): InvoiceState {
   };
 }
 
+/** A partner grant was revoked: drop the invoice share written when it was accepted. */
+async function onPartnerGrantRevoked(ctx: PluginContext, companyId: string, payload: unknown) {
+  const body = asObject(payload);
+  if (body.recordType !== "invoice") return;
+  const invoiceId = String(body.recordId ?? "");
+  const granteeCompanyId = String(body.granteeCompanyId ?? "");
+  if (!companyId || !invoiceId || !granteeCompanyId) return;
+  try {
+    await ctx.db.execute(
+      `DELETE FROM ${table(ctx, "invoice_grants")} WHERE company_id = $1 AND invoice_id = $2 AND grantee_company_id = $3`,
+      [companyId, invoiceId, granteeCompanyId],
+    );
+  } catch (error) {
+    ctx.logger.error("Billing partner share removal failed", { invoiceId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** total_minor is always the VAT-inclusive total of the invoice lines. */
+async function recomputeInvoiceTotal(ctx: PluginContext, invoice: InvoiceRow): Promise<void> {
+  const lines = await linesFor(ctx, invoice.id);
+  const subtotal = lineTotal(lines.map((line) => ({
+    quantity: Number(line.quantity),
+    unitAmountMinor: Number(line.unit_amount_minor),
+  })));
+  invoice.total_minor = totalWithTax(subtotal, Number(invoice.tax_rate ?? 0)).totalMinor;
+}
+
+function customerNameOf(value: unknown): string | null {
+  const record = asObject(value);
+  return typeof record.name === "string" ? record.name : null;
+}
+
 function publicInvoice(invoice: InvoiceRow) {
   return {
     id: invoice.id,
@@ -690,6 +827,9 @@ function publicInvoice(invoice: InvoiceRow) {
     currency: invoice.currency,
     customerKind: invoice.customer_kind,
     customerRef: invoice.customer_ref,
+    customerName: customerNameOf(invoice.customer),
+    taxRate: Number(invoice.tax_rate ?? 0),
+    dueAt: invoice.due_at == null ? null : String(invoice.due_at),
     totalMinor: Number(invoice.total_minor),
     pendingAction: invoice.pending_action,
     approvalIssueId: invoice.approval_issue_id,
@@ -725,19 +865,3 @@ function integer(value: unknown, key: string): number {
   return amount;
 }
 
-async function reconcileAll(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("Billing skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("invoice-draft", companyId);
-  } catch (error) {
-    ctx.logger.info("Billing skill reconcile skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-  }
-}

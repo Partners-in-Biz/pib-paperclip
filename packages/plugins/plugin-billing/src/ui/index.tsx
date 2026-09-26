@@ -24,8 +24,33 @@ import {
   formatMinor,
 } from "@partnersinbiz/pib-plugin-ui";
 
-interface Invoice { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string }
-interface Quote { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string }
+interface Invoice { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string; customerName?: string | null; taxRate?: number; dueAt?: string | null }
+interface Quote { id: string; number: string; status: string; currency: string; totalMinor: number; customerRef: string; customerName?: string | null }
+interface Client { id: string; name: string }
+interface Snapshot {
+  invoices: Invoice[];
+  quotes?: Quote[];
+  expenses?: Expense[];
+  clients?: Client[];
+  settingsSaved?: boolean;
+  defaults?: { currency: string; taxRate: number; senderName: string };
+}
+
+/** "1 234,50" / "1234.5" → minor units. */
+function toMinor(value: string): number {
+  const cleaned = value.replace(/\s/g, "").replace(",", ".");
+  const amount = Number(cleaned);
+  if (!Number.isFinite(amount)) throw new Error("Enter a valid amount");
+  return Math.round(amount * 100);
+}
+
+function openPrintable(html: string) {
+  const win = window.open("", "_blank");
+  if (!win) throw new Error("Allow pop-ups to open the printable document");
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
 interface Expense { id: string; description: string; amountMinor: number; currency: string; category: string }
 type TabId = "overview" | "invoices" | "quotes" | "expenses";
 type CreateKind = "invoice" | "line" | "quote" | "expense" | null;
@@ -38,6 +63,10 @@ export function BillingPage({ context }: PluginPageProps) {
   const requestPay = usePluginAction("billing.request-pay");
   const createQuote = usePluginAction("billing.create-quote");
   const createExpense = usePluginAction("billing.create-expense");
+  const invoiceHtml = usePluginAction("billing.invoice-html");
+  const quoteHtml = usePluginAction("billing.quote-html");
+  const [clients, setClients] = useState<Client[]>([]);
+  const [settingsSaved, setSettingsSaved] = useState(true);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -59,10 +88,13 @@ export function BillingPage({ context }: PluginPageProps) {
   const [expenseCategory, setExpenseCategory] = useState("other");
 
   async function refresh() {
-    const snapshot = (await load({})) as { invoices: Invoice[]; quotes: Quote[]; expenses: Expense[] };
+    const snapshot = (await load({})) as Snapshot;
     setInvoices(snapshot.invoices);
     setQuotes(snapshot.quotes ?? []);
     setExpenses(snapshot.expenses ?? []);
+    setClients(snapshot.clients ?? []);
+    setSettingsSaved(snapshot.settingsSaved !== false);
+    if (snapshot.defaults?.currency) setCurrency((current) => current || snapshot.defaults!.currency);
   }
 
   useEffect(() => {
@@ -83,7 +115,7 @@ export function BillingPage({ context }: PluginPageProps) {
   }
 
   const q = search.trim().toLowerCase();
-  const rows = useMemo(() => invoices.filter((invoice) => !q || `${invoice.number} ${invoice.status} ${invoice.customerRef}`.toLowerCase().includes(q)), [invoices, q]);
+  const rows = useMemo(() => invoices.filter((invoice) => !q || `${invoice.number} ${invoice.status} ${invoice.customerRef} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)), [invoices, q]);
   const byStatus = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const invoice of invoices) counts[invoice.status] = (counts[invoice.status] ?? 0) + 1;
@@ -96,7 +128,9 @@ export function BillingPage({ context }: PluginPageProps) {
     <Page
       title="Billing"
       description="Draft an invoice here. Sending and payment wait for a person to finish the approval issue."
-      message={message}
+      message={message || (!settingsSaved
+        ? "Billing settings are not saved for this company. Open Settings → Plugins → Billing, add your business, VAT and EFT details, and click Save — they print on every invoice."
+        : undefined)}
       actions={<Button type="button" onClick={() => setCreate("invoice")}>+ Draft invoice</Button>}
     >
       <Tabs
@@ -135,13 +169,14 @@ export function BillingPage({ context }: PluginPageProps) {
                 { key: "number", header: "Number" },
                 { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "paid" ? "ok" : value === "draft" ? "pending" : "info"} /> },
                 { key: "total", header: "Total" },
-                { key: "customerRef", header: "Customer" },
+                { key: "customer", header: "Customer" },
                 {
                   key: "id",
                   header: "Actions",
-                  width: "280px",
+                  width: "340px",
                   render: (_value, row) => (
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => void invoiceHtml({ invoiceId: String(row.id) }).then((result) => openPrintable(String((result as { html: string }).html))).catch((error: unknown) => setMessage(errorText(error)))}>Print</Button>
                       <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => { setInvoiceId(String(row.id)); setCreate("line"); }}>Add line</Button>
                       <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => requestSend({ invoiceId: String(row.id) }), "Send approval opened")}>Request send</Button>
                       <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => requestPay({ invoiceId: String(row.id) }), "Payment approval opened")}>Request pay</Button>
@@ -149,7 +184,7 @@ export function BillingPage({ context }: PluginPageProps) {
                   ),
                 },
               ]}
-              rows={rows.map((invoice) => ({ ...invoice, total: formatMinor(invoice.totalMinor, invoice.currency) }))}
+              rows={rows.map((invoice) => ({ ...invoice, customer: invoice.customerName ?? invoice.customerRef, total: formatMinor(invoice.totalMinor, invoice.currency) }))}
               emptyMessage="No invoices match."
             />
           )}
@@ -169,9 +204,17 @@ export function BillingPage({ context }: PluginPageProps) {
                 { key: "number", header: "Number" },
                 { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "accepted" ? "ok" : value === "draft" ? "pending" : "info"} /> },
                 { key: "total", header: "Total" },
-                { key: "customerRef", header: "Customer" },
+                { key: "customer", header: "Customer" },
+                {
+                  key: "id",
+                  header: "",
+                  width: "90px",
+                  render: (_value, row) => (
+                    <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => void quoteHtml({ quoteId: String(row.id) }).then((result) => openPrintable(String((result as { html: string }).html))).catch((error: unknown) => setMessage(errorText(error)))}>Print</Button>
+                  ),
+                },
               ]}
-              rows={quotes.map((quote) => ({ ...quote, total: formatMinor(quote.totalMinor, quote.currency) }))}
+              rows={quotes.map((quote) => ({ ...quote, customer: quote.customerName ?? quote.customerRef, total: formatMinor(quote.totalMinor, quote.currency) }))}
               emptyMessage="No quotes match."
             />
           )}
@@ -203,14 +246,25 @@ export function BillingPage({ context }: PluginPageProps) {
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
-            await createInvoice({ currency, customerKind: "company", customerRef, customerName });
+            await createInvoice({ currency, customerKind: "company", customerRef, ...(customerName ? { customerName } : {}) });
             setCustomerName("");
             setCustomerRef("");
           }, "Draft created")}>Create draft</Button>
         </>
       )}>
-        <Field label="Customer name"><Input value={customerName} onChange={(event) => setCustomerName(event.target.value)} required /></Field>
-        <Field label="Customer reference"><Input value={customerRef} onChange={(event) => setCustomerRef(event.target.value)} required /></Field>
+        {clients.length > 0 ? (
+          <Field label="Client">
+            <Select value={customerRef} onChange={(event) => setCustomerRef(event.target.value)} required>
+              <option value="">Choose a CRM client…</option>
+              {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+            </Select>
+          </Field>
+        ) : (
+          <>
+            <Field label="Customer name"><Input value={customerName} onChange={(event) => setCustomerName(event.target.value)} required /></Field>
+            <Field label="Customer reference (CRM id)"><Input value={customerRef} onChange={(event) => setCustomerRef(event.target.value)} required /></Field>
+          </>
+        )}
         <Field label="Currency"><Input value={currency} onChange={(event) => setCurrency(event.target.value)} /></Field>
       </Modal>
 
@@ -221,27 +275,38 @@ export function BillingPage({ context }: PluginPageProps) {
             invoiceId,
             description,
             quantity: Number(quantity),
-            unitAmountMinor: Number(unitAmount),
+            unitAmountMinor: toMinor(unitAmount),
           }), "Line added")}>Add line</Button>
         </>
       )}>
         <Field label="Description"><Input value={description} onChange={(event) => setDescription(event.target.value)} required /></Field>
         <Field label="Quantity"><Input value={quantity} onChange={(event) => setQuantity(event.target.value)} /></Field>
-        <Field label="Unit amount (minor)"><Input value={unitAmount} onChange={(event) => setUnitAmount(event.target.value)} required /></Field>
+        <Field label="Unit price (excl. VAT)"><Input value={unitAmount} onChange={(event) => setUnitAmount(event.target.value)} required /></Field>
       </Modal>
 
       <Modal open={create === "quote"} title="Draft quote" onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
-            await createQuote({ currency, customerKind: "company", customerRef: quoteRef, customerName: quoteName });
+            await createQuote({ currency, customerKind: "company", customerRef: quoteRef, ...(quoteName ? { customerName: quoteName } : {}) });
             setQuoteName("");
             setQuoteRef("");
           }, "Quote draft created")}>Create quote</Button>
         </>
       )}>
-        <Field label="Customer name"><Input value={quoteName} onChange={(event) => setQuoteName(event.target.value)} required /></Field>
-        <Field label="Customer reference"><Input value={quoteRef} onChange={(event) => setQuoteRef(event.target.value)} required /></Field>
+        {clients.length > 0 ? (
+          <Field label="Client">
+            <Select value={quoteRef} onChange={(event) => setQuoteRef(event.target.value)} required>
+              <option value="">Choose a CRM client…</option>
+              {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+            </Select>
+          </Field>
+        ) : (
+          <>
+            <Field label="Customer name"><Input value={quoteName} onChange={(event) => setQuoteName(event.target.value)} required /></Field>
+            <Field label="Customer reference (CRM id)"><Input value={quoteRef} onChange={(event) => setQuoteRef(event.target.value)} required /></Field>
+          </>
+        )}
         <Field label="Currency"><Input value={currency} onChange={(event) => setCurrency(event.target.value)} /></Field>
       </Modal>
 
@@ -249,14 +314,14 @@ export function BillingPage({ context }: PluginPageProps) {
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" onClick={() => void run(async () => {
-            await createExpense({ description: expenseDescription, amountMinor: Number(expenseAmount || 0), category: expenseCategory });
+            await createExpense({ description: expenseDescription, amountMinor: toMinor(expenseAmount || "0"), category: expenseCategory });
             setExpenseDescription("");
             setExpenseAmount("");
           }, "Expense recorded")}>Save expense</Button>
         </>
       )}>
         <Field label="Description"><Input value={expenseDescription} onChange={(event) => setExpenseDescription(event.target.value)} required /></Field>
-        <Field label="Amount (minor units)"><Input value={expenseAmount} onChange={(event) => setExpenseAmount(event.target.value)} required /></Field>
+        <Field label="Amount"><Input value={expenseAmount} onChange={(event) => setExpenseAmount(event.target.value)} required /></Field>
         <Field label="Category"><Input value={expenseCategory} onChange={(event) => setExpenseCategory(event.target.value)} /></Field>
       </Modal>
     </Page>

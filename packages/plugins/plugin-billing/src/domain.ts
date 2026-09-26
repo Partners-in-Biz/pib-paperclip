@@ -147,6 +147,13 @@ export interface InvoiceHtmlLine {
 }
 
 export interface InvoiceHtmlInput {
+  /** "Invoice" (default) or "Quote". */
+  kind?: "Invoice" | "Quote";
+  issuedAt?: string | null;
+  taxRate?: number;
+  /** EFT/bank details printed under the total. */
+  payment?: Record<string, unknown> | null;
+  notes?: string | null;
   number: string;
   status: string;
   currency: string;
@@ -158,9 +165,9 @@ export interface InvoiceHtmlInput {
 
 function money(amountMinor: number, currency: string): string {
   try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 }).format(amountMinor / 100);
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amountMinor / 100);
   } catch {
-    return `${currency} ${(amountMinor / 100).toFixed(0)}`;
+    return `${currency} ${(amountMinor / 100).toFixed(2)}`;
   }
 }
 
@@ -176,10 +183,44 @@ function esc(value: unknown): string {
  * Build a self-contained, printable HTML invoice. A person can open it in a
  * browser and save as PDF. No external assets, so it works offline.
  */
+const SENDER_FIELDS: Array<[string, string]> = [
+  ["address", ""],
+  ["email", ""],
+  ["phone", ""],
+  ["vatNumber", "VAT no. "],
+  ["registrationNumber", "Reg. no. "],
+];
+
+const PAYMENT_FIELDS: Array<[string, string]> = [
+  ["bankName", "Bank"],
+  ["accountName", "Account name"],
+  ["accountNumber", "Account number"],
+  ["branchCode", "Branch code"],
+  ["accountType", "Account type"],
+  ["swift", "SWIFT"],
+];
+
+function partyLines(party: Record<string, unknown>, fallbackName: string): string {
+  const lines = [`<strong>${esc(party.name ?? fallbackName)}</strong>`];
+  for (const [key, prefix] of SENDER_FIELDS) {
+    const value = party[key];
+    if (typeof value === "string" && value.trim()) {
+      lines.push(esc(`${prefix}${value.trim()}`).replace(/\n/g, "<br />"));
+    }
+  }
+  return lines.join("<br />");
+}
+
+/**
+ * Build a self-contained, printable HTML invoice or quote. A person can open it
+ * in a browser and save as PDF. No external assets, so it works offline.
+ */
 export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
+  const kind = input.kind ?? "Invoice";
   const senderName = esc(input.sender.name ?? "Workspace");
-  const customerName = esc(input.customer.name ?? "Customer");
-  const total = input.lines.reduce((sum, line) => sum + line.quantity * line.unitAmountMinor, 0);
+  const subtotal = input.lines.reduce((sum, line) => sum + line.quantity * line.unitAmountMinor, 0);
+  const taxRate = Number(input.taxRate ?? 0);
+  const { taxMinor, totalMinor } = totalWithTax(subtotal, taxRate);
   const rows = input.lines
     .map((line) => {
       const lineTotal = line.quantity * line.unitAmountMinor;
@@ -191,51 +232,72 @@ export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
       </tr>`;
     })
     .join("\n        ");
+  const payment = input.payment ?? null;
+  const paymentRows = payment
+    ? PAYMENT_FIELDS.filter(([key]) => typeof payment[key] === "string" && String(payment[key]).trim())
+        .map(([key, label]) => `<tr><th>${esc(label)}</th><td>${esc(payment[key])}</td></tr>`)
+        .join("")
+    : "";
+  const reference = kind === "Invoice" ? `<tr><th>Reference</th><td>${esc(input.number)}</td></tr>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Invoice ${esc(input.number)}</title>
+<title>${kind} ${esc(input.number)}</title>
 <style>
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; margin: 0; padding: 40px; }
   .wrap { max-width: 720px; margin: 0 auto; }
   header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 16px; }
   h1 { font-size: 22px; margin: 0; }
-  .meta { text-align: right; font-size: 13px; color: #555; }
+  .meta { text-align: right; font-size: 13px; color: #555; line-height: 1.6; }
   .parties { display: flex; justify-content: space-between; gap: 24px; margin: 24px 0; }
-  .party h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin: 0 0 6px; }
+  .party h3, .pay h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin: 0 0 6px; }
   .party p { margin: 0; font-size: 14px; line-height: 1.5; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; border-bottom: 1px solid #ddd; padding: 8px; }
-  td { padding: 10px 8px; border-bottom: 1px solid #eee; }
+  table.lines { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.lines th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; border-bottom: 1px solid #ddd; padding: 8px; }
+  table.lines td { padding: 10px 8px; border-bottom: 1px solid #eee; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .total { text-align: right; font-size: 18px; font-weight: 700; margin-top: 16px; }
+  .totals { margin-left: auto; margin-top: 16px; font-size: 14px; border-collapse: collapse; }
+  .totals td { padding: 4px 8px; }
+  .totals .grand td { font-size: 18px; font-weight: 700; border-top: 2px solid #111; padding-top: 8px; }
+  .pay { margin-top: 32px; font-size: 13px; }
+  .pay table { border-collapse: collapse; }
+  .pay th { text-align: left; color: #666; font-weight: 500; padding: 2px 16px 2px 0; }
+  .notes { margin-top: 24px; font-size: 13px; color: #444; white-space: pre-wrap; }
   .status { display: inline-block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 3px 10px; border-radius: 999px; background: #eee; }
+  @media print { body { padding: 0; } .status { display: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div>
-      <h1>Invoice ${esc(input.number)}</h1>
+      <h1>${kind} ${esc(input.number)}</h1>
       <div class="status">${esc(input.status)}</div>
     </div>
     <div class="meta">
       <div>${senderName}</div>
-      ${input.dueAt ? `<div>Due ${esc(input.dueAt)}</div>` : ""}
+      ${input.issuedAt ? `<div>Issued ${esc(input.issuedAt.slice(0, 10))}</div>` : ""}
+      ${input.dueAt ? `<div>${kind === "Quote" ? "Valid until" : "Due"} ${esc(String(input.dueAt).slice(0, 10))}</div>` : ""}
     </div>
   </header>
   <div class="parties">
-    <div class="party"><h3>From</h3><p>${senderName}</p></div>
-    <div class="party"><h3>To</h3><p>${customerName}</p></div>
+    <div class="party"><h3>From</h3><p>${partyLines(input.sender, "Workspace")}</p></div>
+    <div class="party"><h3>To</h3><p>${partyLines(input.customer, "Customer")}</p></div>
   </div>
-  <table>
+  <table class="lines">
     <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Amount</th></tr></thead>
     <tbody>
         ${rows}
     </tbody>
   </table>
-  <div class="total">Total ${money(total, input.currency)}</div>
+  <table class="totals">
+    <tr><td>Subtotal</td><td class="num">${money(subtotal, input.currency)}</td></tr>
+    ${taxRate > 0 ? `<tr><td>VAT ${esc(taxRate)}%</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : ""}
+    <tr class="grand"><td>Total</td><td class="num">${money(totalMinor, input.currency)}</td></tr>
+  </table>
+  ${kind === "Invoice" && paymentRows ? `<div class="pay"><h3>Payment details (EFT)</h3><table>${paymentRows}${reference}</table></div>` : ""}
+  ${input.notes ? `<div class="notes">${esc(input.notes)}</div>` : ""}
 </div>
 </body>
 </html>`;

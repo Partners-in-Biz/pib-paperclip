@@ -105,6 +105,7 @@ interface Summary {
 }
 
 interface Snapshot {
+  settingsSaved?: boolean;
   accounts: Account[];
   contacts: Contact[];
   deals: Deal[];
@@ -247,7 +248,9 @@ export function CrmPage({ context }: PluginPageProps) {
     <Page
       title="CRM"
       description="People, the companies they work for, and the deals between them."
-      message={message}
+      message={message || (snapshot && snapshot.settingsSaved === false
+        ? "CRM settings are not saved for this company yet. Open Settings → Plugins → CRM and click Save once, or sequence steps will not open issues and other plugins will not see your clients."
+        : undefined)}
       actions={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate("company")}>+ Company</Button>
@@ -480,7 +483,7 @@ export function CrmPage({ context }: PluginPageProps) {
                   ),
                 },
               ]}
-              rows={sequences}
+              rows={sequences as unknown as Record<string, unknown>[]}
               emptyMessage="No sequences match."
             />
           )}
@@ -503,7 +506,7 @@ export function CrmPage({ context }: PluginPageProps) {
               columns={[
                 { key: "name", header: "Product" },
                 { key: "description", header: "Description" },
-                { key: "price", header: "Price", render: (_value, row) => formatMinor((row as Product).unitAmountMinor, (row as Product).currency) },
+                { key: "price", header: "Price", render: (_value, row) => formatMinor((row as unknown as Product).unitAmountMinor, (row as unknown as Product).currency) },
                 { key: "isActive", header: "Status", render: (value) => <StatusBadge label={value ? "Active" : "Inactive"} status={value ? "ok" : "info"} /> },
               ]}
               rows={products.map((row) => ({ ...row, price: "" }))}

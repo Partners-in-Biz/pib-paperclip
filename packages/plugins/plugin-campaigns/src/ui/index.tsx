@@ -33,9 +33,11 @@ interface Campaign {
   audienceTags: string[];
   steps: Array<{ position: number; delayDays: number; subject: string; body: string }>;
   stats: { enrolled: number; running: number; done: number };
+  approvalIssueId: string | null;
+  approvalStatus: string | null;
 }
 
-interface Snapshot { campaigns: Campaign[] }
+interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean }
 type TabId = "overview" | "campaigns";
 type CreateKind = "campaign" | "step" | null;
 
@@ -44,6 +46,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const createCampaign = usePluginAction("campaigns.create-campaign");
   const addStep = usePluginAction("campaigns.add-step");
   const launch = usePluginAction("campaigns.launch");
+  const requestApproval = usePluginAction("campaigns.request-approval");
   const pause = usePluginAction("campaigns.pause");
   const resume = usePluginAction("campaigns.resume");
   const complete = usePluginAction("campaigns.complete");
@@ -90,7 +93,9 @@ export function CampaignsPage({ context }: PluginPageProps) {
     <Page
       title="Campaigns"
       description="Themed email programs that enroll contacts and open Paperclip issues for each due step."
-      message={message}
+      message={message || (snapshot && snapshot.settingsSaved === false
+        ? "Campaign settings are not saved for this company yet. Open Settings → Plugins → Campaigns and click Save once, or due-step issues will not open."
+        : undefined)}
       actions={<Button type="button" onClick={() => setCreate("campaign")}>+ New campaign</Button>}
     >
       <Tabs
@@ -135,7 +140,13 @@ export function CampaignsPage({ context }: PluginPageProps) {
                     return (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => { setSelectedCampaignId(campaign.id); setCreate("step"); }}>Add step</Button>
-                        {campaign.status === "draft" || campaign.status === "paused" ? (
+                        {campaign.status === "draft" && !campaign.approvalIssueId ? (
+                          <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => requestApproval({ campaignId: campaign.id }), "Approval requested — mark the approval issue done to approve")}>Request approval</Button>
+                        ) : null}
+                        {campaign.status === "draft" && campaign.approvalIssueId && campaign.approvalStatus !== "done" ? (
+                          <StatusBadge label="Awaiting approval" status="pending" />
+                        ) : null}
+                        {(campaign.status === "draft" && campaign.approvalStatus === "done") || campaign.status === "paused" ? (
                           <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => launch({ campaignId: campaign.id }), "Campaign launched")}>Launch</Button>
                         ) : null}
                         {campaign.status === "active" || campaign.status === "scheduled" ? (

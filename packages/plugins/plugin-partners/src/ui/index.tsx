@@ -36,6 +36,7 @@ export function PartnersPage({ context }: PluginPageProps) {
   const proposeLink = usePluginAction("partners.propose-link");
   const acceptLink = usePluginAction("partners.accept-link");
   const acceptGrant = usePluginAction("partners.accept-grant");
+  const revokeGrant = usePluginAction("partners.revoke-grant");
   const [links, setLinks] = useState<LinkRow[]>([]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [message, setMessage] = useState("");
@@ -132,7 +133,7 @@ export function PartnersPage({ context }: PluginPageProps) {
                   ),
                 },
               ]}
-              rows={linkRows}
+              rows={linkRows as unknown as Record<string, unknown>[]}
               emptyMessage="No links match."
             />
           )}
@@ -149,12 +150,21 @@ export function PartnersPage({ context }: PluginPageProps) {
               columns={[
                 { key: "record_type", header: "Type" },
                 { key: "record_id", header: "Record" },
-                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "accepted" ? "ok" : "pending"} /> },
+                { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" || value === "accepted" ? "ok" : value === "revoked" ? "info" : "pending"} /> },
                 {
                   key: "id",
                   header: "",
                   width: "110px",
-                  render: (_value, row) => row.status === "proposed" ? (
+                  render: (_value, row) => row.status === "active" && row.source_company_id === context.companyId ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      style={{ height: 28, fontSize: 12 }}
+                      onClick={() => void run(() => revokeGrant({ grantId: String(row.id) }), "Grant revoked")}
+                    >
+                      Revoke
+                    </Button>
+                  ) : row.status === "proposed" ? (
                     <Button
                       type="button"
                       style={{ height: 28, fontSize: 12 }}
@@ -169,7 +179,7 @@ export function PartnersPage({ context }: PluginPageProps) {
                   ) : null,
                 },
               ]}
-              rows={grantRows}
+              rows={grantRows as unknown as Record<string, unknown>[]}
               emptyMessage="No grants match."
             />
           )}

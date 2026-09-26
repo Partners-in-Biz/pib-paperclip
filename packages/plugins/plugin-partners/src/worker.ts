@@ -17,6 +17,10 @@ import {
   type LinkStatus,
 } from "./domain.js";
 import { PARTNER_TOOLS } from "./tools.js";
+import { SKILLS } from "./skills.js";
+import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+
+let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 interface LinkRow {
   id: string;
@@ -39,19 +43,27 @@ interface GrantRow {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    skillSync = createSkillSyncer(ctx, SKILLS);
     for (const tool of PARTNER_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, (params, run) => {
+        void skillSync?.ensure(run.companyId);
+        return runTool(ctx, tool.name, params, run);
+      });
     }
-    ctx.actions.register("partners.load", (_params, context) => load(ctx, requiredCompany(context)));
+    ctx.actions.register("partners.load", (_params, context) => {
+      const companyId = requiredCompany(context);
+      void skillSync?.ensure(companyId);
+      return load(ctx, companyId);
+    });
+    ctx.actions.register("partners.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("partners.propose-link", (params, context) => proposeLink(ctx, requiredCompany(context), params));
     ctx.actions.register("partners.accept-link", (params, context) => acceptLink(ctx, requiredCompany(context), params));
     ctx.actions.register("partners.propose-grant", (params, context) => proposeNamedGrant(ctx, requiredCompany(context), params));
     ctx.actions.register("partners.accept-grant", (params, context) => acceptNamedGrant(ctx, context, params));
     ctx.actions.register("partners.revoke-grant", (params, context) => revokeGrant(ctx, requiredCompany(context), params));
     ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+      if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await reconcileAll(ctx);
   },
   async onHealth() {
     return { status: "ok", message: "Partners plugin ready" };
@@ -174,7 +186,21 @@ async function revokeGrant(ctx: PluginContext, companyId: string, params: Record
     `UPDATE ${table(ctx, "grants")} SET status = 'revoked' WHERE id = $1`,
     [grant.id],
   );
-  return { grantId: grant.id, recordType: grant.record_type, recordId: grant.record_id, status: "revoked" };
+  // CRM and Billing listen for this and remove the share they wrote on accept.
+  let propagated = true;
+  try {
+    await ctx.events.emit("grant.revoked", companyId, {
+      grantId: grant.id,
+      recordType: grant.record_type,
+      recordId: grant.record_id,
+      sourceCompanyId: grant.source_company_id,
+      granteeCompanyId: grant.grantee_company_id,
+    });
+  } catch (error) {
+    propagated = false;
+    ctx.logger.error("Partner grant revoke broadcast failed", { grantId: grant.id, error: error instanceof Error ? error.message : String(error) });
+  }
+  return { grantId: grant.id, recordType: grant.record_type, recordId: grant.record_id, status: "revoked", propagated };
 }
 
 async function requireLink(ctx: PluginContext, id: string): Promise<LinkRow> {
@@ -231,19 +257,3 @@ function requiredString(params: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
-async function reconcileAll(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("Partners skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("partner-share", companyId);
-  } catch (error) {
-    ctx.logger.info("Partners skill reconcile skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-  }
-}

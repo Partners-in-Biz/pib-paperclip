@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { CampaignDraft, CampaignStepDraft, EnrollmentDraft } from "./domain.js";
-import { pluginNamespace } from "./namespace.js";
-
-/** The CRM plugin's namespace, derived the same way the host derives it. */
-const CRM_NAMESPACE = pluginNamespace("partnersinbiz.crm", "crm");
+import { listCrmContacts } from "@partnersinbiz/pib-plugin-kit";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace)) throw new Error("Unsafe namespace");
@@ -291,23 +288,30 @@ export async function campaignStats(ctx: PluginContext, campaignId: string): Pro
   return stats;
 }
 
+/**
+ * Contacts from the local CRM projection (fed by CRM events). A plugin may not
+ * read the CRM schema directly. Tag matching is case-insensitive; an empty tag
+ * list means every contact.
+ */
 export async function crmContactsByTags(
   ctx: PluginContext,
   companyId: string,
   tags: string[],
-): Promise<Array<{ id: string; name: string; tags: string[] }>> {
-  try {
-    const rows = await ctx.db.query<{ id: string; name: string; tags: unknown }>(
-      `SELECT id, name, tags FROM ${CRM_NAMESPACE}.contacts WHERE company_id = $1`,
-      [companyId],
-    );
-    const wanted = new Set(tags.map((tag) => tag.toLowerCase()));
-    return rows
-      .map((row) => ({ id: row.id, name: row.name, tags: asStringList(row.tags) }))
-      .filter((contact) => wanted.size === 0 || contact.tags.some((tag) => wanted.has(tag.toLowerCase())));
-  } catch (error) {
-    throw new Error(`Could not read CRM contacts: ${error instanceof Error ? error.message : String(error)}`);
-  }
+): Promise<Array<{ id: string; name: string; tags: string[]; emails: string[] }>> {
+  const rows = await listCrmContacts(ctx, ctx.db.namespace, companyId);
+  const wanted = new Set(tags.map((tag) => tag.toLowerCase()));
+  return rows
+    .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }))
+    .filter((contact) => wanted.size === 0 || contact.tags.some((tag) => wanted.has(tag.toLowerCase())));
+}
+
+export async function crmContactsByIds(
+  ctx: PluginContext,
+  companyId: string,
+  ids: string[],
+): Promise<Array<{ id: string; name: string; tags: string[]; emails: string[] }>> {
+  const rows = await listCrmContacts(ctx, ctx.db.namespace, companyId, { ids });
+  return rows.map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }));
 }
 
 export async function campaignFunnel(ctx: PluginContext, campaignId: string): Promise<{ byStep: Array<{ stepPosition: number; variant: string; count: number }>; completed: number; stopped: number }> {

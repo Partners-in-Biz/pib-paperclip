@@ -7,15 +7,28 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { assertMayDraft, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
+import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { MAILBOX_TOOLS } from "./tools.js";
+import { SKILLS } from "./skills.js";
+import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+
+let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    skillSync = createSkillSyncer(ctx, SKILLS);
     for (const tool of MAILBOX_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, (params, run) => {
+        void skillSync?.ensure(run.companyId);
+        return runTool(ctx, tool.name, params, run);
+      });
     }
-    ctx.actions.register("mailbox.load", (_params, context) => load(ctx, requiredCompany(context)));
+    ctx.actions.register("mailbox.load", (_params, context) => {
+      const companyId = requiredCompany(context);
+      void skillSync?.ensure(companyId);
+      return load(ctx, companyId);
+    });
+    ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("mailbox.create-account", (params, context) => createAccount(ctx, requiredCompany(context), context.actor.userId, params));
     ctx.actions.register("mailbox.create-delegation", (params, context) => createDelegation(ctx, requiredCompany(context), params));
     ctx.actions.register("mailbox.create-draft", (params, context) => createDraft(ctx, requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent"));
@@ -25,9 +38,8 @@ const plugin = definePlugin({
     ctx.actions.register("mailbox.list-email-templates", (_params, context) => listEmailTemplates(ctx, requiredCompany(context)));
     ctx.actions.register("mailbox.list-threads", (params, context) => listThreads(ctx, requiredCompany(context), params));
     ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+      if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await reconcileAll(ctx);
   },
   async onHealth() {
     return { status: "ok", message: "Mailbox plugin ready" };
@@ -46,11 +58,28 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     if (name === "send-draft") {
       return { content: "Draft queued", data: await sendDraft(ctx, run.companyId, run.agentId, requiredString(body, "messageId")) };
     }
-    if (name === "list-inbox") return { content: "Inbox listed", data: await listInbox(ctx, run.companyId, body) };
-    if (name === "mark-read") return { content: "Message marked read", data: await markRead(ctx, run.companyId, body) };
+    if (name === "list-inbox") {
+      assertMayRead(await delegationFor(ctx, requiredString(body, "accountId"), run.agentId));
+      return { content: "Inbox listed", data: await listInbox(ctx, run.companyId, body) };
+    }
+    if (name === "mark-read") {
+      const accountId = await messageAccount(ctx, run.companyId, requiredString(body, "messageId"));
+      assertMayRead(accountId ? await delegationFor(ctx, accountId, run.agentId) : null);
+      return { content: "Message marked read", data: await markRead(ctx, run.companyId, body) };
+    }
     if (name === "create-email-template") return { content: "Email template created", data: await createEmailTemplateAction(ctx, run.companyId, body) };
     if (name === "list-email-templates") return { content: "Email templates listed", data: await listEmailTemplates(ctx, run.companyId) };
-    if (name === "list-threads") return { content: "Threads listed", data: await listThreads(ctx, run.companyId, body) };
+    if (name === "list-threads") {
+      const accountId = optionalString(body, "accountId");
+      if (accountId) {
+        assertMayRead(await delegationFor(ctx, accountId, run.agentId));
+        return { content: "Threads listed", data: await listThreads(ctx, run.companyId, body) };
+      }
+      const readable = await readableAccounts(ctx, run.companyId, run.agentId);
+      const threads = [];
+      for (const id of readable) threads.push(...(await listThreads(ctx, run.companyId, { ...body, accountId: id })));
+      return { content: "Threads listed", data: threads };
+    }
     return { error: "Unknown mailbox tool" };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Mailbox tool failed" };
@@ -218,6 +247,22 @@ async function listEmailTemplates(ctx: PluginContext, companyId: string) {
   );
 }
 
+async function messageAccount(ctx: PluginContext, companyId: string, messageId: string): Promise<string | null> {
+  const rows = await ctx.db.query<{ account_id: string }>(
+    `SELECT account_id FROM ${table(ctx, "messages")} WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [messageId, companyId],
+  );
+  return rows[0]?.account_id ?? null;
+}
+
+async function readableAccounts(ctx: PluginContext, companyId: string, agentId: string): Promise<string[]> {
+  const rows = await ctx.db.query<{ account_id: string }>(
+    `SELECT account_id FROM ${table(ctx, "delegations")} WHERE company_id = $1 AND agent_id = $2 AND can_read = true`,
+    [companyId, agentId],
+  );
+  return rows.map((row) => row.account_id);
+}
+
 async function delegationFor(ctx: PluginContext, accountId: string, agentId: string): Promise<Delegation | null> {
   const rows = await ctx.db.query<{ can_read: boolean; can_draft: boolean; can_send: boolean }>(
     `SELECT can_read, can_draft, can_send FROM ${table(ctx, "delegations")}
@@ -263,19 +308,3 @@ function integer(value: unknown, key: string): number {
   return amount;
 }
 
-async function reconcileAll(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("Mailbox skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("mailbox-draft", companyId);
-  } catch (error) {
-    ctx.logger.info("Mailbox skill reconcile skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-  }
-}
