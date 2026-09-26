@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
 import { StatusBadge, usePluginAction, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Select, fluidColumns, oneColumn, tokens, useIsNarrow, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import type { Client, Snapshot } from "./types.js";
 
@@ -157,7 +157,7 @@ export function Row({ children, style }: { children: ReactNode; style?: CSSPrope
 }
 
 export function Grid({ children, min = 150 }: { children: ReactNode; min?: number }) {
-  return <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fit, minmax(${min}px, 1fr))`, gap: 10 }}>{children}</div>;
+  return <div style={{ display: "grid", gridTemplateColumns: fluidColumns(min), gap: 10 }}>{children}</div>;
 }
 
 export function SmallButton(props: Parameters<typeof Button>[0]) {
@@ -166,9 +166,9 @@ export function SmallButton(props: Parameters<typeof Button>[0]) {
 
 export function Card({ title, children, actions }: { title?: string; children: ReactNode; actions?: ReactNode }) {
   return (
-    <section style={{ display: "grid", gap: 10, padding: 14, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.card }}>
+    <section style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 10, padding: 14, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.card, minWidth: 0 }}>
       {title || actions ? (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {title ? <h3 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted }}>{title}</h3> : <span />}
           {actions}
         </div>
@@ -180,9 +180,9 @@ export function Card({ title, children, actions }: { title?: string; children: R
 
 export function Totals({ rows }: { rows: Array<{ label: string; value: string; strong?: boolean }> }) {
   return (
-    <div style={{ display: "grid", gap: 4, justifyContent: "end", fontSize: 13 }}>
+    <div style={{ display: "grid", gap: 4, justifyContent: "end", fontSize: 13, maxWidth: "100%" }}>
       {rows.map((row) => (
-        <div key={row.label} style={{ display: "flex", gap: 24, justifyContent: "space-between", fontWeight: row.strong ? 650 : 400 }}>
+        <div key={row.label} style={{ display: "flex", gap: 16, justifyContent: "space-between", fontWeight: row.strong ? 650 : 400 }}>
           <span style={{ color: row.strong ? tokens.fg : tokens.muted }}>{row.label}</span>
           <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.value}</span>
         </div>
@@ -193,6 +193,8 @@ export function Totals({ rows }: { rows: Array<{ label: string; value: string; s
 
 /** A wide side panel (the kit's Sheet is 440px; editors need more room). */
 export function Drawer({ open, title, subtitle, onClose, children, actions }: { open: boolean; title: string; subtitle?: ReactNode; onClose: () => void; children: ReactNode; actions?: ReactNode }) {
+  const narrow = useIsNarrow();
+  usePibBaseStyles();
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
@@ -204,13 +206,38 @@ export function Drawer({ open, title, subtitle, onClose, children, actions }: { 
   if (!open) return null;
   return (
     <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} style={{ position: "fixed", inset: 0, zIndex: 70, background: "color-mix(in oklab, black 40%, transparent)", display: "flex", justifyContent: "flex-end" }}>
-      <aside role="dialog" aria-modal="true" aria-label={title} style={{ width: "min(820px, 100%)", height: "100%", overflow: "auto", background: tokens.bg, borderLeft: `1px solid ${tokens.border}`, color: tokens.fg, fontFamily: FONT, display: "grid", alignContent: "start", gap: 14, padding: 22, boxShadow: "-12px 0 40px color-mix(in oklab, black 20%, transparent)" }}>
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="pib-ui"
+        style={{
+          // A phone gets the whole screen, clear of the notch and the home indicator.
+          width: narrow ? "100%" : "min(820px, 100%)",
+          height: "100%",
+          maxHeight: "100dvh",
+          overflowX: "hidden",
+          overflowY: "auto",
+          overscrollBehavior: "contain",
+          WebkitOverflowScrolling: "touch",
+          background: tokens.bg,
+          borderLeft: narrow ? "none" : `1px solid ${tokens.border}`,
+          color: tokens.fg,
+          fontFamily: FONT,
+          display: "grid",
+          gridTemplateColumns: oneColumn,
+          alignContent: "start",
+          gap: 14,
+          padding: narrow ? "calc(14px + env(safe-area-inset-top, 0px)) 16px calc(20px + env(safe-area-inset-bottom, 0px))" : 22,
+          boxShadow: "-12px 0 40px color-mix(in oklab, black 20%, transparent)",
+        }}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
           <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-            <h2 style={{ margin: 0, fontSize: 19, fontWeight: 650, letterSpacing: "-0.01em" }}>{title}</h2>
+            <h2 style={{ margin: 0, fontSize: 19, fontWeight: 650, letterSpacing: "-0.01em", overflowWrap: "anywhere" }}>{title}</h2>
             {subtitle ? <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12.5, color: tokens.muted }}>{subtitle}</div> : null}
           </div>
-          <Button type="button" variant="secondary" onClick={onClose} aria-label="Close" style={{ minWidth: 0, padding: "0 10px" }}>×</Button>
+          <Button type="button" variant="secondary" onClick={onClose} aria-label="Close" style={{ minWidth: narrow ? 40 : 0, padding: "0 10px", flexShrink: 0 }}>×</Button>
         </div>
         {actions ? <Row>{actions}</Row> : null}
         {children}
@@ -316,7 +343,7 @@ export async function uploadFile(call: Call, purpose: "receipt" | "pop" | "bill"
 
 export function FilePicker({ label, onFile, accept = "application/pdf,image/*", disabled }: { label: string; onFile: (file: File) => void; accept?: string; disabled?: boolean }) {
   return (
-    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 28, padding: "0 10px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1 }}>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1 }}>
       {label}
       <input type="file" accept={accept} disabled={disabled} style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onFile(file); }} />
     </label>

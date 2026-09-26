@@ -52,6 +52,12 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 - When a Jev key is set, every new item carries \`triage\`: \`needsReply\`, \`intent\` (question, complaint, praise, lead, spam, other), \`sentiment\` and \`escalate\`. Confident spam is marked read for you. Items that need a reply arrive as **one issue per account per day** ("Reply to social comments: …") listing the \`itemId\`s; more comments that day are added as comments on it. Items with legal, safety or PR risk go to a person, never to you: do not reply to them.
 - \`reply-inbox\` replies through the platform when it supports replies. Unless the company turned on agent replies, your reply is saved as a suggestion that a person sends. Keep replies short, friendly and on brand; never argue, never share private details, escalate complaints to a person.
 - \`mark-inbox-read\` when handled. Close the day's issue with one line on what you did.
+- Items Jev reads as a **lead** also go to the CRM on their own (a follow-up for the owner). Still answer them and point to the booking or contact link.
+
+## Hand-offs
+
+- When an SEO page goes live you get one **"Repurpose for social: …"** issue in that page's scope: draft a LinkedIn post, an X thread and an Instagram idea from the page, with the link, following the playbook. Drafts only, then \`request-review\`.
+- With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before a person approves. Fix what it lists, then send the post for review again.
 
 ## Analytics and feeds
 

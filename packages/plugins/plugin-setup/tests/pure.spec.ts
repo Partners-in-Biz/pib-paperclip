@@ -218,7 +218,7 @@ describe("finish setup content", () => {
     expect(content?.description).toContain("[Open settings](/PIB/company/settings/instance/plugins/mb-id)");
     // SEO is off: not listed. Uninstalled enabled modules are mentioned but not counted.
     expect(content?.description).not.toContain("## SEO");
-    expect(content?.description).toContain("Switched on but not installed: Social media, Email campaigns, Billing, Accounting, Payroll, Partners.");
+    expect(content?.description).toContain("Switched on but not installed: Cockpit & team, Social media, Email campaigns, Billing, Accounting, Payroll, Partners.");
     expect(content?.description).toContain("[Open the Setup page](/PIB/setup)");
     expect(content?.missing.map((m) => `${m.module}:${m.item.key}`)).toEqual(["crm:gmail", "mailbox:settings"]);
   });

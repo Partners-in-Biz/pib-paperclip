@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Button, Field, Input, Modal, Select, Tabs, TextArea, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Modal, Select, Tabs, TextArea, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import {
   OVERRIDE_FIELDS,
   PLATFORM_LABELS,
@@ -84,6 +84,7 @@ export function Thumb({ asset, selected, order, onClick }: { asset: { url: strin
         position: "relative",
         width: 84,
         height: 84,
+        flexShrink: 0,
         padding: 0,
         borderRadius: 10,
         overflow: "hidden",
@@ -238,7 +239,7 @@ export function Composer({ snapshot, post, run, onClose }: {
             {foreign.map((d) => d.accountName).join(", ")} belong{foreign.length === 1 ? "s" : ""} to another client and will be removed from this post when you save.
           </Muted>
         ) : null}
-        <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
+        <div style={{ display: "grid", gap: 6, gridTemplateColumns: fluidColumns(200, "auto-fill") }}>
           {accounts.map((account) => (
             <label key={account.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", borderRadius: 10, border: `1px solid ${accountIds.has(account.id) ? tokens.primary : tokens.border}`, cursor: "pointer" }}>
               <input type="checkbox" checked={accountIds.has(account.id)} onChange={() => toggleAccount(account.id)} />

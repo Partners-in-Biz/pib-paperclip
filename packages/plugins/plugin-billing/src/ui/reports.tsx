@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { DataTable, MetricCard } from "@paperclipai/plugin-sdk/ui";
-import { BarChart, Field, Input, StatRow, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { BarChart, Field, Input, StatRow, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Card, Muted, Row, SmallButton, Status, fmtDate, money, today, useBilling } from "./parts.js";
 
 type Bucket = { count: number; amountMinor: number };
@@ -74,7 +74,7 @@ export function ReportsTab() {
           <MetricCard label="Churn (30 days)" value={`${Math.round(data.mrr.churnRate * 1000) / 10}%`} />
         </StatRow>
       </Card>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(320), gap: 14 }}>
         <BarChart title={`Invoiced per month (${cur}, excl. VAT)`} items={data.revenue.months.map((m) => ({ label: m.month, value: Math.round(m.invoicedMinor / 100) }))} />
         <BarChart title={`Collected per month (${cur})`} items={data.revenue.months.map((m) => ({ label: m.month, value: Math.round(m.collectedMinor / 100) }))} />
       </div>

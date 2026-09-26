@@ -3,6 +3,7 @@
  * the task tools (start, complete, block, skip, add).
  */
 import { randomUUID } from "node:crypto";
+import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
 import { blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
@@ -40,6 +41,8 @@ import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { resolveAgent } from "./agent.js";
 import { addNeedsYou } from "./needs-you.js";
+import { publishTaskDone } from "./handoff.js";
+import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
 
 export function taskCopy(task: db.SprintTask): TaskCopy {
@@ -221,7 +224,10 @@ export async function onIssueUpdated(env: Env, companyId: string, issueId: strin
   const issue = await getIssue(env, companyId, issueId);
   if (!issue) return;
   const result = await syncTaskFromIssue(env, task, { id: issue.id, status: String(issue.status), identifier: issue.identifier ?? null });
-  if (result.changed && result.status === "done" && task.status !== "done") await followUpApprovedPr(env, task);
+  if (result.changed && result.status === "done" && task.status !== "done") {
+    await followUpApprovedPr(env, task);
+    await publishTaskDone(env, companyId, task.id);
+  }
 }
 
 /** GitHub pull request links in a task's sign-off hand-off. */
@@ -382,6 +388,7 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
       await db.updateTask(env.ctx.db, companyId, task.id, { issue_status: "done" });
     }
   }
+  await publishTaskDone(env, companyId, task.id);
   return { ...taskView({ ...task, status: "done", completedAt: now }), issueClosed };
 }
 
@@ -417,20 +424,39 @@ export async function blockTask(env: Env, companyId: string, actor: Actor, param
     return null;
   });
   let reassigned = false;
+  let reviewed = false;
   if (task.issueId) {
     await commentOn(env, companyId, task.issueId, blockComment({ reason, humanAsk, review, links }));
     // Sign-off goes to the owner's review queue; a blocked task stays with the agent until the digest item is done.
+    // With a Cockpit Reviewer, the Reviewer checks it first and hands it to the owner.
     const owner = review ? assignableUser(sprint.ownerUserId) : null;
+    const reviewer = review ? await reviewerAgentId(env.ctx, companyId) : null;
     const issueStatus = review ? "in_review" : "blocked";
-    const updated = await patchIssue(env, companyId, task.issueId, owner ? { status: issueStatus, assigneeAgentId: null, assigneeUserId: owner } : { status: issueStatus });
+    const patch = reviewer
+      ? { status: issueStatus, assigneeAgentId: reviewer, assigneeUserId: null }
+      : owner
+        ? { status: issueStatus, assigneeAgentId: null, assigneeUserId: owner }
+        : { status: issueStatus };
+    const updated = await patchIssue(env, companyId, task.issueId, patch as Parameters<typeof patchIssue>[3]);
     if (updated) {
-      reassigned = Boolean(owner);
-      await db.updateTask(env.ctx.db, companyId, task.id, { issue_status: issueStatus, assignee_kind: owner ? "user" : task.assigneeKind });
+      reassigned = Boolean(owner || reviewer);
+      reviewed = Boolean(reviewer);
+      await db.updateTask(env.ctx.db, companyId, task.id, { issue_status: issueStatus, assignee_kind: reviewer ? "reviewer" : owner ? "user" : task.assigneeKind });
+      if (reviewer) {
+        await commentOn(env, companyId, task.issueId, signoffReviewBrief(task.title, owner));
+        await wakeIssue(env.ctx, task.issueId, companyId, "SEO sign-off needs a review");
+      }
     }
   }
   return {
     ...taskView({ ...task, status, blockerReason: review ? null : reason, humanAsk }),
-    handedTo: review ? (reassigned ? "sprint owner" : "nobody (the sprint has no owner; the issue keeps its assignee)") : "the Needs you digest",
+    handedTo: review
+      ? reviewed
+        ? "the Reviewer, then the sprint owner"
+        : reassigned
+          ? "sprint owner"
+          : "nobody (the sprint has no owner; the issue keeps its assignee)"
+      : "the Needs you digest",
     needsYouIssueId: digest?.issueId ?? null,
   };
 }

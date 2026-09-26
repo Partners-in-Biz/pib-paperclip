@@ -92,7 +92,7 @@ export function IssueLink({ id, identifier, label }: { id: string | null; identi
 /** A plain table for reports and line editors (DataTable is used for simple lists). */
 export function Table({ head, children, footer }: { head: Array<string | { label: string; right?: boolean; width?: string }>; children: ReactNode; footer?: ReactNode }) {
   return (
-    <div style={{ overflowX: "auto", border: `1px solid ${tokens.border}`, borderRadius: 10 }}>
+    <div className="pib-scroll-x" style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", maxWidth: "100%", minWidth: 0, border: `1px solid ${tokens.border}`, borderRadius: 10 }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: tokens.secondary }}>
@@ -132,16 +132,16 @@ export function Td({ children, right, strong, muted, colSpan }: { children?: Rea
 
 export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
   return (
-    <div style={{ border: `1px solid ${tokens.border}`, borderRadius: 12, padding: "12px 14px", background: tokens.card, display: "grid", gap: 4, minWidth: 150 }}>
+    <div style={{ border: `1px solid ${tokens.border}`, borderRadius: 12, padding: "12px 14px", background: tokens.card, display: "grid", gap: 4, minWidth: "min(150px, 100%)" }}>
       <span style={{ fontSize: 12, color: tokens.muted }}>{label}</span>
-      <span style={{ fontSize: 20, fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+      <span style={{ fontSize: 20, fontWeight: 650, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}>{value}</span>
       {hint ? <span style={{ fontSize: 12, color: tokens.muted }}>{hint}</span> : null}
     </div>
   );
 }
 
 export function Row({ children, gap = 8, wrap = true }: { children: ReactNode; gap?: number; wrap?: boolean }) {
-  return <div style={{ display: "flex", gap, alignItems: "flex-end", flexWrap: wrap ? "wrap" : "nowrap" }}>{children}</div>;
+  return <div style={{ display: "flex", gap, alignItems: "flex-end", flexWrap: wrap ? "wrap" : "nowrap", minWidth: 0 }}>{children}</div>;
 }
 
 export function Muted({ children }: { children: ReactNode }) {
@@ -212,7 +212,7 @@ export function AccountSelect({ accounts, value, onChange, filter, placeholder =
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      style={{ height: 36, borderRadius: 8, border: `1px solid ${tokens.input}`, background: tokens.bg, color: tokens.fg, padding: "0 8px", fontSize: 13, fontFamily: "inherit", minWidth: 220, maxWidth: 360 }}
+      style={{ height: 36, borderRadius: 8, border: `1px solid ${tokens.input}`, background: tokens.bg, color: tokens.fg, padding: "0 8px", fontSize: 13, fontFamily: "inherit", minWidth: "min(220px, 100%)", maxWidth: "min(360px, 100%)" }}
     >
       <option value="">{placeholder}</option>
       {groups.filter(([, items]) => items.length).map(([label, items]) => (

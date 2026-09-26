@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Select, TextArea, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Modal, ResponsiveGrid, Select, TextArea, Toolbar, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   Card,
@@ -252,7 +252,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         {detail.lines.length === 0 ? <Muted>No lines yet.</Muted> : (
           <div style={{ display: "grid", gap: 6 }}>
             {detail.lines.map((l) => editing === l.id ? (
-              <div key={l.id} style={{ display: "grid", gridTemplateColumns: "3fr 70px 120px 150px auto", gap: 6, alignItems: "end" }}>
+              <ResponsiveGrid key={l.id} columns="3fr 70px 120px 150px auto" narrowColumns={2} spanFirst gap={6} alignItems="end">
                 <Field label="Description"><Input value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></Field>
                 <Field label="Qty"><Input value={edit.quantity} onChange={(e) => setEdit({ ...edit, quantity: e.target.value })} /></Field>
                 <Field label={inv.pricesIncludeVat ? "Unit (incl.)" : "Unit (excl.)"}><Input value={edit.unit} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} /></Field>
@@ -261,7 +261,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
                   <SmallButton variant="primary" onClick={() => void act(() => call("billing.update-line", { invoiceId: inv.id, lineId: l.id, description: edit.description, quantity: Number(edit.quantity), unitAmountMinor: toMinor(edit.unit), taxCode: edit.taxCode || null }).then(() => setEditing(null)), "Line changed")}>Save</SmallButton>
                   <SmallButton onClick={() => setEditing(null)}>Cancel</SmallButton>
                 </Row>
-              </div>
+              </ResponsiveGrid>
             ) : (
               <div key={l.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, padding: "8px 10px", borderRadius: 8, background: tokens.secondary, fontSize: 13 }}>
                 <div style={{ display: "grid", gap: 2 }}>
@@ -280,7 +280,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
           </div>
         )}
         {editable ? (
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 70px 120px 150px auto", gap: 6, alignItems: "end" }}>
+          <ResponsiveGrid columns="3fr 70px 120px 150px auto" narrowColumns={2} spanFirst gap={6} alignItems="end">
             <Field label="Description"><Input value={line.description} onChange={(e) => setLine({ ...line, description: e.target.value })} placeholder="What was done" /></Field>
             <Field label="Qty"><Input value={line.quantity} onChange={(e) => setLine({ ...line, quantity: e.target.value })} /></Field>
             <Field label={inv.pricesIncludeVat ? "Unit (incl.)" : "Unit (excl.)"}><Input value={line.unit} onChange={(e) => setLine({ ...line, unit: e.target.value })} placeholder="0.00" /></Field>
@@ -289,7 +289,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
               await call("billing.add-line", { invoiceId: inv.id, description: line.description, quantity: Number(line.quantity || "1"), unitAmountMinor: toMinor(line.unit), ...(line.taxCode ? { taxCode: line.taxCode } : {}) });
               setLine({ description: "", quantity: "1", unit: "", taxCode: line.taxCode });
             }, "Line added")}>Add</SmallButton>
-          </div>
+          </ResponsiveGrid>
         ) : null}
         <Totals rows={totalRows} />
       </Card>
@@ -438,7 +438,7 @@ function InvoiceDetailsForm({ detail, onSave }: { detail: InvoiceDetail; onSave:
   const [defaultCode, setDefaultCode] = useState(inv.defaultTaxCode ?? "");
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(180), gap: 10 }}>
         <Field label="Due date"><Input type="date" value={dueAt} onChange={(e) => setDueAt(e.target.value)} /></Field>
         <Field label="Prices">
           <Select value={inclusive ? "incl" : "excl"} onChange={(e) => setInclusive(e.target.value === "incl")}>

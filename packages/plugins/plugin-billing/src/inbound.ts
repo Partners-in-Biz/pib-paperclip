@@ -203,10 +203,15 @@ async function claimDecisionIssue(ctx: PluginContext, issueId: string, status: "
   return (res.rowCount ?? 0) > 0 ? row : null;
 }
 
-export async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, companyId: string): Promise<void> {
+export async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, companyId: string, actorType?: string): Promise<void> {
   if (!issueId || !companyId) return;
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue || (issue.status !== "done" && issue.status !== "cancelled")) return;
+  // Only a person decides an approval. An agent (e.g. the Reviewer) closing it is undone and handed to the person.
+  if (actorType === "agent" && (await isOpenApproval(ctx, issue.id))) {
+    await reopenForPerson(ctx, issue.id, companyId);
+    return;
+  }
   const done = issue.status === "done";
   const actor = issue.assigneeUserId ? `user:${issue.assigneeUserId}` : "approval";
 
@@ -298,5 +303,26 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
       await ctx.db.execute(`UPDATE ${table(ctx, "inbox")} SET result = $2::jsonb WHERE key = $1`, [match.key, JSON.stringify(result)]);
       await emitBankMatchResult(ctx, decision.company_id, result);
     }
+  }
+}
+
+/** The issue still gates a Billing action (send, pay, bill approval, POP or bank-match check). */
+async function isOpenApproval(ctx: PluginContext, issueId: string): Promise<boolean> {
+  const rows = await ctx.db.query<{ x: number }>(
+    `SELECT 1 AS x FROM ${table(ctx, "invoices")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 1 AS x FROM ${table(ctx, "quotes")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 1 AS x FROM ${table(ctx, "bills")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 1 AS x FROM ${table(ctx, "decision_issues")} WHERE issue_id = $1 AND status = 'open'`,
+    [issueId],
+  );
+  return rows.length > 0;
+}
+
+async function reopenForPerson(ctx: PluginContext, issueId: string, companyId: string): Promise<void> {
+  const settings = await billingSettings(ctx, companyId);
+  try {
+    await ctx.issues.update(issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: settings.reviewerUserId ?? null }, companyId);
+  } catch (error) {
+    ctx.logger.info("Could not hand the approval back to a person", { issueId, error: errorMessage(error) });
   }
 }

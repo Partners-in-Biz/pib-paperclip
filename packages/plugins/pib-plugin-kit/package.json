@@ -10,7 +10,8 @@
     "./client-ref": "./src/client-ref.ts",
     "./build": "./src/build.mjs",
     "./setup-client": "./src/setup-client.ts",
-    "./setup": "./src/setup.ts"
+    "./setup": "./src/setup.ts",
+    "./cockpit": "./src/cockpit.ts"
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",

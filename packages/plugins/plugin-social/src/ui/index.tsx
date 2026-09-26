@@ -11,7 +11,7 @@ import {
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, ClientWorkspaceBar, EmptyState, Page, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ClientWorkspaceBar, EmptyState, Page, PageFrame, PageMessage, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
 import { platformLabel, Row } from "./parts.js";
@@ -89,15 +89,11 @@ function tabFrom(search: string): TabId {
 /** The page frame for a client workspace: the shared workspace bar replaces the page title. */
 function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <main style={{ fontFamily: `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+    <PageFrame>
       {bar}
-      {message ? (
-        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
-          {message}
-        </p>
-      ) : null}
+      <PageMessage message={message} />
       {children}
-    </main>
+    </PageFrame>
   );
 }
 

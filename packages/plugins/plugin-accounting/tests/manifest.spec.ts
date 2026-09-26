@@ -33,11 +33,12 @@ describe("manifest", () => {
 
   it("serves the setup status route and matches the package version", async () => {
     const { SETUP_STATUS_ROUTE } = await import("@partnersinbiz/pib-plugin-kit");
-    expect(manifest.apiRoutes).toEqual([SETUP_STATUS_ROUTE]);
+    const { COCKPIT_ROUTE } = await import("@partnersinbiz/pib-plugin-kit");
+    expect(manifest.apiRoutes).toEqual([SETUP_STATUS_ROUTE, COCKPIT_ROUTE]);
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.1.1");
+    expect(manifest.version).toBe("0.1.2");
   });
 
   it("schedules redeliver, month-end and FX jobs", () => {
@@ -73,7 +74,8 @@ describe("manifest", () => {
     expect(SKILLS[0]!.markdown).toMatch(/^---\nname: pib-bookkeeping\nslug: pib-bookkeeping/);
     expect(SKILLS[0]!.markdown).toMatch(/Never post, lock or approve on your own/);
     expect(SKILL_CANONICAL_KEY).toBe("plugin/partnersinbiz-accounting/bookkeeping");
-    expect(BOOKKEEPER_ROLE).toMatchObject({ roleKey: "bookkeeper", displayName: "Bookkeeper", pluginKey: PLUGIN_ID });
+    expect(BOOKKEEPER_ROLE).toMatchObject({ roleKey: "bookkeeper", displayName: "Bookkeeper", pluginKey: PLUGIN_ID, budgetMonthlyCents: 2000 });
+    expect(BOOKKEEPER_ROLE.capabilities).toContain("80%");
     expect(BOOKKEEPER_ROLE.skills[0]).toMatchObject({ key: SKILL_CANONICAL_KEY, slug: SKILL_SLUG });
   });
 

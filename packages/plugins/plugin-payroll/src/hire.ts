@@ -36,10 +36,10 @@ export const CLERK_ROLE: HireRole = {
   role: "general",
   icon: "wallet",
   capabilities:
-    "Prepares monthly and weekly pay runs, enters hours, overtime, bonuses and leave, checks variances against last month and sends runs to a board member for approval, using masked payroll data only.",
+    "Prepares monthly and weekly pay runs, enters hours, overtime, bonuses and leave, checks variances against last month and sends runs to a board member for approval, using masked payroll data only. Monthly budget $10; the Cockpit alerts at 80% of it.",
   adapterPreference: ["hermes_local", "claude_local"],
   skills: [{ key: canonicalSkillKey(PLUGIN_ID, SKILL_KEY), slug: SKILL_SLUG, purpose: "the pay run procedure, variance checks, leave and the payroll tool reference" }],
-  budgetMonthlyCents: 0,
+  budgetMonthlyCents: 1000,
   suggestedManager: "the finance lead (or the CEO)",
   instructions: CLERK_INSTRUCTIONS,
   pluginSetup: [

@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-payroll",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Partners in Biz payroll plugin. South African payroll: employees with sealed personal details, PAYE/UIF/SDL/ETI pay runs with approval, payslips, leave, EMP201/IRP5/EMP501 packs and net-pay bank files.",

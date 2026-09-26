@@ -121,7 +121,7 @@ const ceo = (): Agent => ({ id: "ceo", name: "CEO", role: "ceo", status: "idle",
 
 describe("social hire role", () => {
   it("spells out the agent and both skills", () => {
-    expect(SOCIAL_HIRE_ROLE).toMatchObject({ pluginKey: "partnersinbiz.social", roleKey: "social-media-manager", displayName: "Social Media Manager", role: "general", budgetMonthlyCents: 0 });
+    expect(SOCIAL_HIRE_ROLE).toMatchObject({ pluginKey: "partnersinbiz.social", roleKey: "social-media-manager", displayName: "Social Media Manager", role: "general", budgetMonthlyCents: 4000 });
     expect(SOCIAL_HIRE_ROLE.adapterPreference).toEqual(["hermes_local", "claude_local"]);
     expect(SOCIAL_HIRE_ROLE.skills.map((s) => [s.key, s.slug])).toEqual([
       ["plugin/partnersinbiz-social/social-publish", "pib-social-publish"],

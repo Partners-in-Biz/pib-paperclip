@@ -84,7 +84,7 @@ export function AssetsTab({ data, onMessage }: { data: LoadResult; onMessage: (m
                 <Td>{a.depreciationStart}</Td>
                 <Td><StatusBadge label={a.status === "disposed" ? `disposed ${a.disposedDate}` : "in use"} status={a.status === "disposed" ? "info" : "ok"} /></Td>
                 <Td>
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <Button type="button" variant="secondary" style={small} onClick={() => void run("detail", async () => setDetail((await list({ assetId: a.id })) as { asset: Asset; schedule: ScheduleRow[] }))}>Schedule</Button>
                     {a.status === "active" ? <Button type="button" variant="secondary" style={small} onClick={() => setDisposal({ asset: a, date: today(), proceeds: "", account: "" })}>Dispose</Button> : null}
                   </div>

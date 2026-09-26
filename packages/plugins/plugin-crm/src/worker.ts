@@ -116,6 +116,7 @@ import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
 import {
   clientScopeFromInput,
+  COCKPIT_ROUTE,
   createSkillSyncer,
   createWorkIssue,
   isModuleEnabled,
@@ -124,10 +125,14 @@ import {
   pluginEvent,
   readConfig,
   registerModuleWatch,
+  registerRoleWatch,
   rememberPluginUiBase,
   SETUP_STATUS_ROUTE,
+  trackJob,
   type ClientRef,
 } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
+import { LEAD_EVENTS, onLeadCaptured } from "./leads.js";
 import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
 import {
   onApprovalIssue,
@@ -149,6 +154,7 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
     const registerAction = (
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
@@ -190,10 +196,12 @@ const plugin = definePlugin({
     registerAction("crm.sync-skills", (_params, context) => syncSkillsAction(ctx, context));
     registerAction("crm.settings-status", (_params, context) => settingsStatusAction(ctx, context));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
-    ctx.jobs.register("open-due-steps", () => openDueSteps(ctx));
+    ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
-      const result = await redeliverMail(ctx);
-      if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
+      await trackJob(ctx, "redeliver-mail", async () => {
+        const result = await redeliverMail(ctx);
+        if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
+      });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
       // Replies are ignored while the CRM module is switched off for the company.
@@ -201,11 +209,16 @@ const plugin = definePlugin({
       await onMailReceived(ctx, event);
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
-    ctx.jobs.register("emit-recent", () => emitForAllCompanies(ctx, 1800));
-    ctx.jobs.register("emit-all", () => emitForAllCompanies(ctx, null));
+    ctx.jobs.register("emit-recent", () => trackJob(ctx, "emit-recent", () => emitForAllCompanies(ctx, 1800)));
+    ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
     ctx.jobs.register("setup-status", async () => {
-      await publishAllSetupStatus(ctx);
+      await trackJob(ctx, "setup-status", async () => {
+        await publishAllSetupStatus(ctx);
+        await publishAllCockpit(ctx);
+      });
     });
+    // Leads handed over by Social (inbox intent) and the Mailbox (mail triaged as a lead).
+    for (const eventType of LEAD_EVENTS) ctx.events.on(eventType, (event) => onLeadCaptured(ctx, event));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
@@ -223,6 +236,9 @@ const plugin = definePlugin({
     if (!pluginCtx) return { status: 503, body: { error: "CRM plugin is not ready" } };
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
       return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
     }
     return acceptPartnerGrant(pluginCtx, input);
   },
@@ -1030,8 +1046,13 @@ async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<strin
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
   const stage = await getStage(ctx, requiredString(params, "stageId"));
   if (!stage || stage.company_id !== deal.companyId) throw new CrmError("Stage was not found");
+  const moved = deal.stageId !== stage.id;
   deal.stageId = stage.id;
   await saveDeal(ctx, deal);
+  if (moved) {
+    // Recorded for the deal's history and the Cockpit's activity list; never fails the move.
+    await insertActivity(ctx, { companyId: deal.companyId, recordType: "deal", recordId: deal.id, kind: "deal_moved", body: `Moved to ${stage.name}` }).catch(() => undefined);
+  }
   if (stageStopsEnrollments(stageKind(stage.kind)) && deal.contactId) {
     await stopEnrollmentsForContact(ctx, deal.companyId, deal.contactId);
   }

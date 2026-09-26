@@ -3,9 +3,10 @@
  * when the cursor is missing or expired), metadata only, upsert, triage,
  * labels, optional reply issues, and `mail.received` events. Every run
  * re-emits the last 30 minutes of messages because events are at-most-once;
- * consumers dedupe by key.
+ * consumers dedupe by key. Mail triaged as a lead from a sender who is not a
+ * CRM contact also goes out as `lead.captured` (same window; the CRM dedupes).
  */
-import { configSaved, createWorkIssue, decisionConfig, isModuleEnabled, MAIL_EVENTS, RISK_THRESHOLDS, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createWorkIssue, decisionConfig, HANDOFF_EVENTS, isModuleEnabled, MAIL_EVENTS, RISK_THRESHOLDS, type LeadCaptured, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
 import { GmailUnavailable } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -165,6 +166,38 @@ export function mailReceivedFrom(row: MessageRow, accountAddress: string): MailR
   return event;
 }
 
+/** A lead worth handing to the CRM: triaged `lead`, a real sender, not bulk or phishing. */
+export function isLeadCandidate(row: MessageRow): boolean {
+  const triage = row.triage;
+  if (row.direction !== "inbound" || !row.gmail_message_id) return false;
+  if ((triage?.category ?? row.category) !== "lead") return false;
+  if (row.bulk || row.bounce) return false;
+  if ((triage?.phishing ?? Number(row.phishing ?? 0)) >= 0.9) return false;
+  return Boolean(row.from_addr?.email);
+}
+
+/** `lead.captured` for the CRM (`HANDOFF_EVENTS.leadCaptured`). */
+export function leadCapturedFrom(row: MessageRow): LeadCaptured {
+  const triage = row.triage;
+  const subject = (row.subject ?? "").trim();
+  const snippet = (row.snippet ?? "").trim();
+  const text = subject && snippet ? `${subject}: ${snippet}` : subject || snippet;
+  return {
+    key: `mail:${row.gmail_message_id}`,
+    source: "email",
+    name: row.from_addr?.name?.trim() || null,
+    email: row.from_addr?.email?.toLowerCase() ?? null,
+    handle: null,
+    platform: null,
+    text: text.slice(0, 300),
+    url: null,
+    clientKind: triage?.clientKind ?? (row.client_kind === "company" || row.client_kind === "contact" ? row.client_kind : null),
+    clientRef: triage?.clientRef ?? row.client_ref ?? null,
+    confidence: triage?.confidence ?? null,
+    capturedAt: row.received_at ?? row.created_at,
+  };
+}
+
 export interface SyncStats {
   mode: "history" | "full";
   listed: number;
@@ -174,6 +207,8 @@ export interface SyncStats {
   labelled: number;
   issues: number;
   emitted: number;
+  /** `lead.captured` events sent this run (new leads plus the re-emit window). */
+  leads: number;
   historyId: string | null;
   at: string;
 }
@@ -289,6 +324,7 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
   for (const row of triaged) toEmit.set(row.id, row);
   for (const row of await env.store.recentInbound(account.id, REEMIT_MINUTES, 200)) if (!toEmit.has(row.id)) toEmit.set(row.id, row);
   let emitted = 0;
+  let leads = 0;
   for (const row of toEmit.values()) {
     if (!row.gmail_message_id) continue;
     try {
@@ -297,6 +333,7 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
     } catch (error) {
       env.ctx.logger.info("mail.received emit failed", { messageId: row.id, error: errorMessage(error) });
     }
+    if (await emitLead(env, account, row)) leads += 1;
   }
 
   const stats: SyncStats = {
@@ -308,6 +345,7 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
     labelled,
     issues,
     emitted,
+    leads,
     historyId: cursor ?? null,
     at: new Date(env.now()).toISOString(),
   };
@@ -319,6 +357,20 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
   });
   account.history_id = cursor ?? null;
   return stats;
+}
+
+/** Emit `lead.captured` when the sender is not a CRM contact yet. Never throws. */
+async function emitLead(env: Env, account: AccountRow, row: MessageRow): Promise<boolean> {
+  if (!isLeadCandidate(row)) return false;
+  try {
+    const contacts = await env.store.crmContactsByEmail(account.company_id, row.from_addr!.email);
+    if (contacts.length > 0) return false;
+    await env.ctx.events.emit(HANDOFF_EVENTS.leadCaptured, account.company_id, leadCapturedFrom(row) as unknown as Record<string, unknown>);
+    return true;
+  } catch (error) {
+    env.ctx.logger.info("lead.captured emit failed", { messageId: row.id, error: errorMessage(error) });
+    return false;
+  }
 }
 
 async function applyTriageLabels(env: Env, loaded: LoadedConfig, account: AccountRow, rows: MessageRow[]): Promise<number> {

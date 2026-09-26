@@ -19,7 +19,8 @@ import {
 } from "./domain.js";
 import { PARTNER_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
-import { createSkillSyncer, registerModuleWatch, rememberPluginUiBase, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, createSkillSyncer, registerModuleWatch, registerRoleWatch, rememberPluginUiBase, SETUP_STATUS_ROUTE, trackJob } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
@@ -49,6 +50,7 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
     for (const tool of PARTNER_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
@@ -73,7 +75,10 @@ const plugin = definePlugin({
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
     ctx.jobs.register("setup-status", async () => {
-      await publishAllSetupStatus(ctx);
+      await trackJob(ctx, "setup-status", async () => {
+        await publishAllSetupStatus(ctx);
+        await publishAllCockpit(ctx);
+      });
     });
   },
   async onHealth() {
@@ -83,6 +88,9 @@ const plugin = definePlugin({
     if (!pluginCtx) return { status: 503, body: { error: "Partners plugin is not ready" } };
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
       return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
     }
     return { status: 404, body: { error: "Not found" } };
   },

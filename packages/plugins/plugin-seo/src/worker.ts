@@ -9,6 +9,7 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   configSaved,
   hireTaskDraft,
   linkAgent,
@@ -18,13 +19,16 @@ import {
   registerCrmProjection,
   registerHireWatch,
   registerModuleWatch,
+  registerRoleWatch,
   SETUP_STATUS_ROUTE,
   rememberPluginUiBase,
   startHire,
   toolFail,
   toolOk,
+  trackJob,
   unlinkAgent,
 } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
 import { DAILY_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
@@ -71,11 +75,12 @@ const plugin = definePlugin({
     }
     registerActions(e);
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
-      const result = await runDailyJob(e, { force: job.trigger === "manual" });
+      // Recorded for the Cockpit's job health (kit jobHealth).
+      const result = await trackJob(ctx, DAILY_JOB_KEY, () => runDailyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO daily job finished", { ...result, trigger: job.trigger });
     });
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
-      const result = await runWeeklyJob(e, { force: job.trigger === "manual" });
+      const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
     });
     ctx.events.on("issue.updated", async (event) => {
@@ -94,6 +99,8 @@ const plugin = definePlugin({
     registerHireWatch(ctx, [{ role: SEO_ROLE, onLinked: seoOnLinked(e) }]);
     // Module switches from the Setup plugin: jobs and agent tools skip companies that switched SEO off.
     registerModuleWatch(ctx);
+    // Cockpit roles: sign-offs and out-of-scope PRs go to the Reviewer first when one is set.
+    registerRoleWatch(ctx);
     // Clients are CRM companies or CRM contacts (sole traders).
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     ctx.logger.info("SEO plugin ready");
@@ -132,6 +139,10 @@ const plugin = definePlugin({
       if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
         if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
         return { status: 200, body: await seoSetupStatus(env, input.companyId) };
+      }
+      if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+        return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
       }
       if (input.routeKey === "oauth-start") {
         const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Select, TextArea, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Modal, ResponsiveGrid, Select, TextArea, Toolbar, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { Card, ClientSelect, Drawer, FilePicker, Muted, Row, SmallButton, Status, TaxCodeSelect, Totals, dayInput, fmtDate, minorToInput, money, openUrl, taxShort, toMinor, today, uploadFile, useBilling, words } from "./parts.js";
 import type { Bill, Expense } from "./types.js";
@@ -135,7 +135,7 @@ function BillDrawer({ billId, onClose }: { billId: string; onClose: () => void }
           </Row>
         ))}
         {draft ? (
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 60px 110px 140px 140px auto", gap: 6, alignItems: "end" }}>
+          <ResponsiveGrid columns="2fr 60px 110px 140px 140px auto" narrowColumns={2} spanFirst gap={6} alignItems="end">
             <Field label="Description"><Input value={line.description} onChange={(e) => setLine({ ...line, description: e.target.value })} /></Field>
             <Field label="Qty"><Input value={line.quantity} onChange={(e) => setLine({ ...line, quantity: e.target.value })} /></Field>
             <Field label={bill.pricesIncludeVat ? "Amount (incl.)" : "Amount (excl.)"}><Input value={line.unit} onChange={(e) => setLine({ ...line, unit: e.target.value })} placeholder="0.00" /></Field>
@@ -145,7 +145,7 @@ function BillDrawer({ billId, onClose }: { billId: string; onClose: () => void }
               await call("billing.add-bill-line", { billId: bill.id, description: line.description, quantity: Number(line.quantity || "1"), unitAmountMinor: toMinor(line.unit), ...(line.taxCode ? { taxCode: line.taxCode } : {}), ...(line.category ? { category: line.category } : {}) });
               setLine({ ...line, description: "", unit: "" });
             }, "Line added")}>Add</SmallButton>
-          </div>
+          </ResponsiveGrid>
         ) : null}
         <Totals rows={[
           { label: "Subtotal (excl. VAT)", value: money(bill.subtotalMinor, cur) },
@@ -185,7 +185,7 @@ function BillDetails({ bill, onSave }: { bill: Bill; onSave: (patch: Record<stri
   const [notes, setNotes] = useState(bill.notes ?? "");
   return (
     <Card title="Details">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 10 }}>
         <Field label="Their invoice number"><Input value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
         <Field label="Invoice date"><Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} /></Field>
         <Field label="Due"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>

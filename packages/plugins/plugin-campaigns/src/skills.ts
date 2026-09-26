@@ -10,7 +10,7 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`audienceMode\` chooses who launch enrolls: \`tags\` (CRM contacts matching \`audienceTags\`; empty means every contact), \`client_contacts\` (the contacts at the client company, narrowed by \`audienceTags\` when set; the default for a company client), or \`client_contact\` (the client contact alone; the default for a contact client).
 - \`update-campaign\` edits a draft, including moving it to another client or back to own work.
 - \`create-campaign\` then \`add-campaign-step\` build the program. A step has a subject, body, and a \`delayDays\` wait after the previous step.
-- Every campaign needs approval. \`request-campaign-approval\` opens a Paperclip issue for a person; \`launch-campaign\` refuses to run until that issue is done.
+- Every campaign needs approval. \`request-campaign-approval\` opens a Paperclip issue for a person; \`launch-campaign\` refuses to run until a person marks that issue done. When the company has a Reviewer, the issue goes to the Reviewer first; the Reviewer comments PASS or CHANGES NEEDED and reassigns it to the person, and never marks it done.
 - \`launch-campaign\` enrolls matching contacts (or the \`contactIds\` you pass) and opens each due step's Paperclip issue with the recipient's address. A person sends the email and marks the issue done.
 - \`pause-campaign\` and \`resume-campaign\` control a running program. \`complete-campaign\` ends it.
 - \`campaign-stats\` reports enrolled, running, and completed counts. \`campaign-funnel\` shows how many contacts are at each step.

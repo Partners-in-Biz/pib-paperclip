@@ -65,13 +65,19 @@ import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import {
   clientScopeFromInput,
+  COCKPIT_ROUTE,
+  companyRoles,
   createSkillSyncer,
   createWorkIssue,
   getCrmContact as projectedContact,
   isModuleEnabled,
   registerModuleWatch,
+  registerRoleWatch,
   rememberPluginUiBase,
+  reviewerAgentId,
+  reviewerBrief,
   SETUP_STATUS_ROUTE,
+  trackJob,
   listCrmContactsAtCompany,
   parseClientParam,
   readConfig,
@@ -85,6 +91,7 @@ import {
 import { abSuggestionFor, onMailReceived, onSendResult, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
+import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
 
@@ -97,6 +104,7 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
     for (const tool of CAMPAIGN_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
@@ -122,13 +130,18 @@ const plugin = definePlugin({
     ctx.actions.register("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
     ctx.actions.register("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
-    ctx.jobs.register("open-due-steps", () => openDueSteps(ctx));
+    ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
-      const result = await redeliverMail(ctx);
-      if (result.emitted || result.failed || result.handedOver) ctx.logger.info("Campaign mail redelivery", result);
+      await trackJob(ctx, "redeliver-mail", async () => {
+        const result = await redeliverMail(ctx);
+        if (result.emitted || result.failed || result.handedOver) ctx.logger.info("Campaign mail redelivery", result);
+      });
     });
     ctx.jobs.register("setup-status", async () => {
-      await publishAllSetupStatus(ctx);
+      await trackJob(ctx, "setup-status", async () => {
+        await publishAllSetupStatus(ctx);
+        await publishAllCockpit(ctx);
+      });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
       // Replies are ignored while the Campaigns module is switched off for the company.
@@ -149,6 +162,9 @@ const plugin = definePlugin({
     if (!pluginCtx) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
       return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
     }
     return handleApiRoute(pluginCtx, input);
   },
@@ -359,6 +375,10 @@ async function launch(ctx: PluginContext, companyId: string, params: Record<stri
     }
     const approval = await ctx.issues.get(campaign.approvalIssueId, companyId);
     if (approval?.status !== "done") throw new CampaignError("The campaign has not been approved yet");
+    // Only a person approves. An approval closed while it still sits with an agent (e.g. the Reviewer) does not count.
+    if (approval.assigneeAgentId) {
+      throw new CampaignError("The approval issue was closed while assigned to an agent. A person must approve it: reopen it, assign it to the approver and have them mark it done.");
+    }
   }
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch");
@@ -511,23 +531,54 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   const preview = steps
     .map((step) => `${step.position}${step.variant === "b" ? "B" : ""}. **${step.subject}** (after ${step.delayDays} days)\n${step.body || "(no body)"}`)
     .join("\n\n");
+  const description = [
+    `A person marks this issue done to approve launching campaign ${campaign.name}.`,
+    campaign.delivery === "email"
+      ? "Delivery: **email**. Once launched, the Mailbox sends each due step from Gmail. Tokens such as {{first_name}} are filled in per contact."
+      : "Delivery: **issue**. Each due step opens an issue; a person sends the email.",
+    "",
+    preview || "(no steps yet)",
+  ].join("\n");
+  // A launch is outward-facing: the Reviewer checks it first when the company has one, then hands it to the person.
+  const reviewer = await reviewerAgentId(ctx, companyId);
+  const approver = reviewer ? await approverUserId(ctx, companyId, campaign) : null;
   const issue = await createWorkIssue(ctx, {
     companyId,
     title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}Approve campaign ${campaign.name}`,
-    description: [
-      `A person marks this issue done to approve launching campaign ${campaign.name}.`,
-      campaign.delivery === "email"
-        ? "Delivery: **email**. Once launched, the Mailbox sends each due step from Gmail. Tokens such as {{first_name}} are filled in per contact."
-        : "Delivery: **issue**. Each due step opens an issue; a person sends the email.",
-      "",
-      preview || "(no steps yet)",
-    ].join("\n"),
+    description: reviewer ? `${description}\n${launchReviewBrief(campaign, approver)}` : description,
     originKind: "plugin:partnersinbiz.campaigns",
     originId: campaign.id,
+    ...(reviewer ? { assigneeAgentId: reviewer, wakeReason: "Review a campaign launch before a person approves it" } : {}),
   });
   campaign.approvalIssueId = issue.id;
   await saveCampaign(ctx, campaign);
   return { campaignId: campaign.id, approvalIssueId: issue.id };
+}
+
+/** The person the Reviewer hands a launch approval to: the campaign's owner, else the company owner from the Cockpit roles. */
+async function approverUserId(ctx: PluginContext, companyId: string, campaign: CampaignDraft): Promise<string | null> {
+  if (campaign.ownerUserId && campaign.ownerUserId !== "local-board") return campaign.ownerUserId;
+  return (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
+}
+
+/** What the Reviewer checks on a campaign launch. */
+export function launchReviewBrief(campaign: Pick<CampaignDraft, "name" | "delivery" | "audienceMode" | "audienceTags" | "clientName" | "clientRef">, approverUserId: string | null): string {
+  const audience = campaign.audienceMode === "tags"
+    ? `contacts tagged ${campaign.audienceTags.length ? campaign.audienceTags.map((tag) => `\`${tag}\``).join(", ") : "(no tags: every contact)"}`
+    : campaign.audienceMode === "client_contact"
+      ? `the client contact ${campaign.clientName ?? campaign.clientRef ?? ""}`.trim()
+      : `the contacts at ${campaign.clientName ?? campaign.clientRef ?? "the client"}`;
+  return reviewerBrief({
+    what: `the launch of campaign ${campaign.name} (${campaign.delivery === "email" ? "sent by email from Gmail" : "each step opens an issue"})`,
+    checks: [
+      "Subject and body of every step and every A/B variant: clear, on brand, no typos, and {{first_name}} / {{name}} / {{company}} read well when filled in.",
+      `Audience matches the intent: this campaign goes to ${audience}. Nobody who should not get it (existing clients mid-project, partners, staff).`,
+      "Suppressions: unsubscribed and bounced addresses are skipped automatically; flag any contact in the audience who asked not to be emailed.",
+      "Links: every link works and points to the right page, with no test or staging URLs.",
+      "Compliance: says who we are, gives a way to opt out (reply STOP or unsubscribe), makes no claims we cannot back up (POPIA).",
+    ],
+    handTo: approverUserId ? { userId: approverUserId, label: `the approver (user \`${approverUserId}\`)` } : { label: "a board member (unassign the agent so the board sees it)" },
+  });
 }
 
 async function createAbVariant(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {

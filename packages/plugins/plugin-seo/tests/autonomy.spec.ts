@@ -661,3 +661,69 @@ describe("tool results are always objects", () => {
     }
   });
 });
+
+describe("Cockpit Reviewer routing (sign-offs and out-of-scope PRs)", () => {
+  const ROLES = { companyId: "co-1", operatorAgentId: null, reviewerAgentId: "rev-1", ownerUserId: "user-1", reviewOutward: true, updatedAt: "2026-09-26T00:00:00Z" };
+  function withReviewer(host: ReturnType<typeof fakeHost>, roles: Row | null = ROLES) {
+    (host.ctx.state.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: { namespace?: string; stateKey: string }) => {
+      if (key.namespace === "pib-cockpit" && key.stateKey === "roles") return roles;
+      if (key.stateKey === "plugin-ui-base") return "/_plugins/051bbf0b-aeb5-42d7-b0b6-c4cabd271cdc/ui/";
+      return key.stateKey.startsWith("role:") ? { agentId: "agent-1" } : null;
+    });
+  }
+  const signoffTask = () => taskRow({ id: "s-1", title: "Publish post 1 — comparison format", task_type: "post-publish", autopilot_eligible: false, status: "in_progress", issue_id: "iss-s1", issue_status: "in_progress", assignee_kind: "agent" });
+
+  it("without a Reviewer a sign-off goes straight to the owner (unchanged)", async () => {
+    const host = fakeHost({ tasks: [signoffTask()] });
+    const result = await blockTask(host.env, "co-1", agentActor, { taskId: "s-1", reason: "Ready to publish", humanAsk: "Approve the post", review: true, links: ["https://github.com/pib/site/pull/7"] });
+    expect(host.issueUpdates.find((u) => u.id === "iss-s1")!.patch).toEqual({ status: "in_review", assigneeAgentId: null, assigneeUserId: "user-1" });
+    expect(result.handedTo).toBe("sprint owner");
+    expect(host.comments.some((c) => c.body.includes("## Reviewer"))).toBe(false);
+  });
+
+  it("with a Reviewer the sign-off goes to the Reviewer with the checks, handing it to the owner", async () => {
+    const host = fakeHost({ tasks: [signoffTask()] });
+    withReviewer(host);
+    const result = await blockTask(host.env, "co-1", agentActor, { taskId: "s-1", reason: "Ready to publish", humanAsk: "Approve the post", review: true, links: ["https://github.com/pib/site/pull/7"] });
+    expect(host.issueUpdates.find((u) => u.id === "iss-s1")!.patch).toEqual({ status: "in_review", assigneeAgentId: "rev-1", assigneeUserId: null });
+    expect(result.handedTo).toBe("the Reviewer, then the sprint owner");
+    const brief = host.comments.find((c) => c.id === "iss-s1" && c.body.includes("## Reviewer"))!.body;
+    for (const check of ["allowed SEO scope", "Preview and CI checks passed", "Copy is accurate", "No pricing, legal"]) expect(brief).toContain(check);
+    expect(brief).toContain("reassign this issue to user `user-1` (the sprint owner)");
+    expect(brief).toContain("The owner approves it by marking the issue done");
+    expect(host.wakeups).toContain("iss-s1");
+    expect(host.tasks.get("s-1")!.assignee_kind).toBe("reviewer");
+  });
+
+  it("a blocked (not sign-off) task never goes to the Reviewer", async () => {
+    const host = fakeHost({ tasks: [signoffTask()] });
+    withReviewer(host);
+    await blockTask(host.env, "co-1", agentActor, { taskId: "s-1", reason: "DNS", humanAsk: "Add the TXT record" });
+    expect(host.issueUpdates.find((u) => u.id === "iss-s1")!.patch).toEqual({ status: "blocked" });
+  });
+
+  it("an out-of-scope PR on Needs you opens one review issue for the Reviewer", async () => {
+    const { needsYouAddTool } = await import("../src/service/needs-you.js");
+    const host = fakeHost({});
+    withReviewer(host);
+    const params = { sprintId: "sp-1", kind: "pr", title: "Merge PR #12 (touches pricing page)", why: "The PR changes app/pricing, which is outside SEO scope.", after: "Re-checks production.", links: ["PR #12 | https://github.com/pib/site/pull/12"], steps: ["Review and merge PR #12"] };
+    const first = await needsYouAddTool(host.env, "co-1", agentActor, params);
+    expect((first as { reviewIssueId?: string }).reviewIssueId).toBeDefined();
+    const review = host.issuesCreated.find((i) => String(i.originId).startsWith("review:sp-1:"))!;
+    expect(review).toMatchObject({ assigneeAgentId: "rev-1", status: "todo", parentId: "root-1" });
+    expect(String(review.title)).toBe("Review PR before the owner merges: Merge PR #12 (touches pricing page)");
+    expect(String(review.description)).toContain("Closing this issue approves nothing");
+    expect(String(review.description)).toContain("https://github.com/pib/site/pull/12");
+    // Added again (same key): no second review issue.
+    await needsYouAddTool(host.env, "co-1", agentActor, params);
+    expect(host.issuesCreated.filter((i) => String(i.originId).startsWith("review:"))).toHaveLength(1);
+  });
+
+  it("no Reviewer: an out-of-scope PR only lands on Needs you", async () => {
+    const { needsYouAddTool } = await import("../src/service/needs-you.js");
+    const host = fakeHost({});
+    const result = await needsYouAddTool(host.env, "co-1", agentActor, { sprintId: "sp-1", kind: "pr", title: "Merge PR #13", why: "Out of scope", after: "Carries on." });
+    expect((result as { reviewIssueId?: string }).reviewIssueId).toBeUndefined();
+    expect(host.issuesCreated.every((i) => !String(i.originId).startsWith("review:"))).toBe(true);
+  });
+});

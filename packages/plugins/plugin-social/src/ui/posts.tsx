@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, EmptyState, Field, Input, Sheet, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Sheet, Toolbar, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
 import { Thumb } from "./composer.js";
 import { Banner, Card, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, platformLabel, PostStatus, Row, SmallButton } from "./parts.js";
@@ -208,7 +208,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
         <Muted>{fmtDate(days[0]!.toISOString(), tz, false)} – {fmtDate(days[13]!.toISOString(), tz, false)} ({tz})</Muted>
         <SmallButton onClick={() => setOffset((o) => o + 1)}>Later →</SmallButton>
       </Row>
-      <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(150, "auto-fill") }}>
         {days.map((day) => {
           const key = dayKey(day.toISOString());
           const list = (byDay.get(key) ?? []).sort((a, b) => String(a.scheduledAt).localeCompare(String(b.scheduledAt)));

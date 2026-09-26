@@ -20,6 +20,8 @@ export const PIB_PLUGINS = {
   partners: "partnersinbiz.partners",
   accounting: "partnersinbiz.accounting",
   payroll: "partnersinbiz.payroll",
+  setup: "partnersinbiz.setup",
+  cockpit: "partnersinbiz.cockpit",
 } as const;
 
 export type PibPluginKey = (typeof PIB_PLUGINS)[keyof typeof PIB_PLUGINS];

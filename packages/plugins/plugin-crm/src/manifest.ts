@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -96,7 +96,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "setup-status",
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what the CRM still needs for each company.",
+      description: "Tells the Setup plugin what the CRM still needs, and sends the Cockpit snapshot, for each company.",
       schedule: "17 * * * *",
     },
   ],
@@ -111,6 +111,7 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "body", key: "companyId" },
     },
     { ...SETUP_STATUS_ROUTE },
+    { ...COCKPIT_ROUTE },
   ],
   ui: {
     slots: [

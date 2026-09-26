@@ -34,7 +34,8 @@ export const SEO_ROLE: HireRole = {
       purpose: "the 90-day sprint procedure, the playbook for all 42 tasks, the weekly optimization loop and the SEO tool reference",
     },
   ],
-  budgetMonthlyCents: 0,
+  // $40 a month. The Company Cockpit alerts at 80% ($32).
+  budgetMonthlyCents: 4000,
   suggestedManager: "the marketing / growth lead (or the CEO)",
   instructions: HIRE_INSTRUCTIONS,
   pluginSetup: [
@@ -42,6 +43,7 @@ export const SEO_ROLE: HireRole = {
     "Assigns the \"Run today's SEO\" and \"Weekly SEO review\" routines to it in the SEO project. They stay paused, with schedules off, until someone turns them on.",
     "Points every SEO sprint at the agent and hands it the SEO tasks that were waiting for an agent.",
     `Keeps the \`${SKILL_SLUG}\` skill up to date.`,
+    "Budget: $40 a month to start. The Cockpit alerts at 80% ($32), so raise it there if the agent needs more.",
   ],
   toolPlugins: ["partnersinbiz.social", "partnersinbiz.crm"],
 };

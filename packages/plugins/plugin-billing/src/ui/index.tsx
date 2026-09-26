@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { MetricCard, useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
-import { BarChart, Button, ClientWorkspaceBar, Page, StatRow, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { BarChart, Button, ClientWorkspaceBar, Page, PageFrame, PageMessage, StatRow, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
-import { BillingContext, FONT, Muted, money, useCall, type BillingApi } from "./parts.js";
+import { BillingContext, Muted, money, useCall, type BillingApi } from "./parts.js";
 import { PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
 import { RemindersTab, ReportsTab } from "./reports.js";
@@ -15,6 +15,13 @@ import { TimeTab } from "./time.js";
 import type { Snapshot } from "./types.js";
 
 type TabId = "overview" | "invoices" | "quotes" | "payments" | "bills" | "expenses" | "time" | "retainers" | "reports" | "reminders";
+const TAB_IDS: readonly TabId[] = ["overview", "invoices", "quotes", "payments", "bills", "expenses", "time", "retainers", "reports", "reminders"];
+
+/** `?tab=invoices` (Cockpit links) opens that tab. */
+function tabFromSearch(search: string): TabId {
+  const value = new URLSearchParams(search).get("tab");
+  return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
+}
 
 const PLUGIN_KEY = "partnersinbiz.billing";
 
@@ -41,15 +48,11 @@ const OPEN = new Set(["sent", "viewed", "overdue", "partially_paid", "payment_pe
 /** Page layout for a client workspace: the shared client bar replaces the page header. */
 function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+    <PageFrame>
       {header}
-      {message ? (
-        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
-          {message}
-        </p>
-      ) : null}
+      <PageMessage message={message} />
       {children}
-    </main>
+    </PageFrame>
   );
 }
 
@@ -105,7 +108,7 @@ export function BillingPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot>({ invoices: [] });
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>("overview");
+  const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [openInvoice, setOpenInvoice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const enabled = useModuleEnabled(context.companyId);

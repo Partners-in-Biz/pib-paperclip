@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { Button, EmptyState, Field, Input, Modal, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Modal, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, type SocialPlatform } from "../platforms.js";
 import { AccountStatus, Avatar, Banner, BelongsToSelect, Card, Code, fmtDate, ignore, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import type { Account, ClientOption, RunAction, Snapshot } from "./types.js";
@@ -342,7 +342,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
         <Muted>
           Redirect URI to register with every provider: <Code>{expectedRedirect(snapshot)}</Code>
         </Muted>
-        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))" }}>
+        <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(210, "auto-fill") }}>
           {snapshot.platforms.map((p) => {
             const disabled = !ready || (p.mode === "oauth" && !p.configured) || busy !== "";
             const hint = !ready
@@ -399,7 +399,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
             return (
               <Card key={account.id} style={{ gap: 8 }}>
                 <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <Row style={{ minWidth: 0, flex: "1 1 320px" }}>
+                  <Row style={{ minWidth: 0, flex: "1 1 240px", flexWrap: "nowrap" }}>
                     <Avatar url={account.avatarUrl} label={account.displayName} />
                     <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
                       <strong style={{ fontSize: 13 }}>{account.displayName}</strong>

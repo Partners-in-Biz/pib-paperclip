@@ -22,7 +22,7 @@ export interface Harness {
   ctx: PluginContext;
   client: PgClient;
   emitted: Array<{ name: string; companyId: string; payload: unknown }>;
-  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; originId?: string | null }>;
+  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null }>;
   handlers: Map<string, Array<(event: PluginEvent) => Promise<void>>>;
   config: Map<string, Record<string, unknown>>;
   statements: string[];
@@ -115,9 +115,9 @@ export async function startHarness(): Promise<Harness> {
       },
     },
     issues: {
-      create: async (input: { companyId: string; title: string; description?: string; status?: string; assigneeUserId?: string | null; originId?: string | null }) => {
+      create: async (input: { companyId: string; title: string; description?: string; status?: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null }) => {
         issueSeq += 1;
-        const issue = { id: `issue-${issueSeq}`, companyId: input.companyId, title: input.title, description: input.description, status: input.status ?? "todo", assigneeUserId: input.assigneeUserId ?? null, originId: input.originId ?? null, identifier: `PIB-${issueSeq}` };
+        const issue = { id: `issue-${issueSeq}`, companyId: input.companyId, title: input.title, description: input.description, status: input.status ?? "todo", assigneeUserId: input.assigneeUserId ?? null, assigneeAgentId: input.assigneeAgentId ?? null, originId: input.originId ?? null, identifier: `PIB-${issueSeq}` };
         issues.set(issue.id, issue);
         return issue;
       },

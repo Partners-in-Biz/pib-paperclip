@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-campaigns",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "description": "Partners in Biz campaigns plugin. Themed email programs that enroll contacts and open Paperclip issues for due steps.",

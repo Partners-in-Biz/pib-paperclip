@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { ACCOUNTING_TOOLS } from "./tools.js";
@@ -48,7 +48,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.1.2",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",
@@ -83,7 +83,7 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "accounting", migrationsDir: "migrations", coreReadTables: ["issues"] },
   tools: ACCOUNTING_TOOLS,
-  apiRoutes: [SETUP_STATUS_ROUTE],
+  apiRoutes: [SETUP_STATUS_ROUTE, COCKPIT_ROUTE],
   jobs: [
     {
       jobKey: "redeliver",
@@ -94,7 +94,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "month-end",
       displayName: "Depreciation and month-end",
-      description: "Posts depreciation up to last month, revalues open foreign-currency items at the last month end, and opens the Bookkeeper's month-end close issue.",
+      description: "Posts depreciation up to last month, revalues open foreign-currency items at the last month end, opens the Bookkeeper's month-end close issue and checks the journal audit chain.",
       schedule: "20 3 * * *",
     },
     {

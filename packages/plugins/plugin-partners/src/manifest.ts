@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { PARTNER_TOOLS } from "./tools.js";
@@ -50,11 +50,11 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "setup-status",
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what Partners still needs for each company.",
+      description: "Tells the Setup plugin what Partners still needs, and sends the Cockpit snapshot, for each company.",
       schedule: "23 * * * *",
     },
   ],
-  apiRoutes: [{ ...SETUP_STATUS_ROUTE }],
+  apiRoutes: [{ ...SETUP_STATUS_ROUTE }, { ...COCKPIT_ROUTE }],
   ui: {
     slots: [
       { type: "page", id: "partners-page", displayName: "Partners", exportName: "PartnersPage", routePath: "partners" },

@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-setup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Partners in Biz guided setup. Pick the modules a company uses, see what each plugin still needs, fix it with deep links or \"Do it for me\", and copy setup from another company.",

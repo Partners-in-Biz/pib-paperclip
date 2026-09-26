@@ -1,5 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
 import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
@@ -46,13 +46,13 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: SYNC_JOB_KEY,
       displayName: "Sync Gmail",
-      description: "Every 2 minutes: new Gmail messages (headers only), triage, labels and mail.received events for every connected account.",
+      description: "Every 2 minutes: new Gmail messages (headers only), triage, labels, mail.received events and lead.captured for new leads, for every connected account.",
       schedule: "*/2 * * * *",
     },
     {
       jobKey: SETUP_STATUS_JOB_KEY,
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what the Mailbox still needs for each company.",
+      description: "Tells the Setup plugin what the Mailbox still needs, and sends the Cockpit snapshot, for each company.",
       schedule: "29 * * * *",
     },
   ],
@@ -66,6 +66,7 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "body", key: "companyId" },
     },
     { ...SETUP_STATUS_ROUTE },
+    { ...COCKPIT_ROUTE },
   ],
   ui: {
     slots: [

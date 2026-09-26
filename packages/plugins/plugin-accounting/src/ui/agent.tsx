@@ -143,9 +143,9 @@ export function BookkeeperPanel({ hire, refresh, onMessage }: { hire: HireView |
       {banner}
       {steps ? (
         <Banner>
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <strong>{steps.title}</strong>
-            <button type="button" onClick={() => setSteps(null)} style={{ border: "none", background: "transparent", color: tokens.muted, cursor: "pointer" }} aria-label="Dismiss">×</button>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+            <strong style={{ minWidth: 0 }}>{steps.title}</strong>
+            <button type="button" onClick={() => setSteps(null)} style={{ border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", minWidth: 32, flexShrink: 0 }} aria-label="Dismiss">×</button>
           </div>
           <ul style={{ margin: 0, paddingLeft: 18 }}>{steps.steps.map((s) => <li key={s}>{s}</li>)}</ul>
           {steps.instructions.length ? <ol style={{ margin: 0, paddingLeft: 18 }}>{steps.instructions.map((s) => <li key={s}>{s}</li>)}</ol> : null}

@@ -102,6 +102,7 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { buildPublishRequest, retryPost, validateDestination } from "./publish.js";
+import { closePostReview, routePostReview } from "./review.js";
 import { jevKeySet, triageOut } from "./triage.js";
 
 export interface Viewer {
@@ -459,6 +460,9 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], to, clearSchedule))) {
     throw new SocialError("The post changed while you were editing it. Reload and try again.");
   }
+  // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
+  if (to === "review") await routePostReview(ctx, viewer, post);
+  else await closePostReview(ctx, viewer, post, to);
   return getPostDetail(ctx, viewer, post.id);
 }
 

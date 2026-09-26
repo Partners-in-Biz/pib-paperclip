@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Select, breakAnywhere, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
 import type { ClientOption, Snapshot } from "./types.js";
 
@@ -128,7 +128,7 @@ export function BelongsToSelect({ clients, value, onChange, disabled }: {
   const contacts = clients.filter((c) => c.kind === "contact");
   const known = value === "" || clients.some((c) => c.client === value);
   return (
-    <Select value={value} onChange={(event) => onChange(event.target.value)} aria-label="Belongs to" disabled={disabled} style={{ minWidth: 200 }}>
+    <Select value={value} onChange={(event) => onChange(event.target.value)} aria-label="Belongs to" disabled={disabled}>
       <option value="">Own work (Partners in Biz)</option>
       {!known ? <option value={value}>Current client</option> : null}
       {companies.length ? (
@@ -156,5 +156,5 @@ export function Avatar({ url, label }: { url: string | null; label: string }) {
 }
 
 export function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
-  return <a href={href} target="_blank" rel="noopener" style={{ color: tokens.fg, fontSize: 12, textDecoration: "underline" }}>{children}</a>;
+  return <a href={href} target="_blank" rel="noopener" style={{ color: tokens.fg, fontSize: 12, textDecoration: "underline", ...breakAnywhere }}>{children}</a>;
 }

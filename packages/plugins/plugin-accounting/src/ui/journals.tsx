@@ -323,8 +323,8 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
               <div key={i} style={{ display: "grid", gap: 6, paddingTop: 8, borderTop: `1px solid ${tokens.border}` }}>
                 <AccountSelect accounts={accounts} value={l.accountCode} onChange={(code) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, accountCode: code } : x)) })} />
                 <Row>
-                  <Input placeholder="Debit" value={l.debit} style={{ minWidth: 90, width: 110 }} onChange={(e) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, debit: e.target.value, credit: e.target.value ? "" : x.credit } : x)) })} />
-                  <Input placeholder="Credit" value={l.credit} style={{ minWidth: 90, width: 110 }} onChange={(e) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, credit: e.target.value, debit: e.target.value ? "" : x.debit } : x)) })} />
+                  <Input placeholder="Debit" value={l.debit} inputMode="decimal" style={{ minWidth: 90, width: 110 }} onChange={(e) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, debit: e.target.value, credit: e.target.value ? "" : x.credit } : x)) })} />
+                  <Input placeholder="Credit" value={l.credit} inputMode="decimal" style={{ minWidth: 90, width: 110 }} onChange={(e) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, credit: e.target.value, debit: e.target.value ? "" : x.debit } : x)) })} />
                   <Select value={l.taxCode} onChange={(e) => setEditor({ ...editor, lines: editor.lines.map((x, k) => (k === i ? { ...x, taxCode: e.target.value } : x)) })}>
                     {TAX_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </Select>
@@ -379,7 +379,7 @@ function Rejected({ onMessage }: { onMessage: (m: string) => void }) {
             <Td>{r.error}</Td>
             <Td>{r.attempts}</Td>
             <Td>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Button type="button" style={small} disabled={busy !== ""} onClick={() => void run("retry", async () => {
                   const res = (await retry({ key: r.key })) as { journalNumber?: string | null };
                   await refresh();

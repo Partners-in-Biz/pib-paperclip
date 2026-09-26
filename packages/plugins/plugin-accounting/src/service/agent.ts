@@ -41,7 +41,7 @@ export const BOOKKEEPER_ROLE: HireRole = {
   role: "general",
   icon: "calculator",
   capabilities:
-    "Reconciles the bank, categorises statement lines, prepares manual journals as drafts, runs the month-end close checklist and prepares VAT returns in the Accounting plugin. A person approves anything that posts or locks.",
+    "Reconciles the bank, categorises statement lines, prepares manual journals as drafts, runs the month-end close checklist and prepares VAT returns in the Accounting plugin. A person approves anything that posts or locks. Monthly budget $20; the Cockpit alerts at 80% of it.",
   adapterPreference: ["hermes_local", "claude_local"],
   skills: [
     {
@@ -50,7 +50,7 @@ export const BOOKKEEPER_ROLE: HireRole = {
       purpose: "reconciling, categorising, month-end close checklist and the Accounting tool reference",
     },
   ],
-  budgetMonthlyCents: 0,
+  budgetMonthlyCents: 2000,
   suggestedManager: "the finance lead (or the CEO)",
   instructions: BOOKKEEPER_INSTRUCTIONS,
   pluginSetup: [

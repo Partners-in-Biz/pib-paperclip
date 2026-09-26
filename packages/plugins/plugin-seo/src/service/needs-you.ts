@@ -41,6 +41,7 @@ import { loadServiceAccount } from "./google-access.js";
 import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "../engine/items.js";
 import { settingsPath } from "./settings-path.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { routePrReview } from "./review.js";
 
 const nowIso = (env: Env) => env.now().toISOString();
 
@@ -300,7 +301,7 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
     const [label, url] = entry.includes(" | ") ? entry.split(" | ") : [entry, entry];
     return { label: label!.trim(), url: url!.trim() };
   });
-  const result = await addNeedsYou(env, info, sprint, {
+  const item: NewNeedsYouItem = {
     key: key ?? `${kind}:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60)}`,
     kind,
     title,
@@ -312,8 +313,11 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
     check: taskIds.length > 0 && kind === "pr" ? "task_done" : "manual",
     taskIds,
     optional: bool(params, "optional") ?? false,
-  }, { reopen: true });
-  return { sprintId: sprint.id, ...result, by: actorLabel(actor) };
+  };
+  const result = await addNeedsYou(env, info, sprint, item, { reopen: true });
+  // An out-of-scope PR is outward-facing: the Cockpit Reviewer checks it before the owner merges.
+  const reviewIssueId = kind === "pr" && result.added ? await routePrReview(env, sprint, item) : null;
+  return { sprintId: sprint.id, ...result, ...(reviewIssueId ? { reviewIssueId } : {}), by: actorLabel(actor) };
 }
 
 export async function needsYouResolveTool(env: Env, companyId: string, actor: Actor, params: Params) {

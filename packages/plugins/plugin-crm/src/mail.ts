@@ -12,6 +12,7 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import {
+  companyRoles,
   configSaved,
   createWorkIssue,
   decide,
@@ -22,6 +23,8 @@ import {
   readConfig,
   receiveOnce,
   redeliver,
+  reviewerAgentId,
+  reviewerBrief,
   settleOutbox,
   shouldAct,
   type MailReceived,
@@ -111,7 +114,7 @@ export async function contactAssignee(
 }
 
 /** Opens an issue once per origin id (a retried event must not open a second one). */
-async function openIssueOnce(
+export async function openIssueOnce(
   ctx: PluginContext,
   input: { companyId: string; originId: string; title: string; description: string; assignee: { assigneeAgentId?: string; assigneeUserId?: string }; wakeReason: string },
 ): Promise<string> {
@@ -401,30 +404,56 @@ export async function setDelivery(
   const approved = sequenceEmailApproved(sequence);
   if (delivery === "email" && !approved) {
     const existing = approvalIssueId ? await ctx.issues.get(approvalIssueId, companyId).catch(() => null) : null;
-    if (!existing || existing.status === "cancelled") {
+    // Done but not approved means an agent closed it (only a board user's done counts): ask again.
+    if (!existing || existing.status === "cancelled" || existing.status === "done") {
       const steps = await listSteps(ctx, sequence.id);
       const preview = steps
         .map((step) => `${step.position}. **${step.title}** (after ${step.delayMinutes} min)\n${step.body || "(no body)"}`)
         .join("\n\n");
+      const description = [
+        `The CRM wants to send the steps of sequence "${sequence.name}" as email from the Mailbox.`,
+        "A board user approves by marking this issue done. Until then no step is emailed.",
+        "Tokens such as {{first_name}} and {{company}} are filled in per contact.",
+        "",
+        preview || "(no steps yet)",
+      ].join("\n");
+      // Email to contacts is outward-facing: the Reviewer checks it first when the company has one.
+      const reviewer = await reviewerAgentId(ctx, companyId);
+      const sender = reviewer ? await senderLabel(ctx, companyId) : "";
+      const approver = reviewer ? (await companyRoles(ctx, companyId))?.ownerUserId ?? null : null;
       const issue = await createWorkIssue(ctx, {
         companyId,
         title: `Approve email sending: ${sequence.name}`,
-        description: [
-          `The CRM wants to send the steps of sequence "${sequence.name}" as email from the Mailbox.`,
-          "A board user approves by marking this issue done. Until then no step is emailed.",
-          "Tokens such as {{first_name}} and {{company}} are filled in per contact.",
-          "",
-          preview || "(no steps yet)",
-        ].join("\n"),
+        description: reviewer ? `${description}\n${sequenceReviewBrief(sequence.name, sender, approver)}` : description,
         originKind: ORIGIN,
         originId: `sequence-email:${sequence.id}`,
-        wake: false,
+        ...(reviewer ? { assigneeAgentId: reviewer, wake: true, wakeReason: "Review a sequence before it switches to email" } : { wake: false }),
       });
       approvalIssueId = issue.id;
     }
   }
   await saveSequenceDelivery(ctx, { id: sequence.id, delivery, approvalIssueId });
   return { sequenceId: sequence.id, delivery, emailApproved: approved, approvalIssueId };
+}
+
+async function senderLabel(ctx: PluginContext, companyId: string): Promise<string> {
+  const config = await readConfig(ctx, companyId).catch(() => ({} as Record<string, unknown>));
+  return typeof config.mailFrom === "string" && config.mailFrom.includes("@") ? config.mailFrom.trim() : "the Mailbox's default Gmail account";
+}
+
+/** What the Reviewer checks before a sequence starts sending email. */
+export function sequenceReviewBrief(sequenceName: string, sender: string, approverUserId: string | null): string {
+  return reviewerBrief({
+    what: `sequence "${sequenceName}" before its steps are emailed to contacts`,
+    checks: [
+      "Personalisation: every {{first_name}}, {{name}} and {{company}} token is spelled right and reads well when filled in, with a fallback (e.g. {{first_name|there}}) where a contact may have no first name.",
+      "Tone: sounds like us, friendly and direct, no pushy or spammy lines, right length for a cold or follow-up email.",
+      "Claims: prices, results, client names and guarantees are accurate and we can back them up.",
+      "Unsubscribe: each email tells the reader how to stop the emails (for example \"Reply STOP and we won't email again\").",
+      `Sender: the mail goes out from ${sender}. That address is right for this audience.`,
+    ],
+    handTo: approverUserId ? { userId: approverUserId, label: `the approver (user \`${approverUserId}\`)` } : { label: "a board member (unassign the agent so the board sees it)" },
+  });
 }
 
 /** A board user marked an approval issue done: email sending is approved for good. */

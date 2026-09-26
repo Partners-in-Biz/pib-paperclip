@@ -26,6 +26,7 @@ export const SETUP_EVENTS = {
 
 /** Modules a company can switch on or off, and the plugins behind each. */
 export const MODULES = {
+  cockpit: { title: "Cockpit & team", plugins: ["partnersinbiz.cockpit"], description: "One place to see everything, plus the Operator (runs the day) and Reviewer (checks outward-facing work) agents." },
   crm: { title: "CRM", plugins: [PIB_PLUGINS.crm], description: "Companies, contacts, deals, sequences. Other modules use it for clients." },
   mailbox: { title: "Mailbox (Gmail)", plugins: [PIB_PLUGINS.mailbox], description: "Connect Gmail: triage, and sending for invoices, payslips, sequences and campaigns." },
   social: { title: "Social media", plugins: [PIB_PLUGINS.social], description: "Accounts, scheduling, inbox, Growth Lab." },

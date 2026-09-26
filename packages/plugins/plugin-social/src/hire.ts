@@ -46,7 +46,8 @@ export const SOCIAL_HIRE_ROLE: HireRole = {
   capabilities: SOCIAL_AGENT_CAPABILITIES,
   adapterPreference: ["hermes_local", "claude_local"],
   skills: SOCIAL_SKILLS,
-  budgetMonthlyCents: 0,
+  // $40 a month. The Company Cockpit alerts at 80% ($32).
+  budgetMonthlyCents: 4000,
   suggestedManager: "the marketing / growth lead (or the CEO)",
   instructions: SOCIAL_HIRE_INSTRUCTIONS,
   pluginSetup: [
@@ -54,6 +55,7 @@ export const SOCIAL_HIRE_ROLE: HireRole = {
     "Assigns it the weekly \"Weekly social review & plan\" routine in the Social project (the trigger stays off until you enable it).",
     "Assigns it new failed-post issues from then on.",
     "Checks it has both social skills and says so here if one is missing.",
+    "Budget: $40 a month to start. The Cockpit alerts at 80% ($32), so raise it there if the agent needs more.",
   ],
   toolPlugins: ["partnersinbiz.crm"],
 };

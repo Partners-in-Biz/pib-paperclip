@@ -61,8 +61,8 @@ describe("Campaigns setup status", () => {
     expect(manifest.apiRoutes).toContainEqual(expect.objectContaining({ routeKey: SETUP_STATUS_ROUTE.routeKey, path: "/setup-status" }));
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit"]));
-    expect(manifest.version).toBe("0.3.1");
-    expect(PLUGIN_VERSION).toBe("0.3.1");
+    expect(manifest.version).toBe("0.3.2");
+    expect(PLUGIN_VERSION).toBe("0.3.2");
   });
 
   it("an unconfigured company: settings missing, Jev and Mailbox optional", async () => {

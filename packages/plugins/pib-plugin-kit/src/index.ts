@@ -14,6 +14,7 @@ export * from "./experiments.js";
 export * from "./pdf.js";
 export * from "./tool-result.js";
 export * from "./setup.js";
+export * from "./cockpit.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

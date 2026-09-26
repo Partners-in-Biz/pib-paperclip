@@ -3,6 +3,7 @@
  */
 import { randomUUID } from "node:crypto";
 import * as db from "../db.js";
+import { contentWentLive } from "./handoff.js";
 import { keywordStatusForPosition } from "../engine/sprint.js";
 import { discoverKeywords, inferIntent, type Intent } from "../integrations/autocomplete.js";
 import {
@@ -437,6 +438,8 @@ export async function addContent(env: Env, companyId: string, params: Params) {
     taskId: str(params, "taskId") ?? null,
     notes: str(params, "notes", { max: 4000 }) ?? null,
   });
+  // Live now: Social repurposes it (content.published).
+  if (status === "live") await contentWentLive(env, companyId, id);
   return { contentId: id, sprintId: sprint.id, status };
 }
 
@@ -480,6 +483,7 @@ export async function updateContentTool(env: Env, companyId: string, params: Par
   if (params.notes !== undefined) patch.notes = str(params, "notes", { max: 4000 }) ?? null;
   if (Object.keys(patch).length === 0) throw new SeoError("Nothing to update");
   await db.updateContent(env.ctx.db, companyId, content.id, patch);
+  if (status === "live" && content.status !== "live") await contentWentLive(env, companyId, content.id);
   return { contentId: content.id, updated: Object.keys(patch) };
 }
 

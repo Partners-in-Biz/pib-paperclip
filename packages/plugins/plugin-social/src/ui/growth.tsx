@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DataTable, MarkdownBlock, MetricCard, StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Select, StatRow, TextArea, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, Modal, Select, StatRow, TextArea, Toolbar, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, Card, fmtDate, Muted, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import type { GrowthChange, GrowthExperiment, GrowthPost, GrowthSnapshot, RunAction, Snapshot } from "./types.js";
 
@@ -285,7 +285,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         />
       </Card>
 
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: fluidColumns(320) }}>
         <Card>
           <strong style={{ fontSize: 13 }}>Top posts</strong>
           {data.top.length === 0 ? <Muted>No scored posts with a lift yet.</Muted> : data.top.map((p) => <PostRow key={p.postId} post={p} tz={tz} />)}

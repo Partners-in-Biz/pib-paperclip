@@ -98,7 +98,7 @@ describe("SEO setup status", () => {
   it("maps the checklist for a new company, with exact next steps", async () => {
     const { env } = host();
     const status = await seoSetupStatus(env, "co-1");
-    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.6.1", checkedAt: "2026-09-26T08:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.6.2", checkedAt: "2026-09-26T08:00:00.000Z" });
     expect(status.items[0]!.key).toBe("settings");
     const items = byKey(status.items);
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins/051bbf0b-aeb5-42d7-b0b6-c4cabd271cdc" });

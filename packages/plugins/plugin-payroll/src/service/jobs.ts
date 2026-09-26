@@ -7,14 +7,15 @@ import { CLERK_ROLE, type clerkOnLinked } from "../hire.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { errorMessage, type Env } from "./env.js";
 import { generatePayslips } from "./payslips.js";
+import { publishCockpit } from "./cockpit.js";
 import { setupStatus } from "./setup.js";
 
 /**
  * Job: payslips a locked run is still missing, pending clerk hires and the
- * hourly setup status. Jobs have no company scope. Companies that switched
+ * hourly setup status and Cockpit snapshot. Jobs have no company scope. Companies that switched
  * Payroll off in Setup get no new automatic work.
  */
-export async function followUp(e: Env, onLinked: ReturnType<typeof clerkOnLinked>, published: Map<string, number> = setupPublished) {
+export async function followUp(e: Env, onLinked: ReturnType<typeof clerkOnLinked>, published: Map<string, number> = setupPublished, cockpitPushed?: Map<string, number>) {
   const { ctx } = e;
   const enabled = new Map<string, boolean>();
   const isOn = async (companyId: string) => {
@@ -33,6 +34,7 @@ export async function followUp(e: Env, onLinked: ReturnType<typeof clerkOnLinked
     if (!(await configSaved(ctx, companyId)) || !(await isOn(companyId))) continue;
     await tryLinkPendingHire(ctx, companyId, CLERK_ROLE, onLinked).catch(() => null);
     await publishStatus(e, companyId, published);
+    await publishCockpit(e, companyId, cockpitPushed);
   }
 }
 

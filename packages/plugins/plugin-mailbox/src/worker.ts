@@ -11,9 +11,12 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   createSkillSyncer,
   decisionStats,
   registerModuleWatch,
+  registerRoleWatch,
+  trackJob,
   SETUP_STATUS_ROUTE,
   MAIL_CATEGORIES,
   MAIL_EVENTS,
@@ -29,6 +32,7 @@ import {
 import { gmailRedirectUri, loadMailboxConfig, validateMailboxConfig } from "./config.js";
 import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
+import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { SqlStore } from "./db.js";
 import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { createEnv, errorMessage, type Env } from "./gmail/env.js";
@@ -53,6 +57,7 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace);
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
@@ -100,11 +105,16 @@ const plugin = definePlugin({
     user("mailbox.get-message", (companyId, _userId, params) => getMessage(companyId, requiredString(params, "messageId"), params, null));
 
     ctx.jobs.register(SYNC_JOB_KEY, async () => {
-      const result = await runSyncJob(requireEnv());
-      if (result.accounts > 0) ctx.logger.info("Gmail sync finished", result);
+      await trackJob(ctx, SYNC_JOB_KEY, async () => {
+        const result = await runSyncJob(requireEnv());
+        if (result.accounts > 0) ctx.logger.info("Gmail sync finished", result);
+      });
     });
     ctx.jobs.register(SETUP_STATUS_JOB_KEY, async () => {
-      await publishAllSetupStatus(ctx, requireStore());
+      await trackJob(ctx, SETUP_STATUS_JOB_KEY, async () => {
+        await publishAllSetupStatus(ctx, requireStore());
+        await publishAllCockpit(ctx);
+      });
     });
 
     for (const sender of MAIL_SENDERS) {
@@ -130,6 +140,7 @@ const plugin = definePlugin({
     try {
       if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
       if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
+      if (input.routeKey === COCKPIT_ROUTE.routeKey) return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
       return { status: 404, body: { error: "Unknown route" } };
     } catch (error) {
       return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };

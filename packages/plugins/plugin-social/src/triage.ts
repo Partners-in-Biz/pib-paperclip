@@ -43,6 +43,7 @@ import {
 } from "./db.js";
 import { clip, SocialError } from "./domain.js";
 import { localDate } from "./growth/engine.js";
+import { emitLead } from "./handoff.js";
 import { createIssueSafely, ORIGIN_KIND, scopeLine, socialAgent, socialProjectId } from "./issues.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 
@@ -103,6 +104,11 @@ export interface Triage {
 
 function noulP(answer: JevAnswer | undefined): number {
   return answer?.type === "noul" ? answer.noul : 0;
+}
+
+/** Intent "lead" on an item that is neither spam nor escalated. Pure. */
+export function isLead(t: Pick<Triage, "intent" | "action">): boolean {
+  return t.intent.value === "lead" && t.action !== "escalated" && t.action !== "spam_read";
 }
 
 /** Read Jev's answers and decide what to do. Pure. */
@@ -280,6 +286,8 @@ export interface TriageSummary {
   queued: number;
   escalated: number;
   failed: number;
+  /** Items with intent "lead" sent to the CRM (lead.captured). */
+  leads?: number;
   skipped?: "no_jev";
 }
 
@@ -341,6 +349,11 @@ export async function triageInbox(ctx: PluginContext, config: SocialConfig, opti
       queued.set(acc.id, [...(queued.get(acc.id) ?? []), { item, triage }]);
     }
     await saveInboxTriage(ctx, companyId, item.id, { triage, issueId: triage.issueId ?? null });
+    // Buying intent goes to the CRM (not spam, not a risky item a person handles).
+    if (isLead(triage)) {
+      summary.leads = (summary.leads ?? 0) + 1;
+      await emitLead(ctx, companyId, item, triage.intent.confidence);
+    }
     const acted = actedKeys(triage.action).map((k) => triage.decisionIds[k]).filter((x): x is string => Boolean(x));
     if (acted.length) await markDecisionsActed(ctx, companyId, acted);
   }
@@ -395,6 +408,8 @@ export async function correctTriage(ctx: PluginContext, companyId: string, userI
   if (decisionId) await correctDecision(ctx, companyId, decisionId, params.value, userId);
   const next: Triage = { ...triage, corrected: { ...(triage.corrected ?? {}), [params.key]: params.value } };
   await saveInboxTriage(ctx, companyId, item.id, { triage: next, issueId: item.triage_issue_id ?? null });
+  // A person says it is a lead: the CRM gets it now (at full confidence).
+  if (params.key === "intent" && params.value === "lead" && triage.intent.value !== "lead") await emitLead(ctx, companyId, item, 1);
   // "Not spam": bring an item Jev marked read back to the inbox.
   if (params.key === "intent" && triage.action === "spam_read" && params.value !== "spam" && item.status === "read") {
     await setInboxItemStatus(ctx, companyId, item.id, "new");

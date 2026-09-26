@@ -25,7 +25,7 @@ const FULL = {
 describe("manifest", () => {
   it("declares the setup-status route and matches the package version", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.3.1");
+    expect(manifest.version).toBe("0.3.2");
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.apiRoutes).toContainEqual(SETUP_STATUS_ROUTE);
     expect(manifest.capabilities).toContain("api.routes.register");
@@ -77,7 +77,7 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
 
   it("lists what is missing before anything is saved, linking to the plugin list", async () => {
     const s = await status();
-    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: "0.3.1" });
+    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: "0.3.2" });
     expect(s.items[0]).toMatchObject({ key: "settings", status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(s, "sender")).toMatchObject({ status: "missing", required: true });
     expect(item(s, "eft")).toMatchObject({ status: "missing", required: true });

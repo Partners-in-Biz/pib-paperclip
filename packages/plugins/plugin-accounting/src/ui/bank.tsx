@@ -331,7 +331,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                 render: (_v, row) => {
                   const line = row as unknown as BankLine;
                   return (
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {line.status === "unreconciled" && line.suggestions.length ? (
                         <Button type="button" style={small} disabled={busy !== ""} onClick={() => void run("accept", async () => {
                           await accept({ lineId: line.id, index: 0 });
@@ -454,7 +454,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                   <div style={{ display: "grid", gap: 6 }}>
                     <strong>Suggestions</strong>
                     {selected.suggestions.map((s, i) => (
-                      <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+                      <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
                         <span>{describe(s, accounts)}</span>
                         <Button type="button" style={small} disabled={busy !== ""} onClick={() => void run("accept", async () => {
                           await accept({ lineId: selected.id, index: i });

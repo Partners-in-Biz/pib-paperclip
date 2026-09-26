@@ -20,9 +20,11 @@ import {
   Select,
   StatRow,
   Tabs,
+  ScrollX,
   TextArea,
   Toolbar,
   errorText,
+  fluidColumns,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
@@ -298,7 +300,7 @@ function Money({ minor }: { minor: number }) {
 }
 
 function Row({ children }: { children: ReactNode }) {
-  return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>{children}</div>;
+  return <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 12 }}>{children}</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1037,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
             render: (_v, row) => {
               const i = row as unknown as ItemView;
               return (
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <Button type="button" variant="secondary" style={small} onClick={() => setTraceItem(i)} disabled={!i.trace.length && !i.lines.length}>How</Button>
                   {editable ? <Button type="button" variant="secondary" style={small} onClick={() => {
                     const inputs = i.inputs as { overtimeHours?: number; doubleTimeHours?: number; ordinaryHours?: number; unpaidHours?: number; excluded?: boolean; components?: Array<{ code: string; amountMinor: number }> };
@@ -1080,6 +1082,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
       <Modal open={Boolean(traceItem)} title={traceItem ? `How ${traceItem.name}'s pay was worked out` : ""} onClose={() => setTraceItem(null)} footer={<Button type="button" onClick={() => setTraceItem(null)}>Close</Button>}>
         {traceItem ? (
           <div style={{ display: "grid", gap: 12, fontSize: 12.5 }}>
+            <ScrollX>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <tbody>
                 {traceItem.lines.map((l, idx) => (
@@ -1091,6 +1094,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
                 ))}
               </tbody>
             </table>
+            </ScrollX>
             <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
               {traceItem.trace.map((step) => (
                 <li key={step.step}>
@@ -1227,7 +1231,7 @@ function PayslipsTab({ run, setMessage }: { run: RunFn; setMessage: (m: string) 
           render: (_v, row) => {
             const p = row as unknown as NonNullable<typeof rows>[number];
             return (
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Button type="button" variant="secondary" style={small} disabled={p.status === "pending" || (p.status === "failed" && !p.emailedTo)} onClick={() => void run(async () => download((await downloadSlip({ payslipId: p.id })) as { url: string; fileName: string }))}>Download</Button>
                 <Button type="button" variant="secondary" style={small} disabled={p.status === "pending" || p.status === "sending"} onClick={() => void run(async () => { await email({ runId: p.runId, payslipIds: [p.id] }); await refresh(); }, "Queued for email")}>{p.status === "sent" ? "Email again" : "Email"}</Button>
               </div>
@@ -1293,7 +1297,7 @@ function LeaveTab({ s, run }: { s: Snapshot; run: RunFn }) {
                 render: (_v, row) => {
                   const r = row as unknown as LeaveData["requests"][number];
                   return (
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       {r.status === "pending" ? <Button type="button" style={small} onClick={() => void act(() => decide({ requestId: r.id, decision: "approve" }), "Leave approved")}>Approve</Button> : null}
                       {r.status === "pending" ? <Button type="button" variant="secondary" style={small} onClick={() => void act(() => decide({ requestId: r.id, decision: "reject" }), "Leave declined")}>Decline</Button> : null}
                       {r.status === "pending" || r.status === "approved" ? <Button type="button" variant="secondary" style={small} onClick={() => void act(() => cancel({ requestId: r.id }), "Leave cancelled")}>Cancel</Button> : null}
@@ -1436,7 +1440,7 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <Notice tone="info">These are evidence packs and exports. Payroll never submits to SARS and never pays SARS; file the EMP201 and EMP501 on eFiling yourself.</Notice>
-      <Section title="EMP201 (monthly)" actions={<div style={{ display: "flex", gap: 8 }}>
+      <Section title="EMP201 (monthly)" actions={<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ width: 160 }} />
         <Button type="button" variant="secondary" onClick={() => void run(async () => setE201(((await emp201({ month })) as { emp201: Emp201View }).emp201))}>Show</Button>
         <Button type="button" variant="secondary" onClick={() => exportAndDownload({ kind: "emp201", month }, "EMP201 exported")}>CSV</Button>
@@ -1458,7 +1462,7 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Pick a month to see PAYE, SDL, UIF and ETI from its locked pay runs.</p>}
       </Section>
 
-      <Section title="IRP5 / IT3(a) certificates" actions={<div style={{ display: "flex", gap: 8 }}>
+      <Section title="IRP5 / IT3(a) certificates" actions={<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Input value={taxYear} onChange={(e) => setTaxYear(e.target.value)} style={{ width: 110 }} aria-label="Tax year" />
         <Button type="button" variant="secondary" onClick={() => void run(async () => setCertificates(((await certs({ taxYear })) as { certificates: NonNullable<typeof certificates> }).certificates))}>Show</Button>
         <Button type="button" variant="secondary" onClick={() => { if (window.confirm("The certificate file holds ID and tax numbers. Download it?")) exportAndDownload({ kind: "irp5", taxYear }, "Certificates exported"); }}>CSV</Button>
@@ -1481,7 +1485,7 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Totals per employee per SARS source code for the tax year.</p>}
       </Section>
 
-      <Section title="EMP501 reconciliation" actions={<div style={{ display: "flex", gap: 8 }}>
+      <Section title="EMP501 reconciliation" actions={<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Select value={period} onChange={(e) => setPeriod(e.target.value as "annual" | "interim")} style={{ width: 170 }}>
           <option value="interim">Interim (Mar–Aug)</option>
           <option value="annual">Annual (Mar–Feb)</option>

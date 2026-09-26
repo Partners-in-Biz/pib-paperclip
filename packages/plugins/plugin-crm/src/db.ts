@@ -950,6 +950,22 @@ export async function contactsByEmail(ctx: PluginContext, companyId: string, ema
   return rows.map(mapContact);
 }
 
+/**
+ * Contacts with this social handle (`<platform>:<handle>`, lower case) in
+ * `custom.handles`, oldest first. Written by the lead intake.
+ */
+export async function contactsByHandle(ctx: PluginContext, companyId: string, handleKey: string): Promise<ContactDraft[]> {
+  const rows = await ctx.db.query<ContactRow>(
+    `SELECT ${CONTACT_COLUMNS}
+       FROM ${table(ctx, "contacts")} c
+      WHERE c.company_id = $1 AND c.custom -> 'handles' @> $2::jsonb
+      ORDER BY c.created_at, c.id
+      LIMIT 10`,
+    [companyId, JSON.stringify([handleKey])],
+  );
+  return rows.map(mapContact);
+}
+
 export async function saveEmailStatus(ctx: PluginContext, contactId: string, status: EmailStatus): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "contacts")} SET email_status = $2, updated_at = now() WHERE id = $1`,

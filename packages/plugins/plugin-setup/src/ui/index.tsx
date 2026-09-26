@@ -6,7 +6,7 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Modal, Page, Section, Select, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Modal, Page, Section, Select, Tabs, breakAnywhere, errorText, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, SETUP_PLUGIN, setupProgress, type ModuleKey, type SetupItem } from "../kit-setup.js";
 import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupMissing } from "../finish-issue.js";
@@ -140,7 +140,7 @@ export function SetupPage({ context }: PluginPageProps) {
     >
       {data.load && !firstVisit ? (
         <Section title="Progress" actions={(
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {data.load.finishIssueId ? <a {...linkFor(`/issues/${data.load.finishIssueId}`)} style={{ fontSize: 13, color: tokens.primary, textDecoration: "none" }}>Finish setup issue →</a> : null}
             <Button type="button" variant="secondary" onClick={doRefreshIssue} disabled={busy === "issue"}>{busy === "issue" ? "Updating…" : "Update issue now"}</Button>
           </div>
@@ -242,7 +242,7 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
           ? "Start here. Switch off what this company does not need: its menu entry, jobs and setup items go away. You can change this any time."
           : "Switched-off modules hide their menu entry, skip their jobs, and drop out of the checklist."}
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(260, "auto-fill"), gap: 12 }}>
         {ORDERED_MODULES.map((key) => {
           const plugins = MODULES[key].plugins as readonly string[];
           const isInstalled = installed ? plugins.every((plugin) => !!installed[plugin]) : null;
@@ -393,7 +393,7 @@ function GuidedSetup({ open, data, linkFor, busy, onAction, onClose }: {
             <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>
               {skipped.size ? "They stay on the checklist and on the weekly Finish setup issue." : "The agents can now run on their own for the modules you use."}
             </p>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {skipped.size ? <Button type="button" variant="secondary" onClick={() => setSkipped(new Set())}>Show skipped items</Button> : null}
               <Button type="button" onClick={onClose}>Close</Button>
             </div>
@@ -606,7 +606,7 @@ export function CopyPreview({ row, onToggle }: { row: CopyRow; onToggle: (includ
   else {
     body = (
       <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
-        {plan.added.map((entry) => <li key={entry.path}><code>{entry.path}</code> = {previewValue(entry.value)}</li>)}
+        {plan.added.map((entry) => <li key={entry.path} style={breakAnywhere}><code>{entry.path}</code> = {previewValue(entry.value)}</li>)}
       </ul>
     );
   }
@@ -645,7 +645,7 @@ export function SetupProgressCard({ data, linkFor }: { data: Pick<SetupData, "lo
   if (load.modules !== null && !pending && overall.total > 0 && overall.done === overall.total) return null;
   return (
     <div style={{ display: "grid", gap: 12, padding: 16, borderRadius: 14, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 14 }}>Setup progress</strong>
         <a {...linkFor("/setup")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>
           {load.modules === null ? "Start setup →" : "Continue setup →"}
@@ -660,7 +660,7 @@ export function SetupProgressCard({ data, linkFor }: { data: Pick<SetupData, "lo
             {views.map((view) => {
               const progress = view.status ? setupProgress(view.status.items) : null;
               return (
-                <div key={view.pluginKey} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+                <div key={view.pluginKey} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
                   <span>{MODULES[view.module].title}</span>
                   <span style={{ color: progress && progress.missing.length === 0 ? tokens.muted : tokens.fg }}>
                     {progress ? (progress.missing.length === 0 ? "Done" : `${progress.done} of ${progress.total}`) : "Checking…"}

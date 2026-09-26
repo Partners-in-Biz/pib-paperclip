@@ -37,7 +37,9 @@ import {
   Tabs,
   TextArea,
   Toolbar,
+  PageFrame,
   errorText,
+  fluidColumns,
   formatMinor,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
@@ -324,7 +326,7 @@ function CrmList({ context }: PluginPageProps) {
             />
             <MetricCard label="Deals" value={summary?.dealCount ?? 0} />
           </StatRow>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: fluidColumns(240), gap: 12 }}>
             <BarChart
               title="Pipeline by stage"
               items={stages.map((stage) => ({
@@ -341,7 +343,7 @@ function CrmList({ context }: PluginPageProps) {
               items={Object.entries(summary?.contactLifecycle ?? {}).map(([label, value]) => ({ label, value }))}
             />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: fluidColumns(260), gap: 12 }}>
             <AttentionCard
               title="Contacts without a company"
               empty="Every contact is linked."
@@ -1203,7 +1205,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
       />
       {message ? <StatusLine>{message}</StatusLine> : null}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 12 }}>
         {WORK_SOURCES.map((source) => (
           <WorkCard
             key={source.tab}
@@ -1860,15 +1862,9 @@ function asClientSummary(body: unknown): ClientSummary | null {
   return { headline, stats };
 }
 
-const shellFont = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-
 /** Same frame as `Page`, without its header: the workspace bar is the header. */
 function WorkspaceShell({ children }: { children: ReactNode }) {
-  return (
-    <main style={{ fontFamily: shellFont, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
-      {children}
-    </main>
-  );
+  return <PageFrame>{children}</PageFrame>;
 }
 
 function StatusLine({ children }: { children: ReactNode }) {
@@ -1884,6 +1880,7 @@ function StatusLine({ children }: { children: ReactNode }) {
         background: tokens.secondary,
         color: tokens.secondaryFg,
         lineHeight: 1.45,
+        overflowWrap: "anywhere",
       }}
     >
       {children}

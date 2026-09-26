@@ -17,6 +17,8 @@ import {
   Input,
   Modal,
   Page,
+  PageFrame,
+  PageMessage,
   Select,
   StatRow,
   Tabs,
@@ -74,8 +76,6 @@ interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: Wo
 type TabId = "overview" | "campaigns";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
-const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-
 function defaultAudience(scope: ClientScope): AudienceMode {
   if (!scope) return "tags";
   return scope.kind === "company" ? "client_contacts" : "client_contact";
@@ -91,27 +91,11 @@ function audienceLabel(campaign: Campaign): string {
 /** Page layout for a client workspace: the shared client bar replaces the page header. */
 function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+    <PageFrame>
       {header}
-      {message ? (
-        <p
-          role="status"
-          style={{
-            margin: 0,
-            fontSize: 13,
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: `1px solid ${tokens.border}`,
-            background: tokens.secondary,
-            color: tokens.secondaryFg,
-            lineHeight: 1.45,
-          }}
-        >
-          {message}
-        </p>
-      ) : null}
+      <PageMessage message={message} />
       {children}
-    </main>
+    </PageFrame>
   );
 }
 
@@ -244,7 +228,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                 { key: "audience", header: "Audience" },
                 { key: "deliveryLabel", header: "Sends by" },
                 { key: "enrolled", header: "Enrolled" },
-                { key: "steps", header: "Steps" },
+                { key: "stepCount", header: "Steps" },
                 {
                   key: "id",
                   header: "Actions",
@@ -282,7 +266,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                   },
                 },
               ]}
-              rows={campaigns.map((c) => ({ ...c, audience: audienceLabel(c), deliveryLabel: c.delivery === "email" ? "Email" : "Issue", enrolled: c.stats.enrolled, steps: c.steps.length }))}
+              rows={campaigns.map((c) => ({ ...c, audience: audienceLabel(c), deliveryLabel: c.delivery === "email" ? "Email" : "Issue", enrolled: c.stats.enrolled, stepCount: c.steps.length }))}
               emptyMessage="No campaigns match."
             />
           )}

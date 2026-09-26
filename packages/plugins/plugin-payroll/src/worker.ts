@@ -11,6 +11,7 @@ import {
   type PluginPerformActionContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   createSkillSyncer,
   hireStatus,
   hireTaskDraft,
@@ -22,9 +23,11 @@ import {
   redeliver,
   registerHireWatch,
   registerModuleWatch,
+  registerRoleWatch,
   rememberPluginUiBase,
   SETUP_STATUS_ROUTE,
   startHire,
+  trackJob,
   tryLinkPendingHire,
   unlinkAgent,
   MAIL_EVENTS,
@@ -63,6 +66,7 @@ import {
 import { certificates, emp201, emp501, exportDownload, exportStatutory, importYtd, netPayFile } from "./service/statutory.js";
 import { overview, rulesView, runTool } from "./service/agent-tools.js";
 import { followUp } from "./service/jobs.js";
+import { cockpitSnapshot } from "./service/cockpit.js";
 import { markRulesReviewed, rulesReviewed, setupStatus } from "./service/setup.js";
 
 export const LEDGER_RESULT_EVENT = pluginEvent(PIB_PLUGINS.accounting, LEDGER_EVENTS.postResult);
@@ -79,6 +83,7 @@ const plugin = definePlugin({
     const onLinked = clerkOnLinked(ctx, (companyId) => skills!.force(companyId));
     registerHireWatch(ctx, [{ role: CLERK_ROLE, onLinked }]);
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
     registerActions(e, onLinked);
 
     for (const tool of PAYROLL_TOOLS) {
@@ -116,11 +121,13 @@ const plugin = definePlugin({
     });
 
     // Outbox redelivery keeps running for companies that switched Payroll off, so queued work is not stranded.
-    ctx.jobs.register("redeliver", async () => {
-      const result = await redeliver(ctx);
-      if (result.emitted || result.failed) ctx.logger.info("Payroll outbox redelivered", result);
-    });
-    ctx.jobs.register("follow-up", () => followUp(e, onLinked));
+    ctx.jobs.register("redeliver", () =>
+      trackJob(ctx, "redeliver", async () => {
+        const result = await redeliver(ctx);
+        if (result.emitted || result.failed) ctx.logger.info("Payroll outbox redelivered", result);
+      }),
+    );
+    ctx.jobs.register("follow-up", () => trackJob(ctx, "follow-up", () => followUp(e, onLinked)));
     ctx.logger.info("Payroll plugin ready");
   },
   async onHealth() {
@@ -131,6 +138,14 @@ const plugin = definePlugin({
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
       try {
         return { status: 200, body: await setupStatus(env, input.companyId) };
+      } catch (error) {
+        return { status: 500, body: { error: errorMessage(error) } };
+      }
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+      try {
+        return { status: 200, body: await cockpitSnapshot(env, input.companyId) };
       } catch (error) {
         return { status: 500, body: { error: errorMessage(error) } };
       }

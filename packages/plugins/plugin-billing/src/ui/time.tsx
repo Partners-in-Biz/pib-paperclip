@@ -44,8 +44,8 @@ export function TimeTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => void
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             <Row style={{ alignItems: "end" }}>
-              <Field label="What are you working on?"><Input value={description} onChange={(e) => setDescription(e.target.value)} style={{ minWidth: 260 }} /></Field>
-              <Field label="Rate per hour"><Input value={rate} onChange={(e) => setRate(e.target.value)} style={{ width: 120 }} /></Field>
+              <div style={{ flex: "1 1 260px", minWidth: 0 }}><Field label="What are you working on?"><Input value={description} onChange={(e) => setDescription(e.target.value)} /></Field></div>
+              <div style={{ flex: "0 1 120px", minWidth: 100 }}><Field label="Rate per hour"><Input value={rate} onChange={(e) => setRate(e.target.value)} inputMode="decimal" /></Field></div>
             </Row>
             {!scope ? <ClientSelect clients={snapshot.clients ?? []} value={client} onChange={setClient} allowEmpty /> : null}
             <Row>

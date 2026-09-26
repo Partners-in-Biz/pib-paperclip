@@ -22,14 +22,19 @@ import {
   Modal,
   NewTaskDialog,
   Page,
+  PageFrame,
+  PageMessage,
+  ScrollX,
   Section,
   Select,
   StatRow,
   Tabs,
   TextArea,
   Toolbar,
+  breakAnywhere,
   errorText,
   tokens,
+  useIsNarrow,
   type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
@@ -250,20 +255,14 @@ function siteUrlFromDomain(domain: string | null): string {
   return /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
 }
 
-const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-
 /** A client's workspace: the shared client bar replaces the page header. */
 function ClientPage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
   return (
-    <main style={{ fontFamily: FONT, color: tokens.fg, padding: 28, maxWidth: 1160, display: "grid", gap: 22 }}>
+    <PageFrame>
       {header}
-      {message ? (
-        <p role="status" style={{ margin: 0, fontSize: 13, padding: "10px 14px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, lineHeight: 1.45 }}>
-          {message}
-        </p>
-      ) : null}
+      <PageMessage message={message} />
       {children}
-    </main>
+    </PageFrame>
   );
 }
 
@@ -336,8 +335,8 @@ function WireResultNote({ result, onClose }: { result: WireSummary; onClose: () 
   return (
     <Banner tone="info">
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-        <strong>{result.title}</strong>
-        <button type="button" onClick={onClose} aria-label="Dismiss" style={{ appearance: "none", border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+        <strong style={{ minWidth: 0 }}>{result.title}</strong>
+        <button type="button" onClick={onClose} aria-label="Dismiss" style={{ appearance: "none", border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", fontSize: 16, lineHeight: 1, minWidth: 32, flexShrink: 0 }}>×</button>
       </div>
       <ul style={{ margin: 0, paddingLeft: 18 }}>
         {result.steps.map((line) => <li key={line}>{line}</li>)}
@@ -638,7 +637,7 @@ export function SeoPage({ context }: PluginPageProps) {
       {!scope && settings?.redirectUri && settings.googleClientId ? (
         <Banner tone="info">
           <span>
-            OAuth fallback — redirect URI to register in Google Cloud (Credentials → your Web client → Authorized redirect URIs): <code>{settings.redirectUri}</code>
+            OAuth fallback — redirect URI to register in Google Cloud (Credentials → your Web client → Authorized redirect URIs): <code style={breakAnywhere}>{settings.redirectUri}</code>
           </span>
         </Banner>
       ) : null}
@@ -740,9 +739,9 @@ function SprintList({ data, client, onOpen, onMessage, onChanged }: { data: Load
               key: "siteName",
               header: "Site",
               render: (_v, row) => (
-                <button type="button" onClick={() => onOpen(String(row.sprintId))} style={{ all: "unset", cursor: "pointer", display: "grid", gap: 2 }}>
-                  <strong style={{ fontSize: 13 }}>{String(row.siteName)}</strong>
-                  <span style={{ fontSize: 12, color: tokens.muted }}>{String(row.siteUrl)}</span>
+                <button type="button" onClick={() => onOpen(String(row.sprintId))} style={{ all: "unset", cursor: "pointer", display: "grid", gap: 2, minWidth: 0, maxWidth: "100%" }}>
+                  <strong style={{ fontSize: 13, ...breakAnywhere }}>{String(row.siteName)}</strong>
+                  <span style={{ fontSize: 12, color: tokens.muted, ...breakAnywhere }}>{String(row.siteUrl)}</span>
                   {row.legacyClientName ? (
                     <span style={{ fontSize: 12, color: tokens.muted }}>Names client “{String(row.legacyClientName)}” but is not linked to the CRM</span>
                   ) : null}
@@ -965,14 +964,14 @@ function SprintCockpit({
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "grid", gap: 4 }}>
-          <button type="button" onClick={onBack} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: tokens.muted }}>← {scope ? "This client's sprints" : "All PiB sprints"}</button>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 650 }}>{s.siteName}</h2>
-          <span style={{ fontSize: 12, color: tokens.muted }}>
+        <div style={{ display: "grid", gap: 4, minWidth: 0, flex: "1 1 280px" }}>
+          <button type="button" onClick={onBack} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: tokens.muted, minHeight: 24 }}>← {scope ? "This client's sprints" : "All PiB sprints"}</button>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 650, ...breakAnywhere }}>{s.siteName}</h2>
+          <span style={{ fontSize: 12, color: tokens.muted, ...breakAnywhere }}>
             {s.siteUrl} · start {s.startDate} · root issue <IssueLink id={s.rootIssueId} identifier={s.rootIssueIdentifier} />
           </span>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
           <Select
             aria-label="Autopilot"
             value={s.autopilotMode}
@@ -1091,6 +1090,8 @@ function chipState(task: Task, day: number): keyof typeof chipColors {
 
 function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
   const [selected, setSelected] = useState<Task | null>(null);
+  const narrow = useIsNarrow();
+  const weekColumns = `${narrow ? 56 : 72}px minmax(0, 1fr)`;
   const day = bundle.sprint.day;
   const open = bundle.tasks.filter((t) => ["not_started", "in_progress", "blocked"].includes(t.status));
   const due = open.filter((t) => t.dueDay == null || t.dueDay <= day);
@@ -1132,13 +1133,14 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             </span>
           ))}
         </div>
-        <div style={{ display: "grid", gap: 8 }}>
+        <ScrollX label="13-week plan">
+        <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
           {weeks.map((w) => {
             const items = bundle.tasks.filter((t) => t.week === w && t.source === "template");
             if (items.length === 0) return null;
             const current = bundle.sprint.week === w;
             return (
-              <div key={w} style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10, alignItems: "start" }}>
+              <div key={w} style={{ display: "grid", gridTemplateColumns: weekColumns, gap: narrow ? 8 : 10, alignItems: "start" }}>
                 <div style={{ fontSize: 12, fontWeight: current ? 700 : 500, color: current ? tokens.fg : tokens.muted, paddingTop: 5 }}>Week {w}{current ? " ◂" : ""}</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {items.map((t) => <TaskChip key={t.id} task={t} state={chipState(t, day)} onClick={() => setSelected(t)} />)}
@@ -1147,7 +1149,7 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             );
           })}
           {extra.length > 0 ? (
-            <div style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: weekColumns, gap: narrow ? 8 : 10 }}>
               <div style={{ fontSize: 12, color: tokens.muted, paddingTop: 5 }}>Added</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {extra.map((t) => <TaskChip key={t.id} task={t} state={chipState(t, day)} onClick={() => setSelected(t)} />)}
@@ -1155,6 +1157,7 @@ function PlanTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
             </div>
           ) : null}
         </div>
+        </ScrollX>
       </Section>
       <TaskSheet task={selected} onClose={() => setSelected(null)} call={call} />
     </div>
@@ -1176,7 +1179,7 @@ function TaskChip({ task, state, onClick }: { task: Task; state: keyof typeof ch
         borderRadius: 8,
         padding: "4px 8px",
         fontSize: 12,
-        maxWidth: 280,
+        maxWidth: "min(280px, 100%)",
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -1235,7 +1238,7 @@ function KeywordsTab({ bundle, call, working }: { bundle: SprintBundle; call: Ca
         <MetricCard label="Priority" value={bundle.keywords.filter((k) => k.isPriority && !k.retiredAt).length} />
       </StatRow>
       <Toolbar>
-        <label style={{ fontSize: 12, color: tokens.muted, display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <label style={{ fontSize: 12, color: tokens.muted, display: "inline-flex", gap: 6, alignItems: "center", minHeight: 36 }}>
           <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} /> Show retired
         </label>
         <Button type="button" onClick={() => setAdding(true)}>+ Keywords</Button>
@@ -1270,7 +1273,7 @@ function KeywordsTab({ bundle, call, working }: { bundle: SprintBundle; call: Ca
               header: "",
               width: "150px",
               render: (_v, row) => row.retiredAt ? null : (
-                <span style={{ display: "inline-flex", gap: 6 }}>
+                <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
                   <Button type="button" variant="secondary" style={small} onClick={() => void call("update-keyword", { keywordId: row.id, priority: !row.isPriority })}>{row.isPriority ? "Unstar" : "Star"}</Button>
                   <Button type="button" variant="secondary" style={small} onClick={() => void call("retire-keyword", { keywordId: row.id }, "Keyword retired.")}>Retire</Button>
                 </span>
@@ -1527,13 +1530,13 @@ function OptimizationsTab({ bundle, call }: { bundle: SprintBundle; call: CallFn
             {proposed.map((o) => (
               <div key={o.id} style={{ border: `1px solid ${tokens.border}`, borderRadius: 12, padding: 12, display: "grid", gap: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  <strong style={{ fontSize: 14 }}>{o.hypothesis}</strong>
+                  <strong style={{ fontSize: 14, minWidth: 0 }}>{o.hypothesis}</strong>
                   <span style={{ display: "inline-flex", gap: 6 }}><Badge status={o.severity} label={o.signalType} /></span>
                 </div>
                 <span style={{ fontSize: 13 }}>{o.proposedAction}</span>
                 <span style={{ fontSize: 12, color: tokens.muted }}>Tasks: {o.proposedTasks.map((t) => t.title).join("; ")}</span>
                 <code style={{ fontSize: 11, color: tokens.muted, wordBreak: "break-all" }}>{JSON.stringify(o.evidence)}</code>
-                <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <Button type="button" style={small} onClick={() => void call("approve-optimization", { optimizationId: o.id }, "Approved: tasks created for this week, measured in 14 days.")}>Approve</Button>
                   <Button type="button" variant="secondary" style={small} onClick={() => { setReason(""); setRejecting(o); }}>Reject</Button>
                 </div>
@@ -1649,10 +1652,10 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
         <div style={{ fontSize: 13, display: "grid", gap: 4 }}>
           <span style={{ color: tokens.muted }}>
             {load.settings.serviceAccountEmail
-              ? <>Service account: <code>{load.settings.serviceAccountEmail}</code> — the agent verifies our own sites with it; clients add it as a Search Console user.</>
+              ? <>Service account: <code style={breakAnywhere}>{load.settings.serviceAccountEmail}</code> — the agent verifies our own sites with it; clients add it as a Search Console user.</>
               : load.settings.serviceAccountError ?? "No service account key yet (see Setup). The OAuth connection below is the fallback."}
           </span>
-          <span>Property: {gsc?.propertyUrl ?? <em style={{ color: tokens.muted }}>none selected</em>}</span>
+          <span style={breakAnywhere}>Property: {gsc?.propertyUrl ?? <em style={{ color: tokens.muted }}>none selected</em>}</span>
           <span style={{ color: tokens.muted }}>Last pull: {gsc?.lastPullAt ? gsc.lastPullAt.slice(0, 16).replace("T", " ") : "never"}</span>
           {gsc?.lastError ? <span style={{ color: tokens.destructive }}>{gsc.lastError}</span> : null}
         </div>
@@ -1678,8 +1681,8 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
           <div style={{ display: "grid", gap: 6 }}>
             {properties.length === 0 ? <span style={{ fontSize: 13, color: tokens.muted }}>This Google account has no Search Console properties.</span> : null}
             {properties.map((p) => (
-              <div key={p.propertyUrl} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <code style={{ fontSize: 12 }}>{p.propertyUrl}</code>
+              <div key={p.propertyUrl} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <code style={{ fontSize: 12, minWidth: 0, ...breakAnywhere }}>{p.propertyUrl}</code>
                 <Button type="button" variant="secondary" style={small} disabled={!p.usable || p.propertyUrl === gsc?.propertyUrl} onClick={() => void call("gsc-set-property", { sprintId, propertyUrl: p.propertyUrl }, "Property selected.").then(() => setProperties(null))}>
                   {p.propertyUrl === gsc?.propertyUrl ? "Selected" : p.usable ? "Use" : "Unverified"}
                 </Button>
@@ -1718,7 +1721,7 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
         </span>
         {bing?.lastError ? <span style={{ color: tokens.destructive, fontSize: 13 }}>{bing.lastError}</span> : null}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <Input value={bingUrl} onChange={(e) => setBingUrl(e.target.value)} style={{ maxWidth: 320 }} aria-label="Bing site URL" />
+          <Input value={bingUrl} onChange={(e) => setBingUrl(e.target.value)} style={{ maxWidth: 320, flex: "1 1 220px", minWidth: 0 }} aria-label="Bing site URL" />
           <Button type="button" variant="secondary" onClick={() => void toggle("bing", bing?.status !== "enabled")}>{bing?.status === "enabled" ? "Disable" : "Enable"}</Button>
         </div>
       </Section>

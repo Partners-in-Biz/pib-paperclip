@@ -11,6 +11,7 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   configSaved,
   correctDecision,
   createSkillSyncer,
@@ -21,15 +22,20 @@ import {
   redeliver,
   registerCrmProjection,
   registerModuleWatch,
+  registerRoleWatch,
   rememberPluginUiBase,
   resolveCrmClient,
   retryOutbox,
+  reviewerAgentId,
+  reviewerBrief,
   SETUP_STATUS_ROUTE,
   TAX_CODES,
   toolFail,
   toolOk,
+  trackJob,
   type ClientRef,
 } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { customerCredit, invoiceBalance, invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
 import { BANK_MATCHED_EVENT } from "./bank.js";
 import {
@@ -320,6 +326,7 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
@@ -334,13 +341,13 @@ const plugin = definePlugin({
     }
     ctx.actions.register("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
 
-    ctx.jobs.register("mark-overdue", () => markOverdueJob(ctx));
-    ctx.jobs.register("run-recurring", () => runRecurring(ctx));
-    ctx.jobs.register("redeliver", () => redeliverJob(ctx));
-    ctx.jobs.register("emit-open-items", () => emitOpenItemsJob(ctx, 1800));
-    ctx.jobs.register("emit-open-items-all", () => emitOpenItemsJob(ctx, null));
-    ctx.jobs.register("dunning", () => dunningJob(ctx));
-    ctx.jobs.register("fx-rates", () => fxJob(ctx));
+    ctx.jobs.register("mark-overdue", () => trackJob(ctx, "mark-overdue", () => markOverdueJob(ctx)));
+    ctx.jobs.register("run-recurring", () => trackJob(ctx, "run-recurring", () => runRecurring(ctx)));
+    ctx.jobs.register("redeliver", () => trackJob(ctx, "redeliver", () => redeliverJob(ctx)));
+    ctx.jobs.register("emit-open-items", () => trackJob(ctx, "emit-open-items", () => emitOpenItemsJob(ctx, 1800)));
+    ctx.jobs.register("emit-open-items-all", () => trackJob(ctx, "emit-open-items-all", () => emitOpenItemsJob(ctx, null)));
+    ctx.jobs.register("dunning", () => trackJob(ctx, "dunning", () => dunningJob(ctx)));
+    ctx.jobs.register("fx-rates", () => trackJob(ctx, "fx-rates", () => fxJob(ctx)));
 
     const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
       try {
@@ -350,7 +357,7 @@ const plugin = definePlugin({
         throw error;
       }
     };
-    ctx.events.on("issue.updated", guard("issue update", (event) => onIssueUpdated(ctx, event.entityId, event.companyId)));
+    ctx.events.on("issue.updated", guard("issue update", (event) => onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType)));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on(MAIL_RESULT_EVENT, guard("mail result", (event) => onMailResult(ctx, event)));
     ctx.events.on(MAIL_RECEIVED_EVENT, guard("inbound mail", (event) => onMailReceived(ctx, event)));
@@ -367,6 +374,7 @@ const plugin = definePlugin({
     if (!pluginCtx) return { status: 503, body: { error: "Billing plugin is not ready" } };
     if (input.routeKey === "client-summary") return clientSummaryRoute(pluginCtx, input);
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return setupStatusRoute(pluginCtx, input);
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) return cockpitRoute(pluginCtx, input);
     return acceptGrant(pluginCtx, input);
   },
 });
@@ -672,17 +680,20 @@ async function requestDecision(ctx: PluginContext, context: PluginPerformActionC
   const recipients = action === "send" && emailEnabled(settings) ? await recipientsFor(ctx, companyId, invoice) : [];
   const amount = balance ? balance.outstandingMinor : Number(invoice.total_minor);
   const money = new Intl.NumberFormat("en-ZA", { style: "currency", currency: invoice.currency }).format(amount / 100);
-  const issue = await createWorkIssue(ctx, {
-    companyId: invoice.company_id,
-    title: action === "send" ? `Approve sending invoice ${invoice.number}` : `Approve payment of invoice ${invoice.number}`,
-    description: action === "send"
+  // Sending is outward-facing: the Reviewer checks it first when the company has one. Money (pay) goes straight to the person.
+  const reviewer = action === "send" ? await reviewerAgentId(ctx, invoice.company_id) : null;
+  const description = action === "send"
       ? recipients.length
         ? `Open invoice ${invoice.number} on the Billing page and check it. Mark this issue done to email it (with the PDF) to ${recipients.map((r) => r.email).join(", ")} from the Mailbox. The plugin records it as sent when the email goes out, and freezes the sender and customer details.`
         : `Open invoice ${invoice.number} on the Billing page and check it. There is no email address for this customer${emailEnabled(settings) ? "" : " (email is off in settings)"}, so mark this issue done after you have sent it yourself. The plugin then records it as sent and freezes the sender and customer details.`
-      : `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`,
+      : `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`;
+  const issue = await createWorkIssue(ctx, {
+    companyId: invoice.company_id,
+    title: action === "send" ? `Approve sending invoice ${invoice.number}` : `Approve payment of invoice ${invoice.number}`,
+    description: reviewer ? `${description}\n${sendReviewBrief(`invoice ${invoice.number} before it is emailed`, recipients.length > 0, settings.reviewerUserId)}` : description,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: invoice.id,
-    ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+    ...approvalAssignee(reviewer, settings.reviewerUserId),
   });
   invoice.approval_issue_id = issue.id;
   invoice.pending_action = action;
@@ -698,18 +709,43 @@ async function requestQuoteSend(ctx: PluginContext, context: PluginPerformAction
   if (Number(quote.total_minor) <= 0) throw new BillingError("Add a line before sending the quote");
   const { settings } = await loadBilling(ctx, companyId);
   const recipients = emailEnabled(settings) ? await recipientsFor(ctx, companyId, quote) : [];
+  const reviewer = await reviewerAgentId(ctx, companyId);
+  const description = recipients.length
+    ? `Check quote ${quote.number} on the Billing page, then mark this issue done to email it (with the PDF) to ${recipients.map((r) => r.email).join(", ")}.`
+    : `Check quote ${quote.number} on the Billing page. There is no email address for this customer, so mark this issue done after you have sent it yourself.`;
   const issue = await createWorkIssue(ctx, {
     companyId,
     title: `Approve sending quote ${quote.number}`,
-    description: recipients.length
-      ? `Check quote ${quote.number} on the Billing page, then mark this issue done to email it (with the PDF) to ${recipients.map((r) => r.email).join(", ")}.`
-      : `Check quote ${quote.number} on the Billing page. There is no email address for this customer, so mark this issue done after you have sent it yourself.`,
+    description: reviewer ? `${description}\n${sendReviewBrief(`quote ${quote.number} before it is emailed`, recipients.length > 0, settings.reviewerUserId)}` : description,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: quote.id,
-    ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+    ...approvalAssignee(reviewer, settings.reviewerUserId),
   });
   await ctx.db.execute(`UPDATE ${table(ctx, "quotes")} SET approval_issue_id = $2, pending_action = 'send', updated_at = now() WHERE id = $1`, [quote.id, issue.id]);
   return { quoteId: quote.id, issueId: issue.id, recipients };
+}
+
+/** Reviewer agent first when set; otherwise the person who checks payments (unchanged). */
+export function approvalAssignee(reviewer: string | null, personId: string | null | undefined): { assigneeAgentId?: string; assigneeUserId?: string } {
+  if (reviewer) return { assigneeAgentId: reviewer };
+  return personId ? { assigneeUserId: personId } : {};
+}
+
+/** What the Reviewer checks on an invoice, quote or statement before a person approves sending it. */
+export function sendReviewBrief(what: string, emailed: boolean, personId: string | null | undefined): string {
+  return reviewerBrief({
+    what,
+    checks: [
+      "Customer and amounts: the right customer, lines, quantities and prices match the work or agreement.",
+      "VAT: the right VAT code on each line, and the document is a Tax invoice only when your VAT number is set.",
+      "Due date (or valid-until date) is correct for this customer.",
+      "Bank details: account name, number and branch code on the document match your EFT details.",
+      "PDF attached: the Billing page shows the document and it renders correctly.",
+      emailed ? "Email wording: subject and message are plain, polite and name the right document." : "No email address: the person sends it themselves.",
+      emailed ? "Recipients: the addresses listed above belong to this customer." : "Recipients: add the customer's billing email in the CRM if one should exist.",
+    ],
+    handTo: personId ? { userId: personId, label: `the person who checks payments (user ${personId})` } : { label: "a board member (leave it unassigned for the board)" },
+  });
 }
 
 // ── Payments ───────────────────────────────────────────────────────────────
@@ -1117,6 +1153,7 @@ async function markOverdueJob(ctx: PluginContext) {
   }
   await markOverdue(ctx, off);
   await publishAllSetupStatus(ctx);
+  await publishAllCockpit(ctx);
 }
 
 async function redeliverJob(ctx: PluginContext) {
@@ -1160,6 +1197,16 @@ async function setupStatusRoute(ctx: PluginContext, input: PluginApiRequestInput
   } catch (error) {
     ctx.logger.info("Billing setup status failed", { error: errorMessage(error) });
     return { status: 500, body: { error: error instanceof Error ? error.message : "Setup status failed" } };
+  }
+}
+
+async function cockpitRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+  try {
+    return { status: 200, body: await cockpitSnapshot(ctx, input.companyId) };
+  } catch (error) {
+    ctx.logger.info("Billing cockpit snapshot failed", { error: errorMessage(error) });
+    return { status: 500, body: { error: error instanceof Error ? error.message : "Cockpit snapshot failed" } };
   }
 }
 

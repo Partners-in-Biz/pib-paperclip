@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Field, Input, ResponsiveGrid, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { NewDocumentModal } from "./invoices.js";
 import { Card, DeliveryNote, Drawer, Muted, Row, SmallButton, Status, TaxCodeSelect, Totals, dayInput, fmtDate, money, openBase64Pdf, taxShort, toMinor, useBilling } from "./parts.js";
 import type { QuoteDetail } from "./types.js";
@@ -103,7 +103,7 @@ function QuoteDrawer({ quoteId, onClose, onOpenInvoice }: { quoteId: string; onC
           </div>
         ))}
         {editable ? (
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 70px 120px 150px auto", gap: 6, alignItems: "end" }}>
+          <ResponsiveGrid columns="3fr 70px 120px 150px auto" narrowColumns={2} spanFirst gap={6} alignItems="end">
             <Field label="Description"><Input value={line.description} onChange={(e) => setLine({ ...line, description: e.target.value })} /></Field>
             <Field label="Qty"><Input value={line.quantity} onChange={(e) => setLine({ ...line, quantity: e.target.value })} /></Field>
             <Field label={qt.pricesIncludeVat ? "Unit (incl.)" : "Unit (excl.)"}><Input value={line.unit} onChange={(e) => setLine({ ...line, unit: e.target.value })} placeholder="0.00" /></Field>
@@ -112,7 +112,7 @@ function QuoteDrawer({ quoteId, onClose, onOpenInvoice }: { quoteId: string; onC
               await call("billing.add-quote-line", { quoteId: qt.id, description: line.description, quantity: Number(line.quantity || "1"), unitAmountMinor: toMinor(line.unit), ...(line.taxCode ? { taxCode: line.taxCode } : {}) });
               setLine({ description: "", quantity: "1", unit: "", taxCode: line.taxCode });
             }, "Line added")}>Add</SmallButton>
-          </div>
+          </ResponsiveGrid>
         ) : null}
         <Totals rows={[
           { label: "Subtotal (excl. VAT)", value: money(qt.subtotalMinor, cur) },

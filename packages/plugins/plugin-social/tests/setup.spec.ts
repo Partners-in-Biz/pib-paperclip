@@ -59,7 +59,7 @@ describe("social setup status", () => {
   it("lists exact next steps for a new company", async () => {
     const { ctx } = world();
     const status = await socialSetupStatus(ctx, "co", new Date("2026-09-26T10:00:00Z"));
-    expect(status).toMatchObject({ plugin: "partnersinbiz.social", module: "social", title: "Social", version: "0.5.1", checkedAt: "2026-09-26T10:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.social", module: "social", title: "Social", version: "0.5.2", checkedAt: "2026-09-26T10:00:00.000Z" });
     expect(status.items[0]!.key).toBe("settings");
     const items = byKey(status.items);
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins/e588ce00-a14b-49fc-b62d-54b0208daafa" });

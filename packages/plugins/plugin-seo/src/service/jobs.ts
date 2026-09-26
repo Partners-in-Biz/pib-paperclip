@@ -30,7 +30,8 @@ import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
-import { publishSetupStatuses, seoOn } from "./setup-status.js";
+import { publishSetupStatuses, seoCompanies, seoOn } from "./setup-status.js";
+import { publishCockpitSnapshots } from "../cockpit.js";
 import { scheduledSnapshots } from "./snapshots.js";
 import { healTasks, materialiseDueTasks } from "./tasks.js";
 
@@ -308,7 +309,14 @@ export async function linkPendingHires(env: Env): Promise<number> {
   return linked;
 }
 
-export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; skipped: number; errors: string[]; hiresLinked: number; setupStatus: { published: number; skipped: number } }> {
+export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{
+  processed: number;
+  skipped: number;
+  errors: string[];
+  hiresLinked: number;
+  setupStatus: { published: number; skipped: number };
+  cockpit: { published: number; skipped: number; content: number };
+}> {
   const started = Date.now();
   const hiresLinked = await linkPendingHires(env).catch((error: unknown) => {
     env.ctx.logger.info("SEO hire check failed", { error: errorMessage(error) });
@@ -349,12 +357,17 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
     }
   }
   await db.deleteExpiredOAuthSessions(env.ctx.db).catch(() => undefined);
-  // Hourly: the Setup plugin's copy of each company's checklist.
-  const setupStatus = await publishSetupStatuses(env).catch((error: unknown) => {
+  // Hourly: the Setup plugin's copy of each company's checklist, the Cockpit snapshot and the content hand-off re-emit.
+  const companies = await seoCompanies(env).catch(() => [] as string[]);
+  const setupStatus = await publishSetupStatuses(env, companies).catch((error: unknown) => {
     env.ctx.logger.info("SEO setup status publish failed", { error: errorMessage(error) });
     return { published: 0, skipped: 0 };
   });
-  return { processed, skipped, errors, hiresLinked, setupStatus };
+  const cockpit = await publishCockpitSnapshots(env, companies).catch((error: unknown) => {
+    env.ctx.logger.info("SEO cockpit publish failed", { error: errorMessage(error) });
+    return { published: 0, skipped: 0, content: 0 };
+  });
+  return { processed, skipped, errors, hiresLinked, setupStatus, cockpit };
 }
 
 export async function runWeeklyForSprint(env: Env, info: CompanyInfo, sprint: db.Sprint) {

@@ -181,7 +181,7 @@ describe("GSC OAuth completion", () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "https://oauth2.googleapis.com/token") {
         expect(new URLSearchParams(String(init?.body)).get("redirect_uri")).toBe("https://paperclip.partnersinbiz.online/_plugins/051bbf0b-aeb5-42d7-b0b6-c4cabd271cdc/ui/oauth-callback.html");
-        return new Response(JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 3600, scope: "https://www.googleapis.com/auth/webmasters" }));
+        return new Response(JSON.stringify({ access_token: "at", refresh_token: "refresh-token-plaintext-marker", expires_in: 3600, scope: "https://www.googleapis.com/auth/webmasters" }));
       }
       return new Response(JSON.stringify({ siteEntry: [{ siteUrl: "sc-domain:acme.co.za", permissionLevel: "siteOwner" }] }));
     });
@@ -192,7 +192,7 @@ describe("GSC OAuth completion", () => {
     expect(update).toBeDefined();
     const sealed = update!.params.find((p) => typeof p === "string" && p.startsWith("v1."));
     expect(sealed).toBeDefined();
-    expect(String(sealed)).not.toContain("rt");
+    expect(String(sealed)).not.toContain("refresh-token-plaintext-marker");
     expect(update!.params).toContain("sc-domain:acme.co.za");
   });
 });

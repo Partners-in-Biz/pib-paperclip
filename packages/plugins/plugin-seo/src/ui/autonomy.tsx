@@ -3,7 +3,7 @@
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { StatusBadge, type StatusBadgeVariant } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Section, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Section, Select, breakAnywhere, fluidColumns, tokens } from "@partnersinbiz/pib-plugin-ui";
 
 export type UiLink = { label: string; url: string };
 
@@ -62,7 +62,7 @@ function LinkList({ links }: { links: UiLink[] }) {
   return (
     <span style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12 }}>
       {links.map((l) => (
-        <a key={l.url} href={l.url} target={/^https?:\/\//.test(l.url) ? "_blank" : undefined} rel="noreferrer" style={{ color: tokens.fg, fontWeight: 500 }}>
+        <a key={l.url} href={l.url} target={/^https?:\/\//.test(l.url) ? "_blank" : undefined} rel="noreferrer" style={{ color: tokens.fg, fontWeight: 500, minHeight: 24, display: "inline-flex", alignItems: "center", ...breakAnywhere }}>
           {l.label} ↗
         </a>
       ))}
@@ -92,7 +92,7 @@ export function SetupChecklist({ title, items }: { title: string; items: SetupIt
         {items.map((item) => (
           <div key={item.key} style={{ display: "grid", gap: 6, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-              <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
                 <StatusBadge status={STATUS[item.status].variant} label={STATUS[item.status].label} />
                 <strong style={{ fontSize: 13 }}>{item.label}</strong>
               </span>
@@ -209,9 +209,9 @@ export function SiteRepoSection({ sprintId, site, projects, prefix, call }: { sp
     >
       <span style={{ fontSize: 13, color: tokens.muted }}>
         Code and content tasks open in this project, so the agent works in its repo workspace: branch, PR, checks, preview, merge.
-        {site.repoUrl ? <> Repo: <code>{site.repoUrl}</code>.</> : null}
+        {site.repoUrl ? <> Repo: <code style={breakAnywhere}>{site.repoUrl}</code>.</> : null}
       </span>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 10 }}>
         <Field label="Project with the repo workspace">
           <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
             <option value="">Choose a project…</option>

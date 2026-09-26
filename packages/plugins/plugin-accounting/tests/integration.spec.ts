@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ACCOUNT_ROLES, rememberPluginUiBase, type LedgerPostRequested, type SetupItem } from "@partnersinbiz/pib-plugin-kit";
+import { ACCOUNT_ROLES, rememberPluginUiBase, type CockpitSnapshot, type LedgerPostRequested, type SetupItem } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot, recordChainCheck, resetCockpitThrottle } from "../src/service/cockpit.js";
+import { todayIso } from "../src/domain/util.js";
 import * as db from "../src/db.js";
 import { ZA_CHART } from "../src/domain/chart.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -620,7 +622,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.1" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.2" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -734,5 +736,114 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     await harness.emit(`plugin.${BILLING}.ledger.post.requested`, invoiceRequest(key, "2026-09-20"), { companyId: M });
     expect(results.at(-1)).toMatchObject({ key, status: "posted" });
     expect(harness.logs.filter((l) => l.level === "error")).toEqual([]);
+  });
+
+  describe("cockpit snapshot", () => {
+    const S = "co-ck";
+    const kpi = (snap: CockpitSnapshot, key: string) => snap.kpis.find((k) => k.key === key);
+    const check = (snap: CockpitSnapshot, key: string) => snap.health.find((c) => c.key === key)!;
+
+    it("before anything is set up: warns about settings and the book, and never creates one", async () => {
+      const snap = await cockpitSnapshot(ctx, "co-ck-none");
+      expect(snap).toMatchObject({ plugin: "partnersinbiz.accounting", title: "Accounting" });
+      expect(check(snap, "settings")).toMatchObject({ status: "warn", href: "/setup" });
+      expect(check(snap, "book")).toMatchObject({ status: "warn" });
+      expect(kpi(snap, "cash")).toBeUndefined();
+      expect(kpi(snap, "unreconciled")).toMatchObject({ raw: 0, tone: "ok" });
+      expect(check(snap, "job:redeliver")).toMatchObject({ status: "ok", detail: "Has not run yet." });
+      expect(check(snap, "hash_chain")).toMatchObject({ status: "ok", detail: "Not checked yet (checked daily)." });
+      expect(snap.waiting).toEqual([]);
+      expect(snap.health.find((c) => c.key === "snapshot")).toBeUndefined();
+      expect(await db.getBook(ctx.db, "co-ck-none")).toBeNull();
+    });
+
+    it("configured: cash, this month's P&L, VAT due, bank lines, approvals and problems", async () => {
+      configs.set(S, { legalName: "Cockpit Co", vatNumber: "4111111111", vatCategory: "C", financialYearEndMonth: 2 });
+      await ensureBook(ctx, S);
+      const today = todayIso();
+      const postS = (req: LedgerPostRequested) => receivePostRequest(ctx, S, `plugin.${BILLING}.ledger.post.requested`, req);
+      expect(await postS(invoiceRequest("billing:invoice:ck1:issue", today))).toMatchObject({ status: "posted" });
+      const bank = await saveBankAccount(ctx, S, { name: "Main" });
+      await importStatement(ctx, S, user, { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "ck.ofx" });
+      await q(`UPDATE ${NAMESPACE}.bank_lines SET date = current_date - 30 WHERE company_id = $1`, [S]);
+      // A rejected posting and one refused by a closed period.
+      await postS(invoiceRequest("billing:invoice:ck-bad:issue", today, { lines: [{ role: "ar", debitMinor: 100, creditMinor: 0 }, { role: "revenue", debitMinor: 0, creditMinor: 99 }] }));
+      await setPeriod(ctx, S, "2026-01", "closed", user);
+      await postS(invoiceRequest("billing:invoice:ck-jan:issue", "2026-01-10"));
+      const draft = await saveDraft(ctx, S, { date: today, memo: "Accrue audit fee", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] }, agent);
+      const pending = await requestDraftApproval(ctx, S, draft.id, agent);
+
+      const snap = await cockpitSnapshot(ctx, S);
+      expect(snap.health.find((c) => c.key === "settings")).toBeUndefined();
+      expect(kpi(snap, "cash")).toMatchObject({ group: "money", href: "/accounting?tab=bank" });
+      expect(kpi(snap, "month_revenue")).toMatchObject({ raw: 10_000_00, value: "R 10,000.00" });
+      expect(kpi(snap, "month_profit")).toMatchObject({ raw: 10_000_00, tone: "ok" });
+      expect(kpi(snap, "vat_due")).toMatchObject({ raw: 1_500_00, href: "/accounting?tab=vat" });
+      expect(kpi(snap, "unreconciled")!.raw).toBeGreaterThan(0);
+      expect(kpi(snap, "unreconciled")!.tone).toBe("warn");
+      expect(check(snap, "unreconciled_old")).toMatchObject({ status: "warn" });
+      expect(check(snap, "rejections")).toMatchObject({ status: "bad" });
+      expect(check(snap, "closed_period")).toMatchObject({ status: "warn" });
+      expect(check(snap, "opening_balances")).toMatchObject({ status: "warn", href: "/accounting?tab=cutover" });
+      expect(check(snap, "outbox").status).toBe("ok");
+      expect(snap.waiting).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: `approval:${pending.approvalIssueId}`, issueId: pending.approvalIssueId, kind: "money", href: `/issues/${pending.approvalIssueId}` }),
+        expect.objectContaining({ kind: "judgement", title: "Fix 2 rejected postings" }),
+      ]));
+      expect(snap.activity[0]!.text).toMatch(/^(Posted JNL-|Imported statement)/);
+      expect(snap.activity.some((a) => a.text.startsWith("Imported statement ck.ofx"))).toBe(true);
+      expect(snap.quality.map((m) => m.key)).toEqual(["categorisation_corrected"]);
+    });
+
+    it("reports a broken audit chain from the daily check", async () => {
+      expect((await recordChainCheck(ctx, S)).ok).toBe(true);
+      expect(check(await cockpitSnapshot(ctx, S), "hash_chain")).toMatchObject({ status: "ok" });
+      const [row] = await q(`SELECT id, memo FROM ${NAMESPACE}.journals WHERE company_id = $1 ORDER BY seq LIMIT 1`, [S]);
+      await q(`UPDATE ${NAMESPACE}.journals SET memo = 'edited' WHERE id = $1`, [row!.id]);
+      expect((await recordChainCheck(ctx, S)).ok).toBe(false);
+      expect(check(await cockpitSnapshot(ctx, S), "hash_chain")).toMatchObject({ status: "bad" });
+      await q(`UPDATE ${NAMESPACE}.journals SET memo = $2 WHERE id = $1`, [row!.id, row!.memo]);
+      await recordChainCheck(ctx, S);
+    });
+
+    it("keeps the rest when one query fails", async () => {
+      const broken = { ...ctx, db: { ...ctx.db, query: async (text: string, params?: unknown[]) => (text.includes(".bank_lines") ? Promise.reject(new Error("boom")) : ctx.db.query(text, params)) } };
+      const snap = await cockpitSnapshot(broken, S);
+      expect(kpi(snap, "unreconciled")).toBeUndefined();
+      expect(kpi(snap, "month_revenue")).toBeDefined();
+      expect(check(snap, "snapshot")).toMatchObject({ status: "warn" });
+    });
+
+    it("the route, job tracking and the hourly push (module on and settings saved only)", async () => {
+      const { createTestHarness } = await import("@paperclipai/plugin-sdk/testing");
+      const manifest = (await import("../src/manifest.js")).default;
+      const plugin = (await import("../src/worker.js")).default;
+      const C = "co-ck-w";
+      const harness = createTestHarness({ manifest, config: { legalName: "PiB", vatNumber: "4000000000", vatCategory: "B", financialYearEndMonth: 2 } });
+      harness.seed({ companies: [{ id: C, issuePrefix: "PCK", name: "PCK" } as never] });
+      (harness.ctx as unknown as { db: unknown }).db = shimDb();
+      await plugin.definition.setup(harness.ctx);
+      const pushed: string[] = [];
+      harness.ctx.events.on("plugin.partnersinbiz.accounting.cockpit.snapshot", async (e) => void pushed.push(e.companyId));
+      await harness.performAction("accounting.load", {}, { companyId: C, actor: { type: "user" as const, userId: "u-1" } });
+      const route = await plugin.definition.onApiRequest!({ routeKey: "cockpit", method: "GET", path: "/cockpit", params: {}, query: { companyId: C }, body: null, actor: { actorType: "user", actorId: "u-1" }, companyId: C, headers: {} });
+      expect(route.status).toBe(200);
+      expect(route.body).toMatchObject({ plugin: "partnersinbiz.accounting" });
+
+      await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: C, modules: { accounting: false }, updatedAt: "2026-09-26T10:00:00Z" }, { companyId: C });
+      await harness.runJob("redeliver");
+      expect(pushed).not.toContain(C);
+      resetCockpitThrottle();
+      await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: C, modules: { accounting: true }, updatedAt: "2026-09-26T11:00:00Z" }, { companyId: C });
+      await harness.runJob("redeliver");
+      expect(pushed.filter((c) => c === C)).toHaveLength(1);
+      await harness.runJob("redeliver");
+      expect(pushed.filter((c) => c === C)).toHaveLength(1);
+
+      const snap = (await plugin.definition.onApiRequest!({ routeKey: "cockpit", method: "GET", path: "/cockpit", params: {}, query: { companyId: C }, body: null, actor: { actorType: "user", actorId: "u-1" }, companyId: C, headers: {} })).body as CockpitSnapshot;
+      const job = snap.health.find((c) => c.key === "job:redeliver")!;
+      expect(job.status).toBe("ok");
+      expect(job.detail).toBeUndefined();
+    });
   });
 });

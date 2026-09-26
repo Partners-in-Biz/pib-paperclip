@@ -10,6 +10,7 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   configSaved,
   createSkillSyncer,
   decisionConfig,
@@ -25,13 +26,16 @@ import {
   redeliver,
   registerHireWatch,
   registerModuleWatch,
+  registerRoleWatch,
   rememberPluginUiBase,
   SecretResolver,
   startHire,
   toolFail,
   toolOk,
+  trackJob,
   unlinkAgent,
 } from "@partnersinbiz/pib-plugin-kit";
+import { cockpitSnapshot, publishCockpitThrottled, recordChainCheck } from "./service/cockpit.js";
 import * as db from "./db.js";
 import { ROLE_LABELS } from "./domain/chart.js";
 import { AccountingError, addMonths, monthOf, todayIso } from "./domain/util.js";
@@ -597,7 +601,9 @@ async function redeliverJob(ctx: PluginContext) {
   for (const companyId of enabled) await tryLinkBookkeeper(ctx, companyId, syncSkills);
   let published = 0;
   for (const companyId of enabled) if (await publishStatusThrottled(ctx, companyId)) published += 1;
-  return { outbox, companies: companies.length, enabled: enabled.length, published };
+  let cockpit = 0;
+  for (const companyId of enabled) if (await publishCockpitThrottled(ctx, companyId)) cockpit += 1;
+  return { outbox, companies: companies.length, enabled: enabled.length, published, cockpit };
 }
 
 async function monthEndJob(ctx: PluginContext) {
@@ -616,7 +622,12 @@ async function monthEndJob(ctx: PluginContext) {
     }
     closeIssues[companyId] = await monthEndCloseIssue(ctx, companyId).catch((error) => ({ error: errorMessage(error) }));
   }
-  return { depreciation, fx, closeIssues };
+  // Daily audit-chain check; the Cockpit reads the last result.
+  const chains: Record<string, boolean | string> = {};
+  for (const companyId of companies) {
+    chains[companyId] = await recordChainCheck(ctx, companyId).then((c) => c.ok).catch((error) => errorMessage(error));
+  }
+  return { depreciation, fx, closeIssues, chains };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +636,10 @@ async function monthEndJob(ctx: PluginContext) {
 
 export async function handleApiRequest(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (input.routeKey === "setup-status") return { status: 200, body: await setupStatus(ctx, input.companyId) };
+  if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+    if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+    return { status: 200, body: await cockpitSnapshot(ctx, input.companyId) };
+  }
   return { status: 404, body: { error: "Not found" } };
 }
 
@@ -657,17 +672,24 @@ const plugin = definePlugin({
     ctx.events.on("company.created", safely(ctx, "Skill sync", (e) => skillSync!.ensure(e.companyId)));
     registerHireWatch(ctx, [{ role: BOOKKEEPER_ROLE, onLinked: onBookkeeperLinked(ctx, syncSkills) }]);
     registerModuleWatch(ctx);
+    registerRoleWatch(ctx);
 
-    ctx.jobs.register("redeliver", async () => {
-      const result = await redeliverJob(ctx);
-      if (result.outbox.emitted || result.outbox.failed) ctx.logger.info("Accounting redeliver", result);
-    });
-    ctx.jobs.register("month-end", async () => {
-      ctx.logger.info("Accounting month-end", await monthEndJob(ctx));
-    });
-    ctx.jobs.register("fx-rates", async () => {
-      ctx.logger.info("FX rates stored", await fetchRates(ctx));
-    });
+    ctx.jobs.register("redeliver", () =>
+      trackJob(ctx, "redeliver", async () => {
+        const result = await redeliverJob(ctx);
+        if (result.outbox.emitted || result.outbox.failed) ctx.logger.info("Accounting redeliver", result);
+      }),
+    );
+    ctx.jobs.register("month-end", () =>
+      trackJob(ctx, "month-end", async () => {
+        ctx.logger.info("Accounting month-end", await monthEndJob(ctx));
+      }),
+    );
+    ctx.jobs.register("fx-rates", () =>
+      trackJob(ctx, "fx-rates", async () => {
+        ctx.logger.info("FX rates stored", await fetchRates(ctx));
+      }),
+    );
     ctx.logger.info("Accounting plugin ready");
   },
   async onHealth() {

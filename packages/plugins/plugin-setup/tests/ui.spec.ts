@@ -73,7 +73,7 @@ describe("setup UI render", () => {
       onChange: () => undefined,
       onSave: () => undefined,
     }));
-    for (const module of Object.values(MODULES)) expect(html).toContain(module.title);
+    for (const module of Object.values(MODULES)) expect(html).toContain(module.title.replace(/&/g, "&amp;"));
     expect(html).toContain("Save and continue");
     expect(html).toContain("Not installed");
     expect(html).toContain("take their clients from the CRM");
@@ -118,7 +118,7 @@ describe("setup UI render", () => {
   });
 
   it("shows the widget until everything required is done", () => {
-    const load: LoadResult = { modules: { crm: true, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null };
+    const load: LoadResult = { modules: { crm: true, cockpit: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null };
     const views = resolveModuleViews({ modules: load.modules, installed, live: { "partnersinbiz.crm": { ok: true, status: crm } }, stored: {} });
     const html = renderToStaticMarkup(createElement(SetupProgressCard, { data: { load, views }, linkFor }));
     expect(html).toContain("Setup progress");

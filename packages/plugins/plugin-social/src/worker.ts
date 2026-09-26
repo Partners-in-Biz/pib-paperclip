@@ -9,8 +9,11 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_ROUTE,
   linkAgent,
   publishSetupStatus,
+  registerRoleWatch,
+  trackJob,
   registerCrmProjection,
   registerHireWatch,
   registerModuleWatch,
@@ -25,6 +28,8 @@ import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { loadSocialConfig } from "./config.js";
 import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
+import { cockpitSnapshot, publishCockpitSnapshots } from "./cockpit.js";
+import { registerHandoffs } from "./handoff.js";
 import { SOCIAL_HIRE_ROLE } from "./hire.js";
 import { pollInboxJob } from "./inbox.js";
 import {
@@ -382,6 +387,15 @@ const ACTIONS: Record<string, ActionHandler> = {
 
 async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
   if (input.routeKey === "client-summary") return handleClientSummary(ctx, input);
+  if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+    const companyId = input.companyId;
+    if (!companyId) return { status: 400, body: { error: "companyId is required" } };
+    try {
+      return { status: 200, body: await cockpitSnapshot(ctx, companyId) };
+    } catch (error) {
+      return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
+    }
+  }
   if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
     const companyId = input.companyId;
     if (!companyId) return { status: 400, body: { error: "companyId is required" } };
@@ -421,7 +435,8 @@ async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) 
 function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown>) {
   ctx.jobs.register(key, async () => {
     try {
-      const summary = await run();
+      // Recorded for the Cockpit's job health (kit jobHealth).
+      const summary = await trackJob(ctx, key, run);
       lastRuns[key] = { at: new Date().toISOString(), ok: true, summary };
       ctx.logger.info(`Social job ${key} finished`, { summary });
     } catch (error) {
@@ -471,7 +486,12 @@ const plugin = definePlugin({
       // Hourly fallback for hire links (agent events are delivered at most once).
       const summary = await refreshTokensJob(ctx, ensure, (companyId) => tryLinkSocialHire(ctx, companyId));
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
-      return { ...summary, setupStatus: await publishSetupStatuses(ctx) };
+      const setupStatus = await publishSetupStatuses(ctx);
+      const cockpit = await publishCockpitSnapshots(ctx).catch((error: unknown) => {
+        ctx.logger.info("Social cockpit publish failed", { error: error instanceof Error ? error.message : String(error) });
+        return { published: 0, skipped: 0, leads: 0 };
+      });
+      return { ...summary, setupStatus, cockpit };
     });
     registerJob(ctx, "collect-metrics", () => collectMetricsJob(ctx, ensure));
     registerJob(ctx, "poll-inbox", () => pollInboxJob(ctx, ensure));
@@ -481,6 +501,9 @@ const plugin = definePlugin({
 
     registerHireWatch(ctx, [{ role: SOCIAL_HIRE_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
     registerModuleWatch(ctx);
+    // Cockpit roles (Operator, Reviewer) and hand-offs (SEO content → repurpose task).
+    registerRoleWatch(ctx);
+    registerHandoffs(ctx);
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await ensure(event.companyId);
     });

@@ -28,7 +28,7 @@ describe("manifest", () => {
     }
   });
 
-  it("registers the OAuth completion, client summary and setup status routes, and no start route", () => {
+  it("registers the OAuth completion, client summary, setup status and cockpit routes, and no start route", () => {
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
       expect.objectContaining({
@@ -40,8 +40,9 @@ describe("manifest", () => {
         companyResolution: { from: "query", key: "companyId" },
       }),
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
+      expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.5.1");
+    expect(manifest.version).toBe("0.5.2");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {

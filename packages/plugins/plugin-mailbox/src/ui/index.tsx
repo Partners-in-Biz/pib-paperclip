@@ -24,6 +24,7 @@ import {
   Tabs,
   TextArea,
   Toolbar,
+  breakAnywhere,
   errorText,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
@@ -412,7 +413,7 @@ export function MailboxPage({ context }: PluginPageProps) {
         )}
         {settings?.redirectUri ? (
           <p style={{ margin: 0, fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>
-            Redirect URI to add to the Google Web client (Credentials → Authorized redirect URIs): <code>{settings.redirectUri}</code>
+            Redirect URI to add to the Google Web client (Credentials → Authorized redirect URIs): <code style={breakAnywhere}>{settings.redirectUri}</code>
           </p>
         ) : settings?.publicBaseUrl ? (
           <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Reload this page to see the Google redirect URI.</p>
@@ -469,7 +470,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                     return (
                       <div style={{ display: "grid", gap: 2 }}>
                         <span style={{ fontWeight: m.is_read ? 400 : 600 }}>{m.subject}{m.attachments.length ? ` · ${m.attachments.length} file${m.attachments.length === 1 ? "" : "s"}` : ""}</span>
-                        <span style={{ fontSize: 12, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 420 }}>{m.snippet}</span>
+                        <span style={{ fontSize: 12, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "min(420px, 100%)" }}>{m.snippet}</span>
                       </div>
                     );
                   },
