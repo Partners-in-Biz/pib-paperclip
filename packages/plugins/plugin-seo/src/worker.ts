@@ -1,228 +1,294 @@
-import { randomUUID } from "node:crypto";
 import {
   definePlugin,
   runWorker,
+  type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginPerformActionContext,
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { SeoError, sprintTask } from "./domain.js";
+import { configSaved, listCrmCompanies, pluginUiBase, registerCrmProjection, rememberPluginUiBase } from "@partnersinbiz/pib-plugin-kit";
+import { gscRedirectUri, validateSeoConfig } from "./config.js";
+import { DAILY_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
+import * as db from "./db.js";
+import { dispatch, HANDLERS, toolSummary } from "./dispatch.js";
+import { NAMESPACE } from "./namespace.js";
+import { activateAgent, resolveAgent } from "./service/agent.js";
+import { asParams, companyInfo, createEnv, errorMessage, reqStr, SeoError, type Actor, type Env } from "./service/common.js";
+import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
+import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
+import { detectSignals } from "./service/optimize.js";
+import { ensureProject } from "./service/agent.js";
+import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
+import { onIssueUpdated } from "./service/tasks.js";
 import { SEO_TOOLS } from "./tools.js";
 
+let env: Env | null = null;
+
 const plugin = definePlugin({
+  multiCompanyConfig: true,
+
   async setup(ctx) {
+    const e = createEnv(ctx);
+    env = e;
     for (const tool of SEO_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
     }
-    ctx.actions.register("seo.load", (_params, context) => load(ctx, requiredCompany(context)));
-    ctx.actions.register("seo.create-sprint", (params, context) => createSprint(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.record-rank", (params, context) => recordRank(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.record-audit", (params, context) => recordAudit(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.open-task", (params, context) => openTask(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.add-keyword", (params, context) => addKeyword(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.add-page", (params, context) => addPage(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.rank-history", (params, context) => rankHistory(ctx, requiredCompany(context), params));
-    ctx.actions.register("seo.audit-summary", (params, context) => auditSummary(ctx, requiredCompany(context), params));
-    ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await safeReconcile(ctx, event.companyId);
+    registerActions(e);
+    ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
+      const result = await runDailyJob(e, { force: job.trigger === "manual" });
+      ctx.logger.info("SEO daily job finished", { ...result, trigger: job.trigger });
     });
-    await reconcileAll(ctx);
+    ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
+      const result = await runWeeklyJob(e, { force: job.trigger === "manual" });
+      ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
+    });
+    ctx.events.on("issue.updated", async (event) => {
+      if (!event.entityId || !event.companyId) return;
+      try {
+        await onIssueUpdated(e, event.companyId, event.entityId);
+      } catch (error) {
+        ctx.logger.info("SEO issue sync failed", { issueId: event.entityId, error: errorMessage(error) });
+      }
+    });
+    ctx.events.on("company.created", async (event) => {
+      if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);
+    });
+    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: false });
+    ctx.logger.info("SEO plugin ready");
   },
+
   async onHealth() {
-    return { status: "ok", message: "SEO plugin ready" };
+    if (!env) return { status: "degraded", message: "SEO worker is starting" };
+    try {
+      const companies = await db.listSprintCompanies(env.ctx.db);
+      const missing: string[] = [];
+      for (const companyId of companies.slice(0, 5)) {
+        if (!(await configSaved(env.ctx, companyId))) missing.push(companyId);
+      }
+      if (missing.length > 0) {
+        return { status: "degraded", message: "SEO settings are not saved for a company with sprints; scheduled work is skipped there.", details: { companiesMissingSettings: missing } };
+      }
+      return { status: "ok", message: "SEO plugin ready", details: { companiesWithSprints: companies.length } };
+    } catch (error) {
+      return { status: "degraded", message: `SEO health check failed: ${errorMessage(error)}` };
+    }
+  },
+
+  async onValidateConfig(config) {
+    return validateSeoConfig(config);
+  },
+
+  async onConfigChanged() {
+    // Config is read per call with an explicit company, so nothing to reload.
+  },
+
+  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+    if (!env) return { status: 503, body: { error: "SEO plugin is not ready" } };
+    try {
+      if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
+      if (input.routeKey === "oauth-start") {
+        const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
+        const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
+        const returnTo = Array.isArray(input.query.returnTo) ? input.query.returnTo[0] : input.query.returnTo;
+        const body = await gscConnectStart(env, input.companyId, actor, { sprintId, returnTo });
+        return { status: 200, body };
+      }
+      return { status: 404, body: { error: "Unknown route" } };
+    } catch (error) {
+      return { status: error instanceof SeoError ? 400 : 500, body: { error: errorMessage(error) } };
+    }
   },
 });
 
 export default plugin;
 runWorker(plugin, import.meta.url);
 
-async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+async function toolActor(ctx: PluginContext, run: ToolRunContext): Promise<Actor> {
+  let responsibleUserId: string | null = null;
+  if (run.runId && run.agentId) {
+    try {
+      const rows = await ctx.db.query<{ responsible_user_id: string | null }>(
+        `SELECT responsible_user_id FROM public.heartbeat_runs WHERE id = $1 AND company_id = $2 AND agent_id = $3 LIMIT 1`,
+        [run.runId, run.companyId, run.agentId],
+      );
+      responsibleUserId = rows[0]?.responsible_user_id ?? null;
+    } catch {
+      responsibleUserId = null;
+    }
+  }
+  return { kind: "agent", agentId: run.agentId, runId: run.runId ?? null, responsibleUserId };
+}
+
+async function runTool(e: Env, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
-    const body = objectParams(params);
-    const data = await dispatch(ctx, run.companyId, name, body);
-    return { content: name, data };
+    await e.skills.ensure(run.companyId).catch(() => []);
+    const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
+    return { content: toolSummary(name, data), data };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "SEO tool failed" };
+    if (!(error instanceof SeoError)) e.ctx.logger.error("SEO tool failed", { tool: name, error: errorMessage(error) });
+    return { error: errorMessage(error) };
   }
 }
 
-async function dispatch(ctx: PluginContext, companyId: string, name: string, body: Record<string, unknown>) {
-  if (name === "create-sprint") return createSprint(ctx, companyId, body);
-  if (name === "record-rank") return recordRank(ctx, companyId, body);
-  if (name === "record-audit") return recordAudit(ctx, companyId, body);
-  if (name === "open-task") return openTask(ctx, companyId, body);
-  if (name === "add-keyword") return addKeyword(ctx, companyId, body);
-  if (name === "add-page") return addPage(ctx, companyId, body);
-  if (name === "rank-history") return rankHistory(ctx, companyId, body);
-  if (name === "audit-summary") return auditSummary(ctx, companyId, body);
-  throw new SeoError(`Unknown SEO tool ${name}`);
-}
-
-async function load(ctx: PluginContext, companyId: string) {
-  const sprints = await ctx.db.query(
-    `SELECT id, name, site_url, status FROM ${table(ctx, "sprints")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
-  );
-  const keywords = await ctx.db.query(
-    `SELECT id, sprint_id, phrase, rank FROM ${table(ctx, "keywords")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
-  );
-  const audits = await ctx.db.query(
-    `SELECT id, sprint_id, finding, severity FROM ${table(ctx, "audits")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
-  );
-  const pages = await ctx.db.query(
-    `SELECT id, sprint_id, url, title FROM ${table(ctx, "pages")} WHERE company_id = $1 ORDER BY created_at DESC`,
-    [companyId],
-  );
-  return { sprints, keywords, audits, pages };
-}
-
-async function createSprint(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const id = randomUUID();
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "sprints")} (id, company_id, name, site_url) VALUES ($1, $2, $3, $4)`,
-    [id, companyId, requiredString(params, "name"), requiredString(params, "siteUrl")],
-  );
-  return { id };
-}
-
-async function recordRank(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const rank = params.rank == null ? null : Number(params.rank);
-  if (rank != null && !Number.isInteger(rank)) throw new SeoError("Rank must be an integer");
-  const id = randomUUID();
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "keywords")} (id, company_id, sprint_id, phrase, rank) VALUES ($1, $2, $3, $4, $5)`,
-    [id, companyId, sprint.id, requiredString(params, "phrase"), rank],
-  );
-  if (rank != null) {
-    await ctx.db.execute(
-      `INSERT INTO ${table(ctx, "rank_history")} (id, company_id, keyword_id, rank) VALUES ($1, $2, $3, $4)`,
-      [randomUUID(), companyId, id, rank],
-    );
-  }
-  return { id, sprintId: sprint.id };
-}
-
-async function recordAudit(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const id = randomUUID();
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "audits")} (id, company_id, sprint_id, finding, severity) VALUES ($1, $2, $3, $4, $5)`,
-    [id, companyId, sprint.id, requiredString(params, "finding"), optionalString(params, "severity") ?? "info"],
-  );
-  return { id, sprintId: sprint.id };
-}
-
-async function openTask(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const task = sprintTask({ id: sprint.id, name: sprint.name }, requiredString(params, "title"));
-  const issue = await ctx.issues.create({
-    companyId,
-    title: task.title,
-    description: task.description,
-    status: "todo",
-    originKind: task.originKind,
-    originId: task.originId,
-  });
-  return { issueId: issue.id, sprintId: sprint.id };
-}
-
-async function addKeyword(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const id = randomUUID();
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "keywords")} (id, company_id, sprint_id, phrase, rank) VALUES ($1, $2, $3, $4, NULL)`,
-    [id, companyId, sprint.id, requiredString(params, "phrase")],
-  );
-  return { id, sprintId: sprint.id };
-}
-
-async function addPage(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const id = randomUUID();
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "pages")} (id, company_id, sprint_id, url, title) VALUES ($1, $2, $3, $4, $5)`,
-    [id, companyId, sprint.id, requiredString(params, "url"), optionalString(params, "title") ?? ""],
-  );
-  return { id, sprintId: sprint.id };
-}
-
-async function rankHistory(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const keywordId = requiredString(params, "keywordId");
-  const rows = await ctx.db.query(
-    `SELECT rank, recorded_at FROM ${table(ctx, "rank_history")}
-      WHERE keyword_id = $1 AND company_id = $2 ORDER BY recorded_at`,
-    [keywordId, companyId],
-  );
-  return rows;
-}
-
-async function auditSummary(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
-  const sprint = await requireSprint(ctx, companyId, requiredString(params, "sprintId"));
-  const rows = await ctx.db.query<{ severity: string; count: string | number }>(
-    `SELECT severity, count(*) AS count FROM ${table(ctx, "audits")}
-      WHERE sprint_id = $1 AND company_id = $2 GROUP BY severity`,
-    [sprint.id, companyId],
-  );
-  const bySeverity: Record<string, number> = {};
-  for (const row of rows) bySeverity[row.severity] = Number(row.count ?? 0);
-  return { sprintId: sprint.id, bySeverity };
-}
-
-async function requireSprint(ctx: PluginContext, companyId: string, id: string): Promise<{ id: string; name: string }> {
-  const rows = await ctx.db.query<{ id: string; name: string }>(
-    `SELECT id, name FROM ${table(ctx, "sprints")} WHERE id = $1 AND company_id = $2 LIMIT 1`,
-    [id, companyId],
-  );
-  const sprint = rows[0];
-  if (!sprint) throw new SeoError("Sprint was not found");
-  return sprint;
-}
-
-function table(ctx: PluginContext, name: string): string {
-  if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new SeoError("Unsafe identifier");
-  return `${ctx.db.namespace}.${name}`;
-}
-
-function requiredCompany(context: PluginPerformActionContext): string {
-  if (!context.companyId) throw new SeoError("Company is required");
+function actionCompany(context: PluginPerformActionContext): string {
+  if (!context.companyId) throw new SeoError("Open the SEO page inside a company");
   return context.companyId;
 }
 
-function objectParams(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SeoError("Parameters must be an object");
-  return value as Record<string, unknown>;
-}
-
-function requiredString(params: Record<string, unknown>, key: string): string {
-  const value = params[key];
-  if (typeof value !== "string" || !value.trim()) throw new SeoError(`${key} is required`);
-  return value.trim();
-}
-
-function optionalString(params: Record<string, unknown>, key: string): string | undefined {
-  const value = params[key];
-  if (value == null || value === "") return undefined;
-  if (typeof value !== "string") throw new SeoError(`${key} must be a string`);
-  return value.trim();
-}
-
-async function reconcileAll(ctx: PluginContext) {
-  try {
-    const companies = await ctx.companies.list({ limit: 100 });
-    for (const company of companies) await safeReconcile(ctx, company.id);
-  } catch (error) {
-    ctx.logger.info("SEO skill reconcile deferred", { error: error instanceof Error ? error.message : String(error) });
+function actionActor(context: PluginPerformActionContext): Actor {
+  if (context.actor.type === "user") return { kind: "user", userId: context.actor.userId };
+  if (context.actor.type === "agent" && context.actor.agentId) {
+    return { kind: "agent", agentId: context.actor.agentId, runId: context.actor.runId, responsibleUserId: null };
   }
+  return { kind: "system" };
 }
 
-async function safeReconcile(ctx: PluginContext, companyId: string) {
-  try {
-    await ctx.skills.managed.reconcile("seo-sprint", companyId);
-  } catch (error) {
-    ctx.logger.info("SEO skill reconcile skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-  }
+function requireUser(actor: Actor): Extract<Actor, { kind: "user" }> {
+  if (actor.kind !== "user") throw new SeoError("This action is for board users");
+  return actor;
+}
+
+function registerActions(e: Env) {
+  const { ctx } = e;
+  const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
+    ctx.actions.register(key, async (params, context) => {
+      const companyId = actionCompany(context);
+      await e.skills.ensure(companyId).catch(() => []);
+      return fn(companyId, actionActor(context), asParams(params));
+    });
+
+  action("seo.load", async (companyId, actor, params) => {
+    const uiBase = (await rememberPluginUiBase(ctx, params.uiBase)) ?? (await pluginUiBase(ctx));
+    const info = await companyInfo(e, companyId);
+    const [sprints, counts, clients, agent] = await Promise.all([
+      db.listSprints(ctx.db, companyId),
+      db.sprintCounts(ctx.db, companyId),
+      listCrmCompanies(ctx, NAMESPACE, companyId).catch(() => []),
+      resolveAgent(e, companyId),
+    ]);
+    const secretSet = async (path: string) => {
+      try {
+        return Boolean(await info.loaded.secrets.get(path));
+      } catch {
+        return false;
+      }
+    };
+    const base = info.loaded.config.publicBaseUrl;
+    return {
+      today: info.today,
+      timezone: info.timezone,
+      userId: actor.kind === "user" ? actor.userId : null,
+      settings: {
+        saved: info.loaded.config.saved,
+        publicBaseUrl: base,
+        redirectUri: base && uiBase ? gscRedirectUri(base, uiBase) : null,
+        googleClientId: Boolean(info.loaded.config.googleClientId),
+        googleClientSecret: await secretSet("google.clientSecret"),
+        encryptionKey: await secretSet("encryptionKey"),
+        pagespeedApiKey: await secretSet("pagespeedApiKey"),
+        bingApiKey: await secretSet("bingApiKey"),
+        defaultAutopilotMode: info.loaded.config.defaultAutopilotMode,
+        dailyHourLocal: info.loaded.config.dailyHourLocal,
+      },
+      agent,
+      skillKey: SKILL_CANONICAL_KEY,
+      clients: clients.map((c) => ({ id: c.id, name: c.name, domain: c.domain })),
+      sprints: sprints.map((s) => sprintView(s, info.today, counts[s.id])),
+    };
+  });
+
+  action("seo.sprint", async (companyId, _actor, params) => {
+    const sprintId = reqStr(params, "sprintId");
+    const info = await companyInfo(e, companyId);
+    const sprint = await db.getSprint(ctx.db, companyId, sprintId);
+    if (!sprint) throw new SeoError("Sprint not found");
+    const [tasks, keywords, backlinks, content, snapshots, findings, optimizations, integrations, health, counts] = await Promise.all([
+      db.listTasks(ctx.db, companyId, sprintId),
+      db.listKeywords(ctx.db, companyId, sprintId, { includeRetired: true }),
+      db.listBacklinks(ctx.db, companyId, sprintId),
+      db.listContent(ctx.db, companyId, sprintId),
+      db.listSnapshots(ctx.db, companyId, sprintId),
+      db.listFindings(ctx.db, companyId, sprintId, { status: "open", limit: 200 }),
+      db.listOptimizations(ctx.db, companyId, sprintId),
+      db.listIntegrations(ctx.db, companyId, sprintId),
+      db.latestPageHealth(ctx.db, sprintId),
+      db.sprintCounts(ctx.db, companyId),
+    ]);
+    const history = await db.sprintHistory(ctx.db, sprintId, "2000-01-01");
+    const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
+    for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
+    return {
+      sprint: sprintView(sprint, info.today, counts[sprintId]),
+      prefix: info.prefix,
+      scoreboard: sprint.scoreboard,
+      today: sprint.today,
+      tasks,
+      keywords: keywords.map((k) => ({ ...k, history: (byKeyword[k.id] ?? []).slice(-60) })),
+      backlinks,
+      content,
+      snapshots,
+      findings,
+      optimizations,
+      integrations: integrations.map(integrationView),
+      pageHealth: health,
+    };
+  });
+
+  action("seo.call", async (companyId, actor, params) => {
+    const tool = reqStr(params, "tool");
+    if (!HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
+    return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
+  });
+
+  action("seo.create-sprint", async (companyId, actor, params) => {
+    const user = requireUser(actor);
+    const owner = params.owner === "none" ? "none" : undefined;
+    return dispatch(e, companyId, user, "create-sprint", { ...params, owner: undefined, ...(owner ? { ownerUserId: owner } : {}) });
+  });
+
+  action("seo.gsc-start", async (companyId, actor, params) => gscConnectStart(e, companyId, requireUser(actor), params));
+  action("seo.gsc-disconnect", async (companyId, actor, params) => gscDisconnect(e, companyId, requireUser(actor), params));
+
+  action("seo.integration", async (companyId, actor, params) => {
+    requireUser(actor);
+    const sprintId = reqStr(params, "sprintId");
+    const provider = reqStr(params, "provider");
+    if (provider !== "pagespeed" && provider !== "bing") throw new SeoError("provider must be pagespeed or bing");
+    const integration = await db.getIntegration(ctx.db, companyId, sprintId, provider);
+    if (!integration) throw new SeoError("Integration not found for this sprint");
+    const enabled = params.enabled === true;
+    const siteUrl = typeof params.propertyUrl === "string" && params.propertyUrl.trim() ? params.propertyUrl.trim() : null;
+    await db.updateIntegration(ctx.db, companyId, integration.id, {
+      status: enabled ? "enabled" : "disabled",
+      ...(provider === "bing" && siteUrl ? { property_url: siteUrl } : {}),
+      last_error: null,
+    });
+    return { provider, enabled };
+  });
+
+  action("seo.activate-agent", async (companyId, actor) => activateAgent(e, companyId, requireUser(actor)));
+  action("seo.sync-skills", async (companyId, actor) => {
+    requireUser(actor);
+    return { results: await e.skills.force(companyId) };
+  });
+  action("seo.upgrade-legacy", async (companyId, actor, params) => upgradeLegacySprint(e, companyId, requireUser(actor), params));
+
+  action("seo.run-daily", async (companyId, actor, params) => {
+    requireUser(actor);
+    const sprint = await db.getSprint(ctx.db, companyId, reqStr(params, "sprintId"));
+    if (!sprint) throw new SeoError("Sprint not found");
+    if (!sprint.seededAt) throw new SeoError("Start the 90-day plan on this sprint first");
+    const info = await companyInfo(e, companyId);
+    return runDailyForSprint(e, info, sprint, { agent: await resolveAgent(e, companyId), projectId: await ensureProject(e, companyId) });
+  });
+
+  action("seo.run-weekly", async (companyId, actor, params) => {
+    requireUser(actor);
+    const sprint = await db.getSprint(ctx.db, companyId, reqStr(params, "sprintId"));
+    if (!sprint) throw new SeoError("Sprint not found");
+    const info = await companyInfo(e, companyId);
+    return params.propose === false ? detectSignals(e, info, sprint, { propose: false }) : runWeeklyForSprint(e, info, sprint);
+  });
 }
