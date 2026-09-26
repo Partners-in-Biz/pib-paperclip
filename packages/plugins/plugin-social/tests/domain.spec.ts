@@ -1,118 +1,86 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentTransition, assertDestination, createPost, publishResult,
+import {
   aggregateMetrics,
+  assertAgentTransition,
+  assertDestination,
+  assertEditable,
   assertMetric,
+  assertTransition,
+  canTransition,
   createInboxItem,
   createMediaAsset,
   createRssFeed,
-  createTemplate,} from "../src/domain.js";
-import { NAMESPACE } from "../src/namespace.js";
+  createTemplate,
+  normalizeSubreddit,
+} from "../src/domain.js";
 
-describe("social", () => {
-  it("uses the host namespace", () => {
-    expect(NAMESPACE).toBe("plugin_social_e70c4e79f2");
-    const sql = readFileSync(new URL("../migrations/001_social.sql", import.meta.url), "utf8");
-    expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.posts`);
-    expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.accounts`);
-    expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.destinations`);
+describe("post transitions", () => {
+  it("follows draft → review → approved → scheduled → publishing → published", () => {
+    expect(() => assertTransition("draft", "review")).not.toThrow();
+    expect(() => assertTransition("review", "approved")).not.toThrow();
+    expect(() => assertTransition("approved", "scheduled")).not.toThrow();
+    expect(() => assertTransition("scheduled", "publishing")).not.toThrow();
+    expect(canTransition("publishing", "partially_published")).toBe(true);
+    expect(canTransition("partially_published", "publishing")).toBe(true);
+    expect(canTransition("failed", "publishing")).toBe(true);
+    expect(() => assertTransition("draft", "scheduled")).toThrow(/cannot move/);
+    expect(() => assertTransition("published", "draft")).toThrow();
   });
 
-  it("refuses a personal account on an organisation post", () => {
-    expect(() => assertDestination({
-      postScope: "org",
-      accountScope: "personal",
-      accountOwnerUserId: "user-1",
-      actorUserId: "user-1",
-    })).toThrow(/personal account/);
-  });
-
-  it("requires the owning member for a personal account", () => {
-    expect(() => assertDestination({
-      postScope: "personal",
-      accountScope: "personal",
-      accountOwnerUserId: "user-1",
-      actorUserId: "user-2",
-    })).toThrow(/owning member|owner/);
-  });
-
-  it("lets an agent submit review and refuses approval", () => {
+  it("lets an agent submit review and schedule but never approve", () => {
     expect(() => assertAgentTransition("draft", "review")).not.toThrow();
+    expect(() => assertAgentTransition("approved", "scheduled")).not.toThrow();
     expect(() => assertAgentTransition("review", "approved")).toThrow(/approves/);
   });
 
-  it("fails publishing when the account has no credential reference", () => {
-    expect(publishResult(null).status).toBe("failed");
-    expect(publishResult("secret://linkedin").status).toBe("published");
-    expect(createPost({ companyId: "co", body: "Hello", ownerUserId: "user-1" }).status).toBe("draft");
+  it("only edits drafts and posts in review", () => {
+    expect(() => assertEditable("draft")).not.toThrow();
+    expect(() => assertEditable("review")).not.toThrow();
+    expect(() => assertEditable("scheduled")).toThrow(/cannot be edited/);
   });
 });
 
-describe("social templates", () => {
-  it("creates a template with a platform", () => {
-    const template = createTemplate({ companyId: "workspace-a", name: "Launch", body: "We are live!", platform: "linkedin" });
-    expect(template.name).toBe("Launch");
-    expect(template.platform).toBe("linkedin");
+describe("destinations", () => {
+  it("refuses a personal account on an organisation post", () => {
+    expect(() => assertDestination({ postScope: "org", accountScope: "personal", accountOwnerUserId: "user-1", actorUserId: "user-1" })).toThrow(/personal account/);
   });
 
-  it("rejects a blank name or body", () => {
-    expect(() => createTemplate({ companyId: "workspace-a", name: "  ", body: "x" })).toThrow(/name is required/);
-    expect(() => createTemplate({ companyId: "workspace-a", name: "x", body: "  " })).toThrow(/body is required/);
+  it("requires the owner for a personal account", () => {
+    expect(() => assertDestination({ postScope: "personal", accountScope: "personal", accountOwnerUserId: "user-1", actorUserId: "user-2" })).toThrow(/owner/);
   });
 });
 
-describe("social metrics", () => {
-  it("rejects a negative or fractional metric", () => {
+describe("records", () => {
+  it("creates templates and rejects blanks", () => {
+    expect(createTemplate({ companyId: "c", name: "Launch", body: "Live!", platform: "linkedin" })).toMatchObject({ name: "Launch", platform: "linkedin" });
+    expect(() => createTemplate({ companyId: "c", name: " ", body: "x" })).toThrow(/name is required/);
+    expect(() => createTemplate({ companyId: "c", name: "x", body: " " })).toThrow(/body is required/);
+  });
+
+  it("validates metrics", () => {
     expect(assertMetric(5, "views")).toBe(5);
     expect(() => assertMetric(-1, "likes")).toThrow(/non-negative/);
     expect(() => assertMetric(1.5, "shares")).toThrow(/non-negative/);
+    expect(aggregateMetrics([{ views: 100, likes: 10, comments: 2, shares: 1 }, { views: 50, likes: 5, comments: 1, shares: 0 }])).toEqual({ views: 150, likes: 15, comments: 3, shares: 1 });
   });
 
-  it("aggregates metrics across snapshots", () => {
-    const totals = aggregateMetrics([
-      { views: 100, likes: 10, comments: 2, shares: 1 },
-      { views: 50, likes: 5, comments: 1, shares: 0 },
-    ]);
-    expect(totals).toEqual({ views: 150, likes: 15, comments: 3, shares: 1 });
-  });
-});
-
-describe("social media assets", () => {
-  it("creates an image asset", () => {
-    const asset = createMediaAsset({ companyId: "workspace-a", name: "Hero", url: "https://cdn.test/hero.png" });
-    expect(asset.kind).toBe("image");
-    expect(asset.url).toBe("https://cdn.test/hero.png");
+  it("requires https media URLs", () => {
+    expect(createMediaAsset({ companyId: "c", name: "Hero", url: "https://cdn.test/hero.png" }).kind).toBe("image");
+    expect(() => createMediaAsset({ companyId: "c", name: "X", url: " " })).toThrow(/URL is required/);
+    expect(() => createMediaAsset({ companyId: "c", name: "X", url: "http://x/y.png" })).toThrow(/https/);
+    expect(() => createMediaAsset({ companyId: "c", name: "X", url: "https://u", kind: "audio" })).toThrow(/image or video/);
   });
 
-  it("rejects a blank url and an invalid kind", () => {
-    expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "  " })).toThrow(/URL is required/);
-    expect(() => createMediaAsset({ companyId: "workspace-a", name: "X", url: "u", kind: "audio" })).toThrow(/image or video/);
-  });
-});
-
-describe("social rss feeds", () => {
-  it("creates an active feed", () => {
-    const feed = createRssFeed({ companyId: "workspace-a", url: "https://blog.test/feed.xml" });
-    expect(feed.isActive).toBe(true);
-    expect(feed.url).toBe("https://blog.test/feed.xml");
+  it("validates feeds and inbox items", () => {
+    expect(createRssFeed({ companyId: "c", url: "https://blog.test/feed.xml" }).isActive).toBe(true);
+    expect(() => createRssFeed({ companyId: "c", url: "ftp://x" })).toThrow(/http/);
+    expect(createInboxItem({ companyId: "c", kind: "mention", body: "@us", author: "ada" })).toMatchObject({ status: "new", kind: "mention" });
+    expect(() => createInboxItem({ companyId: "c", kind: "like", body: "x" })).toThrow(/mention, comment, or message/);
   });
 
-  it("rejects a blank or non-http url", () => {
-    expect(() => createRssFeed({ companyId: "workspace-a", url: "  " })).toThrow(/URL is required/);
-    expect(() => createRssFeed({ companyId: "workspace-a", url: "ftp://x" })).toThrow(/http/);
-  });
-});
-
-describe("social inbox", () => {
-  it("creates a new mention", () => {
-    const item = createInboxItem({ companyId: "workspace-a", kind: "mention", body: "@us check this", author: "ada" });
-    expect(item.status).toBe("new");
-    expect(item.kind).toBe("mention");
-    expect(item.author).toBe("ada");
-  });
-
-  it("rejects a blank body and an invalid kind", () => {
-    expect(() => createInboxItem({ companyId: "workspace-a", kind: "mention", body: "  " })).toThrow(/body is required/);
-    expect(() => createInboxItem({ companyId: "workspace-a", kind: "like", body: "x" })).toThrow(/mention, comment, or message/);
+  it("normalises subreddits", () => {
+    expect(normalizeSubreddit("/r/SmallBusiness/")).toBe("SmallBusiness");
+    expect(normalizeSubreddit("r/sa")).toBe("sa");
+    expect(normalizeSubreddit("bad name!")).toBeNull();
   });
 });

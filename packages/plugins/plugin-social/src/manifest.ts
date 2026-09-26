@@ -1,65 +1,20 @@
-import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { PLUGIN_ID } from "./namespace.js";
-import { SOCIAL_PUBLISH_SKILL } from "./skills.js";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
+import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
+import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, SKILLS, SOCIAL_AGENT_INSTRUCTIONS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
-import { ALL_PLATFORMS, PLATFORM_LABELS } from "./oauth/types.js";
-
-function platformSchema(clientLabel: string): JsonSchema {
-  return {
-    type: "object",
-    title: clientLabel,
-    properties: {
-      clientId: { type: "string", title: "Client ID / App ID" },
-      clientSecret: { type: "string", title: "Client secret (or app password)" },
-      extra: {
-        type: "object",
-        title: "Extra options (per platform)",
-        description: "mastodon: instance (e.g. https://mastodon.social)",
-        additionalProperties: { type: "string" },
-      },
-    },
-  };
-}
-
-const platformsProps: Record<string, JsonSchema> = {};
-for (const platform of ALL_PLATFORMS) {
-  platformsProps[platform] = platformSchema(PLATFORM_LABELS[platform]);
-}
-
-const instanceConfigSchema: JsonSchema = {
-  type: "object",
-  title: "Social integrations",
-  description:
-    "OAuth app credentials for each platform you want to connect. The authorization callback URL to register in each developer console is: <this-instance>/social/oauth/callback. Client secrets are stored in the plugin config; account tokens are encrypted at rest.",
-  properties: {
-    social: {
-      type: "object",
-      properties: {
-        publicBaseUrl: {
-          type: "string",
-          title: "Public base URL",
-          description: "e.g. https://paperclip.65.108.146.144.sslip.io (optional; auto-detected from requests).",
-        },
-        encryptionSecret: {
-          type: "string",
-          title: "Token encryption secret",
-          description: "A strong passphrase used to encrypt stored OAuth tokens. Changing it invalidates stored tokens.",
-        },
-        platforms: { type: "object", title: "Platform app credentials", properties: platformsProps },
-      },
-    },
-  },
-};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Social",
-  description: "Draft, review, and publish posts to org or personal accounts.",
+  description:
+    "Connect client social accounts (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. " +
+    "OAuth redirect URI for every provider (shown on the Social page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
-  categories: ["automation"],
-  instanceConfigSchema,
+  categories: ["connector", "automation", "ui"],
+  instanceConfigSchema: buildInstanceConfigSchema(),
   capabilities: [
     "companies.read",
     "database.namespace.migrate",
@@ -67,6 +22,20 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "agent.tools.register",
     "skills.managed",
+    "agents.managed",
+    "agents.read",
+    "projects.managed",
+    "routines.managed",
+    "authorization.grants.read",
+    "authorization.grants.write",
+    "issues.read",
+    "issues.create",
+    "issues.wakeup",
+    "issue.comments.create",
+    "secrets.read-ref",
+    "plugin.state.read",
+    "plugin.state.write",
+    "http.outbound",
     "jobs.schedule",
     "events.subscribe",
     "api.routes.register",
@@ -84,19 +53,35 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "publish-due",
       displayName: "Publish due posts",
-      description: "Publishes due scheduled posts to each connected destination via the platform API.",
+      description: "Publishes scheduled posts to each destination, retrying failures after 1, 5, 15 and 60 minutes.",
       schedule: "*/5 * * * *",
+    },
+    {
+      jobKey: "refresh-tokens",
+      displayName: "Refresh account tokens",
+      description: "Refreshes tokens that expire within 48 hours (10 days for long-lived Meta tokens) and flags accounts that need reconnecting.",
+      schedule: "7 * * * *",
+    },
+    {
+      jobKey: "collect-metrics",
+      displayName: "Collect post metrics",
+      description: "Snapshots engagement 1 hour, 24 hours, 7 days and 30 days after publishing.",
+      schedule: "12,42 * * * *",
+    },
+    {
+      jobKey: "poll-inbox",
+      displayName: "Poll social inbox",
+      description: "Pulls comments on recent posts and mentions into the social inbox.",
+      schedule: "3,18,33,48 * * * *",
+    },
+    {
+      jobKey: "poll-rss",
+      displayName: "Poll RSS feeds",
+      description: "Turns new RSS/Atom items into draft posts for review.",
+      schedule: "9,24,39,54 * * * *",
     },
   ],
   apiRoutes: [
-    {
-      routeKey: "oauth-start",
-      method: "GET",
-      path: "/oauth/:platform/start",
-      auth: "board",
-      capability: "api.routes.register",
-      companyResolution: { from: "query", key: "companyId" },
-    },
     {
       routeKey: "oauth-complete",
       method: "POST",
@@ -106,15 +91,68 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "body", key: "companyId" },
     },
   ],
-  skills: [
+  agents: [
     {
-      skillKey: "social-publish",
-      displayName: "Social publish",
-      slug: "social-publish",
-      description: "Draft, review, and schedule posts across connected platforms.",
-      markdown: SOCIAL_PUBLISH_SKILL,
+      agentKey: SOCIAL_AGENT_KEY,
+      displayName: "Social Media Manager",
+      role: "general",
+      title: "Social Media Manager",
+      icon: "megaphone",
+      capabilities:
+        "Plans, drafts and schedules social posts for Partners in Biz clients across 12 platforms, fixes failed posts, and works the social inbox through the Social plugin tools.",
+      adapterType: "hermes_local",
+      adapterPreference: ["hermes_local", "claude_local"],
+      adapterConfig: {
+        paperclipSkillSync: { desiredSkills: DESIRED_SKILLS },
+      },
+      permissions: { pluginTools: [PLUGIN_ID, "partnersinbiz.crm"] },
+      status: "paused",
+      budgetMonthlyCents: 0,
+      instructions: { entryFile: "AGENTS.md", content: SOCIAL_AGENT_INSTRUCTIONS },
     },
   ],
+  projects: [
+    {
+      projectKey: SOCIAL_PROJECT_KEY,
+      displayName: "Social",
+      description: "Social publishing work: failed posts, account reconnects and the weekly planning routine.",
+      status: "in_progress",
+      color: "#db2777",
+    },
+  ],
+  routines: [
+    {
+      routineKey: PLAN_ROUTINE_KEY,
+      title: "Plan next week's social",
+      description: PLAN_ROUTINE_DESCRIPTION,
+      status: "paused",
+      priority: "medium",
+      assigneeRef: { resourceKind: "agent", resourceKey: SOCIAL_AGENT_KEY },
+      projectRef: { resourceKind: "project", resourceKey: SOCIAL_PROJECT_KEY },
+      concurrencyPolicy: "skip_if_active",
+      catchUpPolicy: "skip_missed",
+      triggers: [
+        {
+          kind: "schedule",
+          label: "Mondays 07:00",
+          enabled: false,
+          cronExpression: "0 7 * * 1",
+          timezone: DEFAULT_TIMEZONE,
+          signingMode: null,
+          replayWindowSec: null,
+        },
+      ],
+      issueTemplate: { originId: "routine:plan-next-week" },
+    },
+  ],
+  skills: SKILLS.map((skill) => ({
+    skillKey: skill.skillKey,
+    displayName: skill.displayName,
+    slug: skill.slug,
+    description: skill.description,
+    markdown: skill.markdown,
+    files: skill.files,
+  })),
   ui: {
     slots: [
       { type: "page", id: "social-page", displayName: "Social", exportName: "SocialPage", routePath: "social" },

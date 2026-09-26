@@ -1,49 +1,42 @@
 /** Provider registry: platform → implementation. */
-import type { SocialPlatform } from "./types.js";
-import type { SocialProviderImpl } from "./providers/base.js";
+import { isSocialPlatform, type SocialPlatform } from "../platforms.js";
+import type { SocialProvider } from "./types.js";
 import { facebookProvider, instagramProvider, threadsProvider } from "./providers/meta.js";
-import { linkedinProvider, xProvider } from "./providers/linkedin-x.js";
-import {
-  tiktokProvider,
-  youtubeProvider,
-  pinterestProvider,
-  redditProvider,
-  blueskyProvider,
-  mastodonProvider,
-  dribbbleProvider,
-} from "./providers/others.js";
+import { linkedinProvider } from "./providers/linkedin.js";
+import { xProvider } from "./providers/x.js";
+import { tiktokProvider } from "./providers/tiktok.js";
+import { youtubeProvider } from "./providers/youtube.js";
+import { pinterestProvider } from "./providers/pinterest.js";
+import { redditProvider } from "./providers/reddit.js";
+import { blueskyProvider } from "./providers/bluesky.js";
+import { mastodonProvider } from "./providers/mastodon.js";
+import { dribbbleProvider } from "./providers/dribbble.js";
 
-const REGISTRY: Record<SocialPlatform, SocialProviderImpl> = {
+export const PROVIDERS: Record<SocialPlatform, SocialProvider> = {
   facebook: facebookProvider,
   instagram: instagramProvider,
   threads: threadsProvider,
   linkedin: linkedinProvider,
   x: xProvider,
   tiktok: tiktokProvider,
-  bluesky: blueskyProvider,
-  mastodon: mastodonProvider,
+  youtube: youtubeProvider,
   pinterest: pinterestProvider,
   reddit: redditProvider,
+  bluesky: blueskyProvider,
+  mastodon: mastodonProvider,
   dribbble: dribbbleProvider,
-  youtube: youtubeProvider,
 };
 
-export function providerFor(platform: SocialPlatform): SocialProviderImpl {
-  const impl = REGISTRY[platform];
-  if (!impl) throw new Error(`No provider for platform: ${platform}`);
-  return impl;
+export function providerFor(platform: string): SocialProvider {
+  if (!isSocialPlatform(platform)) throw new Error(`Unsupported platform: ${platform}`);
+  return PROVIDERS[platform];
 }
 
-export function isSupportedPlatform(value: string): value is SocialPlatform {
-  return value in REGISTRY;
-}
-
-/** Platforms that connect via user-supplied credentials instead of OAuth. */
-export function isCredentialConnect(platform: SocialPlatform): boolean {
-  return platform === "bluesky";
-}
-
-/** Platforms that need a stateful start() (OAuth1 / dynamic client registration). */
-export function needsStartFlow(platform: SocialPlatform): boolean {
-  return platform === "x" || platform === "mastodon";
+/**
+ * Which app credentials an account uses. Instagram accounts connected
+ * through Facebook Login use the Meta (facebook) app.
+ */
+export function appPlatformFor(platform: SocialPlatform, meta: Record<string, unknown>): SocialPlatform {
+  if (platform === "instagram" && meta.via === "facebook_login") return "facebook";
+  return platform;
 }
