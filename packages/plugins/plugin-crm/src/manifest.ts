@@ -1,4 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { jevConfigSchema } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -18,13 +19,19 @@ const instanceConfigSchema: JsonSchema = {
       enum: ["contact", "none"],
       default: "contact",
     },
+    mailFrom: {
+      type: "string",
+      title: "Send sequence email from",
+      description: "A Mailbox (Gmail) address. Leave empty to use the Mailbox's default account.",
+    },
+    jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "CRM",
   description: "Companies, contacts, deals, and sequences for a Paperclip workspace.",
   author: "Partners in Biz",
@@ -43,6 +50,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.emit",
     "plugin.state.read",
     "plugin.state.write",
+    "secrets.read-ref",
     "issues.read",
     "issues.create",
     "issues.wakeup",
@@ -65,6 +73,12 @@ const manifest: PaperclipPluginManifestV1 = {
       jobKey: "open-due-steps",
       displayName: "Open due sequence steps",
       description: "Opens a Paperclip issue for each sequence step that is due.",
+      schedule: "*/5 * * * *",
+    },
+    {
+      jobKey: "redeliver-mail",
+      displayName: "Resend sequence email requests",
+      description: "Re-sends sequence email requests the Mailbox has not answered yet, and hands failed ones to a person.",
       schedule: "*/5 * * * *",
     },
     {

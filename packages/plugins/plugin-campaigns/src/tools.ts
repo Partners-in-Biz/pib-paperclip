@@ -24,6 +24,13 @@ const audienceMode = {
     "Who launch enrolls. tags: CRM contacts matching audienceTags (empty = everyone). client_contacts: the contacts at the client company, narrowed by audienceTags when set (default for a company client). client_contact: the client contact alone (default for a contact client).",
 } satisfies JsonSchema;
 
+const delivery = {
+  type: "string",
+  enum: ["issue", "email"],
+  description:
+    "issue (default): each due step opens an issue and a person sends the email. email: once the approved campaign is launched, the Mailbox sends each due step from Gmail ({{first_name}}, {{name}}, {{company}} are filled in).",
+} satisfies JsonSchema;
+
 export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-campaign",
@@ -38,6 +45,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       replyTo: text,
       audienceTags: textList,
       audienceMode,
+      delivery,
       ...clientParams,
       startAt: text,
       endAt: text,
@@ -47,7 +55,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     name: "update-campaign",
     displayName: "Update campaign",
     description:
-      "Edit a draft campaign. Omitted fields stay. Pass client to move it to a client, or client \"own\" to make it PiB's own work.",
+      "Edit a draft campaign. Omitted fields stay. Pass client to move it to a client, or client \"own\" to make it PiB's own work. Switching delivery to email after approval needs a new approval.",
     parametersSchema: schema(["campaignId"], {
       campaignId: text,
       name: text,
@@ -57,6 +65,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       replyTo: text,
       audienceTags: textList,
       audienceMode,
+      delivery,
       ...clientParams,
       startAt: text,
       endAt: text,
@@ -225,16 +234,27 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       templateId: text,
       name: text,
       audienceMode,
+      delivery,
       ...clientParams,
     }),
   },
   {
     name: "declare-ab-winner",
     displayName: "Declare A/B winner",
-    description: "Declare variant a or b as the winner of a campaign, so new enrollments use only it.",
+    description:
+      "Declare variant a or b as the winner of a campaign, so new enrollments use only it. Only declare what a person agreed to; the result includes the reply-rate suggestion.",
     parametersSchema: schema(["campaignId", "winner"], {
       campaignId: text,
       winner: text,
+    }),
+  },
+  {
+    name: "suggest-ab-winner",
+    displayName: "Suggest A/B winner",
+    description:
+      "Compare reply rates of variants a and b from emails the Mailbox sent. Needs at least 20 sends per variant, otherwise the verdict is inconclusive. It only suggests: a person declares with declare-ab-winner.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId: text,
     }),
   },
 ];

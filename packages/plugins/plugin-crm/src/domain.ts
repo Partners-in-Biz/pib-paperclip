@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { LeadScore } from "./lead-levels.js";
 
 export const LIFECYCLES = ["lead", "prospect", "customer", "churned"] as const;
 export type Lifecycle = (typeof LIFECYCLES)[number];
@@ -17,6 +18,14 @@ export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
 export const COMPLETION_MODES = ["manual", "sent"] as const;
 export type CompletionMode = (typeof COMPLETION_MODES)[number];
+
+/** How a due sequence step reaches the contact: a Paperclip issue for a person, or an email from the Mailbox. */
+export const SEQUENCE_DELIVERIES = ["issue", "email"] as const;
+export type SequenceDelivery = (typeof SEQUENCE_DELIVERIES)[number];
+
+/** Whether we may email a contact. Bounced and unsubscribed contacts are never emailed by a sequence. */
+export const EMAIL_STATUSES = ["ok", "bounced", "unsubscribed"] as const;
+export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
 export const LOCAL_BOARD_USER_ID = "local-board";
 
@@ -80,6 +89,10 @@ export interface ContactDraft {
   tags: string[];
   nextActionKind: NextActionKind | null;
   nextActionDueAt: string | null;
+  /** Read from the row; written only by the reply handler. */
+  emailStatus?: EmailStatus;
+  /** Jev lead score, when one has been taken. */
+  leadScore?: LeadScore | null;
 }
 
 export interface LinkDraft {
@@ -118,6 +131,11 @@ export interface EnrollmentDraft {
   stepPosition: number;
   nextDueAt: string | null;
   openIssueId: string | null;
+  /** Outbox key of the step email waiting for the Mailbox's result. */
+  sendingKey?: string | null;
+  /** Gmail thread of the last email sent, so follow-ups stay in one thread. */
+  mailThreadId?: string | null;
+  mailLastMessageId?: string | null;
 }
 
 export interface ProductDraft {
@@ -717,4 +735,134 @@ export function parseCsv(input: string): string[][] {
 
 function cleanStrings(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Email sequences and replies
+// ---------------------------------------------------------------------------
+
+export function assertDelivery(value: unknown): SequenceDelivery {
+  if (value == null || value === "") return "issue";
+  if (value !== "issue" && value !== "email") throw new CrmError("Delivery must be issue or email");
+  return value;
+}
+
+export function deliveryOf(value: unknown): SequenceDelivery {
+  return value === "email" ? "email" : "issue";
+}
+
+export function emailStatusOf(value: unknown): EmailStatus {
+  return value === "bounced" || value === "unsubscribed" ? value : "ok";
+}
+
+/** Outbox key for one step email: one send per enrollment per step. */
+export function sequenceMailKey(enrollmentId: string, stepPosition: number): string {
+  return `crm:seq:${enrollmentId}:${stepPosition}`;
+}
+
+/** Refuses email work for a contact that bounced or unsubscribed. */
+export function assertCanEmail(status: EmailStatus | undefined): void {
+  if (status === "unsubscribed") throw new CrmError("This contact unsubscribed, so they cannot join an email sequence");
+  if (status === "bounced") throw new CrmError("This contact's email bounced, so they cannot join an email sequence");
+}
+
+export interface PersonalVars {
+  name: string;
+  email?: string | null;
+  company?: string | null;
+}
+
+/**
+ * Fills `{{first_name}}`, `{{last_name}}`, `{{name}}`, `{{company}}` and
+ * `{{email}}`. `{{first_name|there}}` falls back to "there" when the value is
+ * empty. Unknown tokens are left as they are so a person notices them.
+ */
+export function personalize(template: string, vars: PersonalVars): string {
+  const parts = vars.name.trim().split(/\s+/).filter(Boolean);
+  const values: Record<string, string> = {
+    first_name: parts[0] ?? "",
+    last_name: parts.length > 1 ? parts.slice(1).join(" ") : "",
+    name: vars.name.trim(),
+    company: vars.company?.trim() ?? "",
+    email: vars.email?.trim() ?? "",
+  };
+  return template.replace(/\{\{\s*([a-z_]+)\s*(?:\|([^}]*))?\}\}/gi, (match, rawKey: string, fallback: string | undefined) => {
+    const key = rawKey.toLowerCase();
+    if (!(key in values)) return match;
+    const value = values[key]!;
+    return value || (fallback ?? "").trim();
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Plain text to simple HTML: paragraphs on blank lines, <br> on single breaks. */
+export function textToHtml(text: string): string {
+  const paragraphs = text.replace(/\r\n/g, "\n").split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  return paragraphs.map((part) => `<p>${escapeHtml(part).replace(/\n/g, "<br>")}</p>`).join("\n");
+}
+
+export const REPLY_KINDS = ["interested", "question", "not_now", "unsubscribe", "out_of_office", "bounce", "other"] as const;
+export type ReplyKind = (typeof REPLY_KINDS)[number];
+
+export const REPLY_KIND_LABELS: Record<ReplyKind, string> = {
+  interested: "interested",
+  question: "a question",
+  not_now: "not now",
+  unsubscribe: "unsubscribe",
+  out_of_office: "out of office",
+  bounce: "a bounce",
+  other: "something else",
+};
+
+export function isReplyKind(value: unknown): value is ReplyKind {
+  return typeof value === "string" && (REPLY_KINDS as readonly string[]).includes(value);
+}
+
+/** What the CRM does with a reply from a contact in a running sequence. */
+export interface ReplyPlan {
+  /** Stop every running enrollment of the contact. */
+  stopEnrollments: boolean;
+  emailStatus: EmailStatus | null;
+  addTag: string | null;
+  /** Set the contact's next action this many days out. */
+  nextActionDays: number | null;
+  /** Push running enrollments' next step this many days. */
+  pushDays: number | null;
+  /** follow-up: work for the contact's owner. review: the owner decides what to do. */
+  issue: "follow-up" | "review" | null;
+  summary: string;
+}
+
+const NO_PLAN: ReplyPlan = { stopEnrollments: false, emailStatus: null, addTag: null, nextActionDays: null, pushDays: null, issue: null, summary: "" };
+
+/**
+ * The action for a classified reply. `confident` is false below the `update`
+ * risk threshold (or without Jev): then a person decides.
+ */
+export function replyPlan(kind: ReplyKind | null, confident: boolean): ReplyPlan {
+  if (!kind || !confident) return { ...NO_PLAN, issue: "review", summary: "Opened an issue for the owner to decide." };
+  switch (kind) {
+    case "interested":
+    case "question":
+      return { ...NO_PLAN, stopEnrollments: true, issue: "follow-up", summary: "Stopped the sequence and opened a follow-up issue." };
+    case "not_now":
+      return { ...NO_PLAN, stopEnrollments: true, nextActionDays: 30, summary: "Stopped the sequence and set a follow-up email in 30 days." };
+    case "unsubscribe":
+      return { ...NO_PLAN, stopEnrollments: true, emailStatus: "unsubscribed", addTag: "unsubscribed", summary: "Stopped all sequences and marked the email unsubscribed." };
+    case "out_of_office":
+      return { ...NO_PLAN, pushDays: 5, summary: "Moved the next step 5 days later." };
+    case "bounce":
+      return { ...NO_PLAN, stopEnrollments: true, emailStatus: "bounced", summary: "Stopped all sequences and marked the email bounced." };
+    default:
+      return { ...NO_PLAN, issue: "review", summary: "Opened an issue for the owner to decide." };
+  }
+}
+
+/** The later of `current` and `now`, plus `days`. */
+export function pushDate(current: string | null, now: Date, days: number): string {
+  const base = current ? Math.max(Date.parse(current) || 0, now.getTime()) : now.getTime();
+  return new Date(base + days * 86_400_000).toISOString();
 }

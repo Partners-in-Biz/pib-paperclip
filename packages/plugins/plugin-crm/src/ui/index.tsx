@@ -42,6 +42,7 @@ import {
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { LEAD_DIMENSION_LABELS, LEAD_DIMENSIONS, leadBand, leadLevelLabel, type LeadScore } from "../lead-levels.js";
 
 interface Account {
   id: string;
@@ -78,6 +79,9 @@ interface Sequence {
   id: string;
   name: string;
   completionMode: string;
+  delivery?: "issue" | "email";
+  emailApproved?: boolean;
+  approvalIssueId?: string | null;
 }
 
 interface Product {
@@ -95,7 +99,14 @@ interface Activity {
   body: string;
   issueId: string | null;
   createdAt: string;
+  threadId?: string | null;
 }
+
+const ACTIVITY_LABELS: Record<string, string> = {
+  email_received: "Email received",
+  email_sent: "Email sent",
+  reply_classified: "Reply read",
+};
 
 interface Stage {
   id: string;
@@ -163,6 +174,7 @@ function CrmList({ context }: PluginPageProps) {
   const createDeal = usePluginAction("crm.create-deal");
   const moveDeal = usePluginAction("crm.move-deal");
   const createSequence = usePluginAction("crm.create-sequence");
+  const setSequenceDelivery = usePluginAction("crm.set-sequence-delivery");
   const createProduct = usePluginAction("crm.create-product");
   const activities = usePluginAction("crm.activities");
 
@@ -184,6 +196,7 @@ function CrmList({ context }: PluginPageProps) {
   const [dealCurrency, setDealCurrency] = useState("ZAR");
   const [dealContactId, setDealContactId] = useState("");
   const [sequenceName, setSequenceName] = useState("");
+  const [sequenceDelivery, setSequenceDeliveryChoice] = useState<"issue" | "email">("issue");
   const [productName, setProductName] = useState("");
   const [productAmount, setProductAmount] = useState("");
   const [productCurrency, setProductCurrency] = useState("ZAR");
@@ -677,9 +690,9 @@ function CrmList({ context }: PluginPageProps) {
             <Button
               type="button"
               onClick={() => void run(async () => {
-                await createSequence({ name: sequenceName, completionMode: "manual" });
+                await createSequence({ name: sequenceName, completionMode: "manual", delivery: sequenceDelivery });
                 setSequenceName("");
-              }, "Sequence saved")}
+              }, sequenceDelivery === "email" ? "Sequence saved. Mark the approval issue done to start emailing." : "Sequence saved")}
             >
               Save sequence
             </Button>
@@ -688,6 +701,12 @@ function CrmList({ context }: PluginPageProps) {
       >
         <Field label="Name">
           <Input value={sequenceName} onChange={(event) => setSequenceName(event.target.value)} placeholder="Intro" required />
+        </Field>
+        <Field label="Due steps">
+          <Select value={sequenceDelivery} onChange={(event) => setSequenceDeliveryChoice(event.target.value === "email" ? "email" : "issue")}>
+            <option value="issue">Open an issue for a person</option>
+            <option value="email">Send as email from the Mailbox (needs approval)</option>
+          </Select>
         </Field>
       </Modal>
 
@@ -754,9 +773,36 @@ function CrmList({ context }: PluginPageProps) {
         ) : null}
 
         {detailSequence ? (
-          <KeyValueList pairs={[
-            { label: "Completion", value: <StatusBadge label={detailSequence.completionMode} status="pending" /> },
-          ]} />
+          <>
+            <KeyValueList pairs={[
+              { label: "Completion", value: <StatusBadge label={detailSequence.completionMode} status="pending" /> },
+              { label: "Due steps", value: detailSequence.delivery === "email" ? "Sent as email" : "Open an issue" },
+              ...(detailSequence.delivery === "email"
+                ? [{
+                  label: "Email approval",
+                  value: detailSequence.emailApproved
+                    ? <StatusBadge label="Approved" status="ok" />
+                    : <StatusBadge label="Waiting for approval" status="pending" />,
+                }]
+                : []),
+            ]} />
+            {detailSequence.delivery === "email" && !detailSequence.emailApproved ? (
+              <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted }}>
+                Nothing is emailed until a board user marks the approval issue done.
+              </p>
+            ) : null}
+            <div>
+              {detailSequence.delivery === "email" ? (
+                <Button type="button" variant="secondary" onClick={() => void run(() => setSequenceDelivery({ sequenceId: detailSequence.id, delivery: "issue" }), "Due steps open issues again")}>
+                  Open issues instead
+                </Button>
+              ) : (
+                <Button type="button" onClick={() => void run(() => setSequenceDelivery({ sequenceId: detailSequence.id, delivery: "email" }), detailSequence.emailApproved ? "Due steps are emailed" : "Approval requested. Mark the approval issue done to start emailing.")}>
+                  Send as email
+                </Button>
+              )}
+            </div>
+          </>
         ) : null}
       </Sheet>
     </Page>
@@ -772,10 +818,20 @@ function Timeline({ items }: { items: Activity[] }) {
       {items.map((item) => (
         <li key={item.id} style={{ display: "grid", gap: 2, padding: "8px 10px", borderRadius: 8, background: "var(--secondary)", fontSize: 13 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{item.kind}</span>
+            <span style={{ fontWeight: 600, textTransform: "capitalize" }}>{ACTIVITY_LABELS[item.kind] ?? item.kind}</span>
             <span style={{ color: "var(--muted-foreground)", fontSize: 11 }}>{new Date(item.createdAt).toLocaleString()}</span>
           </div>
           <div style={{ color: "var(--foreground)", lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{item.body}</div>
+          {item.threadId ? (
+            <a
+              href={`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(item.threadId)}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontSize: 12, color: "var(--muted-foreground)", width: "fit-content" }}
+            >
+              Open in Gmail
+            </a>
+          ) : null}
         </li>
       ))}
     </ul>
@@ -883,6 +939,8 @@ interface WorkspaceContact {
   humanOwned: string[];
   nextActionKind: string | null;
   nextActionDueAt: string | null;
+  emailStatus?: "ok" | "bounced" | "unsubscribed";
+  leadScore?: LeadScore | null;
 }
 
 interface WorkspaceDeal {
@@ -920,7 +978,13 @@ interface ClientSummary {
 }
 
 type SummaryState = { status: "loading" } | { status: "ok"; summary: ClientSummary } | { status: "error" };
-type ScoreResult = { total: number; band: string; parts: Array<{ label: string; points: number }> };
+type ScoreResult = {
+  total: number;
+  band: string;
+  parts: Array<{ label: string; points: number }>;
+  jev?: LeadScore | null;
+  jevNote?: string;
+};
 type WorkspaceModal = "add-contact" | "link-company" | "deal" | null;
 type Patch = Record<string, unknown>;
 
@@ -1271,6 +1335,10 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
 
           {contact ? (
             <Section title="Contact tools">
+              {contact.emailStatus && contact.emailStatus !== "ok" ? (
+                <StatusBadge label={contact.emailStatus === "bounced" ? "Email bounced" : "Unsubscribed"} status="error" />
+              ) : null}
+              {(score?.jev ?? contact.leadScore) ? <LeadScoreCard score={(score?.jev ?? contact.leadScore)!} /> : null}
               <div style={{ display: "grid", gap: 8 }}>
                 <Button
                   type="button"
@@ -1605,6 +1673,29 @@ function EditButtons({ saving, onCancel }: { saving: boolean; onCancel: () => vo
   );
 }
 
+function LeadScoreCard({ score }: { score: LeadScore }) {
+  const band = leadBand(score);
+  return (
+    <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <strong style={{ fontSize: 13 }}>Lead score</strong>
+        <StatusBadge label={band} status={band === "hot" ? "ok" : band === "warm" ? "warning" : "info"} />
+      </div>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 12 }}>
+        {LEAD_DIMENSIONS.map((dimension) => (
+          <li key={dimension} style={{ display: "flex", justifyContent: "space-between" }}>
+            <span style={{ color: tokens.muted }}>{LEAD_DIMENSION_LABELS[dimension]}</span>
+            <span>{leadLevelLabel(dimension, score[dimension])} <span style={{ color: tokens.muted }}>({score[dimension].toFixed(1)}/3)</span></span>
+          </li>
+        ))}
+      </ul>
+      <span style={{ fontSize: 11.5, color: tokens.muted }}>
+        Jev, {Math.round(score.confidence * 100)}% sure · {formatDate(score.scoredAt)}
+      </span>
+    </div>
+  );
+}
+
 function ScoreCard({ score }: { score: ScoreResult }) {
   return (
     <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
@@ -1622,6 +1713,7 @@ function ScoreCard({ score }: { score: ScoreResult }) {
           ))}
         </ul>
       ) : null}
+      {score.jevNote ? <span style={{ fontSize: 11.5, color: tokens.muted }}>{score.jevNote}</span> : null}
     </div>
   );
 }

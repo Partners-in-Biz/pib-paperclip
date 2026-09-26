@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { experimentVerdict, type Verdict } from "@partnersinbiz/pib-plugin-kit";
 
 export const CAMPAIGN_STATUSES = ["draft", "scheduled", "active", "paused", "completed"] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
@@ -31,6 +32,20 @@ export interface CampaignDraft {
   /** CRM name when the campaign was scoped, for issue titles. */
   clientName: string | null;
   audienceMode: AudienceMode;
+  /** issue: a due step opens an issue (default). email: the Mailbox sends it (after the launch approval). */
+  delivery: CampaignDelivery;
+  /** Who gets reply issues: the creator (a user or an agent). */
+  ownerUserId: string | null;
+  ownerAgentId: string | null;
+}
+
+export const CAMPAIGN_DELIVERIES = ["issue", "email"] as const;
+export type CampaignDelivery = (typeof CAMPAIGN_DELIVERIES)[number];
+
+export function assertDelivery(value: unknown): CampaignDelivery {
+  if (value == null || value === "") return "issue";
+  if (value !== "issue" && value !== "email") throw new CampaignError("delivery must be issue or email");
+  return value;
 }
 
 /**
@@ -68,6 +83,10 @@ export interface EnrollmentDraft {
   variant: "a" | "b";
   nextDueAt: string | null;
   openIssueId: string | null;
+  /** Outbox key of the step email waiting for the Mailbox's result. */
+  sendingKey?: string | null;
+  mailThreadId?: string | null;
+  mailLastMessageId?: string | null;
 }
 
 export function assertVariant(value: string): "a" | "b" {
@@ -94,6 +113,9 @@ export function createCampaign(input: {
   client?: CampaignClient | null;
   startAt?: string | null;
   endAt?: string | null;
+  delivery?: string | null;
+  ownerUserId?: string | null;
+  ownerAgentId?: string | null;
   id?: string;
 }): CampaignDraft {
   const name = input.name.trim();
@@ -119,6 +141,9 @@ export function createCampaign(input: {
     clientRef: client?.id ?? null,
     clientName: client?.name ?? null,
     audienceMode: assertAudienceMode(input.audienceMode, client),
+    delivery: assertDelivery(input.delivery),
+    ownerUserId: input.ownerUserId ?? null,
+    ownerAgentId: input.ownerAgentId ?? null,
   };
 }
 
@@ -222,6 +247,8 @@ export function startEnrollment(input: {
   existing: Array<{ status: string }>;
   steps: CampaignStepDraft[];
   now: Date;
+  /** The A/B arm this contact gets (see `pickVariant`); defaults to the first step's variant. */
+  variant?: "a" | "b";
   id?: string;
 }): EnrollmentDraft {
   if (input.existing.some((row) => row.status === "running")) {
@@ -236,7 +263,7 @@ export function startEnrollment(input: {
     contactId: input.contactId,
     status: "running",
     stepPosition: first.position,
-    variant: first.variant,
+    variant: input.variant ?? first.variant,
     nextDueAt: new Date(input.now.getTime() + first.delayDays * 86_400_000).toISOString(),
     openIssueId: null,
   };
@@ -254,11 +281,12 @@ export function advanceEnrollment(
   if (!next) {
     return { ...enrollment, status: "done", openIssueId: null, nextDueAt: null };
   }
+  // The contact keeps its A/B arm across steps; a step without a B version sends A (`stepFor`).
   return {
     ...enrollment,
     status: "running",
     stepPosition: next.position,
-    variant: next.variant,
+    variant: enrollment.variant,
     openIssueId: null,
     nextDueAt: new Date(now.getTime() + next.delayDays * 86_400_000).toISOString(),
   };
@@ -343,4 +371,173 @@ export function campaignClientSummary(counts: { total: number; active: number; e
       { label: "Due steps", value: counts.dueSteps, ...(counts.dueSteps > 0 ? { tone: "warn" as const } : {}) },
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// A/B arms, Mailbox sends and replies
+// ---------------------------------------------------------------------------
+
+/**
+ * The arm a new enrollment gets: the declared winner, else an even split by
+ * a stable hash of campaign and contact when any step has a B version, else A.
+ */
+export function pickVariant(
+  campaign: Pick<CampaignDraft, "id" | "winnerVariant">,
+  steps: Array<Pick<CampaignStepDraft, "variant">>,
+  contactId: string,
+): "a" | "b" {
+  if (campaign.winnerVariant) return campaign.winnerVariant;
+  if (!steps.some((step) => step.variant === "b")) return "a";
+  const byte = createHash("sha256").update(`${campaign.id}:${contactId}`).digest()[0]!;
+  return byte % 2 === 0 ? "a" : "b";
+}
+
+/** The step to send at a position for an arm; falls back to A when the position has no B version. */
+export function stepFor(steps: CampaignStepDraft[], position: number, variant: "a" | "b"): CampaignStepDraft | null {
+  return steps.find((step) => step.position === position && step.variant === variant)
+    ?? steps.find((step) => step.position === position && step.variant === "a")
+    ?? null;
+}
+
+export function campaignMailKey(enrollmentId: string, position: number): string {
+  return `campaigns:step:${enrollmentId}:${position}`;
+}
+
+export interface PersonalVars {
+  name: string;
+  email?: string | null;
+  company?: string | null;
+}
+
+/** Fills {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}; `{{first_name|there}}` has a fallback. */
+export function personalize(template: string, vars: PersonalVars): string {
+  const parts = vars.name.trim().split(/\s+/).filter(Boolean);
+  const values: Record<string, string> = {
+    first_name: parts[0] ?? "",
+    last_name: parts.length > 1 ? parts.slice(1).join(" ") : "",
+    name: vars.name.trim(),
+    company: vars.company?.trim() ?? "",
+    email: vars.email?.trim() ?? "",
+  };
+  return template.replace(/\{\{\s*([a-z_]+)\s*(?:\|([^}]*))?\}\}/gi, (match, rawKey: string, fallback: string | undefined) => {
+    const key = rawKey.toLowerCase();
+    if (!(key in values)) return match;
+    return values[key]! || (fallback ?? "").trim();
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+export function textToHtml(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => `<p>${escapeHtml(part).replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+}
+
+export const REPLY_KINDS = ["interested", "question", "not_now", "unsubscribe", "out_of_office", "bounce", "other"] as const;
+export type ReplyKind = (typeof REPLY_KINDS)[number];
+
+export const REPLY_KIND_LABELS: Record<ReplyKind, string> = {
+  interested: "interested",
+  question: "a question",
+  not_now: "not now",
+  unsubscribe: "unsubscribe",
+  out_of_office: "out of office",
+  bounce: "a bounce",
+  other: "something else",
+};
+
+export function isReplyKind(value: unknown): value is ReplyKind {
+  return typeof value === "string" && (REPLY_KINDS as readonly string[]).includes(value);
+}
+
+/** What a campaign does with a reply. */
+export interface CampaignReplyPlan {
+  /** Step event to record (null: an auto-reply that is not a real reply). */
+  event: "reply" | "bounce" | "unsubscribe" | null;
+  /** this: stop the replied enrollment. contact: stop every campaign for the contact (`stopEnrollmentsForContact`). */
+  stop: "none" | "this" | "contact";
+  suppress: "unsubscribe" | "bounce" | null;
+  pushDays: number | null;
+  issue: "follow-up" | "review" | null;
+  summary: string;
+}
+
+/** `confident` is false below the `update` threshold or without Jev: a person decides. */
+export function campaignReplyPlan(kind: ReplyKind | null, confident: boolean): CampaignReplyPlan {
+  const base: CampaignReplyPlan = { event: "reply", stop: "none", suppress: null, pushDays: null, issue: null, summary: "" };
+  if (!kind || !confident) return { ...base, issue: "review", summary: "Opened an issue for the campaign owner to decide." };
+  switch (kind) {
+    case "interested":
+    case "question":
+      return { ...base, stop: "this", issue: "follow-up", summary: "Stopped this campaign for the contact and opened a follow-up issue." };
+    case "not_now":
+      return { ...base, stop: "this", summary: "Stopped this campaign for the contact." };
+    case "unsubscribe":
+      return { ...base, event: "unsubscribe", stop: "contact", suppress: "unsubscribe", summary: "Stopped every campaign for the contact and suppressed the address." };
+    case "bounce":
+      return { ...base, event: "bounce", stop: "contact", suppress: "bounce", summary: "Stopped every campaign for the contact and suppressed the address." };
+    case "out_of_office":
+      return { ...base, event: null, pushDays: 5, summary: "Moved the next step 5 days later." };
+    default:
+      return { ...base, issue: "review", summary: "Opened an issue for the campaign owner to decide." };
+  }
+}
+
+export function pushDate(current: string | null, now: Date, days: number): string {
+  const base = current ? Math.max(Date.parse(current) || 0, now.getTime()) : now.getTime();
+  return new Date(base + days * 86_400_000).toISOString();
+}
+
+export interface AbSuggestion {
+  verdict: Verdict;
+  /** The variant to declare, or null when there is no clear winner yet. */
+  suggestion: "a" | "b" | null;
+  sends: { a: number; b: number };
+  replies: { a: number; b: number };
+  replyRate: { a: number | null; b: number | null };
+  reason: string;
+}
+
+export const AB_MIN_SENDS = 20;
+const AB_BATCH = 5;
+
+function batchRates(sends: boolean[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i + AB_BATCH <= sends.length; i += AB_BATCH) {
+    out.push(sends.slice(i, i + AB_BATCH).filter(Boolean).length / AB_BATCH);
+  }
+  return out;
+}
+
+/**
+ * Suggests an A/B winner from reply rates. Each send is true when it got a
+ * reply; sends are in the order they went out. Below 20 sends per variant it
+ * is inconclusive. Otherwise the reply rates of batches of 5 sends go through
+ * the kit `experimentVerdict` (B is the variant, A the control). A person
+ * still declares the winner.
+ */
+export function abSuggestion(input: { a: boolean[]; b: boolean[] }): AbSuggestion {
+  const count = (xs: boolean[]) => xs.filter(Boolean).length;
+  const rate = (xs: boolean[]) => (xs.length ? count(xs) / xs.length : null);
+  const base = {
+    sends: { a: input.a.length, b: input.b.length },
+    replies: { a: count(input.a), b: count(input.b) },
+    replyRate: { a: rate(input.a), b: rate(input.b) },
+  };
+  if (input.a.length < AB_MIN_SENDS || input.b.length < AB_MIN_SENDS) {
+    return { ...base, verdict: "inconclusive", suggestion: null, reason: `Needs at least ${AB_MIN_SENDS} sends per variant (A ${input.a.length}, B ${input.b.length}).` };
+  }
+  const verdict = experimentVerdict({ control: batchRates(input.a), variant: batchRates(input.b), minPerArm: 3 });
+  const pct = (x: number | null) => (x == null ? "–" : `${Math.round(x * 100)}%`);
+  const rates = `Reply rate A ${pct(base.replyRate.a)}, B ${pct(base.replyRate.b)}.`;
+  if (verdict.verdict === "win") return { ...base, verdict: "win", suggestion: "b", reason: `B looks better. ${rates}` };
+  if (verdict.verdict === "loss") return { ...base, verdict: "loss", suggestion: "a", reason: `A looks better. ${rates}` };
+  return { ...base, verdict: verdict.verdict, suggestion: null, reason: `No clear winner yet. ${rates}` };
 }

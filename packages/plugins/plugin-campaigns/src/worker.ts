@@ -1,3 +1,4 @@
+import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
 import { randomUUID } from "node:crypto";
 import {
   definePlugin,
@@ -36,6 +37,9 @@ import {
 } from "./db.js";
 import {
   advanceEnrollment,
+  assertDelivery,
+  pickVariant,
+  stepFor,
   assertCanComplete,
   assertCanDeclareWinner,
   assertCanLaunch,
@@ -69,8 +73,14 @@ import {
   readConfig,
   registerCrmProjection,
   resolveCrmClient,
+  MAIL_EVENTS,
+  PIB_PLUGINS,
+  pluginEvent,
   type ClientScope,
 } from "@partnersinbiz/pib-plugin-kit";
+import { abSuggestionFor, onMailReceived, onSendResult, redeliverMail, sendCampaignStep } from "./mail.js";
+
+type Owner = { userId?: string | null; agentId?: string | null };
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
@@ -83,7 +93,7 @@ const plugin = definePlugin({
     for (const tool of CAMPAIGN_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
-        return runTool(ctx, tool.name, params, run);
+        return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
     ctx.actions.register("campaigns.load", (params, context) => {
@@ -100,7 +110,15 @@ const plugin = definePlugin({
     ctx.actions.register("campaigns.complete", (params, context) => completeAction(ctx, context, params));
     ctx.actions.register("campaigns.stats", (params, context) => statsAction(ctx, context, params));
     ctx.actions.register("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
+    ctx.actions.register("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
+    ctx.actions.register("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
     ctx.jobs.register("open-due-steps", () => openDueSteps(ctx));
+    ctx.jobs.register("redeliver-mail", async () => {
+      const result = await redeliverMail(ctx);
+      if (result.emitted || result.failed || result.handedOver) ctx.logger.info("Campaign mail redelivery", result);
+    });
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), (event) => onMailReceived(ctx, event));
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event.entityId, event.companyId));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
@@ -131,7 +149,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 async function dispatch(ctx: PluginContext, name: string, body: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
-  if (name === "create-campaign") return createCampaignRecord(ctx, companyId, body);
+  if (name === "create-campaign") return createCampaignRecord(ctx, companyId, body, { agentId: run.agentId });
   if (name === "update-campaign") return updateCampaignRecord(ctx, companyId, body);
   if (name === "list-campaigns") return listCampaignsRecord(ctx, companyId, body);
   if (name === "add-campaign-step") return addStep(ctx, companyId, body);
@@ -150,8 +168,9 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
-  if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body);
+  if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId });
   if (name === "declare-ab-winner") return declareWinner(ctx, companyId, body);
+  if (name === "suggest-ab-winner") return suggestWinner(ctx, companyId, body);
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -206,7 +225,7 @@ async function listCampaignsRecord(ctx: PluginContext, companyId: string, params
 }
 
 async function createCampaignAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return createCampaignRecord(ctx, requiredCompany(context), params);
+  return createCampaignRecord(ctx, requiredCompany(context), params, { userId: context.actor.userId, agentId: context.actor.agentId });
 }
 
 async function addStepAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -237,7 +256,7 @@ async function enrollAction(ctx: PluginContext, context: PluginPerformActionCont
   return enroll(ctx, requiredCompany(context), params);
 }
 
-async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
   const client = await requireClient(ctx, companyId, readClientScope(params) ?? null);
   const campaign = createCampaign({
     companyId,
@@ -251,6 +270,9 @@ async function createCampaignRecord(ctx: PluginContext, companyId: string, param
     client,
     startAt: optionalString(params, "startAt"),
     endAt: optionalString(params, "endAt"),
+    delivery: optionalString(params, "delivery"),
+    ownerUserId: owner.userId ?? null,
+    ownerAgentId: owner.agentId ?? null,
   });
   await insertCampaign(ctx, campaign);
   return publicCampaign(campaign);
@@ -281,8 +303,13 @@ async function updateCampaignRecord(ctx: PluginContext, companyId: string, param
     client: campaign.clientRef ? { kind: campaign.clientKind ?? "company", id: campaign.clientRef, name: campaign.clientName ?? campaign.clientRef } : null,
     startAt: params.startAt === undefined ? campaign.startAt : optionalString(params, "startAt") ?? null,
     endAt: params.endAt === undefined ? campaign.endAt : optionalString(params, "endAt") ?? null,
+    delivery: params.delivery === undefined ? campaign.delivery : optionalString(params, "delivery"),
+    ownerUserId: campaign.ownerUserId,
+    ownerAgentId: campaign.ownerAgentId,
   });
-  const next: CampaignDraft = { ...edited, approvalIssueId: campaign.approvalIssueId, winnerVariant: campaign.winnerVariant };
+  // Switching a draft to email after approval needs a fresh approval: the approver saw issue delivery.
+  const approvalIssueId = edited.delivery === "email" && campaign.delivery !== "email" ? null : campaign.approvalIssueId;
+  const next: CampaignDraft = { ...edited, approvalIssueId, winnerVariant: campaign.winnerVariant };
   await saveCampaign(ctx, next);
   return publicCampaign(next);
 }
@@ -338,6 +365,7 @@ async function launch(ctx: PluginContext, companyId: string, params: Record<stri
         existing,
         steps,
         now: new Date(),
+        variant: pickVariant(campaign, steps, contact.id),
       });
       await insertEnrollment(ctx, enrollment);
       enrolled += 1;
@@ -383,6 +411,7 @@ async function enroll(ctx: PluginContext, companyId: string, params: Record<stri
     existing,
     steps,
     now: new Date(),
+    variant: pickVariant(campaign, steps, contactId),
   });
   await insertEnrollment(ctx, enrollment);
   return enrollment;
@@ -406,24 +435,32 @@ async function openDueSteps(ctx: PluginContext) {
   for (const enrollment of due) {
     try {
       const steps = await listSteps(ctx, enrollment.campaignId);
-      const step = steps.find((item) => item.position === enrollment.stepPosition && item.variant === enrollment.variant);
+      // The contact's A/B arm; a position without a B version sends A.
+      const step = stepFor(steps, enrollment.stepPosition, enrollment.variant);
       if (!step) continue;
       if (!campaigns.has(enrollment.campaignId)) campaigns.set(enrollment.campaignId, getCampaign(ctx, enrollment.campaignId));
       const campaign = await campaigns.get(enrollment.campaignId)!;
-      const contact = await projectedContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
-      const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, step, campaign?.clientRef ? campaign.clientName : null);
-      const to = contact?.emails?.[0] ? `\n\nSend to: ${contact.name} <${contact.emails[0]}>` : "";
-      // Explicit companyId: jobs have no invocation scope; the host allows the
-      // call only for a company with saved Campaigns settings.
-      const issue = await createWorkIssue(ctx, {
-        companyId: enrollment.companyId,
-        title: copy.title,
-        description: `${copy.description}${to}`,
-        originKind: "plugin:partnersinbiz.campaigns",
-        originId: enrollment.id,
-      });
-      enrollment.openIssueId = issue.id;
-      await saveEnrollment(ctx, enrollment);
+      const openIssue = async (note?: string) => {
+        const contact = await projectedContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
+        const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, step, campaign?.clientRef ? campaign.clientName : null);
+        const to = contact?.emails?.[0] ? `\n\nSend to: ${contact.name} <${contact.emails[0]}>` : "";
+        // Explicit companyId: jobs have no invocation scope; the host allows the
+        // call only for a company with saved Campaigns settings.
+        const issue = await createWorkIssue(ctx, {
+          companyId: enrollment.companyId,
+          title: copy.title,
+          description: `${note ? `${note}\n\n` : ""}${copy.description}${to}`,
+          originKind: "plugin:partnersinbiz.campaigns",
+          originId: enrollment.id,
+        });
+        enrollment.openIssueId = issue.id;
+        await saveEnrollment(ctx, enrollment);
+      };
+      if (campaign?.delivery === "email") {
+        await sendCampaignStep(ctx, { campaign, enrollment, step, issueFallback: (note) => openIssue(note) });
+        continue;
+      }
+      await openIssue();
     } catch (error) {
       ctx.logger.error("Campaign due step failed", {
         enrollmentId: enrollment.id,
@@ -447,10 +484,21 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanRequestApproval(campaign.status);
   if (campaign.approvalIssueId) throw new CampaignError("Approval was already requested for this campaign");
+  const steps = await listSteps(ctx, campaign.id);
+  const preview = steps
+    .map((step) => `${step.position}${step.variant === "b" ? "B" : ""}. **${step.subject}** (after ${step.delayDays} days)\n${step.body || "(no body)"}`)
+    .join("\n\n");
   const issue = await createWorkIssue(ctx, {
     companyId,
     title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}Approve campaign ${campaign.name}`,
-    description: `A person marks this issue done to approve launching campaign ${campaign.name}.`,
+    description: [
+      `A person marks this issue done to approve launching campaign ${campaign.name}.`,
+      campaign.delivery === "email"
+        ? "Delivery: **email**. Once launched, the Mailbox sends each due step from Gmail. Tokens such as {{first_name}} are filled in per contact."
+        : "Delivery: **issue**. Each due step opens an issue; a person sends the email.",
+      "",
+      preview || "(no steps yet)",
+    ].join("\n"),
     originKind: "plugin:partnersinbiz.campaigns",
     originId: campaign.id,
   });
@@ -541,12 +589,20 @@ async function listTemplatesAction(ctx: PluginContext, companyId: string) {
   return rows.map((row) => ({ id: row.id, name: row.name, description: row.description }));
 }
 
-async function createFromTemplate(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function createFromTemplate(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
   const template = await getCampaignTemplate(ctx, requiredString(params, "templateId"));
   if (!template || template.company_id !== companyId) throw new CampaignError("Template was not found");
   const steps = parseSteps(template.steps);
   const client = await requireClient(ctx, companyId, readClientScope(params) ?? null);
-  const campaign = createCampaign({ companyId, name: requiredString(params, "name"), client, audienceMode: optionalString(params, "audienceMode") });
+  const campaign = createCampaign({
+    companyId,
+    name: requiredString(params, "name"),
+    client,
+    audienceMode: optionalString(params, "audienceMode"),
+    delivery: optionalString(params, "delivery"),
+    ownerUserId: owner.userId ?? null,
+    ownerAgentId: owner.agentId ?? null,
+  });
   await insertCampaign(ctx, campaign);
   for (const step of steps) {
     await insertStep(ctx, { companyId, campaignId: campaign.id, step });
@@ -592,9 +648,17 @@ async function declareWinner(ctx: PluginContext, companyId: string, params: Reco
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanDeclareWinner(campaign.status);
   const winner = assertVariant(requiredString(params, "winner"));
+  const suggestion = await abSuggestionFor(ctx, campaign.id);
   campaign.winnerVariant = winner;
   await saveCampaign(ctx, campaign);
-  return { campaignId: campaign.id, winner };
+  return { campaignId: campaign.id, winner, suggestion };
+}
+
+/** Reply-rate verdict per variant (kit `experimentVerdict`); a person still declares with declare-ab-winner. */
+async function suggestWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const suggestion = await abSuggestionFor(ctx, campaign.id);
+  return { campaignId: campaign.id, winnerVariant: campaign.winnerVariant, ...suggestion };
 }
 
 async function requireCampaign(ctx: PluginContext, companyId: string, id: string): Promise<CampaignDraft> {
@@ -619,6 +683,8 @@ function publicCampaign(campaign: CampaignDraft) {
     startAt: campaign.startAt,
     endAt: campaign.endAt,
     approvalIssueId: campaign.approvalIssueId,
+    delivery: campaign.delivery,
+    winnerVariant: campaign.winnerVariant,
   };
 }
 

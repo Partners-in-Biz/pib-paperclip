@@ -7,6 +7,12 @@ export * from "./issues.js";
 export * from "./crm-projection.js";
 export * from "./client-ref.js";
 export * from "./agent-hire.js";
+export * from "./contracts.js";
+export * from "./outbox.js";
+export * from "./decisions.js";
+export * from "./experiments.js";
+export * from "./pdf.js";
+export * from "./tool-result.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

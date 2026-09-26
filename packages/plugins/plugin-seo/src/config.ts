@@ -5,7 +5,7 @@
  * saved config row). Secrets are secret-refs resolved at call time.
  */
 import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
-import { oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { AUTOPILOT_MODES, type AutopilotMode } from "./engine/sprint.js";
 import { DEFAULT_TIMEZONE, validTimezone } from "./engine/time.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -50,15 +50,21 @@ export const instanceConfigSchema: JsonSchema = {
     },
     google: {
       type: "object",
-      title: "Google OAuth client (Search Console)",
-      description: "A Google Cloud OAuth client (Web application) with the Search Console API enabled. Can be the same project as YouTube.",
+      title: "Google (Search Console)",
+      description:
+        "Preferred: one service account for every sprint (Site Verification API + Search Console API enabled). The agent verifies our own sites with it and clients add its email as a Search Console user. The OAuth client is the fallback for a property only a person's account can reach.",
       properties: {
-        clientId: { type: "string", title: "Client ID" },
-        clientSecret: secretField("Client secret"),
+        serviceAccountJson: secretField(
+          "Google service account key",
+          "A Paperclip secret holding the whole JSON key file (Google Cloud → IAM → Service accounts → Keys → Add key → JSON).",
+        ),
+        clientId: { type: "string", title: "OAuth client ID (fallback)" },
+        clientSecret: secretField("OAuth client secret (fallback)"),
       },
     },
     pagespeedApiKey: secretField("PageSpeed Insights API key (optional)", "Raises the PageSpeed quota. Without it Google may rate-limit the daily checks."),
     bingApiKey: secretField("Bing Webmaster API key (optional)", "From Bing Webmaster Tools → Settings → API access. Enables inbound link counts."),
+    jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };
 
@@ -89,12 +95,14 @@ export function parseSeoConfig(raw: Record<string, unknown>): SeoConfig {
 export interface LoadedConfig {
   config: SeoConfig;
   secrets: SecretResolver;
+  /** The saved settings as stored (the Jev block is read from here). */
+  raw: Record<string, unknown>;
 }
 
 /** Read config for one company. Always pass the company explicitly (jobs have no scope). */
 export async function loadSeoConfig(ctx: PluginContext, companyId: string): Promise<LoadedConfig> {
   const raw = await readConfig(ctx, companyId);
-  return { config: parseSeoConfig(raw), secrets: new SecretResolver(ctx, companyId, raw) };
+  return { config: parseSeoConfig(raw), secrets: new SecretResolver(ctx, companyId, raw), raw };
 }
 
 /**
@@ -125,12 +133,19 @@ export function validateSeoConfig(raw: Record<string, unknown>): { ok: boolean; 
       errors.push("Public base URL is not a valid URL");
     }
   } else {
-    warnings.push("Public base URL is empty: Google Search Console cannot be connected until it is set.");
+    warnings.push("Public base URL is empty: Paperclip links in issues are relative and the OAuth fallback cannot be used.");
   }
   if (typeof raw.encryptionKey === "string" && raw.encryptionKey.trim()) {
     warnings.push("Token encryption key is stored as plain text; pick a Paperclip secret instead.");
   }
   const google = (raw.google && typeof raw.google === "object" ? raw.google : {}) as Record<string, unknown>;
   if (google.clientId && !google.clientSecret) warnings.push("Google client secret is missing.");
+  if (typeof google.serviceAccountJson === "string" && google.serviceAccountJson.trim()) {
+    warnings.push("The Google service account key is stored as plain text; pick a Paperclip secret instead.");
+  }
+  const jev = (raw.jev && typeof raw.jev === "object" ? raw.jev : {}) as Record<string, unknown>;
+  if (typeof jev.apiKey === "string" && jev.apiKey.trim()) {
+    warnings.push("TypeSafe API key is stored as plain text; pick a Paperclip secret instead.");
+  }
   return { ok: errors.length === 0, errors, warnings };
 }

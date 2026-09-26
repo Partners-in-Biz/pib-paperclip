@@ -111,6 +111,9 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind }} />)}</Row>
       ) : null}
       {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
+      {post.experimentId ? (
+        <Muted>Growth Lab: {post.experimentArm} arm of "{snapshot.experiments.find((e) => e.experimentId === post.experimentId)?.hypothesis ?? "a closed experiment"}"</Muted>
+      ) : null}
       {Object.keys(post.overrides).length ? (
         <Card style={{ gap: 6 }}>
           <strong style={{ fontSize: 12 }}>Overrides</strong>

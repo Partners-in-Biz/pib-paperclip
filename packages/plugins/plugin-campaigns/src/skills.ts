@@ -19,7 +19,9 @@ Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
 - \`record-step-event\` records an open or click on a step. \`campaign-step-analytics\` reports opens and clicks per step.
 - \`set-step-html\` sets the rich HTML body of a step. The plain body stays as a fallback for clients that cannot render HTML.
 - \`create-campaign-template\` saves a reusable campaign with its steps. \`create-campaign-from-template\` makes a new draft from one.
-- \`declare-ab-winner\` records variant a or b as the winner of an A/B campaign.
+- \`suggest-ab-winner\` compares reply rates per variant from Mailbox sends (at least 20 sends per variant, else inconclusive). It only suggests. \`declare-ab-winner\` records the winner a person chose; new enrollments then get only that variant. Without a winner, contacts are split evenly between A and B.
+- \`delivery\` is \`issue\` (default: a due step opens an issue and a person sends it) or \`email\` (after the approved launch the Mailbox sends each due step; \`{{first_name}}\`, \`{{name}}\`, \`{{company}}\` are filled in). The approval issue says which. Switching a draft to email after approval needs a new approval.
+- Replies arrive from the Mailbox and are recorded per step and variant. With Jev: interested or a question stops the campaign for that contact and opens a follow-up issue for the campaign's creator; not now stops it; unsubscribe and bounces stop every campaign for the contact and suppress the address; out of office moves the next step 5 days. When Jev is unsure or not set up, the creator gets an issue to decide.
 - Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.
 - A contact is enrolled once per campaign. A second running enrollment is refused.
 `;

@@ -37,6 +37,23 @@ const scope: Record<string, JsonSchema> = {
 
 const OWN = " Omit the client for PiB's own work; pass client (or clientKind + clientRef) for a client. Never mix clients.";
 
+/** Growth Lab tag on a post. */
+const experimentTag: Record<string, JsonSchema> = {
+  experimentId: { type: "string", description: "Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag." },
+  arm: { type: "string", enum: ["control", "variant"], description: "Which arm of the experiment the post is: control (what we do now) or variant (the change)." },
+};
+
+const arms: JsonSchema = {
+  type: "array",
+  description: 'Exactly two arms: [{"key":"control","description":"what we do now"},{"key":"variant","description":"the one change"}].',
+  items: {
+    type: "object",
+    required: ["key", "description"],
+    additionalProperties: false,
+    properties: { key: { type: "string", enum: ["control", "variant"] }, description: text },
+  },
+};
+
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
@@ -71,7 +88,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with accountIds (destinations), mediaAssetIds (order = carousel order), firstComment and per-platform overrides. Accounts and media must belong to the same client as the post (or all be own work).${OWN} The separate scope field is org (default) or personal.`,
+      `Draft one post with accountIds (destinations), mediaAssetIds (order = carousel order), firstComment and per-platform overrides. Accounts and media must belong to the same client as the post (or all be own work).${OWN} The separate scope field is org (default) or personal. Tag a Growth Lab experiment arm with experimentId + arm (same client).`,
     parametersSchema: schema(["body"], {
       body: text,
       scope: text,
@@ -80,13 +97,14 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       mediaAssetIds: ids,
       firstComment: text,
       overrides,
+      ...experimentTag,
     }),
   },
   {
     name: "update-post",
     displayName: "Update post",
     description:
-      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, overrides (replaces them). Leave the client out to keep the post's client. Moving a post to another client (client: \"own\" for own work) only works once it has no accounts or media of the old one.",
+      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, overrides (replaces them). Leave the client out to keep the post's client. Moving a post to another client (client: \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag (or with experimentId \"\" clear) the Growth Lab experiment arm.",
     parametersSchema: schema(["postId"], {
       postId: text,
       body: text,
@@ -95,6 +113,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       mediaAssetIds: ids,
       firstComment: text,
       overrides,
+      ...experimentTag,
     }),
   },
   {
@@ -214,7 +233,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-inbox",
     displayName: "List social inbox",
-    description: `Return the comments and mentions of one scope, newest first. Filter by status (new, read, replied).${OWN}`,
+    description: `Return the comments and mentions of one scope, newest first. Filter by status (new, read, replied). With a Jev key, items carry triage (needsReply, intent, sentiment, escalate); never reply to escalated items.${OWN}`,
     parametersSchema: schema([], { status: text, limit: { type: "integer" }, ...scope }),
   },
   {
@@ -247,6 +266,87 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     displayName: "Post analytics",
     description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,
     parametersSchema: schema([], { postId: text, ...scope }),
+  },
+  {
+    name: "performance-review",
+    displayName: "Performance review",
+    description:
+      `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first). periodDays 7-90 (default 28).${OWN}`,
+    parametersSchema: schema([], { ...scope, periodDays: { type: "integer" } }),
+  },
+  {
+    name: "get-playbook",
+    displayName: "Get playbook",
+    description: `The scope's playbook (markdown rules to follow when planning posts), its version, recent versions and pending changes. Created on first use.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
+  },
+  {
+    name: "propose-playbook-change",
+    displayName: "Propose playbook change",
+    description:
+      `Propose one playbook edit with a reason: op add (section rules, avoid, open, constraints or goal; text = the rule), remove (text = the exact line) or replace (playbook = the whole new markdown). A person keeps or discards it unless autopilot is full.${OWN}`,
+    parametersSchema: schema(["reason"], {
+      ...scope,
+      op: { type: "string", enum: ["add", "remove", "replace"] },
+      section: { type: "string", enum: ["rules", "avoid", "open", "constraints", "goal"] },
+      text,
+      playbook: text,
+      reason: text,
+    }),
+  },
+  {
+    name: "decide-playbook-change",
+    displayName: "Decide playbook change",
+    description: "Keep (new playbook version) or discard a pending playbook change. Agents may only decide when the program's autopilot is full; otherwise a person decides on the Growth tab.",
+    parametersSchema: schema(["changeId", "decision"], { changeId: text, decision: { type: "string", enum: ["keep", "discard"] }, note: text }),
+  },
+  {
+    name: "list-experiments",
+    displayName: "List experiments",
+    description: `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard. Filter by status (proposed, running, measured, rejected, abandoned; comma-separated).${OWN}`,
+    parametersSchema: schema([], { ...scope, status: text }),
+  },
+  {
+    name: "propose-experiment",
+    displayName: "Propose experiment",
+    description:
+      `Propose one experiment that changes one variable: hypothesis, hypothesisType (feature:value, e.g. hook:question; pick from performance-review's ranked types), variable, arms control/variant with descriptions, minPerArm (default 3). At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
+    parametersSchema: schema(["hypothesis", "hypothesisType", "variable", "arms"], {
+      ...scope,
+      hypothesis: text,
+      hypothesisType: text,
+      variable: text,
+      arms,
+      minPerArm: { type: "integer" },
+      windowDays: { type: "integer" },
+    }),
+  },
+  {
+    name: "approve-experiment",
+    displayName: "Approve experiment",
+    description: "Start a proposed experiment. Only on full autopilot may an agent approve; otherwise a person approves on the Growth tab.",
+    parametersSchema: schema(["experimentId"], { experimentId: text, note: text }),
+  },
+  {
+    name: "reject-experiment",
+    displayName: "Reject experiment",
+    description: "Reject a proposed experiment with a reason (its post tags are cleared). Only on full autopilot may an agent reject.",
+    parametersSchema: schema(["experimentId", "reason"], { experimentId: text, reason: text }),
+  },
+  {
+    name: "propose-feature-question",
+    displayName: "Propose feature question",
+    description:
+      `Feature discovery: add a question Jev answers about every post caption (op add: key, type noul/choice/score, question, options for choice, levels for score, lowest first), or retire one (op retire + key). New questions apply to new posts and backfill the last 90 days; at most 12 active. Propose questions that separate the top posts from the bottom ones in performance-review.${OWN}`,
+    parametersSchema: schema([], {
+      ...scope,
+      op: { type: "string", enum: ["add", "retire"] },
+      key: text,
+      type: { type: "string", enum: ["noul", "choice", "score"] },
+      question: text,
+      options: ids,
+      levels: ids,
+    }),
   },
   {
     name: "account-analytics",

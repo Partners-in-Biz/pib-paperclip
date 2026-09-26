@@ -1,3 +1,4 @@
+import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
 import { randomUUID } from "node:crypto";
 import {
   definePlugin,
@@ -47,7 +48,7 @@ const plugin = definePlugin({
     for (const tool of PARTNER_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
-        return runTool(ctx, tool.name, params, run);
+        return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
     ctx.actions.register("partners.load", (_params, context) => {

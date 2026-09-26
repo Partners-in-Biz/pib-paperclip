@@ -13,7 +13,7 @@ import { SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 describe("Outrank-90 template", () => {
   it("has the 42 tasks with unique stable keys", () => {
     expect(TEMPLATE_ID).toBe("outrank-90");
-    expect(TEMPLATE_VERSION).toBe(2);
+    expect(TEMPLATE_VERSION).toBe(3);
     expect(OUTRANK_90.tasks).toHaveLength(42);
     const keys = OUTRANK_90.tasks.map((t) => t.templateKey);
     expect(new Set(keys).size).toBe(42);
@@ -35,15 +35,19 @@ describe("Outrank-90 template", () => {
   it("ports the old autopilot flags and task types", () => {
     const byKey = Object.fromEntries(OUTRANK_90.tasks.map((t) => [t.templateKey, t]));
     expect(byKey["w0-meta-tags"]).toMatchObject({ taskType: "meta-tag-audit", autopilotEligible: true, internalToolPath: "/admin/seo/tools#metadata-check" });
-    expect(byKey["w0-gsc-verify"]).toMatchObject({ taskType: "gsc-verify", autopilotEligible: false });
+    // v3: verification runs through the service account and the site repo (SEO scope).
+    expect(byKey["w0-gsc-verify"]).toMatchObject({ taskType: "gsc-verify", owner: "agent", autopilotEligible: true });
     expect(byKey["w9-directories"]).toMatchObject({ taskType: "directory-submission", autopilotEligible: true });
     expect(byKey["w5-post-1"]).toMatchObject({ taskType: "post-publish", autopilotEligible: false });
-    expect(OUTRANK_90.tasks.filter((t) => t.autopilotEligible)).toHaveLength(24);
+    expect(OUTRANK_90.tasks.filter((t) => t.autopilotEligible)).toHaveLength(30);
   });
 
-  it("assigns people only what needs their own accounts or relationships", () => {
-    const human = OUTRANK_90.tasks.filter((t) => t.owner === "human").map((t) => t.taskType).sort();
-    expect(human).toEqual(["bing-verify", "community-post", "cross-link", "gsc-request-index", "gsc-verify", "link-trade-dm"]);
+  it("has no person tasks in v3 (grants and personal messages go to the Needs you digest)", () => {
+    expect(OUTRANK_90.tasks.filter((t) => t.owner === "human")).toEqual([]);
+    const signoff = OUTRANK_90.tasks.filter((t) => !t.autopilotEligible).map((t) => t.taskType).sort();
+    expect(signoff).toContain("link-trade-dm");
+    expect(signoff).toContain("community-post");
+    expect(signoff).not.toContain("alt-text-audit");
   });
 
   it("makes the Day 90 audit due on day 90 and pre-launch immediately", () => {

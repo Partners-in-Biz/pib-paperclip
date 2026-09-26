@@ -19,6 +19,8 @@ import {
   registerHireWatch,
   rememberPluginUiBase,
   startHire,
+  toolFail,
+  toolOk,
   unlinkAgent,
 } from "@partnersinbiz/pib-plugin-kit";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
@@ -47,6 +49,10 @@ import { findClient, scopeParam } from "./service/scope.js";
 import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
 import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
+import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
+import { setupChecklist } from "./service/setup.js";
+import { siteProjectOptions } from "./service/site.js";
+import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS } from "./tools.js";
 
 let env: Env | null = null;
@@ -72,6 +78,7 @@ const plugin = definePlugin({
     ctx.events.on("issue.updated", async (event) => {
       if (!event.entityId || !event.companyId) return;
       try {
+        if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
         await onIssueUpdated(e, event.companyId, event.entityId);
       } catch (error) {
         ctx.logger.info("SEO issue sync failed", { issueId: event.entityId, error: errorMessage(error) });
@@ -154,10 +161,11 @@ async function runTool(e: Env, name: string, params: unknown, run: ToolRunContex
   try {
     await e.skills.ensure(run.companyId).catch(() => []);
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
-    return { content: toolSummary(name, data), data };
+    // MCP clients need structuredContent to be an object: never return null, arrays or bare values.
+    return toolOk(toolSummary(name, data), data);
   } catch (error) {
     if (!(error instanceof SeoError)) e.ctx.logger.error("SEO tool failed", { tool: name, error: errorMessage(error) });
-    return { error: errorMessage(error) };
+    return toolFail(errorMessage(error));
   }
 }
 
@@ -217,6 +225,8 @@ function registerActions(e: Env) {
       }
     };
     const base = info.loaded.config.publicBaseUrl;
+    const serviceAccount = await loadServiceAccount(info);
+    const setup = scope ? [] : await setupChecklist(e, info, null).catch(() => []);
     return {
       today: info.today,
       timezone: info.timezone,
@@ -230,11 +240,14 @@ function registerActions(e: Env) {
         encryptionKey: await secretSet("encryptionKey"),
         pagespeedApiKey: await secretSet("pagespeedApiKey"),
         bingApiKey: await secretSet("bingApiKey"),
+        serviceAccountEmail: serviceAccount.key?.clientEmail ?? null,
+        serviceAccountError: serviceAccount.error,
         defaultAutopilotMode: info.loaded.config.defaultAutopilotMode,
         dailyHourLocal: info.loaded.config.dailyHourLocal,
       },
       agent,
       hire,
+      setup,
       skillKey: SKILL_CANONICAL_KEY,
       scope: scopeParamValue(scope),
       client: scope
@@ -283,6 +296,11 @@ function registerActions(e: Env) {
       db.sprintCounts(ctx.db, companyId),
     ]);
     const history = await db.sprintHistory(ctx.db, sprintId, "2000-01-01");
+    const [needsYou, setup, projects] = await Promise.all([
+      needsYouView(e, info, sprint).catch(() => null),
+      setupChecklist(e, info, sprint).catch(() => []),
+      siteProjectOptions(e, companyId, sprint.siteUrl).catch(() => []),
+    ]);
     const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
     for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
     return {
@@ -299,6 +317,9 @@ function registerActions(e: Env) {
       optimizations,
       integrations: integrations.map(integrationView),
       pageHealth: health,
+      needsYou,
+      setup,
+      projects,
     };
   });
 

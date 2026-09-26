@@ -1,0 +1,4 @@
+Transaction date;Description;Debit;Credit;Balance
+01/09/2026;Salary payment;25 000,00;;75 000,00
+02/09/2026;Interest received;;12,34;75 012,34
+03 Sep 2026;"Card purchase; Takealot";1 150,00;;73 862,34

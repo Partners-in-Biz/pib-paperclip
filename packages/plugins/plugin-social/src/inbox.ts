@@ -1,6 +1,7 @@
 /**
  * Social inbox: `poll-inbox` (every 15 minutes) pulls comments on recent
- * posts and mentions into inbox_items (deduped per account + external id);
+ * posts and mentions into inbox_items (deduped per account + external id),
+ * then Jev triages new items (triage.ts) when a key is set;
  * `reply` publishes a real reply through the platform when it supports it.
  */
 import { randomUUID } from "node:crypto";
@@ -23,6 +24,7 @@ import { SocialError } from "./domain.js";
 import { providerFor } from "./oauth/registry.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 import { freshAccount } from "./tokens.js";
+import { triageInbox } from "./triage.js";
 
 /** Platforms whose inbox reads comments per published post (the others read account-level mentions). */
 const PER_POST_INBOX = new Set(["facebook", "instagram", "threads", "youtube"]);
@@ -67,7 +69,7 @@ async function pollAccount(ctx: PluginContext, config: SocialConfig, row: Accoun
 }
 
 export async function pollInboxJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>) {
-  const summary = { accounts: 0, added: 0, errors: 0 };
+  const summary = { accounts: 0, added: 0, errors: 0, triaged: 0, spam: 0, queued: 0, escalated: 0 };
   for (const companyId of await companiesWithAccounts(ctx)) {
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
@@ -82,6 +84,17 @@ export async function pollInboxJob(ctx: PluginContext, ensureCompany: (companyId
         summary.errors += 1;
         ctx.logger.info("Social inbox poll failed", { accountId: row.id, platform: row.platform, error: error instanceof Error ? error.message : String(error) });
       }
+    }
+    // Jev triage of new items (polled or recorded by hand). No key: nothing changes.
+    try {
+      const triage = await triageInbox(ctx, config);
+      summary.triaged += triage.triaged;
+      summary.spam += triage.spam;
+      summary.queued += triage.queued;
+      summary.escalated += triage.escalated;
+    } catch (error) {
+      summary.errors += 1;
+      ctx.logger.info("Social inbox triage failed", { companyId, error: error instanceof Error ? error.message : String(error) });
     }
   }
   return summary;

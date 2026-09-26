@@ -548,13 +548,17 @@ export interface PostRow {
   published_at: unknown;
   error: string | null;
   created_by_agent_id: string | null;
+  /** Growth Lab: the experiment and arm this post tests (null when untagged). */
+  experiment_id?: string | null;
+  experiment_arm?: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
 
 const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
-  "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "created_at", "updated_at",
+  "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
+  "created_at", "updated_at",
 ].join(", ");
 
 export function postMedia(row: Pick<PostRow, "media">): MediaRef[] {
@@ -707,6 +711,15 @@ export async function setPostOutcome(ctx: PluginContext, id: string, fields: {
       WHERE id = $1`,
     [id, fields.status, fields.error, fields.publishedAt],
   );
+}
+
+/** Tag (or untag with nulls) the experiment arm a post tests. */
+export async function setPostExperiment(ctx: PluginContext, companyId: string, id: string, experimentId: string | null, arm: string | null): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "posts")} SET experiment_id = $3, experiment_arm = $4, updated_at = now() WHERE id = $1 AND company_id = $2`,
+    [id, companyId, experimentId, arm],
+  );
+  return result.rowCount === 1;
 }
 
 export async function setPostFailureIssue(ctx: PluginContext, id: string, issueId: string): Promise<void> {
@@ -1275,13 +1288,18 @@ export interface InboxItemRow {
   client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
+  /** Jev triage (see triage.ts); null until triaged. */
+  triage?: unknown;
+  triaged_at?: unknown;
+  triage_attempts?: number | null;
+  triage_issue_id?: string | null;
   created_at: unknown;
 }
 
 const INBOX_COLS = [
   "id", "company_id", "account_id", "platform", "kind", "author", "body", "status", "external_id", "parent_external_id", "permalink",
   "destination_id", "post_id", "reply_draft", "reply_body", "reply_external_id", "replied_at", "received_at", "client_kind", "client_ref",
-  "client_name", "created_at",
+  "client_name", "triage", "triaged_at", "triage_attempts", "triage_issue_id", "created_at",
 ].join(", ");
 
 export async function insertInboxItem(ctx: PluginContext, item: {
@@ -1363,6 +1381,44 @@ export async function saveInboxReply(ctx: PluginContext, companyId: string, id: 
             replied_at = CASE WHEN $7::boolean THEN now() ELSE replied_at END
       WHERE id = $1 AND company_id = $2`,
     [id, companyId, fields.status, fields.replyDraft ?? null, fields.replyBody ?? null, fields.replyExternalId ?? null, fields.replied],
+  );
+}
+
+/** New items Jev has not triaged yet (recent, fewer than `maxAttempts` failed tries). */
+export async function untriagedInboxItems(ctx: PluginContext, companyId: string, limit = 100, maxAttempts = 3): Promise<InboxItemRow[]> {
+  return ctx.db.query<InboxItemRow>(
+    `SELECT ${INBOX_COLS} FROM ${table(ctx, "inbox_items")}
+      WHERE company_id = $1 AND status = 'new' AND triaged_at IS NULL AND triage_attempts < $2
+        AND created_at >= now() - interval '3 days'
+      ORDER BY created_at
+      LIMIT $3`,
+    [companyId, maxAttempts, Math.min(Math.max(limit, 1), 500)],
+  );
+}
+
+/** Store the triage on the item, or count a failed try. */
+export async function saveInboxTriage(ctx: PluginContext, companyId: string, id: string, input: { triage: unknown; issueId?: string | null; failed?: boolean }): Promise<void> {
+  if (input.failed) {
+    await ctx.db.execute(
+      `UPDATE ${table(ctx, "inbox_items")} SET triage_attempts = triage_attempts + 1 WHERE id = $1 AND company_id = $2`,
+      [id, companyId],
+    );
+    return;
+  }
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "inbox_items")}
+        SET triage = $3::jsonb, triaged_at = COALESCE(triaged_at, now()), triage_issue_id = COALESCE($4, triage_issue_id)
+      WHERE id = $1 AND company_id = $2`,
+    [id, companyId, JSON.stringify(input.triage ?? null), input.issueId ?? null],
+  );
+}
+
+/** Mark logged Jev decisions as acted on (the kit logs them before the caller knows). */
+export async function markDecisionsActed(ctx: PluginContext, companyId: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "decisions")} SET acted = true WHERE company_id = $1 AND id = ANY(${textArrayParam(2)})`,
+    [companyId, JSON.stringify(ids)],
   );
 }
 

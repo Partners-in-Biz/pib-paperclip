@@ -13,7 +13,7 @@ describe("migrations", () => {
 
   it("every statement passes the host migration guard", () => {
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-    expect(files.slice(-4)).toEqual(["008_social.sql", "009_social.sql", "010_social.sql", "011_social.sql"]);
+    expect(files.slice(-5)).toEqual(["008_social.sql", "009_social.sql", "010_social.sql", "011_social.sql", "012_social.sql"]);
     for (const file of files) {
       for (const statement of splitStatements(readFileSync(new URL(file, MIGRATIONS), "utf8"))) {
         expect(() => assertMigrationStatement(statement), `${file}: ${statement.slice(0, 70)}`).not.toThrow();

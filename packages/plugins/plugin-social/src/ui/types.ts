@@ -78,6 +78,9 @@ export interface Post extends Scoped {
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
   source: string;
+  /** Growth Lab: the experiment and arm this post tests. */
+  experimentId: string | null;
+  experimentArm: "control" | "variant" | null;
   error: string | null;
   failureIssueId: string | null;
   createdAt: string | null;
@@ -120,6 +123,21 @@ export interface InboxItem extends Scoped {
   repliedAt: string | null;
   receivedAt: string | null;
   canReply: boolean;
+  /** Jev triage; null when not triaged (no key, or not yet). */
+  triage: InboxTriage | null;
+}
+
+export interface InboxTriage {
+  needsReply: boolean;
+  intent: string;
+  intentConfidence: number;
+  sentiment: string;
+  escalate: boolean;
+  action: "spam_read" | "escalated" | "queued" | "none";
+  corrected: string[];
+  issueId: string | null;
+  model: string;
+  triagedAt: string | null;
 }
 
 export interface Template {
@@ -154,6 +172,8 @@ export interface Snapshot {
     allowAgentReplies: boolean;
     blueskyDefaultPds: string;
     mastodonDefaultInstance: string | null;
+    /** A Jev (TypeSafe) key is saved and switched on. */
+    jev: boolean;
   };
   platforms: PlatformInfo[];
   accounts: Account[];
@@ -162,6 +182,8 @@ export interface Snapshot {
   media: MediaAsset[];
   feeds: Feed[];
   inbox: InboxItem[];
+  /** Proposed and running Growth Lab experiments a post in this scope can be tagged with. */
+  experiments: ExperimentOption[];
   agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   viewer: { userId: string | null };
@@ -215,3 +237,141 @@ export interface HireOptions {
 }
 
 export type RunAction = (key: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;
+
+// ── Growth Lab ──────────────────────────────────────────────────────────────
+
+export interface ExperimentArm {
+  key: "control" | "variant";
+  description: string;
+}
+
+export interface ExperimentOption {
+  experimentId: string;
+  hypothesis: string;
+  hypothesisType: string;
+  status: string;
+  arms: ExperimentArm[];
+}
+
+export interface FeatureQuestion {
+  key: string;
+  type: "noul" | "choice" | "score";
+  question: string;
+  options?: string[];
+  levels?: string[];
+  status: "active" | "retired";
+  proposedBy?: string | null;
+  createdAt?: string;
+}
+
+export interface GrowthProgram {
+  programId: string;
+  client: string | null;
+  clientName: string | null;
+  objective: string;
+  metric: string;
+  autopilot: "off" | "safe" | "full";
+  topics: string[];
+  brandVoice: string | null;
+  platforms: string | null;
+  cadence: string | null;
+  playbookVersion: number;
+  scoreboard: Record<string, { wins: number; losses: number; noChange: number; inconclusive: number }>;
+  featureQuestions: FeatureQuestion[];
+  ownerUserId: string | null;
+}
+
+export interface ArmCount {
+  posts: number;
+  published: number;
+  scored: number;
+}
+
+export interface GrowthExperiment {
+  experimentId: string;
+  status: "proposed" | "running" | "measured" | "rejected" | "abandoned";
+  hypothesis: string;
+  hypothesisType: string;
+  variable: string;
+  arms: ExperimentArm[];
+  minPerArm: number;
+  windowDays: number;
+  proposedBy: string | null;
+  approvalIssueId: string | null;
+  approvedAt: string | null;
+  startedAt: string | null;
+  measureBy: string | null;
+  measuredAt: string | null;
+  verdict: "win" | "loss" | "no_change" | "inconclusive" | null;
+  reason: string | null;
+  relativeChange: number | null;
+  controlMedian: number | null;
+  variantMedian: number | null;
+  playbookDiff: string | null;
+  playbookDecision: "pending" | "kept" | "discarded" | null;
+  note: string | null;
+  counts: { control: ArmCount; variant: ArmCount } | null;
+  createdAt: string | null;
+}
+
+export interface GrowthChange {
+  changeId: string;
+  status: "pending" | "kept" | "discarded";
+  op: "add" | "remove" | "replace";
+  section: string | null;
+  text: string | null;
+  diff: string;
+  reason: string;
+  experimentId: string | null;
+  baseVersion: number;
+  resultVersion: number | null;
+  proposedBy: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  note: string | null;
+  createdAt: string | null;
+}
+
+export interface GrowthPost {
+  postId: string;
+  caption: string;
+  platforms: string[];
+  publishedAt: string | null;
+  lift: number | null;
+  engagementRate: number | null;
+  destinations: number;
+  features: Record<string, string>;
+  experimentId: string | null;
+  arm: string | null;
+}
+
+export interface RankedType {
+  type: string;
+  tries: number;
+  score: number | null;
+  untried: boolean;
+  running: boolean;
+  observedLift: number | null;
+  observedPosts: number;
+}
+
+export interface GrowthSnapshot {
+  program: GrowthProgram;
+  periodDays: number;
+  summary: { postsScored: number; postsWithLift: number; medianLift: number | null };
+  top: GrowthPost[];
+  bottom: GrowthPost[];
+  featureLifts: Array<{ key: string; count: number; medianLift: number }>;
+  runningExperiments: GrowthExperiment[];
+  proposedExperiments: GrowthExperiment[];
+  pendingChanges: GrowthChange[];
+  rankedHypothesisTypes: RankedType[];
+  featureQuestions: { builtIn: string[]; custom: FeatureQuestion[]; slotsLeft: number };
+  notes: string[];
+  playbook: string;
+  versions: Array<{ version: number; reason: string; experimentId: string | null; createdBy: string | null; createdAt: string | null; playbook: string }>;
+  changes: GrowthChange[];
+  experiments: GrowthExperiment[];
+  jevConfigured: boolean;
+  canDecide: boolean;
+}

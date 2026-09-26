@@ -14,7 +14,7 @@ import {
   zeroImpressionContent,
   type DetectorInput,
 } from "../src/loop/detectors.js";
-import { proposeHypotheses } from "../src/loop/hypotheses.js";
+import { proposeHypotheses, rankCandidates } from "../src/loop/hypotheses.js";
 
 function base(overrides: Partial<DetectorInput> = {}): DetectorInput {
   return {
@@ -144,6 +144,32 @@ describe("hypotheses", () => {
       "stuck_page:internal-links": { wins: 2, losses: 0, noChange: 0, inconclusive: 0 },
     });
     expect(proposal!.hypothesisType).toBe("stuck_page:internal-links");
+  });
+  it("tries an untried hypothesis before repeating a winner (UCB)", () => {
+    const [proposal] = proposeHypotheses([stuck], {
+      "stuck_page:depth-faq": { wins: 3, losses: 0, noChange: 0, inconclusive: 0 },
+    });
+    expect(proposal!.hypothesisType).toBe("stuck_page:internal-links");
+  });
+  it("balances record and exploration once both are tried", () => {
+    // depth-faq won 6 of 7; internal-links lost twice: exploit the better record.
+    expect(proposeHypotheses([stuck], {
+      "stuck_page:depth-faq": { wins: 6, losses: 1, noChange: 0, inconclusive: 0 },
+      "stuck_page:internal-links": { wins: 0, losses: 2, noChange: 0, inconclusive: 0 },
+    })[0]!.hypothesisType).toBe("stuck_page:depth-faq");
+    // After many plays of depth-faq, one lightly tried alternative gets another go.
+    expect(proposeHypotheses([stuck], {
+      "stuck_page:depth-faq": { wins: 12, losses: 8, noChange: 0, inconclusive: 0 },
+      "stuck_page:internal-links": { wins: 0, losses: 0, noChange: 1, inconclusive: 0 },
+    })[0]!.hypothesisType).toBe("stuck_page:internal-links");
+  });
+  it("ranks candidates untried first and keeps the candidate order on ties", () => {
+    const candidates = [{ hypothesisType: "x:first" }, { hypothesisType: "x:second" }, { hypothesisType: "x:third" }];
+    expect(rankCandidates(candidates, null).map((c) => c.hypothesisType)).toEqual(["x:first", "x:second", "x:third"]);
+    expect(rankCandidates(candidates, { "x:first": { wins: 1, losses: 0, noChange: 0, inconclusive: 0 } }).map((c) => c.hypothesisType))
+      .toEqual(["x:second", "x:third", "x:first"]);
+    // Inconclusive results do not count as tries.
+    expect(rankCandidates(candidates, { "x:first": { wins: 0, losses: 0, noChange: 0, inconclusive: 4 } })[0]!.hypothesisType).toBe("x:first");
   });
   it("orders high severity first", () => {
     const cwv = { type: "cwv_regression" as const, severity: "high" as const, subject: "u", evidence: { url: "u", lcpMs: 5000, cls: 0 } };

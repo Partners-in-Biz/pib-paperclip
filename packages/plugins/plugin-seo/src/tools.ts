@@ -1,6 +1,7 @@
 /**
  * Agent tool declarations (exposed as `partnersinbiz.seo:<name>`). The plugin
- * never calls a model: every tool is deterministic; the agent does the thinking.
+ * never writes content: tools are deterministic, except keyword intent, which
+ * Jev classifies when a TypeSafe key is set (word rules otherwise).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 
@@ -87,7 +88,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Tasks",
     name: "block-task",
     displayName: "Hand a task to a person",
-    description: "Blocked (review false) or ready for sign-off (review true): comments the precise ask on the issue and hands it to the sprint owner.",
+    description: "Only for a true one-time grant or judgement. Blocked (review false): the ask goes on the sprint's weekly Needs you issue and the task comes back to you when it is done. Ready for sign-off (review true): the issue goes to the sprint owner's review and is listed on Needs you.",
     parametersSchema: schema(["taskId", "reason", "humanAsk"], {
       taskId,
       reason: text("What happened / what you prepared"),
@@ -113,7 +114,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       createIssue: flag("default true"),
     }),
   },
-  { group: "Tasks", name: "open-task", displayName: "Open sprint task (legacy)", description: "Legacy alias of add-task for work a person must do (owner defaults to human).", parametersSchema: schema(["sprintId", "title"], { sprintId, title: text(), description: text(), owner: choice(["agent", "human"]) }) },
+  { group: "Tasks", name: "open-task", displayName: "Open sprint task (legacy)", description: "Legacy alias of add-task (owner defaults to human; site code changes stay agent work). Person tasks go on the Needs you issue.", parametersSchema: schema(["sprintId", "title"], { sprintId, title: text(), description: text(), owner: choice(["agent", "human"]) }) },
 
   // Keywords
   { group: "Keywords", name: "list-keywords", displayName: "List keywords", description: "Tracked keywords with current position, impressions, clicks, CTR, intent and target URL.", parametersSchema: schema(["sprintId"], { sprintId, includeRetired: flag() }) },
@@ -121,7 +122,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Keywords",
     name: "add-keywords",
     displayName: "Add keywords",
-    description: "Track keywords in bulk (duplicates are skipped). Never invent volume.",
+    description: "Track keywords in bulk (duplicates are skipped). Never invent volume. A keyword without an intent gets one from Jev (when it is sure) or the word rules.",
     parametersSchema: schema(["sprintId", "keywords"], {
       sprintId,
       keywords: {
@@ -141,7 +142,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Keywords", name: "record-rank", displayName: "Record keyword rank (legacy)", description: "Legacy alias of record-position (no longer creates duplicate keywords).", parametersSchema: schema(["sprintId", "phrase"], { sprintId, phrase: text(), rank: int() }) },
   { group: "Keywords", name: "keyword-history", displayName: "Keyword position history", description: "Daily positions (GSC and manual) for one keyword, oldest first.", parametersSchema: schema(["keywordId"], { keywordId: text(), limit: int() }) },
   { group: "Keywords", name: "rank-history", displayName: "Keyword rank history (legacy)", description: "Legacy alias of keyword-history.", parametersSchema: schema(["keywordId"], { keywordId: text() }) },
-  { group: "Keywords", name: "discover-keywords", displayName: "Discover keywords", description: "Google Autocomplete suggestions plus seed variants (alternative, vs, best, how to, for small business, pricing) with an intent guess. Suggestions only — nothing is saved.", parametersSchema: schema(["seeds"], { seeds: list("1–8 seed terms"), sprintId, limit: int(), country: text("Two-letter country for autocomplete, default za"), language: text("default en") }) },
+  { group: "Keywords", name: "discover-keywords", displayName: "Discover keywords", description: "Google Autocomplete suggestions plus seed variants (alternative, vs, best, how to, for small business, pricing) with an intent (Jev when sure, else word rules; see intentSource). Suggestions only — nothing is saved.", parametersSchema: schema(["seeds"], { seeds: list("1–8 seed terms"), sprintId, limit: int(), country: text("Two-letter country for autocomplete, default za"), language: text("default en") }) },
 
   // Backlinks
   { group: "Backlinks", name: "list-backlinks", displayName: "List backlinks", description: "Backlinks and directory submissions with status.", parametersSchema: schema(["sprintId"], { sprintId, status: choice(["not_started", "in_progress", "submitted", "live", "rejected", "lost"]), type: choice(["directory", "community", "guest_post", "link_trade", "organic", "citation", "other"]) }) },
@@ -166,13 +167,106 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Site checks", name: "run-pagespeed", displayName: "Run PageSpeed Insights", description: "PageSpeed Insights for one URL (up to ~25 s): scores, LCP/CLS/INP (field data when Google has it), top opportunities. Saved to page health with sprintId.", parametersSchema: schema([], { ...urlOrSprint, strategy: choice(["mobile", "desktop"]) }) },
 
   // GSC
-  { group: "Google Search Console", name: "gsc-connect-url", displayName: "GSC connect link", description: "Connection status and the Paperclip page link a person uses to connect Search Console (the OAuth must happen in their browser).", parametersSchema: schema(["sprintId"], { sprintId }) },
+  { group: "Google Search Console", name: "gsc-connect-url", displayName: "GSC access status", description: "How this sprint reaches Search Console: the service account (preferred; its email and next step) or the OAuth fallback page.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Google Search Console",
+    name: "gsc-verification-token",
+    displayName: "GSC verification token",
+    description: "Site Verification API: the exact meta tag (META) or file (FILE) for a URL-prefix site, or the DNS TXT record for a domain property, for the service account to become a verified owner. Add it through the site repo, then gsc-verify-site.",
+    parametersSchema: schema(["sprintId"], { sprintId, method: choice(["META", "FILE", "DNS_TXT"], "Default META (URL-prefix); DNS_TXT for a domain property"), property: choice(["url", "domain"], "Default url"), taskId: text("The task this is for (resumed when a missing grant is added)") }),
+  },
+  {
+    group: "Google Search Console",
+    name: "gsc-verify-site",
+    displayName: "Verify site with the service account",
+    description: "Verify the token that is live on the site (the service account becomes a verified owner), add the Search Console property, store it on the sprint and submit <site>/sitemap.xml.",
+    parametersSchema: schema(["sprintId"], { sprintId, method: choice(["META", "FILE", "DNS_TXT"]), submitSitemap: flag("default true") }),
+  },
+  {
+    group: "Google Search Console",
+    name: "gsc-check-access",
+    displayName: "Check service account access",
+    description: "Can the service account read this sprint's property? Selects it when yes. For client sites without access it puts the email (service account + Search Console Users link) on the Needs you issue.",
+    parametersSchema: schema(["sprintId"], { sprintId, property: text("e.g. sc-domain:example.com; default: detected from the site"), askClient: flag("Queue the client email even for own sites"), taskId: text() }),
+  },
   { group: "Google Search Console", name: "gsc-properties", displayName: "GSC properties", description: "Properties the connected Google account can see, the selected one and a suggestion.", parametersSchema: schema(["sprintId"], { sprintId }) },
   { group: "Google Search Console", name: "gsc-set-property", displayName: "Select GSC property", description: "Choose the property (e.g. sc-domain:example.com) used for this sprint.", parametersSchema: schema(["sprintId", "propertyUrl"], { sprintId, propertyUrl: text() }) },
   { group: "Google Search Console", name: "gsc-pull", displayName: "Pull GSC data", description: "Pull the last 8 days (to yesterday) now: tracked keyword positions (impression-weighted), clicks, CTR, content impressions and site totals. The daily run does this automatically.", parametersSchema: schema(["sprintId"], { sprintId }) },
   { group: "Google Search Console", name: "gsc-query", displayName: "Query GSC", description: "Page+query rows for the last N days, optionally filtered by position band, page or query text (e.g. positionMin 8, positionMax 20 for stuck pages).", parametersSchema: schema(["sprintId"], { sprintId, days: int("1–90, default 28"), positionMin: number(), positionMax: number(), page: text(), query: text("contains"), limit: int("default 100") }) },
   { group: "Google Search Console", name: "gsc-submit-sitemap", displayName: "Submit sitemap to GSC", description: "Submit a sitemap to the selected property (default <site>/sitemap.xml).", parametersSchema: schema(["sprintId"], { sprintId, sitemapUrl: text() }) },
-  { group: "Google Search Console", name: "gsc-inspect-url", displayName: "Inspect URL in GSC", description: "URL Inspection: verdict, coverage, robots state, last crawl, Google vs declared canonical. Cannot request indexing.", parametersSchema: schema(["sprintId", "url"], { sprintId, url: text() }) },
+  { group: "Google Search Console", name: "gsc-inspect-url", displayName: "Inspect URL in GSC", description: "URL Inspection: verdict, coverage, robots state, last crawl, Google vs declared canonical. (Google has no public request-indexing API; use request-indexing.)", parametersSchema: schema(["sprintId", "url"], { sprintId, url: text() }) },
+
+  // Indexing and Bing
+  { group: "Indexing and Bing", name: "indexnow-key", displayName: "IndexNow key", description: "The sprint's IndexNow key, the key file to add through the repo (public/<key>.txt), and whether it is live.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Indexing and Bing",
+    name: "request-indexing",
+    displayName: "Get pages crawled",
+    description: "Sitemap to Search Console, IndexNow ping (Bing and others; needs the live key file) and URL Inspection for up to 5 URLs (default: home + priority/live pages). The daily run re-inspects after 14 days and adds optional Search Console links to Needs you only for pages still not indexed.",
+    parametersSchema: schema(["sprintId"], { sprintId, urls: list("Absolute URLs or paths; default the core pages"), sitemapUrl: text() }),
+  },
+  { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo. Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("default <site origin>/"), taskId: text() }) },
+  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml is live; enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("default true"), taskId: text() }) },
+  { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list(), sitemapUrl: text(), taskId: text() }) },
+
+  // Site repo
+  { group: "Site repo", name: "list-site-projects", displayName: "List site projects", description: "Paperclip projects that could hold the site repo (repo URL from their workspace), best match first, plus how to create one.", parametersSchema: schema([], { sprintId }) },
+  {
+    group: "Site repo",
+    name: "link-site",
+    displayName: "Link site repo",
+    description: "Link the Paperclip project whose workspace holds the site repo (code and content tasks open there), or noRepo: true for a CMS / client-managed site. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      projectId: text(),
+      noRepo: flag("No repo access: change sets go through Needs you"),
+      unlink: flag("People only"),
+      defaultBranch: text("default: from the workspace, else main"),
+      framework: text("e.g. nextjs"),
+      hosting: choice(["vercel", "netlify", "other"]),
+      changePolicy: choice(["merge_seo_scope", "pr_only", "full"]),
+    }),
+  },
+  { group: "Site repo", name: "get-site-link", displayName: "Get site link", description: "The sprint's site repo link, change policy and the exact SEO scope you may merge alone.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Site repo",
+    name: "check-change-scope",
+    displayName: "Check change scope",
+    description: "Before merging your PR: list every changed file with its SEO category and the check state. Returns merge, wait (checks not green) or pr_only (out of scope or policy pr_only → leave it open and add it to Needs you).",
+    parametersSchema: schema(["sprintId", "changes"], {
+      sprintId,
+      changes: {
+        type: "array",
+        description: "Every changed file",
+        items: { type: "object", required: ["path", "category"], properties: { path: text(), category: choice(["head_metadata", "json_ld", "sitemap_robots", "verification_file", "image_alt", "internal_links", "new_content", "seo_redirect", "other"]) } },
+      },
+      checks: choice(["passed", "failed", "pending"], "CI and preview deployment checks on the PR head commit"),
+    }),
+  },
+
+  // Needs you
+  { group: "Needs you", name: "needs-you", displayName: "Needs you digest", description: "This week's Needs you items for the sprint (open and done) and its issue.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Needs you",
+    name: "needs-you-add",
+    displayName: "Add to Needs you",
+    description: "Put something only a person can do on the sprint's weekly Needs you issue (deduped by key): an out-of-scope PR to merge (kind pr), a DM or email from a personal account with copy-ready text (kind message), a one-time grant. Say exactly what to do and what you do after. Standard keys github_token, site_project, service_account and bing_key fill in the exact steps and links themselves (pass taskIds; why = what failed).",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      kind: choice(["grant", "review", "pr", "message", "task", "indexing"]),
+      key: text("Stable key for dedupe, e.g. pr:<url>; or a standard key: github_token, site_project, service_account, bing_key"),
+      title: text("Required unless a standard key"),
+      why: text("Required unless a standard key"),
+      steps: list("Exact steps"),
+      links: list('"Label | https://…" or a bare URL'),
+      copy: text("Copy-ready text (DM, email, post)"),
+      after: text("What you do once it is done (required unless a standard key)"),
+      taskIds: list("Tasks that continue when it is done"),
+      optional: flag(),
+    }),
+  },
+  { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text(), note: text() }) },
+  { group: "Needs you", name: "setup-checklist", displayName: "Setup checklist", description: "Every one-time setup item (settings, service account, GitHub access, agent, keys; per sprint: site repo, property, Bing, autopilot) with status, links and what you do next.", parametersSchema: schema([], { sprintId }) },
 
   // Audits
   { group: "Audits", name: "run-audit-snapshot", displayName: "Take audit snapshot", description: "Record traffic, rankings, authority, content, CWV and task counts now (day 0/30/60/90 and monthly snapshots happen automatically).", parametersSchema: schema(["sprintId"], { sprintId, day: int("Override the sprint day label"), notes: text() }) },

@@ -22,7 +22,12 @@ import { ensureProject, linkPendingHire, resolveAgent } from "./agent.js";
 import { savePageHealth } from "./checks.js";
 import { companyInfo, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { clockFor } from "./context.js";
-import { gscPull, GscUnavailable } from "./gsc.js";
+import { gscCheckAccess, gscPull, GscUnavailable, settingsPath } from "./gsc.js";
+import { loadServiceAccount } from "./google-access.js";
+import { indexingFollowUp } from "./indexing.js";
+import { addNeedsYou, recheckNeedsYou } from "./needs-you.js";
+import { upgradeSprintPlan } from "./upgrade.js";
+import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
 import { scheduledSnapshots } from "./snapshots.js";
@@ -121,11 +126,36 @@ async function dailyBing(env: Env, info: CompanyInfo, sprint: db.Sprint): Promis
   }
 }
 
+/**
+ * One-time grants the sprint needs now, raised before anyone has to notice:
+ * the service account key (Search Console not set up) and the Bing key (Bing
+ * task open). Client sprints with a service account get the access email.
+ */
+async function raiseGrants(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<void> {
+  const gsc = await db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc");
+  const gscReady = Boolean(gsc?.propertyUrl) && gsc?.status === "connected";
+  const sa = await loadServiceAccount(info);
+  const open = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
+  const idsOf = (type: string) => open.filter((t) => t.taskType === type).map((t) => t.id);
+  const settings = await settingsPath(env, info);
+  if (!gscReady && !sa.key) {
+    await addNeedsYou(env, info, sprint, serviceAccountItem({ prefix: info.prefix, settingsPath: settings }, idsOf("gsc-verify")));
+  } else if (!gscReady && sa.key && (sprint.clientRef || sprint.siteAccess === "none")) {
+    await gscCheckAccess(env, sprint.companyId, { sprintId: sprint.id }).catch(() => undefined);
+  }
+  const bingTasks = idsOf("bing-verify");
+  if (bingTasks.length > 0 && !(await info.loaded.secrets.get("bingApiKey").catch(() => undefined))) {
+    await addNeedsYou(env, info, sprint, bingKeyItem({ prefix: info.prefix, settingsPath: settings }, bingTasks));
+  }
+}
+
 export interface DailySprintResult {
   sprintId: string;
   status: string;
   day: number;
   issuesOpened: number;
+  planUpgraded: boolean;
+  needsYouResolved: number;
   snapshotDay: number | null;
   measured: number;
   healed: number;
@@ -157,8 +187,18 @@ export async function runDailyForSprint(
     warnings.push(`Root issue: ${errorMessage(error)}`);
   }
 
+  let planUpgraded = false;
+  try {
+    planUpgraded = (await upgradeSprintPlan(env, info, sprint, deps.agent)).upgraded;
+    if (planUpgraded) sprint = (await db.getSprint(env.ctx.db, sprint.companyId, sprint.id)) ?? sprint;
+  } catch (error) {
+    warnings.push(`Plan upgrade: ${errorMessage(error)}`);
+  }
+
   const gsc = await db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc");
-  if (gsc?.tokenSealed && gsc.status === "connected" && gsc.propertyUrl) {
+  const saReady = Boolean((await loadServiceAccount(info)).key);
+  // The service account finds the property on its own; the OAuth connection needs one selected.
+  if (gsc && (saReady || (gsc.tokenSealed && gsc.status === "connected" && gsc.propertyUrl))) {
     try {
       await gscPull(env, info, sprint);
     } catch (error) {
@@ -191,6 +231,19 @@ export async function runDailyForSprint(
     warnings.push(...result.errors.slice(0, 5));
   }
 
+  let needsYouResolved = 0;
+  try {
+    await raiseGrants(env, info, sprint);
+    needsYouResolved = await recheckNeedsYou(env, info, sprint);
+  } catch (error) {
+    warnings.push(`Needs you: ${errorMessage(error)}`);
+  }
+  try {
+    await indexingFollowUp(env, info, sprint);
+  } catch (error) {
+    warnings.push(`Indexing follow-up: ${errorMessage(error)}`);
+  }
+
   let measured = 0;
   try {
     measured = await measureDue(env, info, sprint);
@@ -221,7 +274,7 @@ export async function runDailyForSprint(
     },
     last_daily_on: info.today,
   });
-  return { sprintId: sprint.id, status, day: clock.day, issuesOpened, snapshotDay, measured, healed, warnings };
+  return { sprintId: sprint.id, status, day: clock.day, issuesOpened, planUpgraded, needsYouResolved, snapshotDay, measured, healed, warnings };
 }
 
 /**

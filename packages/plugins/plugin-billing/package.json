@@ -1,9 +1,9 @@
 {
   "name": "@partnersinbiz/plugin-billing",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Commercial invoices in minor units. Agents draft. A person approves sending and payment.",
+  "description": "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers in minor units. Agents draft; a person approves sending and money.",
   "files": [
     "dist",
     "migrations",

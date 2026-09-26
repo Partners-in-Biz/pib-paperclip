@@ -24,10 +24,11 @@ import { SocialError } from "./domain.js";
 import { legacySocialAgent, missingSocialSkills, skillsHint, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE, SOCIAL_SKILLS } from "./hire.js";
 import { agentStatusActive } from "./issues.js";
 import { PLAN_ROUTINE_KEY, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
+import { PLAN_ROUTINE_TITLE } from "./skills.js";
 
 export { PLAN_ROUTINE_KEY };
 export const TOOLS_GRANT = { permissionKey: "tools:use" as const, scope: { providerType: "paperclip_plugin" } };
-const ROUTINE_TITLE = "\"Plan next week's social\"";
+const ROUTINE_TITLE = `"${PLAN_ROUTINE_TITLE}"`;
 
 function sameScope(a: Record<string, unknown> | null | undefined, b: Record<string, unknown>): boolean {
   const norm = (v: Record<string, unknown> | null | undefined) => JSON.stringify(Object.keys(v ?? {}).sort().map((k) => [k, (v ?? {})[k]]));

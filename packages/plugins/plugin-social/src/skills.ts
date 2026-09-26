@@ -8,7 +8,7 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 export const SKILL_KEY_PREFIX = "plugin/partnersinbiz-social";
 
 const PUBLISH_DESCRIPTION =
-  "Operate the Partners in Biz Social plugin: work in one scope (PiB's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, and work the social inbox and analytics. Use for any social posting or scheduling task.";
+  "Operate the Partners in Biz Social plugin: work in one scope (PiB's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, work the Jev-triaged social inbox, and run the Growth Lab (performance review, experiments, playbook). Use for any social posting, scheduling, inbox or performance task.";
 
 export const SOCIAL_PUBLISH_BODY = `# Social publish
 
@@ -49,17 +49,31 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 ## Inbox
 
 - \`list-inbox\` returns comments and mentions pulled every 15 minutes (Facebook, Instagram, Threads, YouTube comments on recent posts; X, Bluesky and Mastodon mentions).
+- When a Jev key is set, every new item carries \`triage\`: \`needsReply\`, \`intent\` (question, complaint, praise, lead, spam, other), \`sentiment\` and \`escalate\`. Confident spam is marked read for you. Items that need a reply arrive as **one issue per account per day** ("Reply to social comments: …") listing the \`itemId\`s; more comments that day are added as comments on it. Items with legal, safety or PR risk go to a person, never to you: do not reply to them.
 - \`reply-inbox\` replies through the platform when it supports replies. Unless the company turned on agent replies, your reply is saved as a suggestion that a person sends. Keep replies short, friendly and on brand; never argue, never share private details, escalate complaints to a person.
-- \`mark-inbox-read\` when handled.
+- \`mark-inbox-read\` when handled. Close the day's issue with one line on what you did.
 
 ## Analytics and feeds
 
 - \`post-analytics\` (one post, or totals for one scope) and \`account-analytics\` (one scope) return views, likes, comments and shares from snapshots taken 1 hour, 24 hours, 7 days and 30 days after publishing. Never invent numbers; if a platform has none yet, say so.
 - \`create-rss-feed\` turns new feed items into draft posts (with destinations) for review. \`pause-rss-feed\`/\`resume-rss-feed\` control it.
 
+## Growth Lab (what works, per scope)
+
+Each scope (own work, each client) has a Growth program: a goal ("engagement rate lift at 7d"), an autopilot mode and a **playbook** (markdown rules you follow when planning). The loop works like autoresearch:
+
+- **Score.** The daily \`score-posts\` job scores every published destination on its 7-day numbers: weighted engagement ÷ reach (else impressions, else views), against the same account's median over the 30 days before it (its own post excluded). Lift +0.2 = 20% better than usual. Posts without reach numbers are not scored.
+- **Features.** Each published post is tagged once: format, length and posting daypart in code; hook, CTA, topic (when the program lists topics) and tone by Jev from the caption only; plus the program's own questions.
+- **Review.** \`performance-review\` (one scope): top and bottom 5 posts with features and lift, median lift per feature value, running experiments, pending playbook changes, and hypothesis types ranked by UCB (untried types first, then what has won).
+- **Experiment.** \`propose-experiment\` changes **one** variable: \`hypothesisType\` like \`hook:question\`, arms \`control\` (what we do now) and \`variant\` (the change), at least 3 posts per arm. Max 3 running per scope. Then tag each post with \`experimentId\` + \`arm\` on \`create-post\` / \`update-post\`. The daily \`measure-experiments\` job decides win / loss / no change / inconclusive when each arm has its 7-day scores (or after 21 days) and drafts a playbook change for a win or a loss.
+- **Playbook.** \`get-playbook\` before planning. \`propose-playbook-change\` (add a rule, remove a line, or replace) with a reason. \`decide-playbook-change\` keeps (new version) or discards.
+- **Feature discovery.** When the top and bottom posts differ in a way no feature captures, \`propose-feature-question\` adds a question Jev asks about every caption (yes/no, choice or score; at most 12). It backfills the last 90 days. Retire questions that never separate anything.
+- **Autopilot.** off: you only read. safe (default): you propose; a person approves experiments and keeps or discards changes from one approval issue per program per week. Never approve or decide yourself. full: your proposals start at once, you may decide changes, and wins are kept automatically.
+- \`list-experiments\` shows arms, tagged/published/scored counts per arm and verdicts. Never invent results; say "not measured yet" when it is not.
+
 ## Tool list
 
-list-clients, list-connected-accounts, connect-account, refresh-account, create-post, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics.
+list-clients, list-connected-accounts, connect-account, refresh-account, create-post, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
 `;
 
 const CONTENT_DESCRIPTION =
@@ -96,10 +110,24 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 
 Full per-platform guidance: \`references/platforms.md\`.
 
+## Follow the playbook
+
+- Call \`get-playbook\` for the scope before you write. Follow "Rules we follow", avoid "Things that did not work", and respect "Constraints". When a rule and this skill disagree, the playbook wins for that client.
+- A post in an experiment changes only the tested variable. Control posts follow the playbook as it is; variant posts make the one change and nothing else. Tag each with \`experimentId\` + \`arm\`.
+
+## Weekly social review & plan
+
+For each scope with connected accounts (own work first, then each client):
+1. \`performance-review\` (default 28 days).
+2. Write the insights as a comment on the routine issue: what the top posts share, what the bottom posts share, which feature values lift or drag (with post counts), and the state of running experiments. Numbers only from the review.
+3. Propose at most 2 experiments (\`propose-experiment\`), picking hypothesis types high in \`rankedHypothesisTypes\` that are not running. If the top and bottom posts differ in something no feature measures, use \`propose-feature-question\` instead of guessing.
+4. Pending playbook changes: on full autopilot decide them (\`decide-playbook-change\`); otherwise leave them for the person on the approval issue and mention them in your comment.
+5. Draft next week's posts following the playbook (\`get-playbook\`), tagging the arms of running (or just proposed) experiments so each arm gets at least its minimum number of posts. \`validate-post\`, then \`request-review\`.
+
 ## Scope
 
 - Own work = no client. Client work = pass \`clientKind\` + \`clientRef\` from the issue.
-- Never reuse one client's copy, media or accounts for another client or for PiB's own posts.
+- Never reuse one client's copy, media or accounts for another client or for PiB's own posts. Each scope has its own playbook and experiments.
 
 ## Always
 
@@ -199,20 +227,23 @@ You run social media for Partners in Biz (its own accounts) and its clients insi
 - Work in one scope at a time. PiB's own work: call the tools without a client. Client work (a CRM company or contact): pass \`clientKind\` + \`clientRef\` from the issue or \`list-clients\` on every call. Never mix accounts or media across clients.
 - You draft, validate, request review and schedule approved posts. A person approves. You never approve.
 - When an issue says a post failed: read the destination errors with \`get-post\`, fix what you can, \`retry-post\` for transient errors, and ask a person to reconnect accounts for token errors. Comment what you did, then close the issue.
-- When asked to plan a week: propose 3-5 posts per client per active platform, draft them, and put them in review with a short summary comment for the approver.
+- The weekly "Weekly social review & plan" routine: for each scope, run \`performance-review\`, comment the insights, propose at most 2 experiments, handle playbook changes (decide only on full autopilot), then draft next week's posts following the playbook and tag experiment arms. The procedure is in \`social-content\` ("Weekly social review & plan").
+- Social comment issues ("Reply to social comments: …") list inbox items Jev says need a reply: reply with \`reply-inbox\`, mark the rest read, close the issue.
 - Never invent metrics, quotes, prices or client claims. Never paste secrets or tokens anywhere.
 - Keep issue comments short: what you did, what is waiting for a person, links to the posts.
 `;
 
-export const PLAN_ROUTINE_DESCRIPTION = `Plan next week's social posts for PiB's own accounts and every active client.
+export const PLAN_ROUTINE_TITLE = "Weekly social review & plan";
 
-Run procedure:
+export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for PiB's own accounts and every active client (Growth Lab).
+
+Run procedure (details in the pib-social-content skill, "Weekly social review & plan"):
 1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts.
-2. For each scope, read last week's posts (list-posts in that scope) and post-analytics to see what worked.
-3. Draft 3-5 posts per scope per active platform for next week with create-post (media from list-media-assets or import-media-from-url, per-platform overrides, first comments where useful). Follow social-content.
-4. validate-post each draft and fix every problem.
-5. request-review each post. Do not schedule; a person approves first.
-6. Comment on this routine issue with one line per scope (own work, then each client): posts drafted, platforms, and anything the approver must decide. Then close it.`;
+2. For each scope: performance-review, then comment the insights on this issue (top/bottom posts, feature lifts, running experiments; numbers from the review only).
+3. Propose at most 2 experiments per scope (propose-experiment, from the ranked hypothesis types), or a feature question when no feature explains the difference.
+4. Pending playbook changes: decide them only on full autopilot (decide-playbook-change); otherwise leave them on the approval issue.
+5. Draft next week's posts per scope and active platform with create-post, following get-playbook and tagging experiment arms (experimentId + arm). validate-post, fix every problem, request-review. Do not schedule; a person approves first.
+6. Finish with one line per scope (own work, then each client): posts drafted, experiments proposed or running, and anything the approver must decide. Then close this issue.`;
 
 export interface SocialSkill extends PluginManagedSkillDeclaration {
   markdown: string;

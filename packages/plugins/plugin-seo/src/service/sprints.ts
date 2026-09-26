@@ -41,6 +41,10 @@ import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy 
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
 import { materialiseDueTasks } from "./tasks.js";
+import { loadServiceAccount } from "./google-access.js";
+import { needsYouView } from "./needs-you.js";
+import { siteLinkView } from "./site.js";
+import { isCodeTask } from "../engine/site-change.js";
 
 export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks: number; backlinks: number }> {
   const tasks = await db.insertTasks(
@@ -208,7 +212,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     issuesOpened: materialised.created,
     issuesPending: materialised.remaining,
     warnings,
-    next: "Connect Google Search Console on the SEO page (Integrations tab) and activate the SEO agent if it is not active yet.",
+    next:
+      "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue.",
   };
 }
 
@@ -259,6 +264,7 @@ export function sprintView(sprint: db.Sprint, today: string, counts?: { open: nu
     health: sprint.health,
     lastDailyOn: sprint.lastDailyOn,
     notes: sprint.notes,
+    site: siteLinkView(sprint),
     ...(counts ? { tasks: counts } : {}),
   };
 }
@@ -298,7 +304,8 @@ export function integrationView(i: db.Integration) {
     propertyUrl: i.propertyUrl,
     lastPullAt: i.lastPullAt,
     lastError: i.lastError,
-    connected: i.provider === "gsc" ? Boolean(i.tokenSealed) && i.status === "connected" : i.status === "enabled",
+    connected: i.provider === "gsc" ? (Boolean(i.tokenSealed) || i.settings?.auth === "service_account") && i.status === "connected" : i.status === "enabled",
+    auth: i.provider === "gsc" ? (i.settings?.auth === "service_account" ? "service_account" : i.tokenSealed ? "oauth" : null) : null,
     stats: i.stats,
   };
 }
@@ -339,16 +346,33 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const since = `${addDays(info.today, -1)}T00:00:00Z`;
   const notStarted = due.filter((t) => t.status === "not_started");
   const agentWork = notStarted.filter((t) => t.owner === "agent");
-  const inProgress = due.filter((t) => t.status === "in_progress");
+  // Person tasks listed on Needs you are not the agent's work in progress.
+  const inProgress = due.filter((t) => t.status === "in_progress" && t.assigneeKind !== "needs_you");
   const blocked = due.filter((t) => t.status === "blocked");
   const gsc = integrations.find((i) => i.provider === "gsc");
+  const sa = await loadServiceAccount(info);
+  const needsYou = await needsYouView(env, info, sprint).catch(() => null);
   const next: string[] = [];
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
-  if (gsc?.status === "needs_reconnect") next.push("Search Console needs a reconnect by the owner (send the gsc-connect-url link).");
-  else if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) next.push("Search Console is not connected with a property: rankings cannot update. Ask the owner to connect it (gsc-connect-url).");
+  if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
+    if (sa.key) {
+      next.push(
+        sprint.clientRef
+          ? "Search Console: run gsc-check-access. Without access the client email is on Needs you; the plugin re-checks every morning."
+          : "Search Console: verify it yourself with the service account (gsc-verification-token → tag through the repo → gsc-verify-site).",
+      );
+    } else {
+      next.push("Search Console: waiting for the service account key (on the Needs you issue). Work the other tasks meanwhile; rankings start once it is set.");
+    }
+  }
+  if (sprint.siteAccess === "unlinked") {
+    const waiting = notStarted.filter((t) => t.owner === "agent" && !t.issueId && isCodeTask(t)).length;
+    if (waiting > 0) next.push(`${waiting} code task(s) wait for the site repo link (on Needs you). If you know the repo's project, link it with link-site.`);
+  }
   if (inProgress.length > 0) next.push(`Finish the ${inProgress.length} task(s) in progress first.`);
   if (agentWork.length > 0) next.push(`Work the ${agentWork.length} due agent task(s), oldest week first; complete each with complete-task and evidence.`);
-  if (blocked.length > 0) next.push(`${blocked.length} task(s) wait on a person; do not redo them.`);
+  if (blocked.length > 0) next.push(`${blocked.length} task(s) are blocked; what they need is on Needs you — do not redo them.`);
+  if (needsYou && needsYou.open.length > 0) next.push(`${needsYou.open.length} item(s) wait on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
   if (proposals.length > 0) next.push(`${proposals.length} optimization proposal(s) await approval.`);
   if (next.length === 0) next.push("Nothing is due. Check keyword positions (list-keywords) and post a short digest.");
   return {
@@ -372,6 +396,9 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     upcoming: tasks.filter((t) => t.dueDay != null && t.dueDay > clock.day).slice(0, 5).map(brief),
     proposals: proposals.map((p) => ({ optimizationId: p.id, hypothesis: p.hypothesis, signal: p.signalType, severity: p.severity })),
     integrations: integrations.map(integrationView),
+    siteRepo: siteLinkView(sprint),
+    serviceAccountEmail: sa.key?.clientEmail ?? null,
+    needsYou: needsYou ? { issueId: needsYou.issueId, issueIdentifier: needsYou.issueIdentifier, open: needsYou.open.map((i) => ({ key: i.key, title: i.title, kind: i.kind })) } : null,
     health: sprint.health,
     next,
   };

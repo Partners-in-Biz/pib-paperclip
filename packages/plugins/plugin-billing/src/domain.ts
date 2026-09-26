@@ -12,8 +12,26 @@ export interface InvoiceLine {
   unitAmountMinor: number;
 }
 
+export type InvoiceStatusValue =
+  | "draft"
+  | "sent"
+  | "viewed"
+  | "payment_pending_verification"
+  | "partially_paid"
+  | "paid"
+  | "overdue"
+  | "cancelled"
+  | "written_off";
+
+/** Statuses on which money is still owed. */
+export const OPEN_STATUSES: readonly InvoiceStatusValue[] = ["sent", "viewed", "overdue", "partially_paid", "payment_pending_verification"];
+
+export function isOpenStatus(status: string): boolean {
+  return (OPEN_STATUSES as readonly string[]).includes(status);
+}
+
 export interface InvoiceState {
-  status: "draft" | "sent" | "viewed" | "paid" | "overdue" | "cancelled";
+  status: InvoiceStatusValue;
   sender: Record<string, unknown>;
   customer: Record<string, unknown>;
   senderSnapshot: Record<string, unknown> | null;
@@ -49,7 +67,7 @@ export function markSent<T extends InvoiceState>(invoice: T, now: string): T {
 }
 
 export function markPaid<T extends InvoiceState>(invoice: T): T {
-  if (invoice.status !== "sent" && invoice.status !== "viewed" && invoice.status !== "overdue") {
+  if (!isOpenStatus(invoice.status)) {
     throw new BillingError("This invoice cannot be marked paid");
   }
   return { ...invoice, status: "paid" };
@@ -161,6 +179,8 @@ export interface InvoiceHtmlInput {
   customer: Record<string, unknown>;
   lines: InvoiceHtmlLine[];
   dueAt: string | null;
+  /** Totals from per-line VAT codes; when set, `taxRate` is ignored. */
+  totals?: { subtotalMinor: number; vatMinor: number; totalMinor: number };
 }
 
 /** Minor units as money in the document's currency, e.g. `ZAR 12,400.00`. Used on printed invoices and summaries. */
@@ -223,9 +243,11 @@ function partyLines(party: Record<string, unknown>, fallbackName: string): strin
 export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
   const kind = input.kind ?? "Invoice";
   const senderName = esc(input.sender.name ?? "Workspace");
-  const subtotal = input.lines.reduce((sum, line) => sum + line.quantity * line.unitAmountMinor, 0);
-  const taxRate = Number(input.taxRate ?? 0);
-  const { taxMinor, totalMinor } = totalWithTax(subtotal, taxRate);
+  const taxRate = input.totals ? 0 : Number(input.taxRate ?? 0);
+  const computed = totalWithTax(input.lines.reduce((sum, line) => sum + line.quantity * line.unitAmountMinor, 0), taxRate);
+  const subtotal = input.totals ? input.totals.subtotalMinor : input.lines.reduce((sum, line) => sum + line.quantity * line.unitAmountMinor, 0);
+  const taxMinor = input.totals ? input.totals.vatMinor : computed.taxMinor;
+  const totalMinor = input.totals ? input.totals.totalMinor : computed.totalMinor;
   const rows = input.lines
     .map((line) => {
       const lineTotal = line.quantity * line.unitAmountMinor;
@@ -298,7 +320,7 @@ export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
   </table>
   <table class="totals">
     <tr><td>Subtotal</td><td class="num">${money(subtotal, input.currency)}</td></tr>
-    ${taxRate > 0 ? `<tr><td>VAT ${esc(taxRate)}%</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : ""}
+    ${taxRate > 0 ? `<tr><td>VAT ${esc(taxRate)}%</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : input.totals && taxMinor > 0 ? `<tr><td>VAT</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : ""}
     <tr class="grand"><td>Total</td><td class="num">${money(totalMinor, input.currency)}</td></tr>
   </table>
   ${kind === "Invoice" && paymentRows ? `<div class="pay"><h3>Payment details (EFT)</h3><table>${paymentRows}${reference}</table></div>` : ""}
@@ -424,7 +446,7 @@ export interface SummaryInvoice {
   lastPaidAt: string | null;
 }
 
-const OPEN_INVOICE_STATUSES = new Set(["sent", "viewed", "overdue"]);
+const OPEN_INVOICE_STATUSES = new Set<string>(OPEN_STATUSES);
 
 /** What the customer still owes on a sent invoice: total less payments and credits, never below zero. */
 export function outstandingMinor(invoice: Pick<SummaryInvoice, "status" | "totalMinor" | "paidMinor" | "creditedMinor">): number {
@@ -477,4 +499,50 @@ export function clientBillingSummary(input: {
       { label: "Last paid", value: lastPaid ? new Date(Date.parse(lastPaid)).toISOString().slice(0, 10) : "Never" },
     ],
   };
+}
+
+export interface BalanceState {
+  status: string;
+  totalMinor: number;
+  /** Payments allocated to the invoice. */
+  paidMinor: number;
+  /** Credit notes and customer credit applied. */
+  creditedMinor: number;
+  writtenOffMinor: number;
+  pendingPops: number;
+  paymentCount: number;
+  dueAt: string | null;
+}
+
+/** What is still owed from the stored sums (never below zero). */
+export function balanceOutstanding(state: BalanceState): number {
+  if (!isOpenStatus(state.status)) return 0;
+  return Math.max(0, state.totalMinor - state.paidMinor - state.creditedMinor - state.writtenOffMinor);
+}
+
+/**
+ * The status an issued invoice should have after money or a proof of payment
+ * moved: paid when nothing is owed, waiting on verification while a POP is
+ * pending, partly paid, overdue by due date, else sent/viewed. Drafts and
+ * cancelled invoices keep their status, and an invoice marked paid before
+ * payments were recorded (0.2 approvals) stays paid.
+ */
+export function deriveInvoiceStatus(state: BalanceState, now: Date): InvoiceStatusValue {
+  const current = state.status as InvoiceStatusValue;
+  if (current === "draft" || current === "cancelled") return current;
+  if ((current === "paid" || current === "written_off") && state.paymentCount === 0 && state.creditedMinor + state.writtenOffMinor === 0) return current;
+  const owed = state.totalMinor - state.paidMinor - state.creditedMinor - state.writtenOffMinor;
+  if (owed <= 0) return state.writtenOffMinor > 0 && state.paidMinor + state.creditedMinor < state.totalMinor ? "written_off" : "paid";
+  if (state.pendingPops > 0) return "payment_pending_verification";
+  if (state.paidMinor + state.creditedMinor > 0) return "partially_paid";
+  const due = state.dueAt ? Date.parse(state.dueAt) : Number.NaN;
+  if (Number.isFinite(due) && due < now.getTime()) return "overdue";
+  return current === "viewed" ? "viewed" : "sent";
+}
+
+/** Whole days an invoice is past due (0 when not yet due or no due date). */
+export function daysPastDue(dueAt: string | null, now: Date): number {
+  const due = dueAt ? Date.parse(dueAt) : Number.NaN;
+  if (!Number.isFinite(due)) return 0;
+  return Math.max(0, Math.floor((now.getTime() - due) / 86_400_000));
 }

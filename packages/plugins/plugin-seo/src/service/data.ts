@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import * as db from "../db.js";
 import { keywordStatusForPosition } from "../engine/sprint.js";
-import { discoverKeywords } from "../integrations/autocomplete.js";
+import { discoverKeywords, inferIntent, type Intent } from "../integrations/autocomplete.js";
 import {
   actorId,
   bool,
@@ -22,6 +22,18 @@ import {
   type Params,
 } from "./common.js";
 import { assertWritable, requireSprint } from "./context.js";
+import { classifyIntents } from "./intent.js";
+
+/** Names a searcher would use for the sprint's own brand (site, client, domain label). */
+function sprintBrandTerms(sprint: db.Sprint): string[] {
+  let host = "";
+  try {
+    host = new URL(sprint.siteUrl).hostname.replace(/^www\./, "").split(".")[0] ?? "";
+  } catch {
+    host = "";
+  }
+  return [sprint.siteName, sprint.clientName ?? sprint.legacyClientName ?? "", host].filter(Boolean);
+}
 
 export const INTENTS = ["problem", "solution", "brand"] as const;
 export const BACKLINK_TYPES = ["directory", "community", "guest_post", "link_trade", "organic", "citation", "other"] as const;
@@ -94,17 +106,32 @@ export async function addKeywords(env: Env, companyId: string, actor: Actor, par
   const raw = Array.isArray(params.keywords) ? params.keywords : params.phrase ? [params] : null;
   if (!raw || raw.length === 0) throw new SeoError("keywords must be a non-empty list of {phrase, …}");
   if (raw.length > 200) throw new SeoError("Add at most 200 keywords per call");
-  const added: Array<{ keywordId: string; phrase: string }> = [];
+  const added: Array<{ keywordId: string; phrase: string; intent: string | null; intentSource?: "jev" | "rules" }> = [];
   const skipped: Array<{ phrase: string; reason: string }> = [];
+  const inputs: KeywordInput[] = [];
   for (const item of raw) {
     const entry = typeof item === "string" ? { phrase: item } : (item as Params);
-    let input: KeywordInput;
     try {
-      input = parseKeywordInput(entry, sprint.siteUrl);
+      inputs.push(parseKeywordInput(entry, sprint.siteUrl));
     } catch (error) {
       skipped.push({ phrase: String((entry as Params).phrase ?? ""), reason: error instanceof Error ? error.message : "invalid" });
-      continue;
     }
+  }
+  // Keywords without an intent get one: Jev when it is sure enough, else the regex guess.
+  const missing = inputs.filter((input) => !input.intent);
+  const brandTerms = sprintBrandTerms(sprint);
+  const guessed = await classifyIntents(
+    env,
+    companyId,
+    missing.map((input) => ({ phrase: input.phrase, fallback: inferIntent(input.phrase, brandTerms) })),
+    { siteName: sprint.siteName, sprintId: sprint.id },
+  );
+  const sourceByInput = new Map<KeywordInput, "jev" | "rules">();
+  missing.forEach((input, index) => {
+    input.intent = guessed[index]!.intent;
+    sourceByInput.set(input, guessed[index]!.source);
+  });
+  for (const input of inputs) {
     const id = randomUUID();
     const inserted = await db.insertKeyword(env.ctx.db, {
       id,
@@ -113,8 +140,10 @@ export async function addKeywords(env: Env, companyId: string, actor: Actor, par
       ...input,
       source: actor.kind === "agent" ? "agent" : "manual",
     });
-    if (inserted) added.push({ keywordId: id, phrase: input.phrase });
-    else skipped.push({ phrase: input.phrase, reason: "already tracked" });
+    if (inserted) {
+      const source = sourceByInput.get(input);
+      added.push({ keywordId: id, phrase: input.phrase, intent: input.intent, ...(source ? { intentSource: source } : {}) });
+    } else skipped.push({ phrase: input.phrase, reason: "already tracked" });
   }
   return { sprintId: sprint.id, added: added.length, skipped: skipped.length, keywords: added, skippedDetail: skipped };
 }
@@ -212,10 +241,12 @@ export async function discoverKeywordsTool(env: Env, companyId: string, params: 
   if (seeds.length === 0) throw new SeoError("seeds is required (1–8 seed terms)");
   let brandTerms: string[] = [];
   let exclude: string[] = [];
+  let siteName: string | null = null;
   const sprintId = str(params, "sprintId");
   if (sprintId) {
     const sprint = await requireSprint(env, companyId, sprintId);
-    brandTerms = [sprint.siteName, sprint.clientName ?? sprint.legacyClientName ?? "", new URL(sprint.siteUrl).hostname.replace(/^www\./, "").split(".")[0] ?? ""].filter(Boolean);
+    brandTerms = sprintBrandTerms(sprint);
+    siteName = sprint.siteName;
     exclude = (await db.listKeywords(env.ctx.db, companyId, sprint.id)).map((k) => k.phrase);
   }
   const candidates = await discoverKeywords(env.fetch, {
@@ -226,11 +257,22 @@ export async function discoverKeywordsTool(env: Env, companyId: string, params: 
     brandTerms,
     exclude,
   });
+  const intents = await classifyIntents(
+    env,
+    companyId,
+    candidates.map((candidate) => ({ phrase: candidate.phrase, fallback: candidate.intent })),
+    { siteName, sprintId: sprintId ?? null },
+  );
+  const classified = candidates.map((candidate, index) => ({
+    ...candidate,
+    intent: intents[index]!.intent as Intent,
+    intentSource: intents[index]!.source,
+  }));
   return {
     seeds,
-    count: candidates.length,
-    candidates,
-    note: "Suggestions come from Google Autocomplete (real searches, no volumes) plus seed variants (unverified patterns). Check the live results before choosing; save picks with add-keywords.",
+    count: classified.length,
+    candidates: classified,
+    note: "Suggestions come from Google Autocomplete (real searches, no volumes) plus seed variants (unverified patterns). Intent comes from Jev when it is sure (intentSource jev), else from word rules. Check the live results before choosing; save picks with add-keywords.",
   };
 }
 

@@ -1,4 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { jevConfigSchema } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
@@ -11,13 +12,14 @@ const instanceConfigSchema: JsonSchema = {
   properties: {
     timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
     defaultFromName: { type: "string", title: "Default sender name", default: "Partners in Biz" },
+    jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "Campaigns",
   description: "Themed email programs that enroll contacts and open Paperclip issues for due steps.",
   author: "Partners in Biz",
@@ -33,6 +35,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed",
     "jobs.schedule",
     "events.subscribe",
+    "events.emit",
+    "secrets.read-ref",
     "issues.read",
     "issues.create",
     "issues.wakeup",
@@ -57,6 +61,12 @@ const manifest: PaperclipPluginManifestV1 = {
       jobKey: "open-due-steps",
       displayName: "Open due campaign steps",
       description: "Opens a Paperclip issue for each campaign step that is due.",
+      schedule: "*/5 * * * *",
+    },
+    {
+      jobKey: "redeliver-mail",
+      displayName: "Resend campaign email requests",
+      description: "Re-sends campaign email requests the Mailbox has not answered yet, and hands failed ones to a person.",
       schedule: "*/5 * * * *",
     },
   ],

@@ -30,6 +30,7 @@ export const ORIGIN = {
   task: `plugin:${PLUGIN_ID}:task`,
   approval: `plugin:${PLUGIN_ID}:approval`,
   alert: `plugin:${PLUGIN_ID}:alert`,
+  needsYou: `plugin:${PLUGIN_ID}:needs-you`,
 } as const;
 
 export function isOurOrigin(originKind: unknown): boolean {

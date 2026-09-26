@@ -16,6 +16,7 @@ import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
 import { platformLabel, Row } from "./parts.js";
 import { CalendarView, PostDetail, PostsTab } from "./posts.js";
+import { GrowthTab } from "./growth.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
@@ -55,13 +56,22 @@ const ACTION_KEYS = [
   "social.start-hire",
   "social.link-agent",
   "social.unlink-agent",
+  "social.correct-triage",
+  "social.growth-load",
+  "social.growth-update-program",
+  "social.growth-save-playbook",
+  "social.growth-approve-experiment",
+  "social.growth-reject-experiment",
+  "social.growth-abandon-experiment",
+  "social.growth-decide-change",
+  "social.growth-retire-question",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.hire-options"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.hire-options", "social.growth-load"]);
 
-type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "media" | "feeds" | "templates";
-const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "media", "feeds", "templates"];
+type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "growth" | "media" | "feeds" | "templates";
+const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "growth", "media", "feeds", "templates"];
 
 function useSocialActions(): Record<string, PluginActionFn> {
   const fns: Record<string, PluginActionFn> = {};
@@ -197,6 +207,7 @@ export function SocialPage({ context }: PluginPageProps) {
           { id: "calendar", label: "Calendar" },
           { id: "accounts", label: `Accounts (${snapshot.accounts.length})${problems ? ` · ${problems} to fix` : ""}` },
           { id: "inbox", label: `Inbox${newItems ? ` (${newItems})` : ""}` },
+          { id: "growth", label: "Growth" },
           { id: "media", label: "Media" },
           { id: "feeds", label: "Feeds" },
           { id: "templates", label: "Templates" },
@@ -209,6 +220,7 @@ export function SocialPage({ context }: PluginPageProps) {
       {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
       {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
       {tab === "inbox" ? <InboxTab snapshot={snapshot} run={run} /> : null}
+      {tab === "growth" ? <GrowthTab snapshot={snapshot} run={run} /> : null}
       {tab === "media" ? <MediaTab snapshot={snapshot} run={run} /> : null}
       {tab === "feeds" ? <FeedsTab snapshot={snapshot} run={run} /> : null}
       {tab === "templates" ? <TemplatesTab snapshot={snapshot} run={run} /> : null}

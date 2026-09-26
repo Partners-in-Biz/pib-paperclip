@@ -62,7 +62,7 @@ export function rootIssueDescription(sprint: SprintCopy, input: { startDate: str
     `- Autopilot: ${sprint.autopilotMode}`,
     input.cockpitPath ? `- Cockpit: [SEO → this sprint](${input.cockpitPath})` : null,
     "",
-    "Each task of the Outrank-90 plan becomes a sub-issue of this issue on the day it is due. Agent tasks go to the SEO Specialist; tasks that need a person (verifications, Request indexing, DMs, community posts) go to the sprint owner. Closing a sub-issue closes the task in the sprint.",
+    "Each task of the Outrank-90 plan becomes a sub-issue of this issue on the day it is due and is worked by the SEO Specialist. Code and content tasks open in the site's repo project. The few things only a person can do (one-time grants, out-of-scope PRs, messages from personal accounts) are batched in one weekly **Needs you** issue. Closing a sub-issue closes the task in the sprint.",
     "",
     "The SEO Specialist posts a short digest here after each daily run.",
     "",
@@ -81,10 +81,41 @@ function toolLine(name: string): string {
   return `- \`${qualifiedTool(name)}\``;
 }
 
+export interface SiteCopy {
+  access: string;
+  repoUrl: string | null;
+  defaultBranch: string;
+  branch: string;
+  changePolicy: string;
+  hosting: string | null;
+}
+
+const POLICY_LINE: Record<string, string> = {
+  merge_seo_scope: "merge it yourself when every changed file is SEO scope and the checks pass; anything else stays an open PR in the Needs you digest",
+  pr_only: "open the PR and leave it for a person to merge (add it to the Needs you digest)",
+  full: "merge it yourself when the checks pass",
+};
+
+export function siteSection(site: SiteCopy): string[] {
+  if (site.access !== "repo") {
+    return [
+      "## Site changes",
+      "This site has no repo link (CMS or client-managed). Prepare the exact change set (page, field, old value, new value) and add it to the Needs you digest with `partnersinbiz.seo:needs-you-add` (kind task, the change set in `copy`), then `block-task`.",
+      "",
+    ];
+  }
+  return [
+    "## Site repo",
+    `You run in this project's workspace: ${site.repoUrl ?? "the linked repo"} (default branch \`${site.defaultBranch}\`${site.hosting ? `, hosted on ${site.hosting}` : ""}).`,
+    `Branch \`${site.branch}\` → commit → push → open a PR → wait for CI${site.hosting === "vercel" ? " and the Vercel preview" : ""} → verify on the preview URL with the check tools → \`partnersinbiz.seo:check-change-scope\` → ${POLICY_LINE[site.changePolicy] ?? POLICY_LINE.pr_only} → after deploy re-check production and \`complete-task\` with the PR, commit and check output. Details: skill reference \`references/site-changes.md\`.`,
+    "",
+  ];
+}
+
 export function taskIssueDescription(
   task: TaskCopy,
   sprint: SprintCopy,
-  input: { assignment: Assignment; context?: string | null; cockpitPath?: string | null },
+  input: { assignment: Assignment; context?: string | null; cockpitPath?: string | null; site?: SiteCopy | null },
 ): string {
   const playbook = playbookFor(task.playbookKey);
   const phase = PHASE_NAMES[(Math.min(Math.max(task.phase, 0), 4) as SprintPhase)];
@@ -102,7 +133,7 @@ export function taskIssueDescription(
   } else if (a.kind === "user" && a.reason === "autopilot_off") {
     lines.push("> Autopilot is **off** for this sprint, so this agent task is assigned to the sprint owner. Assign it to the SEO Specialist to have it done for you.", "");
   } else if (a.kind === "unassigned") {
-    lines.push("> The SEO Specialist is not active yet. Activate it on the SEO page (Activate SEO agent) and this issue is assigned to it, or assign it yourself.", "");
+    lines.push("> The SEO Specialist is not linked yet. This issue is assigned to it as soon as it is (SEO page → Activate SEO agent).", "");
   }
   if (task.description && task.description.trim()) lines.push(task.description.trim(), "");
   if (input.context && input.context.trim()) lines.push("## Why this task exists", input.context.trim(), "");
@@ -111,6 +142,7 @@ export function taskIssueDescription(
   lines.push("", "## Tools");
   for (const tool of playbook.tools) lines.push(toolLine(tool));
   lines.push("", "## Definition of done", playbook.done, "", "## Evidence to record", playbook.evidence, "");
+  if (input.site) lines.push(...siteSection(input.site));
   if (sprint.notes && sprint.notes.trim()) lines.push("## Sprint notes (site access, constraints)", sprint.notes.trim(), "");
   lines.push("## Close it");
   if (task.owner === "human" || a.kind === "user") {
@@ -118,7 +150,7 @@ export function taskIssueDescription(
   } else {
     lines.push(
       `Call \`partnersinbiz.seo:complete-task\` with \`{"taskId": "${task.id}", "summary": "…", "links": ["…"]}\` — it records the evidence and closes this issue.`,
-      `Blocked on a person? Call \`partnersinbiz.seo:block-task\` with \`{"taskId": "${task.id}", "reason": "…", "humanAsk": "…"}\` — it hands the issue to the sprint owner.`,
+      `Truly blocked on a person (a one-time grant or judgement)? Call \`partnersinbiz.seo:block-task\` with \`{"taskId": "${task.id}", "reason": "…", "humanAsk": "…"}\` — it goes on the sprint's weekly Needs you digest and comes back to you when done.`,
     );
   }
   lines.push("", `sprintId: \`${sprint.id}\` · taskId: \`${task.id}\``);
@@ -128,7 +160,7 @@ export function taskIssueDescription(
 
 export function blockComment(input: { reason: string; humanAsk: string; review: boolean; links?: string[] }): string {
   const lines = [
-    input.review ? "**Ready for your sign-off.**" : "**Blocked — needs a person.**",
+    input.review ? "**Ready for your sign-off.**" : "**Blocked — needs a person.** (Also listed in this week's Needs you issue.)",
     "",
     `**What happened:** ${input.reason}`,
     "",
@@ -141,7 +173,7 @@ export function blockComment(input: { reason: string; humanAsk: string; review: 
     "",
     input.review
       ? "Mark this issue done to approve (the task completes), or reassign it to the SEO Specialist with your changes."
-      : "When it is resolved, reassign this issue to the SEO Specialist (status todo) so it can continue, or mark it done if nothing is left.",
+      : "Mark the item done in the Needs you issue (or on the SEO page → Integrations); this task goes back to the SEO Specialist automatically.",
   );
   return lines.join("\n");
 }
@@ -232,7 +264,7 @@ export function digestComment(input: {
   const lines = [`**SEO digest — day ${input.day}, week ${input.week} (${phase})**`, "", input.summary.trim(), ""];
   if (input.doneToday.length > 0) lines.push("**Completed today:**", ...input.doneToday.map((t) => `- ${t}`), "");
   if (input.blocked.length > 0) {
-    lines.push("**Waiting on a person:**", ...input.blocked.map((b) => `- ${b.title}${b.humanAsk ? ` — ${b.humanAsk}` : ""}`), "");
+    lines.push("**Waiting on a person (see the Needs you issue):**", ...input.blocked.map((b) => `- ${b.title}${b.humanAsk ? ` — ${b.humanAsk}` : ""}`), "");
   }
   lines.push(`Open due tasks: ${input.dueOpen}`);
   return lines.join("\n");

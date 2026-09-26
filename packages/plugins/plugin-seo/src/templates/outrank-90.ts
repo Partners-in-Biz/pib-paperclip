@@ -7,18 +7,21 @@
  * idempotent on it), an `owner` (who does the work) and a playbook key (the
  * skill's `references/outrank-90.md` section and the issue description).
  *
- * Owner rules (documented in the skill):
- * - human: needs a person's own account, verification or relationship
- *   (verify GSC/Bing, URL-inspection "Request indexing", cross-link from
- *   another property, founder DMs, community posts).
- * - agent: everything else. Tasks with `autopilotEligible: false` are
- *   review-gated in `safe` mode: the agent prepares the work and hands it to
- *   the sprint owner with `block-task` + `review: true`; the person signs off
- *   by marking the issue done.
+ * Version 3 (plugin 0.6.0) removes every person task: the agent verifies
+ * Search Console with the service account, gets pages crawled through the
+ * sitemap / IndexNow / URL Inspection APIs, sets up Bing through its API,
+ * decides cross-links, and drafts link-trade DMs and community posts. What a
+ * person still has to do (one-time grants, messages from personal accounts)
+ * goes on the weekly Needs you digest. `TEMPLATE_V3_CHANGES` lists what the
+ * upgrade rewrites on existing sprints.
+ *
+ * Tasks with `autopilotEligible: false` are review-gated in `safe` mode: the
+ * agent prepares the work and hands it over with `block-task` + `review: true`
+ * (publishing posts, pSEO launches, pitches, public announcements).
  */
 
 export const TEMPLATE_ID = "outrank-90";
-export const TEMPLATE_VERSION = 2;
+export const TEMPLATE_VERSION = 3;
 export const TEMPLATE_NAME = "Outrank 90-Day SEO Sprint";
 
 export type TaskOwner = "agent" | "human";
@@ -60,19 +63,19 @@ export const OUTRANK_90: SeoTemplate = {
     // Phase 0 — Pre-launch (Week 0)
     task({ templateKey: "w0-meta-tags", week: 0, phase: 0, focus: "Pre-launch", title: "Set up meta tags on every page (title, description, OG image)", taskType: "meta-tag-audit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#metadata-check" }),
     task({ templateKey: "w0-schema", week: 0, phase: 0, focus: "Pre-launch", title: "Add SoftwareApplication + FAQ schema (structured data)", taskType: "schema-add", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w0-gsc-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Verify site in Google Search Console", taskType: "gsc-verify", owner: "human", autopilotEligible: false }),
+    task({ templateKey: "w0-gsc-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Verify site in Google Search Console (service account)", taskType: "gsc-verify", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w0-sitemap-submit", week: 0, phase: 0, focus: "Pre-launch", title: "Submit sitemap.xml to GSC", taskType: "sitemap-submit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#sitemap-check" }),
-    task({ templateKey: "w0-gsc-request-index", week: 0, phase: 0, focus: "Pre-launch", title: "Manually request indexing for 5 core pages", taskType: "gsc-request-index", owner: "human", autopilotEligible: false }),
-    task({ templateKey: "w0-bing-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Set up Bing Webmaster Tools (import from GSC)", taskType: "bing-verify", owner: "human", autopilotEligible: false }),
-    task({ templateKey: "w0-cross-link", week: 0, phase: 0, focus: "Pre-launch", title: "Cross-link from existing property to new site", taskType: "cross-link", owner: "human", autopilotEligible: false }),
+    task({ templateKey: "w0-gsc-request-index", week: 0, phase: 0, focus: "Pre-launch", title: "Get the 5 core pages crawled (sitemap, IndexNow, URL Inspection)", taskType: "gsc-request-index", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-bing-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Set up Bing Webmaster Tools (API: add, verify, submit sitemap)", taskType: "bing-verify", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-cross-link", week: 0, phase: 0, focus: "Pre-launch", title: "Cross-link from a property we own to the new site (or skip)", taskType: "cross-link", owner: "agent", autopilotEligible: true }),
     // Phase 1 — Foundation (Weeks 1-4)
     task({ templateKey: "w1-robots-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check robots.txt — nothing blocking crawlers", taskType: "robots-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#robots-check" }),
     task({ templateKey: "w1-gsc-index-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check all core pages are being indexed in GSC", taskType: "gsc-index-check", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w1-pagespeed-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check page speed at pagespeed.web.dev", taskType: "pagespeed-check", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w1-cwv-check", week: 1, phase: 1, focus: "Tech Audit", title: "Confirm Core Web Vitals: LCP < 2.5s, CLS minimal", taskType: "cwv-check", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w1-canonical-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check canonical tags on all key pages", taskType: "canonical-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#canonical-check" }),
-    task({ templateKey: "w1-alt-text", week: 1, phase: 1, focus: "Tech Audit", title: "Add alt text to all images", taskType: "alt-text-audit", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w1-noindex", week: 1, phase: 1, focus: "Tech Audit", title: "Add noindex to login, dashboard, onboarding pages", taskType: "noindex-add", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w1-alt-text", week: 1, phase: 1, focus: "Tech Audit", title: "Add alt text to all images", taskType: "alt-text-audit", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-noindex", week: 1, phase: 1, focus: "Tech Audit", title: "Add noindex to login, dashboard, onboarding pages", taskType: "noindex-add", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w2-keyword-discover", week: 2, phase: 1, focus: "Keywords", title: "Pick 20–30 winnable keywords (DR of top 3 results < 50)", taskType: "keyword-discover", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#keyword-discover" }),
     task({ templateKey: "w2-keyword-bucket", week: 2, phase: 1, focus: "Keywords", title: "Sort keywords into 3 intent buckets (Problem / Solution / Brand)", taskType: "keyword-bucket", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w2-keyword-prioritize", week: 2, phase: 1, focus: "Keywords", title: "Identify 5 keywords for immediate content (solution-aware first)", taskType: "keyword-prioritize", owner: "agent", autopilotEligible: true }),
@@ -93,9 +96,9 @@ export const OUTRANK_90: SeoTemplate = {
     task({ templateKey: "w8-pseo-comparison", week: 8, phase: 2, focus: "pSEO", title: "Launch alternative/comparison page templates", taskType: "pseo-comparison", owner: "agent", autopilotEligible: false }),
     // The old executor only flipped statuses. complete-task now refuses this task while any directory is still not started.
     task({ templateKey: "w9-directories", week: 9, phase: 2, focus: "Backlinks", title: "Submit to 15 SaaS directories (log in Backlinks tab)", taskType: "directory-submission", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w9-link-trade-dm", week: 9, phase: 2, focus: "Backlinks", title: "DM 3 founders for link trades", taskType: "link-trade-dm", owner: "human", autopilotEligible: false }),
+    task({ templateKey: "w9-link-trade-dm", week: 9, phase: 2, focus: "Backlinks", title: "Find 3 link-trade partners and draft the DMs", taskType: "link-trade-dm", owner: "agent", autopilotEligible: false }),
     task({ templateKey: "w10-guest-post", week: 10, phase: 2, focus: "Backlinks", title: "Pitch 1 guest post to a relevant DR 40+ blog", taskType: "guest-post-pitch", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w10-community", week: 10, phase: 2, focus: "Backlinks", title: "Submit to IndieHackers and relevant subreddits", taskType: "community-post", owner: "human", autopilotEligible: false }),
+    task({ templateKey: "w10-community", week: 10, phase: 2, focus: "Backlinks", title: "Share on IndieHackers and relevant subreddits (drafts, Reddit via Social)", taskType: "community-post", owner: "agent", autopilotEligible: false }),
     // Phase 3 — Authority (Weeks 11-13)
     task({ templateKey: "w11-stuck-pages", week: 11, phase: 3, focus: "Authority", title: "Open GSC — find pages ranking position 8–20", taskType: "gsc-stuck-pages", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w11-update-stuck", week: 11, phase: 3, focus: "Authority", title: "Update each position 8–20 page (add depth, FAQ, structure)", taskType: "page-rewrite", owner: "agent", autopilotEligible: true }),
@@ -155,6 +158,18 @@ export function dueDayFor(week: number, dueDay?: number | null): number | null {
   if (week <= 0) return null;
   return (week - 1) * 7 + 1;
 }
+
+/** Template keys whose owner, title or sign-off flag changed in version 3 (rewritten on existing sprints). */
+export const TEMPLATE_V3_CHANGES = [
+  "w0-gsc-verify",
+  "w0-gsc-request-index",
+  "w0-bing-verify",
+  "w0-cross-link",
+  "w1-alt-text",
+  "w1-noindex",
+  "w9-link-trade-dm",
+  "w10-community",
+] as const;
 
 export function templateTask(templateKey: string): SeoTaskTemplate | undefined {
   return OUTRANK_90.tasks.find((t) => t.templateKey === templateKey);

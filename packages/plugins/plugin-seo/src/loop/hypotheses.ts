@@ -1,11 +1,15 @@
 /**
  * Signal → hypothesis → proposed tasks. Each signal type has one or more
- * candidate hypotheses; the one with the best win rate on this site (the
- * sprint scoreboard) is proposed. Tasks are created for the CURRENT week when
- * the proposal is approved (the old system used week 99, which hid them).
+ * candidate hypotheses. They are ranked with UCB over this site's scoreboard
+ * (kit `rankHypothesisTypes`): untried types first, then the best mean result
+ * plus an exploration bonus, so one early win does not lock the loop into
+ * the same fix forever. Ties keep the candidate order. Tasks are created for
+ * the CURRENT week when the proposal is approved (the old system used week
+ * 99, which hid them).
  */
+import { rankHypothesisTypes, type Scoreboard as KitScoreboard } from "@partnersinbiz/pib-plugin-kit";
 import type { TaskOwner } from "../templates/outrank-90.js";
-import { hypothesisScore, type Scoreboard } from "../engine/measure.js";
+import type { Scoreboard } from "../engine/measure.js";
 import type { HealthSignal, Severity } from "./detectors.js";
 
 export interface ProposedTaskSpec {
@@ -34,10 +38,6 @@ function str(value: unknown, fallback = ""): string {
 
 function agentTask(title: string, taskType: string, playbook: string, autopilotEligible = true): ProposedTaskSpec {
   return { title, taskType, owner: "agent", autopilotEligible, playbook };
-}
-
-function humanTask(title: string, taskType: string, playbook: string): ProposedTaskSpec {
-  return { title, taskType, owner: "human", autopilotEligible: false, playbook };
 }
 
 const CANDIDATES: Record<HealthSignal["type"], (s: HealthSignal) => Candidate[]> = {
@@ -82,7 +82,7 @@ const CANDIDATES: Record<HealthSignal["type"], (s: HealthSignal) => Candidate[]>
         proposedAction: `Diagnose indexing for "${title}", fix it, and request indexing`,
         tasks: [
           agentTask(`Diagnose indexing for "${title}"`, "index-diagnose", "opt:index-diagnose"),
-          humanTask(`Request indexing for "${title}" in Search Console`, "gsc-request-index", "opt:gsc-request-index"),
+          agentTask(`Get "${title}" recrawled (sitemap, IndexNow, inspection)`, "gsc-request-index", "opt:gsc-request-index"),
         ],
       },
     ];
@@ -96,7 +96,7 @@ const CANDIDATES: Record<HealthSignal["type"], (s: HealthSignal) => Candidate[]>
         proposedAction: `Audit crawler access for ${url}, fix it, and request indexing`,
         tasks: [
           agentTask(`Crawler and index check for ${url}`, "index-diagnose", "opt:index-diagnose"),
-          humanTask(`Request indexing for ${url}`, "gsc-request-index", "opt:gsc-request-index"),
+          agentTask(`Get ${url} recrawled (sitemap, IndexNow, inspection)`, "gsc-request-index", "opt:gsc-request-index"),
         ],
       },
     ];
@@ -158,21 +158,32 @@ const CANDIDATES: Record<HealthSignal["type"], (s: HealthSignal) => Candidate[]>
 
 const SEVERITY_ORDER: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
 
+/** The sprint scoreboard in the kit's shape (missing counts are zero). */
+function kitScoreboard(scoreboard: Scoreboard | null | undefined): KitScoreboard {
+  const out: KitScoreboard = {};
+  for (const [type, entry] of Object.entries(scoreboard ?? {})) {
+    out[type] = { wins: entry?.wins ?? 0, losses: entry?.losses ?? 0, noChange: entry?.noChange ?? 0, inconclusive: entry?.inconclusive ?? 0 };
+  }
+  return out;
+}
+
+/** Candidates in UCB order (untried first); equal scores keep the candidate order. */
+export function rankCandidates<T extends { hypothesisType: string }>(candidates: T[], scoreboard?: Scoreboard | null): T[] {
+  const ranked = rankHypothesisTypes(kitScoreboard(scoreboard), [...new Set(candidates.map((c) => c.hypothesisType))]);
+  const score = new Map(ranked.map((entry) => [entry.type, entry.score]));
+  return candidates
+    .map((candidate, index) => ({ candidate, index, score: score.get(candidate.hypothesisType) ?? 0 }))
+    .sort((a, b) => (a.score === b.score ? a.index - b.index : b.score - a.score))
+    .map((entry) => entry.candidate);
+}
+
 export function proposeHypotheses(signals: HealthSignal[], scoreboard?: Scoreboard | null): Proposal[] {
   const sorted = [...signals].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
   const out: Proposal[] = [];
   for (const signal of sorted) {
     const candidates = CANDIDATES[signal.type]?.(signal) ?? [];
     if (candidates.length === 0) continue;
-    let pick = candidates[0]!;
-    let best = hypothesisScore(scoreboard?.[pick.hypothesisType]);
-    for (const candidate of candidates.slice(1)) {
-      const score = hypothesisScore(scoreboard?.[candidate.hypothesisType]);
-      if (score > best) {
-        best = score;
-        pick = candidate;
-      }
-    }
+    const pick = rankCandidates(candidates, scoreboard)[0]!;
     const keywordId = typeof signal.evidence.keywordId === "string" ? signal.evidence.keywordId : null;
     const url = typeof signal.evidence.url === "string" && signal.evidence.url ? signal.evidence.url : null;
     out.push({ ...pick, signal, targetKeywordIds: keywordId ? [keywordId] : [], targetUrl: url });

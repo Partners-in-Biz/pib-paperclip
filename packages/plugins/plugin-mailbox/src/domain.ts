@@ -7,6 +7,22 @@ export class MailboxError extends Error {
   }
 }
 
+/** Gmail cannot be used right now (not connected, or a person must reconnect). */
+export class GmailUnavailable extends MailboxError {
+  constructor(message: string) {
+    super(message);
+    this.name = "GmailUnavailable";
+  }
+}
+
+/** Over the per-minute send limit; nothing was stored, the sender retries. */
+export class SendThrottled extends MailboxError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SendThrottled";
+  }
+}
+
 export interface Delegation {
   canRead: boolean;
   canDraft: boolean;

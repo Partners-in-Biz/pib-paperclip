@@ -87,6 +87,7 @@ import {
   SocialError,
   type AccountScope,
 } from "./domain.js";
+import { experimentOptions, growthEnv, planExperimentTag, writeExperimentTag } from "./growth/service.js";
 import { replyToInboxItem } from "./inbox.js";
 import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
@@ -101,6 +102,7 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { buildPublishRequest, retryPost, validateDestination } from "./publish.js";
+import { jevKeySet, triageOut } from "./triage.js";
 
 export interface Viewer {
   companyId: string;
@@ -249,6 +251,8 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     media: postMedia(row),
     overrides: postOverrides(row),
     source: row.source ?? "manual",
+    experimentId: row.experiment_id ?? null,
+    experimentArm: row.experiment_arm ?? null,
     error: row.error,
     failureIssueId: row.failure_issue_id,
     createdAt: iso(row.created_at),
@@ -309,9 +313,13 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, param
     created_by_agent_id: viewer.agentId,
   };
   for (const account of accounts) assertAccountScope(row, account);
+  // Growth Lab tag: checked before anything is written.
+  const growth = growthEnv(ctx);
+  const tag = await planExperimentTag(growth, viewer.companyId, { id: row.id, ...scopeColumns(target) }, { experimentId: params.experimentId, arm: params.arm });
   await insertPost(ctx, row);
   const post = (await getPost(ctx, viewer.companyId, row.id))!;
   await attachAccounts(ctx, viewer, post, accounts);
+  await writeExperimentTag(growth, viewer.companyId, row.id, tag);
   return getPostDetail(ctx, viewer, row.id);
 }
 
@@ -341,6 +349,10 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, param
       if (foreign.length) throw new SocialError(`Replace the media from ${scopeLabel(foreign[0]!)} before moving this post to ${scopeLabel(target)}.`);
     }
   }
+  // Growth Lab tag: a post that changes client leaves its old experiment.
+  const growth = growthEnv(ctx);
+  const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
+  const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
@@ -354,6 +366,7 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, param
     }
   }
   if (accounts.length) await attachAccounts(ctx, viewer, (await getPost(ctx, viewer.companyId, post.id))!, accounts);
+  await writeExperimentTag(growth, viewer.companyId, post.id, tag);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -669,6 +682,7 @@ function inboxOut(row: Awaited<ReturnType<typeof listInboxItems>>[number]) {
     receivedAt: iso(row.received_at) ?? iso(row.created_at),
     ...scopeOut(row),
     canReply: Boolean(row.external_id && row.platform && isSocialPlatform(row.platform) && providerFor(row.platform).reply),
+    triage: triageOut(row.triage, row.triaged_at),
   };
 }
 
@@ -813,7 +827,7 @@ export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
 export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
   const target = await scopeFromParams(ctx, viewer.companyId, params);
   const scope: ClientScope = target.scope;
-  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers] = await Promise.all([
+  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),
     listAccounts(ctx, viewer.companyId, scope),
     listPosts(ctx, viewer.companyId, { limit: 300, scope }),
@@ -825,6 +839,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     // Hire status (open task, candidates) is only shown on the own page.
     agentSummary(ctx, viewer.companyId, { hire: !scope }),
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
+    // Growth Lab experiments a post in this scope can be tagged with.
+    experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
@@ -849,6 +865,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
       allowAgentReplies: config.allowAgentReplies,
       blueskyDefaultPds: config.blueskyDefaultPds,
       mastodonDefaultInstance: config.mastodonDefaultInstance,
+      jev: jevKeySet(config.raw),
     },
     platforms: ALL_PLATFORMS.map((platform) => {
       const status = config.platform(platform);
@@ -860,6 +877,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     media: media.map(assetOut),
     feeds: feeds.map(feedOut),
     inbox: inbox.map(inboxOut),
+    experiments,
     agent,
     pendingPickers: pickers
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))

@@ -1,9 +1,9 @@
 {
   "name": "@partnersinbiz/plugin-mailbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Member mailboxes, message metadata, and agent delegations. Sending is off unless the delegation allows it.",
+  "description": "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it.",
   "files": [
     "dist",
     "migrations",

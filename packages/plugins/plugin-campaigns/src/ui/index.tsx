@@ -39,10 +39,22 @@ interface Campaign {
   audienceTags: string[];
   audienceMode?: AudienceMode;
   client?: { kind: ClientKind; id: string; name: string | null } | null;
-  steps: Array<{ position: number; delayDays: number; subject: string; body: string }>;
+  steps: Array<{ position: number; delayDays: number; subject: string; body: string; variant?: "a" | "b" }>;
   stats: { enrolled: number; running: number; done: number };
   approvalIssueId: string | null;
   approvalStatus: string | null;
+  delivery?: "issue" | "email";
+  winnerVariant?: "a" | "b" | null;
+}
+
+interface AbSuggestion {
+  verdict: string;
+  suggestion: "a" | "b" | null;
+  sends: { a: number; b: number };
+  replies: { a: number; b: number };
+  replyRate: { a: number | null; b: number | null };
+  reason: string;
+  winnerVariant?: "a" | "b" | null;
 }
 
 interface WorkspaceClient {
@@ -56,7 +68,7 @@ interface WorkspaceClient {
 
 interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null }
 type TabId = "overview" | "campaigns";
-type CreateKind = "campaign" | "step" | null;
+type CreateKind = "campaign" | "step" | "ab" | null;
 
 const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
 
@@ -112,6 +124,10 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const pause = usePluginAction("campaigns.pause");
   const resume = usePluginAction("campaigns.resume");
   const complete = usePluginAction("campaigns.complete");
+  const abSuggestion = usePluginAction("campaigns.ab-suggestion");
+  const declareWinner = usePluginAction("campaigns.declare-winner");
+  const [ab, setAb] = useState<AbSuggestion | null>(null);
+  const [delivery, setDelivery] = useState<"issue" | "email">("issue");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
   const [tab, setTab] = useState<TabId>("overview");
@@ -151,7 +167,17 @@ export function CampaignsPage({ context }: PluginPageProps) {
 
   function openNewCampaign() {
     setAudienceMode(defaultAudience(scope));
+    setDelivery("issue");
     setCreate("campaign");
+  }
+
+  function openAb(campaignId: string) {
+    setSelectedCampaignId(campaignId);
+    setAb(null);
+    setCreate("ab");
+    abSuggestion({ campaignId })
+      .then((result) => setAb(result as AbSuggestion))
+      .catch((error: unknown) => setMessage(errorText(error)));
   }
 
   const client = scope ? snapshot?.client ?? null : null;
@@ -211,6 +237,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                 { key: "name", header: "Campaign" },
                 { key: "status", header: "Status", render: (value) => <StatusBadge label={String(value)} status={value === "active" ? "ok" : value === "draft" ? "pending" : "info"} /> },
                 { key: "audience", header: "Audience" },
+                { key: "deliveryLabel", header: "Sends by" },
                 { key: "enrolled", header: "Enrolled" },
                 { key: "steps", header: "Steps" },
                 {
@@ -222,6 +249,11 @@ export function CampaignsPage({ context }: PluginPageProps) {
                     return (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => { setSelectedCampaignId(campaign.id); setCreate("step"); }}>Add step</Button>
+                        {campaign.steps.some((step) => step.variant === "b") && (campaign.status === "active" || campaign.status === "paused") ? (
+                          <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => openAb(campaign.id)}>
+                            {campaign.winnerVariant ? `A/B: ${campaign.winnerVariant.toUpperCase()} won` : "A/B results"}
+                          </Button>
+                        ) : null}
                         {campaign.status === "draft" && !campaign.approvalIssueId ? (
                           <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => requestApproval({ campaignId: campaign.id }), "Approval requested — mark the approval issue done to approve")}>Request approval</Button>
                         ) : null}
@@ -245,7 +277,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                   },
                 },
               ]}
-              rows={campaigns.map((c) => ({ ...c, audience: audienceLabel(c), enrolled: c.stats.enrolled, steps: c.steps.length }))}
+              rows={campaigns.map((c) => ({ ...c, audience: audienceLabel(c), deliveryLabel: c.delivery === "email" ? "Email" : "Issue", enrolled: c.stats.enrolled, steps: c.steps.length }))}
               emptyMessage="No campaigns match."
             />
           )}
@@ -264,6 +296,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
                 name,
                 description,
                 audienceTags: showTags ? audienceTags.split(",").map((tag) => tag.trim()).filter(Boolean) : [],
+                delivery,
                 ...(scope ? { client: scope, audienceMode } : {}),
               });
               setName("");
@@ -275,6 +308,12 @@ export function CampaignsPage({ context }: PluginPageProps) {
       >
         <Field label="Name"><Input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
         <Field label="Description"><TextArea value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
+        <Field label="Due steps">
+          <Select value={delivery} onChange={(event) => setDelivery(event.target.value === "email" ? "email" : "issue")}>
+            <option value="issue">Open an issue; a person sends the email</option>
+            <option value="email">Send from the Mailbox after approval</option>
+          </Select>
+        </Field>
         {scope ? (
           <Field label="Audience">
             <Select value={audienceMode} onChange={(event) => setAudienceMode(event.target.value as AudienceMode)}>
@@ -310,6 +349,30 @@ export function CampaignsPage({ context }: PluginPageProps) {
         <Field label="Subject"><Input value={stepSubject} onChange={(event) => setStepSubject(event.target.value)} required /></Field>
         <Field label="Body"><TextArea value={stepBody} onChange={(event) => setStepBody(event.target.value)} /></Field>
         <Field label="Delay (days)"><Input value={stepDelay} onChange={(event) => setStepDelay(event.target.value)} /></Field>
+      </Modal>
+
+      <Modal open={create === "ab"} title="A/B results" onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Close</Button>
+          <Button type="button" variant={ab?.suggestion === "a" ? "primary" : "secondary"} disabled={!ab} onClick={() => void run(() => declareWinner({ campaignId: selectedCampaignId, winner: "a" }), "A declared the winner")}>Declare A</Button>
+          <Button type="button" variant={ab?.suggestion === "b" ? "primary" : "secondary"} disabled={!ab} onClick={() => void run(() => declareWinner({ campaignId: selectedCampaignId, winner: "b" }), "B declared the winner")}>Declare B</Button>
+        </>
+      )}>
+        {ab ? (
+          <div style={{ display: "grid", gap: 10, fontSize: 13 }}>
+            <StatRow>
+              <MetricCard label="A replies" value={`${ab.replies.a}/${ab.sends.a}`} />
+              <MetricCard label="B replies" value={`${ab.replies.b}/${ab.sends.b}`} />
+            </StatRow>
+            <p style={{ margin: 0 }}>{ab.reason}</p>
+            <p style={{ margin: 0, color: tokens.muted }}>
+              {ab.suggestion ? `Suggested winner: ${ab.suggestion.toUpperCase()}. You decide.` : "No winner suggested yet."}
+              {ab.winnerVariant ? ` Current winner: ${ab.winnerVariant.toUpperCase()}.` : ""}
+            </p>
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p>
+        )}
       </Modal>
     </>
   );

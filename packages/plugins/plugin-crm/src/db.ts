@@ -16,7 +16,8 @@ import type {
   SequenceStepDraft,
   StageKind,
 } from "./domain.js";
-import { DEFAULT_STAGES } from "./domain.js";
+import { DEFAULT_STAGES, deliveryOf, emailStatusOf, type EmailStatus, type SequenceDelivery } from "./domain.js";
+import type { LeadScore } from "./lead-levels.js";
 
 interface AccountRow {
   id: string;
@@ -46,7 +47,17 @@ interface ContactRow {
   tags: unknown;
   next_action_kind: string | null;
   next_action_due_at: unknown;
+  email_status?: string | null;
+  lead_fit?: number | string | null;
+  lead_intent?: number | string | null;
+  lead_urgency?: number | string | null;
+  lead_confidence?: number | string | null;
+  lead_scored_at?: unknown;
 }
+
+const CONTACT_COLUMNS = `id, company_id, name, emails, phones, lifecycle, custom, human_owned_fields,
+            owner_user_id, assignee_agent_id, tags, next_action_kind, next_action_due_at,
+            email_status, lead_fit, lead_intent, lead_urgency, lead_confidence, lead_scored_at`;
 
 interface LinkRow {
   id: string;
@@ -84,12 +95,18 @@ interface StageRow {
   position: number;
 }
 
-interface SequenceRow {
+export interface SequenceRow {
   id: string;
   company_id: string;
   name: string;
   completion_mode: string;
+  delivery?: string | null;
+  email_approval_issue_id?: string | null;
+  email_approved_at?: unknown;
+  email_approved_by?: string | null;
 }
+
+const SEQUENCE_COLUMNS = "id, company_id, name, completion_mode, delivery, email_approval_issue_id, email_approved_at, email_approved_by";
 
 interface StepRow {
   id: string;
@@ -110,7 +127,13 @@ interface EnrollmentRow {
   step_position: number;
   next_due_at: unknown;
   open_issue_id: string | null;
+  sending_key?: string | null;
+  mail_thread_id?: string | null;
+  mail_last_message_id?: string | null;
 }
+
+const ENROLLMENT_COLUMNS =
+  "id, company_id, sequence_id, contact_id, status, step_position, next_due_at, open_issue_id, sending_key, mail_thread_id, mail_last_message_id";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace)) throw new Error("Unsafe namespace");
@@ -186,7 +209,24 @@ function mapContact(row: ContactRow): ContactDraft {
     tags: asStringList(row.tags),
     nextActionKind: (row.next_action_kind as NextActionKind | null) ?? null,
     nextActionDueAt: asIso(row.next_action_due_at),
+    emailStatus: emailStatusOf(row.email_status),
+    leadScore: mapLeadScore(row),
   };
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function mapLeadScore(row: ContactRow): LeadScore | null {
+  const scoredAt = asIso(row.lead_scored_at);
+  const fit = numberOrNull(row.lead_fit);
+  const intent = numberOrNull(row.lead_intent);
+  const urgency = numberOrNull(row.lead_urgency);
+  if (!scoredAt || fit == null || intent == null || urgency == null) return null;
+  return { fit, intent, urgency, confidence: numberOrNull(row.lead_confidence) ?? 0, scoredAt };
 }
 
 function mapDeal(row: DealRow): DealDraft {
@@ -221,6 +261,9 @@ function mapEnrollment(row: EnrollmentRow): EnrollmentDraft {
     stepPosition: row.step_position,
     nextDueAt: asIso(row.next_due_at),
     openIssueId: row.open_issue_id,
+    sendingKey: row.sending_key ?? null,
+    mailThreadId: row.mail_thread_id ?? null,
+    mailLastMessageId: row.mail_last_message_id ?? null,
   };
 }
 
@@ -300,8 +343,7 @@ export async function saveAccount(ctx: PluginContext, account: AccountDraft): Pr
 
 export async function listContacts(ctx: PluginContext, companyId: string): Promise<ContactDraft[]> {
   const rows = await ctx.db.query<ContactRow>(
-    `SELECT id, company_id, name, emails, phones, lifecycle, custom, human_owned_fields,
-            owner_user_id, assignee_agent_id, tags, next_action_kind, next_action_due_at
+    `SELECT ${CONTACT_COLUMNS}
        FROM ${table(ctx, "contacts")}
       WHERE company_id = $1
          OR id IN (
@@ -316,8 +358,7 @@ export async function listContacts(ctx: PluginContext, companyId: string): Promi
 
 export async function getContact(ctx: PluginContext, id: string): Promise<ContactDraft | null> {
   const rows = await ctx.db.query<ContactRow>(
-    `SELECT id, company_id, name, emails, phones, lifecycle, custom, human_owned_fields,
-            owner_user_id, assignee_agent_id, tags, next_action_kind, next_action_due_at
+    `SELECT ${CONTACT_COLUMNS}
        FROM ${table(ctx, "contacts")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -572,14 +613,14 @@ export async function stopEnrollmentsForContact(ctx: PluginContext, companyId: s
 
 export async function listSequences(ctx: PluginContext, companyId: string): Promise<SequenceRow[]> {
   return ctx.db.query<SequenceRow>(
-    `SELECT id, company_id, name, completion_mode FROM ${table(ctx, "sequences")} WHERE company_id = $1 ORDER BY name`,
+    `SELECT ${SEQUENCE_COLUMNS} FROM ${table(ctx, "sequences")} WHERE company_id = $1 ORDER BY name`,
     [companyId],
   );
 }
 
 export async function getSequence(ctx: PluginContext, id: string): Promise<SequenceRow | null> {
   const rows = await ctx.db.query<SequenceRow>(
-    `SELECT id, company_id, name, completion_mode FROM ${table(ctx, "sequences")} WHERE id = $1 LIMIT 1`,
+    `SELECT ${SEQUENCE_COLUMNS} FROM ${table(ctx, "sequences")} WHERE id = $1 LIMIT 1`,
     [id],
   );
   return rows[0] ?? null;
@@ -593,6 +634,41 @@ export async function insertSequence(
     `INSERT INTO ${table(ctx, "sequences")} (id, company_id, name, completion_mode) VALUES ($1, $2, $3, $4)`,
     [input.id, input.companyId, input.name, input.completionMode],
   );
+}
+
+export function sequenceDelivery(row: SequenceRow): SequenceDelivery {
+  return deliveryOf(row.delivery);
+}
+
+export function sequenceEmailApproved(row: SequenceRow): boolean {
+  return row.email_approved_at != null && row.email_approved_at !== "";
+}
+
+export async function saveSequenceDelivery(
+  ctx: PluginContext,
+  input: { id: string; delivery: SequenceDelivery; approvalIssueId: string | null },
+): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "sequences")} SET delivery = $2, email_approval_issue_id = $3 WHERE id = $1`,
+    [input.id, input.delivery, input.approvalIssueId],
+  );
+}
+
+/** First approval wins; later approvals are no-ops. */
+export async function approveSequenceEmail(ctx: PluginContext, id: string, approvedBy: string): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "sequences")} SET email_approved_at = now(), email_approved_by = $2 WHERE id = $1 AND email_approved_at IS NULL`,
+    [id, approvedBy],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+export async function sequenceByApprovalIssue(ctx: PluginContext, issueId: string): Promise<SequenceRow | null> {
+  const rows = await ctx.db.query<SequenceRow>(
+    `SELECT ${SEQUENCE_COLUMNS} FROM ${table(ctx, "sequences")} WHERE email_approval_issue_id = $1 LIMIT 1`,
+    [issueId],
+  );
+  return rows[0] ?? null;
 }
 
 export async function listSteps(ctx: PluginContext, sequenceId: string): Promise<SequenceStepDraft[]> {
@@ -623,7 +699,7 @@ export async function insertStep(
 
 export async function enrollmentsForContact(ctx: PluginContext, sequenceId: string, contactId: string): Promise<EnrollmentDraft[]> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, sequence_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT ${ENROLLMENT_COLUMNS}
        FROM ${table(ctx, "enrollments")}
       WHERE sequence_id = $1 AND contact_id = $2`,
     [sequenceId, contactId],
@@ -652,24 +728,75 @@ export async function insertEnrollment(ctx: PluginContext, enrollment: Enrollmen
 export async function saveEnrollment(ctx: PluginContext, enrollment: EnrollmentDraft): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "enrollments")}
-        SET status = $2, step_position = $3, next_due_at = $4, open_issue_id = $5, updated_at = now()
+        SET status = $2, step_position = $3, next_due_at = $4, open_issue_id = $5, sending_key = $6,
+            mail_thread_id = $7, mail_last_message_id = $8, updated_at = now()
       WHERE id = $1`,
-    [enrollment.id, enrollment.status, enrollment.stepPosition, enrollment.nextDueAt, enrollment.openIssueId],
+    [
+      enrollment.id,
+      enrollment.status,
+      enrollment.stepPosition,
+      enrollment.nextDueAt,
+      enrollment.openIssueId,
+      enrollment.sendingKey ?? null,
+      enrollment.mailThreadId ?? null,
+      enrollment.mailLastMessageId ?? null,
+    ],
   );
+}
+
+/** Moves only the next due time of a running enrollment (never touches a send in flight). */
+export async function pushEnrollmentDue(ctx: PluginContext, id: string, nextDueAt: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "enrollments")} SET next_due_at = $2, updated_at = now() WHERE id = $1 AND status = 'running'`,
+    [id, nextDueAt],
+  );
+}
+
+export async function enrollmentById(ctx: PluginContext, id: string): Promise<EnrollmentDraft | null> {
+  const rows = await ctx.db.query<EnrollmentRow>(
+    `SELECT ${ENROLLMENT_COLUMNS} FROM ${table(ctx, "enrollments")} WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  return rows[0] ? mapEnrollment(rows[0]) : null;
+}
+
+/** Every running enrollment of one contact, across sequences. */
+export async function runningEnrollmentsForContact(ctx: PluginContext, companyId: string, contactId: string): Promise<EnrollmentDraft[]> {
+  const rows = await ctx.db.query<EnrollmentRow>(
+    `SELECT ${ENROLLMENT_COLUMNS}
+       FROM ${table(ctx, "enrollments")}
+      WHERE company_id = $1 AND contact_id = $2 AND status = 'running'
+      ORDER BY created_at`,
+    [companyId, contactId],
+  );
+  return rows.map(mapEnrollment);
+}
+
+/** Running enrollments whose step email the outbox gave up on (no answer after every retry). */
+export async function enrollmentsWithFailedSend(ctx: PluginContext): Promise<Array<EnrollmentDraft & { lastError: string | null }>> {
+  const rows = await ctx.db.query<EnrollmentRow & { last_error: string | null }>(
+    `SELECT e.id, e.company_id, e.sequence_id, e.contact_id, e.status, e.step_position, e.next_due_at, e.open_issue_id,
+            e.sending_key, e.mail_thread_id, e.mail_last_message_id, o.last_error
+       FROM ${table(ctx, "enrollments")} e
+       JOIN ${table(ctx, "outbox")} o ON o.key = e.sending_key
+      WHERE e.status = 'running' AND o.status = 'failed'
+      LIMIT 200`,
+  );
+  return rows.map((row) => ({ ...mapEnrollment(row), lastError: row.last_error ?? null }));
 }
 
 export async function dueEnrollments(ctx: PluginContext): Promise<EnrollmentDraft[]> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, sequence_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT ${ENROLLMENT_COLUMNS}
        FROM ${table(ctx, "enrollments")}
-      WHERE status = 'running' AND open_issue_id IS NULL AND next_due_at IS NOT NULL AND next_due_at <= now()`,
+      WHERE status = 'running' AND open_issue_id IS NULL AND sending_key IS NULL AND next_due_at IS NOT NULL AND next_due_at <= now()`,
   );
   return rows.map(mapEnrollment);
 }
 
 export async function enrollmentByIssue(ctx: PluginContext, issueId: string): Promise<EnrollmentDraft | null> {
   const rows = await ctx.db.query<EnrollmentRow>(
-    `SELECT id, company_id, sequence_id, contact_id, status, step_position, next_due_at, open_issue_id
+    `SELECT ${ENROLLMENT_COLUMNS}
        FROM ${table(ctx, "enrollments")}
       WHERE open_issue_id = $1 AND status = 'running'
       LIMIT 1`,
@@ -715,6 +842,7 @@ interface ActivityRow {
   body: string;
   issue_id: string | null;
   created_at: unknown;
+  meta?: unknown;
 }
 
 function mapProduct(row: ProductRow): ProductDraft {
@@ -768,14 +896,110 @@ export async function saveProduct(ctx: PluginContext, product: ProductDraft): Pr
   );
 }
 
+/**
+ * Insert an activity once per `sourceKey` (events may arrive twice). Returns
+ * false when an activity with that key already exists.
+ */
+export async function insertActivityOnce(
+  ctx: PluginContext,
+  input: {
+    companyId: string;
+    recordType: RecordType;
+    recordId: string;
+    kind: string;
+    body: string;
+    sourceKey: string;
+    meta?: Record<string, unknown> | null;
+    issueId?: string | null;
+  },
+): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "activities")}
+      (id, company_id, record_type, record_id, kind, body, issue_id, meta, source_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+     ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING`,
+    [
+      randomUUID(),
+      input.companyId,
+      input.recordType,
+      input.recordId,
+      input.kind,
+      input.body,
+      input.issueId ?? null,
+      input.meta ? json(input.meta) : null,
+      input.sourceKey,
+    ],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+/**
+ * Contacts in this workspace with this email address (case-insensitive),
+ * oldest first so the match is deterministic.
+ */
+export async function contactsByEmail(ctx: PluginContext, companyId: string, email: string): Promise<ContactDraft[]> {
+  const rows = await ctx.db.query<ContactRow>(
+    `SELECT ${CONTACT_COLUMNS}
+       FROM ${table(ctx, "contacts")} c
+      WHERE c.company_id = $1
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(c.emails) AS e(value) WHERE lower(trim(e.value)) = $2)
+      ORDER BY c.created_at, c.id
+      LIMIT 10`,
+    [companyId, email.trim().toLowerCase()],
+  );
+  return rows.map(mapContact);
+}
+
+export async function saveEmailStatus(ctx: PluginContext, contactId: string, status: EmailStatus): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "contacts")} SET email_status = $2, updated_at = now() WHERE id = $1`,
+    [contactId, status],
+  );
+}
+
+export async function saveLeadScore(ctx: PluginContext, contactId: string, score: Omit<LeadScore, "scoredAt">): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "contacts")}
+        SET lead_fit = $2, lead_intent = $3, lead_urgency = $4, lead_confidence = $5, lead_scored_at = now()
+      WHERE id = $1`,
+    [contactId, score.fit, score.intent, score.urgency, score.confidence],
+  );
+}
+
+/** The contact's company links with the company name, oldest first. */
+export async function contactCompanyLinks(
+  ctx: PluginContext,
+  contactId: string,
+): Promise<Array<{ accountId: string; name: string; roleLabel: string }>> {
+  const rows = await ctx.db.query<{ account_id: string; name: string; role_label: string }>(
+    `SELECT l.account_id, a.name, l.role_label
+       FROM ${table(ctx, "contact_companies")} l
+       JOIN ${table(ctx, "companies")} a ON a.id = l.account_id
+      WHERE l.contact_id = $1
+      ORDER BY l.created_at
+      LIMIT 5`,
+    [contactId],
+  );
+  return rows.map((row) => ({ accountId: row.account_id, name: row.name, roleLabel: row.role_label }));
+}
+
+export async function markDecisionActed(ctx: PluginContext, decisionId: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "decisions")} SET acted = true WHERE id = $1`, [decisionId]);
+}
+
+/** Keep a transient send error on a pending outbox row (the redeliver job retries it). */
+export async function noteOutboxError(ctx: PluginContext, key: string, error: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "outbox")} SET last_error = $2 WHERE key = $1 AND status = 'pending'`, [key, error.slice(0, 500)]);
+}
+
 export async function listActivities(
   ctx: PluginContext,
   recordType: RecordType,
   recordId: string,
   limit = 50,
-): Promise<Array<{ id: string; kind: string; body: string; issueId: string | null; createdAt: string }>> {
+): Promise<Array<{ id: string; kind: string; body: string; issueId: string | null; createdAt: string; threadId: string | null }>> {
   const rows = await ctx.db.query<ActivityRow>(
-    `SELECT id, company_id, record_type, record_id, kind, body, issue_id, created_at
+    `SELECT id, company_id, record_type, record_id, kind, body, issue_id, created_at, meta
        FROM ${table(ctx, "activities")}
       WHERE record_type = $1 AND record_id = $2
       ORDER BY created_at DESC
@@ -788,7 +1012,13 @@ export async function listActivities(
     body: row.body,
     issueId: row.issue_id,
     createdAt: row.created_at == null ? "" : String(row.created_at),
+    threadId: threadIdOf(row.meta),
   }));
+}
+
+function threadIdOf(meta: unknown): string | null {
+  const value = asRecord(meta).threadId;
+  return typeof value === "string" && value ? value : null;
 }
 
 export async function contactEngagement(

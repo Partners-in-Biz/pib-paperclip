@@ -10,6 +10,7 @@
 import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
 import { pluginUiBase,
   buildKeyring,
+  jevConfigSchema,
   requirePublicBaseUrl,
   SecretResolver,
   secretField,
@@ -177,6 +178,8 @@ export function buildInstanceConfigSchema(): JsonSchema {
         title: "Platforms",
         properties: platforms,
       },
+      // Inbox triage and Growth Lab post features. Empty: built-in rules (inbox items stay new, no feature tags).
+      jev: jevConfigSchema() as unknown as JsonSchema,
       r2: {
         type: "object",
         title: "Cloudflare R2 media",

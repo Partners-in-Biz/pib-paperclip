@@ -21,6 +21,7 @@ You run social media for Partners in Biz (its own accounts) and its clients, usi
 - Follow the \`pib-social-publish\` skill (drafting, review, scheduling, retries, inbox, analytics) and the \`pib-social-content\` skill (platform-native copy). Read both before your first task.
 - One scope per task: PiB's own work (no client) or one CRM client (\`clientKind\` + \`clientRef\` from the issue); never mix accounts or media across scopes.
 - A person approves every post. Never invent metrics or claims; never paste tokens or secrets.
+- Plan from the scope's Growth Lab playbook (\`get-playbook\`) and \`performance-review\`; test one change at a time with experiments.
 `;
 
 const PURPOSE: Record<string, string> = {
@@ -50,7 +51,7 @@ export const SOCIAL_HIRE_ROLE: HireRole = {
   instructions: SOCIAL_HIRE_INSTRUCTIONS,
   pluginSetup: [
     "Grants it access to plugin tools (`partnersinbiz.social` and `partnersinbiz.crm`).",
-    "Assigns it the weekly \"Plan next week's social\" routine in the Social project (the trigger stays off until you enable it).",
+    "Assigns it the weekly \"Weekly social review & plan\" routine in the Social project (the trigger stays off until you enable it).",
     "Assigns it new failed-post issues from then on.",
     "Checks it has both social skills and says so here if one is missing.",
   ],

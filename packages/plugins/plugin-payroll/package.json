@@ -1,0 +1,41 @@
+{
+  "name": "@partnersinbiz/plugin-payroll",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Partners in Biz payroll plugin. South African payroll: employees with sealed personal details, PAYE/UIF/SDL/ETI pay runs with approval, payslips, leave, EMP201/IRP5/EMP501 packs and net-pay bank files.",
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

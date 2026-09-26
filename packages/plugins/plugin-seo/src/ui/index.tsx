@@ -33,6 +33,7 @@ import {
   type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
+import { NeedsYouSection, SetupChecklist, SiteRepoSection, type NeedsYouView, type ProjectOption, type SetupItem, type SiteLink } from "./autonomy.js";
 
 // ---------------------------------------------------------------------------
 // Types (type aliases so DataTable accepts them as records)
@@ -64,6 +65,7 @@ type SprintSummary = {
   health: { score?: number; signals?: Array<{ type: string; severity: string }> };
   lastDailyOn: string | null;
   notes: string | null;
+  site?: SiteLink;
   tasks?: TaskCounts;
 };
 
@@ -80,12 +82,16 @@ type LoadResult = {
     encryptionKey: boolean;
     pagespeedApiKey: boolean;
     bingApiKey: boolean;
+    serviceAccountEmail: string | null;
+    serviceAccountError: string | null;
     defaultAutopilotMode: string;
     dailyHourLocal: number;
   };
   agent: { id: string; status: string } | null;
   /** The SEO agent's hire state; own page only (null in a client workspace). */
   hire: HireView | null;
+  /** Company-level setup checklist (own page only). */
+  setup: SetupItem[];
   /** The page's scope: null = Partners in Biz's own sites. */
   scope: string | null;
   client: ScopeClient | null;
@@ -160,7 +166,7 @@ type Content = { id: string; title: string; type: string; status: string; target
 type Snapshot = { id: string; day: number; kind: string; capturedOn: string | null; source: string; traffic: Record<string, unknown>; rankings: Record<string, unknown>; authority: Record<string, unknown>; content: Record<string, unknown>; notes: string | null };
 type Finding = { id: string; finding: string; severity: string; category: string | null; url: string | null; source: string | null };
 type Optimization = { id: string; status: string; signalType: string; severity: string; hypothesis: string; hypothesisType: string; proposedAction: string; evidence: Record<string, unknown>; proposedTasks: Array<{ title: string }>; detectedOn: string | null; measureOn: string | null; result: string | null; outcome: { reasons?: string[] } | null; rejectedReason: string | null };
-type Integration = { provider: string; status: string; propertyUrl: string | null; lastPullAt: string | null; lastError: string | null; connected: boolean; stats: Record<string, unknown> };
+type Integration = { provider: string; status: string; propertyUrl: string | null; lastPullAt: string | null; lastError: string | null; connected: boolean; auth?: "service_account" | "oauth" | null; stats: Record<string, unknown> };
 type PageHealth = { url: string; strategy: string; performance: number | null; seo: number | null; lcpMs: number | null; cls: number | null; inpMs: number | null; source: string; pulledOn: string | null };
 
 type SprintBundle = {
@@ -177,6 +183,9 @@ type SprintBundle = {
   optimizations: Optimization[];
   integrations: Integration[];
   pageHealth: PageHealth[];
+  needsYou: NeedsYouView | null;
+  setup: SetupItem[];
+  projects: ProjectOption[];
 };
 
 type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "integrations";
@@ -621,18 +630,11 @@ export function SeoPage({ context }: PluginPageProps) {
           <span>Open Settings → Plugins → SEO and click Save once. Until then the daily and weekly SEO jobs skip this company.</span>
         </Banner>
       ) : null}
-      {settings && settings.saved && (!settings.publicBaseUrl || !settings.googleClientId || !settings.googleClientSecret || !settings.encryptionKey) ? (
-        <Banner tone="info">
-          <strong>Search Console connection is not configured yet.</strong>
-          <span>
-            Needed in the SEO settings: {[!settings.publicBaseUrl && "Public base URL", !settings.encryptionKey && "token encryption key", !settings.googleClientId && "Google client ID", !settings.googleClientSecret && "Google client secret"].filter(Boolean).join(", ")}.
-          </span>
-        </Banner>
-      ) : null}
-      {!scope && settings?.redirectUri ? (
+      {!scope && !sprintId && data?.setup?.length ? <SetupChecklist title="Setup (once)" items={data.setup} /> : null}
+      {!scope && settings?.redirectUri && settings.googleClientId ? (
         <Banner tone="info">
           <span>
-            Google OAuth redirect URI to register in Google Cloud (Credentials → your Web client → Authorized redirect URIs): <code>{settings.redirectUri}</code>
+            OAuth fallback — redirect URI to register in Google Cloud (Credentials → your Web client → Authorized redirect URIs): <code>{settings.redirectUri}</code>
           </span>
         </Banner>
       ) : null}
@@ -681,7 +683,7 @@ export function SeoPage({ context }: PluginPageProps) {
   return (
     <Page
       title="SEO"
-      description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. Every due task is a Paperclip issue under the sprint's root issue; the SEO agent works agent tasks, people get the rest."
+      description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. The SEO agent works every task (code changes through the site repo); what only a person can do is batched in one weekly Needs you issue per sprint."
       message={message}
       actions={seoAgent.headerAction}
     >
@@ -1629,21 +1631,40 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <Section title="Google Search Console" actions={gsc ? <Badge status={gsc.status} /> : null}>
+      <NeedsYouSection
+        sprintId={sprintId}
+        view={bundle.needsYou}
+        call={call}
+        issueLink={bundle.needsYou?.issueId ? <IssueLink id={bundle.needsYou.issueId} identifier={bundle.needsYou.issueIdentifier} /> : null}
+      />
+      {bundle.sprint.site ? <SiteRepoSection sprintId={sprintId} site={bundle.sprint.site} projects={bundle.projects ?? []} prefix={bundle.prefix} call={call} /> : null}
+      <SetupChecklist title="Setup for this sprint" items={bundle.setup ?? []} />
+      <Section title="Google Search Console" actions={gsc ? <Badge status={gsc.status} label={gsc.auth === "service_account" ? `${gsc.status} · service account` : gsc.auth === "oauth" ? `${gsc.status} · OAuth` : gsc.status} /> : null}>
         <div style={{ fontSize: 13, display: "grid", gap: 4 }}>
+          <span style={{ color: tokens.muted }}>
+            {load.settings.serviceAccountEmail
+              ? <>Service account: <code>{load.settings.serviceAccountEmail}</code> — the agent verifies our own sites with it; clients add it as a Search Console user.</>
+              : load.settings.serviceAccountError ?? "No service account key yet (see Setup). The OAuth connection below is the fallback."}
+          </span>
           <span>Property: {gsc?.propertyUrl ?? <em style={{ color: tokens.muted }}>none selected</em>}</span>
           <span style={{ color: tokens.muted }}>Last pull: {gsc?.lastPullAt ? gsc.lastPullAt.slice(0, 16).replace("T", " ") : "never"}</span>
           {gsc?.lastError ? <span style={{ color: tokens.destructive }}>{gsc.lastError}</span> : null}
-          {load.settings.redirectUri ? <span style={{ color: tokens.muted, fontSize: 12 }}>Redirect URI: <code>{load.settings.redirectUri}</code></span> : <span style={{ color: tokens.destructive, fontSize: 12 }}>Set the Public base URL in the SEO settings first.</span>}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Button type="button" onClick={() => void connect()}>{gsc?.status === "connected" ? "Reconnect Google Search Console" : "Connect Google Search Console"}</Button>
+          {load.settings.serviceAccountEmail ? (
+            <Button type="button" variant="secondary" disabled={working === "gsc-check-access"} onClick={() => void call("gsc-check-access", { sprintId }, "Service account access checked.")}>
+              {working === "gsc-check-access" ? "Checking…" : "Check service account access"}
+            </Button>
+          ) : null}
+          {load.settings.googleClientId ? (
+            <Button type="button" variant="secondary" onClick={() => void connect()}>{gsc?.auth === "oauth" && gsc.status === "connected" ? "Reconnect with Google (fallback)" : "Connect with Google (fallback)"}</Button>
+          ) : null}
           {gsc?.status === "connected" ? (
             <>
               <Button type="button" variant="secondary" onClick={() => void loadProperties()}>Choose property</Button>
               <Button type="button" variant="secondary" disabled={working === "gsc-pull" || !gsc.propertyUrl} onClick={() => void call("gsc-pull", { sprintId }, "Search Console data pulled.")}>{working === "gsc-pull" ? "Pulling…" : "Pull now"}</Button>
               <Button type="button" variant="secondary" disabled={working === "gsc-submit-sitemap" || !gsc.propertyUrl} onClick={() => void call("gsc-submit-sitemap", { sprintId }, "Sitemap submitted.")}>Submit sitemap</Button>
-              <Button type="button" variant="secondary" onClick={() => { if (window.confirm("Disconnect Search Console for this sprint?")) void disconnect({ sprintId }).then(() => reload()).catch((e: unknown) => onMessage(errorText(e))); }}>Disconnect</Button>
+              {gsc.auth === "oauth" ? <Button type="button" variant="secondary" onClick={() => { if (window.confirm("Disconnect the OAuth Search Console connection for this sprint?")) void disconnect({ sprintId }).then(() => reload()).catch((e: unknown) => onMessage(errorText(e))); }}>Disconnect OAuth</Button> : null}
             </>
           ) : null}
         </div>
@@ -1686,7 +1707,7 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
       </Section>
       <Section title="Bing Webmaster Tools" actions={bing ? <Badge status={bing.status} /> : null}>
         <span style={{ fontSize: 13, color: tokens.muted }}>
-          Inbound link counts from Bing (GetLinkCounts). Verify the site in Bing first. {load.settings.bingApiKey ? "API key set." : "Add the Bing API key in the SEO settings."}
+          The agent adds and verifies the site through the Bing API (bing-add-site → BingSiteAuth.xml via the repo → bing-verify-site), then pulls inbound link counts daily. {load.settings.bingApiKey ? "API key set." : "Needs the Bing API key (see Setup)."}
           {typeof bing?.stats?.totalInboundLinks === "number" ? ` Inbound links: ${String(bing.stats.totalInboundLinks)}.` : ""}
         </span>
         {bing?.lastError ? <span style={{ color: tokens.destructive, fontSize: 13 }}>{bing.lastError}</span> : null}

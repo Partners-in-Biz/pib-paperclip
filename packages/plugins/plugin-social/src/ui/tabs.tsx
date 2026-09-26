@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { MetricCard } from "@paperclipai/plugin-sdk/ui";
-import { BarChart, Button, EmptyState, Field, Input, Modal, StatRow, TextArea, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { BarChart, Button, EmptyState, Field, Input, Modal, Select, StatRow, TextArea, Toolbar, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { SOCIAL_MEDIA_MIME } from "../platforms.js";
 import { AgentCard } from "./agent.js";
 import { Thumb, uploadToR2 } from "./composer.js";
@@ -38,6 +38,54 @@ export function OverviewTab({ snapshot, posts, run, onOpenPicker }: { snapshot: 
   );
 }
 
+const INTENTS = ["question", "complaint", "praise", "lead", "spam", "other"];
+const SENTIMENTS = ["negative", "neutral", "positive"];
+
+function TriageChip({ label, tone, title }: { label: string; tone?: "warn" | "bad" | "good"; title?: string }) {
+  const color = tone === "bad" ? "var(--destructive)" : tone === "warn" ? "#b45309" : tone === "good" ? "#15803d" : tokens.muted;
+  return <span title={title} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: `1px solid ${tokens.border}`, color }}>{label}</span>;
+}
+
+/** Jev's answers on an inbox item, with a way to correct them (logged as labelled data). */
+function TriageRow({ item, run }: { item: InboxItem; run: RunAction }) {
+  const [fixing, setFixing] = useState(false);
+  const t = item.triage;
+  if (!t) return null;
+  const correct = (key: string, value: string) => run("social.correct-triage", { itemId: item.id, key, value }, "Correction saved").catch(ignore);
+  const mark = (key: string) => (t.corrected.includes(key) ? " (corrected)" : "");
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <Row>
+        {t.escalate ? <TriageChip label={`Needs a person${mark("escalate")}`} tone="bad" title="Legal, safety or PR risk" /> : null}
+        {t.action === "spam_read" && !t.corrected.includes("intent") ? <TriageChip label="Marked spam" tone="warn" /> : null}
+        <TriageChip label={`${t.intent}${mark("intent")}`} title={`Jev ${Math.round(t.intentConfidence * 100)}% sure`} />
+        <TriageChip label={`${t.sentiment}${mark("sentiment")}`} tone={t.sentiment === "negative" ? "warn" : t.sentiment === "positive" ? "good" : undefined} />
+        <TriageChip label={`${t.needsReply ? "needs reply" : "no reply needed"}${mark("needs_reply")}`} />
+        {t.action === "queued" ? <TriageChip label="Queued for the agent" /> : null}
+        <SmallButton onClick={() => setFixing((f) => !f)} style={{ height: 22, fontSize: 11 }}>{fixing ? "Done" : "Fix"}</SmallButton>
+      </Row>
+      {fixing ? (
+        <Row>
+          <Select value={t.intent} onChange={(e) => void correct("intent", e.target.value)} aria-label="Intent" style={{ height: 28, fontSize: 12 }}>
+            {INTENTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </Select>
+          <Select value={t.sentiment} onChange={(e) => void correct("sentiment", e.target.value)} aria-label="Sentiment" style={{ height: 28, fontSize: 12 }}>
+            {SENTIMENTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </Select>
+          <Select value={t.needsReply ? "yes" : "no"} onChange={(e) => void correct("needs_reply", e.target.value)} aria-label="Needs reply" style={{ height: 28, fontSize: 12 }}>
+            <option value="yes">needs reply</option>
+            <option value="no">no reply needed</option>
+          </Select>
+          <Select value={t.escalate ? "yes" : "no"} onChange={(e) => void correct("escalate", e.target.value)} aria-label="Needs a person" style={{ height: 28, fontSize: 12 }}>
+            <option value="no">ordinary</option>
+            <option value="yes">needs a person</option>
+          </Select>
+        </Row>
+      ) : null}
+    </div>
+  );
+}
+
 export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
   const [status, setStatus] = useState("new");
   const [replies, setReplies] = useState<Record<string, string>>({});
@@ -55,7 +103,10 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
           <SmallButton key={id} onClick={() => setStatus(id!)} style={status === id ? { background: tokens.primary, color: tokens.primaryFg } : undefined}>{label}</SmallButton>
         ))}
       </Toolbar>
-      <Muted>Comments on recent posts (Facebook, Instagram, Threads, YouTube) and mentions (X, Bluesky, Mastodon) are pulled every 15 minutes.</Muted>
+      <Muted>
+        Comments on recent posts (Facebook, Instagram, Threads, YouTube) and mentions (X, Bluesky, Mastodon) are pulled every 15 minutes.
+        {snapshot.config.jev ? " Jev sorts new items: spam is marked read, replies go to the agent in one issue per account per day, and risky items go to a person." : ""}
+      </Muted>
       {items.length === 0 ? <EmptyState title="Nothing here" description="New comments and mentions show up here." /> : null}
       {items.map((item) => {
         const account = item.accountId ? accounts.get(item.accountId) : undefined;
@@ -66,6 +117,7 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
               <Muted>{platformLabel(item.platform)}{account ? ` · ${account.displayName}` : ""} · {item.kind} · {fmtDate(item.receivedAt, snapshot.config.timezone)}</Muted>
             </Row>
             <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{item.body}</div>
+            <TriageRow item={item} run={run} />
             {item.permalink ? <ExternalLink href={item.permalink}>Open on {platformLabel(item.platform)}</ExternalLink> : null}
             {item.replyBody ? <Muted>Replied: {item.replyBody}</Muted> : null}
             {item.status !== "replied" ? (

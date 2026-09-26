@@ -45,3 +45,95 @@ export async function fetchBingLinkCounts(fetchImpl: FetchLike, input: { apiKey:
     clearTimeout(timer);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Site setup through the Bing Webmaster API (AddSite, verification, submissions)
+// ---------------------------------------------------------------------------
+
+export interface BingUserSite {
+  url: string;
+  isVerified: boolean;
+  authenticationCode: string | null;
+  dnsVerificationCode: string | null;
+}
+
+async function bingCall(fetchImpl: FetchLike, apiKey: string, method: string, body?: Record<string, unknown>): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetchImpl(`${BASE}/${method}?apikey=${encodeURIComponent(apiKey)}`, {
+      method: body ? "POST" : "GET",
+      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json; charset=utf-8" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      const message = json && typeof json === "object" && typeof (json as { Message?: unknown }).Message === "string" ? (json as { Message: string }).Message : text.slice(0, 200);
+      throw new Error(`Bing Webmaster API ${method} returned HTTP ${res.status}${message ? `: ${message}` : ""}`);
+    }
+    return json && typeof json === "object" && "d" in (json as object) ? (json as { d: unknown }).d : json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sameSite(a: string, b: string): boolean {
+  const norm = (u: string) => u.trim().toLowerCase().replace(/\/+$/, "");
+  return norm(a) === norm(b);
+}
+
+export async function bingGetUserSites(fetchImpl: FetchLike, apiKey: string): Promise<BingUserSite[]> {
+  const d = await bingCall(fetchImpl, apiKey, "GetUserSites");
+  const list = Array.isArray(d) ? d : [];
+  return list.map((item) => {
+    const s = item as Record<string, unknown>;
+    return {
+      url: String(s.Url ?? ""),
+      isVerified: Boolean(s.IsVerified),
+      authenticationCode: typeof s.AuthenticationCode === "string" ? s.AuthenticationCode : null,
+      dnsVerificationCode: typeof s.DnsVerificationCode === "string" ? s.DnsVerificationCode : null,
+    };
+  });
+}
+
+/** Add the site (no-op when it exists) and return its verification codes. */
+export async function bingAddSite(fetchImpl: FetchLike, apiKey: string, siteUrl: string): Promise<BingUserSite> {
+  const existing = (await bingGetUserSites(fetchImpl, apiKey)).find((s) => sameSite(s.url, siteUrl));
+  if (!existing) await bingCall(fetchImpl, apiKey, "AddSite", { siteUrl });
+  const site = existing ?? (await bingGetUserSites(fetchImpl, apiKey)).find((s) => sameSite(s.url, siteUrl));
+  if (!site) throw new Error(`Bing did not list ${siteUrl} after AddSite`);
+  return site;
+}
+
+export async function bingVerifySite(fetchImpl: FetchLike, apiKey: string, siteUrl: string): Promise<boolean> {
+  const result = await bingCall(fetchImpl, apiKey, "VerifySite", { siteUrl });
+  if (result === true) return true;
+  const site = (await bingGetUserSites(fetchImpl, apiKey)).find((s) => sameSite(s.url, siteUrl));
+  return Boolean(site?.isVerified);
+}
+
+export async function bingSubmitSitemap(fetchImpl: FetchLike, apiKey: string, siteUrl: string, feedUrl: string): Promise<void> {
+  await bingCall(fetchImpl, apiKey, "SubmitSitemap", { siteUrl, feedUrl });
+}
+
+export async function bingSubmitUrlBatch(fetchImpl: FetchLike, apiKey: string, siteUrl: string, urlList: string[]): Promise<number> {
+  const list = [...new Set(urlList)].slice(0, 500);
+  if (list.length === 0) return 0;
+  await bingCall(fetchImpl, apiKey, "SubmitUrlBatch", { siteUrl, urlList: list });
+  return list.length;
+}
+
+/** BingSiteAuth.xml and the equivalent meta tag for an authentication code. */
+export function bingVerificationFiles(code: string): { file: { path: string; content: string }; meta: string } {
+  return {
+    file: { path: "/BingSiteAuth.xml", content: `<?xml version="1.0"?>\n<users>\n\t<user>${code}</user>\n</users>\n` },
+    meta: `<meta name="msvalidate.01" content="${code}" />`,
+  };
+}

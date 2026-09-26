@@ -30,7 +30,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
       expect.objectContaining({ routeKey: "client-summary", method: "GET", path: "/client-summary", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.6.0");
   });
 
   it("uses secret-ref fields without a type", () => {
@@ -96,7 +96,7 @@ describe("skill", () => {
   it("is the pib- prefixed multi-file skill", () => {
     expect(skill).toMatchObject({ skillKey: "seo-sprint", slug: "pib-seo-sprint" });
     expect(skill.markdown).toMatch(/^---\nname: pib-seo-sprint\nslug: pib-seo-sprint\n/);
-    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md"]);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md"]);
     expect(skill.markdown).toContain("complete-task");
     expect(skill.markdown).toContain("Never invent data");
   });

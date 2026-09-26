@@ -37,7 +37,7 @@ export async function socialAgent(ctx: PluginContext, companyId: string): Promis
   }
 }
 
-async function socialProjectId(ctx: PluginContext, companyId: string): Promise<string | undefined> {
+export async function socialProjectId(ctx: PluginContext, companyId: string): Promise<string | undefined> {
   try {
     const res = await ctx.projects.managed.get(SOCIAL_PROJECT_KEY, companyId);
     return res.projectId ?? undefined;
@@ -55,6 +55,22 @@ export function scopeLine(row: Pick<PostRow, "client_kind" | "client_ref" | "cli
   const scope = scopeOfRow(row);
   if (!scope) return "Scope: own work (PiB's own accounts). Call the Social tools without a client.";
   return `Scope: client ${row.client_name ?? scope.id} — pass \`clientKind: "${scope.kind}"\`, \`clientRef: "${scope.id}"\` (or \`client: "${formatClientParam(scope)}"\`) to the Social tools. Use only this client's accounts and media.`;
+}
+
+type WorkIssueInput = Parameters<typeof createWorkIssue>[1];
+
+/**
+ * createWorkIssue, retried without the assignee when the host refuses it
+ * (e.g. a default person who is no longer a member), so the work is not lost.
+ */
+export async function createIssueSafely(ctx: PluginContext, input: WorkIssueInput): Promise<{ id: string; woke: boolean }> {
+  try {
+    return await createWorkIssue(ctx, input);
+  } catch (error) {
+    if (!input.assigneeUserId && !input.assigneeAgentId) throw error;
+    ctx.logger.info("Issue assignee refused; creating it unassigned", { title: input.title, error: error instanceof Error ? error.message : String(error) });
+    return createWorkIssue(ctx, { ...input, assigneeUserId: undefined, assigneeAgentId: undefined, wake: false });
+  }
 }
 
 export async function openPublishFailureIssue(

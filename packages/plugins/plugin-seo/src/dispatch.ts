@@ -5,6 +5,10 @@ import * as checks from "./service/checks.js";
 import { asParams, SeoError, type Actor, type Env, type Params } from "./service/common.js";
 import * as data from "./service/data.js";
 import * as gsc from "./service/gsc.js";
+import * as indexing from "./service/indexing.js";
+import * as needsYou from "./service/needs-you.js";
+import * as setup from "./service/setup.js";
+import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
 import * as snapshots from "./service/snapshots.js";
 import * as sprints from "./service/sprints.js";
@@ -71,6 +75,25 @@ export const HANDLERS: Record<string, Handler> = {
   "gsc-query": (env, c, _a, p) => gsc.gscQuery(env, c, p),
   "gsc-submit-sitemap": (env, c, _a, p) => gsc.gscSubmitSitemap(env, c, p),
   "gsc-inspect-url": (env, c, _a, p) => gsc.gscInspectUrl(env, c, p),
+  "gsc-verification-token": (env, c, _a, p) => gsc.gscVerificationToken(env, c, p),
+  "gsc-verify-site": (env, c, a, p) => gsc.gscVerifySite(env, c, a, p),
+  "gsc-check-access": (env, c, _a, p) => gsc.gscCheckAccess(env, c, p),
+  // Indexing and Bing
+  "indexnow-key": (env, c, _a, p) => indexing.indexNowKeyTool(env, c, p),
+  "request-indexing": (env, c, _a, p) => indexing.requestIndexingTool(env, c, p),
+  "bing-add-site": (env, c, _a, p) => indexing.bingAddSiteTool(env, c, p),
+  "bing-verify-site": (env, c, _a, p) => indexing.bingVerifySiteTool(env, c, p),
+  "bing-submit": (env, c, _a, p) => indexing.bingSubmitTool(env, c, p),
+  // Site repo
+  "list-site-projects": (env, c, _a, p) => site.listSiteProjectsTool(env, c, p),
+  "link-site": (env, c, a, p) => site.linkSiteTool(env, c, a, p),
+  "get-site-link": (env, c, _a, p) => site.getSiteLinkTool(env, c, p),
+  "check-change-scope": (env, c, _a, p) => site.checkChangeScopeTool(env, c, p),
+  // Needs you + setup
+  "needs-you": (env, c, _a, p) => needsYou.needsYouTool(env, c, p),
+  "needs-you-add": (env, c, a, p) => needsYou.needsYouAddTool(env, c, a, p),
+  "needs-you-resolve": (env, c, a, p) => needsYou.needsYouResolveTool(env, c, a, p),
+  "setup-checklist": (env, c, _a, p) => setup.setupChecklistTool(env, c, p),
   // Audits
   "run-audit-snapshot": (env, c, _a, p) => snapshots.runAuditSnapshotTool(env, c, p),
   "record-finding": (env, c, a, p) => data.recordFinding(env, c, a, p),

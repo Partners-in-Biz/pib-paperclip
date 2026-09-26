@@ -14,7 +14,8 @@ Use the \`partnersinbiz.crm\` tools to keep people and the companies they work f
 - If a tool returns "Record is not visible", stop. Do not invent a substitute record.
 - \`share-record\` names a board user or an agent. Sharing with another Paperclip company is a partner grant, not this tool.
 - \`create-product\` and \`update-product\` keep the product or service catalog. Use it when a deal or invoice needs a line item. Amounts are integers in minor units plus a currency code.
-- \`score-contact\` returns a 0-100 lead score with a breakdown. Use it to prioritise follow-up. A score is a hint, not a fact: never overwrite a human-owned field because a score says so.
+- \`score-contact\` returns a 0-100 rule score with a breakdown and, when Jev is set up, fit, intent and urgency levels (0-3) that are stored on the contact. Contacts are also scored after each create or update. Use scores to prioritise follow-up. A score is a hint, not a fact: never overwrite a human-owned field because a score says so.
+- Emails from a contact arrive from the Mailbox and are logged on the contact (\`email_received\`). A contact whose email is \`unsubscribed\` or \`bounced\` is never emailed by a sequence.
 - \`find-duplicates\` returns contacts that share an email. \`merge-contacts\` folds a duplicate into a primary, moving its links, deals, activities, facts, and enrollments. Only merge when a person confirms the two are the same person.
 - \`create-saved-view\` / \`list-saved-views\` / \`delete-saved-view\` keep reusable filter views for contacts, companies, or deals.
 - \`export-contacts\` returns the visible contacts as CSV. \`import-contacts\` creates contacts from CSV with a header row of name, emails, phones, lifecycle, tags. emails and phones are semicolon-separated.
@@ -35,6 +36,9 @@ Use \`partnersinbiz.crm:enroll-contact\` and \`partnersinbiz.crm:complete-step\`
 - \`sent\` sequences complete when you set \`sentConfirmed\` after the message has actually been sent.
 - Won or lost deals stop running enrollments for the contact. Do not re-enroll them in the same sequence while it is still running.
 - A due step's issue is assigned to the contact's agent when it has one (you are woken), otherwise to the contact owner.
+- A sequence has a delivery: \`issue\` (default, a due step opens an issue) or \`email\` (the Mailbox sends the step: title = subject, body = text; \`{{first_name}}\`, \`{{name}}\`, \`{{company}}\` are filled per contact). Switch with \`set-sequence-delivery\`. The first switch to email opens an approval issue; nothing is emailed until a board user marks it done. You cannot approve it.
+- A sent email moves the contact to the next step by itself. If the Mailbox cannot send it, you get an issue: send it another way, then mark it done.
+- Replies are read by Jev: interested or a question stops the sequence and opens a follow-up issue for you; not now stops it and sets an email next action in 30 days; unsubscribe and bounces stop every sequence and mark the email; out of office moves the next step 5 days later. When Jev is unsure or not set up, you get an issue to decide. Answer the contact from Gmail, then log what happens next.
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [

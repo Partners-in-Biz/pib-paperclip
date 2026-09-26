@@ -14,6 +14,8 @@ import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@p
 import { NAMESPACE } from "./namespace.js";
 import type { AutopilotMode, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
 import type { TaskOwner } from "./templates/outrank-90.js";
+import { CHANGE_POLICIES, SITE_ACCESS, type ChangePolicy, type SiteAccess } from "./engine/site-change.js";
+import type { NeedsYouItem } from "./engine/needs-you.js";
 
 export type SeoDb = PluginContext["db"];
 
@@ -179,6 +181,16 @@ export interface Sprint {
   lastWeeklyOn: string | null;
   auditDaysDone: number[];
   seededAt: string | null;
+  /** The Paperclip project whose workspace holds the site repo (code tasks go there). */
+  siteProjectId: string | null;
+  siteAccess: SiteAccess;
+  repoUrl: string | null;
+  defaultBranch: string;
+  framework: string | null;
+  hosting: string | null;
+  changePolicy: ChangePolicy;
+  /** Google / Bing / IndexNow verification and indexing follow-up state. */
+  verification: Record<string, unknown>;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -186,7 +198,8 @@ export interface Sprint {
 const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, client_ref, client_name, status, start_date::text AS start_date,
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
-  last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, created_at, updated_at`;
+  last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, site_access, repo_url, default_branch, framework,
+  hosting, change_policy, verification, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
   return {
@@ -218,6 +231,14 @@ function sprintFrom(row: Row): Sprint {
     lastWeeklyOn: s(row.last_weekly_on)?.slice(0, 10) ?? null,
     auditDaysDone: numList(row.audit_days_done),
     seededAt: iso(row.seeded_at),
+    siteProjectId: s(row.site_project_id),
+    siteAccess: (SITE_ACCESS as readonly string[]).includes(String(row.site_access)) ? (String(row.site_access) as SiteAccess) : "unlinked",
+    repoUrl: s(row.repo_url),
+    defaultBranch: s(row.default_branch) ?? "main",
+    framework: s(row.framework),
+    hosting: s(row.hosting),
+    changePolicy: (CHANGE_POLICIES as readonly string[]).includes(String(row.change_policy)) ? (String(row.change_policy) as ChangePolicy) : "merge_seo_scope",
+    verification: json<Record<string, unknown>>(row.verification, {}),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -259,6 +280,14 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   last_weekly_on: "date",
   audit_days_done: "jsonb",
   seeded_at: "ts",
+  site_project_id: "text",
+  site_access: "text",
+  repo_url: "text",
+  default_branch: "text",
+  framework: "text",
+  hosting: "text",
+  change_policy: "text",
+  verification: "jsonb",
   updated_at: "ts",
 };
 
@@ -377,6 +406,8 @@ export interface SprintTask {
   issueId: string | null;
   issueIdentifier: string | null;
   issueStatus: string | null;
+  /** Project the issue was created in (the site project for code tasks). */
+  issueProjectId?: string | null;
   assigneeKind: string | null;
   blockerReason: string | null;
   humanAsk: string | null;
@@ -390,7 +421,7 @@ export interface SprintTask {
 
 const TASK_SELECT = `id, company_id, sprint_id, template_key, week, phase, due_day, focus, title, description, task_type, owner,
   autopilot_eligible, playbook_key, status, source, parent_optimization_id, context, issue_id, issue_identifier, issue_status,
-  assignee_kind, blocker_reason, human_ask, evidence, started_at, completed_at, completed_by, created_at, updated_at`;
+  assignee_kind, blocker_reason, human_ask, evidence, started_at, completed_at, completed_by, created_at, updated_at, issue_project_id`;
 
 function taskFrom(row: Row): SprintTask {
   return {
@@ -415,6 +446,7 @@ function taskFrom(row: Row): SprintTask {
     issueId: s(row.issue_id),
     issueIdentifier: s(row.issue_identifier),
     issueStatus: s(row.issue_status),
+    issueProjectId: s(row.issue_project_id),
     assigneeKind: s(row.assignee_kind),
     blockerReason: s(row.blocker_reason),
     humanAsk: s(row.human_ask),
@@ -443,6 +475,7 @@ const TASK_COLUMNS: Record<string, ColumnKind> = {
   issue_id: "text",
   issue_identifier: "text",
   issue_status: "text",
+  issue_project_id: "text",
   assignee_kind: "text",
   blocker_reason: "text",
   human_ask: "text",
@@ -1674,4 +1707,73 @@ export async function sprintCounts(db: SeoDb, companyId: string): Promise<Record
     };
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// "Needs you" digests (one row per sprint per week; items as one jsonb array)
+// ---------------------------------------------------------------------------
+
+export interface NeedsYouDigest {
+  id: string;
+  companyId: string;
+  sprintId: string;
+  weekStart: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  items: NeedsYouItem[];
+  status: "open" | "done";
+  updatedAt: string | null;
+}
+
+const NEEDS_YOU_SELECT = `id, company_id, sprint_id, week_start::text AS week_start, issue_id, issue_identifier, items, status, updated_at`;
+
+function needsYouFrom(row: Row): NeedsYouDigest {
+  const items = json<unknown>(row.items, []);
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    sprintId: String(row.sprint_id),
+    weekStart: String(row.week_start ?? "").slice(0, 10),
+    issueId: s(row.issue_id),
+    issueIdentifier: s(row.issue_identifier),
+    items: Array.isArray(items) ? (items as NeedsYouItem[]) : [],
+    status: row.status === "done" ? "done" : "open",
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+/** The digest for one week (Monday date). */
+export async function getNeedsYou(db: SeoDb, companyId: string, sprintId: string, weekStart: string): Promise<NeedsYouDigest | null> {
+  const rows = await db.query(
+    `SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND sprint_id = $2 AND week_start = $3::date LIMIT 1`,
+    [companyId, sprintId, weekStart],
+  );
+  return rows[0] ? needsYouFrom(rows[0]) : null;
+}
+
+export async function latestNeedsYouBefore(db: SeoDb, companyId: string, sprintId: string, weekStart: string): Promise<NeedsYouDigest | null> {
+  const rows = await db.query(
+    `SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND sprint_id = $2 AND week_start < $3::date ORDER BY week_start DESC LIMIT 1`,
+    [companyId, sprintId, weekStart],
+  );
+  return rows[0] ? needsYouFrom(rows[0]) : null;
+}
+
+export async function getNeedsYouByIssue(db: SeoDb, companyId: string, issueId: string): Promise<NeedsYouDigest | null> {
+  const rows = await db.query(`SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND issue_id = $2 LIMIT 1`, [companyId, issueId]);
+  return rows[0] ? needsYouFrom(rows[0]) : null;
+}
+
+/** One statement: insert this week's digest or replace its items / issue. */
+export async function upsertNeedsYou(db: SeoDb, row: { id: string; companyId: string; sprintId: string; weekStart: string; items: NeedsYouItem[]; status: "open" | "done" }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("needs_you")} (id, company_id, sprint_id, week_start, items, status)
+     VALUES ($1, $2, $3, $4::date, $5::jsonb, $6)
+     ON CONFLICT (sprint_id, week_start) DO UPDATE SET items = EXCLUDED.items, status = EXCLUDED.status, updated_at = now()`,
+    [row.id, row.companyId, row.sprintId, row.weekStart, jsonParam(row.items), row.status],
+  );
+}
+
+export async function setNeedsYouIssue(db: SeoDb, companyId: string, id: string, issueId: string | null, identifier: string | null): Promise<void> {
+  await db.execute(`UPDATE ${t("needs_you")} SET issue_id = $1, issue_identifier = $2, updated_at = now() WHERE id = $3 AND company_id = $4`, [issueId, identifier, id, companyId]);
 }

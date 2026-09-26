@@ -9,6 +9,7 @@ import {
   type PlatformOverride,
   type SocialPlatform,
 } from "../platforms.js";
+import { ExperimentSelect } from "./growth.js";
 import { Avatar, Muted, Row, scopeName, scopeParams, SmallButton, platformLabel } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
@@ -118,6 +119,8 @@ export function Composer({ snapshot, post, run, onClose }: {
   const [firstComment, setFirstComment] = useState(post?.firstComment ?? "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
   const [overrideTab, setOverrideTab] = useState<string>("");
+  const initialTag = post?.experimentId && post.experimentArm ? `${post.experimentId}|${post.experimentArm}` : "";
+  const [tag, setTag] = useState(initialTag);
   const [uploading, setUploading] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -175,12 +178,16 @@ export function Composer({ snapshot, post, run, onClose }: {
         const kept = Object.fromEntries(Object.entries(entry).filter(([, v]) => typeof v === "string" && v.trim()));
         if (Object.keys(kept).length) cleanOverrides[platform] = kept;
       }
+      const [experimentId, arm] = tag ? tag.split("|") : ["", ""];
+      // Only send the tag when it changed (an untouched closed experiment stays as history).
+      const tagParams = tag === initialTag ? {} : tag ? { experimentId, arm } : { experimentId: "" };
       const params = {
         body,
         accountIds: [...accountIds],
         mediaAssetIds: mediaIds,
         firstComment: firstComment || null,
         overrides: cleanOverrides,
+        ...tagParams,
       };
       const saved = (post
         ? await run("social.update-post", { postId: post.id, ...params }, sendToReview ? undefined : "Post saved")
@@ -263,6 +270,8 @@ export function Composer({ snapshot, post, run, onClose }: {
           </div>
         )}
       </div>
+
+      <ExperimentSelect snapshot={snapshot} value={tag} onChange={setTag} />
 
       <Field label="First comment (optional)">
         <TextArea value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} placeholder="Posted as the first comment or reply where the platform allows" />

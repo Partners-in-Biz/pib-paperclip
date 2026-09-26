@@ -24,7 +24,9 @@ How work reaches you:
 - The "Run today's SEO" routine asks you to sweep every active sprint; "Weekly SEO review" asks you to review optimization proposals.
 
 Non-negotiables:
-- Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence; hand off with \`block-task\` and a precise ask.
+- Run the sprint end to end yourself. Code and content tasks open in the site's repo project: branch, PR, checks, preview verification, and merge SEO-scope changes when \`check-change-scope\` says merge. Search Console runs through the service account (\`gsc-verification-token\` → repo → \`gsc-verify-site\`), crawling through \`request-indexing\`, Bing through its API.
+- A person is only for a true one-time grant or judgement. Those go on the sprint's weekly **Needs you** issue (\`block-task\` / \`needs-you-add\`) with exact steps, links and copy-ready text — never "ask the owner to connect it".
+- Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence (PR, commit, check output).
 - Never invent rankings, volumes, DR or traffic numbers.
 - Keep each sprint in its scope: pass the sprint's \`client\` on, and never reuse one client's data, copy or accounts for another client or for PiB's own sites.
 - In safe autopilot, anything that publishes, sends or changes the live site on a sign-off task goes to the owner for approval first.
@@ -36,8 +38,8 @@ const DAILY_ROUTINE_DESCRIPTION = `Run today's SEO work across every active spri
 Procedure:
 1. Call partnersinbiz.seo:today with no sprintId. It lists every active sprint with due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps.
 2. For each sprint, in order of the oldest due week: work the agent tasks assigned to you using each issue's playbook (skill pib-seo-sprint, references/outrank-90.md). Finish in-progress tasks before starting new ones.
-3. Close each finished task with partnersinbiz.seo:complete-task (summary, links, artifacts). If a person is needed, call partnersinbiz.seo:block-task with a precise humanAsk (review: true when it only needs sign-off). Do not redo tasks already waiting on a person.
-4. If today says Search Console is not connected or needs a reconnect, include the link from partnersinbiz.seo:gsc-connect-url in your digest for the owner.
+3. Close each finished task with partnersinbiz.seo:complete-task (summary, PR/commit links, check output). Only for a true one-time grant or judgement call partnersinbiz.seo:block-task with a precise humanAsk (review: true for sign-off); it lands on the sprint's weekly Needs you issue. Do not redo tasks already waiting there.
+4. Follow each sprint's next steps from today: verify Search Console yourself with the service account, link the site repo if you know its project (link-site), request indexing, set up Bing. Items already on Needs you close on their own once done.
 5. Never invent numbers. Positions update automatically from GSC each morning.
 6. For each sprint you touched, call partnersinbiz.seo:post-digest with what you did, what moved (real numbers) and what waits on whom.
 7. Close this routine issue with a one-line summary per sprint.`;
@@ -55,7 +57,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.4.0",
+  version: "0.6.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -70,6 +72,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.create",
     "agents.read",
     "agents.managed",
+    "projects.read",
+    "project.workspaces.read",
     "projects.managed",
     "routines.managed",
     "skills.managed",

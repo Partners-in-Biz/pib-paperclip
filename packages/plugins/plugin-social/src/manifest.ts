@@ -2,16 +2,16 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
 import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
-import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, SKILLS, SOCIAL_AGENT_INSTRUCTIONS } from "./skills.js";
+import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS, SOCIAL_AGENT_INSTRUCTIONS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.4.0",
+  version: "0.5.0",
   displayName: "Social",
   description:
-    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. " +
+    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Jev inbox triage; Growth Lab scores, experiments and playbook. " +
     "OAuth redirect URI for every provider (shown on the Social page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
@@ -31,6 +31,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "authorization.grants.write",
     "issues.read",
     "issues.create",
+    "issues.update",
     "issues.wakeup",
     "issue.comments.create",
     "secrets.read-ref",
@@ -81,6 +82,18 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Turns new RSS/Atom items into draft posts for review.",
       schedule: "9,24,39,54 * * * *",
     },
+    {
+      jobKey: "score-posts",
+      displayName: "Score posts (Growth Lab)",
+      description: "Scores each post's 7-day engagement against the account's trailing 30-day median and tags post features (in code, plus one Jev call per post when a key is set).",
+      schedule: "25 3 * * *",
+    },
+    {
+      jobKey: "measure-experiments",
+      displayName: "Measure experiments (Growth Lab)",
+      description: "Measures running experiments once each arm has its 7-day scores (or after 21 days), updates the scoreboard and drafts playbook changes.",
+      schedule: "50 3 * * *",
+    },
   ],
   apiRoutes: [
     {
@@ -127,7 +140,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       projectKey: SOCIAL_PROJECT_KEY,
       displayName: "Social",
-      description: "Social publishing work: failed posts, account reconnects and the weekly planning routine.",
+      description: "Social publishing work: failed posts, account reconnects, inbox replies, Growth Lab approvals and the weekly review routine.",
       status: "in_progress",
       color: "#db2777",
     },
@@ -135,7 +148,7 @@ const manifest: PaperclipPluginManifestV1 = {
   routines: [
     {
       routineKey: PLAN_ROUTINE_KEY,
-      title: "Plan next week's social",
+      title: PLAN_ROUTINE_TITLE,
       description: PLAN_ROUTINE_DESCRIPTION,
       status: "paused",
       priority: "medium",

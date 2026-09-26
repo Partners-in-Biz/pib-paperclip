@@ -160,10 +160,12 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-sequence",
     displayName: "Create sequence",
-    description: "Create a sequence and its steps. completionMode is manual or sent.",
+    description:
+      "Create a sequence and its steps. completionMode is manual or sent. delivery is issue (default: a due step opens an issue) or email (a due step is emailed from the Mailbox after a board user approves the sequence once). Step title is the email subject; body may use {{first_name}}, {{name}}, {{company}}.",
     parametersSchema: schema(["name"], {
       name: text,
       completionMode: text,
+      delivery: { type: "string", enum: ["issue", "email"] },
       steps: {
         type: "array",
         items: {
@@ -206,7 +208,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
       name: "score-contact",
       displayName: "Score contact",
-      description: "Return a 0-100 lead score for a visible contact with a plain-language breakdown of what raised or lowered it.",
+      description:
+        "Return a 0-100 rule score for a visible contact with a plain-language breakdown, plus (when Jev is set up) fit, intent and urgency levels 0-3 that are stored on the contact.",
       parametersSchema: schema(["contactId"], {
         contactId: text,
       }),
@@ -306,6 +309,16 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       productId: text,
       quantity: { type: "integer" },
       unitAmountMinor: { type: "integer" },
+    }),
+  },
+  {
+    name: "set-sequence-delivery",
+    displayName: "Set sequence delivery",
+    description:
+      "Choose how a sequence's due steps go out: issue (a person or agent sends it) or email (the Mailbox sends it). The first switch to email opens an approval issue; nothing is emailed until a board user marks it done.",
+    parametersSchema: schema(["sequenceId", "delivery"], {
+      sequenceId: text,
+      delivery: { type: "string", enum: ["issue", "email"] },
     }),
   },
   {

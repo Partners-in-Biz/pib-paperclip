@@ -1,3 +1,4 @@
+import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -16,6 +17,24 @@ import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
 import { SOCIAL_HIRE_ROLE } from "./hire.js";
 import { pollInboxJob } from "./inbox.js";
+import {
+  abandonExperiment,
+  approveExperiment,
+  decidePlaybookChange,
+  getPlaybookRecord,
+  growthEnv,
+  growthSnapshot,
+  listExperimentsRecord,
+  measureExperimentsJob,
+  performanceReview,
+  proposeExperiment,
+  proposeFeatureQuestion,
+  proposePlaybookChange,
+  rejectExperiment,
+  savePlaybookRecord,
+  scorePostsJob,
+  updateProgramRecord,
+} from "./growth/service.js";
 import { importFromUrl, presignUpload, registerAsset } from "./media.js";
 import { collectMetricsJob } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
@@ -63,6 +82,7 @@ import {
 import { handleClientSummary } from "./routes.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
+import { correctTriage } from "./triage.js";
 
 let pluginCtx: PluginContext | null = null;
 let bootstrap: CompanyBootstrap | null = null;
@@ -177,6 +197,25 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":
       return accountAnalyticsRecord(ctx, viewer, p);
+    // Growth Lab
+    case "performance-review":
+      return performanceReview(growthEnv(ctx), viewer, p);
+    case "get-playbook":
+      return getPlaybookRecord(growthEnv(ctx), viewer, p);
+    case "propose-playbook-change":
+      return proposePlaybookChange(growthEnv(ctx), viewer, p);
+    case "decide-playbook-change":
+      return decidePlaybookChange(growthEnv(ctx), viewer, p);
+    case "list-experiments":
+      return listExperimentsRecord(growthEnv(ctx), viewer, p);
+    case "propose-experiment":
+      return proposeExperiment(growthEnv(ctx), viewer, p);
+    case "approve-experiment":
+      return approveExperiment(growthEnv(ctx), viewer, p);
+    case "reject-experiment":
+      return rejectExperiment(growthEnv(ctx), viewer, p);
+    case "propose-feature-question":
+      return proposeFeatureQuestion(growthEnv(ctx), viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -265,6 +304,29 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
   "social.reply-inbox": (ctx, v, p) => replyInboxRecord(ctx, v, p),
   "social.post-analytics": (ctx, v, p) => postAnalyticsRecord(ctx, v, p),
+  "social.correct-triage": (ctx, v, p) =>
+    correctTriage(ctx, v.companyId, requireUser(v, "correct a triage"), { itemId: requiredString(p, "itemId"), key: requiredString(p, "key"), value: requiredString(p, "value") }),
+  // Growth Lab (people): the Growth tab.
+  "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
+  "social.growth-update-program": (ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p),
+  "social.growth-save-playbook": (ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p),
+  "social.growth-approve-experiment": (ctx, v, p) => {
+    requireUser(v, "approve an experiment");
+    return approveExperiment(growthEnv(ctx), v, p);
+  },
+  "social.growth-reject-experiment": (ctx, v, p) => {
+    requireUser(v, "reject an experiment");
+    return rejectExperiment(growthEnv(ctx), v, p);
+  },
+  "social.growth-abandon-experiment": (ctx, v, p) => abandonExperiment(growthEnv(ctx), v, p),
+  "social.growth-decide-change": (ctx, v, p) => {
+    requireUser(v, "decide a playbook change");
+    return decidePlaybookChange(growthEnv(ctx), v, p);
+  },
+  "social.growth-retire-question": (ctx, v, p) => {
+    requireUser(v, "retire a feature question");
+    return proposeFeatureQuestion(growthEnv(ctx), v, { ...p, op: "retire" });
+  },
   // Hiring: a normal task spells out the agent; the plugin links it when it appears, or a person links one by hand.
   "social.hire-options": (ctx, v) => {
     requireUser(v, "hire the Social agent");
@@ -355,7 +417,7 @@ const plugin = definePlugin({
     const ensure = (companyId: string) => bootstrap!.ensure(companyId);
 
     for (const tool of SOCIAL_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
@@ -371,6 +433,8 @@ const plugin = definePlugin({
     registerJob(ctx, "collect-metrics", () => collectMetricsJob(ctx, ensure));
     registerJob(ctx, "poll-inbox", () => pollInboxJob(ctx, ensure));
     registerJob(ctx, "poll-rss", () => pollRssJob(ctx));
+    registerJob(ctx, "score-posts", () => scorePostsJob(ctx, ensure));
+    registerJob(ctx, "measure-experiments", () => measureExperimentsJob(ctx, ensure));
 
     registerHireWatch(ctx, [{ role: SOCIAL_HIRE_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
     ctx.events.on("company.created", async (event) => {

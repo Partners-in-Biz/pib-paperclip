@@ -40,7 +40,7 @@ describe("manifest", () => {
         companyResolution: { from: "query", key: "companyId" },
       }),
     ]);
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.5.0");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {
@@ -73,7 +73,24 @@ describe("manifest", () => {
     for (const tool of SOCIAL_TOOLS) expect(publish, tool.name).toContain(tool.name);
   });
 
+  it("ships the 0.5.0 Growth Lab and Jev settings", () => {
+    const schema = manifest.instanceConfigSchema as Record<string, any>;
+    expect(schema.properties.jev.properties.apiKey).toMatchObject({ format: "secret-ref" });
+    expect(schema.properties.jev.properties.apiKey.type).toBeUndefined();
+    expect(manifest.capabilities).toContain("issues.update");
+    expect(manifest.routines![0]).toMatchObject({ routineKey: "plan-next-week", title: "Weekly social review & plan" });
+    expect(manifest.routines![0]!.description).toContain("performance-review");
+    for (const tool of ["performance-review", "get-playbook", "propose-playbook-change", "decide-playbook-change", "list-experiments", "propose-experiment", "approve-experiment", "reject-experiment", "propose-feature-question"]) {
+      expect(manifest.tools!.map((t) => t.name)).toContain(tool);
+    }
+    const content = SKILLS[1]!.markdown;
+    expect(content).toContain("## Weekly social review & plan");
+    expect(content).toContain("get-playbook");
+    const create = manifest.tools!.find((t) => t.name === "create-post")!;
+    expect(Object.keys((create.parametersSchema as any).properties)).toEqual(expect.arrayContaining(["experimentId", "arm"]));
+  });
+
   it("schedules every job", () => {
-    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss"]);
+    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss", "score-posts", "measure-experiments"]);
   });
 });
