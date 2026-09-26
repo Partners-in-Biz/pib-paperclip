@@ -13,6 +13,8 @@ import {
 import {
   createSkillSyncer,
   decisionStats,
+  registerModuleWatch,
+  SETUP_STATUS_ROUTE,
   MAIL_CATEGORIES,
   MAIL_EVENTS,
   MAIL_SENDERS,
@@ -25,7 +27,8 @@ import {
   type MailSendRequested,
 } from "@partnersinbiz/pib-plugin-kit";
 import { gmailRedirectUri, loadMailboxConfig, validateMailboxConfig } from "./config.js";
-import { SYNC_JOB_KEY } from "./constants.js";
+import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { SqlStore } from "./db.js";
 import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { createEnv, errorMessage, type Env } from "./gmail/env.js";
@@ -49,6 +52,7 @@ const plugin = definePlugin({
     env = createEnv(ctx, store);
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace);
+    registerModuleWatch(ctx);
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
@@ -60,9 +64,10 @@ const plugin = definePlugin({
     const user = (key: string, fn: (companyId: string, userId: string, params: Record<string, unknown>) => Promise<unknown>) =>
       ctx.actions.register(key, (params, context) => fn(requiredCompany(context), requiredUser(context), params));
 
-    ctx.actions.register("mailbox.load", (params, context) => {
+    ctx.actions.register("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
       void skillSync?.ensure(companyId);
+      await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
     ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
@@ -98,6 +103,9 @@ const plugin = definePlugin({
       const result = await runSyncJob(requireEnv());
       if (result.accounts > 0) ctx.logger.info("Gmail sync finished", result);
     });
+    ctx.jobs.register(SETUP_STATUS_JOB_KEY, async () => {
+      await publishAllSetupStatus(ctx, requireStore());
+    });
 
     for (const sender of MAIL_SENDERS) {
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.sendRequested), async (event) => {
@@ -121,6 +129,7 @@ const plugin = definePlugin({
     if (!env) return { status: 503, body: { error: "Mailbox plugin is not ready" } };
     try {
       if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
+      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
       return { status: 404, body: { error: "Unknown route" } };
     } catch (error) {
       return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };

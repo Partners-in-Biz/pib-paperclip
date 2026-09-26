@@ -33,6 +33,7 @@ import {
   type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
+import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { NeedsYouSection, SetupChecklist, SiteRepoSection, type NeedsYouView, type ProjectOption, type SetupItem, type SiteLink } from "./autonomy.js";
 
 // ---------------------------------------------------------------------------
@@ -587,6 +588,9 @@ export function SeoPage({ context }: PluginPageProps) {
   const [data, setData] = useState<LoadResult | null>(null);
   const [message, setMessage] = useState("");
   const request = useRef(0);
+  // Switched off in Setup: show the banner instead of loading (null = still checking, load as usual).
+  const enabled = useModuleEnabled(context.companyId);
+  const off = enabled === false;
 
   const refresh = useCallback(async () => {
     const mine = ++request.current;
@@ -597,11 +601,11 @@ export function SeoPage({ context }: PluginPageProps) {
   }, [load, scopeKey]);
 
   useEffect(() => {
-    if (!context.companyId) return;
+    if (!context.companyId || off) return;
     setData(null);
     refresh().catch((error: unknown) => setMessage(errorText(error)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [context.companyId, scopeKey]);
+  }, [context.companyId, scopeKey, off]);
 
   useEffect(() => {
     if (search.get("connected") === "gsc") setMessage(search.get("pick") ? "Google Search Console connected. Pick the property for this sprint below." : "Google Search Console connected.");
@@ -622,7 +626,7 @@ export function SeoPage({ context }: PluginPageProps) {
 
   const settings = data?.settings;
   const client = scope ? data?.client ?? null : null;
-  const body = (
+  const body = off ? <ModuleOffBanner /> : (
     <>
       {settings && !settings.saved ? (
         <Banner tone="warn">
@@ -676,6 +680,8 @@ export function SeoPage({ context }: PluginPageProps) {
         linkProps={nav.linkProps}
         ownPath="/seo"
       />
+    ) : off ? (
+      <ClientWorkspaceBar client={{ kind: scope.kind, id: scope.id, name: "Client", detail: null }} active="seo" linkProps={nav.linkProps} ownPath="/seo" />
     ) : null;
     return <ClientPage header={header} message={message}>{body}</ClientPage>;
   }
@@ -685,7 +691,7 @@ export function SeoPage({ context }: PluginPageProps) {
       title="SEO"
       description="90-day SEO sprints for Partners in Biz's own sites. Client sprints live in each client's workspace: open the client in the CRM, then SEO. The SEO agent works every task (code changes through the site repo); what only a person can do is batched in one weekly Needs you issue per sprint."
       message={message}
-      actions={seoAgent.headerAction}
+      actions={off ? undefined : seoAgent.headerAction}
     >
       {body}
     </Page>
@@ -1720,7 +1726,9 @@ function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, wor
   );
 }
 
-export function SeoSidebar(_props: PluginSidebarProps) {
+export function SeoSidebar({ context }: PluginSidebarProps) {
+  // Nothing when the company switched SEO off; shown while the check runs.
+  if (useModuleEnabled(context.companyId) === false) return null;
   return (
     <SidebarNavLink to="/seo" label="SEO" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

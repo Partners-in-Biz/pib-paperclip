@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-accounting",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Partners in Biz accounting plugin. The books every other plugin posts to: SA chart of accounts, journals with an audit hash chain, bank import and reconciliation, VAT201, reports, fixed assets, FX revaluation, cut-over and the accountant pack.",

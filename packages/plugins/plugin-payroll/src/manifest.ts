@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
@@ -7,7 +8,7 @@ import { PAYROLL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.1",
   displayName: "Payroll",
   description:
     "South African payroll: employees with sealed ID, tax and bank details, PAYE/UIF/SDL/ETI pay runs with separate approval, payslips by email, leave, EMP201/IRP5/EMP501 packs and net-pay bank files. Posts every locked run to Accounting.",
@@ -39,6 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "ui.page.register",
     "ui.sidebar.register",
+    "api.routes.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -49,6 +51,7 @@ const manifest: PaperclipPluginManifestV1 = {
     migrationsDir: "migrations",
   },
   tools: PAYROLL_TOOLS,
+  apiRoutes: [{ ...SETUP_STATUS_ROUTE }],
   jobs: [
     {
       jobKey: "redeliver",
@@ -59,7 +62,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "follow-up",
       displayName: "Payroll follow-up",
-      description: "Makes payslips that a locked run is still missing and links a pending Payroll Clerk hire.",
+      description: "Makes payslips that a locked run is still missing, links a pending Payroll Clerk hire and sends the setup checklist to Setup (hourly).",
       schedule: "*/15 * * * *",
     },
   ],

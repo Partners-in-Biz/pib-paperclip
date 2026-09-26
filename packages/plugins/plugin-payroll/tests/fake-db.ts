@@ -138,7 +138,11 @@ export async function getRunByApprovalIssue(_c: unknown, companyId: string, issu
   return r ? clone(r) : null;
 }
 export async function runsNeedingFollowUp() {
-  return [];
+  // Locked runs (not reversals) with an ok item that has no made payslip, like the real query.
+  return [...s.runs.values()]
+    .filter((r) => r.status === "locked" && r.kind !== "reversal")
+    .filter((r) => [...s.items.values()].some((i) => i.runId === r.id && i.status === "ok" && ![...s.payslips.values()].some((p) => p.runId === r.id && p.employeeId === i.employeeId && p.status !== "pending")))
+    .map((r) => ({ id: r.id, companyId: r.companyId }));
 }
 export async function countRuns(_c: unknown, companyId: string, month: string, frequency: string, kind: string) {
   return [...s.runs.values()].filter((r) => r.companyId === companyId && r.payDate.startsWith(month) && r.frequency === frequency && r.kind === kind).length;
@@ -275,4 +279,7 @@ export async function listAudit() {
 }
 export async function companiesWithRuns() {
   return ["company-1"];
+}
+export async function companiesWithEmployees() {
+  return [...new Set([...s.employees.values()].map((e) => e.companyId))];
 }

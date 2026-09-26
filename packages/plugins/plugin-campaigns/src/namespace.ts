@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const PLUGIN_ID = "partnersinbiz.campaigns";
+export const PLUGIN_VERSION = "0.3.1";
 export const NAMESPACE_SLUG = "campaigns";
 
 /** Same derivation the Paperclip host uses for a plugin schema. */

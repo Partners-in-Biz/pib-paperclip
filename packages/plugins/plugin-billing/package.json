@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-billing",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers in minor units. Agents draft; a person approves sending and money.",

@@ -1022,3 +1022,9 @@ export async function companiesWithRuns(ctx: Db): Promise<string[]> {
   const rows = await ctx.db.query<{ company_id: unknown }>(`SELECT DISTINCT company_id FROM ${table(ctx, "pay_runs")}`);
   return rows.map((r) => String(r.company_id));
 }
+
+/** Companies with employees (a company can be set up before its first run). */
+export async function companiesWithEmployees(ctx: Db): Promise<string[]> {
+  const rows = await ctx.db.query<{ company_id: unknown }>(`SELECT DISTINCT company_id FROM ${table(ctx, "employees")}`);
+  return rows.map((r) => String(r.company_id));
+}

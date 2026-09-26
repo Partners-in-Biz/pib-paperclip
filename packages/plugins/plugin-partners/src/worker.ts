@@ -19,9 +19,11 @@ import {
 } from "./domain.js";
 import { PARTNER_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
-import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+import { createSkillSyncer, registerModuleWatch, rememberPluginUiBase, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+let pluginCtx: PluginContext | null = null;
 
 interface LinkRow {
   id: string;
@@ -44,16 +46,21 @@ interface GrantRow {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
+    registerModuleWatch(ctx);
     for (const tool of PARTNER_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
-    ctx.actions.register("partners.load", (_params, context) => {
+    ctx.actions.register("partners.load", async (params, context) => {
       const companyId = requiredCompany(context);
       void skillSync?.ensure(companyId);
+      // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
+      await rememberPluginUiBase(ctx, params.uiBase);
+      await rememberCompany(ctx, companyId);
       return load(ctx, companyId);
     });
     ctx.actions.register("partners.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
@@ -65,9 +72,19 @@ const plugin = definePlugin({
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
+    ctx.jobs.register("setup-status", async () => {
+      await publishAllSetupStatus(ctx);
+    });
   },
   async onHealth() {
     return { status: "ok", message: "Partners plugin ready" };
+  },
+  async onApiRequest(input) {
+    if (!pluginCtx) return { status: 503, body: { error: "Partners plugin is not ready" } };
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
+    return { status: 404, body: { error: "Not found" } };
   },
 });
 

@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { safeFetch } from "@partnersinbiz/pib-plugin-kit";
 import { inScope, scopeOfRow } from "./clients.js";
+import { moduleGate } from "./modules.js";
 import {
   activeRssFeeds,
   getAccountsByIds,
@@ -210,8 +211,13 @@ async function pollFeed(ctx: PluginContext, feed: RssFeedRow): Promise<number> {
 }
 
 export async function pollRssJob(ctx: PluginContext) {
-  const summary = { feeds: 0, drafted: 0, errors: 0 };
+  const summary = { feeds: 0, drafted: 0, errors: 0, switchedOff: 0 };
+  const on = moduleGate(ctx);
   for (const feed of await activeRssFeeds(ctx)) {
+    if (!(await on(feed.company_id))) {
+      summary.switchedOff += 1;
+      continue;
+    }
     summary.feeds += 1;
     try {
       summary.drafted += await pollFeed(ctx, feed);

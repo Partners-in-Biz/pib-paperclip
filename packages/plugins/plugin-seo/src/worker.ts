@@ -17,6 +17,8 @@ import {
   pluginUiBase,
   registerCrmProjection,
   registerHireWatch,
+  registerModuleWatch,
+  SETUP_STATUS_ROUTE,
   rememberPluginUiBase,
   startHire,
   toolFail,
@@ -51,6 +53,7 @@ import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
 import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
 import { setupChecklist } from "./service/setup.js";
+import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { siteProjectOptions } from "./service/site.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS } from "./tools.js";
@@ -89,6 +92,8 @@ const plugin = definePlugin({
     });
     // Links the agent hired through the hire task as soon as it appears.
     registerHireWatch(ctx, [{ role: SEO_ROLE, onLinked: seoOnLinked(e) }]);
+    // Module switches from the Setup plugin: jobs and agent tools skip companies that switched SEO off.
+    registerModuleWatch(ctx);
     // Clients are CRM companies or CRM contacts (sole traders).
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     ctx.logger.info("SEO plugin ready");
@@ -124,6 +129,10 @@ const plugin = definePlugin({
     try {
       if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
       if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
+      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+        return { status: 200, body: await seoSetupStatus(env, input.companyId) };
+      }
       if (input.routeKey === "oauth-start") {
         const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
         const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
@@ -159,6 +168,8 @@ async function toolActor(ctx: PluginContext, run: ToolRunContext): Promise<Actor
 
 async function runTool(e: Env, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
+    // Switched off in Setup: agents (and the SEO routines) get a clear refusal.
+    if (!(await seoOn(e, run.companyId))) return toolFail(MODULE_OFF_MESSAGE);
     await e.skills.ensure(run.companyId).catch(() => []);
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
     // MCP clients need structuredContent to be an object: never return null, arrays or bare values.

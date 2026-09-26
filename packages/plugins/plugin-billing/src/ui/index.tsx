@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { MetricCard, useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { BarChart, Button, ClientWorkspaceBar, Page, StatRow, Tabs, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
 import { BillingContext, FONT, Muted, money, useCall, type BillingApi } from "./parts.js";
@@ -13,6 +15,26 @@ import { TimeTab } from "./time.js";
 import type { Snapshot } from "./types.js";
 
 type TabId = "overview" | "invoices" | "quotes" | "payments" | "bills" | "expenses" | "time" | "retainers" | "reports" | "reminders";
+
+const PLUGIN_KEY = "partnersinbiz.billing";
+
+/** null while loading, false when the company switched Billing off in Setup. */
+function useModuleEnabled(companyId: string | null | undefined): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    setEnabled(null);
+    moduleEnabled(companyId, PLUGIN_KEY).then((on) => {
+      if (live) setEnabled(on);
+    }).catch(() => {
+      if (live) setEnabled(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [companyId]);
+  return enabled;
+}
 
 const OPEN = new Set(["sent", "viewed", "overdue", "partially_paid", "payment_pending_verification"]);
 
@@ -86,21 +108,33 @@ export function BillingPage({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>("overview");
   const [openInvoice, setOpenInvoice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const enabled = useModuleEnabled(context.companyId);
 
   async function refresh() {
-    const next = await call<Snapshot>("billing.load", { client: scope });
+    const next = await call<Snapshot>("billing.load", { client: scope, uiBase: await resolvePluginUiBase(PLUGIN_KEY, import.meta.url) });
     setSnapshot(next);
     setLoaded(true);
   }
 
   useEffect(() => {
-    if (!context.companyId) return;
+    if (!context.companyId || enabled === false) return;
     setLoaded(false);
     setMessage("");
     setOpenInvoice(null);
     if (scope && ["bills", "expenses", "reports", "reminders"].includes(tab)) setTab("overview");
     refresh().catch((error: unknown) => setMessage(errorText(error)));
-  }, [context.companyId, scopeKey]);
+  }, [context.companyId, scopeKey, enabled === false]);
+
+  if (enabled === false) {
+    return (
+      <Page title="Billing" description="Invoices, quotes, payments, bills, expenses, time and retainers.">
+        <p style={{ margin: 0, fontSize: 14, color: tokens.fg, lineHeight: 1.5 }}>
+          This module is switched off for this company. Turn it on in{" "}
+          <a {...navigation.linkProps("/setup")} style={{ color: tokens.primary, fontWeight: 600 }}>Setup</a>.
+        </p>
+      </Page>
+    );
+  }
 
   const client = snapshot.client ?? null;
   const clientName = client?.name ?? "this client";
@@ -197,7 +231,9 @@ export function BillingPage({ context }: PluginPageProps) {
   );
 }
 
-export function BillingSidebar(_props: PluginSidebarProps) {
+export function BillingSidebar({ context }: PluginSidebarProps) {
+  // Nothing while the company has Billing switched off (shown as usual while loading).
+  if (useModuleEnabled(context.companyId) === false) return null;
   return (
     <SidebarNavLink to="/billing" label="Billing" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

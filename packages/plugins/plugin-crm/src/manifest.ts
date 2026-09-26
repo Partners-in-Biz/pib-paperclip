@@ -1,6 +1,6 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema } from "@partnersinbiz/pib-plugin-kit";
-import { PLUGIN_ID } from "./namespace.js";
+import { jevConfigSchema, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
 
@@ -31,7 +31,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.0",
+  version: PLUGIN_VERSION,
   displayName: "CRM",
   description: "Companies, contacts, deals, and sequences for a Paperclip workspace.",
   author: "Partners in Biz",
@@ -93,6 +93,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Re-sends every company and contact to the other PiB plugins so their client lists stay complete.",
       schedule: "30 1 * * *",
     },
+    {
+      jobKey: "setup-status",
+      displayName: "Report setup status",
+      description: "Tells the Setup plugin what the CRM still needs for each company.",
+      schedule: "17 * * * *",
+    },
   ],
   skills: SKILLS,
   apiRoutes: [
@@ -104,6 +110,7 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
     },
+    { ...SETUP_STATUS_ROUTE },
   ],
   ui: {
     slots: [

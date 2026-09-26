@@ -49,6 +49,13 @@ What senders should do so the books and VAT201 come out right:
 - Use `source.kind: "credit_note"` for credit notes (their VAT goes to field 18 / 12), and a bad-debt journal on the `bad_debts` role for write-offs (field 17).
 - The payment journal for a bank match should post the bank side to `accountCode: <BankMatched.bankAccountCode>` and put `dimensions.bankTxId` on a line; that reconciles the bank line.
 - A `rejected` result can later be followed by `posted` for the same key (after a person fixes the cause and clicks Retry). Record the journal id even if the outbox entry was already settled as failed.
+- When the company switched Accounting off in Setup, every new request gets `rejected` with `error: "Accounting is switched off for this company"` and nothing is stored. After it is switched back on, `retryOutbox` with the same key posts it.
+
+## Setup
+
+- `GET /setup-status?companyId=` (kit `SETUP_STATUS_ROUTE`) returns the checklist: settings, company details, chart, roles, bank account, opening balances (required); first statement, Bookkeeper, private R2, accountant review (optional).
+- The `redeliver` job pushes the same status as `setup.status` at most once an hour per company.
+- Module switch (kit `registerModuleWatch`): when Accounting is off for a company, jobs skip new work for it (Bookkeeper link, depreciation, FX revaluation, month-end issue, status push) and statement emails are ignored. Outbox redelivery, approval issues, bank-match results and the open-item projection keep running. The page and sidebar hide.
 
 ## Jobs
 

@@ -16,6 +16,7 @@ import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, t
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
 import { createIssueSafely, ORIGIN_KIND, socialProjectId } from "../issues.js";
+import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
 import { approvalIssueDescription, approvalIssueTitle, changeLines, experimentLines, verdictComment } from "./copy.js";
@@ -554,6 +555,7 @@ export async function measureExperiment(env: GrowthEnv, config: SocialConfig, e:
 export async function measureExperimentsJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>, env: GrowthEnv = growthEnv(ctx)) {
   const summary = { experiments: 0, measured: 0, waiting: 0, errors: 0 };
   for (const companyId of await env.store.companiesWithRunningExperiments()) {
+    if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
     if (!config.saved) continue;
@@ -942,6 +944,7 @@ export async function tagCompany(env: GrowthEnv, config: SocialConfig, options: 
 export async function scorePostsJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>, env: GrowthEnv = growthEnv(ctx)) {
   const summary = { companies: 0, written: 0, jevTagged: 0, codeTagged: 0, errors: 0 };
   for (const companyId of await env.store.companiesWithMetrics(E.SCORE_WINDOW, 75)) {
+    if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
     if (!config.saved) continue;

@@ -30,6 +30,7 @@ import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
+import { publishSetupStatuses, seoOn } from "./setup-status.js";
 import { scheduledSnapshots } from "./snapshots.js";
 import { healTasks, materialiseDueTasks } from "./tasks.js";
 
@@ -46,6 +47,10 @@ function groupByCompany(sprints: db.Sprint[]): Map<string, db.Sprint[]> {
 }
 
 async function companyReady(env: Env, companyId: string): Promise<CompanyInfo | null> {
+  if (!(await seoOn(env, companyId))) {
+    env.ctx.logger.info("SEO is switched off for company; skipping scheduled work", { companyId });
+    return null;
+  }
   try {
     const info = await companyInfo(env, companyId);
     if (!info.loaded.config.saved) {
@@ -297,12 +302,13 @@ export async function linkPendingHires(env: Env): Promise<number> {
   }
   let linked = 0;
   for (const companyId of companies) {
+    if (!(await seoOn(env, companyId))) continue;
     if (await linkPendingHire(env, companyId)) linked += 1;
   }
   return linked;
 }
 
-export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; skipped: number; errors: string[]; hiresLinked: number }> {
+export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; skipped: number; errors: string[]; hiresLinked: number; setupStatus: { published: number; skipped: number } }> {
   const started = Date.now();
   const hiresLinked = await linkPendingHires(env).catch((error: unknown) => {
     env.ctx.logger.info("SEO hire check failed", { error: errorMessage(error) });
@@ -343,7 +349,12 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
     }
   }
   await db.deleteExpiredOAuthSessions(env.ctx.db).catch(() => undefined);
-  return { processed, skipped, errors, hiresLinked };
+  // Hourly: the Setup plugin's copy of each company's checklist.
+  const setupStatus = await publishSetupStatuses(env).catch((error: unknown) => {
+    env.ctx.logger.info("SEO setup status publish failed", { error: errorMessage(error) });
+    return { published: 0, skipped: 0 };
+  });
+  return { processed, skipped, errors, hiresLinked, setupStatus };
 }
 
 export async function runWeeklyForSprint(env: Env, info: CompanyInfo, sprint: db.Sprint) {

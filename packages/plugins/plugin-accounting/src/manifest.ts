@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema, secretField } from "@partnersinbiz/pib-plugin-kit";
+import { jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { ACCOUNTING_TOOLS } from "./tools.js";
@@ -48,7 +48,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.1",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",
@@ -78,10 +78,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.emit",
     "ui.page.register",
     "ui.sidebar.register",
+    "api.routes.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "accounting", migrationsDir: "migrations", coreReadTables: ["issues"] },
   tools: ACCOUNTING_TOOLS,
+  apiRoutes: [SETUP_STATUS_ROUTE],
   jobs: [
     {
       jobKey: "redeliver",

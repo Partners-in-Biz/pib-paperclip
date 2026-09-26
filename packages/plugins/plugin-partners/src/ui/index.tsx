@@ -22,6 +22,10 @@ import {
   Toolbar,
   errorText,
 } from "@partnersinbiz/pib-plugin-ui";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+
+const PLUGIN_ID = "partnersinbiz.partners";
 
 interface LinkRow { id: string; company_a_id: string; company_b_id: string; status: string }
 interface GrantRow { id: string; record_type: string; record_id: string; status: string; grantee_company_id: string }
@@ -46,7 +50,7 @@ export function PartnersPage({ context }: PluginPageProps) {
   const [otherCompanyId, setOtherCompanyId] = useState("");
 
   async function refresh() {
-    const snapshot = (await load({})) as { links: LinkRow[]; grants: GrantRow[] };
+    const snapshot = (await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as { links: LinkRow[]; grants: GrantRow[] };
     setLinks(snapshot.links);
     setGrants(snapshot.grants);
   }
@@ -81,6 +85,7 @@ export function PartnersPage({ context }: PluginPageProps) {
       message={message}
       actions={<Button type="button" onClick={() => setCreate("link")}>+ Propose link</Button>}
     >
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
           { id: "overview", label: "Overview" },
@@ -221,7 +226,10 @@ async function publishShare(result: ShareResult, companyId: string): Promise<voi
   }
 }
 
-export function PartnersSidebar(_props: PluginSidebarProps) {
+export function PartnersSidebar({ context }: PluginSidebarProps) {
+  // Hidden when the company switched Partners off in Setup; shown while loading.
+  const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
+  if (enabled === false) return null;
   return (
     <SidebarNavLink to="/partners" label="Partners" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

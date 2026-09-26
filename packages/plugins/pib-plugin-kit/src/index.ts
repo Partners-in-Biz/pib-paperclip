@@ -13,6 +13,7 @@ export * from "./decisions.js";
 export * from "./experiments.js";
 export * from "./pdf.js";
 export * from "./tool-result.js";
+export * from "./setup.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

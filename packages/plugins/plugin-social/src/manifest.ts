@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
 import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
@@ -8,7 +9,7 @@ import { SOCIAL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.5.0",
+  version: "0.5.1",
   displayName: "Social",
   description:
     "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Jev inbox triage; Growth Lab scores, experiments and playbook. " +
@@ -40,6 +41,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "jobs.schedule",
     "events.subscribe",
+    "events.emit",
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
@@ -113,6 +115,8 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },
     },
+    // Read by the Setup plugin: this company's setup checklist (kit SetupStatus).
+    { ...SETUP_STATUS_ROUTE },
   ],
   // Kept so agents activated before hiring moved to tasks are still found
   // (ctx.agents.managed.get). New agents are hired through a task (src/hire.ts);

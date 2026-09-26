@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { LEDGER_SOURCES, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
@@ -28,6 +29,15 @@ describe("manifest", () => {
       expect(manifest.capabilities, cap).toContain(cap);
     }
     expect(manifest.capabilities).not.toContain("agents.managed");
+  });
+
+  it("serves the setup status route and matches the package version", async () => {
+    const { SETUP_STATUS_ROUTE } = await import("@partnersinbiz/pib-plugin-kit");
+    expect(manifest.apiRoutes).toEqual([SETUP_STATUS_ROUTE]);
+    expect(manifest.capabilities).toContain("api.routes.register");
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(manifest.version).toBe(pkg.version);
+    expect(manifest.version).toBe("0.1.1");
   });
 
   it("schedules redeliver, month-end and FX jobs", () => {

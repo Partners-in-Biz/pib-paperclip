@@ -17,6 +17,7 @@ import { Composer } from "./composer.js";
 import { platformLabel, Row } from "./parts.js";
 import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { GrowthTab } from "./growth.js";
+import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
@@ -121,6 +122,9 @@ export function SocialPage({ context }: PluginPageProps) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [pickerId, setPickerId] = useState<string | null>(null);
   const loadSeq = useRef(0);
+  // Switched off in Setup: show the banner instead of loading (null = still checking, load as usual).
+  const enabled = useModuleEnabled(context.companyId);
+  const off = enabled === false;
 
   /** A path on this page that keeps the current scope. */
   const pagePath = useCallback((query: string) => withClientParam(`/social${query ? `?${query}` : ""}`, scope), [scope]);
@@ -165,9 +169,9 @@ export function SocialPage({ context }: PluginPageProps) {
   }, [scopeKey]);
 
   useEffect(() => {
-    if (!context.companyId) return;
+    if (!context.companyId || off) return;
     refresh().catch((error: unknown) => setLoadError(errorText(error)));
-  }, [context.companyId, refresh]);
+  }, [context.companyId, refresh, off]);
 
   // Returning from the OAuth bridge: ?tab=accounts&connected=facebook or &picker=<id> (plus ?client= for a client workspace).
   useEffect(() => {
@@ -191,7 +195,7 @@ export function SocialPage({ context }: PluginPageProps) {
   const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
 
-  const body = loadError ? (
+  const body = off ? <ModuleOffBanner /> : loadError ? (
     <EmptyState
       title={scope ? "This client's workspace could not open" : "Social could not load"}
       description={loadError}
@@ -255,14 +259,14 @@ export function SocialPage({ context }: PluginPageProps) {
             client={{
               kind: scope.kind,
               id: scope.id,
-              name: client?.name ?? (loadError ? "Unknown client" : "Loading…"),
+              name: client?.name ?? (loadError ? "Unknown client" : off ? "Client" : "Loading…"),
               detail: client ? client.domain ?? client.email ?? null : null,
             }}
             active="social"
             linkProps={navigation.linkProps}
             ownPath="/social"
             ownLabel="Own social"
-            actions={<Row>{newPost}</Row>}
+            actions={off ? undefined : <Row>{newPost}</Row>}
           />
         )}
       >
@@ -276,14 +280,16 @@ export function SocialPage({ context }: PluginPageProps) {
       title="Social"
       description="Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."
       message={message}
-      actions={<Row>{newPost}</Row>}
+      actions={off ? undefined : <Row>{newPost}</Row>}
     >
       {body}
     </Page>
   );
 }
 
-export function SocialSidebar(_props: PluginSidebarProps) {
+export function SocialSidebar({ context }: PluginSidebarProps) {
+  // Nothing when the company switched Social off; shown while the check runs.
+  if (useModuleEnabled(context.companyId) === false) return null;
   return (
     <SidebarNavLink to="/social" label="Social" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

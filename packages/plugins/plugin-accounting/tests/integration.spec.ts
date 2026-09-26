@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ACCOUNT_ROLES, type LedgerPostRequested } from "@partnersinbiz/pib-plugin-kit";
+import { ACCOUNT_ROLES, rememberPluginUiBase, type LedgerPostRequested, type SetupItem } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../src/db.js";
 import { ZA_CHART } from "../src/domain/chart.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -22,6 +22,7 @@ import { revalueMonth } from "../src/service/fx.js";
 import { approveDraft, onDraftIssue, postJournal, requestDraftApproval, saveDraft, verifyJournalChain } from "../src/service/journals.js";
 import { receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection } from "../src/service/ledger.js";
 import { buildPack } from "../src/service/pack.js";
+import { setupStatus } from "../src/service/setup.js";
 import { approveReconciliation, prepareReconciliation, requestReconciliationApproval } from "../src/service/reconcile.js";
 import { runReport } from "../src/service/reports.js";
 import { approveVatReturn, prepareVatReturn, requestVatApproval } from "../src/service/vat.js";
@@ -50,6 +51,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   const emitted: Array<{ name: string; companyId: string; payload: Record<string, unknown> }> = [];
   const state = new Map<string, unknown>();
   const config: Record<string, unknown> = { legalName: "Partners in Biz (Pty) Ltd", vatNumber: "4123456789", vatCategory: "B", financialYearEndMonth: 2 };
+  const configs = new Map<string, Record<string, unknown>>();
   let issueSeq = 0;
   let ctx: any;
 
@@ -103,7 +105,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     }
     ctx = {
       db: shimDb(),
-      config: { get: async (companyId?: string) => (companyId === CO ? config : {}) },
+      config: { get: async (companyId?: string) => (companyId === CO ? config : configs.get(companyId ?? "") ?? {}) },
       secrets: { resolve: async () => undefined },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       state: { get: async (k: { stateKey: string }) => state.get(k.stateKey) ?? null, set: async (k: { stateKey: string }, v: unknown) => void state.set(k.stateKey, v) },
@@ -611,5 +613,126 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     await harness.runJob("month-end");
     expect(harness.logs.filter((l) => l.level === "error")).toEqual([]);
     expect(harness.logs.filter((l) => l.level === "warn" && /failed/.test(l.message))).toEqual([]);
+  });
+
+  const byKey = (items: SetupItem[]) => Object.fromEntries(items.map((i) => [i.key, i]));
+
+  it("setup status: nothing configured yet", async () => {
+    const S = "co-setup";
+    const status = await setupStatus(ctx, S);
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.1" });
+    expect(Date.parse(status.checkedAt)).not.toBeNaN();
+    const items = byKey(status.items);
+    expect(status.items[0]!.key).toBe("settings");
+    expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
+    for (const key of ["company_details", "chart", "roles", "bank_account", "opening_balances"]) expect(items[key], key).toMatchObject({ status: "missing", required: true });
+    for (const key of ["first_statement", "bookkeeper", "private_storage", "accountant_review"]) expect(items[key], key).toMatchObject({ status: "optional", required: false });
+    expect(items.chart!.action).toEqual({ plugin: "partnersinbiz.accounting", key: "accounting.chart", label: "Set up the chart" });
+    expect(items.bank_account!.href).toBe("/accounting?tab=bank");
+    expect(items.opening_balances).toMatchObject({ href: "/accounting?tab=cutover", blockedBy: ["chart", "roles"] });
+    expect(items.opening_balances!.steps!.length).toBeGreaterThan(0);
+    // A probe never writes: no book was created for the company.
+    expect(await db.getBook(ctx.db, S)).toBeNull();
+  });
+
+  it("setup status: everything configured", async () => {
+    const S = "co-setup";
+    configs.set(S, {
+      legalName: "Setup Co (Pty) Ltd",
+      vatNumber: "4999999999",
+      vatCategory: "C",
+      financialYearEndMonth: 2,
+      r2: { accountId: "acc", bucket: "books-private", accessKeyId: "AK", secretAccessKey: "secret-ref-1" },
+    });
+    await ensureBook(ctx, S);
+    const bank = await saveBankAccount(ctx, S, { name: "Main" });
+    await importStatement(ctx, S, user, { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx" });
+    await postCutover(ctx, S, user, { csv: "code,name,debit,credit\n1000,Bank,1000.00,\n3100,Retained earnings,,1000.00\n", date: "2025-02-28" });
+    await rememberPluginUiBase(ctx, "/_plugins/0f3c1d2e-aaaa-4bbb-8ccc-123456789abc/ui/");
+    const items = byKey((await setupStatus(ctx, S)).items);
+    for (const key of ["settings", "company_details", "chart", "roles", "bank_account", "opening_balances", "first_statement", "private_storage"]) expect(items[key]!.status, key).toBe("done");
+    expect(items.settings!.href).toBe("/company/settings/instance/plugins/0f3c1d2e-aaaa-4bbb-8ccc-123456789abc");
+    expect(items.company_details!.href).toBe(items.settings!.href);
+    expect(items.bookkeeper!.status).toBe("optional");
+    expect(items.accountant_review!.status).toBe("optional");
+  });
+
+  it("setup status: partial settings and a failing check", async () => {
+    const S = "co-setup-2";
+    configs.set(S, { vatCategory: "B" });
+    await ensureBook(ctx, S);
+    const items = byKey((await setupStatus(ctx, S)).items);
+    expect(items.settings!.status).toBe("done");
+    expect(items.company_details).toMatchObject({ status: "missing" });
+    expect(items.company_details!.detail).toMatch(/legal name, VAT number/);
+    expect(items.chart!.status).toBe("done");
+    expect(items.bank_account!.status).toBe("missing");
+    expect(items.opening_balances!.status).toBe("missing");
+    expect(items.private_storage!.status).toBe("optional");
+
+    const broken = { ...ctx, db: { ...ctx.db, query: async (text: string, params?: unknown[]) => (text.includes(".bank_accounts") ? Promise.reject(new Error("boom")) : ctx.db.query(text, params)) } };
+    const status = await setupStatus(broken, S);
+    expect(byKey(status.items).bank_account!.status).toBe("unknown");
+    expect(byKey(status.items).chart!.status).toBe("done");
+  });
+
+  it("module switched off: refuses postings, skips jobs; back on: posts the same key", async () => {
+    const { createTestHarness } = await import("@paperclipai/plugin-sdk/testing");
+    const manifest = (await import("../src/manifest.js")).default;
+    const plugin = (await import("../src/worker.js")).default;
+    const M = "co-m";
+    const harness = createTestHarness({ manifest, config: { legalName: "PiB", vatNumber: "4000000000", vatCategory: "B", financialYearEndMonth: 2 } });
+    harness.seed({ companies: [{ id: M, issuePrefix: "PIM", name: "PiM" } as never] });
+    (harness.ctx as unknown as { db: unknown }).db = shimDb();
+    await plugin.definition.setup(harness.ctx);
+    const results: Array<Record<string, unknown>> = [];
+    const statuses: Array<{ companyId: string; payload: Record<string, unknown> }> = [];
+    harness.ctx.events.on("plugin.partnersinbiz.accounting.ledger.post.result", async (e) => void results.push(e.payload as Record<string, unknown>));
+    harness.ctx.events.on("plugin.partnersinbiz.accounting.setup.status", async (e) => void statuses.push({ companyId: e.companyId, payload: e.payload as Record<string, unknown> }));
+    await harness.performAction("accounting.load", {}, { companyId: M, actor: { type: "user" as const, userId: "u-1" } });
+
+    // The status route.
+    const route = await plugin.definition.onApiRequest!({ routeKey: "setup-status", method: "GET", path: "/setup-status", params: {}, query: { companyId: M }, body: null, actor: { actorType: "user", actorId: "u-1" }, companyId: M, headers: {} });
+    expect(route.status).toBe(200);
+    expect(route.body).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting" });
+    expect((await plugin.definition.onApiRequest!({ routeKey: "other", method: "GET", path: "/x", params: {}, query: {}, body: null, actor: { actorType: "user", actorId: "u-1" }, companyId: M, headers: {} })).status).toBe(404);
+
+    await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: M, modules: { accounting: false, billing: true }, updatedAt: "2026-09-26T10:00:00Z" }, { companyId: M });
+    const key = "billing:invoice:m1:issue";
+    await harness.emit(`plugin.${BILLING}.ledger.post.requested`, invoiceRequest(key, "2026-09-20"), { companyId: M });
+    expect(results.at(-1)).toEqual({ key, status: "rejected", journalId: null, journalNumber: null, error: "Accounting is switched off for this company", source: invoiceRequest(key, "2026-09-20").source });
+    expect((await db.listJournals(ctx.db, M)).total).toBe(0);
+    expect(await db.listRejections(ctx.db, M, "open")).toEqual([]);
+    expect(await db.inboxResult(ctx.db, `ledger:${key}`)).toBeNull();
+
+    await harness.runJob("month-end");
+    await harness.runJob("redeliver");
+    const monthEnd = harness.logs.filter((l) => l.message === "Accounting month-end").at(-1)!.meta as { depreciation: Record<string, unknown>; closeIssues: Record<string, unknown> };
+    expect(Object.keys(monthEnd.depreciation)).not.toContain(M);
+    expect(Object.keys(monthEnd.closeIssues)).not.toContain(M);
+    expect(statuses.some((s) => s.companyId === M)).toBe(false);
+
+    // Switched back on: the sender's retry with the same key posts.
+    await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: M, modules: { accounting: true }, updatedAt: "2026-09-26T11:00:00Z" }, { companyId: M });
+    await harness.emit(`plugin.${BILLING}.ledger.post.requested`, invoiceRequest(key, "2026-09-20"), { companyId: M });
+    expect(results.at(-1)).toMatchObject({ key, status: "posted", error: null });
+    expect((await db.listJournals(ctx.db, M)).total).toBe(1);
+
+    await harness.runJob("month-end");
+    await harness.runJob("redeliver");
+    const monthEndOn = harness.logs.filter((l) => l.message === "Accounting month-end").at(-1)!.meta as { depreciation: Record<string, unknown> };
+    expect(Object.keys(monthEndOn.depreciation)).toContain(M);
+    const published = statuses.filter((s) => s.companyId === M);
+    expect(published).toHaveLength(1);
+    expect(published[0]!.payload).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting" });
+    // Throttled: a second run within the hour does not publish again.
+    await harness.runJob("redeliver");
+    expect(statuses.filter((s) => s.companyId === M)).toHaveLength(1);
+
+    // Off again: an already-posted key still gets its stored answer.
+    await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: M, modules: { accounting: false }, updatedAt: "2026-09-26T12:00:00Z" }, { companyId: M });
+    await harness.emit(`plugin.${BILLING}.ledger.post.requested`, invoiceRequest(key, "2026-09-20"), { companyId: M });
+    expect(results.at(-1)).toMatchObject({ key, status: "posted" });
+    expect(harness.logs.filter((l) => l.level === "error")).toEqual([]);
   });
 });

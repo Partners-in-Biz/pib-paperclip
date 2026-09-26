@@ -118,12 +118,17 @@ import {
   clientScopeFromInput,
   createSkillSyncer,
   createWorkIssue,
+  isModuleEnabled,
   MAIL_EVENTS,
   PIB_PLUGINS,
   pluginEvent,
   readConfig,
+  registerModuleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
   type ClientRef,
 } from "@partnersinbiz/pib-plugin-kit";
+import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
 import {
   onApprovalIssue,
   onMailReceived,
@@ -143,6 +148,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
+    registerModuleWatch(ctx);
     const registerAction = (
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
@@ -157,7 +163,12 @@ const plugin = definePlugin({
     for (const tool of CRM_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
-    registerAction("crm.load", (_params, context) => load(ctx, context));
+    registerAction("crm.load", async (params, context) => {
+      // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
+      await rememberPluginUiBase(ctx, params.uiBase);
+      if (context.companyId) await rememberCompany(ctx, context.companyId);
+      return load(ctx, context);
+    });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
@@ -184,10 +195,17 @@ const plugin = definePlugin({
       const result = await redeliverMail(ctx);
       if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
     });
-    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), (event) => onMailReceived(ctx, event));
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
+      // Replies are ignored while the CRM module is switched off for the company.
+      if (event.companyId && !(await isModuleEnabled(ctx, event.companyId, PLUGIN_ID))) return;
+      await onMailReceived(ctx, event);
+    });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     ctx.jobs.register("emit-recent", () => emitForAllCompanies(ctx, 1800));
     ctx.jobs.register("emit-all", () => emitForAllCompanies(ctx, null));
+    ctx.jobs.register("setup-status", async () => {
+      await publishAllSetupStatus(ctx);
+    });
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
@@ -203,6 +221,9 @@ const plugin = definePlugin({
 
   async onApiRequest(input) {
     if (!pluginCtx) return { status: 503, body: { error: "CRM plugin is not ready" } };
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
     return acceptPartnerGrant(pluginCtx, input);
   },
 });
@@ -1122,8 +1143,11 @@ async function openDueSteps(ctx: PluginContext) {
   const due = await dueEnrollments(ctx);
   const assigneeModeByCompany = new Map<string, string>();
   const sequences = new Map<string, Promise<Awaited<ReturnType<typeof getSequence>>>>();
+  const enabled = new Map<string, Promise<boolean>>();
   for (const enrollment of due) {
     try {
+      if (!enabled.has(enrollment.companyId)) enabled.set(enrollment.companyId, isModuleEnabled(ctx, enrollment.companyId, PLUGIN_ID));
+      if (!(await enabled.get(enrollment.companyId))) continue;
       const steps = await listSteps(ctx, enrollment.sequenceId);
       const step = steps.find((item) => item.position === enrollment.stepPosition);
       const contact = await getContact(ctx, enrollment.contactId);
@@ -1192,7 +1216,9 @@ async function afterMutation(ctx: PluginContext, companyId: string, name: string
 async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | null) {
   for (const companyId of await crmCompanyIds(ctx)) {
     try {
+      if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await emitChanges(ctx, companyId, sinceSeconds);
+      if (sinceSeconds == null) await recordFullShare(ctx, companyId);
     } catch (error) {
       ctx.logger.info("CRM change broadcast skipped", {
         companyId,
@@ -1232,6 +1258,7 @@ async function onPartnerGrantRevoked(ctx: PluginContext, companyId: string, payl
 async function resyncAction(ctx: PluginContext, context: PluginPerformActionContext) {
   const viewer = await actionViewer(ctx, context);
   const counts = await emitChanges(ctx, viewer.companyId, null);
+  await recordFullShare(ctx, viewer.companyId);
   return { ok: true, ...counts };
 }
 

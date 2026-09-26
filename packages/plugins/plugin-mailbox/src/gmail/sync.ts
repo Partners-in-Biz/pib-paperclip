@@ -5,7 +5,7 @@
  * re-emits the last 30 minutes of messages because events are at-most-once;
  * consumers dedupe by key.
  */
-import { configSaved, createWorkIssue, decisionConfig, MAIL_EVENTS, RISK_THRESHOLDS, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createWorkIssue, decisionConfig, isModuleEnabled, MAIL_EVENTS, RISK_THRESHOLDS, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
 import { GmailUnavailable } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -409,6 +409,8 @@ export async function runSyncJob(env: Env): Promise<{ accounts: number; synced: 
   let failed = 0;
   for (const [companyId, list] of byCompany) {
     if (!(await configSaved(env.ctx, companyId))) continue;
+    // Only the Mailbox's own switch stops the sync; other modules being off does not.
+    if (!(await isModuleEnabled(env.ctx, companyId, PLUGIN_ID))) continue;
     const loaded = await loadMailboxConfig(env.ctx, companyId);
     const run = await triageRunFor(env, loaded);
     for (const account of list) {

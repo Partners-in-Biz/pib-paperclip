@@ -3,6 +3,7 @@ import {
   DataTable,
   MetricCard,
   StatusBadge,
+  useHostLocation,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -24,6 +25,10 @@ import {
   errorText,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+
+const PLUGIN_ID = "partnersinbiz.payroll";
 
 // ---------------------------------------------------------------------------
 // Types (what the worker returns)
@@ -140,6 +145,7 @@ interface Snapshot {
   runs: RunSummary[];
   components: Component[];
   hire: { agent: { id: string; name: string; status: string } | null; hire: { issueId: string; identifier: string | null } | null } | null;
+  rulesReviewed: boolean;
 }
 
 interface Line {
@@ -192,6 +198,25 @@ interface RunDetail {
 }
 
 type TabId = "overview" | "employees" | "runs" | "payslips" | "leave" | "statutory";
+const TAB_IDS: TabId[] = ["overview", "employees", "runs", "payslips", "leave", "statutory"];
+
+/** `?tab=` from the address (Setup links to e.g. /payroll?tab=employees). */
+function tabFrom(search: string): TabId | null {
+  const value = new URLSearchParams(search).get("tab");
+  return value && (TAB_IDS as string[]).includes(value) ? (value as TabId) : null;
+}
+
+/** False once Setup says the company switched this module off; true while loading or unknown. */
+function useModuleEnabled(companyId: string | null | undefined): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    setEnabled(null);
+    moduleEnabled(companyId, PLUGIN_ID).then((value) => { if (live) setEnabled(value); }, () => { if (live) setEnabled(true); });
+    return () => { live = false; };
+  }, [companyId]);
+  return enabled;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -281,14 +306,33 @@ function Row({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------
 
 export function PayrollPage({ context }: PluginPageProps) {
+  const enabled = useModuleEnabled(context.companyId);
+  if (enabled === false) return <ModuleOff />;
+  return <PayrollWorkspace context={context} />;
+}
+
+function ModuleOff() {
+  const hostNavigation = useHostNavigation();
+  return (
+    <Page title="Payroll" description="South African payroll for your own staff.">
+      <Notice tone="info">
+        This module is switched off for this company. Turn it on in <a {...hostNavigation.linkProps("/setup")}>Setup</a>.
+      </Notice>
+    </Page>
+  );
+}
+
+function PayrollWorkspace({ context }: PluginPageProps) {
   const load = usePluginAction("payroll.load");
+  const reviewRules = usePluginAction("payroll.review-rules");
+  const location = useHostLocation();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>("overview");
+  const [tab, setTab] = useState<TabId>(() => tabFrom(location.search) ?? "overview");
   const [openRunId, setOpenRunId] = useState<string | null>(null);
 
   async function refresh() {
-    setSnapshot((await load({})) as Snapshot);
+    setSnapshot((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
   }
 
   useEffect(() => {
@@ -296,6 +340,14 @@ export function PayrollPage({ context }: PluginPageProps) {
     setSnapshot(null);
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId]);
+
+  useEffect(() => {
+    const next = tabFrom(location.search);
+    if (next) {
+      setTab(next);
+      setOpenRunId(null);
+    }
+  }, [location.search]);
 
   async function run<T>(work: () => Promise<T>, success?: string): Promise<T | null> {
     setMessage("");
@@ -316,13 +368,16 @@ export function PayrollPage({ context }: PluginPageProps) {
   if (s && s.settings.saved && !s.settings.encryptionKey) banners.push(<Notice key="key" tone="warn">Add the encryption key in the Payroll settings before entering ID numbers, tax numbers or bank details.</Notice>);
   if (s && s.settings.saved && !s.settings.privateStorage) banners.push(<Notice key="r2" tone="warn">Payslips and bank files need private storage. Fill in the R2 section of the Payroll settings with a private bucket.</Notice>);
   if (s && !s.rules.id) banners.push(<Notice key="rules" tone="warn">No payroll rules are loaded for {s.rules.taxYear}. Pay runs cannot be calculated until they are.</Notice>);
-  if (s && s.rules.unverified.length) {
+  if (s && s.rules.unverified.length && !s.rulesReviewed) {
     banners.push(
       <Notice key="unverified" tone="warn">
         <strong>{s.rules.unverified.length} payroll rule{s.rules.unverified.length === 1 ? "" : "s"} for {s.rules.taxYear} not confirmed yet.</strong> Have an accountant check them before relying on the figures.
         <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
           {s.rules.unverified.map((u) => <li key={u.path}>{u.note}</li>)}
         </ul>
+        <div style={{ marginTop: 8 }}>
+          <Button type="button" variant="secondary" style={small} onClick={() => void run(() => reviewRules({}), "Marked as checked")}>My accountant checked these</Button>
+        </div>
       </Notice>,
     );
   }
@@ -810,7 +865,7 @@ function RunsTab({ s, run, openRunId, setOpenRunId, setMessage }: { s: Snapshot;
             period: `${r.periodStart} to ${r.periodEnd}`,
             employees: r.totals.employeeCount,
             net: "",
-            ledgerText: r.ledger.status === "posted" ? `Posted ${r.ledger.journalNumber ?? ""}` : r.ledger.status === "none" ? "—" : words(r.ledger.status),
+            ledgerText: r.ledger.status === "posted" ? `Posted ${r.ledger.journalNumber ?? ""}` : r.ledger.status === "none" ? (r.ledger.error ? "Not posted" : "—") : words(r.ledger.status),
           }))}
           emptyMessage="No pay runs."
         />
@@ -937,7 +992,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
       }}>Reverse</Button>);
     }
   }
-  if ((r.status === "locked" || r.status === "reversed") && (r.ledger.status === "rejected" || r.ledger.status === "failed")) buttons.push(<Button key="repost" type="button" variant="secondary" onClick={() => void act(() => repost({ runId }), "Posting again")}>Post again</Button>);
+  if ((r.status === "locked" || r.status === "reversed") && (r.ledger.status === "rejected" || r.ledger.status === "failed" || (r.ledger.status === "none" && r.ledger.error))) buttons.push(<Button key="repost" type="button" variant="secondary" onClick={() => void act(() => repost({ runId }), "Posting again")}>Post again</Button>);
   if (["draft", "calculated", "pending_approval"].includes(r.status)) buttons.push(<Button key="cancel" type="button" variant="secondary" onClick={() => { if (window.confirm(`Cancel ${r.number}?`)) void act(() => cancel({ runId }), "Cancelled"); }}>Cancel run</Button>);
   if (r.status !== "draft") buttons.push(<Button key="var" type="button" variant="secondary" onClick={() => void act(async () => { setVariance((await variances({ runId })) as typeof variance); }, "")}>Changes since last run</Button>);
 
@@ -950,7 +1005,7 @@ function RunDetailView({ s, runId, back, run, setMessage }: { s: Snapshot; runId
           <p style={{ margin: "4px 0 0", fontSize: 13, color: tokens.muted }}>
             {r.kind !== "regular" ? `${r.kind} · ` : ""}{r.frequency} · {r.periodStart} to {r.periodEnd} · paid {r.payDate} · tax year {r.taxYear}
             {r.status === "pending_approval" ? ` · approval ${detail.approvalStatus ?? "requested"}${iPrepared ? " (you prepared it, so someone else approves)" : ""}` : ""}
-            {r.ledger.status !== "none" ? ` · Accounting: ${r.ledger.status === "posted" ? `posted ${r.ledger.journalNumber ?? ""}` : words(r.ledger.status)}${r.ledger.error ? ` (${r.ledger.error})` : ""}` : ""}
+            {r.ledger.status !== "none" || r.ledger.error ? ` · Accounting: ${r.ledger.status === "posted" ? `posted ${r.ledger.journalNumber ?? ""}` : r.ledger.status === "none" ? "not posted" : words(r.ledger.status)}${r.ledger.error ? ` (${r.ledger.error})` : ""}` : ""}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{buttons}</div>
@@ -1474,10 +1529,12 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
 // Sidebar
 // ---------------------------------------------------------------------------
 
-export function PayrollSidebar(_props: PluginSidebarProps) {
+export function PayrollSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
+  const enabled = useModuleEnabled(context.companyId);
   const href = hostNavigation.resolveHref("/payroll");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
+  if (enabled === false) return null;
   return (
     <a
       {...hostNavigation.linkProps("/payroll")}

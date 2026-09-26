@@ -68,6 +68,10 @@ import {
   createSkillSyncer,
   createWorkIssue,
   getCrmContact as projectedContact,
+  isModuleEnabled,
+  registerModuleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
   listCrmContactsAtCompany,
   parseClientParam,
   readConfig,
@@ -79,6 +83,8 @@ import {
   type ClientScope,
 } from "@partnersinbiz/pib-plugin-kit";
 import { abSuggestionFor, onMailReceived, onSendResult, redeliverMail, sendCampaignStep } from "./mail.js";
+import { PLUGIN_ID } from "./namespace.js";
+import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
 
@@ -90,14 +96,18 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
+    registerModuleWatch(ctx);
     for (const tool of CAMPAIGN_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
-    ctx.actions.register("campaigns.load", (params, context) => {
+    ctx.actions.register("campaigns.load", async (params, context) => {
       if (context.companyId) void skillSync?.ensure(context.companyId);
+      // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
+      await rememberPluginUiBase(ctx, params.uiBase);
+      if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
     ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
@@ -117,7 +127,14 @@ const plugin = definePlugin({
       const result = await redeliverMail(ctx);
       if (result.emitted || result.failed || result.handedOver) ctx.logger.info("Campaign mail redelivery", result);
     });
-    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), (event) => onMailReceived(ctx, event));
+    ctx.jobs.register("setup-status", async () => {
+      await publishAllSetupStatus(ctx);
+    });
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
+      // Replies are ignored while the Campaigns module is switched off for the company.
+      if (event.companyId && !(await isModuleEnabled(ctx, event.companyId, PLUGIN_ID))) return;
+      await onMailReceived(ctx, event);
+    });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event.entityId, event.companyId));
     ctx.events.on("company.created", async (event) => {
@@ -130,6 +147,9 @@ const plugin = definePlugin({
   },
   async onApiRequest(input) {
     if (!pluginCtx) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
+    }
     return handleApiRoute(pluginCtx, input);
   },
 });
@@ -432,8 +452,11 @@ async function completeStep(ctx: PluginContext, companyId: string, params: Recor
 async function openDueSteps(ctx: PluginContext) {
   const due = await dueEnrollments(ctx);
   const campaigns = new Map<string, Promise<CampaignDraft | null>>();
+  const enabled = new Map<string, Promise<boolean>>();
   for (const enrollment of due) {
     try {
+      if (!enabled.has(enrollment.companyId)) enabled.set(enrollment.companyId, isModuleEnabled(ctx, enrollment.companyId, PLUGIN_ID));
+      if (!(await enabled.get(enrollment.companyId))) continue;
       const steps = await listSteps(ctx, enrollment.campaignId);
       // The contact's A/B arm; a position without a B version sends A.
       const step = stepFor(steps, enrollment.stepPosition, enrollment.variant);

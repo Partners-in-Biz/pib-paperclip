@@ -16,6 +16,7 @@ import {
   createWorkIssue,
   decide,
   enqueue,
+  isModuleEnabled,
   MAIL_EVENTS,
   outboxStatus,
   readConfig,
@@ -603,6 +604,7 @@ export async function redeliverMail(ctx: PluginContext): Promise<{ emitted: numb
   for (const enrollment of await enrollmentsWithFailedSend(ctx)) {
     try {
       if (!(await configSaved(ctx, enrollment.companyId))) continue;
+      if (!(await isModuleEnabled(ctx, enrollment.companyId, PLUGIN_ID))) continue;
       await failStep(ctx, enrollment, enrollment.lastError ?? "No answer from the Mailbox");
       handedOver += 1;
     } catch (error) {

@@ -187,3 +187,34 @@ export function gscUsersLink(property: string): string {
 export function gscInspectLink(property: string, url: string): string {
   return `https://search.google.com/search-console/inspect?resource_id=${encodeURIComponent(property)}&id=${encodeURIComponent(url)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Setup probe: are the two APIs enabled for the service account's project?
+// ---------------------------------------------------------------------------
+
+export type ApiProbe = { state: "on" } | { state: "off"; message: string } | { state: "unknown"; message: string };
+
+/** Google's answer when an API is not enabled for the project. */
+export function isApiDisabled(status: number, message: string): boolean {
+  return status === 403 && /has not been used|is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(message);
+}
+
+async function probe(fetchImpl: FetchLike, token: string, url: string, label: string): Promise<ApiProbe> {
+  try {
+    await call(fetchImpl, token, "GET", url, label);
+    return { state: "on" };
+  } catch (error) {
+    const status = error instanceof GoogleApiError ? error.status : 0;
+    const message = error instanceof Error ? error.message : String(error);
+    return isApiDisabled(status, message) ? { state: "off", message } : { state: "unknown", message };
+  }
+}
+
+/** Lists (read-only) against both APIs; a disabled API answers 403 SERVICE_DISABLED. */
+export async function probeServiceAccountApis(fetchImpl: FetchLike, token: string): Promise<{ siteVerification: ApiProbe; searchConsole: ApiProbe }> {
+  const [siteVerification, searchConsole] = await Promise.all([
+    probe(fetchImpl, token, `${SITE_VERIFICATION}/webResource`, "Site Verification"),
+    probe(fetchImpl, token, `${WEBMASTERS}/sites`, "Search Console"),
+  ]);
+  return { siteVerification, searchConsole };
+}

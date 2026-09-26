@@ -12,7 +12,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { correctDecision, createWorkIssue, getCrmCompany, getCrmContact, PIB_PLUGINS, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
+import { correctDecision, createWorkIssue, getCrmCompany, getCrmContact, isModuleEnabled, PIB_PLUGINS, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
 import { anthropicConfig, defaultTaxCode, expenseCategories, jevFor, loadBilling, privateR2, type BillingSettings } from "./config.js";
 import { getExpense, insertExpense, table, type ExpenseRow } from "./db.js";
 import { BillingError, createExpense } from "./domain.js";
@@ -279,7 +279,8 @@ export async function cancelBill(ctx: PluginContext, context: PluginPerformActio
   if ((await billPaidMinor(ctx, bill.id)) > 0) throw new BillingError("This bill has payments; it cannot be cancelled");
   const wasApproved = bill.status !== "draft";
   await ctx.db.execute(`UPDATE ${table(ctx, "bills")} SET status = 'cancelled', pending_action = NULL, updated_at = now() WHERE id = $1`, [bill.id]);
-  if (wasApproved && bill.ledger_status) {
+  // No reversal is sent while the company has Accounting switched off.
+  if (wasApproved && bill.ledger_status && (await isModuleEnabled(ctx, companyId, PIB_PLUGINS.accounting))) {
     const lines = await billLines(ctx, bill.id);
     const original = billJournal({
       id: bill.id,

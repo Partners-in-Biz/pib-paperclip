@@ -26,6 +26,10 @@ import {
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+
+const PLUGIN_ID = "partnersinbiz.campaigns";
 
 type AudienceMode = "tags" | "client_contacts" | "client_contact";
 
@@ -143,7 +147,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [stepDelay, setStepDelay] = useState("0");
 
   async function refresh() {
-    setSnapshot((await load({ client: scope })) as Snapshot);
+    setSnapshot((await load({ client: scope, uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
   }
 
   useEffect(() => {
@@ -199,6 +203,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
 
   const body = (
     <>
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
           { id: "overview", label: "Overview" },
@@ -409,7 +414,10 @@ export function CampaignsPage({ context }: PluginPageProps) {
   );
 }
 
-export function CampaignsSidebar(_props: PluginSidebarProps) {
+export function CampaignsSidebar({ context }: PluginSidebarProps) {
+  // Hidden when the company switched Campaigns off in Setup; shown while loading.
+  const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
+  if (enabled === false) return null;
   return (
     <SidebarNavLink to="/campaigns" label="Campaigns" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

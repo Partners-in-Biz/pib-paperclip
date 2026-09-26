@@ -22,13 +22,13 @@ describe("manifest", () => {
     for (const cap of [
       "secrets.read-ref", "issues.create", "issues.read", "issues.wakeup", "issue.comments.create", "agents.managed", "agents.read",
       "authorization.grants.read", "authorization.grants.write", "projects.managed", "routines.managed", "skills.managed",
-      "plugin.state.read", "plugin.state.write", "http.outbound", "events.subscribe", "companies.read", "api.routes.register",
+      "plugin.state.read", "plugin.state.write", "http.outbound", "events.subscribe", "events.emit", "companies.read", "api.routes.register",
     ]) {
       expect(manifest.capabilities).toContain(cap);
     }
   });
 
-  it("registers the OAuth completion and client summary routes, and no start route", () => {
+  it("registers the OAuth completion, client summary and setup status routes, and no start route", () => {
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
       expect.objectContaining({
@@ -39,8 +39,9 @@ describe("manifest", () => {
         capability: "api.routes.register",
         companyResolution: { from: "query", key: "companyId" },
       }),
+      expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {

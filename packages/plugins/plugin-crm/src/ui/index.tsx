@@ -42,6 +42,8 @@ import {
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import { LEAD_DIMENSION_LABELS, LEAD_DIMENSIONS, leadBand, leadLevelLabel, type LeadScore } from "../lead-levels.js";
 
 interface Account {
@@ -148,6 +150,7 @@ type Detail =
   | { kind: "sequence"; id: string }
   | null;
 
+const PLUGIN_ID = "partnersinbiz.crm";
 const LIFECYCLE_OPTIONS = ["lead", "prospect", "customer", "churned"] as const;
 const NEXT_ACTION_OPTIONS = ["call", "email", "meet"] as const;
 
@@ -203,7 +206,7 @@ function CrmList({ context }: PluginPageProps) {
   const [timeline, setTimeline] = useState<Activity[]>([]);
 
   async function refresh() {
-    setSnapshot((await load({})) as Snapshot);
+    setSnapshot((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
   }
 
   useEffect(() => {
@@ -293,6 +296,7 @@ function CrmList({ context }: PluginPageProps) {
         </>
       )}
     >
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
           { id: "overview", label: "Overview" },
@@ -1915,7 +1919,10 @@ function formatDate(value: string | null): string {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
 }
 
-export function CrmSidebar(_props: PluginSidebarProps) {
+export function CrmSidebar({ context }: PluginSidebarProps) {
+  // Hidden when the company switched the CRM module off in Setup; shown while loading.
+  const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
+  if (enabled === false) return null;
   return (
     <SidebarNavLink to="/crm" label="CRM" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -202,3 +202,19 @@ describe("pdf", () => {
     expect(formatMoneyMinor(-1_50, "ZAR")).toBe("-R 1.50");
   });
 });
+
+import { moduleOfPlugin, setupProgress, settingsItem, isModuleEnabled } from "../src/setup.js";
+describe("setup", () => {
+  it("maps plugins to modules and counts progress", async () => {
+    expect(moduleOfPlugin("partnersinbiz.seo")).toBe("seo");
+    expect(moduleOfPlugin("other")).toBeNull();
+    const items = [settingsItem({ saved: true, pluginId: "p" }), { ...settingsItem({ saved: false, pluginId: "p" }), key: "x" }, { key: "o", title: "o", status: "missing" as const, required: false }];
+    expect(setupProgress(items)).toMatchObject({ done: 1, total: 2 });
+    const store = new Map<string, unknown>();
+    const ctx = { state: { get: async () => store.get("m") ?? null, set: async (_k: unknown, v: unknown) => void store.set("m", v) } } as never;
+    expect(await isModuleEnabled(ctx, "co", "partnersinbiz.seo")).toBe(true);
+    store.set("m", { modules: { seo: false } });
+    expect(await isModuleEnabled(ctx, "co", "partnersinbiz.seo")).toBe(false);
+    expect(await isModuleEnabled(ctx, "co", "partnersinbiz.crm")).toBe(true);
+  });
+});

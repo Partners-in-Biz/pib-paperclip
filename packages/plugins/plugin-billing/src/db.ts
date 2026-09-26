@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { ClientRef, ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { textArrayParam, type ClientRef, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new Error("Unsafe identifier");
@@ -224,11 +224,14 @@ export async function invoiceByApproval(ctx: PluginContext, issueId: string): Pr
  * those waiting on proof-of-payment checks keep their status (ageing and
  * reminders read the due date).
  */
-export async function markOverdue(ctx: PluginContext): Promise<void> {
+/** Sent/viewed invoices past their due time → overdue, except for companies in `skipCompanyIds` (module off). */
+export async function markOverdue(ctx: PluginContext, skipCompanyIds: string[] = []): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")}
         SET status = 'overdue', updated_at = now()
-      WHERE status IN ('sent', 'viewed') AND due_at IS NOT NULL AND due_at < now()`,
+      WHERE status IN ('sent', 'viewed') AND due_at IS NOT NULL AND due_at < now()
+        AND NOT (company_id = ANY(${textArrayParam(1)}))`,
+    [JSON.stringify(skipCompanyIds)],
   );
 }
 

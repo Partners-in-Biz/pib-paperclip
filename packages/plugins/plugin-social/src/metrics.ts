@@ -18,6 +18,7 @@ import {
 import { dueMetricWindow } from "./domain.js";
 import { ProviderHttpError, PublishRejected } from "./oauth/http.js";
 import { providerFor } from "./oauth/registry.js";
+import { socialOn } from "./modules.js";
 import { isSocialPlatform } from "./platforms.js";
 import { freshAccount } from "./tokens.js";
 
@@ -84,6 +85,7 @@ export async function collectMetricsJob(ctx: PluginContext, ensureCompany: (comp
   const byCompany = new Map<string, Array<DestinationRow & { platform: string }>>();
   for (const row of rows) byCompany.set(row.company_id, [...(byCompany.get(row.company_id) ?? []), row]);
   for (const [companyId, list] of byCompany) {
+    if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
     if (!config.saved) continue;

@@ -5,12 +5,12 @@
 import {
   definePlugin,
   runWorker,
-
+  type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginEvent,
   type PluginPerformActionContext,
 } from "@paperclipai/plugin-sdk";
 import {
-  configSaved,
   createSkillSyncer,
   hireStatus,
   hireTaskDraft,
@@ -21,6 +21,9 @@ import {
   pluginEvent,
   redeliver,
   registerHireWatch,
+  registerModuleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
   startHire,
   tryLinkPendingHire,
   unlinkAgent,
@@ -59,6 +62,8 @@ import {
 } from "./service/runs.js";
 import { certificates, emp201, emp501, exportDownload, exportStatutory, importYtd, netPayFile } from "./service/statutory.js";
 import { overview, rulesView, runTool } from "./service/agent-tools.js";
+import { followUp } from "./service/jobs.js";
+import { markRulesReviewed, rulesReviewed, setupStatus } from "./service/setup.js";
 
 export const LEDGER_RESULT_EVENT = pluginEvent(PIB_PLUGINS.accounting, LEDGER_EVENTS.postResult);
 export const MAIL_RESULT_EVENT = pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult);
@@ -73,6 +78,7 @@ const plugin = definePlugin({
     const e = env;
     const onLinked = clerkOnLinked(ctx, (companyId) => skills!.force(companyId));
     registerHireWatch(ctx, [{ role: CLERK_ROLE, onLinked }]);
+    registerModuleWatch(ctx);
     registerActions(e, onLinked);
 
     for (const tool of PAYROLL_TOOLS) {
@@ -109,6 +115,7 @@ const plugin = definePlugin({
       if (event.companyId) await skills?.ensure(event.companyId);
     });
 
+    // Outbox redelivery keeps running for companies that switched Payroll off, so queued work is not stranded.
     ctx.jobs.register("redeliver", async () => {
       const result = await redeliver(ctx);
       if (result.emitted || result.failed) ctx.logger.info("Payroll outbox redelivered", result);
@@ -119,6 +126,17 @@ const plugin = definePlugin({
   async onHealth() {
     return { status: "ok", message: "Payroll plugin ready" };
   },
+  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+    if (!env) return { status: 503, body: { error: "Payroll plugin is not ready" } };
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      try {
+        return { status: 200, body: await setupStatus(env, input.companyId) };
+      } catch (error) {
+        return { status: 500, body: { error: errorMessage(error) } };
+      }
+    }
+    return { status: 404, body: { error: "Unknown route" } };
+  },
 });
 
 export default plugin;
@@ -127,23 +145,6 @@ runWorker(plugin, import.meta.url);
 function statusOf(payload: unknown): string | undefined {
   const status = payload && typeof payload === "object" ? (payload as Record<string, unknown>).status : undefined;
   return typeof status === "string" ? status : undefined;
-}
-
-/** Job: payslips a locked run is still missing, and pending clerk hires. Jobs have no company scope. */
-async function followUp(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
-  const { ctx } = e;
-  for (const run of await db.runsNeedingFollowUp(ctx)) {
-    if (!(await configSaved(ctx, run.companyId))) continue;
-    try {
-      await generatePayslips(e, run.companyId, run.id);
-    } catch (error) {
-      ctx.logger.info("Payslip follow-up failed", { runId: run.id, error: errorMessage(error) });
-    }
-  }
-  for (const companyId of await db.companiesWithRuns(ctx)) {
-    if (!(await configSaved(ctx, companyId))) continue;
-    await tryLinkPendingHire(ctx, companyId, CLERK_ROLE, onLinked).catch(() => null);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,11 +160,13 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
       return fn(context.companyId, actionActor(context), asParams(params));
     });
 
-  action("payroll.load", async (companyId, actor) => {
+  action("payroll.load", async (companyId, actor, params) => {
+    // The page reports /_plugins/<installation uuid>/ui/ so Setup can link to the settings page.
+    await rememberPluginUiBase(ctx, params.uiBase);
     const me = actor.kind === "user" ? actor.userId : null;
     await tryLinkPendingHire(ctx, companyId, CLERK_ROLE, onLinked).catch(() => null);
     const date = today(e);
-    const [data, employees, terms, recurring, runs, custom, hire] = await Promise.all([
+    const [data, employees, terms, recurring, runs, custom, hire, reviewed] = await Promise.all([
       overview(e, companyId, true, me),
       db.listEmployees(ctx, companyId),
       db.termsOn(ctx, companyId, "9999-12-31"),
@@ -171,9 +174,11 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
       db.listRuns(ctx, companyId, 60),
       db.listCustomComponents(ctx, companyId),
       hireStatus(ctx, companyId, CLERK_ROLE).catch(() => null),
+      rulesReviewed(e, companyId),
     ]);
     return {
       ...data,
+      rulesReviewed: reviewed,
       me,
       employees: employees.map((x) => employeeView(x, terms.get(x.id) ?? null, recurring.filter((r) => r.employeeId === x.id), date)),
       runs: runs.map(runSummary),
@@ -182,6 +187,7 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
     };
   });
 
+  action("payroll.review-rules", (companyId, actor) => markRulesReviewed(e, companyId, actor));
   action("payroll.rules", async (_companyId, _actor, params) => rulesView(e, optStr(params, "taxYear", 7) ?? taxYearOf(today(e))));
   action("payroll.employee-terms", async (companyId, _actor, params) => ({ terms: (await db.listTerms(ctx, companyId, reqStr(params, "employeeId", 64))).map(termsView) }));
   action("payroll.save-employee", (companyId, actor, params) => saveEmployee(e, companyId, actor, params));

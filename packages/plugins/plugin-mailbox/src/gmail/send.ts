@@ -11,7 +11,7 @@
  *   message Gmail refuses → `failed` with `permanent: true`.
  */
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { MAIL_EVENTS, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
+import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
 import { GmailUnavailable, MailboxError, SendThrottled } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -422,6 +422,8 @@ async function finishSent(
 }
 
 /** Event handler for `plugin.<sender>.mail.send.requested`. */
+export const MAILBOX_OFF = "The Mailbox is switched off for this company. Turn it on in Setup, then retry the send from the Mailbox.";
+
 export async function handleSendRequested(env: Env, event: PluginEvent): Promise<MailSendResult | null> {
   const sender = senderOf(event.eventType) ?? "unknown";
   const companyId = event.companyId;
@@ -430,7 +432,9 @@ export async function handleSendRequested(env: Env, event: PluginEvent): Promise
     env.ctx.logger.info("Ignored a mail send request without a key or company", { eventType: event.eventType });
     return null;
   }
-  const { request, problem } = normalised;
+  const { request } = normalised;
+  // Switched off in Setup: answer at once so the sender hands the mail to a person.
+  const problem = (await isModuleEnabled(env.ctx, companyId, PLUGIN_ID)) ? normalised.problem : MAILBOX_OFF;
   try {
     const { result } = await receiveOnce(env.ctx, companyId, event.eventType, request.key, () =>
       performSend(env, companyId, request, { sourcePlugin: sender }, problem).then((r) => r as unknown as Record<string, unknown>),

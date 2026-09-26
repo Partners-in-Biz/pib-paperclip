@@ -9,7 +9,7 @@ import { SEO_TOOLS } from "../src/tools.js";
 describe("manifest", () => {
   it("declares the capabilities every host call needs", () => {
     for (const cap of [
-      "issues.create", "issues.read", "issues.update", "issues.wakeup", "issue.comments.create", "events.subscribe",
+      "issues.create", "issues.read", "issues.update", "issues.wakeup", "issue.comments.create", "events.subscribe", "events.emit",
       "agents.managed", "agents.read", "projects.managed", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "secrets.read-ref", "http.outbound",
       "api.routes.register", "jobs.schedule", "plugin.state.read", "plugin.state.write", "companies.read",
@@ -24,13 +24,14 @@ describe("manifest", () => {
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-weekly", "0 5 * * 1"]]);
   });
 
-  it("declares the OAuth and client-summary routes with company resolution", () => {
+  it("declares the OAuth, client-summary and setup-status routes with company resolution", () => {
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-start", method: "GET", path: "/oauth/start", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board", companyResolution: { from: "body", key: "companyId" } }),
       expect.objectContaining({ routeKey: "client-summary", method: "GET", path: "/client-summary", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }),
+      expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.6.0");
+    expect(manifest.version).toBe("0.6.1");
   });
 
   it("uses secret-ref fields without a type", () => {

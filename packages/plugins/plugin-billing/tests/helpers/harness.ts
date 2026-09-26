@@ -29,12 +29,17 @@ export interface Harness {
   actions: Map<string, (params: Record<string, unknown>, context: unknown) => Promise<unknown>>;
   tools: Map<string, (params: unknown, run: unknown) => Promise<unknown>>;
   jobs: Map<string, (job: unknown) => Promise<void>>;
+  state: Map<string, unknown>;
   call: <T = any>(action: string, params?: Record<string, unknown>, context?: unknown) => Promise<T>;
   runJob: (key: string) => Promise<void>;
   reset: () => Promise<void>;
   stop: () => Promise<void>;
   deliver: (name: string, companyId: string, payload: unknown, extra?: Partial<PluginEvent>) => Promise<void>;
 }
+
+type StateKey = { scopeKind?: string; scopeId?: string; namespace?: string; stateKey: string };
+/** Like the host: state is keyed by scope, namespace and key. */
+const stateId = (key: StateKey) => `${key.scopeKind ?? "instance"}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
 
 export async function embeddedAvailable(): Promise<boolean> {
   try {
@@ -128,9 +133,9 @@ export async function startHarness(): Promise<Harness> {
     config: { get: async (companyId: string) => config.get(companyId) ?? {} },
     secrets: { resolve: async (ref: { secretId: string }) => `secret-${ref.secretId}` },
     state: {
-      get: async (key: { stateKey: string }) => state.get(key.stateKey) ?? null,
-      set: async (key: { stateKey: string }, value: unknown) => {
-        state.set(key.stateKey, value);
+      get: async (key: StateKey) => state.get(stateId(key)) ?? null,
+      set: async (key: StateKey, value: unknown) => {
+        state.set(stateId(key), value);
       },
     },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
@@ -151,6 +156,7 @@ export async function startHarness(): Promise<Harness> {
     actions,
     tools,
     jobs,
+    state,
     async call(action, params = {}, context = userContext()) {
       const fn = actions.get(action);
       if (!fn) throw new Error(`No action ${action}`);

@@ -1,14 +1,15 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
-import { SYNC_JOB_KEY } from "./constants.js";
-import { PLUGIN_ID } from "./namespace.js";
+import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: PLUGIN_VERSION,
   displayName: "Mailbox",
   description:
     "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it.",
@@ -48,6 +49,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Every 2 minutes: new Gmail messages (headers only), triage, labels and mail.received events for every connected account.",
       schedule: "*/2 * * * *",
     },
+    {
+      jobKey: SETUP_STATUS_JOB_KEY,
+      displayName: "Report setup status",
+      description: "Tells the Setup plugin what the Mailbox still needs for each company.",
+      schedule: "29 * * * *",
+    },
   ],
   apiRoutes: [
     {
@@ -58,6 +65,7 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
     },
+    { ...SETUP_STATUS_ROUTE },
   ],
   ui: {
     slots: [

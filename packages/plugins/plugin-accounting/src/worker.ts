@@ -1,6 +1,8 @@
 import {
   definePlugin,
   runWorker,
+  type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginEvent,
   type PluginPerformActionContext,
@@ -12,6 +14,7 @@ import {
   createSkillSyncer,
   decisionConfig,
   decisionStats,
+  isModuleEnabled,
   LEDGER_EVENTS,
   LEDGER_SOURCES,
   linkAgent,
@@ -21,6 +24,8 @@ import {
   pluginEvent,
   redeliver,
   registerHireWatch,
+  registerModuleWatch,
+  rememberPluginUiBase,
   SecretResolver,
   startHire,
   toolFail,
@@ -73,6 +78,7 @@ import {
 } from "./service/journals.js";
 import { dismissRejection, receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection, senderOf } from "./service/ledger.js";
 import { buildPack } from "./service/pack.js";
+import { publishStatusThrottled, setupStatus } from "./service/setup.js";
 import { approveReconciliation, onReconciliationIssue, prepareReconciliation, requestReconciliationApproval } from "./service/reconcile.js";
 import { forecast, overview, runReport } from "./service/reports.js";
 import { approveVatReturn, computeForPeriod, onVatIssue, prepareVatReturn, requestVatApproval, vatCsv, vatPeriods } from "./service/vat.js";
@@ -127,7 +133,9 @@ async function withNames(ctx: PluginContext, companyId: string, journals: Awaite
 }
 
 const ACTIONS: Record<string, Handler> = {
-  "accounting.load": async (ctx, companyId, actor) => {
+  "accounting.load": async (ctx, companyId, actor, p) => {
+    // The page reports /_plugins/<installation uuid>/ui/ so the setup checklist can link to the settings.
+    await rememberPluginUiBase(ctx, p.uiBase);
     const book = await ensureBook(ctx, companyId);
     void skillSync?.ensure(companyId);
     if (actor.kind === "user") await tryLinkBookkeeper(ctx, companyId, syncSkills);
@@ -546,6 +554,13 @@ async function savedCompanies(ctx: PluginContext): Promise<string[]> {
   return out;
 }
 
+/** Saved companies that have not switched Accounting off in Setup (for new automatic work). */
+export async function enabledCompanies(ctx: PluginContext, companies: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const companyId of companies) if (await isModuleEnabled(ctx, companyId, PLUGIN_ID)) out.push(companyId);
+  return out;
+}
+
 /** Pending approvals whose issue closed while the event was missed. */
 async function sweepApprovals(ctx: PluginContext, companies: Set<string>) {
   const note = async (companyId: string, issueId: string | null, what: string) => {
@@ -575,14 +590,18 @@ async function sweepApprovals(ctx: PluginContext, companies: Set<string>) {
 
 async function redeliverJob(ctx: PluginContext) {
   const companies = await savedCompanies(ctx);
+  // In-flight work keeps running for every company: outbox redelivery and approvals already asked for.
   const outbox = await redeliver(ctx);
   await sweepApprovals(ctx, new Set(companies));
-  for (const companyId of companies) await tryLinkBookkeeper(ctx, companyId, syncSkills);
-  return { outbox, companies: companies.length };
+  const enabled = await enabledCompanies(ctx, companies);
+  for (const companyId of enabled) await tryLinkBookkeeper(ctx, companyId, syncSkills);
+  let published = 0;
+  for (const companyId of enabled) if (await publishStatusThrottled(ctx, companyId)) published += 1;
+  return { outbox, companies: companies.length, enabled: enabled.length, published };
 }
 
 async function monthEndJob(ctx: PluginContext) {
-  const companies = await savedCompanies(ctx);
+  const companies = await enabledCompanies(ctx, await savedCompanies(ctx));
   const depreciation = await depreciationJob(ctx, companies);
   const fx: Record<string, unknown> = {};
   const closeIssues: Record<string, unknown> = {};
@@ -598,6 +617,15 @@ async function monthEndJob(ctx: PluginContext) {
     closeIssues[companyId] = await monthEndCloseIssue(ctx, companyId).catch((error) => ({ error: errorMessage(error) }));
   }
   return { depreciation, fx, closeIssues };
+}
+
+// ---------------------------------------------------------------------------
+// API routes
+// ---------------------------------------------------------------------------
+
+export async function handleApiRequest(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  if (input.routeKey === "setup-status") return { status: 200, body: await setupStatus(ctx, input.companyId) };
+  return { status: 404, body: { error: "Not found" } };
 }
 
 // ---------------------------------------------------------------------------
@@ -621,10 +649,14 @@ const plugin = definePlugin({
       safely(ctx, "Open item", (e) => receiveOpenItem(ctx, e.companyId, senderOf(e.eventType, OPEN_ITEM_EVENTS.upserted), e.payload)),
     );
     ctx.events.on(pluginEvent(PIB_PLUGINS.billing, OPEN_ITEM_EVENTS.bankMatchResult), safely(ctx, "Bank match result", (e) => receiveMatchResult(ctx, e.companyId, e.payload)));
-    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), safely(ctx, "Statement email", (e) => receiveMail(ctx, e.companyId, e.eventType, e.payload)));
+    ctx.events.on(
+      pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received),
+      safely(ctx, "Statement email", async (e) => ((await isModuleEnabled(ctx, e.companyId, PLUGIN_ID)) ? receiveMail(ctx, e.companyId, e.eventType, e.payload) : false)),
+    );
     ctx.events.on("issue.updated", safely(ctx, "Approval issue", (e) => onIssueUpdated(ctx, e)));
     ctx.events.on("company.created", safely(ctx, "Skill sync", (e) => skillSync!.ensure(e.companyId)));
     registerHireWatch(ctx, [{ role: BOOKKEEPER_ROLE, onLinked: onBookkeeperLinked(ctx, syncSkills) }]);
+    registerModuleWatch(ctx);
 
     ctx.jobs.register("redeliver", async () => {
       const result = await redeliverJob(ctx);
@@ -640,6 +672,10 @@ const plugin = definePlugin({
   },
   async onHealth() {
     return { status: "ok", message: "Accounting plugin ready" };
+  },
+  async onApiRequest(input) {
+    if (!pluginCtx) return { status: 503, body: { error: "Accounting plugin is not ready" } };
+    return handleApiRequest(pluginCtx, input);
   },
   async onConfigChanged(_config, context) {
     const companyId = context?.companyId;

@@ -1,5 +1,6 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { PLUGIN_ID } from "./namespace.js";
+import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { PARTNER_TOOLS } from "./tools.js";
 
@@ -19,7 +20,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: PLUGIN_VERSION,
   displayName: "Partners",
   description: "Bilateral company links and named record grants.",
   author: "Partners in Biz",
@@ -36,6 +37,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.emit",
     "plugin.state.read",
     "plugin.state.write",
+    "jobs.schedule",
+    "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
   ],
@@ -43,6 +46,15 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { namespaceSlug: "partners", migrationsDir: "migrations" },
   tools: PARTNER_TOOLS,
   skills: SKILLS,
+  jobs: [
+    {
+      jobKey: "setup-status",
+      displayName: "Report setup status",
+      description: "Tells the Setup plugin what Partners still needs for each company.",
+      schedule: "23 * * * *",
+    },
+  ],
+  apiRoutes: [{ ...SETUP_STATUS_ROUTE }],
   ui: {
     slots: [
       { type: "page", id: "partners-page", displayName: "Partners", exportName: "PartnersPage", routePath: "partners" },

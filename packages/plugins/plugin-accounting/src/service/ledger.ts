@@ -2,6 +2,9 @@
  * Receiving side of the cross-plugin contracts (kit contracts.ts):
  * - `ledger.post.requested` from Billing / Payroll → post (or reverse) →
  *   `ledger.post.result`. Handled once per key with the kit `receiveOnce`;
+ *   when the company switched Accounting off in Setup, the request is
+ *   refused ("Accounting is switched off for this company") and nothing is
+ *   stored, so the sender's retry after switching it back on posts it;
  *   a repeat delivery re-emits the stored result. A rejected posting is
  *   stored too, but a later delivery of the same key runs again, so fixing
  *   the cause (map the role, reopen the period) and retrying works.
@@ -16,6 +19,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   createWorkIssue,
+  isModuleEnabled,
   LEDGER_EVENTS,
   receiveOnce,
   settleOutbox,
@@ -27,11 +31,13 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { AccountingError, isIsoDate } from "../domain/util.js";
+import { PLUGIN_ID } from "../namespace.js";
 import { ensureBook } from "./books.js";
 import { closeIssue, commentOn, errorMessage, issueStatus, ORIGIN, withLock } from "./common.js";
 import { postJournal, reverseJournal } from "./journals.js";
 
 const REJECTION_TITLE = "Accounting: postings were rejected";
+export const MODULE_OFF_ERROR = "Accounting is switched off for this company";
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -100,6 +106,20 @@ export async function receivePostRequest(ctx: PluginContext, companyId: string, 
   const req = payload as unknown as LedgerPostRequested;
   const sender = senderOf(eventType, LEDGER_EVENTS.postRequested);
   const inboxKey = inboxKeyForPosting(req.key);
+  if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) {
+    // Switched off in Setup: refuse without touching the inbox, the rejection
+    // list or issues. The sender marks its outbox row failed; after the module
+    // is switched back on, its retry (retryOutbox, same key) posts normally.
+    // A key that was already posted still gets its stored answer.
+    const earlier = (await db.inboxResult(ctx.db, inboxKey)) as unknown as LedgerPostResult | null;
+    if (earlier?.status === "posted") {
+      await emitResult(ctx, companyId, earlier);
+      return earlier;
+    }
+    const off: LedgerPostResult = { key: req.key, status: "rejected", journalId: null, journalNumber: null, error: MODULE_OFF_ERROR, source: req.source };
+    await emitResult(ctx, companyId, off);
+    return off;
+  }
   await ensureBook(ctx, companyId);
   // A stored rejection is not final: run it again on redelivery.
   const stored = await db.inboxResult(ctx.db, inboxKey);
@@ -114,12 +134,16 @@ export async function receivePostRequest(ctx: PluginContext, companyId: string, 
   } else {
     await resolveIfRejected(ctx, companyId, req.key, out.journalId ?? null);
   }
+  await emitResult(ctx, companyId, out);
+  return out;
+}
+
+async function emitResult(ctx: PluginContext, companyId: string, out: LedgerPostResult): Promise<void> {
   try {
     await ctx.events.emit(LEDGER_EVENTS.postResult, companyId, out as unknown as Record<string, unknown>);
   } catch (error) {
-    ctx.logger.info("ledger.post.result emit failed (the sender will retry)", { key: req.key, error: errorMessage(error) });
+    ctx.logger.info("ledger.post.result emit failed (the sender will retry)", { key: out.key, error: errorMessage(error) });
   }
-  return out;
 }
 
 /** Record a rejection and keep ONE open issue for a person to fix them. */

@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { useHostLocation, useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { Button, Page, Tabs, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
@@ -11,6 +13,9 @@ import { OverviewTab, type LoadResult } from "./overview.js";
 import { ReportsTab } from "./reports.js";
 import { Banner } from "./shared.js";
 import { VatTab } from "./vat.js";
+
+// The UI bundle cannot import namespace.ts (node:crypto).
+const PLUGIN_ID = "partnersinbiz.accounting";
 
 type TabId = "overview" | "bank" | "journals" | "chart" | "vat" | "reports" | "assets" | "budgets" | "cutover";
 
@@ -26,21 +31,65 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "cutover", label: "Cut-over" },
 ];
 
+/** `?tab=bank` etc. (links from the Setup checklist); anything else is the overview. */
+function tabFrom(search: string): TabId {
+  const value = new URLSearchParams(search).get("tab");
+  return TABS.some((t) => t.id === value) ? (value as TabId) : "overview";
+}
+
+/** Null while checking; false when the company switched Accounting off in Setup. */
+function useModuleEnabled(companyId: string | null | undefined): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    setEnabled(null);
+    moduleEnabled(companyId, PLUGIN_ID)
+      .then((value) => live && setEnabled(value))
+      .catch(() => live && setEnabled(true));
+    return () => {
+      live = false;
+    };
+  }, [companyId]);
+  return enabled;
+}
+
+function ModuleOff() {
+  const nav = useHostNavigation();
+  return (
+    <Page title="Accounting" description="Partners in Biz's books.">
+      <Banner tone="info">
+        <span>
+          This module is switched off for this company. Turn it on in <a {...nav.linkProps("/setup")} style={{ fontWeight: 600 }}>Setup</a>.
+        </span>
+      </Banner>
+    </Page>
+  );
+}
+
 export function AccountingPage({ context }: PluginPageProps) {
   const load = usePluginAction("accounting.load");
+  const location = useHostLocation();
+  const enabled = useModuleEnabled(context.companyId);
   const [data, setData] = useState<LoadResult | null>(null);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>("overview");
+  const [tab, setTab] = useState<TabId>(() => tabFrom(location.search));
 
   async function refresh() {
-    setData((await load({})) as LoadResult);
+    setData((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as LoadResult);
   }
 
+  // A new ?tab= (e.g. a link from Setup while the page is open) switches tab.
   useEffect(() => {
-    if (!context.companyId) return;
+    setTab(tabFrom(location.search));
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!context.companyId || enabled !== true) return;
     setData(null);
     refresh().catch((error: unknown) => setMessage(errorText(error)));
-  }, [context.companyId]);
+  }, [context.companyId, enabled]);
+
+  if (enabled === false) return <ModuleOff />;
 
   const settingsBanner: ReactNode = data && !data.settings.saved ? (
     <Banner tone="warn">
@@ -99,10 +148,21 @@ export function AccountingPage({ context }: PluginPageProps) {
   );
 }
 
-export function AccountingSidebar(_props: PluginSidebarProps) {
+export function AccountingSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
+  const [enabled, setEnabled] = useState(true);
+  useEffect(() => {
+    let live = true;
+    moduleEnabled(context.companyId, PLUGIN_ID)
+      .then((value) => live && setEnabled(value))
+      .catch(() => live && setEnabled(true));
+    return () => {
+      live = false;
+    };
+  }, [context.companyId]);
   const href = hostNavigation.resolveHref("/accounting");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
+  if (!enabled) return null;
   return (
     <a
       {...hostNavigation.linkProps("/accounting")}

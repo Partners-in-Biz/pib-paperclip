@@ -9,6 +9,7 @@ import {
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import {
   BarChart,
   Button,
@@ -337,6 +338,7 @@ export function MailboxPage({ context }: PluginPageProps) {
       message={message}
       actions={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
     >
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} />
       {settings && !settings.saved ? (
         <Banner tone="warn">
           <strong>Mailbox settings are not saved for this company.</strong>
@@ -771,7 +773,10 @@ export function MailboxPage({ context }: PluginPageProps) {
   );
 }
 
-export function MailboxSidebar(_props: PluginSidebarProps) {
+export function MailboxSidebar({ context }: PluginSidebarProps) {
+  // Hidden when the company switched the Mailbox off in Setup; shown while loading.
+  const enabled = useModuleEnabled(context.companyId, PLUGIN_KEY);
+  if (enabled === false) return null;
   return (
     <SidebarNavLink to="/mailbox" label="Mailbox" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

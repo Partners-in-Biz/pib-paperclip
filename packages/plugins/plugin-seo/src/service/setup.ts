@@ -1,6 +1,6 @@
 /** Setup checklist facts for a company (and optionally one sprint). */
 import * as db from "../db.js";
-import { buildSetupChecklist, checklistSummary, type SetupItem } from "../engine/setup.js";
+import { buildSetupChecklist, checklistSummary, type SetupFacts, type SetupItem } from "../engine/setup.js";
 import { resolveAgent } from "./agent.js";
 import { companyInfo, str, type CompanyInfo, type Env, type Params } from "./common.js";
 import { requireSprint } from "./context.js";
@@ -15,7 +15,8 @@ async function secretSet(info: CompanyInfo, path: string): Promise<boolean> {
   }
 }
 
-export async function setupChecklist(env: Env, info: CompanyInfo, sprint: db.Sprint | null): Promise<SetupItem[]> {
+/** Company-level facts (no sprint). */
+export async function companySetupFacts(env: Env, info: CompanyInfo): Promise<SetupFacts> {
   const [sa, agent, pagespeedKey, bingKey, settings] = await Promise.all([
     loadServiceAccount(info),
     resolveAgent(env, info.companyId),
@@ -23,27 +24,7 @@ export async function setupChecklist(env: Env, info: CompanyInfo, sprint: db.Spr
     secretSet(info, "bingApiKey"),
     settingsPath(env, info),
   ]);
-  let sprintFacts;
-  if (sprint) {
-    const [gsc, bing] = await Promise.all([
-      db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc"),
-      db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "bing"),
-    ]);
-    sprintFacts = {
-      siteName: sprint.siteName,
-      siteUrl: sprint.siteUrl,
-      isClient: Boolean(sprint.clientRef),
-      siteAccess: sprint.siteAccess,
-      siteProjectId: sprint.siteProjectId,
-      repoUrl: sprint.repoUrl,
-      changePolicy: sprint.changePolicy,
-      autopilotMode: sprint.autopilotMode,
-      property: gsc?.status === "connected" ? gsc.propertyUrl : null,
-      gscVia: integrationAuth(gsc),
-      bingVerified: bing?.status === "enabled",
-    };
-  }
-  return buildSetupChecklist({
+  return {
     prefix: info.prefix,
     settingsPath: settings,
     settingsSaved: info.loaded.config.saved,
@@ -51,8 +32,33 @@ export async function setupChecklist(env: Env, info: CompanyInfo, sprint: db.Spr
     agent,
     pagespeedKey,
     bingKey,
-    ...(sprintFacts ? { sprint: sprintFacts } : {}),
-  });
+  };
+}
+
+/** One sprint's facts for the checklist. */
+export async function sprintSetupFacts(env: Env, sprint: db.Sprint): Promise<NonNullable<SetupFacts["sprint"]>> {
+  const [gsc, bing] = await Promise.all([
+    db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc"),
+    db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "bing"),
+  ]);
+  return {
+    siteName: sprint.siteName,
+    siteUrl: sprint.siteUrl,
+    isClient: Boolean(sprint.clientRef),
+    siteAccess: sprint.siteAccess,
+    siteProjectId: sprint.siteProjectId,
+    repoUrl: sprint.repoUrl,
+    changePolicy: sprint.changePolicy,
+    autopilotMode: sprint.autopilotMode,
+    property: gsc?.status === "connected" ? gsc.propertyUrl : null,
+    gscVia: integrationAuth(gsc),
+    bingVerified: bing?.status === "enabled",
+  };
+}
+
+export async function setupChecklist(env: Env, info: CompanyInfo, sprint: db.Sprint | null): Promise<SetupItem[]> {
+  const [facts, sprintFacts] = await Promise.all([companySetupFacts(env, info), sprint ? sprintSetupFacts(env, sprint) : Promise.resolve(null)]);
+  return buildSetupChecklist({ ...facts, ...(sprintFacts ? { sprint: sprintFacts } : {}) });
 }
 
 export async function setupChecklistTool(env: Env, companyId: string, params: Params) {

@@ -4,7 +4,7 @@
  * Accounting through the outbox → payslips. Reverse or correct with a new
  * run; a locked run is never edited.
  */
-import { createWorkIssue, enqueue, LEDGER_EVENTS, outboxStatus, retryOutbox, settleOutbox, type LedgerPostResult } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, enqueue, isModuleEnabled, LEDGER_EVENTS, outboxStatus, PIB_PLUGINS, retryOutbox, settleOutbox, type LedgerPostResult } from "@partnersinbiz/pib-plugin-kit";
 import { mergeComponents } from "../components.js";
 import * as db from "../db.js";
 import {
@@ -508,7 +508,20 @@ export async function lockRun(env: Env, companyId: string, actor: Actor, params:
   return { runId: run.id, status: "locked" };
 }
 
-export async function postToLedger(env: Env, companyId: string, run: db.PayRun): Promise<void> {
+export const ACCOUNTING_OFF = "Accounting is switched off for this company, so this run was not posted. Turn Accounting on in Setup, then post it again.";
+
+/** True when Accounting is on for the company (no choice saved counts as on). */
+export function accountingEnabled(env: Env, companyId: string): Promise<boolean> {
+  return isModuleEnabled(env.ctx, companyId, PIB_PLUGINS.accounting);
+}
+
+/** Queues the run's journal for Accounting. False when nothing was queued. */
+export async function postToLedger(env: Env, companyId: string, run: db.PayRun): Promise<boolean> {
+  if (!(await accountingEnabled(env, companyId))) {
+    // The run still locks; it is simply not posted until Accounting is on.
+    await db.updateRun(env.ctx, companyId, run.id, { ledger_status: "none", ledger_error: ACCOUNTING_OFF });
+    return false;
+  }
   try {
     const payload = ledgerPostFor({
       id: run.id,
@@ -521,9 +534,11 @@ export async function postToLedger(env: Env, companyId: string, run: db.PayRun):
       reversesRunId: run.reversesRunId,
     });
     await enqueue(env.ctx, companyId, LEDGER_EVENTS.postRequested, payload as unknown as { key: string } & Record<string, unknown>);
+    return true;
   } catch (error) {
     await db.updateRun(env.ctx, companyId, run.id, { ledger_status: "failed", ledger_error: errorMessage(error) });
     env.ctx.logger.error("Pay run ledger post failed", { runId: run.id, error: errorMessage(error) });
+    return false;
   }
 }
 
@@ -537,7 +552,13 @@ export async function onLedgerResult(env: Env, companyId: string, payload: unkno
   await settleOutbox(env.ctx, result.key, result as Record<string, unknown>, posted ? "done" : "failed");
   await db.updateRun(env.ctx, companyId, runId, posted
     ? { ledger_status: "posted", journal_id: result.journalId ?? null, journal_number: result.journalNumber ?? null, ledger_error: null }
-    : { ledger_status: "rejected", ledger_error: result.error ?? "Accounting refused the journal" });
+    : { ledger_status: "rejected", ledger_error: rejectionText(result.error) });
+}
+
+/** Accounting's reason, with the next step when it was switched off after the run was queued. */
+export function rejectionText(error: string | null | undefined): string {
+  const text = typeof error === "string" && error.trim() ? error.trim() : "Accounting refused the journal";
+  return /switched off/i.test(text) ? `${text.replace(/\.$/, "")}. Turn Accounting on in Setup, then post it again.` : text;
 }
 
 /** Posts again after Accounting refused the journal (e.g. once the chart is set up). */
@@ -546,9 +567,13 @@ export async function repostLedger(env: Env, companyId: string, actor: Actor, pa
   const run = await requireRun(env, companyId, reqStr(params, "runId", 64));
   if (run.status !== "locked" && run.status !== "reversed") throw new PayrollError("Only a locked pay run is posted to Accounting");
   if (run.ledgerStatus === "posted") throw new PayrollError("The pay run is already posted");
+  if (!(await accountingEnabled(env, companyId))) throw new PayrollError("Accounting is switched off for this company. Turn it on in Setup first.");
   const row = await outboxStatus(env.ctx, ledgerKey(run.id));
   if (row?.status === "failed") await retryOutbox(env.ctx, ledgerKey(run.id));
-  else if (!row) await postToLedger(env, companyId, run);
+  else if (!row && !(await postToLedger(env, companyId, run))) {
+    const failed = await requireRun(env, companyId, run.id);
+    return { runId: run.id, ledgerStatus: failed.ledgerStatus };
+  }
   await db.updateRun(env.ctx, companyId, run.id, { ledger_status: "pending", ledger_error: null });
   return { runId: run.id, ledgerStatus: "pending" };
 }

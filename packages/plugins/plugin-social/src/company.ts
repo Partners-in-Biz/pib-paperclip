@@ -6,6 +6,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { deleteJunkAccounts, flagLegacyTokens } from "./db.js";
+import { rememberCompany } from "./modules.js";
 import { SKILLS } from "./skills.js";
 
 export function createCompanyBootstrap(ctx: PluginContext) {
@@ -15,6 +16,7 @@ export function createCompanyBootstrap(ctx: PluginContext) {
     skills,
     async ensure(companyId: string): Promise<void> {
       if (!companyId) return;
+      await rememberCompany(ctx, companyId);
       try {
         await skills.ensure(companyId);
       } catch (error) {

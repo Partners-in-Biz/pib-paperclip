@@ -20,8 +20,11 @@ import {
   PIB_PLUGINS,
   redeliver,
   registerCrmProjection,
+  registerModuleWatch,
+  rememberPluginUiBase,
   resolveCrmClient,
   retryOutbox,
+  SETUP_STATUS_ROUTE,
   TAX_CODES,
   toolFail,
   toolOk,
@@ -133,6 +136,7 @@ import { LEDGER_RESULT_EVENT } from "./posting.js";
 import { buildReports } from "./reporting.js";
 import { createPlan, createSubscription, listRetainers, runSubscriptions, setSubscriptionStatus, updatePlan } from "./retainers.js";
 import { applyCustomerCredit, settle, writeOff } from "./settle.js";
+import { billingOn, knownCompanyIds, publishAllSetupStatus, setupStatus } from "./setup.js";
 import { SKILLS } from "./skills.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject, assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
@@ -315,6 +319,7 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
+    registerModuleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => {
         void skillSync?.ensure(run.companyId);
@@ -329,7 +334,7 @@ const plugin = definePlugin({
     }
     ctx.actions.register("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
 
-    ctx.jobs.register("mark-overdue", () => markOverdue(ctx));
+    ctx.jobs.register("mark-overdue", () => markOverdueJob(ctx));
     ctx.jobs.register("run-recurring", () => runRecurring(ctx));
     ctx.jobs.register("redeliver", () => redeliverJob(ctx));
     ctx.jobs.register("emit-open-items", () => emitOpenItemsJob(ctx, 1800));
@@ -361,6 +366,7 @@ const plugin = definePlugin({
   async onApiRequest(input) {
     if (!pluginCtx) return { status: 503, body: { error: "Billing plugin is not ready" } };
     if (input.routeKey === "client-summary") return clientSummaryRoute(pluginCtx, input);
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return setupStatusRoute(pluginCtx, input);
     return acceptGrant(pluginCtx, input);
   },
 });
@@ -477,6 +483,8 @@ function publicPop(pop: Awaited<ReturnType<typeof listPops>>[number], numbers?: 
  */
 async function load(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown> = {}) {
   const companyId = requiredCompany(context);
+  // The page reports /_plugins/<installation uuid>/ui/ so Setup can link to the settings page.
+  await rememberPluginUiBase(ctx, params.uiBase);
   const scope = readClientScope(params) ?? null;
   const invoices = await listInvoices(ctx, companyId, scope);
   const own = await invoiceBalances(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {});
@@ -904,8 +912,11 @@ function publicRecurring(row: { id: string; company_id: string; template_invoice
 /** Job: a new invoice from each due schedule (every field copied), then retainer subscriptions. */
 async function runRecurring(ctx: PluginContext) {
   const due = await dueRecurring(ctx);
+  const on = moduleCache(ctx);
   for (const schedule of due) {
     try {
+      // Billing switched off for the company: leave the schedule as it is.
+      if (!(await on(schedule.company_id))) continue;
       const template = await getInvoice(ctx, schedule.template_invoice_id);
       const scheduled = new Date(String(iso(schedule.next_run_at)));
       if (!template) {
@@ -949,6 +960,7 @@ async function runRecurring(ctx: PluginContext) {
   }
   for (const companyId of await billingCompanyIds(ctx)) {
     try {
+      if (!(await on(companyId))) continue;
       await runSubscriptions(ctx, companyId);
     } catch (error) {
       ctx.logger.info("Retainer run skipped", { companyId, error: errorMessage(error) });
@@ -1075,12 +1087,36 @@ async function runDunningFor(ctx: PluginContext, companyId: string, force = fals
 
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
+/** Companies scheduled jobs work for: settings saved and the Billing module not switched off. */
 async function companiesWithSettings(ctx: PluginContext): Promise<string[]> {
   const out: string[] = [];
   for (const companyId of await billingCompanyIds(ctx).catch(() => [])) {
-    if (await configSaved(ctx, companyId)) out.push(companyId);
+    if ((await configSaved(ctx, companyId)) && (await billingOn(ctx, companyId))) out.push(companyId);
   }
   return out;
+}
+
+/** Memoised module switch per job run. */
+function moduleCache(ctx: PluginContext): (companyId: string) => Promise<boolean> {
+  const seen = new Map<string, Promise<boolean>>();
+  return (companyId) => {
+    let hit = seen.get(companyId);
+    if (!hit) {
+      hit = billingOn(ctx, companyId);
+      seen.set(companyId, hit);
+    }
+    return hit;
+  };
+}
+
+/** Hourly: overdue invoices (not for companies with Billing off), then the setup status for the Setup plugin. */
+async function markOverdueJob(ctx: PluginContext) {
+  const off: string[] = [];
+  for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
+    if (!(await billingOn(ctx, companyId))) off.push(companyId);
+  }
+  await markOverdue(ctx, off);
+  await publishAllSetupStatus(ctx);
 }
 
 async function redeliverJob(ctx: PluginContext) {
@@ -1116,6 +1152,16 @@ async function fxJob(ctx: PluginContext) {
 }
 
 // ── API routes ─────────────────────────────────────────────────────────────
+
+async function setupStatusRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+  try {
+    return { status: 200, body: await setupStatus(ctx, input.companyId) };
+  } catch (error) {
+    ctx.logger.info("Billing setup status failed", { error: errorMessage(error) });
+    return { status: 500, body: { error: error instanceof Error ? error.message : "Setup status failed" } };
+  }
+}
 
 async function clientSummaryRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
   try {

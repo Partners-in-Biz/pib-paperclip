@@ -8,7 +8,17 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { linkAgent, registerCrmProjection, registerHireWatch, rememberPluginUiBase, startHire, unlinkAgent } from "@partnersinbiz/pib-plugin-kit";
+import {
+  linkAgent,
+  publishSetupStatus,
+  registerCrmProjection,
+  registerHireWatch,
+  registerModuleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
+  startHire,
+  unlinkAgent,
+} from "@partnersinbiz/pib-plugin-kit";
 import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
 import { scopeFromParams } from "./clients.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
@@ -36,6 +46,7 @@ import {
   updateProgramRecord,
 } from "./growth/service.js";
 import { importFromUrl, presignUpload, registerAsset } from "./media.js";
+import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
@@ -80,6 +91,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { handleClientSummary } from "./routes.js";
+import { socialSetupStatus } from "./setup-status.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
 import { correctTriage } from "./triage.js";
@@ -228,6 +240,8 @@ function toolContent(name: string, data: unknown): string {
 
 async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
+    // Switched off in Setup: agents (and their routine runs) get a clear refusal.
+    if (!(await socialOn(ctx, run.companyId))) return { error: MODULE_OFF_MESSAGE };
     const viewer = await toolViewer(ctx, run);
     const data = await dispatchTool(ctx, viewer, name, objectParams(params));
     return { content: toolContent(name, data), data };
@@ -368,6 +382,15 @@ const ACTIONS: Record<string, ActionHandler> = {
 
 async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
   if (input.routeKey === "client-summary") return handleClientSummary(ctx, input);
+  if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+    const companyId = input.companyId;
+    if (!companyId) return { status: 400, body: { error: "companyId is required" } };
+    try {
+      return { status: 200, body: await socialSetupStatus(ctx, companyId) };
+    } catch (error) {
+      return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
+    }
+  }
   if (input.routeKey !== "oauth-complete") return { status: 404, body: { error: "Not found" } };
   // OAuth completion (called by the static bridge page).
   try {
@@ -410,6 +433,26 @@ function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown
   });
 }
 
+/** Hourly: push each known company's setup checklist to the Setup plugin. */
+export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
+  const result = { published: 0, skipped: 0 };
+  for (const companyId of await knownCompanies(ctx)) {
+    try {
+      // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
+      if (!(await socialOn(ctx, companyId)) || !(await loadSocialConfig(ctx, companyId)).saved) {
+        result.skipped += 1;
+        continue;
+      }
+      await publishSetupStatus(ctx, companyId, await socialSetupStatus(ctx, companyId));
+      result.published += 1;
+    } catch (error) {
+      result.skipped += 1;
+      ctx.logger.info("Social setup status skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
@@ -428,7 +471,7 @@ const plugin = definePlugin({
       // Hourly fallback for hire links (agent events are delivered at most once).
       const summary = await refreshTokensJob(ctx, ensure, (companyId) => tryLinkSocialHire(ctx, companyId));
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
-      return summary;
+      return { ...summary, setupStatus: await publishSetupStatuses(ctx) };
     });
     registerJob(ctx, "collect-metrics", () => collectMetricsJob(ctx, ensure));
     registerJob(ctx, "poll-inbox", () => pollInboxJob(ctx, ensure));
@@ -437,6 +480,7 @@ const plugin = definePlugin({
     registerJob(ctx, "measure-experiments", () => measureExperimentsJob(ctx, ensure));
 
     registerHireWatch(ctx, [{ role: SOCIAL_HIRE_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
+    registerModuleWatch(ctx);
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await ensure(event.companyId);
     });

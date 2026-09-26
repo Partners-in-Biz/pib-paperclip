@@ -18,6 +18,7 @@ import { openReconnectIssue } from "./issues.js";
 import { ProviderHttpError } from "./oauth/http.js";
 import { providerFor } from "./oauth/registry.js";
 import type { ProviderAccount } from "./oauth/types.js";
+import { socialOn } from "./modules.js";
 import { isSocialPlatform } from "./platforms.js";
 
 export interface RefreshRunSummary {
@@ -101,6 +102,7 @@ export async function refreshTokensJob(
 ): Promise<RefreshRunSummary> {
   const total: RefreshRunSummary = { checked: 0, refreshed: 0, warned: 0, needsReconnect: 0, errors: 0 };
   for (const companyId of await companiesWithAccounts(ctx)) {
+    if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     if (eachCompany) await eachCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);

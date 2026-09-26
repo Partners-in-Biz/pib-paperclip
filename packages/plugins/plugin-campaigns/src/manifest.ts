@@ -1,6 +1,6 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema } from "@partnersinbiz/pib-plugin-kit";
-import { PLUGIN_ID } from "./namespace.js";
+import { jevConfigSchema, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
 
@@ -19,7 +19,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.0",
+  version: PLUGIN_VERSION,
   displayName: "Campaigns",
   description: "Themed email programs that enroll contacts and open Paperclip issues for due steps.",
   author: "Partners in Biz",
@@ -69,6 +69,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Re-sends campaign email requests the Mailbox has not answered yet, and hands failed ones to a person.",
       schedule: "*/5 * * * *",
     },
+    {
+      jobKey: "setup-status",
+      displayName: "Report setup status",
+      description: "Tells the Setup plugin what Campaigns still needs for each company.",
+      schedule: "19 * * * *",
+    },
   ],
   skills: SKILLS,
   apiRoutes: [
@@ -81,6 +87,7 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },
     },
+    { ...SETUP_STATUS_ROUTE },
   ],
   ui: {
     slots: [

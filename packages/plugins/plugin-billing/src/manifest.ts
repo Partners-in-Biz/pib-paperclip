@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema, secretField, TAX_CODES } from "@partnersinbiz/pib-plugin-kit";
+import { jevConfigSchema, secretField, SETUP_STATUS_ROUTE, TAX_CODES } from "@partnersinbiz/pib-plugin-kit";
 import { DEFAULT_DUNNING_STAGES, DEFAULT_EXPENSE_CATEGORIES, RECEIPT_MODEL_DEFAULT } from "./config.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
@@ -143,7 +143,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.0",
+  version: "0.3.1",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft; a person approves sending and money.",
   author: "Partners in Biz",
@@ -178,7 +178,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "mark-overdue",
       displayName: "Mark overdue invoices",
-      description: "Moves sent or viewed invoices past their due time to overdue.",
+      description: "Moves sent or viewed invoices past their due time to overdue, and reports what Billing still needs to the Setup plugin.",
       schedule: "0 * * * *",
     },
     {
@@ -237,6 +237,8 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },
     },
+    // Read by the Setup plugin: GET /api/plugins/partnersinbiz.billing/api/setup-status?companyId=
+    { ...SETUP_STATUS_ROUTE },
   ],
   ui: {
     slots: [

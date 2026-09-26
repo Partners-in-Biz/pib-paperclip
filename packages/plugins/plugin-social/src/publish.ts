@@ -52,6 +52,7 @@ import { xWeightedLength } from "./oauth/providers/x.js";
 import { ProviderHttpError } from "./oauth/http.js";
 import { providerFor } from "./oauth/registry.js";
 import type { PublishOutcome, PublishRequest } from "./oauth/types.js";
+import { moduleGate } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS, PLATFORM_LIMITS, type SocialPlatform } from "./platforms.js";
 
 /** The request a destination publishes: the post plus that platform's override. */
@@ -239,8 +240,10 @@ export interface PublishRunSummary {
 
 export async function publishDueJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>): Promise<PublishRunSummary> {
   const summary: PublishRunSummary = { companies: 0, posts: 0, attempted: 0, published: 0, skipped: [] };
+  const on = moduleGate(ctx);
   await releaseStaleClaims(ctx);
   for (const stuck of await scheduledPostsWithoutWork(ctx)) {
+    if (!(await on(stuck.company_id))) continue;
     await settlePost(ctx, stuck.company_id, stuck.id, new Map());
   }
   const due = await duePostRefs(ctx);
@@ -248,6 +251,11 @@ export async function publishDueJob(ctx: PluginContext, ensureCompany: (companyI
   for (const row of due) byCompany.set(row.company_id, [...(byCompany.get(row.company_id) ?? []), row.id]);
   for (const [companyId, postIds] of byCompany) {
     summary.companies += 1;
+    if (!(await on(companyId))) {
+      // Switched off in Setup: leave the posts due until it is switched on again.
+      summary.skipped.push(`${companyId}: Social is switched off`);
+      continue;
+    }
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);
     if (!config.saved) {

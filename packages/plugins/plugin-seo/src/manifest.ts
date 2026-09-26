@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
 import {
   AGENT_CAPABILITIES,
@@ -57,7 +58,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.6.0",
+  version: "0.6.1",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -85,6 +86,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "jobs.schedule",
     "events.subscribe",
+    "events.emit",
     "api.routes.register",
     "http.outbound",
     "secrets.read-ref",
@@ -136,6 +138,8 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },
     },
+    // Read by the Setup plugin: this company's setup checklist (kit SetupStatus).
+    { ...SETUP_STATUS_ROUTE },
   ],
   // Kept so agents activated before hiring moved to tasks (host-managed) are
   // still found. New agents are hired through a task; see service/hire.ts.

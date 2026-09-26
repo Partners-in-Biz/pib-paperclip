@@ -5,12 +5,18 @@ import { parseMailboxConfig, parseTriageAssignee, validateMailboxConfig, DEFAULT
 
 describe("manifest", () => {
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.2.0");
+    expect(manifest.version).toBe("0.2.1");
     for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "ui.page.register"]) {
       expect(manifest.capabilities).toContain(cap);
     }
-    expect(manifest.jobs).toEqual([expect.objectContaining({ jobKey: "sync-mailbox", schedule: "*/2 * * * *" })]);
-    expect(manifest.apiRoutes).toEqual([expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board" })]);
+    expect(manifest.jobs).toEqual([
+      expect.objectContaining({ jobKey: "sync-mailbox", schedule: "*/2 * * * *" }),
+      expect.objectContaining({ jobKey: "setup-status", schedule: "29 * * * *" }),
+    ]);
+    expect(manifest.apiRoutes).toEqual([
+      expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board" }),
+      expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
+    ]);
     const props = (manifest.instanceConfigSchema as { properties: Record<string, Record<string, unknown>> }).properties;
     for (const key of ["publicBaseUrl", "encryptionKey", "google", "jev", "labelPrefix", "triageIssueAssignee", "sendRatePerMinute"]) expect(props).toHaveProperty(key);
     expect(props.encryptionKey).toMatchObject({ format: "secret-ref" });
