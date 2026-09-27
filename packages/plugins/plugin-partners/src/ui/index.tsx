@@ -33,6 +33,7 @@ import {
   type TimelineItem,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import { acceptedByMe, partnerSummary, recordKind } from "../series.js";
@@ -314,7 +315,9 @@ async function publishShare(result: ShareResult, companyId: string): Promise<voi
 export function PartnersSidebar({ context }: PluginSidebarProps) {
   // Hidden when the company switched Partners off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
-  if (enabled === false) return null;
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.partners");
+  if (enabled === false || grouped !== false) return null;
   return (
     <SidebarNavLink to="/partners" label="Partners" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -19,6 +19,8 @@ import { uiBase, useCockpitData } from "./data.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 
+export { ClientsNav, FinanceNav, MarketingNav } from "./nav.js";
+
 const ROLE_SKILL: Record<RoleKind, string> = {
   operator: pluginSkillKey("partnersinbiz.cockpit", "operator"),
   reviewer: pluginSkillKey("partnersinbiz.cockpit", "reviewer"),
@@ -82,14 +84,23 @@ export function CockpitPage({ context }: PluginPageProps) {
         title="Cockpit"
         description="What waits on you, what the agents did, the numbers, agent cost and quality, company memory, and system health."
         actions={(
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : void data.reload())}
-            disabled={!memoryTab && data.loading}
-          >
-            {!memoryTab && data.loading ? "Loading…" : "Refresh"}
-          </Button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {/* Setup leaves the sidebar once it is finished; it stays one click away here. */}
+            <a
+              {...linkFor("/setup")}
+              style={{ display: "inline-flex", alignItems: "center", height: 34, padding: "0 12px", borderRadius: 8, border: `1px solid ${tokens.border}`, fontSize: 13, fontWeight: 600, color: tokens.fg, textDecoration: "none" }}
+            >
+              Setup
+            </a>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : void data.reload())}
+              disabled={!memoryTab && data.loading}
+            >
+              {!memoryTab && data.loading ? "Loading…" : "Refresh"}
+            </Button>
+          </div>
         )}
       />
       <PageMessage message={message || data.error || undefined} tone={!message && data.error ? "bad" : undefined} />

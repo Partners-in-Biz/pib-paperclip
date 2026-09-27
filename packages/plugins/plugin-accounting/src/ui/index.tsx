@@ -3,6 +3,7 @@ import { useHostLocation, useHostNavigation, usePluginAction, type PluginPagePro
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { Blocks, BookOpen, Button, CalendarCheck, ChartColumn, Landmark, LayoutDashboard, Package, Page, Stamp, Tabs, Target, errorText, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
 import { BudgetsTab } from "./budgets.js";
@@ -170,9 +171,11 @@ export function AccountingSidebar({ context }: PluginSidebarProps) {
       live = false;
     };
   }, [context.companyId]);
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.accounting");
   const href = hostNavigation.resolveHref("/accounting");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
-  if (!enabled) return null;
+  if (!enabled || grouped !== false) return null;
   return (
     <a
       {...hostNavigation.linkProps("/accounting")}

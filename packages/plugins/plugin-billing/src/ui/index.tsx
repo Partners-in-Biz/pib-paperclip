@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { Banknote, Button, ChartColumn, ClientWorkspaceBar, Coins, CreditCard, FileText, LayoutDashboard, Mail, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, type TabItem } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
@@ -202,7 +203,10 @@ export function BillingPage({ context }: PluginPageProps) {
 
 export function BillingSidebar({ context }: PluginSidebarProps) {
   // Nothing while the company has Billing switched off (shown as usual while loading).
-  if (useModuleEnabled(context.companyId) === false) return null;
+  const enabled = useModuleEnabled(context.companyId);
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.billing");
+  if (enabled === false || grouped !== false) return null;
   return (
     <SidebarNavLink to="/billing" label="Billing" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

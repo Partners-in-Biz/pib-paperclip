@@ -8,7 +8,7 @@ import { PAYROLL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.6",
+  version: "0.1.7",
   displayName: "Payroll",
   description:
     "South African payroll: employees with sealed ID, tax and bank details, PAYE/UIF/SDL/ETI pay runs with separate approval, payslips by email, leave, EMP201/IRP5/EMP501 packs and net-pay bank files. Posts every locked run to Accounting.",

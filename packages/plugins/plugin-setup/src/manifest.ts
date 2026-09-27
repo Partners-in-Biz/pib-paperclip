@@ -1,7 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -97,7 +97,7 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "setup-sidebar",
         displayName: "Setup",
         exportName: "SetupSidebar",
-        order: 10,
+        order: 30,
       },
       {
         type: "dashboardWidget",

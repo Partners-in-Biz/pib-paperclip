@@ -46,6 +46,7 @@ import {
   fluidColumns,
   tokens,
 } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { costPerRun, costSplit, daysUntil, emp201Month, leaveUsed, runTone, statusTone } from "./series.js";
@@ -1659,9 +1660,11 @@ function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMess
 export function PayrollSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
   const enabled = useModuleEnabled(context.companyId);
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.payroll");
   const href = hostNavigation.resolveHref("/payroll");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
-  if (enabled === false) return null;
+  if (enabled === false || grouped !== false) return null;
   return (
     <a
       {...hostNavigation.linkProps("/payroll")}

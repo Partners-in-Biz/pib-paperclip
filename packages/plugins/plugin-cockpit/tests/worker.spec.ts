@@ -55,7 +55,7 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.2.1");
+    expect(manifest.version).toBe("0.2.2");
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
@@ -63,8 +63,10 @@ describe("manifest and migration", () => {
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
       "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
     ]) expect(manifest.capabilities).toContain(capability);
-    expect(manifest.ui?.slots?.map((slot) => [slot.type, slot.displayName])).toEqual([["page", "Cockpit"], ["sidebar", "Cockpit"], ["dashboardWidget", "Company today"]]);
-    expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5 });
+    expect(manifest.ui?.slots?.map((slot) => [slot.type, slot.displayName])).toEqual([
+      ["page", "Cockpit"], ["sidebar", "Cockpit"], ["sidebar", "Clients"], ["sidebar", "Marketing"], ["sidebar", "Finance"], ["dashboardWidget", "Company today"],
+    ]);
+    expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
     expect(manifest.apiRoutes).toEqual([{ ...COCKPIT_ROUTE }, { ...SETUP_STATUS_ROUTE }]);
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([[JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"]]);

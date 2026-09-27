@@ -60,6 +60,7 @@ import {
   tone,
   IconBadge,
 } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
@@ -1851,7 +1852,9 @@ function formatDate(value: string | null): string {
 export function CrmSidebar({ context }: PluginSidebarProps) {
   // Hidden when the company switched the CRM module off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
-  if (enabled === false) return null;
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.crm");
+  if (enabled === false || grouped !== false) return null;
   return (
     <SidebarNavLink to="/crm" label="CRM" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

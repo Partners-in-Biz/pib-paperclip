@@ -48,6 +48,7 @@ import {
   tone,
   type Segment,
 } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
 
@@ -836,7 +837,9 @@ export function MailboxPage({ context }: PluginPageProps) {
 export function MailboxSidebar({ context }: PluginSidebarProps) {
   // Hidden when the company switched the Mailbox off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_KEY);
-  if (enabled === false) return null;
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.mailbox");
+  if (enabled === false || grouped !== false) return null;
   return (
     <SidebarNavLink to="/mailbox" label="Mailbox" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

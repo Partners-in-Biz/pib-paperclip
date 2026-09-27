@@ -52,6 +52,7 @@ export {
   type ModuleAccent,
 } from "./theme.js";
 export * from "./charts.js";
+export * from "./nav.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {

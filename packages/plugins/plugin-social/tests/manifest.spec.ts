@@ -42,7 +42,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.5.5");
+    expect(manifest.version).toBe("0.5.6");
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {

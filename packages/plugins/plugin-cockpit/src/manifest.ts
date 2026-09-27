@@ -146,6 +146,10 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "cockpit-page", displayName: "Cockpit", exportName: "CockpitPage", routePath: "cockpit" },
       { type: "sidebar", id: "cockpit-sidebar", displayName: "Cockpit", exportName: "CockpitSidebar", order: 5 },
+      // Grouped navigation (pib-plugin-ui NAV_GROUPS): member plugins hide their own rows while these exist.
+      { type: "sidebar", id: "pib-nav-clients", displayName: "Clients", exportName: "ClientsNav", order: 6 },
+      { type: "sidebar", id: "pib-nav-marketing", displayName: "Marketing", exportName: "MarketingNav", order: 7 },
+      { type: "sidebar", id: "pib-nav-finance", displayName: "Finance", exportName: "FinanceNav", order: 8 },
       { type: "dashboardWidget", id: "cockpit-today", displayName: "Company today", exportName: "CompanyTodayWidget" },
     ],
   },

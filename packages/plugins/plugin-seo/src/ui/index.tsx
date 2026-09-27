@@ -71,6 +71,7 @@ import {
   type LucideIcon,
   type TaskAssigneeOption,
 } from "@partnersinbiz/pib-plugin-ui";
+import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { CHIP_LABEL, CHIP_TONE, backlinkSegments, dueOpen, changeText, chipState, healthTone, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone, taskSegments, trafficSeries, type ChipState, type TrafficDay } from "./series.js";
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
@@ -1940,7 +1941,10 @@ function scorePill(value: number | null) {
 
 export function SeoSidebar({ context }: PluginSidebarProps) {
   // Nothing when the company switched SEO off; shown while the check runs.
-  if (useModuleEnabled(context.companyId) === false) return null;
+  const enabled = useModuleEnabled(context.companyId);
+  // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
+  const grouped = useGroupedNav("partnersinbiz.seo");
+  if (enabled === false || grouped !== false) return null;
   return (
     <SidebarNavLink to="/seo" label="SEO" icon={(
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

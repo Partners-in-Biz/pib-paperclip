@@ -724,6 +724,8 @@ export function SetupSidebar({ context }: PluginSidebarProps) {
   }, [context.companyId]);
   const href = hostNavigation.resolveHref("/setup");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
+  // Once everything required is done, Setup leaves the sidebar (it stays one click away in the Cockpit header).
+  if (missing === 0 && !isActive) return null;
   return (
     <a
       {...hostNavigation.linkProps("/setup")}
@@ -744,9 +746,9 @@ export function SetupSidebar({ context }: PluginSidebarProps) {
       {missing ? (
         <span
           aria-label={`${missing} setup items left`}
-          style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tokens.secondary, color: tokens.secondaryFg }}
+          style={{ minWidth: 18, height: 18, padding: "0 6px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tokens.secondary, color: tokens.secondaryFg, whiteSpace: "nowrap" }}
         >
-          {missing}
+          {missing} left
         </span>
       ) : null}
     </a>
