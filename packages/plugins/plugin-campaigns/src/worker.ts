@@ -108,13 +108,13 @@ const plugin = definePlugin({
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of CAMPAIGN_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => {
-        void skillSync?.ensure(run.companyId);
+      ctx.tools.register(tool.name, tool, async (params, run) => {
+        await skillSync?.ensure(run.companyId).catch(() => undefined);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
     ctx.actions.register("campaigns.load", async (params, context) => {
-      if (context.companyId) void skillSync?.ensure(context.companyId);
+      if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);

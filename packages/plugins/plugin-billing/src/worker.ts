@@ -328,14 +328,14 @@ const plugin = definePlugin({
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => {
-        void skillSync?.ensure(run.companyId);
+      ctx.tools.register(tool.name, tool, async (params, run) => {
+        await skillSync?.ensure(run.companyId).catch(() => undefined);
         return runTool(ctx, tool.name, params, run);
       });
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      ctx.actions.register(key, (params, context) => {
-        if (context.companyId && key === "billing.load") void skillSync?.ensure(context.companyId);
+      ctx.actions.register(key, async (params, context) => {
+        if (context.companyId && key === "billing.load") await skillSync?.ensure(context.companyId).catch(() => undefined);
         return handler(ctx, context, params ?? {});
       });
     }

@@ -141,7 +141,7 @@ const ACTIONS: Record<string, Handler> = {
     // The page reports /_plugins/<installation uuid>/ui/ so the setup checklist can link to the settings.
     await rememberPluginUiBase(ctx, p.uiBase);
     const book = await ensureBook(ctx, companyId);
-    void skillSync?.ensure(companyId);
+    await skillSync?.ensure(companyId).catch(() => undefined);
     if (actor.kind === "user") await tryLinkBookkeeper(ctx, companyId, syncSkills);
     const settings = await readSettings(ctx, companyId);
     const chart = await loadChart(ctx, companyId);
@@ -500,7 +500,7 @@ function toolContent(data: unknown): string {
 
 async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
-    void skillSync?.ensure(run.companyId);
+    await skillSync?.ensure(run.companyId).catch(() => undefined);
     const data = await dispatchTool(ctx, name, obj(params), run);
     // MCP structuredContent must be an object; toolOk wraps lists and scalars.
     return toolOk(toolContent(data), data);

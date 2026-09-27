@@ -162,7 +162,7 @@ const plugin = definePlugin({
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
     ) => {
       ctx.actions.register(key, async (params, context) => {
-        if (context.companyId) void skillSync?.ensure(context.companyId);
+        if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
         const result = await handler(params, context);
         if (context.companyId && CRM_MUTATIONS.has(key)) await afterMutation(ctx, context.companyId, key, params);
         return result;
@@ -258,7 +258,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       runId: run.runId,
     });
     const body = objectParams(params);
-    void skillSync?.ensure(run.companyId);
+    await skillSync?.ensure(run.companyId).catch(() => undefined);
     const data = await dispatch(ctx, viewer, name, body, "agent");
     if (CRM_MUTATIONS.has(name)) await afterMutation(ctx, run.companyId, name, body);
     if (data && typeof data === "object" && "refused" in data && Array.isArray(data.refused) && data.refused.length > 0) {

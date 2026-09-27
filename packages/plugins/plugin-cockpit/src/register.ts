@@ -115,7 +115,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
-    void env.skills.ensure(companyId).catch(() => undefined);
+    await env.skills.ensure(companyId).catch(() => undefined);
     const [roles, saved, snapshots, setup, own, health, installed] = await Promise.all([
       getRoles(ctx, companyId),
       configSaved(ctx, companyId),
@@ -207,7 +207,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   for (const tool of COCKPIT_TOOLS) {
     ctx.tools.register(tool.name, tool, async (params, run) => {
-      void env.skills.ensure(run.companyId).catch(() => undefined);
+      await env.skills.ensure(run.companyId).catch(() => undefined);
       const result = MEMORY_TOOL_NAMES.has(tool.name) ? await runMemoryTool(env, tool.name, params, run) : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });

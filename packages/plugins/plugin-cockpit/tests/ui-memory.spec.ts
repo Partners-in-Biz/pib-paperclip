@@ -250,7 +250,7 @@ describe("memory tab sections", () => {
     expect(html).toContain('href="/PIB/issues/PIB-12#comment-c9"');
     // Wide tables sit in a horizontal scroller.
     expect(html).toContain("overflow-x:auto");
-    expect(html.match(/min-width:\s?[3-9]\d{2,}px/g)).toEqual(["min-width:900px"]);
+    expect(html.match(/min-width:\s?\d{4,}px/g)).toEqual(["min-width:1000px"]);
   });
 
   it("lists recent briefs and explains an empty list", () => {

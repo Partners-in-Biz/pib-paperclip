@@ -61,8 +61,8 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
 
     for (const tool of MAILBOX_TOOLS) {
-      ctx.tools.register(tool.name, tool, (params, run) => {
-        void skillSync?.ensure(run.companyId);
+      ctx.tools.register(tool.name, tool, async (params, run) => {
+        await skillSync?.ensure(run.companyId).catch(() => undefined);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
@@ -72,7 +72,7 @@ const plugin = definePlugin({
 
     ctx.actions.register("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
-      void skillSync?.ensure(companyId);
+      await skillSync?.ensure(companyId).catch(() => undefined);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
