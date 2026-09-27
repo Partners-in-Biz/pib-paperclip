@@ -10,8 +10,10 @@ import { Button, Field, Modal, NewTaskDialog, Pill, Select, errorText, tokens, t
 import { AGENT_TONE, toneOf } from "./series.js";
 import { Banner, Card, Code, ignore, Muted, Row, SmallButton } from "./parts.js";
 import type { AgentOption, HireOptions, HireRecord, LinkedBy, RunAction, SocialAgent } from "./types.js";
+import { HIRE_STALE_DAYS, ROLE_SKILL_PURPOSE, ROLE_SKILLS, dropSkillAsks, roleView } from "./role-skills.js";
+import { useRoleSkills } from "./use-role-skills.js";
 
-const SKILL_SLUGS = ["pib-social-publish", "pib-social-content"];
+const SKILL_SLUGS = ROLE_SKILLS.map((s) => s.slug);
 
 /** Renders `code` spans in step lines. */
 function Inline({ text }: { text: string }) {
@@ -55,8 +57,17 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
   const closeDialog = useCallback(() => setDialog(false), []);
   const closePicker = useCallback(() => setPicker(null), []);
 
-  const linked = Boolean(agent.agentId);
-  const openHire = !linked && agent.hire?.status === "open" ? agent.hire : null;
+  const role = roleView({ agentId: agent.agentId, hire: agent.hire });
+  const linked = role.mode === "linked";
+  // An open hire task hides "Hire Social agent" (no duplicate hires).
+  const openHire = role.mode === "hiring" ? agent.hire : null;
+  // The page attaches the social skills to the linked agent for the person viewing (a plugin worker cannot).
+  const skills = useRoleSkills({
+    companyId: host.companyId,
+    agent: ownPage && agent.agentId ? { id: agent.agentId, name: agent.name } : null,
+    skills: ROLE_SKILLS,
+    purpose: ROLE_SKILL_PURPOSE,
+  });
 
   const fetchOptions = useCallback(async (): Promise<HireOptions | null> => {
     try {
@@ -123,13 +134,18 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
 
   const linkAgent = async (agentId: string) => {
     setBusy(true);
+    skills.claim(agentId);
     try {
       const res = (await run("social.link-agent", { agentId }, "Agent linked")) as { agent: AgentOption; steps: string[] };
       setPicker(null);
       setOptions(null);
-      setNotice({ title: `${res.agent.name} is now the Social agent`, lines: res.steps });
+      const skill = await skills.afterLink(res.agent.id, res.agent.name);
+      // The worker's skill hint was written before the page attached them.
+      const steps = skill.ok ? dropSkillAsks(res.steps, ROLE_SKILLS) : res.steps;
+      setNotice({ title: `${res.agent.name} is now the Social agent`, lines: [...steps, skill.line] });
     } catch {
       // run() already showed the error
+      skills.release(agentId);
     } finally {
       setBusy(false);
     }
@@ -172,6 +188,8 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
     );
   }
 
+  const skillNote = skills.note ? <Banner tone={skills.note.ok ? "info" : "warn"} title={skills.note.ok ? "Skills attached" : "Skills missing"}>{skills.note.line}</Banner> : null;
+
   const noticeBox = notice ? (
     <Banner tone="info" title={notice.title}>
       {notice.hire ? <div>Task: {issueLink(notice.hire, `${notice.hire.identifier ? `${notice.hire.identifier} · ` : ""}${notice.hire.title}`)}</div> : null}
@@ -205,10 +223,10 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
               : <>{agentLink("", "Open the agent")} and click Resume once its adapter has a working model key. The weekly routine's trigger stays off until you enable it.</>}
           </Banner>
         ) : null}
-        {agent.missingSkills.length ? (
+        {agent.missingSkills.length && !skills.attachedTo(agent.agentId) && !skills.note ? (
           <Banner tone="warn" title="Attach the social skills">
             {agent.name} does not have {agent.missingSkills.map((slug, i) => <span key={slug}>{i ? " and " : ""}<Code>{slug}</Code></span>)} yet.
-            {" "}Attach {agent.missingSkills.length === 1 ? "it" : "them"} on the agent's {agentLink("/skills", "Skills tab")}; the plugin cannot attach skills to an agent it did not create.
+            {" "}Attach {agent.missingSkills.length === 1 ? "it" : "them"} on the agent's {agentLink("/skills", "Skills tab")}.
           </Banner>
         ) : null}
       </>
@@ -226,9 +244,10 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
           </div>
           <Row>
             <Button type="button" variant={agent.candidates.length ? "primary" : "secondary"} disabled={busy} onClick={() => void openPicker("link")}>Link agent</Button>
-            <Button type="button" variant="secondary" disabled={busy} onClick={() => void openDialog()}>Open a new hire task</Button>
+            {role.canRehire ? <Button type="button" variant="secondary" disabled={busy} onClick={() => void openDialog()}>Open a new hire task</Button> : null}
           </Row>
         </Row>
+        {role.stale ? <Muted>It has been open for more than {HIRE_STALE_DAYS} days. If nobody is working on it, open a new hire task.</Muted> : null}
         {agent.candidates.length > 1 ? (
           <Banner tone="info" title="More than one new agent matches">
             {agent.candidates.map((c) => c.name).join(", ")}. Pick the right one with Link agent.
@@ -268,6 +287,7 @@ export function AgentCard({ agent, run, ownPage }: { agent: SocialAgent; run: Ru
   return (
     <Card>
       {body}
+      {skillNote}
       {noticeBox}
       {optionsError && (dialog || picker) ? <Muted style={{ color: tokens.destructive }}>{optionsError}</Muted> : null}
       {options ? (
@@ -356,10 +376,9 @@ function LinkPicker({ open, mode, options, candidates, currentId, canUnlink, bus
         </Field>
       )}
       {chosen && missing.length ? (
-        <Banner tone="warn" title="Skills to attach after linking">
-          {chosen.name} does not have {missing.map((slug, i) => <span key={slug}>{i ? " and " : ""}<Code>{slug}</Code></span>)}.
-          {" "}Attach {missing.length === 1 ? "it" : "them"} on the agent's Skills tab so it knows how to use the Social tools. The plugin cannot attach skills to an agent it did not create.
-        </Banner>
+        <Muted>
+          Linking attaches {missing.map((slug, i) => <span key={slug}>{i ? " and " : ""}<Code>{slug}</Code></span>)} to {chosen.name}, so it knows how to use the Social tools. Its other skills stay.
+        </Muted>
       ) : null}
       {chosen && !missing.length ? <Muted>{chosen.name} already has both social skills.</Muted> : null}
     </Modal>

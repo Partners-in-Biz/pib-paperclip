@@ -27,7 +27,6 @@ import {
   Sun,
   TriangleAlert,
   Users,
-  Bot,
   Wallet,
   tone,
   type ToneInput,
@@ -50,6 +49,7 @@ import {
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { costPerRun, costSplit, daysUntil, emp201Month, leaveUsed, runTone, statusTone } from "./series.js";
+import { ClerkCard, type ClerkHire } from "./clerk.js";
 
 const PLUGIN_ID = "partnersinbiz.payroll";
 
@@ -167,7 +167,7 @@ interface Snapshot {
   employees: EmployeeView[];
   runs: RunSummary[];
   components: Component[];
-  hire: { agent: { id: string; name: string; status: string } | null; hire: { issueId: string; identifier: string | null } | null } | null;
+  hire: ClerkHire | null;
   rulesReviewed: boolean;
 }
 
@@ -460,8 +460,6 @@ function randShort(minor: number): string {
 }
 
 function OverviewTab({ s, run, openRun, go }: { s: Snapshot; run: RunFn; openRun: (id: string) => void; go: (tab: TabId) => void }) {
-  const hireOptions = usePluginAction("payroll.hire-options");
-  const startHire = usePluginAction("payroll.start-hire");
   const loadEmp201 = usePluginAction("payroll.emp201");
   const [e201, setE201] = useState<Emp201View | null>(null);
   const e201Month = emp201Month(s.today);
@@ -593,27 +591,7 @@ function OverviewTab({ s, run, openRun, go }: { s: Snapshot; run: RunFn; openRun
         </SectionCard>
       </div>
 
-      <SectionCard title="Payroll Clerk (optional agent)" icon={Bot}>
-        {s.hire?.agent ? (
-          <p style={{ margin: 0, fontSize: 13 }}>{s.hire.agent.name} prepares pay runs and checks variances ({s.hire.agent.status}). It never approves runs or sees personal details.</p>
-        ) : s.hire?.hire ? (
-          <p style={{ margin: 0, fontSize: 13 }}>A hire request is open{s.hire.hire.identifier ? ` (${s.hire.hire.identifier})` : ""}. The plugin links the agent when it appears.</p>
-        ) : (
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <p style={{ margin: 0, fontSize: 13, color: tokens.muted, maxWidth: 620 }}>An agent can prepare each month's run, enter hours and bonuses, and explain changes against last month. A board member still approves and locks.</p>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void run(async () => {
-                const options = (await hireOptions({})) as { defaultAssigneeAgentId: string | null };
-                return startHire({ assigneeAgentId: options.defaultAssigneeAgentId ?? undefined });
-              }, "Hire request opened")}
-            >
-              Hire Payroll Clerk
-            </Button>
-          </div>
-        )}
-      </SectionCard>
+      <ClerkCard hire={s.hire} run={run} />
       {s.rules.notes.length ? (
         <SectionCard title={`Rules ${s.rules.taxYear}: notes`} icon={CircleCheck}>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6, color: tokens.muted }}>{s.rules.notes.map((n) => <li key={n}>{n}</li>)}</ul>

@@ -10,6 +10,8 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { clientScopeFromSearch, parseClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { HIRE_STALE_DAYS, ROLE_SKILL_PURPOSE, ROLE_SKILLS, dropSkillAsks, roleView } from "./role-skills.js";
+import { useRoleSkills } from "./use-role-skills.js";
 import {
   Activity,
   BarList,
@@ -355,7 +357,6 @@ const small: CSSProperties = { height: 28, fontSize: 12, padding: "0 10px" };
 
 /** The local-board sentinel is not a real member, so it cannot be assigned. */
 const LOCAL_BOARD_USER_ID = "local-board";
-const CLOSED_ISSUE_STATUSES = ["done", "cancelled"];
 
 function words(value: string): string {
   return value.replace(/_/g, " ");
@@ -432,7 +433,7 @@ function LinkAgentModal({ options, currentAgentId, canUnlink, busy, onClose, onL
       </Field>
       {options.agents.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>This company has no agents yet. Open a hire task instead.</p> : null}
       <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>
-        The agent needs the <code>pib-seo-sprint</code> skill attached (Agents → agent → Skills). The plugin keeps the skill up to date and tells you if it is missing.
+        Linking attaches the <code>pib-seo-sprint</code> skill to the agent for you (its other skills stay). The plugin keeps the skill up to date.
       </p>
     </Modal>
   );
@@ -454,6 +455,8 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
   const [linkOptions, setLinkOptions] = useState<HireOptions | null>(null);
   const [result, setResult] = useState<WireSummary | null>(null);
   const [createdIssueId, setCreatedIssueId] = useState<string | null>(null);
+  const agent = hire?.agent ?? null;
+  const skills = useRoleSkills({ companyId: host.companyId, agent, skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE, onAttached: () => void refresh().catch(() => undefined) });
 
   async function run(kind: "hire" | "link" | "resync", fn: () => Promise<void>) {
     setBusy(kind);
@@ -478,9 +481,20 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
 
   async function link(agentId: string) {
     await run("link", async () => {
-      const r = (await linkAgent({ agentId })) as { agent: HireAgent; steps: string[]; instructions: string[] };
+      skills.claim(agentId);
+      let r: { agent: HireAgent; steps: string[]; instructions: string[] };
+      try {
+        r = (await linkAgent({ agentId })) as typeof r;
+      } catch (error) {
+        skills.release(agentId);
+        throw error;
+      }
       setLinkOptions(null);
-      setResult({ title: `Linked ${r.agent.name} as the SEO agent`, steps: r.steps, instructions: r.instructions });
+      const skill = await skills.afterLink(r.agent.id, r.agent.name);
+      // The worker asked for the skill by hand before the page attached it.
+      const steps = skill.ok ? dropSkillAsks(r.steps, ROLE_SKILLS) : r.steps;
+      const instructions = skill.ok ? dropSkillAsks(r.instructions, ROLE_SKILLS) : r.instructions;
+      setResult({ title: `Linked ${r.agent.name} as the SEO agent`, steps: [...steps, skill.line], instructions });
       await refresh();
     });
   }
@@ -495,9 +509,9 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
     });
   }
 
-  const agent = hire?.agent ?? null;
-  const openRequest = !agent && hire?.hire?.status === "open" ? hire.hire : null;
-  const requestClosed = Boolean(openRequest && CLOSED_ISSUE_STATUSES.includes(openRequest.issueStatus ?? ""));
+  const role = roleView({ agentId: agent?.id, hire: hire?.hire });
+  const openRequest = role.mode === "hiring" ? hire?.hire ?? null : null;
+  const requestClosed = role.closed;
   const candidates = hire?.candidates ?? [];
 
   const me = host.userId && host.userId !== LOCAL_BOARD_USER_ID ? host.userId : null;
@@ -506,7 +520,8 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
     ...(hireOptions?.agents ?? []).map((a) => ({ kind: "agent" as const, id: a.id, name: a.name, detail: agentDetail(a), status: a.status })),
   ];
 
-  const headerAction = hire && !agent && !openRequest ? (
+  // Hire only when no agent is linked and no hire task is open (no duplicate hires).
+  const headerAction = hire && role.mode === "none" ? (
     <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void openHire()}>
       {busy === "hire" ? "Opening…" : "Activate SEO agent"}
     </Button>
@@ -541,16 +556,17 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
           <span><strong>Hire request {taskLink} is {words(openRequest.issueStatus ?? "closed")}, but no SEO agent was linked.</strong> If the agent exists, link it; otherwise open a new hire task.</span>
         ) : (
           <span>
-            <strong>{createdIssueId === openRequest.issueId ? <>Hire task {taskLink} created</> : <>Hire request {taskLink} is open</>}</strong> ({assigned}). The plugin links the new agent automatically when it appears.
+            <strong>{createdIssueId === openRequest.issueId ? <>Hire task {taskLink} created</> : <>Hire task {taskLink} is open</>}</strong> ({assigned}). The plugin links the new agent automatically when it appears.
           </span>
         )}
+        {!requestClosed && role.stale ? <span>It has been open for more than {HIRE_STALE_DAYS} days. If nobody is working on it, open a new hire task.</span> : null}
         {!requestClosed && candidates.length > 1 ? (
           <span>More than one new agent looks like the SEO agent ({candidates.map((c) => c.name).join(", ")}). Pick the right one with Link agent.</span>
         ) : null}
         {actions(
           <>
             <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>{busy === "link" ? "Loading…" : "Link agent"}</Button>
-            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openHire()}>{busy === "hire" ? "Opening…" : "Open a new hire task"}</Button>
+            {role.canRehire ? <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openHire()}>{busy === "hire" ? "Opening…" : "Open a new hire task"}</Button> : null}
           </>,
         )}
       </Banner>
@@ -571,6 +587,11 @@ function useSeoAgent({ hire, refresh, onMessage }: { hire: HireView | null; refr
   const panel = (
     <>
       {banner}
+      {skills.note ? (
+        <Banner tone={skills.note.ok ? "info" : "warn"}>
+          <span>{skills.note.line}</span>
+        </Banner>
+      ) : null}
       {result ? <WireResultNote result={result} onClose={() => setResult(null)} /> : null}
       <NewTaskDialog
         open={!!hireOptions}

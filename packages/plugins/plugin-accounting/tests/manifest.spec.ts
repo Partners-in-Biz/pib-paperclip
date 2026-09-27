@@ -38,7 +38,7 @@ describe("manifest", () => {
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.1.3");
+    expect(manifest.version).toBe("0.1.4");
   });
 
   it("schedules redeliver, month-end and FX jobs", () => {
