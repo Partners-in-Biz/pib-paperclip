@@ -23,8 +23,9 @@ Guided setup for each Paperclip company. Pick the modules a company uses, see wh
      4. Fills in only what this company does not have yet. Missing, `null`, `""` and `[]` count as not set.
      5. Shows a preview, then saves with `POST /api/plugins/:id/config`, which needs an instance admin.
      6. Lists the secrets to pick again, with links.
-4. **Dashboard widget:** overall and per-module progress with a "Continue setup" link. It hides once everything required is done.
-5. **Weekly Finish setup issue** (Mondays 07:00 SAST, `0 5 * * 1` UTC, and after every module change):
+4. **Company wiki** (module `memory`, upstream plugin `paperclipai.plugin-llm-wiki`). LLM Wiki pushes no status and the Setup worker cannot see its folder, agent or routines, so the page checks it with the board session: LLM Wiki `POST /data/settings` (falls back to `GET /api/overview`), `GET /api/companies/:id/agents` and `GET /api/companies/:id/routines`. It sends the result as a `WikiSnapshot` to `setup.report-memory`; the worker builds the checklist itself (`memoryStatus` in `src/memory.ts`) and stores it like any pushed status, so the Finish setup issue lists it too. Items: wiki folder, Wiki Maintainer with a working adapter and active, the three routines active with schedules on, and (optional) Paperclip event ingestion. **Set up company memory** (a page action, `memory.setup`) bootstraps the folder at `<instance>/companies/<companyId>/wiki` (derived from an agent's adapter config), creates and turns on the routines and turns on ingestion, skipping what is done. The Maintainer's adapter and model stay a person's step. Switching the module off hides it from Setup only: LLM Wiki does not read the module switches.
+5. **Dashboard widget:** overall and per-module progress with a "Continue setup" link. It hides once everything required is done.
+6. **Weekly Finish setup issue** (Mondays 07:00 SAST, `0 5 * * 1` UTC, and after every module change):
    - Opens one issue per company that has a saved module choice. The issue is assigned to the person who saved the choice.
    - It lists the missing required items of enabled modules, with deep links. It also lists enabled, installed modules that never reported a status, as "settings not saved yet".
    - Status events keep the open issue up to date (they never open a new one), and the issue closes itself once nothing required is missing.
@@ -40,6 +41,7 @@ The page saves Setup's own settings the first time someone saves the modules. Th
 | action | `setup.load` | Page data. Pass `installed` to record which plugins are installed (instance-wide). |
 | action | `setup.save-modules` | `{ modules, installed? }`. Board users only. Saves, emits, and refreshes the Finish setup issue. |
 | action | `setup.refresh-issue` | Opens, updates or closes the Finish setup issue now. |
+| action | `setup.report-memory` | `{ snapshot }` from the page (board users only). Stores the Company wiki checklist and keeps an open Finish setup issue current. |
 | route | `GET /modules?companyId=` | `{ modules, updatedAt }`, where `modules` is `null` when no choice is saved. Used by every plugin's sidebar. |
 | job | `reemit-modules` | Hourly re-send of every saved choice. |
 | job | `weekly-finish-setup` | Mondays 05:00 UTC. |

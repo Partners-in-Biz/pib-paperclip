@@ -1112,8 +1112,23 @@ export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<H
   );
 }
 
+/**
+ * A readable message for anything an action or fetch threw. The host sends a
+ * failed plugin action back as a plain `{ code, message }` object, not an
+ * Error, so read `message` (or `error`) from plain objects and strings too.
+ */
 export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of ["message", "error"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (value && typeof value === "object" && typeof (value as Record<string, unknown>).message === "string") return String((value as Record<string, unknown>).message);
+    }
+  }
+  return "Request failed";
 }
 
 export function formatMinor(amount: number, currency: string): string {

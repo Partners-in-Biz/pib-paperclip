@@ -280,6 +280,43 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Optimization", name: "list-optimizations", displayName: "List optimizations", description: "Proposals and experiments with baseline, measure date, result, and the sprint scoreboard.", parametersSchema: schema(["sprintId"], { sprintId, status: choice(["proposed", "approved", "rejected", "measured"]) }) },
   { group: "Optimization", name: "approve-optimization", displayName: "Approve optimization", description: "People only (agents only when autopilot is full): creates the tasks for the current week, takes the baseline, schedules measurement in 14 days.", parametersSchema: schema(["optimizationId"], { optimizationId: text(), note: text() }) },
   { group: "Optimization", name: "reject-optimization", displayName: "Reject optimization", description: "Reject a proposal with a reason.", parametersSchema: schema(["optimizationId", "reason"], { optimizationId: text(), reason: text() }) },
+
+  // Learned playbook
+  {
+    group: "Learned playbook",
+    name: "get-playbook",
+    displayName: "Get SEO playbook",
+    description:
+      "The learned playbook for a sprint's scope (one client, or Partners in Biz's own sites; shared by every sprint of that client): markdown rules kept from measured optimizations, its version, recent versions with reasons, and pending changes. Created on first use. Call it before working a sprint's tasks and follow it.",
+    parametersSchema: schema([], {
+      sprintId: text("Sprint id: the playbook of its scope (preferred)"),
+      ...clientProps('Without sprintId: "own" for Partners in Biz\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>".'),
+      includeVersionText: flag("Include each version's full markdown (default false)"),
+    }),
+  },
+  {
+    group: "Learned playbook",
+    name: "propose-playbook-change",
+    displayName: "Propose SEO playbook change",
+    description:
+      "Propose one edit to the scope's playbook with a reason: op add (section goal, rules, avoid, open or constraints; text = the rule, one line), remove (text = the exact line from get-playbook) or replace (playbook = the whole new markdown). Link the measured optimization it comes from. A person keeps or discards it unless the sprint's autopilot is full; agents cannot propose when autopilot is off.",
+    parametersSchema: schema(["reason"], {
+      sprintId: text("The sprint you learned it on (or pass optimizationId)"),
+      op: choice(["add", "remove", "replace"], "Default add"),
+      section: choice(["goal", "rules", "avoid", "open", "constraints"], "For add; default rules. avoid = things that did not work"),
+      text: text("add: the rule (max 400 chars, general enough to reuse); remove: the exact line"),
+      playbook: text("replace: the whole new playbook markdown"),
+      reason: text("Why, with the evidence (measured result, numbers)"),
+      optimizationId: text("The measured optimization this comes from"),
+    }),
+  },
+  {
+    group: "Learned playbook",
+    name: "decide-playbook-change",
+    displayName: "Decide SEO playbook change",
+    description: "Keep (writes a new playbook version) or discard a pending playbook change. Agents may only decide when the sprint's autopilot is full; otherwise a person decides from Needs you or SEO → Playbook.",
+    parametersSchema: schema(["changeId", "decision"], { changeId: text(), decision: choice(["keep", "discard"]), note: text() }),
+  },
 ];
 
 /** Manifest form (without the doc-only `group`). */

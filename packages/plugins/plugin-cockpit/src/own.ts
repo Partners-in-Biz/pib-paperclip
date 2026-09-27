@@ -16,6 +16,8 @@ import {
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, VERSION } from "./constants.js";
 import { getRoles } from "./db.js";
 import { message, type Env } from "./env.js";
+import { memoryJevConfig } from "./memory/jev.js";
+import { memoryStats } from "./memory/store.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
 
@@ -116,6 +118,20 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       blockedBy: ["operator_agent"],
     },
   ];
+  const jev = await memoryJevConfig(env.ctx, companyId).catch(() => null);
+  items.push({
+    key: "memory_jev",
+    title: "Let Jev pick each task's memory",
+    status: jev ? "done" : "optional",
+    required: false,
+    detail: jev
+      ? "Every agent's memory brief is filtered by Jev: only the facts the task needs, at most 12."
+      : "Company memory already works: each task gets up to 12 remembered facts matched by keywords and recency. With a TypeSafe key, Jev picks only the facts the task needs, so briefs are shorter and more relevant.",
+    href: id ? `${PLUGINS_PATH}/${id}` : "/cockpit?tab=memory",
+    hrefLabel: id ? "Open settings" : "Open Memory",
+    steps: jev ? undefined : ["Open the Cockpit settings.", "Under Jev for company memory, pick the TypeSafe API key secret (the same one the other PiB plugins use).", "Click Save Configuration."],
+    agentNext: "Briefs switch to Jev on the next task; the Memory tab shows how often Jev and the keyword baseline would have differed.",
+  });
   return { plugin: PLUGIN_KEY, module: null, title: "Cockpit", version: VERSION, items, checkedAt: env.now().toISOString() };
 }
 
@@ -128,6 +144,20 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     health.push(await jobHealth(env.ctx, JOBS.reemitRoles, "Hourly role updates", 60));
   } catch (error) {
     env.ctx.logger.info("Cockpit job health failed", { error: message(error) });
+  }
+  try {
+    const stats = await memoryStats(env.ctx, companyId);
+    snapshot.kpis.push(
+      { key: "memory_facts", label: "Memory facts", value: String(stats.facts.active), raw: stats.facts.active, delta: stats.added7d ? `+${stats.added7d} this week` : null, href: "/cockpit?tab=memory", group: "other" },
+      { key: "memory_briefs", label: "Memory briefs (7 days)", value: String(stats.briefs7d.total), raw: stats.briefs7d.total, delta: stats.briefs7d.total ? `avg ${stats.briefs7d.avgFacts} facts` : null, href: "/cockpit?tab=memory", group: "other" },
+    );
+    const noted = stats.feedback30d.missing + stats.feedback30d.noise;
+    if (noted > 0) {
+      snapshot.quality.push({ key: "memory_feedback", label: "Memory brief feedback (30 days)", value: `${stats.feedback30d.missing} missing, ${stats.feedback30d.noise} noise`, raw: noted, tone: stats.feedback30d.missing > stats.briefs7d.total ? "warn" : "neutral" });
+    }
+    if (stats.facts.active > 0) health.push(await jobHealth(env.ctx, JOBS.memoryUpkeep, "Daily memory upkeep", 24 * 60));
+  } catch (error) {
+    env.ctx.logger.info("Cockpit memory stats failed", { error: message(error) });
   }
   try {
     const roles = await getRoles(env.ctx, companyId);

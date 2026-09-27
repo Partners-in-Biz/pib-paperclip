@@ -177,3 +177,23 @@ export function gscReconnectItem(cockpitPath: string | null, error: string): New
     check: "gsc_access",
   };
 }
+
+/** The one Needs you item per sprint that batches its pending learned-playbook changes. */
+export const PLAYBOOK_ITEM_KEY = "playbook_changes";
+
+export function playbookChangesItem(input: { playbookPath: string | null; scopeLabel: string; diffs: string[] }): NewNeedsYouItem {
+  const n = input.diffs.length;
+  const shown = input.diffs.slice(0, 8).map((d) => `Keep or discard: ${d}`);
+  if (n > shown.length) shown.push(`…and ${n - shown.length} more on the Playbook tab.`);
+  return {
+    key: PLAYBOOK_ITEM_KEY,
+    kind: "review",
+    title: `Keep or discard ${n} learned SEO playbook change${n === 1 ? "" : "s"}`,
+    why: `Measured optimizations and the SEO Specialist propose rules for the ${input.scopeLabel} playbook, which the agent follows on every run. In safe autopilot a person decides each change.`,
+    steps: [...shown, "Open SEO → this sprint → Playbook and press Keep or Discard on each change."],
+    links: input.playbookPath ? [{ label: "Playbook", url: input.playbookPath }] : [],
+    after: "Follows the new playbook version from its next run.",
+    check: "playbook_decided",
+    taskIds: [],
+  };
+}

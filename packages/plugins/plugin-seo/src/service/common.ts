@@ -10,6 +10,7 @@ import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/
 import { localDate, localHour } from "../engine/time.js";
 import type { FetchLike } from "../integrations/google.js";
 import { SKILLS } from "../skills.js";
+import { sqlPlaybookStore, type PlaybookStore } from "./playbook-store.js";
 
 export class SeoError extends Error {
   constructor(message: string) {
@@ -50,6 +51,8 @@ export interface Env {
   /** SSRF-guarded fetch for client websites. */
   site: SiteFetcher;
   skills: ReturnType<typeof createSkillSyncer>;
+  /** Learned playbooks (SQL on the plugin namespace; in-memory in tests). */
+  playbooks: PlaybookStore;
 }
 
 export function createEnv(ctx: PluginContext, overrides: Partial<Omit<Env, "ctx">> = {}): Env {
@@ -59,6 +62,7 @@ export function createEnv(ctx: PluginContext, overrides: Partial<Omit<Env, "ctx"
     fetch: overrides.fetch ?? ((input, init) => fetch(input, init)),
     site: overrides.site ?? ((url, init) => safeFetch(ctx, url, init)),
     skills: overrides.skills ?? createSkillSyncer(ctx, SKILLS),
+    playbooks: overrides.playbooks ?? sqlPlaybookStore(ctx.db),
   };
 }
 

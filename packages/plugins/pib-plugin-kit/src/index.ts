@@ -1,4 +1,5 @@
 export * from "./skills.js";
+export * from "./memory.js";
 export * from "./crypto.js";
 export * from "./config.js";
 export * from "./r2.js";

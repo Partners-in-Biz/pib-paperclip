@@ -8,14 +8,16 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Activity, Bot, Button, EmptyState, Field, HeartPulse, Inbox, NewTaskDialog, PageFrame, PageHeader, PageMessage, Select, Tabs, Users, errorText, tokens, tone, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
-import { assignableUser, type RoleKind } from "../constants.js";
+import { Activity, Bot, Button, EmptyState, Field, HeartPulse, Inbox, Lightbulb, NewTaskDialog, PageFrame, PageHeader, PageMessage, Select, Tabs, Users, errorText, tokens, tone, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
+import { assignableUser, PLUGIN_KEY, type RoleKind } from "../constants.js";
 import type { AgentLite, RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
 import { fetchUsers, savePluginConfig, type UserLite } from "./api.js";
 import { attachAgentSkills, missingAgentSkills, pluginSkillKey } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
-import { useCockpitData } from "./data.js";
+import { uiBase, useCockpitData } from "./data.js";
+import { MemoryPanel } from "./memory.js";
+import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 
 const ROLE_SKILL: Record<RoleKind, string> = {
   operator: pluginSkillKey("partnersinbiz.cockpit", "operator"),
@@ -33,7 +35,14 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-type TabId = "overview" | "team";
+const TAB_IDS = ["overview", "team", "memory"] as const;
+type TabId = (typeof TAB_IDS)[number];
+
+/** `?tab=team` / `?tab=memory` opens that tab; anything else is the overview. */
+export function tabFromSearch(search: string | null | undefined): TabId {
+  const value = new URLSearchParams(search ?? "").get("tab");
+  return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -42,36 +51,61 @@ type TabId = "overview" | "team";
 export function CockpitPage({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const location = useHostLocation();
+  const navigation = useHostNavigation();
   const linkFor = useLinkFor();
-  const initialTab: TabId = new URLSearchParams(location.search ?? "").get("tab") === "team" ? "team" : "overview";
-  const [tab, setTab] = useState<TabId>(initialTab);
+  const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [windowHours, setWindowHours] = useState(24);
   const data = useCockpitData(companyId, { windowHours });
   const [message, setMessage] = useState("");
+  const [memoryTick, setMemoryTick] = useState(0);
+
+  // Follow the address (a `/cockpit?tab=memory` link while the page is open).
+  useEffect(() => {
+    setTab(tabFromSearch(location.search));
+  }, [location.search]);
+
+  const selectTab = (id: TabId) => {
+    setTab(id);
+    navigation.navigate(id === "overview" ? "/cockpit" : `/cockpit?tab=${id}`, { replace: true });
+  };
 
   if (!companyId) {
     return <Shell><PageHeader title="Cockpit" description="Open a company first." /><EmptyState title="No company selected" /></Shell>;
   }
 
   const view = data.view;
+  const memoryTab = tab === "memory";
+  const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
       <PageHeader
         title="Cockpit"
-        description="What waits on you, what the agents did, the numbers, agent cost and quality, and system health."
-        actions={<Button type="button" variant="secondary" onClick={() => void data.reload()} disabled={data.loading}>{data.loading ? "Loading…" : "Refresh"}</Button>}
+        description="What waits on you, what the agents did, the numbers, agent cost and quality, company memory, and system health."
+        actions={(
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : void data.reload())}
+            disabled={!memoryTab && data.loading}
+          >
+            {!memoryTab && data.loading ? "Loading…" : "Refresh"}
+          </Button>
+        )}
       />
       <PageMessage message={message || data.error || undefined} tone={!message && data.error ? "bad" : undefined} />
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
           { id: "team", label: "Team", icon: Users },
+          { id: "memory", label: "Memory", icon: Lightbulb },
         ]}
         active={tab}
-        onChange={(id) => setTab(id as TabId)}
+        onChange={(id) => selectTab(id as TabId)}
       />
       {tab === "overview" ? (
-        view ? <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onTeam={() => setTab("team")} /> : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>
+        view ? <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onTeam={() => selectTab("team")} /> : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>
+      ) : memoryTab ? (
+        <MemoryPanel key={companyId} agents={data.raw?.agents ?? []} linkFor={linkFor} settingsHref={settingsHref} refreshKey={memoryTick} />
       ) : data.raw ? (
         <TeamPanel companyId={companyId} load={data.raw.load} agents={data.raw.agents} onSaved={async (note) => { setMessage(note); await data.reload(); }} onMessage={setMessage} />
       ) : <Muted>Loading…</Muted>}

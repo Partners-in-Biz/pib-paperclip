@@ -10,6 +10,7 @@ import * as needsYou from "./service/needs-you.js";
 import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
+import * as playbook from "./service/playbook.js";
 import * as snapshots from "./service/snapshots.js";
 import * as sprints from "./service/sprints.js";
 import * as tasks from "./service/tasks.js";
@@ -105,6 +106,10 @@ export const HANDLERS: Record<string, Handler> = {
   "list-optimizations": (env, c, _a, p) => optimize.listOptimizationsTool(env, c, p),
   "approve-optimization": (env, c, a, p) => optimize.approveOptimization(env, c, a, p),
   "reject-optimization": (env, c, a, p) => optimize.rejectOptimization(env, c, a, p),
+  // Learned playbook
+  "get-playbook": (env, c, a, p) => playbook.getPlaybookTool(env, c, a, p),
+  "propose-playbook-change": (env, c, a, p) => playbook.proposePlaybookChangeTool(env, c, a, p),
+  "decide-playbook-change": (env, c, a, p) => playbook.decidePlaybookChangeTool(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {

@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import {
+import { errorText,
   BarChart,
   DonutChart,
   KpiCard,
@@ -133,3 +133,16 @@ describe("Cockpit series", () => {
     expect(KIND_TONE.grant).toBe("info");
   });
 });
+
+describe("errorText", () => {
+  it("reads the host's plain { code, message } action errors, not just Error objects", () => {
+    expect(errorText(new Error("Boom"))).toBe("Boom");
+    expect(errorText({ code: "UNKNOWN", message: "Only rules and warnings can be pinned." })).toBe("Only rules and warnings can be pinned.");
+    expect(errorText({ error: "Not allowed" })).toBe("Not allowed");
+    expect(errorText({ error: { message: "Nested" } })).toBe("Nested");
+    expect(errorText("Plain text")).toBe("Plain text");
+    expect(errorText(null)).toBe("Request failed");
+    expect(errorText({})).toBe("Request failed");
+  });
+});
+

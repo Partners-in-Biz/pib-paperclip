@@ -33,6 +33,7 @@ import {
 } from "./common.js";
 import { clockFor, requireSprint, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { draftFromMeasurement, type DraftResult } from "./playbook.js";
 import { materialiseDueTasks } from "./tasks.js";
 
 export async function detectorInput(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<DetectorInput> {
@@ -311,7 +312,18 @@ export async function rejectOptimization(env: Env, companyId: string, actor: Act
   return { optimizationId: o.id, status: "rejected" };
 }
 
-/** Measure approved optimizations whose 14 days are up; update the scoreboard. */
+/** What the measured comment says about the learned playbook. */
+export function playbookNote(sprint: Pick<db.Sprint, "autopilotMode">, o: Pick<db.Optimization, "id">, draft: DraftResult | null): string {
+  if (!draft) return "";
+  if (draft.kept) return `\n\nPlaybook v${draft.version} (kept automatically, full autopilot): ${draft.diff}`;
+  const who =
+    sprint.autopilotMode === "full"
+      ? "Keep or discard it with `decide-playbook-change`"
+      : "A person keeps or discards it (Needs you and SEO → Playbook)";
+  return `\n\nDrafted playbook change \`${draft.changeId}\`: ${draft.diff}\n${who}. If a more general rule fits, propose it with \`propose-playbook-change\` (optimizationId \`${o.id}\`).`;
+}
+
+/** Measure approved optimizations whose 14 days are up; update the scoreboard and draft playbook changes. */
 export async function measureDue(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<number> {
   const due = await db.dueMeasurements(env.ctx.db, sprint.id, info.today);
   let scoreboard = sprint.scoreboard as Scoreboard;
@@ -329,12 +341,19 @@ export async function measureDue(env: Env, info: CompanyInfo, sprint: db.Sprint)
       });
       scoreboard = updateScoreboard(scoreboard, o.hypothesisType, outcome.result);
       measured += 1;
+      // A win or a loss becomes a drafted line on the scope's learned playbook.
+      let draft: DraftResult | null = null;
+      try {
+        draft = await draftFromMeasurement(env, info, sprint, o, outcome);
+      } catch (error) {
+        env.ctx.logger.info("SEO playbook draft failed", { optimizationId: o.id, error: errorMessage(error) });
+      }
       if (sprint.rootIssueId) {
         await commentOn(
           env,
           sprint.companyId,
           sprint.rootIssueId,
-          `**Optimization measured: ${outcome.result.replace("_", " ")}** — ${o.hypothesis}\n\n${outcome.reasons.join(" ")}`,
+          `**Optimization measured: ${outcome.result.replace("_", " ")}** — ${o.hypothesis}\n\n${outcome.reasons.join(" ")}${playbookNote(sprint, o, draft)}`,
         );
       }
     } catch (error) {

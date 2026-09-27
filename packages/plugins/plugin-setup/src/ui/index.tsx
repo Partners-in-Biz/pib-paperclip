@@ -12,10 +12,12 @@ import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupMissing } from "../finish-issue.js";
 import { guidedOrder, overallProgress, PHASES, entryId, type GuideEntry } from "../guide.js";
 import { crmHint, effectiveModules, ORDERED_MODULES, type ModuleChoice } from "../modules.js";
+import { isMemoryAction, memorySetupParams, WIKI_PLUGIN } from "../memory.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { fetchCompanies, fetchPluginConfig, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
 import { Card, Chip, ItemLink, ItemRow, ModuleCard, ModuleProgressRow, ProgressBar, ProgressOverview, moduleCounts, type LinkPropsFor } from "./components.js";
 import { useSetupData, type ModuleView, type SetupData } from "./data.js";
+import { runMemorySetup } from "./memory-client.js";
 
 export { resolveModuleViews } from "./data.js";
 
@@ -90,10 +92,13 @@ export function SetupPage({ context }: PluginPageProps) {
     setBusy(id);
     setMessage("");
     try {
-      await runPluginAction(item.action.plugin, item.action.key, companyId, item.action.params ?? {});
+      let ran: string[] = [];
+      if (isMemoryAction(item.action)) ran = await runMemorySetup(companyId, memorySetupParams(item.action.params));
+      else await runPluginAction(item.action.plugin, item.action.key, companyId, item.action.params ?? {});
       const next = await data.recheck(pluginKey);
       const after = next?.items.find((candidate) => candidate.key === item.key);
-      setMessage(after?.status === "done" ? `Done: ${item.title}.` : `Ran "${item.action.label}". ${after ? "The check still shows it as not done — open it for details." : ""}`.trim());
+      const summary = ran.length ? `${ran.join(". ")}. ` : "";
+      setMessage(after?.status === "done" ? `${summary}Done: ${item.title}.` : `${summary}Ran "${item.action.label}". ${after ? "The check still shows it as not done — open it for details." : ""}`.trim());
     } catch (error) {
       setMessage(`${item.action.label}: ${errorText(error)}`);
     } finally {
@@ -507,7 +512,8 @@ function CopySetup({ open, companyId, data, linkFor, onClose, onDone }: {
       .catch((err: unknown) => setError(errorText(err)));
   }, [open, companyId]);
 
-  const candidates = useMemo(() => enabledViews(data).filter((view) => view.installed), [data.views]);
+  // Company wiki has no settings to copy: its folder, agent and routines belong to each company.
+  const candidates = useMemo(() => enabledViews(data).filter((view) => view.installed && view.pluginKey !== WIKI_PLUGIN), [data.views]);
 
   async function preview() {
     if (!sourceId) return;

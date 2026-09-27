@@ -49,11 +49,17 @@ export function crmHint(modules: Partial<Record<ModuleKey, boolean>>): string | 
   return `${users.join(", ")} ${users.length === 1 ? "takes its" : "take their"} clients from the CRM. We recommend keeping CRM on.`;
 }
 
-/** Order used everywhere: CRM and Mailbox first (others depend on them), then the kit order. */
+/**
+ * Order used everywhere: CRM and Mailbox first (others depend on them), then
+ * Cockpit (with company memory) and the Company wiki, then
+ * the kit order.
+ */
+const EARLY: readonly ModuleKey[] = ["crm", "mailbox", "cockpit", "memory"];
+
 export function moduleRank(key: ModuleKey): number {
-  if (key === "crm") return 0;
-  if (key === "mailbox") return 1;
-  return 2 + MODULE_KEYS.indexOf(key);
+  const early = EARLY.indexOf(key);
+  if (early >= 0) return early;
+  return EARLY.length + MODULE_KEYS.indexOf(key);
 }
 
 export const ORDERED_MODULES: ModuleKey[] = [...MODULE_KEYS].sort((a, b) => moduleRank(a) - moduleRank(b));

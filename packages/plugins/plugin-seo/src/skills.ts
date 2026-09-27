@@ -31,11 +31,13 @@ The plugin never writes content and never invents numbers. You do the thinking; 
 ## Every run
 
 1. **Resolve the sprint.** If you were woken on an issue, its description ends with \`sprintId\` and \`taskId\`. Otherwise call \`partnersinbiz.seo:today\` (no sprintId = every active sprint).
-2. **Read the plan.** \`today\` returns due / in-progress / blocked tasks with issue ids, proposals, integration status and \`next\` steps. Work oldest week first; finish in-progress work before starting new work.
-3. **Work each assigned issue with its playbook.** The issue description holds the goal, steps, tools and definition of done (full list: \`references/outrank-90.md\`). Use the site-check tools; they store findings on the sprint when you pass \`sprintId\`.
-4. **Close with evidence.** \`complete-task\` with a factual \`summary\`, \`links\` (PRs, commits, live URLs, drafts) and \`artifacts\`. It closes the issue. Some task types are checked against sprint data first (keywords tracked and bucketed, directories handled, day-90 snapshot exists) — do the work, then complete. When a page or post is live, mark its content row live (\`update-content\` status \`live\` with the live \`targetUrl\`): that hands it to Social, which opens one repurpose task (LinkedIn, X, Instagram drafts).
-5. **A person only for a true one-time grant or judgement.** \`block-task\` with \`reason\` and a \`humanAsk\` that says exactly what to do, where, and what proof you need: it lands on the sprint's weekly **Needs you** issue and the task comes back to you when the item is done. \`review: true\` for sign-off (the issue goes to the owner's review). For DMs, emails from personal accounts and out-of-scope PRs use \`needs-you-add\` (copy-ready text, links). Never write "ask the owner to connect it": do it yourself with the tools below, or put the one grant it needs on Needs you and carry on with other work.
-6. **Digest.** End each run with \`post-digest\` on each sprint you touched: what you did, what moved (real numbers), what waits in Needs you.
+2. **Read the learned playbook.** \`get-playbook\` with the sprintId, once per client per run: the rules this client's sprints have learned from measured optimizations (PiB's own sites have their own). Follow "Rules we follow", avoid "Things that did not work", respect "Constraints". When a kept rule and a task playbook disagree, the kept rule wins for that client — never over the Rules below. Kept SEO rules live here; company memory (the brief) holds client facts and general lessons, not these rules.
+3. **Read the plan.** \`today\` returns due / in-progress / blocked tasks with issue ids, proposals, integration status and \`next\` steps. Work oldest week first; finish in-progress work before starting new work.
+4. **Work each assigned issue with its task playbook.** The issue description holds the goal, steps, tools and definition of done (full list: \`references/outrank-90.md\`). Use the site-check tools; they store findings on the sprint when you pass \`sprintId\`.
+5. **Close with evidence.** \`complete-task\` with a factual \`summary\`, \`links\` (PRs, commits, live URLs, drafts) and \`artifacts\`. It closes the issue. Some task types are checked against sprint data first (keywords tracked and bucketed, directories handled, day-90 snapshot exists) — do the work, then complete. When a page or post is live, mark its content row live (\`update-content\` status \`live\` with the live \`targetUrl\`): that hands it to Social, which opens one repurpose task (LinkedIn, X, Instagram drafts).
+6. **A person only for a true one-time grant or judgement.** \`block-task\` with \`reason\` and a \`humanAsk\` that says exactly what to do, where, and what proof you need: it lands on the sprint's weekly **Needs you** issue and the task comes back to you when the item is done. \`review: true\` for sign-off (the issue goes to the owner's review). For DMs, emails from personal accounts and out-of-scope PRs use \`needs-you-add\` (copy-ready text, links). Never write "ask the owner to connect it": do it yourself with the tools below, or put the one grant it needs on Needs you and carry on with other work.
+7. **Turn results into rules.** A measured win or loss drafts one playbook change (the "Optimization measured" comment on the root issue names it). When a more general, reusable rule fits, \`propose-playbook-change\` (op add, section \`rules\` or \`avoid\`, one line, reason with the real numbers, \`optimizationId\`); to drop a rule the results no longer support, op remove. Pending changes: \`decide-playbook-change\` only on full autopilot; otherwise a person decides them from Needs you — do not ask again.
+8. **Digest.** End each run with \`post-digest\` on each sprint you touched: what you did, what moved (real numbers), what waits in Needs you.
 
 ## Autonomy: what you do alone
 
@@ -49,7 +51,7 @@ The plugin never writes content and never invents numbers. You do the thinking; 
 ## Rules
 
 - **Never invent data.** No made-up positions, volumes, DR, impressions or "improvements". Positions come from GSC (daily, automatic) or \`record-position\` for a rank you actually observed. Leave unknown numbers empty and say so.
-- **Autopilot.** \`off\`: agent tasks go to the owner. \`safe\` (default): you work your tasks, but anything that publishes, sends or changes the live site on a task with autopilot = false needs sign-off — prepare it, then \`block-task\` with \`review: true\` (\`complete-task\` refuses these). \`full\`: you may finish them yourself. You may lower autopilot (\`set-autopilot\`), never raise it.
+- **Autopilot.** Playbook changes: \`off\` — you only read the playbook; \`safe\` — you propose, a person keeps or discards; \`full\` — you may decide them, and measured wins are kept automatically. \`off\`: agent tasks go to the owner. \`safe\` (default): you work your tasks, but anything that publishes, sends or changes the live site on a task with autopilot = false needs sign-off — prepare it, then \`block-task\` with \`review: true\` (\`complete-task\` refuses these). \`full\`: you may finish them yourself. You may lower autopilot (\`set-autopilot\`), never raise it.
 - **Site changes.** Through the linked repo as above. A site with no repo access (CMS, client-managed): write the exact change set (page, field, old, new) and put it on Needs you.
 - **No person tasks in the plan.** Verification, crawling, Bing and cross-links are yours (see Autonomy). Link-trade DMs and community posts: you draft everything; Reddit goes through the Social plugin when a Reddit account is connected; only messages from someone's personal account go on Needs you with the copy ready.
 - **Relevance over the template.** The seeded directories are SaaS-focused. For a law firm, guest house or clinic, mark irrelevant ones \`rejected\` with notes and add relevant local/industry listings. Skip template tasks that truly do not apply with \`skip-task\` and a reason.
@@ -58,7 +60,7 @@ The plugin never writes content and never invents numbers. You do the thinking; 
 
 ## Weekly review (Mondays)
 
-The \`seo-weekly\` job runs the detectors and puts up to 2 proposals (first 4 weeks; 5 later) on one approval issue for the owner. In the "Weekly SEO review" routine: \`list-optimizations\` (status proposed) and \`detect-signals\` for each active sprint, comment on the approval issue with your recommendation per proposal, and approve only when autopilot is \`full\`. Details: \`references/optimization-loop.md\`.
+The \`seo-weekly\` job runs the detectors and puts up to 2 proposals (first 4 weeks; 5 later) on one approval issue for the owner. In the "Weekly SEO review" routine: \`list-optimizations\` (status proposed) and \`detect-signals\` for each active sprint, comment on the approval issue with your recommendation per proposal, and approve only when autopilot is \`full\`. Then turn last week's measured results into playbook proposals (step 7 above). Details: \`references/optimization-loop.md\`.
 
 ## Timeline
 
@@ -156,12 +158,23 @@ The same metrics are read again and classified:
 
 Impression rules count only once either window has ≥ 20 impressions (a page going from 0 to ≥ 20 impressions is a win). The result is commented on the sprint root issue and added to the scoreboard (wins / losses / noChange / inconclusive per hypothesis type).
 
+## 5. Learn: the playbook
+
+Each scope — one client (CRM company or contact), or PiB's own sites — has one **learned playbook**: versioned markdown with the sections Goal, Rules we follow, Things that did not work, Open questions to test and Constraints. Every sprint of that client shares it, so what one sprint learns carries to the next.
+
+- **Read** it with \`get-playbook\` (sprintId) before working a sprint's tasks, and follow it.
+- **Drafts from results.** When an optimization is measured as a **win**, the plugin drafts "+ Rules we follow: <the action> (win on <date>: <reasons>; <hypothesis type>)"; a **loss** drafts the same under Things that did not work. No change and inconclusive draft nothing. One draft per optimization; the measured comment on the root issue names it.
+- **Propose** better or more general rules with \`propose-playbook-change\`: op \`add\` (section, one line of at most 400 characters), \`remove\` (the exact line from \`get-playbook\`) or \`replace\` (the whole markdown), always with a reason and the evidence, and \`optimizationId\` when it comes from one. At most 10 changes wait at once.
+- **Decide.** \`decide-playbook-change\` keep (a new version with the reason) or discard. \`off\` / \`safe\` autopilot: a person decides; the sprint's pending changes are batched as **one** item on its weekly Needs you issue and on SEO → sprint → Playbook, and the item closes itself once all are decided. \`full\`: you decide, and measured wins are kept automatically.
+
 ## What you do in the weekly review
 
 1. \`list-optimizations\` status proposed, and \`detect-signals\` for context.
 2. For each proposal, check the evidence yourself (\`gsc-query\`, \`crawler-sim\`, \`run-pagespeed\`) and comment your recommendation on the approval issue.
 3. Approve only in \`full\` autopilot. Otherwise leave the decision to the owner.
 4. Do not start optimization work before approval; unapproved proposals have no tasks.
+5. For each optimization measured since the last review: read its drafted playbook change (\`get-playbook\` → pendingChanges), and propose a clearer, more general rule when one fits. On \`full\` autopilot keep or discard every pending change; otherwise leave them to the person.
+6. Prefer hypothesis types the playbook marks as working; do not re-propose what it lists under "Things that did not work" unless the evidence is new.
 `;
 
 function schemaProps(schema: JsonSchema): string {

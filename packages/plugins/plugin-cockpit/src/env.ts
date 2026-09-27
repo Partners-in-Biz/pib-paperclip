@@ -11,6 +11,8 @@ export interface Env {
   ctx: PluginContext;
   skills: SkillSyncer;
   now: () => Date;
+  /** Jev calls go through this when set (tests). */
+  fetchImpl?: typeof fetch;
 }
 
 export class CockpitError extends Error {}

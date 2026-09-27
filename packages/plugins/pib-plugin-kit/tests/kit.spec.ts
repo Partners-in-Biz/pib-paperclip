@@ -106,7 +106,8 @@ describe("skills", () => {
     expect(md).toContain("name: pib-seo-sprint");
     expect(md).toContain("slug: pib-seo-sprint");
     expect(md).toContain("description: \"Run 'the' sprint\"");
-    expect(md.endsWith("# Body")).toBe(true);
+    expect(md).toContain("---\n\n# Body");
+    expect(md).toContain("## Company memory");
   });
 });
 

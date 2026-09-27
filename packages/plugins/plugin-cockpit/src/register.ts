@@ -25,6 +25,9 @@ import { HIRE_ROLES } from "./hire.js";
 import { parseSnapshot } from "./merge.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
 import { onLinkedFor, parseTeamInput, reemitRoles, roleViews, rolesPayload, saveTeam } from "./roles.js";
+import { registerMemoryActions } from "./memory/actions.js";
+import { onCommentCreated, upkeep } from "./memory/service.js";
+import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
 
@@ -187,11 +190,26 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.jobs.register(JOBS.healthAlerts, async () => {
     ctx.logger.info("Cockpit health alerts", await trackJob(ctx, JOBS.healthAlerts, () => healthAlerts(env)));
   });
+  ctx.jobs.register(JOBS.memoryUpkeep, async () => {
+    ctx.logger.info("Company memory upkeep", await trackJob(ctx, JOBS.memoryUpkeep, () => upkeep(env)));
+  });
+
+  registerMemoryActions(env);
+
+  // **Learned:** lines in agents' and people's comments become company memory.
+  ctx.events.on("issue.comment.created", async (event) => {
+    try {
+      await onCommentCreated(env, event);
+    } catch (error) {
+      ctx.logger.info("Memory: could not read Learned lines from a comment", { issueId: event.entityId, error: message(error) });
+    }
+  });
 
   for (const tool of COCKPIT_TOOLS) {
     ctx.tools.register(tool.name, tool, async (params, run) => {
       void env.skills.ensure(run.companyId).catch(() => undefined);
-      return normalizeToolResult(await runTool(env, tool.name, params, run));
+      const result = MEMORY_TOOL_NAMES.has(tool.name) ? await runMemoryTool(env, tool.name, params, run) : await runTool(env, tool.name, params, run);
+      return normalizeToolResult(result);
     });
   }
   return env;

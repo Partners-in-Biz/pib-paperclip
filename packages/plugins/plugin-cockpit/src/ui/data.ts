@@ -45,7 +45,8 @@ export interface CockpitData {
   reload(): Promise<void>;
 }
 
-function uiBase(): string | null {
+/** `/_plugins/<installation id>/ui/` of this bundle, or null outside the host. */
+export function uiBase(): string | null {
   try {
     return pluginUiBaseFromModule(import.meta.url);
   } catch {

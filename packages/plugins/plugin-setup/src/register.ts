@@ -4,7 +4,7 @@ import { getChoice } from "./db.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
 import { JOBS } from "./manifest.js";
 import { SetupError } from "./modules.js";
-import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, saveModules, weeklyFinishSetup } from "./service.js";
+import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, saveModules, weeklyFinishSetup } from "./service.js";
 
 /** Registers everything; exported for tests. */
 export function registerSetup(ctx: PluginContext): void {
@@ -28,6 +28,12 @@ export function registerSetup(ctx: PluginContext): void {
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     return refreshFinishIssue(ctx, companyId, { allowCreate: true });
+  });
+  // The Setup page reports what it read from LLM Wiki (Company wiki).
+  ctx.actions.register("setup.report-memory", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new SetupError("Only the Setup page can report Company wiki");
+    return { status: await reportMemory(ctx, companyId, params.snapshot) };
   });
   ctx.jobs.register(JOBS.reemitModules, async () => {
     const result = await reemitModules(ctx);

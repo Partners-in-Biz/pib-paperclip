@@ -3,7 +3,7 @@
  * `pib-reviewer`). The Cockpit keeps them up to date (kit createSkillSyncer).
  */
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
-import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+import { MEMORY_TOOLS, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { TOOL_NAMES } from "./tools.js";
 
@@ -40,7 +40,7 @@ Everything else goes through the Paperclip API (the \`paperclip\` skill): read i
    - "Plugin not reporting": check the plugin is on and its settings are saved (Setup page). If a person must act, it goes on the brief.
    - The **System health** issue is kept up to date for you. Comment on it with what you did; it closes itself when everything is ok.
 3. **Unblock agents.** List blocked and stale work (\`GET /api/companies/{companyId}/issues?status=blocked\` and in-progress issues not updated for 2 days). For each:
-   - Answer the question yourself when the answer is in the issue, the playbooks, the wiki or earlier work, and wake the agent.
+   - Answer the question yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. If the answer is lasting knowledge, save it with ${T(MEMORY_TOOLS.add)} so the next agent gets it in its brief.
    - Reassign it when the wrong agent has it.
    - Split it into a hand-off (below) when another agent must do part of it.
    - Only when a person must decide or grant something, put it on the brief.
@@ -112,12 +112,17 @@ When work must move to another agent, create an issue (\`POST /api/companies/{co
 ## Weekly retro (Mondays 08:00, routine)
 
 1. ${T(TOOL_NAMES.brief)} with \`windowHours: 168\` and ${T(TOOL_NAMES.scorecards)}.
-2. Write the retro as a comment on this week's Daily brief issue (${T(TOOL_NAMES.postBrief)}), headed **Weekly retro**:
+2. **Company memory.** Call ${T(MEMORY_TOOLS.review)}:
+   - Likely duplicates: keep the clearer fact and mark the other superseded (${T(MEMORY_TOOLS.update)} with \`status: "superseded"\` and \`supersededBy\`).
+   - Noisy facts (often in briefs but not useful): rewrite them to be specific, or archive them. Wrong facts: fix or archive.
+   - Missing-fact reports: when the same kind of knowledge keeps being missed, save it, or tell the agents in the retro to save that kind of fact.
+3. Write the retro as a comment on this week's Daily brief issue (${T(TOOL_NAMES.postBrief)}), headed **Weekly retro**:
    - **What worked:** KPIs that moved, work that shipped.
    - **What failed:** failed runs, rejected or corrected work, things that waited on the owner too long, health problems that repeated.
    - **Scorecards:** one line per agent: runs (failed), spend vs budget, the quality metric that matters most.
+   - **Memory:** one line: facts added, briefs, missing/noise feedback, what you cleaned up.
    - **Proposals:** at most 3 concrete changes (a routine to add or pause, a playbook to fix, a budget to change, work to move to another agent). Mark those that need the owner's yes.
-3. Carry out the proposals that do not need the owner. Close the routine issue.
+4. Carry out the proposals that do not need the owner. Close the routine issue.
 `;
 
 const REVIEWER_DESCRIPTION =

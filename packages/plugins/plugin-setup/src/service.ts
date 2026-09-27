@@ -18,6 +18,7 @@ import {
   upsertStatus,
 } from "./db.js";
 import { finishSetupContent, type InstalledPlugin } from "./finish-issue.js";
+import { memoryStatus, parseWikiSnapshot, WIKI_PLUGIN } from "./memory.js";
 import { normalizeModules, type ModuleChoice } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { parseSetupStatus } from "./status.js";
@@ -102,6 +103,24 @@ export async function onStatusEvent(ctx: PluginContext, pluginKey: string, event
     ctx.logger.info("Finish setup refresh failed", { companyId, error: message(error) });
   }
   return true;
+}
+
+/**
+ * Company wiki: LLM Wiki cannot push a status, so the Setup page reads it
+ * (board session) and sends a snapshot. The worker builds the checklist from
+ * it itself, so a page can report what it saw but not invent items or links.
+ */
+export async function reportMemory(ctx: PluginContext, companyId: string, snapshot: unknown, clock: Clock = systemClock): Promise<SetupStatus | null> {
+  const parsed = parseWikiSnapshot(snapshot);
+  if (!parsed) return null;
+  const status = memoryStatus(parsed);
+  await upsertStatus(ctx, { companyId, pluginKey: WIKI_PLUGIN, status, checkedAt: status.checkedAt, receivedAt: clock.now().toISOString() });
+  try {
+    await refreshFinishIssue(ctx, companyId, { allowCreate: false }, clock);
+  } catch (error) {
+    ctx.logger.info("Finish setup refresh failed", { companyId, error: message(error) });
+  }
+  return status;
 }
 
 // ---------------------------------------------------------------------------

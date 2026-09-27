@@ -4,11 +4,12 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.1.2";
+export const VERSION = "0.2.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
   healthAlerts: "health-alerts",
+  memoryUpkeep: "memory-upkeep",
 } as const;
 
 export const ROUTINES = {

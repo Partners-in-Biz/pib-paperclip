@@ -43,6 +43,7 @@ import { requireClient, scopeParam } from "./scope.js";
 import { materialiseDueTasks } from "./tasks.js";
 import { loadServiceAccount } from "./google-access.js";
 import { needsYouView } from "./needs-you.js";
+import { playbookSummary } from "./playbook.js";
 import { siteLinkView } from "./site.js";
 import { isCodeTask } from "../engine/site-change.js";
 
@@ -352,6 +353,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const gsc = integrations.find((i) => i.provider === "gsc");
   const sa = await loadServiceAccount(info);
   const needsYou = await needsYouView(env, info, sprint).catch(() => null);
+  const playbook = await playbookSummary(env, sprint).catch(() => ({ playbookId: null, version: null, pending: 0 }));
   const next: string[] = [];
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
   if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
@@ -374,6 +376,13 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (blocked.length > 0) next.push(`${blocked.length} task(s) are blocked; what they need is on Needs you — do not redo them.`);
   if (needsYou && needsYou.open.length > 0) next.push(`${needsYou.open.length} item(s) wait on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
   if (proposals.length > 0) next.push(`${proposals.length} optimization proposal(s) await approval.`);
+  if (playbook.pending > 0) {
+    next.push(
+      sprint.autopilotMode === "full"
+        ? `${playbook.pending} playbook change(s) pending: keep or discard each with decide-playbook-change (full autopilot).`
+        : `${playbook.pending} playbook change(s) wait for a person (Needs you / SEO → Playbook); follow the current version meanwhile.`,
+    );
+  }
   if (next.length === 0) next.push("Nothing is due. Check keyword positions (list-keywords) and post a short digest.");
   return {
     sprintId: sprint.id,
@@ -398,6 +407,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     integrations: integrations.map(integrationView),
     siteRepo: siteLinkView(sprint),
     serviceAccountEmail: sa.key?.clientEmail ?? null,
+    playbook: { version: playbook.version, pending: playbook.pending, read: "Call get-playbook with this sprintId before working its tasks and follow it." },
     needsYou: needsYou ? { issueId: needsYou.issueId, issueIdentifier: needsYou.issueIdentifier, open: needsYou.open.map((i) => ({ key: i.key, title: i.title, kind: i.kind })) } : null,
     health: sprint.health,
     next,

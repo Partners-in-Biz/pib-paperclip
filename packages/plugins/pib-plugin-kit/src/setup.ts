@@ -27,6 +27,8 @@ export const SETUP_EVENTS = {
 /** Modules a company can switch on or off, and the plugins behind each. */
 export const MODULES = {
   cockpit: { title: "Cockpit & team", plugins: ["partnersinbiz.cockpit"], description: "One place to see everything, plus the Operator (runs the day) and Reviewer (checks outward-facing work) agents." },
+  // Upstream LLM Wiki: it does not push a setup status; the Setup plugin checks it itself.
+  memory: { title: "Company wiki", plugins: ["paperclipai.plugin-llm-wiki"], description: "Readable pages distilled from finished work (LLM Wiki), for people and for deep lookups. Agents' per-task memory lives in the Cockpit and works without it." },
   crm: { title: "CRM", plugins: [PIB_PLUGINS.crm], description: "Companies, contacts, deals, sequences. Other modules use it for clients." },
   mailbox: { title: "Mailbox (Gmail)", plugins: [PIB_PLUGINS.mailbox], description: "Connect Gmail: triage, and sending for invoices, payslips, sequences and campaigns." },
   social: { title: "Social media", plugins: [PIB_PLUGINS.social], description: "Accounts, scheduling, inbox, Growth Lab." },

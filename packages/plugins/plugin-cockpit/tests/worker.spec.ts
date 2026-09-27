@@ -55,24 +55,28 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.1.2");
+    expect(manifest.version).toBe("0.2.0");
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
       "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "approvals.read", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
-      "database.namespace.migrate", "database.namespace.read", "database.namespace.write",
+      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
     ]) expect(manifest.capabilities).toContain(capability);
     expect(manifest.ui?.slots?.map((slot) => [slot.type, slot.displayName])).toEqual([["page", "Cockpit"], ["sidebar", "Cockpit"], ["dashboardWidget", "Company today"]]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5 });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
     expect(manifest.apiRoutes).toEqual([{ ...COCKPIT_ROUTE }, { ...SETUP_STATUS_ROUTE }]);
-    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([[JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"]]);
+    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([[JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"]]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],
       [ROUTINES.weekly, "0 8 * * 1", "Africa/Johannesburg"],
     ]);
-    expect(manifest.tools?.map((t) => t.name)).toEqual(["company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief"]);
+    expect(manifest.tools?.map((t) => t.name)).toEqual([
+      "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief",
+      "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
+    ]);
+    expect((manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.jev).toBeTruthy();
     expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer"]);
   });
 
@@ -81,12 +85,15 @@ describe("manifest and migration", () => {
     const statements = splitSqlStatements(sql);
     expect(statements).toHaveLength(4);
     for (const statement of statements) validateMigrationStatement(statement, NAMESPACE);
+    const memory = splitSqlStatements(readFileSync(new URL("../migrations/002_cockpit.sql", import.meta.url), "utf8"));
+    expect(memory).toHaveLength(9);
+    for (const statement of memory) validateMigrationStatement(statement, NAMESPACE);
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
     for (const skill of SKILLS) expect(skill.markdown).toMatch(new RegExp(`^---\\nname: ${skill.slug}\\nslug: ${skill.slug}\\n`));
     const operator = SKILLS[0]!.markdown!;
-    for (const text of ["Daily operations review", "Weekly retro", "Never approve money or legal", "Hand-off", "company-brief", "post-daily-brief", "Escalate"]) expect(operator).toContain(text);
+    for (const text of ["Daily operations review", "Weekly retro", "Never approve money or legal", "Hand-off", "company-brief", "post-daily-brief", "Escalate", "memory-review", "## Company memory"]) expect(operator).toContain(text);
     const reviewer = SKILLS[1]!.markdown!;
     for (const text of ["### Social post", "### Campaign email", "### Invoice or quote email", "### Sequence email", "### SEO pull request", "**PASS**", "**CHANGES NEEDED**", "Never approve"]) expect(reviewer).toContain(text);
   });
@@ -358,11 +365,18 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    for (const tool of COCKPIT_TOOLS.filter((t) => t.name !== TOOL_NAMES.postBrief)) {
+    for (const tool of COCKPIT_TOOLS.filter((t) => t.name !== TOOL_NAMES.postBrief && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
       expect(typeof result.data).toBe("object");
       expect(Array.isArray(result.data)).toBe(false);
+    }
+    // Memory tools (tested end to end in memory.pg.spec.ts) refuse empty input softly: an object, never a throw.
+    for (const tool of COCKPIT_TOOLS.filter((t) => t.name.startsWith("memory-"))) {
+      const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
+      expect(typeof result.data).toBe("object");
+      expect(Array.isArray(result.data)).toBe(false);
+      expect(typeof result.content).toBe("string");
     }
     const waiting = (await tools.get(TOOL_NAMES.waiting)!({}, run)) as { data: { count: number } };
     expect(waiting.data.count).toBe(3);
@@ -402,10 +416,10 @@ describe("own routes", () => {
     expect((snap.body as CockpitSnapshot).plugin).toBe(COCKPIT_PLUGIN);
     expect((snap.body as CockpitSnapshot).health.find((h) => h.key === "operator")?.status).toBe("warn");
     const before = await ownSetupStatus(env, A);
-    expect(before.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "missing"], ["operator_agent", "missing"], ["reviewer_agent", "optional"], ["routines", "blocked"]]);
+    expect(before.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "missing"], ["operator_agent", "missing"], ["reviewer_agent", "optional"], ["routines", "blocked"], ["memory_jev", "optional"]]);
     await saveTeam(env, A, { operatorAgentId: "op", reviewerAgentId: "rev" }, "user-1");
     const after = await ownSetupStatus(env, A);
-    expect(after.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "done"], ["operator_agent", "done"], ["reviewer_agent", "done"], ["routines", "done"]]);
+    expect(after.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "done"], ["operator_agent", "done"], ["reviewer_agent", "done"], ["routines", "done"], ["memory_jev", "optional"]]);
     expect((await handleApiRoute(env, apiInput("setup-status"))).status).toBe(200);
     expect((await handleApiRoute(env, apiInput("nope"))).status).toBe(404);
   });

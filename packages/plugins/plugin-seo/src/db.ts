@@ -1808,3 +1808,244 @@ export async function upsertNeedsYou(db: SeoDb, row: { id: string; companyId: st
 export async function setNeedsYouIssue(db: SeoDb, companyId: string, id: string, issueId: string | null, identifier: string | null): Promise<void> {
   await db.execute(`UPDATE ${t("needs_you")} SET issue_id = $1, issue_identifier = $2, updated_at = now() WHERE id = $3 AND company_id = $4`, [issueId, identifier, id, companyId]);
 }
+
+// ---------------------------------------------------------------------------
+// Learned playbooks (one per scope: a CRM client, or PiB's own sites)
+// ---------------------------------------------------------------------------
+
+export interface Playbook {
+  id: string;
+  companyId: string;
+  scopeKey: string;
+  clientKind: ClientKind | null;
+  clientRef: string | null;
+  clientName: string | null;
+  playbook: string;
+  version: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface PlaybookVersion {
+  version: number;
+  playbook: string;
+  reason: string;
+  optimizationId: string | null;
+  changeId: string | null;
+  decidedBy: string | null;
+  createdAt: string | null;
+}
+
+export type PlaybookChangeStatus = "pending" | "kept" | "discarded";
+export type PlaybookChangeSource = "measured" | "agent" | "person";
+
+export interface PlaybookChange {
+  id: string;
+  companyId: string;
+  playbookId: string;
+  sprintId: string | null;
+  optimizationId: string | null;
+  source: PlaybookChangeSource;
+  op: "add" | "remove" | "replace";
+  section: string | null;
+  body: string;
+  diff: string;
+  reason: string;
+  status: PlaybookChangeStatus;
+  baseVersion: number;
+  resultVersion: number | null;
+  proposedBy: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string | null;
+}
+
+export type NewPlaybookChange = Pick<
+  PlaybookChange,
+  "id" | "companyId" | "playbookId" | "sprintId" | "optimizationId" | "source" | "op" | "section" | "body" | "diff" | "reason" | "baseVersion" | "proposedBy"
+>;
+
+export interface PlaybookChangePatch {
+  status?: "kept" | "discarded";
+  resultVersion?: number;
+  decidedBy?: string;
+  decisionNote?: string | null;
+}
+
+const PLAYBOOK_SELECT = `id, company_id, scope_key, client_kind, client_ref, client_name, playbook, version, created_at, updated_at`;
+
+function playbookFrom(row: Row): Playbook {
+  const ref = s(row.client_ref);
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    scopeKey: String(row.scope_key),
+    clientKind: ref ? (isClientKind(row.client_kind) ? row.client_kind : "company") : null,
+    clientRef: ref,
+    clientName: ref ? s(row.client_name) : null,
+    playbook: String(row.playbook ?? ""),
+    version: n(row.version) ?? 1,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+export async function findPlaybook(db: SeoDb, companyId: string, scopeKey: string): Promise<Playbook | null> {
+  const rows = await db.query(`SELECT ${PLAYBOOK_SELECT} FROM ${t("playbooks")} WHERE company_id = $1 AND scope_key = $2 LIMIT 1`, [companyId, scopeKey]);
+  return rows[0] ? playbookFrom(rows[0]) : null;
+}
+
+export async function getPlaybook(db: SeoDb, companyId: string, id: string): Promise<Playbook | null> {
+  const rows = await db.query(`SELECT ${PLAYBOOK_SELECT} FROM ${t("playbooks")} WHERE id = $1 AND company_id = $2 LIMIT 1`, [id, companyId]);
+  return rows[0] ? playbookFrom(rows[0]) : null;
+}
+
+/** Create the scope's playbook at version 1; a concurrent create wins and this is a no-op. */
+export async function insertPlaybook(db: SeoDb, p: { id: string; companyId: string; scopeKey: string; clientKind: ClientKind | null; clientRef: string | null; clientName: string | null; playbook: string }): Promise<boolean> {
+  const result = await db.execute(
+    `INSERT INTO ${t("playbooks")} (id, company_id, scope_key, client_kind, client_ref, client_name, playbook, version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+     ON CONFLICT (company_id, scope_key) DO NOTHING`,
+    [p.id, p.companyId, p.scopeKey, p.clientRef ? p.clientKind ?? "company" : null, p.clientRef, p.clientRef ? p.clientName : null, p.playbook],
+  );
+  return result.rowCount > 0;
+}
+
+export async function setPlaybookClientName(db: SeoDb, companyId: string, id: string, clientName: string): Promise<void> {
+  await db.execute(`UPDATE ${t("playbooks")} SET client_name = $1, updated_at = now() WHERE id = $2 AND company_id = $3`, [clientName, id, companyId]);
+}
+
+/** Replace the markdown while the playbook is still at `expectedVersion`; bumps the version. */
+export async function savePlaybook(db: SeoDb, companyId: string, id: string, expectedVersion: number, playbook: string): Promise<boolean> {
+  const result = await db.execute(
+    `UPDATE ${t("playbooks")} SET playbook = $1, version = version + 1, updated_at = now() WHERE id = $2 AND company_id = $3 AND version = $4::int`,
+    [playbook, id, companyId, expectedVersion],
+  );
+  return result.rowCount > 0;
+}
+
+export async function insertPlaybookVersion(db: SeoDb, v: { id: string; companyId: string; playbookId: string; version: number; playbook: string; reason: string; optimizationId: string | null; changeId: string | null; decidedBy: string | null }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("playbook_versions")} (id, company_id, playbook_id, version, playbook, reason, optimization_id, change_id, decided_by)
+     VALUES ($1, $2, $3, $4::int, $5, $6, $7, $8, $9)
+     ON CONFLICT (playbook_id, version) DO NOTHING`,
+    [v.id, v.companyId, v.playbookId, v.version, v.playbook, v.reason, v.optimizationId, v.changeId, v.decidedBy],
+  );
+}
+
+export async function listPlaybookVersions(db: SeoDb, companyId: string, playbookId: string, limit = 20): Promise<PlaybookVersion[]> {
+  const rows = await db.query(
+    `SELECT version, playbook, reason, optimization_id, change_id, decided_by, created_at FROM ${t("playbook_versions")}
+      WHERE company_id = $1 AND playbook_id = $2 ORDER BY version DESC LIMIT $3::int`,
+    [companyId, playbookId, Math.max(1, Math.min(limit, 100))],
+  );
+  return rows.map((row) => ({
+    version: n(row.version) ?? 1,
+    playbook: String(row.playbook ?? ""),
+    reason: String(row.reason ?? ""),
+    optimizationId: s(row.optimization_id),
+    changeId: s(row.change_id),
+    decidedBy: s(row.decided_by),
+    createdAt: iso(row.created_at),
+  }));
+}
+
+const CHANGE_SELECT = `id, company_id, playbook_id, sprint_id, optimization_id, source, op, section, body, diff, reason, status, base_version,
+  result_version, proposed_by, decided_by, decided_at, decision_note, created_at`;
+
+function changeFrom(row: Row): PlaybookChange {
+  const op = String(row.op);
+  const source = String(row.source);
+  const status = String(row.status);
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    playbookId: String(row.playbook_id),
+    sprintId: s(row.sprint_id),
+    optimizationId: s(row.optimization_id),
+    source: source === "measured" || source === "person" ? source : "agent",
+    op: op === "remove" || op === "replace" ? op : "add",
+    section: s(row.section),
+    body: String(row.body ?? ""),
+    diff: String(row.diff ?? ""),
+    reason: String(row.reason ?? ""),
+    status: status === "kept" || status === "discarded" ? status : "pending",
+    baseVersion: n(row.base_version) ?? 1,
+    resultVersion: n(row.result_version),
+    proposedBy: s(row.proposed_by),
+    decidedBy: s(row.decided_by),
+    decidedAt: iso(row.decided_at),
+    decisionNote: s(row.decision_note),
+    createdAt: iso(row.created_at),
+  };
+}
+
+/** False when a drafted change for the same measured optimization already exists. */
+export async function insertPlaybookChange(db: SeoDb, c: NewPlaybookChange): Promise<boolean> {
+  const result = await db.execute(
+    `INSERT INTO ${t("playbook_changes")} (id, company_id, playbook_id, sprint_id, optimization_id, source, op, section, body, diff, reason, base_version, proposed_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::int, $13)
+     ON CONFLICT (optimization_id) WHERE source = 'measured' DO NOTHING`,
+    [c.id, c.companyId, c.playbookId, c.sprintId, c.optimizationId, c.source, c.op, c.section, c.body, c.diff, c.reason, c.baseVersion, c.proposedBy],
+  );
+  return result.rowCount > 0;
+}
+
+export async function getPlaybookChange(db: SeoDb, companyId: string, id: string): Promise<PlaybookChange | null> {
+  const rows = await db.query(`SELECT ${CHANGE_SELECT} FROM ${t("playbook_changes")} WHERE id = $1 AND company_id = $2 LIMIT 1`, [id, companyId]);
+  return rows[0] ? changeFrom(rows[0]) : null;
+}
+
+export async function listPlaybookChanges(db: SeoDb, companyId: string, playbookId: string, filter: { status?: PlaybookChangeStatus; limit?: number } = {}): Promise<PlaybookChange[]> {
+  const params: unknown[] = [companyId, playbookId];
+  let statusSql = "";
+  if (filter.status) {
+    params.push(filter.status);
+    statusSql = `AND status = $${params.length}`;
+  }
+  params.push(Math.max(1, Math.min(filter.limit ?? 50, 200)));
+  const rows = await db.query(
+    `SELECT ${CHANGE_SELECT} FROM ${t("playbook_changes")} WHERE company_id = $1 AND playbook_id = $2 ${statusSql} ORDER BY created_at DESC LIMIT $${params.length}::int`,
+    params,
+  );
+  return rows.map(changeFrom);
+}
+
+/** Pending changes proposed from one sprint (what its Needs you item lists). */
+export async function pendingPlaybookChangesForSprint(db: SeoDb, companyId: string, sprintId: string): Promise<PlaybookChange[]> {
+  const rows = await db.query(
+    `SELECT ${CHANGE_SELECT} FROM ${t("playbook_changes")} WHERE company_id = $1 AND sprint_id = $2 AND status = 'pending' ORDER BY created_at LIMIT 50`,
+    [companyId, sprintId],
+  );
+  return rows.map(changeFrom);
+}
+
+/** Decide or annotate a change. With `onlyPending`, applies only while it is still pending (the claim). */
+export async function updatePlaybookChange(db: SeoDb, companyId: string, id: string, patch: PlaybookChangePatch, onlyPending: boolean): Promise<boolean> {
+  const params: unknown[] = [];
+  const sets: string[] = [];
+  if (patch.status) {
+    params.push(patch.status);
+    sets.push(`status = $${params.length}`, "decided_at = now()");
+  }
+  if (patch.resultVersion != null) {
+    params.push(patch.resultVersion);
+    sets.push(`result_version = $${params.length}::int`);
+  }
+  if (patch.decidedBy !== undefined) {
+    params.push(patch.decidedBy);
+    sets.push(`decided_by = $${params.length}`);
+  }
+  if (patch.decisionNote !== undefined) {
+    params.push(patch.decisionNote);
+    sets.push(`decision_note = $${params.length}`);
+  }
+  if (sets.length === 0) return false;
+  params.push(id, companyId);
+  const result = await db.execute(
+    `UPDATE ${t("playbook_changes")} SET ${sets.join(", ")}, updated_at = now() WHERE id = $${params.length - 1} AND company_id = $${params.length}${onlyPending ? " AND status = 'pending'" : ""}`,
+    params,
+  );
+  return result.rowCount > 0;
+}

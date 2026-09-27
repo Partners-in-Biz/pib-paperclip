@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, MEMORY_TOOLS, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from "./constants.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
@@ -23,8 +23,9 @@ Never approve money or legal items, never change budgets, never send or publish 
 export const WEEKLY_ROUTINE_DESCRIPTION = `Weekly retro. Follow the ${SKILL_SLUGS.operator} skill.
 
 1. Call ${tool(TOOL_NAMES.brief)} with windowHours 168, and ${tool(TOOL_NAMES.scorecards)}.
-2. Post a "Weekly retro" with ${tool(TOOL_NAMES.postBrief)}: what worked, what failed, one scorecard line per agent (runs, failures, spend vs budget, key quality metric), and at most 3 proposals (mark the ones that need the owner's yes).
-3. Carry out the proposals that do not need the owner, then close this issue.`;
+2. Call ${tool(MEMORY_TOOLS.review)}. Merge likely duplicates (keep the better one, mark the other superseded), fix or archive noisy and wrong facts, and note how briefs did.
+3. Post a "Weekly retro" with ${tool(TOOL_NAMES.postBrief)}: what worked, what failed, one scorecard line per agent (runs, failures, spend vs budget, key quality metric), one line on company memory (facts, briefs, feedback), and at most 3 proposals (mark the ones that need the owner's yes).
+4. Carry out the proposals that do not need the owner, then close this issue.`;
 
 const instanceConfigSchema: JsonSchema = {
   type: "object",
@@ -38,6 +39,12 @@ const instanceConfigSchema: JsonSchema = {
       description: "Keep one open issue listing current problems (bad checks, plugins not reporting, agents in error or at 80% of budget). It closes itself when all is ok.",
       default: true,
     },
+    jev: {
+      ...jevConfigSchema(),
+      title: "Jev for company memory (TypeSafe)",
+      description:
+        "Jev picks which remembered facts each task needs, so agents get a short, relevant brief. Only the task's title and description and the candidate facts are sent. Without a key, briefs use keyword and recency matching (same size limit). Pick the same Paperclip secret you use in the other PiB plugins.",
+    },
   },
 };
 
@@ -47,7 +54,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: VERSION,
   displayName: "Cockpit",
   description:
-    "One place to run the company: what waits on you, what the agents did, money, pipeline, marketing, delivery, agent cost and quality, and system health. Owns the Operator (chief of staff) and Reviewer roles.",
+    "One place to run the company: what waits on you, what the agents did, money, pipeline, marketing, delivery, agent cost and quality, and system health. Owns the Operator (chief of staff) and Reviewer roles, and the company memory every agent reads (a short, filtered brief per task).",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
@@ -58,6 +65,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     "issues.wakeup",
     "issue.comments.create",
+    "issue.comments.read",
     "approvals.read",
     "agents.read",
     "routines.managed",
@@ -74,6 +82,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
     "plugin.state.read",
     "plugin.state.write",
+    "secrets.read-ref",
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
@@ -93,6 +102,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "System health check",
       description: "Every hour: opens, updates or closes one System health issue per company (bad checks, plugins not reporting, agents in error or at 80% of budget).",
       schedule: "20 * * * *",
+    },
+    {
+      jobKey: JOBS.memoryUpkeep,
+      displayName: "Company memory upkeep",
+      description: "Daily: archives facts past their expiry date, and keeps each client and area under its cap by archiving the least useful unpinned facts (never deleted).",
+      schedule: "30 1 * * *",
     },
   ],
   apiRoutes: [

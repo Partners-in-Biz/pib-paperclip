@@ -14,6 +14,7 @@
  * still found through `legacy`.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
 
 export interface HireSkill {
   /** Canonical key the host gives the managed skill, e.g. `plugin/partnersinbiz-seo/seo-sprint`. */
@@ -115,6 +116,12 @@ async function writeHireState(ctx: PluginContext, companyId: string, roleKey: st
   await ctx.state.set(stateKey(companyId, roleKey), state);
 }
 
+/** The role's AGENTS.md plus the company memory line (once). */
+export function withMemoryInstruction(instructions: string): string {
+  const text = instructions.trim();
+  return text.includes(COMPANY_MEMORY_INSTRUCTION) ? text : `${text}\n\n${COMPANY_MEMORY_INSTRUCTION}`;
+}
+
 function money(cents: number): string {
   return cents > 0 ? `$${(cents / 100).toFixed(2)} per month` : "$0 (set one before resuming)";
 }
@@ -148,7 +155,7 @@ The skills hold the full procedure and are kept up to date by the plugin. Do not
 ## Instructions (AGENTS.md)
 
 \`\`\`markdown
-${role.instructions.trim()}
+${withMemoryInstruction(role.instructions)}
 \`\`\`
 
 ## What the plugin does after the hire

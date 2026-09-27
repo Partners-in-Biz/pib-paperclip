@@ -56,6 +56,7 @@ import { integrationView, sprintView, upgradeLegacySprint } from "./service/spri
 import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
 import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
+import { playbookSummary } from "./service/playbook.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { siteProjectOptions } from "./service/site.js";
@@ -322,10 +323,11 @@ function registerActions(e: Env) {
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
-    const [needsYou, setup, projects] = await Promise.all([
+    const [needsYou, setup, projects, playbook] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
       siteProjectOptions(e, companyId, sprint.siteUrl).catch(() => []),
+      playbookSummary(e, sprint).catch(() => null),
     ]);
     const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
     for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
@@ -347,6 +349,7 @@ function registerActions(e: Env) {
       needsYou,
       setup,
       projects,
+      playbook,
     };
   });
 

@@ -24,6 +24,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { DAILY_JOB_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import { t } from "./db.js";
+import { PLAYBOOK_ITEM_KEY } from "./engine/items.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
 import { sprintPagePath } from "./engine/scope.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -126,7 +127,8 @@ async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[])
           WHERE w.company_id = $1 AND s.status IN ${RUNNING} AND w.retired_at IS NULL)::text AS tracked,
        (SELECT sum((i.stats->'siteTotals'->>'clicks')::numeric) FROM ${t("integrations")} i JOIN ${t("sprints")} s ON s.id = i.sprint_id
           WHERE i.company_id = $1 AND s.status IN ${RUNNING} AND i.provider = 'gsc' AND i.stats->'siteTotals'->>'clicks' IS NOT NULL
-            AND i.last_pull_at >= now() - interval '3 days')::text AS clicks`,
+            AND i.last_pull_at >= now() - interval '3 days')::text AS clicks,
+       (SELECT count(*) FROM ${t("playbook_changes")} WHERE company_id = $1 AND status = 'pending')::text AS playbook_pending`,
     [companyId],
   );
   const r = rows[0] ?? {};
@@ -152,6 +154,19 @@ async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[])
   if (r.clicks != null) {
     const clicks = Math.round(count(r.clicks));
     out.push({ key: "seo_clicks", label: "Search clicks (last 8 days, Search Console)", value: clicks.toLocaleString("en-US"), raw: clicks, tone: "neutral", href: "/seo", group: "marketing" });
+  }
+  const playbookPending = count(r.playbook_pending);
+  if (playbookPending > 0) {
+    out.push({
+      key: "seo_playbook_changes_pending",
+      label: "SEO playbook changes to decide",
+      value: String(playbookPending),
+      raw: playbookPending,
+      tone: "warn",
+      delta: "learned from measured optimizations",
+      href: "/seo",
+      group: "marketing",
+    });
   }
   const scores = sprints.map((s) => json<{ score?: unknown }>(s.health, {}).score).filter((x): x is number => typeof x === "number" && Number.isFinite(x));
   if (scores.length > 0) {
@@ -349,7 +364,7 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       key: `seo:needs-you:${digest.sprint_id}:${item.key}`,
       title: `${prefix(digest)}${item.title}`,
       why: clip(item.why || "Only a person can do this for the SEO sprint.", 300),
-      href: sprintHref(digest, "integrations"),
+      href: sprintHref(digest, item.key === PLAYBOOK_ITEM_KEY ? "playbook" : "integrations"),
       issueId: taskIssue ?? digest.issue_id,
       kind: KIND[item.kind] ?? "other",
       since: item.addedAt ?? null,

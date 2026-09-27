@@ -4,6 +4,7 @@
  * only write (one comment on the week's Daily brief issue).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -59,4 +60,5 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       body: { type: "string", description: "The brief in markdown (max 8000 characters)" },
     }),
   },
+  ...MEMORY_TOOL_DECLARATIONS,
 ];

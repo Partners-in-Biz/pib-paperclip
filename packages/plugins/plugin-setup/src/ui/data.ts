@@ -7,8 +7,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { MODULES, type ModuleKey, type SetupStatus } from "../kit-setup.js";
 import { effectiveModules, ORDERED_MODULES } from "../modules.js";
+import { memoryStatus, WIKI_PLUGIN, type WikiSnapshot } from "../memory.js";
 import { parseSetupStatus, standInStatus } from "../status.js";
 import { fetchInstalledPlugins, fetchLiveStatus, type LiveResult, type PluginRecordLite } from "./api.js";
+import { fetchMemoryLive } from "./memory-client.js";
 
 export interface LoadResult {
   modules: Partial<Record<ModuleKey, boolean>> | null;
@@ -67,7 +69,9 @@ export function resolveModuleViews(input: {
           view.status = standInStatus({ pluginKey, module, kind: "not-ready", pluginId: installed.id, reason: `The plugin is ${installed.status}. Enable or upgrade it, then check again.` });
           view.source = "stand-in";
         } else if (live && !live.ok) {
-          view.status = standInStatus({ pluginKey, module, kind: "not-ready", pluginId: installed?.id ?? null, reason: live.reason });
+          view.status = pluginKey === WIKI_PLUGIN
+            ? memoryStatus(null, { reason: live.reason })
+            : standInStatus({ pluginKey, module, kind: "not-ready", pluginId: installed?.id ?? null, reason: live.reason });
           view.source = "stand-in";
         }
       }
@@ -90,6 +94,7 @@ export interface SetupData {
 
 export function useSetupData(companyId: string | null | undefined, options: { live?: boolean } = {}): SetupData {
   const loadAction = usePluginAction("setup.load");
+  const reportMemory = usePluginAction("setup.report-memory");
   const [load, setLoad] = useState<LoadResult | null>(null);
   const [installed, setInstalled] = useState<Record<string, PluginRecordLite> | null>(null);
   const [live, setLive] = useState<Record<string, LiveResult | undefined>>({});
@@ -102,7 +107,11 @@ export function useSetupData(companyId: string | null | undefined, options: { li
   const checkPlugins = useCallback(async (keys: string[], company: string) => {
     if (keys.length === 0) return;
     setChecking((current) => new Set([...current, ...keys]));
-    const results = await Promise.all(keys.map(async (key) => [key, await fetchLiveStatus(key, company)] as const));
+    // Company wiki (upstream LLM Wiki) has no setup-status route: the page checks it and reports it.
+    const check = (key: string) => key === WIKI_PLUGIN
+      ? fetchMemoryLive(company, (snapshot: WikiSnapshot) => reportMemory({ snapshot }))
+      : fetchLiveStatus(key, company);
+    const results = await Promise.all(keys.map(async (key) => [key, await check(key)] as const));
     setLive((current) => ({ ...current, ...Object.fromEntries(results) }));
     setChecking((current) => {
       const next = new Set(current);
@@ -110,7 +119,7 @@ export function useSetupData(companyId: string | null | undefined, options: { li
       return next;
     });
     return Object.fromEntries(results);
-  }, []);
+  }, [reportMemory]);
 
   const reload = useCallback(async () => {
     if (!companyId) return;

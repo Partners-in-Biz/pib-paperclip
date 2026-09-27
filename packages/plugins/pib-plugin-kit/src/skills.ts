@@ -9,6 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { withCompanyMemory } from "./memory.js";
 
 export interface SkillDeclarationLike {
   skillKey: string;
@@ -96,8 +97,13 @@ export function createSkillSyncer(ctx: PluginContext, skills: SkillDeclarationLi
   };
 }
 
-/** Prepend frontmatter with a unique pib- slug so reset never clobbers other company skills. */
-export function withFrontmatter(input: { name: string; description: string }, body: string): string {
+/**
+ * Prepend frontmatter with a unique pib- slug so reset never clobbers other
+ * company skills, and append the company memory section (read before, write
+ * after) unless `memory: false`.
+ */
+export function withFrontmatter(input: { name: string; description: string; memory?: boolean }, body: string): string {
   const description = input.description.replace(/\s+/g, " ").trim().replace(/"/g, "'");
-  return `---\nname: ${input.name}\nslug: ${input.name}\ndescription: "${description}"\n---\n\n${body.trimStart()}`;
+  const content = input.memory === false ? body.trimStart() : withCompanyMemory(body.trimStart());
+  return `---\nname: ${input.name}\nslug: ${input.name}\ndescription: "${description}"\n---\n\n${content}`;
 }

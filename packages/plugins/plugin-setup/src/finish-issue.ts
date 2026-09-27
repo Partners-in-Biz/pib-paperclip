@@ -3,7 +3,7 @@
  */
 import { MODULES, setupProgress, type ModuleKey, type SetupItem, type SetupStatus } from "./kit-setup.js";
 import { ORDERED_MODULES, effectiveModules } from "./modules.js";
-import { linkFor, standInStatus } from "./status.js";
+import { linkFor, unreportedStatus } from "./status.js";
 
 export interface InstalledPlugin {
   id: string;
@@ -52,7 +52,7 @@ export function finishSetupMissing(input: FinishSetupInput): { missing: FinishSe
           notInstalled.push(module);
           continue;
         }
-        status = standInStatus({ pluginKey, module, kind: "no-settings", pluginId: installed?.id ?? null });
+        status = unreportedStatus({ pluginKey, module, pluginId: installed?.id ?? null });
       }
       const items = setupProgress(status.items ?? []).missing;
       if (items.length === 0) continue;

@@ -183,6 +183,8 @@ export async function checkNeedsYouItem(env: Env, info: CompanyInfo, sprint: db.
       }
       return true;
     }
+    case "playbook_decided":
+      return (await env.playbooks.pendingForSprint(sprint.companyId, sprint.id)).length === 0;
     default:
       return null;
   }

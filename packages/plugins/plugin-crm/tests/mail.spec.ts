@@ -222,7 +222,7 @@ describe("replies from the Mailbox", () => {
     jev = stubJev({ reply });
     const store = seed();
     store.enrollments = [
-      enrollment("e-mail", "seq-mail", "ada", { step_position: 2, next_due_at: "2026-09-27T08:00:00.000Z" }),
+      enrollment("e-mail", "seq-mail", "ada", { step_position: 2, next_due_at: "2098-09-27T08:00:00.000Z" }),
       enrollment("e-intro", "seq-intro", "ada"),
       enrollment("e-bob", "seq-intro", "bob"),
     ];
@@ -270,7 +270,7 @@ describe("replies from the Mailbox", () => {
     await receive(harness, mail({ snippet: "I am away until Monday" }));
     const mailEnrollment = store.enrollments!.find((row) => row.id === "e-mail")!;
     expect(mailEnrollment.status).toBe("running");
-    expect(mailEnrollment.next_due_at).toBe("2026-10-02T08:00:00.000Z");
+    expect(mailEnrollment.next_due_at).toBe("2098-10-02T08:00:00.000Z");
     expect(store.enrollments!.find((row) => row.id === "e-intro")!.next_due_at).toBe("2099-01-06T08:00:00.000Z");
     expect(await issues(harness)).toHaveLength(0);
   });

@@ -1,7 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
 
-export const VERSION = "0.1.2";
+export const VERSION = "0.2.0";
 
 export const JOBS = {
   reemitModules: "reemit-modules",

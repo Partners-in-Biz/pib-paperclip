@@ -2,6 +2,7 @@
  * Setup status parsing and stand-in statuses (no node imports).
  */
 import { MODULES, type ModuleKey, type SetupItem, type SetupItemStatus, type SetupStatus } from "./kit-setup.js";
+import { MEMORY_NOT_CHECKED, WIKI_PLUGIN, WIKI_PLUGIN_NAME, memoryStatus } from "./memory.js";
 
 export const PLUGINS_PAGE = "/company/settings/instance/plugins";
 
@@ -76,6 +77,7 @@ export type StandInKind = "not-ready" | "no-settings" | "not-installed";
 /** One-item status for a plugin that cannot report (not installed, not ready, route missing, never reported). */
 export function standInStatus(input: { pluginKey: string; module: ModuleKey; kind: StandInKind; pluginId?: string | null; reason?: string }): SetupStatus {
   const title = MODULES[input.module]?.title ?? input.pluginKey;
+  const pluginName = input.pluginKey === WIKI_PLUGIN ? WIKI_PLUGIN_NAME : title;
   const settingsHref = `${PLUGINS_PAGE}/${input.pluginId ?? input.pluginKey}`;
   const item: SetupItem = input.kind === "no-settings"
     ? {
@@ -92,13 +94,13 @@ export function standInStatus(input: { pluginKey: string; module: ModuleKey; kin
     : input.kind === "not-installed"
       ? {
         key: "install",
-        title: `Install the ${title} plugin`,
+        title: `Install the ${pluginName} plugin`,
         status: "missing",
         required: true,
         detail: "This module is switched on, but its plugin is not installed on this Paperclip.",
         href: PLUGINS_PAGE,
         hrefLabel: "Open plugins",
-        steps: ["Open Settings → Plugins.", `Install the ${title} plugin.`, "Come back here and check again."],
+        steps: ["Open Settings → Plugins.", `Install the ${pluginName} plugin.`, "Come back here and check again."],
         agentNext: null,
       }
       : {
@@ -113,6 +115,16 @@ export function standInStatus(input: { pluginKey: string; module: ModuleKey; kin
         agentNext: null,
       };
   return { plugin: input.pluginKey, module: input.module, title, version: null, items: [item], checkedAt: new Date().toISOString() };
+}
+
+/**
+ * Status for an installed, switched-on plugin that never reported. PiB
+ * plugins report once their settings are saved; Company wiki is checked by
+ * the Setup page, so it gets its checklist with every item "unknown".
+ */
+export function unreportedStatus(input: { pluginKey: string; module: ModuleKey; pluginId?: string | null }): SetupStatus {
+  if (input.pluginKey === WIKI_PLUGIN) return memoryStatus(null, { reason: MEMORY_NOT_CHECKED });
+  return standInStatus({ pluginKey: input.pluginKey, module: input.module, kind: "no-settings", pluginId: input.pluginId ?? null });
 }
 
 /** A Paperclip path (no company prefix) or https URL → a link for the given company prefix. */

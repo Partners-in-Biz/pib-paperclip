@@ -15,6 +15,7 @@ import { useRoleSkills } from "./use-role-skills.js";
 import {
   Activity,
   BarList,
+  BookOpen,
   Button,
   CalendarCheck,
   ChartColumn,
@@ -74,6 +75,7 @@ import { CHIP_LABEL, CHIP_TONE, backlinkSegments, dueOpen, changeText, chipState
 import { scopeParamValue, sprintPagePath } from "../engine/scope.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { NeedsYouSection, SetupChecklist, SiteRepoSection, type NeedsYouView, type ProjectOption, type SetupItem, type SiteLink } from "./autonomy.js";
+import { PlaybookTab } from "./playbook.js";
 
 // ---------------------------------------------------------------------------
 // Types (type aliases so DataTable accepts them as records)
@@ -228,9 +230,11 @@ type SprintBundle = {
   needsYou: NeedsYouView | null;
   setup: SetupItem[];
   projects: ProjectOption[];
+  /** The scope's learned playbook: version and changes waiting for a decision (worker 0.7.0+). */
+  playbook?: { playbookId: string | null; version: number | null; pending: number } | null;
 };
 
-type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "integrations";
+type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "playbook" | "integrations";
 const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "plan", label: "Plan", icon: ListChecks },
   { id: "keywords", label: "Keywords", icon: Target },
@@ -238,6 +242,7 @@ const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "content", label: "Content", icon: FileText },
   { id: "audits", label: "Audits", icon: HeartPulse },
   { id: "optimizations", label: "Optimizations", icon: Lightbulb },
+  { id: "playbook", label: "Playbook", icon: BookOpen },
   { id: "integrations", label: "Integrations", icon: Plug },
 ];
 
@@ -1086,6 +1091,7 @@ function SprintCockpit({
       {tab === "content" ? <ContentTab bundle={bundle} call={call} /> : null}
       {tab === "audits" ? <AuditsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "optimizations" ? <OptimizationsTab bundle={bundle} call={call} /> : null}
+      {tab === "playbook" ? <PlaybookTab sprintId={sprintId} onChanged={reload} onMessage={onMessage} /> : null}
       {tab === "integrations" ? <IntegrationsTab companyId={companyId} bundle={bundle} load={load} call={call} reload={reload} onMessage={onMessage} working={working} /> : null}
     </div>
   );
@@ -1110,6 +1116,7 @@ function tabCount(id: TabId, bundle: SprintBundle): { count?: number | null; cou
       return serious ? { count: serious, countTone: "bad" } : { count: bundle.findings.length || null, countTone: bundle.findings.length ? "warn" : undefined };
     }
     case "optimizations": { const p = bundle.optimizations.filter((o) => o.status === "proposed").length; return { count: p || null, countTone: p ? "warn" : undefined }; }
+    case "playbook": { const p = bundle.playbook?.pending ?? 0; return p ? { count: p, countTone: "warn" } : {}; }
     case "integrations": {
       const broken = bundle.integrations.filter((i) => statusTone(i.status) === "bad" || i.lastError).length;
       const needs = bundle.needsYou?.open.length ?? 0;
