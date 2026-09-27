@@ -13,8 +13,14 @@ import { assignableUser, type RoleKind } from "../constants.js";
 import type { AgentLite, RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
 import { fetchUsers, savePluginConfig, type UserLite } from "./api.js";
+import { attachAgentSkills, missingAgentSkills, pluginSkillKey } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
 import { useCockpitData } from "./data.js";
+
+const ROLE_SKILL: Record<RoleKind, string> = {
+  operator: pluginSkillKey("partnersinbiz.cockpit", "operator"),
+  reviewer: pluginSkillKey("partnersinbiz.cockpit", "reviewer"),
+};
 
 export { buildView } from "../view.js";
 
@@ -208,6 +214,30 @@ export function TeamPanel({ companyId, load, agents, onSaved, onMessage }: {
     setReviewOutward(load.roles?.reviewOutward ?? false);
   }, [load.roles?.updatedAt]);
 
+  // Agents linked automatically (after a hire) may not have the role skill yet: attach it for the person viewing.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const notes: string[] = [];
+      for (const kind of ["operator", "reviewer"] as RoleKind[]) {
+        const agent = load.team?.[kind]?.agent;
+        if (!agent) continue;
+        const missing = await missingAgentSkills(agent.id, companyId, [ROLE_SKILL[kind]]);
+        if (missing.length === 0) continue;
+        try {
+          await attachAgentSkills(agent.id, companyId, missing);
+          notes.push(`Attached the ${ROLE_TEXT[kind].title} skill to ${agent.name}.`);
+        } catch {
+          notes.push(`${agent.name} is missing the ${ROLE_TEXT[kind].title} skill. Add it in Agents → ${agent.name} → Skills.`);
+        }
+      }
+      if (!cancelled && notes.length) setSteps((prev) => [...prev, ...notes]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, load.team?.operator?.agent?.id, load.team?.reviewer?.agent?.id]);
+
   const agentOptions = useMemo(() => agents.filter((a) => !["terminated", "archived", "deleted"].includes(a.status)).sort((a, b) => a.name.localeCompare(b.name)), [agents]);
   const userOptions = useMemo(() => {
     const list = [...users];
@@ -229,7 +259,18 @@ export function TeamPanel({ companyId, load, agents, onSaved, onMessage }: {
           note += ` Cockpit settings could not be saved (${errorText(error)}). Save them once in Settings → Plugins → Cockpit, or the hourly health check cannot act for this company.`;
         }
       }
-      setSteps(result.steps ?? []);
+      const skillSteps: string[] = [];
+      for (const [kind, agentId] of [["operator", operator], ["reviewer", reviewer]] as Array<[RoleKind, string]>) {
+        if (!agentId) continue;
+        const name = agentOptions.find((a) => a.id === agentId)?.name ?? "The agent";
+        try {
+          const added = await attachAgentSkills(agentId, companyId, [ROLE_SKILL[kind]]);
+          skillSteps.push(added.length ? `Attached the ${kind === "operator" ? "pib-operator" : "pib-reviewer"} skill to ${name}, so it knows the ${ROLE_TEXT[kind].title} routine.` : `${name} already has the ${kind === "operator" ? "pib-operator" : "pib-reviewer"} skill.`);
+        } catch (error) {
+          skillSteps.push(`Could not attach the ${ROLE_TEXT[kind].title} skill to ${name} (${errorText(error)}). Add it in Agents → ${name} → Skills.`);
+        }
+      }
+      setSteps([...(result.steps ?? []), ...skillSteps]);
       await onSaved(note);
     } catch (error) {
       onMessage(errorText(error));
@@ -275,11 +316,17 @@ export function TeamPanel({ companyId, load, agents, onSaved, onMessage }: {
             Hire task <a {...linkFor(`/issues/${pending.identifier ?? pending.issueId}`)} style={{ color: tokens.primary }}>{pending.identifier ?? "open"}</a> is open. The Cockpit links the new agent automatically when it appears.
           </Muted>
         ) : null}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void openHire(kind)}>
-            {busy === kind ? "Opening…" : `Hire ${ROLE_TEXT[kind].title}`}
-          </Button>
-        </div>
+        {team?.agent ? (
+          <Muted>
+            Linked: <strong style={{ color: tokens.fg }}>{team.agent.name}</strong>{team.agent.status ? ` (${team.agent.status})` : ""}. Pick another agent above and save to change it.
+          </Muted>
+        ) : pending ? null : (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void openHire(kind)}>
+              {busy === kind ? "Opening…" : `Hire ${ROLE_TEXT[kind].title}`}
+            </Button>
+          </div>
+        )}
       </div>
     );
   };

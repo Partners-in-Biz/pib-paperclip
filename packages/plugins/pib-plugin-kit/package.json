@@ -11,7 +11,8 @@
     "./build": "./src/build.mjs",
     "./setup-client": "./src/setup-client.ts",
     "./setup": "./src/setup.ts",
-    "./cockpit": "./src/cockpit.ts"
+    "./cockpit": "./src/cockpit.ts",
+    "./agent-client": "./src/agent-client.ts"
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",
