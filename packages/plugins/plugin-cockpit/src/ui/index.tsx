@@ -15,7 +15,7 @@ import type { CockpitView, LoadResult } from "../view.js";
 import { fetchUsers, savePluginConfig, type UserLite } from "./api.js";
 import { attachAgentSkills, missingAgentSkills, pluginSkillKey } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
-import { uiBase, useCockpitData } from "./data.js";
+import { uiBase, useCockpitData, useSidebarView } from "./data.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 
@@ -441,9 +441,11 @@ export function CompanyTodayWidget({ context }: PluginWidgetProps) {
 
 export function CockpitSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
-  const data = useCockpitData(context.companyId, { light: true });
-  const waiting = data.view?.waiting.length ?? 0;
-  const health = data.view?.health ?? "ok";
+  const location = useHostLocation();
+  // Shared with the Clients / Marketing / Finance groups: one light load for the whole sidebar.
+  const view = useSidebarView(context.companyId, location.pathname);
+  const waiting = view?.waiting.length ?? 0;
+  const health = view?.health ?? "ok";
   const href = hostNavigation.resolveHref("/cockpit");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
   return (

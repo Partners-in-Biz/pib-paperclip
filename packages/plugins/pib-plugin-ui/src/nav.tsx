@@ -16,7 +16,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Briefcase, ChevronRight, Landmark, Megaphone } from "lucide-react";
 import { MODULE_ICONS } from "./icons.js";
-import type { ModuleKey } from "./tokens.js";
+import { tone, type ModuleKey } from "./tokens.js";
 
 export type NavGroupKey = "clients" | "marketing" | "finance";
 
@@ -229,16 +229,37 @@ export function SidebarRowLink({ linkProps, label, icon: Glyph, active, nested, 
   );
 }
 
+/** A small count pill for a sidebar row: red when money or legal items wait, amber otherwise. */
+export function NavCount({ count, urgent, label }: { count: number; urgent?: boolean; label?: string }) {
+  if (!count) return null;
+  const t = tone(urgent ? "bad" : "warn");
+  return (
+    <span
+      aria-label={label ?? `${count} waiting on you`}
+      title={label ?? `${count} waiting on you`}
+      style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: t.soft, color: t.fg, flexShrink: 0 }}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 export interface SidebarRowGroupProps {
   group: NavGroup;
   open: boolean;
   /** A page inside the group is open (the row is highlighted while closed). */
   active: boolean;
   onToggle: () => void;
+  /** Shown on the group row (e.g. a NavCount), before the chevron. */
+  badge?: ReactNode;
+  /** A colour for a small status dot on the group icon (e.g. a failing job in one of its plugins). */
+  dot?: string | null;
+  /** Extra words for screen readers, e.g. "2 waiting on you". */
+  description?: string;
   children: ReactNode;
 }
 
-export function SidebarRowGroup({ group, open, active, onToggle, children }: SidebarRowGroupProps) {
+export function SidebarRowGroup({ group, open, active, onToggle, badge, dot, description, children }: SidebarRowGroupProps) {
   const Glyph = group.icon;
   const listId = `pib-nav-${group.key}-items`;
   return (
@@ -248,11 +269,16 @@ export function SidebarRowGroup({ group, open, active, onToggle, children }: Sid
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={listId}
+        aria-label={description ? `${group.label}, ${description}` : undefined}
         className={`${ROW} ${active && !open ? ROW_ACTIVE : ROW_IDLE}`}
         style={{ background: active && !open ? undefined : "transparent", border: 0, cursor: "pointer", textAlign: "left", font: "inherit", width: "calc(100% - 16px)" }}
       >
-        <Glyph aria-hidden="true" size={16} strokeWidth={1.9} style={{ flexShrink: 0 }} />
+        <span aria-hidden="true" style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
+          <Glyph size={16} strokeWidth={1.9} />
+          {dot ? <span style={{ position: "absolute", top: -2, right: -2, width: 7, height: 7, borderRadius: 999, background: dot }} /> : null}
+        </span>
         <span className="flex-1 truncate">{group.label}</span>
+        {badge}
         <ChevronRight
           aria-hidden="true"
           size={14}

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NAV_GROUPS,
+  NavCount,
   SidebarRowGroup,
   SidebarRowLink,
   fetchUiContributions,
@@ -15,7 +16,8 @@ import {
   type UiContribution,
 } from "@partnersinbiz/pib-plugin-ui";
 import manifest from "../src/manifest.js";
-import { nextOpenState } from "../src/ui/nav.js";
+import { groupAttention, nextOpenState } from "../src/ui/nav.js";
+import { clearSidebarCache, sharedSidebarView } from "../src/ui/data.js";
 
 const COCKPIT_WITH_GROUPS: UiContribution = {
   pluginKey: "partnersinbiz.cockpit",
@@ -110,15 +112,81 @@ describe("grouped sidebar", () => {
   it("renders an accessible group and nested rows", () => {
     const finance = NAV_GROUPS.finance;
     const link = (label: string) => createElement(SidebarRowLink, { key: label, linkProps: { href: `/PIB/${label.toLowerCase()}` }, label, icon: memberIcon(finance.members[0]!), active: label === "Billing", nested: true });
-    const closed = renderToStaticMarkup(createElement(SidebarRowGroup, { group: finance, open: false, active: true, onToggle: () => undefined }, link("Billing"), link("Payroll")));
+    const closed = renderToStaticMarkup(createElement(SidebarRowGroup, { group: finance, open: false, active: true, onToggle: () => undefined, children: [link("Billing"), link("Payroll")] }));
     expect(closed).toContain('aria-expanded="false"');
     expect(closed).toContain('aria-controls="pib-nav-finance-items"');
     expect(closed).toContain("Finance");
     expect(closed).toMatch(/hidden=""/);
-    const open = renderToStaticMarkup(createElement(SidebarRowGroup, { group: finance, open: true, active: true, onToggle: () => undefined }, link("Billing"), link("Payroll")));
+    const open = renderToStaticMarkup(createElement(SidebarRowGroup, { group: finance, open: true, active: true, onToggle: () => undefined, children: [link("Billing"), link("Payroll")] }));
     expect(open).toContain('aria-expanded="true"');
     expect(open).toContain('aria-current="page"');
     expect(open).toContain("margin-left:22px");
     expect(open).toContain('href="/PIB/payroll"');
   });
+
+  it("counts what waits on you per group, flags money and legal, and picks up broken plugins", () => {
+    const view = {
+      waiting: [
+        { key: "a", title: "Approve invoice", why: "", kind: "money", source: "partnersinbiz.billing", sourceTitle: "Billing" },
+        { key: "b", title: "Review payslips", why: "", kind: "review", source: "partnersinbiz.payroll", sourceTitle: "Payroll" },
+        { key: "c", title: "Approve post", why: "", kind: "review", source: "partnersinbiz.social", sourceTitle: "Social" },
+        { key: "d", title: "Setup", why: "", kind: "grant", source: "host", sourceTitle: "Paperclip" },
+      ],
+      snapshots: [
+        { plugin: "partnersinbiz.accounting", health: [{ key: "bank", title: "Bank feed", status: "bad" }] },
+        { plugin: "partnersinbiz.seo", health: [{ key: "gsc", title: "Search Console", status: "warn" }] },
+      ],
+    } as never;
+    const finance = groupAttention(view, NAV_GROUPS.finance.members.map((m) => m.pluginKey));
+    expect(finance).toMatchObject({ total: 2, urgent: true, health: "bad" });
+    expect(finance.byPlugin).toEqual({ "partnersinbiz.billing": { count: 1, urgent: true }, "partnersinbiz.payroll": { count: 1, urgent: false } });
+    const marketing = groupAttention(view, NAV_GROUPS.marketing.members.map((m) => m.pluginKey));
+    expect(marketing).toMatchObject({ total: 1, urgent: false, health: "warn" });
+    expect(groupAttention(null, ["x"])).toEqual({ total: 0, urgent: false, health: "ok", byPlugin: {} });
+  });
+
+  it("draws the count on a closed group and a dot for a broken plugin", () => {
+    expect(renderToStaticMarkup(createElement(NavCount, { count: 0 }))).toBe("");
+    expect(renderToStaticMarkup(createElement(NavCount, { count: 120 }))).toContain("99+");
+    const html = renderToStaticMarkup(createElement(SidebarRowGroup, {
+      group: NAV_GROUPS.finance,
+      open: false,
+      active: false,
+      onToggle: () => undefined,
+      badge: createElement(NavCount, { count: 2, urgent: true, label: "2 waiting on you (money or legal)" }),
+      dot: "red",
+      description: "2 waiting on you (money or legal)",
+      children: [],
+    }));
+    expect(html).toContain('aria-label="Finance, 2 waiting on you (money or legal)"');
+    expect(html).toContain(">2</span>");
+    expect(html).toContain("background:red");
+  });
+
+  it("the whole sidebar shares one light load per company", async () => {
+    clearSidebarCache();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("[]", { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    let loads = 0;
+    const loadAction = async () => {
+      loads += 1;
+      return { roles: null, rolesSavedAt: null, settingsSaved: true, snapshots: {}, setupStatuses: {}, own: null, team: null, healthIssueId: null, installed: null };
+    };
+    try {
+      let clock = 1_000;
+      const now = () => clock;
+      const views = await Promise.all([1, 2, 3, 4].map(() => sharedSidebarView("co-1", loadAction, now)));
+      expect(loads).toBe(1);
+      expect(views.every((v) => v === views[0])).toBe(true);
+      clock += 31_000;
+      await sharedSidebarView("co-1", loadAction, now);
+      expect(loads).toBe(2);
+      await sharedSidebarView("co-2", loadAction, now);
+      expect(loads).toBe(3);
+    } finally {
+      globalThis.fetch = realFetch;
+      clearSidebarCache();
+    }
+  });
 });
+
