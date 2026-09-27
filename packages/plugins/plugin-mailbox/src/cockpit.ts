@@ -10,6 +10,7 @@ import {
   emptySnapshot,
   isModuleEnabled,
   jobHealth,
+  outboxHealth,
   publishCockpitSnapshot,
   type ActivityItem,
   type CockpitKpi,
@@ -137,6 +138,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string, now
   }
 
   if (counts) snap.health.push(sendQueueHealth(counts));
+  snap.health.push(await leadHandoffHealth(ctx, companyId));
   snap.health.push(await jobHealth(ctx, SYNC_JOB_KEY, "Gmail sync", 2));
   snap.health.push(await jobHealth(ctx, SETUP_STATUS_JOB_KEY, "Setup and cockpit report", 60));
 
@@ -175,6 +177,18 @@ export function accountHealth(account: AccountHealthRow, now: number): HealthChe
   }
   if (account.last_error) return { key, title, status: "warn", detail: `Last error: ${account.last_error}`, href: HREF };
   return { key, title, status: "ok" };
+}
+
+/** Leads waiting for the CRM's answer (the kit outbox): stuck over an hour is a warning, given up is bad. */
+async function leadHandoffHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck> {
+  const check = await outboxHealth(ctx, companyId);
+  return {
+    ...check,
+    key: "mailbox:lead-handoff",
+    title: "Leads handed to the CRM",
+    fix: check.status === "ok" ? check.fix ?? null : "Check the CRM plugin is installed and switched on and its settings are saved: it answers each lead. Leads are re-sent for about 3 days.",
+    href: check.status === "ok" ? null : "/crm",
+  };
 }
 
 function sendQueueHealth(counts: Counts): HealthCheck {

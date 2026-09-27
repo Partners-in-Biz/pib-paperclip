@@ -19,6 +19,8 @@ export interface BillingSettings {
   defaultDueDays?: number;
   defaultTaxRate?: number;
   defaultTaxCode?: string;
+  /** Off when the business is not registered for VAT: new lines are out of scope and no VAT number is needed. */
+  vatRegistered?: boolean;
   pricesIncludeVat?: boolean;
   reportingCurrency?: string;
   invoiceNotes?: string;
@@ -91,8 +93,17 @@ export function isTaxCode(value: unknown): value is TaxCode {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(TAX_CODES, value);
 }
 
-/** The VAT code new lines get: the setting, else 15% when a VAT rate is set, else out of scope. */
+/** The business charges VAT: not when "VAT registered" is off, the default code is out of scope, or the default rate is 0. */
+export function vatRegistered(settings: BillingSettings): boolean {
+  if (settings.vatRegistered === false) return false;
+  if (settings.defaultTaxCode === "za_out_of_scope") return false;
+  if (settings.defaultTaxCode == null && settings.defaultTaxRate != null && Number(settings.defaultTaxRate) <= 0) return false;
+  return true;
+}
+
+/** The VAT code new lines get: out of scope when not VAT registered, else the setting, else 15% when a VAT rate is set, else out of scope. */
 export function defaultTaxCode(settings: BillingSettings): TaxCode {
+  if (settings.vatRegistered === false) return "za_out_of_scope";
   if (isTaxCode(settings.defaultTaxCode)) return settings.defaultTaxCode;
   const rate = Number(settings.defaultTaxRate ?? 15);
   return Number.isFinite(rate) && rate > 0 ? "za_std_15" : "za_out_of_scope";

@@ -1,15 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { cockpitSnapshot, healthTone, integrationChecks, publishCockpitSnapshots, sprintDayLabel, sprintHref, staleNeedsYou } from "../src/cockpit.js";
+import { cockpitSnapshot, healthTone, integrationChecks, publishCockpitSnapshots, sprintDayLabel, sprintHref, staleNeedsYou, stuckAnnouncementChecks } from "../src/cockpit.js";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv } from "../src/service/common.js";
-import { contentPayload, contentWentLive, liveUrlFromEvidence, PUBLISH_TASK_TYPES, publishTaskDone, reemitRecentContent } from "../src/service/handoff.js";
+import { announcementLine, contentPayload, contentWentLive, liveUrlFromEvidence, pageSummary, processAnnouncements, PUBLISH_TASK_TYPES, publishTaskDone, releaseAnnouncements } from "../src/service/handoff.js";
+import { memoryAnnouncements } from "./helpers/announcements.js";
 import { SEO_ROLE } from "../src/service/hire.js";
 import { hireTaskDraft } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { validateParams, validateRuntimeQuery } from "./helpers/sql-guard.js";
+import { addDays, localDate } from "../src/engine/time.js";
 
 type Row = Record<string, unknown>;
 const T = (name: string) => `${NAMESPACE}.${name}`;
@@ -45,6 +47,19 @@ function fakeCtx(rows: (sql: string, params: unknown[]) => Row[], opts: { state?
 
 const SPRINT_ROW = { sprint_id: "sp-1", site_name: "Partners in Biz", client_kind: null, client_ref: null, client_name: null, status: "active", current_day: 34, health: { score: 62 }, autopilot_mode: "safe" };
 const ACME_ROW = { sprint_id: "sp-2", site_name: "Acme", client_kind: "company", client_ref: "c1", client_name: "Acme", status: "active", current_day: 80, health: { score: 81 }, autopilot_mode: "safe" };
+
+/** Sprint days count from the start date in the company's timezone, like the SEO page. */
+const TODAY = localDate(new Date(), "Africa/Johannesburg");
+const sprintDbRow = (row: Row, day: number): Row => ({
+  id: row.sprint_id, company_id: "co-1", name: row.site_name, site_url: "https://site.co.za", site_name: row.site_name, client_kind: row.client_kind, client_ref: row.client_ref,
+  client_name: row.client_name, status: row.status, start_date: addDays(TODAY, -day), template_id: "outrank-90", template_version: 4, autopilot_mode: row.autopilot_mode,
+  health: row.health, scoreboard: {}, today: {}, audit_days_done: [], seeded_at: "2026-08-01T00:00:00Z", created_at: "2026-08-01T00:00:00Z",
+});
+/** Open tasks of sp-1 (day 34): three a week or more past their day (overdue), one due 4 days ago. */
+const OPEN_TASKS: Row[] = [1, 20, 27, 30].map((due, i) => ({
+  id: `ot-${i}`, company_id: "co-1", sprint_id: "sp-1", template_key: null, week: 1, phase: 1, due_day: due, focus: "", title: `Task ${i}`, task_type: "custom",
+  owner: "agent", autopilot_eligible: true, status: i === 0 ? "in_progress" : "not_started", source: "manual", issue_id: `iss-${i}`, assignee_kind: "agent",
+}));
 
 describe("SEO cockpit snapshot (unconfigured)", () => {
   it("returns zero KPIs, jobs that have not run and nothing waiting, without writing", async () => {
@@ -84,8 +99,9 @@ describe("SEO cockpit snapshot (configured)", () => {
     "pib-cockpit-jobs:job:seo-weekly": { lastStartedAt: null, lastOkAt: iso(2 * DAY), lastErrorAt: null, lastError: null, consecutiveFailures: 0 },
   };
   const rows = (sql: string): Row[] => {
-    if (sql.includes(`FROM ${T("sprints")} WHERE company_id = $1 AND status IN`)) return [SPRINT_ROW, ACME_ROW];
-    if (sql.includes("AS done_7d")) return [{ done_7d: "5", overdue: "3", top10: "4", tracked: "30", clicks: "812.0" }];
+    if (sql.includes(`FROM ${T("sprints")} WHERE company_id = $1 ORDER BY`)) return [sprintDbRow(ACME_ROW, 80), sprintDbRow(SPRINT_ROW, 34)];
+    if (sql.includes(`FROM ${T("sprint_tasks")}`) && sql.includes("WHERE company_id = $1 AND status IN")) return OPEN_TASKS;
+    if (sql.includes("AS done_7d")) return [{ done_7d: "5", top10: "4", tracked: "30", clicks: "812.0" }];
     if (sql.includes(`FROM ${T("integrations")} i JOIN`) && sql.includes("ORDER BY s.created_at LIMIT 30")) {
       return [
         { ...SPRINT_ROW, provider: "gsc", status: "connected", last_error: "User does not have sufficient permission", last_pull_at: "2026-09-20T05:00:00Z", updated_at: "2026-09-26T05:00:00Z" },
@@ -127,7 +143,10 @@ describe("SEO cockpit snapshot (configured)", () => {
     const kpi = Object.fromEntries(snap.kpis.map((k) => [k.key, k]));
     expect(kpi.seo_active_sprints).toMatchObject({ value: "2", delta: "days 34–80 of 90", group: "marketing" });
     expect(kpi.seo_tasks_done_7d).toMatchObject({ value: "5" });
-    expect(kpi.seo_overdue_tasks).toMatchObject({ value: "3", tone: "warn" });
+    // The SEO page's definitions: due now = 4, overdue (a week or more past its day) = 3.
+    expect(kpi.seo_overdue_tasks).toMatchObject({ value: "3", tone: "warn", delta: "4 due now; overdue = open a week after its day" });
+    // No SEO agent is linked here, so the due agent work is stuck.
+    expect(kpi.seo_stuck_tasks).toMatchObject({ value: "4", tone: "bad", delta: "No SEO agent is linked: fix in Setup → Team", href: "/setup?section=team#team-seo-specialist" });
     expect(kpi.seo_keywords_top10).toMatchObject({ value: "4", delta: "of 30 tracked" });
     expect(kpi.seo_clicks).toMatchObject({ value: "812", raw: 812 });
     expect(kpi.seo_health_score).toMatchObject({ value: "62/100", tone: "warn", label: "SEO health (lowest sprint)" });
@@ -137,7 +156,7 @@ describe("SEO cockpit snapshot (configured)", () => {
     expect(health["job:seo-weekly"]!.status).toBe("ok");
     expect(health["gsc:sp-1"]).toMatchObject({ status: "bad", title: "Search Console pull failing: Partners in Biz", href: "/seo?sprint=sp-1&tab=integrations" });
     expect(health["gsc:sp-2"]).toMatchObject({ status: "warn", title: "Search Console data is old: [Acme] Acme", href: "/seo?sprint=sp-2&tab=integrations&client=company%3Ac1" });
-    expect(health["bing:sp-1"]).toMatchObject({ status: "warn", detail: "401 Unauthorized" });
+    expect(health["bing:sp-1"]).toMatchObject({ status: "warn", title: "Bing check failing: Partners in Biz", detail: "Bing turned down the API key. Check the Bing key in the SEO settings." });
     expect(health["service-account"]).toMatchObject({ status: "warn" });
     expect(health["needs-you:sp-1"]).toMatchObject({ status: "warn", detail: "1 item: Add the service account key" });
 
@@ -193,23 +212,28 @@ describe("hourly cockpit push", () => {
   });
 });
 
-describe("SEO → Social content hand-off", () => {
-  const sprintDb = { id: "sp-2", company_id: "co-1", name: "Acme", site_url: "https://acme.co.za", site_name: "Acme", client_kind: "company", client_ref: "c1", client_name: "Acme", status: "active", start_date: "2026-08-01", template_id: "outrank-90", template_version: 3, autopilot_mode: "safe", health: {}, scoreboard: {}, today: {}, audit_days_done: [], site_access: "repo", default_branch: "main", change_policy: "merge_seo_scope", verification: {} };
+describe("SEO → Social content hand-off (only once live)", () => {
+  const sprintDb = { id: "sp-2", company_id: "co-1", name: "Acme", site_url: "https://acme.co.za", site_name: "Acme", client_kind: "company", client_ref: "c1", client_name: "Acme", status: "active", start_date: "2026-08-01", template_id: "outrank-90", template_version: 4, autopilot_mode: "safe", health: {}, scoreboard: {}, today: {}, audit_days_done: [], site_access: "repo", default_branch: "main", change_policy: "merge_seo_scope", verification: {} };
   const content = { id: "ct-1", company_id: "co-1", sprint_id: "sp-2", title: "How much does a website cost?", type: "post", status: "live", target_keyword_id: "kw-1", target_url: "https://acme.co.za/blog/website-cost", published_on: "2026-09-26", social_post_ids: [], links_to_pillar_ids: [], task_id: "t-1" };
+  const PAGE = `<html><head><title>Website cost</title><meta name="description" content="What a small business website costs in South Africa in 2026, and what drives the price."></head><body><p>Short.</p></body></html>`;
 
-  function world(extra: { taskRows?: Row[]; recent?: boolean } = {}) {
+  function world(extra: { taskRows?: Row[]; pages?: Record<string, number> } = {}) {
+    let now = new Date("2026-09-27T08:00:00Z");
     const emit = vi.fn(async (_name: string, _companyId: string, _payload: unknown) => undefined);
+    const tasks = new Map((extra.taskRows ?? []).map((t) => [String(t.id), t]));
+    const pages = { "https://acme.co.za/blog/website-cost": 200, ...(extra.pages ?? {}) } as Record<string, number>;
     const { ctx } = fakeCtx((sql, params) => {
       if (sql.includes(`FROM ${T("content")} WHERE id = $1`)) return params[0] === "ct-1" ? [content] : [];
       if (sql.includes(`FROM ${T("sprints")} WHERE id = $1`)) return [sprintDb];
       if (sql.includes(`FROM ${T("keywords")} WHERE id = $1`)) return [{ id: "kw-1", company_id: "co-1", sprint_id: "sp-2", phrase: "website cost south africa" }];
-      if (sql.includes(`FROM ${T("sprint_tasks")} WHERE id = $1`)) return (extra.taskRows ?? []).filter((t) => t.id === params[0]);
+      if (sql.includes(`FROM ${T("sprint_tasks")} WHERE id = $1`)) return tasks.has(String(params[0])) ? [tasks.get(String(params[0]))!] : [];
       if (sql.includes("AND task_id = $3")) return params[2] === "t-1" ? [{ id: "ct-1" }] : [];
-      if (extra.recent && sql.includes(`FROM ${T("content")}`) && sql.includes("updated_at >= now() - interval '24 hours'")) return [{ id: "ct-1" }];
-      if (extra.recent && sql.includes(`FROM ${T("sprint_tasks")}`) && sql.includes("completed_at >= now() - interval '24 hours'")) return (extra.taskRows ?? []).map((t) => ({ id: t.id }));
       return [];
     }, { emit });
-    return { env: createEnv(ctx), emit };
+    const site = vi.fn(async (url: string) => ({ status: pages[url] ?? 404, url, redirects: [], headers: {}, text: (pages[url] ?? 404) === 200 ? PAGE : "not found", ms: 5 }));
+    const announcements = memoryAnnouncements(() => now);
+    const env = createEnv(ctx, { now: () => now, site: site as never, announcements });
+    return { env, emit, site, tasks, pages, announcements, later: (hours: number) => (now = new Date(now.getTime() + hours * 3600_000)) };
   }
 
   const task = (extra: Row = {}): Row => ({
@@ -218,14 +242,20 @@ describe("SEO → Social content hand-off", () => {
     evidence: { summary: "Live", links: ["https://github.com/acme/site/pull/3", "https://www.acme.co.za/blog/use-case"] }, ...extra,
   });
 
-  it("emits content.published when content goes live (key, URL, title, keyword, client scope)", async () => {
-    const w = world();
-    expect(await contentWentLive(w.env, "co-1", "ct-1")).toBe(true);
+  it("a content row marked live goes out once the page answers 200, with the page's own summary", async () => {
+    const w = world({ pages: { "https://acme.co.za/blog/website-cost": 404 } });
+    expect(await contentWentLive(w.env, "co-1", "ct-1")).toMatchObject({ status: "waiting", reason: expect.stringContaining("answers 404") });
+    expect(w.announcements.rows.get("seo:content:ct-1")).toMatchObject({ url: "https://acme.co.za/blog/website-cost", lastHttpStatus: 404 });
+    expect(w.emit).not.toHaveBeenCalled();
+    // Deployed: the next due check sends it.
+    w.pages["https://acme.co.za/blog/website-cost"] = 200;
+    w.later(1);
+    expect(await processAnnouncements(w.env, "co-1")).toMatchObject({ sent: 1 });
     expect(w.emit).toHaveBeenCalledWith("content.published", "co-1", {
       key: "seo:content:ct-1",
       url: "https://acme.co.za/blog/website-cost",
       title: "How much does a website cost?",
-      summary: null,
+      summary: "What a small business website costs in South Africa in 2026, and what drives the price.",
       keyword: "website cost south africa",
       clientKind: "company",
       clientRef: "c1",
@@ -233,25 +263,60 @@ describe("SEO → Social content hand-off", () => {
     });
   });
 
-  it("a finished publish task emits its live URL (never the PR link); its content row wins when one points at it", async () => {
-    const w = world({ taskRows: [task(), task({ id: "t-1", title: "Publish post 1" })] });
-    expect(await publishTaskDone(w.env, "co-1", "t-2")).toBe(true);
+  it("a sign-off approved with a PR is not announced until its merge task is done and the page answers 200", async () => {
+    const w = world({ taskRows: [task({ evidence: { handoff: { review: true, links: ["https://github.com/acme/site/pull/3", "https://acme-preview.vercel.app/blog/use-case"] } } }), task({ id: "m-1", title: "Merge the approved PR: Publish post 2", task_type: "code-fix", status: "not_started", evidence: null })] });
+    expect(await publishTaskDone(w.env, "co-1", "t-2", "m-1")).toMatchObject({ status: "waiting", reason: expect.stringContaining("approved PR to be merged") });
+    expect(w.site).not.toHaveBeenCalled();
+    expect(w.emit).not.toHaveBeenCalled();
+    // The agent merges, the deploy is done, it completes the merge task with the live URL.
+    w.tasks.set("m-1", { ...w.tasks.get("m-1")!, status: "done", evidence: { summary: "Merged", links: ["https://github.com/acme/site/pull/3", "https://www.acme.co.za/blog/use-case"] } });
+    w.pages["https://www.acme.co.za/blog/use-case"] = 200;
+    expect(await releaseAnnouncements(w.env, "co-1", "m-1")).toBe(1);
     expect(w.emit).toHaveBeenLastCalledWith("content.published", "co-1", expect.objectContaining({ key: "seo:content:task-t-2", url: "https://www.acme.co.za/blog/use-case", title: "Publish post 2 — use-case format" }));
-    expect(await publishTaskDone(w.env, "co-1", "t-1")).toBe(true);
-    expect(w.emit).toHaveBeenLastCalledWith("content.published", "co-1", expect.objectContaining({ key: "seo:content:ct-1" }));
   });
 
-  it("ignores tasks that are not publish tasks or have no live URL", async () => {
+  it("a finished publish task uses its live URL (never the PR link); its content row wins when one points at it", async () => {
+    const w = world({ taskRows: [task(), task({ id: "t-1", title: "Publish post 1" })], pages: { "https://www.acme.co.za/blog/use-case": 200 } });
+    expect(await publishTaskDone(w.env, "co-1", "t-2")).toMatchObject({ status: "sent" });
+    expect(w.emit).toHaveBeenLastCalledWith("content.published", "co-1", expect.objectContaining({ key: "seo:content:task-t-2", url: "https://www.acme.co.za/blog/use-case" }));
+    expect(await publishTaskDone(w.env, "co-1", "t-1")).toMatchObject({ key: "seo:content:ct-1", status: "sent" });
+  });
+
+  it("ignores tasks that are not publish tasks, and waits (never guesses) without a live URL", async () => {
     const w = world({ taskRows: [task({ id: "t-3", task_type: "meta-tag-audit" }), task({ id: "t-4", evidence: { links: ["https://github.com/acme/site/pull/3"] } })] });
-    expect(await publishTaskDone(w.env, "co-1", "t-3")).toBe(false);
-    expect(await publishTaskDone(w.env, "co-1", "t-4")).toBe(false);
+    expect(await publishTaskDone(w.env, "co-1", "t-3")).toBeNull();
+    expect(await publishTaskDone(w.env, "co-1", "t-4")).toMatchObject({ status: "waiting", reason: expect.stringContaining("No live URL yet") });
     expect(w.emit).not.toHaveBeenCalled();
   });
 
-  it("the hourly run re-emits the last 24 hours once per key", async () => {
-    const w = world({ recent: true, taskRows: [task(), task({ id: "t-1", title: "Publish post 1" })] });
-    expect(await reemitRecentContent(w.env, "co-1")).toBe(2);
-    expect(w.emit.mock.calls.map((c) => (c[2] as { key: string }).key)).toEqual(["seo:content:ct-1", "seo:content:task-t-2"]);
+  it("re-sends what went out in the last 24 hours (events arrive at most once)", async () => {
+    const w = world();
+    await contentWentLive(w.env, "co-1", "ct-1");
+    expect(w.emit).toHaveBeenCalledTimes(1);
+    w.later(1);
+    expect(await processAnnouncements(w.env, "co-1")).toMatchObject({ sent: 0, resent: 1 });
+    w.later(30);
+    expect(await processAnnouncements(w.env, "co-1")).toMatchObject({ resent: 0 });
+    // Marking it live again never makes a second repurpose task: the key is already sent.
+    expect(await contentWentLive(w.env, "co-1", "ct-1")).toMatchObject({ status: "sent" });
+  });
+
+  it("three days without a 200 makes it stuck: the Cockpit and today say so, and it is still checked daily", async () => {
+    const w = world({ pages: { "https://acme.co.za/blog/website-cost": 500 } });
+    await contentWentLive(w.env, "co-1", "ct-1");
+    w.later(80);
+    expect(await processAnnouncements(w.env, "co-1")).toMatchObject({ stuck: 1 });
+    const row = w.announcements.rows.get("seo:content:ct-1")!;
+    expect(row).toMatchObject({ status: "stuck", lastHttpStatus: 500 });
+    expect(announcementLine(row)).toContain("Social has not been told about https://acme.co.za/blog/website-cost");
+    const checks = stuckAnnouncementChecks([{ key: row.key, url: row.url ?? "https://acme.co.za/blog/website-cost", status: "stuck", last_error: row.lastError, queued_at: row.queuedAt, sprint_id: "sp-2", site_name: "Acme", client_kind: "company", client_ref: "c1", client_name: "Acme" }]);
+    expect(checks[0]).toMatchObject({ key: "social-handoff", status: "warn" });
+    // Fixed later: the daily re-check sends it (once: not re-sent in the same run).
+    w.pages["https://acme.co.za/blog/website-cost"] = 200;
+    w.later(25);
+    const before = w.emit.mock.calls.length;
+    expect(await processAnnouncements(w.env, "co-1")).toMatchObject({ sent: 1, resent: 0 });
+    expect(w.emit.mock.calls.length - before).toBe(1);
   });
 
   it("pure helpers", () => {
@@ -259,6 +324,10 @@ describe("SEO → Social content hand-off", () => {
     expect(liveUrlFromEvidence({ evidence: { handoff: { links: ["https://blog.acme.co.za/x"] } } }, "https://acme.co.za")).toBe("https://blog.acme.co.za/x");
     expect(liveUrlFromEvidence({ evidence: null }, "https://acme.co.za")).toBeNull();
     expect(contentPayload({ id: "x", title: "X", targetUrl: null, publishedOn: null }, { siteUrl: "https://a.b", clientKind: null, clientRef: null }, null)).toBeNull();
+    expect(pageSummary(`<meta property="og:description" content="Open Graph summary of the page for sharing.">`)).toBe("Open Graph summary of the page for sharing.");
+    expect(pageSummary(`<main><p>Hi</p><p>${"A long first paragraph about pricing websites in South Africa. ".repeat(3)}</p></main>`)).toMatch(/^A long first paragraph/);
+    expect(pageSummary("<p>Too short</p>")).toBeNull();
+    expect(stuckAnnouncementChecks([])).toEqual([{ key: "social-handoff", title: "Live pages handed to Social", status: "ok" }]);
   });
 });
 

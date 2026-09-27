@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
-import { experimentVerdict, type Verdict } from "@partnersinbiz/pib-plugin-kit";
+import { experimentVerdict, type SuppressionReason, type Verdict } from "@partnersinbiz/pib-plugin-kit";
 
 export const CAMPAIGN_STATUSES = ["draft", "scheduled", "active", "paused", "completed"] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
@@ -34,9 +34,14 @@ export interface CampaignDraft {
   audienceMode: AudienceMode;
   /** issue: a due step opens an issue (default). email: the Mailbox sends it (after the launch approval). */
   delivery: CampaignDelivery;
-  /** Who gets reply issues: the creator (a user or an agent). */
+  /** Who created it: its agent owns the step, reply and failed-send issues (else the Account Manager). */
   ownerUserId: string | null;
   ownerAgentId: string | null;
+  /** The person who approved the launch (from the approval issue). */
+  approvedByUserId?: string | null;
+  launchedAt?: string | null;
+  /** Why the last launch on approval failed (cleared on a launch). */
+  launchError?: string | null;
 }
 
 export const CAMPAIGN_DELIVERIES = ["issue", "email"] as const;
@@ -211,6 +216,75 @@ export function audienceSource(campaign: Pick<CampaignDraft, "audienceMode" | "a
   }
   return { kind: "tags", tags: campaign.audienceTags };
 }
+
+/** An approval must say this before a launch may email every CRM contact. */
+export const ALL_CONTACTS_MARK = "All contacts (";
+
+/** Tags mode with no tags and no hand-picked contacts: the launch would email every CRM contact. */
+export function isEveryContact(
+  campaign: Pick<CampaignDraft, "audienceMode" | "audienceTags" | "clientKind" | "clientRef">,
+  contactIds: string[] = [],
+): boolean {
+  if (contactIds.length > 0) return false;
+  const source = audienceSource(campaign);
+  return source.kind === "tags" && source.tags.length === 0;
+}
+
+/** The audience line on an approval issue, e.g. `All contacts (42)` or `Contacts tagged \`vip\` (12)`. */
+export function audienceLine(
+  campaign: Pick<CampaignDraft, "audienceMode" | "audienceTags" | "clientKind" | "clientRef" | "clientName">,
+  count: number,
+): string {
+  const source = audienceSource(campaign);
+  const tags = (list: string[]) => list.map((tag) => `\`${tag}\``).join(", ");
+  if (source.kind === "contact") return `${campaign.clientName ?? "The client contact"} only (${count})`;
+  if (source.kind === "company-contacts") {
+    const at = campaign.clientName ?? "the client company";
+    return source.tags.length ? `Contacts at ${at} tagged ${tags(source.tags)} (${count})` : `Contacts at ${at} (${count})`;
+  }
+  return source.tags.length ? `Contacts tagged ${tags(source.tags)} (${count})` : `${ALL_CONTACTS_MARK}${count})`;
+}
+
+/** First step time: now, or the campaign's start date when that is later. */
+export function enrollmentStart(now: Date, startAt: string | null | undefined): Date {
+  const start = startAt ? Date.parse(startAt) : Number.NaN;
+  return Number.isFinite(start) && start > now.getTime() ? new Date(start) : now;
+}
+
+/** The address a campaign emails for a contact: the first real address. */
+export function campaignAddress(emails: string[] | null | undefined): string | null {
+  const email = (emails ?? []).find((value) => typeof value === "string" && value.includes("@"));
+  return email ? email.trim().toLowerCase() : null;
+}
+
+// ---------------------------------------------------------------------------
+// Suppression (shared with the CRM and the Mailbox through `contact.suppressed`)
+// ---------------------------------------------------------------------------
+
+/** How Campaigns stores why an address may not get campaigns. */
+export type CampaignSuppressionReason = "unsubscribe" | "bounce" | "complaint" | "manual";
+
+const TO_KIT: Record<CampaignSuppressionReason, SuppressionReason> = {
+  unsubscribe: "unsubscribed",
+  bounce: "bounced",
+  complaint: "complained",
+  manual: "manual",
+};
+
+export function kitSuppressionReason(reason: CampaignSuppressionReason): SuppressionReason {
+  return TO_KIT[reason];
+}
+
+export function campaignSuppressionReason(reason: SuppressionReason): CampaignSuppressionReason {
+  return (Object.keys(TO_KIT) as CampaignSuppressionReason[]).find((key) => TO_KIT[key] === reason) ?? "manual";
+}
+
+export const SUPPRESSION_REASON_LABELS: Record<CampaignSuppressionReason, string> = {
+  unsubscribe: "unsubscribed",
+  bounce: "bounced",
+  complaint: "complained",
+  manual: "added by a person",
+};
 
 /** `[Client name] ` for issue titles of client work, empty for own work. */
 export function clientPrefix(clientName: string | null | undefined): string {

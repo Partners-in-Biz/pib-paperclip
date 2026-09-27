@@ -73,9 +73,9 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     const other = link.company_a_id === companyId ? link.company_b_id : link.company_a_id;
     items.push({
       key: `partners:link:${link.id}`,
-      title: `Partner link with ${other}`,
-      why: "A person accepts partner links for this company.",
-      href: "/partners",
+      title: "Accept a partner link",
+      why: `Paperclip company ${other} proposed a partner link. A person here accepts it on the Partners page; once both sides accept, named records can be shared.`,
+      href: "/partners?tab=links",
       kind: "grant",
       since: link.created_at,
     });
@@ -88,9 +88,9 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
   for (const grant of grants) {
     items.push({
       key: `partners:grant:${grant.id}`,
-      title: `Share ${grant.record_type} ${grant.record_id} with ${grant.grantee_company_id}`,
-      why: "A person accepts each record grant before the partner sees it.",
-      href: "/partners",
+      title: `Accept sharing a ${grant.record_type} with a partner`,
+      why: `An agent proposed sharing ${grant.record_type} ${grant.record_id} with partner company ${grant.grantee_company_id}. A person accepts each grant on the Partners page before the partner sees it; leave it to keep it private.`,
+      href: "/partners?tab=grants",
       kind: "grant",
       since: grant.created_at,
     });

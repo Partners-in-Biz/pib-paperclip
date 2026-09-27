@@ -597,7 +597,7 @@ export async function saveDeal(ctx: PluginContext, deal: DealDraft): Promise<voi
     `UPDATE ${table(ctx, "deals")}
         SET stage_id = $2, title = $3, amount_minor = $4, currency = $5, tags = $6::jsonb,
             next_action_kind = $7, next_action_due_at = $8, custom = $9::jsonb,
-            human_owned_fields = $10::jsonb, updated_at = now()
+            human_owned_fields = $10::jsonb, account_id = $11, contact_id = $12, updated_at = now()
       WHERE id = $1`,
     [
       deal.id,
@@ -610,6 +610,8 @@ export async function saveDeal(ctx: PluginContext, deal: DealDraft): Promise<voi
       deal.nextActionDueAt,
       json(deal.custom),
       json(deal.humanOwned),
+      deal.accountId,
+      deal.contactId,
     ],
   );
 }
@@ -715,6 +717,19 @@ export async function enrollmentsForContact(ctx: PluginContext, sequenceId: stri
        FROM ${table(ctx, "enrollments")}
       WHERE sequence_id = $1 AND contact_id = $2`,
     [sequenceId, contactId],
+  );
+  return rows.map(mapEnrollment);
+}
+
+/** A sequence's enrollments in the order they started (the sequence drawer lists them). */
+export async function enrollmentsForSequence(ctx: PluginContext, companyId: string, sequenceId: string): Promise<EnrollmentDraft[]> {
+  const rows = await ctx.db.query<EnrollmentRow>(
+    `SELECT ${ENROLLMENT_COLUMNS}
+       FROM ${table(ctx, "enrollments")}
+      WHERE company_id = $1 AND sequence_id = $2
+      ORDER BY created_at
+      LIMIT 200`,
+    [companyId, sequenceId],
   );
   return rows.map(mapEnrollment);
 }

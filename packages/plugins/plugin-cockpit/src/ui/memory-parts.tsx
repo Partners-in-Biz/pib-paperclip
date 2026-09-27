@@ -28,7 +28,7 @@ import {
   useIsNarrow,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
-import { Card, Muted, grid, type LinkPropsFor } from "./components.js";
+import { Card, Details, Muted, grid, type LinkPropsFor } from "./components.js";
 import {
   LEARNED_HINT,
   METHOD_HELP,
@@ -41,12 +41,12 @@ import {
   attentionCount,
   clientLabel,
   clientResolution,
+  clientOptions,
   compareBrief,
   coverageLines,
   factActions,
   filtersActive,
   formatCount,
-  formatLatency,
   isExpired,
   issuePath,
   jevShare,
@@ -59,6 +59,7 @@ import {
   pageLabel,
   scopeInfo,
   shortDate,
+  SMART_MATCHING,
   sourcePath,
   truncate,
   type AgentRef,
@@ -107,8 +108,15 @@ export function TextLink({ href, linkFor, children, style }: { href: string | nu
   );
 }
 
+/** A fact's id: technical, so only behind a Details disclosure. */
 export function FactId({ id }: { id: string }) {
   return <code style={{ ...mono, fontSize: 11, color: tokens.muted }}>{id}</code>;
+}
+
+/** "Details" with a fact's (or brief's) ids and other technical bits. */
+export function IdDetails({ lines }: { lines: Array<string | null | undefined | false> }) {
+  const text = lines.filter(Boolean).join("\n");
+  return text ? <Details raw={text} /> : null;
 }
 
 export function MethodPill({ method }: { method: string }) {
@@ -124,13 +132,16 @@ export function MethodPill({ method }: { method: string }) {
 // Header
 // ---------------------------------------------------------------------------
 
-function JevNote({ href, linkFor }: { href: string; linkFor: LinkPropsFor }) {
+/** Briefs pick facts by keywords; smart matching (an optional AI service) picks only what each task needs. */
+function SmartMatchingNote({ href, linkFor }: { href: string; linkFor: LinkPropsFor }) {
   const t = tone("info");
   return (
     <div role="note" style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: t.soft, border: `1px solid ${t.border}` }}>
       <Info size={16} color={t.solid} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
-      <span style={{ fontSize: 13, lineHeight: 1.5, flex: "1 1 240px", minWidth: 0 }}>Briefs use keyword matching. Add a TypeSafe key in Cockpit settings → Jev to let Jev pick facts.</span>
-      <a {...linkFor(href)} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none", whiteSpace: "nowrap" }}>Open Cockpit settings →</a>
+      <span style={{ fontSize: 13, lineHeight: 1.5, flex: "1 1 240px", minWidth: 0 }}>
+        <strong>{SMART_MATCHING}</strong>: briefs now pick facts by keywords. Turn on smart matching in the Cockpit settings to pick only what each task needs.
+      </span>
+      <a {...linkFor(href)} style={{ display: "inline-flex", alignItems: "center", minHeight: 32, fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none", whiteSpace: "nowrap" }}>Open Cockpit settings →</a>
     </div>
   );
 }
@@ -173,17 +184,17 @@ export function MemoryHeader({ overview, agents, linkFor, settingsHref }: { over
           {LEARNED_HINT.before}<strong style={{ color: tokens.fg }}>{LEARNED_HINT.marker}</strong>{LEARNED_HINT.after}
         </p>
       </div>
-      {overview.jevConfigured ? null : <JevNote href={settingsHref} linkFor={linkFor} />}
+      {overview.jevConfigured ? null : <SmartMatchingNote href={settingsHref} linkFor={linkFor} />}
       <div style={grid(150, 10)}>
         <KpiCard size="sm" label="Active facts" value={formatCount(stats.facts.active)} hint={`${formatCount(stats.facts.pinned)} pinned · ${formatCount(stats.facts.archived)} archived`} icon={BookOpen} />
         <KpiCard size="sm" label="Added this week" value={formatCount(stats.added7d)} hint={`${formatCount(stats.harvested7d ?? 0)} from Learned lines`} icon={TrendingUp} />
         <KpiCard size="sm" label="Clients covered" value={formatCount(stats.facts.clients)} hint="Plus company-wide facts" icon={Users} />
-        <KpiCard size="sm" label="Briefs this week" value={formatCount(b.total)} hint={share === null ? "None yet" : `${share}% picked by Jev`} icon={FileText} />
+        <KpiCard size="sm" label="Briefs this week" value={formatCount(b.total)} hint={share === null ? "None yet" : share > 0 ? `${share}% by smart matching` : "Picked by keywords"} icon={FileText} />
         <KpiCard
           size="sm"
           label="Average brief"
           value={b.total ? `${formatCount(b.avgFacts, 1)} facts` : "–"}
-          hint={b.total ? `~${formatCount(b.avgTokens)} tokens · ${formatLatency(b.avgLatencyMs)}` : `Up to ${limits.briefMaxFacts} facts, ~${formatCount(limits.briefMaxTokens)} tokens`}
+          hint={`At most ${limits.briefMaxFacts} per task`}
           icon={Gauge}
         />
         <KpiCard
@@ -191,7 +202,7 @@ export function MemoryHeader({ overview, agents, linkFor, settingsHref }: { over
           label="Feedback, 30 days"
           value={formatCount(fb.missing + fb.noise)}
           tone={fb.missing ? "warn" : "neutral"}
-          hint={`${formatCount(fb.missing)} missing · ${formatCount(fb.noise)} noise${fb.wrong ? ` · ${formatCount(fb.wrong)} wrong` : ""}`}
+          hint={`${formatCount(fb.missing)} missing · ${formatCount(fb.noise)} not helpful${fb.wrong ? ` · ${formatCount(fb.wrong)} wrong` : ""}`}
           icon={MessageSquare}
         />
       </div>
@@ -200,9 +211,9 @@ export function MemoryHeader({ overview, agents, linkFor, settingsHref }: { over
           title="How this week's briefs were picked"
           height={8}
           segments={[
-            { key: "jev", label: "Jev", value: b.jev, tone: "info" },
-            { key: "baseline", label: "Keyword", value: b.baseline, tone: "neutral" },
-            { key: "empty", label: "Nothing applied", value: b.empty, color: "color-mix(in srgb, var(--muted-foreground) 35%, transparent)" },
+            { key: "jev", label: "Smart matching", value: b.jev, tone: "info" },
+            { key: "baseline", label: "Keywords", value: b.baseline, tone: "neutral" },
+            { key: "empty", label: "Nothing matched", value: b.empty, color: "color-mix(in srgb, var(--muted-foreground) 35%, transparent)" },
           ]}
         />
       ) : null}
@@ -225,22 +236,24 @@ export function FactFiltersBar({ filters, search, clients, areas, onSearch, onCh
   onClear: () => void;
 }) {
   const field: CSSProperties = { width: "auto", flex: "1 1 140px" };
-  const sorted = [...clients].sort((a, b) => a.clientName.localeCompare(b.clientName));
+  // Each client once, even when memory knows it under two refs.
+  const options = clientOptions(clients);
+  const selected = options.find((option) => option.refs.includes(filters.client))?.value ?? filters.client;
   const unknownClient = filters.client && filters.client !== "own" && !clients.some((c) => c.clientRef === filters.client);
   return (
     <div role="search" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
       <Input type="search" aria-label="Search facts" placeholder="Search facts or client names" value={search} onChange={(event) => onSearch(event.target.value)} style={{ width: "auto", flex: "2 1 220px" }} />
       <Select aria-label="Status" value={filters.status} onChange={(event) => onChange({ status: event.target.value as StatusFilter })} style={field}>
         <option value="active">Active</option>
-        <option value="superseded">Superseded</option>
+        <option value="superseded">Replaced</option>
         <option value="archived">Archived</option>
         <option value="all">All statuses</option>
       </Select>
-      <Select aria-label="Client" value={filters.client} onChange={(event) => onChange({ client: event.target.value })} style={{ ...field, flex: "1 1 170px" }}>
+      <Select aria-label="Client" value={selected} onChange={(event) => onChange({ client: event.target.value })} style={{ ...field, flex: "1 1 170px" }}>
         <option value="">All clients</option>
         <option value="own">Company-wide</option>
-        {sorted.map((c) => <option key={c.clientRef} value={c.clientRef}>{c.clientName}</option>)}
-        {unknownClient ? <option value={filters.client}>{filters.client}</option> : null}
+        {options.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        {unknownClient ? <option value={filters.client}>Another client</option> : null}
       </Select>
       <Select aria-label="Area" value={filters.area} onChange={(event) => onChange({ area: event.target.value })} style={field}>
         <option value="">All areas</option>
@@ -279,7 +292,7 @@ function FactButtons({ fact, busy, handlers, align }: { fact: MemoryFact; busy: 
           case "restore":
             return <SmallButton key={action} disabled={busy} aria-label={`Restore: ${label}`} onClick={() => handlers.onStatus(fact, "active")}>Restore</SmallButton>;
           case "supersede":
-            return <SmallButton key={action} disabled={busy} aria-label={`Superseded by another fact: ${label}`} onClick={() => handlers.onSupersede(fact)}>Superseded by…</SmallButton>;
+            return <SmallButton key={action} disabled={busy} aria-label={`Replaced by a newer fact: ${label}`} onClick={() => handlers.onSupersede(fact)}>Replaced by…</SmallButton>;
           default:
             return null;
         }
@@ -293,7 +306,7 @@ function StatusPills({ fact, now }: { fact: Pick<MemoryFact, "status" | "superse
   return (
     <>
       {fact.status !== "active" ? (
-        <Pill size="sm" variant="outline">{fact.status === "superseded" && fact.supersededBy ? `Superseded by ${fact.supersededBy}` : STATUS_LABEL[fact.status]}</Pill>
+        <Pill size="sm" variant="outline">{fact.status === "superseded" ? "Replaced by a newer fact" : STATUS_LABEL[fact.status]}</Pill>
       ) : null}
       {fact.expiresAt ? <Pill size="sm" variant="outline" tone={expired ? "warn" : "neutral"}>{expired ? `Expired ${shortDate(fact.expiresAt)}` : `Expires ${shortDate(fact.expiresAt)}`}</Pill> : null}
     </>
@@ -304,10 +317,11 @@ function FactText({ fact, now }: { fact: MemoryFact; now: Date }) {
   return (
     <div style={{ display: "grid", gap: 5, minWidth: 0 }}>
       <span style={{ fontSize: 13, lineHeight: 1.45, color: fact.status === "active" ? tokens.fg : tokens.muted, ...breakAnywhere }}>{fact.text}</span>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
-        <FactId id={fact.id} />
-        <StatusPills fact={fact} now={now} />
-      </div>
+      {fact.status !== "active" || fact.expiresAt ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
+          <StatusPills fact={fact} now={now} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -330,7 +344,7 @@ function FeedbackCounts({ fact }: { fact: MemoryFact }) {
   const bad = noisy(fact);
   return (
     <span style={{ color: bad ? tone("warn").fg : tokens.muted, fontWeight: bad ? 600 : 400 }}>
-      {formatCount(fact.helpfulCount)} helpful · {formatCount(fact.noiseCount)} noise
+      {formatCount(fact.helpfulCount)} helpful · {formatCount(fact.noiseCount)} not helpful
     </span>
   );
 }
@@ -475,7 +489,7 @@ function BriefCard({ brief, agents, linkFor, onOpen, now }: { brief: BriefSummar
       </div>
       <div style={{ fontSize: 12, color: tokens.muted, lineHeight: 1.5, fontVariantNumeric: "tabular-nums", ...breakAnywhere }}>
         {agent ? <><TextLink href={agent.href} linkFor={linkFor} style={{ fontWeight: 500 }}>{agent.name}</TextLink> · </> : null}
-        {brief.facts} of {formatCount(brief.totalFacts)} facts · ~{formatCount(brief.tokens)} tokens · {formatLatency(brief.latencyMs)} · {relativeTime(brief.createdAt, now) ?? "–"}
+        {brief.facts} of {formatCount(brief.totalFacts)} facts · {relativeTime(brief.createdAt, now) ?? "–"}
       </div>
       <div><SmallButton onClick={() => onOpen(brief.id)}>View brief</SmallButton></div>
     </div>
@@ -484,19 +498,17 @@ function BriefCard({ brief, agents, linkFor, onOpen, now }: { brief: BriefSummar
 
 export function BriefsList({ briefs, agents, linkFor, onOpen, now }: { briefs: BriefSummary[]; agents: AgentRef[]; linkFor: LinkPropsFor; onOpen: (id: string) => void; now: Date }) {
   const narrow = useIsNarrow();
-  if (briefs.length === 0) return <Muted>No briefs yet. An agent gets one each time it starts a task with memory-recall.</Muted>;
+  if (briefs.length === 0) return <Muted>No briefs yet. An agent gets one each time it starts a task.</Muted>;
   if (narrow) return <div style={{ display: "grid", gap: 10 }}>{briefs.map((b) => <BriefCard key={b.id} brief={b} agents={agents} linkFor={linkFor} onOpen={onOpen} now={now} />)}</div>;
   return (
     <div style={tableWrap}>
-      <table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse" }}>
+      <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse" }}>
         <thead>
           <tr>
             <th style={th}>Task</th>
             <th style={th}>Agent</th>
             <th style={th}>Picked by</th>
             <th style={th}>Facts</th>
-            <th style={th}>Tokens</th>
-            <th style={th}>Took</th>
             <th style={th}>When</th>
             <th style={th}><span className="pib-sr-only">Open</span></th>
           </tr>
@@ -510,11 +522,9 @@ export function BriefsList({ briefs, agents, linkFor, onOpen, now }: { briefs: B
                 <td style={td}>{agent ? <TextLink href={agent.href} linkFor={linkFor} style={{ fontWeight: 500 }}>{agent.name}</TextLink> : <span style={{ color: tokens.muted }}>–</span>}</td>
                 <td style={td}><MethodPill method={b.method} /></td>
                 <td style={{ ...td, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{b.facts} of {formatCount(b.totalFacts)}</td>
-                <td style={{ ...td, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>~{formatCount(b.tokens)}</td>
-                <td style={{ ...td, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{formatLatency(b.latencyMs)}</td>
                 <td style={{ ...td, whiteSpace: "nowrap", color: tokens.muted }}>{relativeTime(b.createdAt, now) ?? "–"}</td>
                 <td style={{ ...td, textAlign: "right" }}>
-                  <SmallButton aria-label={`View ${b.issueIdentifier ? `the brief for ${b.issueIdentifier}` : `brief ${b.id}`}`} onClick={(event) => { event.stopPropagation(); onOpen(b.id); }}>View</SmallButton>
+                  <SmallButton aria-label={`View ${b.issueIdentifier ? `the brief for ${b.issueIdentifier}` : "the brief"}`} onClick={(event) => { event.stopPropagation(); onOpen(b.id); }}>View</SmallButton>
                 </td>
               </tr>
             );
@@ -540,8 +550,8 @@ interface FactLineItem {
 
 function marker(line: Pick<BriefLine, "inBrief" | "inBaseline">, method: string): FactLineItem["marker"] {
   if (method !== "jev") return null;
-  if (!line.inBrief) return { label: "Baseline only", tone: "neutral" };
-  return line.inBaseline ? { label: "Baseline too", tone: "neutral" } : { label: "Jev only", tone: "info" };
+  if (!line.inBrief) return { label: "Keywords only", tone: "neutral" };
+  return line.inBaseline ? { label: "Keywords too", tone: "neutral" } : { label: "Smart matching only", tone: "info" };
 }
 
 function fromLine(line: BriefLine, method: string): FactLineItem {
@@ -560,13 +570,12 @@ export function FactLines({ items, clients }: { items: FactLineItem[]; clients: 
         <li key={item.id} style={{ display: "grid", gap: 5, padding: "8px 10px", borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.bg, minWidth: 0 }}>
           <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{item.text ?? <em style={{ color: tokens.muted }}>This fact is no longer stored.</em>}</span>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
-            <FactId id={item.id} />
             {item.text !== null ? <Pill size="sm" variant="outline">{clientLabel(item.clientRef, item.clientName, clients)}</Pill> : null}
             {item.area ? <Pill size="sm">{areaLabel(item.area)}</Pill> : null}
             {item.kind ? <Pill size="sm" tone={kindTone(item.kind)}>{kindLabel(item.kind)}</Pill> : null}
             {item.pinned ? <Pill size="sm" tone="accent" dot>Pinned</Pill> : null}
             {item.status && item.status !== "active" ? <Pill size="sm" variant="outline">{STATUS_LABEL[item.status]} now</Pill> : null}
-            {item.score !== null ? <Pill size="sm" tone="info" icon={Sparkles} title="How likely Jev judged it that this task needs the fact">{item.score.toFixed(2)}</Pill> : null}
+            {item.score !== null ? <Pill size="sm" tone="info" icon={Sparkles} title="How sure smart matching was that this task needs the fact">{Math.round(item.score * 100)}% match</Pill> : null}
             {item.marker ? <Pill size="sm" variant="outline" tone={item.marker.tone}>{item.marker.label}</Pill> : null}
           </div>
         </li>
@@ -593,7 +602,7 @@ function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** A logged brief: what it included and, when Jev chose, what the keyword baseline would have picked. */
+/** A logged brief: what it included and, when smart matching chose, what keyword matching would have picked. Ids sit under Details. */
 export function BriefDetail({ brief, facts, clients, agents, linkFor, now }: { brief: BriefRow; facts: MemoryFact[]; clients: MemoryClient[]; agents: AgentRef[]; linkFor: LinkPropsFor; now: Date }) {
   const cmp = compareBrief(brief, facts);
   const agent = agentRef(brief.agentId, agents);
@@ -603,15 +612,13 @@ export function BriefDetail({ brief, facts, clients, agents, linkFor, now }: { b
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         <MethodPill method={brief.method} />
         <Pill size="sm">{brief.factIds.length} of {formatCount(brief.totalFacts)} facts</Pill>
-        <Pill size="sm">~{formatCount(brief.tokens)} tokens</Pill>
-        {brief.latencyMs > 0 ? <Pill size="sm" variant="outline">{formatLatency(brief.latencyMs)}</Pill> : null}
       </div>
       <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
         <MetaRow label="Task"><BriefTask brief={brief} linkFor={linkFor} /></MetaRow>
         <MetaRow label="Agent">{agent ? <TextLink href={agent.href} linkFor={linkFor}>{agent.name}</TextLink> : "–"}</MetaRow>
         <MetaRow label="Client">{clientNames}</MetaRow>
         <MetaRow label="Area">{brief.area ? areaLabel(brief.area) : "Not set (every area)"}</MetaRow>
-        <MetaRow label="When">{relativeTime(brief.createdAt, now) ?? "–"}{brief.candidateCount ? ` · ${formatCount(brief.candidateCount)} candidates ranked` : ""}{brief.model ? ` · ${brief.model}` : ""}</MetaRow>
+        <MetaRow label="When">{relativeTime(brief.createdAt, now) ?? "–"}</MetaRow>
       </div>
       <Muted>{METHOD_HELP[brief.method] ?? ""}</Muted>
       <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
@@ -620,14 +627,14 @@ export function BriefDetail({ brief, facts, clients, agents, linkFor, now }: { b
       </section>
       {brief.method === "jev" ? (
         <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
-          <h3 style={heading}>What the keyword baseline would have picked</h3>
+          <h3 style={heading}>What keyword matching would have picked</h3>
           {cmp.same ? (
             <Muted>The same {brief.factIds.length === 1 ? "fact" : "facts"}.</Muted>
           ) : (
             <>
               <Muted>
-                {brief.baselineIds.length} {brief.baselineIds.length === 1 ? "fact" : "facts"}: {cmp.agreed} of Jev's picks
-                {cmp.baselineOnly.length ? `, plus ${cmp.baselineOnly.length} Jev left out:` : ", and nothing Jev left out."}
+                {brief.baselineIds.length} {brief.baselineIds.length === 1 ? "fact" : "facts"}: {cmp.agreed} of the smart picks
+                {cmp.baselineOnly.length ? `, plus ${cmp.baselineOnly.length} it left out:` : ", and nothing it left out."}
               </Muted>
               {cmp.baselineOnly.length ? <FactLines items={cmp.baselineOnly.map((l) => fromLine(l, brief.method))} clients={clients} /> : null}
             </>
@@ -640,11 +647,12 @@ export function BriefDetail({ brief, facts, clients, agents, linkFor, now }: { b
           <div style={{ marginTop: 8 }}><BriefBody body={brief.body} /></div>
         </details>
       ) : null}
+      <IdDetails lines={[`Brief: ${brief.id}`, brief.factIds.length ? `Facts: ${brief.factIds.join(", ")}` : null, brief.model ? `Picked with: ${brief.model}` : null, brief.candidateCount ? `Facts compared: ${formatCount(brief.candidateCount)}` : null]} />
     </div>
   );
 }
 
-/** A preview: the brief body the agent would get, then its facts with Jev's scores. */
+/** A preview: the brief body the agent would get, then its facts (with how sure smart matching was, when it picked). */
 export function PreviewResult({ result, clients, linkFor }: { result: BriefResult; clients: MemoryClient[]; linkFor: LinkPropsFor }) {
   const issue = result.issue ? issuePath(result.issue.identifier, result.issue.id) : null;
   return (
@@ -652,21 +660,22 @@ export function PreviewResult({ result, clients, linkFor }: { result: BriefResul
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         <MethodPill method={result.method} />
         <Pill size="sm">{result.facts.length} of {formatCount(result.totalFacts)} facts</Pill>
-        <Pill size="sm">~{formatCount(result.tokens)} tokens</Pill>
-        <Pill size="sm" variant="outline">{formatCount(result.candidateCount)} candidates</Pill>
       </div>
       <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
         {result.issue ? <MetaRow label="Task"><TextLink href={issue} linkFor={linkFor}>{result.issue.identifier ?? "Issue"}</TextLink> {result.issue.title}</MetaRow> : null}
         <MetaRow label="Client">{clientResolution(result.client)}</MetaRow>
         <MetaRow label="Area">{result.area ? areaLabel(result.area) : "Not set (every area)"}</MetaRow>
       </div>
-      <BriefBody body={result.body} />
       {result.facts.length ? (
         <section style={{ display: "grid", gap: 8, minWidth: 0 }}>
-          <h3 style={heading}>Facts and scores</h3>
+          <h3 style={heading}>Facts in the brief</h3>
           <FactLines items={result.facts.map((f) => fromBriefFact(f, result.method))} clients={clients} />
         </section>
-      ) : null}
+      ) : <Muted>No stored fact applies to this task.</Muted>}
+      <details style={{ minWidth: 0 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>What the agent reads</summary>
+        <div style={{ marginTop: 8 }}><BriefBody body={result.body} /></div>
+      </details>
     </div>
   );
 }
@@ -692,6 +701,18 @@ export interface AttentionHandlers {
   onKeep: (keepId: string, dropId: string, key: string) => void;
   onArchive: (id: string, key: string) => void;
   onShowScope: (clientRef: string | null, area: string) => void;
+  /** Save a company-wide fact again for the client it names; the old one is superseded. */
+  onMove?: (fact: MisfiledFactView, key: string) => void;
+}
+
+/** A company-wide fact that names a client (`memory.review` → `misfiled`). */
+export interface MisfiledFactView {
+  id: string;
+  text: string;
+  area: string;
+  kind: string;
+  clientRef: string;
+  clientName: string;
 }
 
 export function AttentionList({ review, clients, agents, linkFor, limits, busyKey, handlers }: {
@@ -708,7 +729,24 @@ export function AttentionList({ review, clients, agents, linkFor, limits, busyKe
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
       <Muted>{review.verdict}{stale}</Muted>
-      {attentionCount(review) === 0 ? <Muted>Nothing to clean up: no likely duplicates, noisy facts, full scopes or agents skipping memory.</Muted> : null}
+      {attentionCount(review) === 0 ? <Muted>Nothing to clean up: no likely duplicates, unhelpful facts, facts under the wrong client, overfull clients or agents skipping memory.</Muted> : null}
+
+      {review.misfiled?.length ? (
+        <Group title={`Company-wide facts that name a client (${review.misfiled.length})`} hint="A company-wide fact reaches every client's brief. Move it to the client it names, so it stays with them.">
+          {review.misfiled.map((m) => {
+            const key = `move:${m.id}`;
+            return (
+              <div key={key} style={{ ...cardBox, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ display: "grid", gap: 4, flex: "1 1 260px", minWidth: 0 }}>
+                  <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{m.text}</span>
+                  <span style={{ fontSize: 12, color: tokens.muted }}>Names <strong style={{ color: tokens.fg }}>{m.clientName}</strong></span>
+                </div>
+                {handlers.onMove ? <SmallButton disabled={busyKey === key} onClick={() => handlers.onMove!(m, key)}>{busyKey === key ? "Moving…" : `Move to ${m.clientName}`}</SmallButton> : null}
+              </div>
+            );
+          })}
+        </Group>
+      ) : null}
 
       {review.duplicates.length ? (
         <Group title={`Likely duplicates (${review.duplicates.length})`} hint="Keep the better wording; the other one stops appearing in briefs.">
@@ -720,13 +758,13 @@ export function AttentionList({ review, clients, agents, linkFor, limits, busyKe
                 {[["A", d.a, d.aText], ["B", d.b, d.bText]].map(([label, id, text]) => (
                   <div key={label} style={{ display: "grid", gridTemplateColumns: "20px minmax(0, 1fr)", gap: 8, alignItems: "baseline" }}>
                     <strong style={{ fontSize: 12, color: tokens.muted }}>{label}</strong>
-                    <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{text} <FactId id={id} /></span>
+                    <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{text}</span>
                   </div>
                 ))}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                   <Pill size="sm" variant="outline">{Math.round(d.overlap * 100)}% same words</Pill>
-                  <SmallButton disabled={busy} onClick={() => handlers.onKeep(d.a, d.b, key)}>Keep A, supersede B</SmallButton>
-                  <SmallButton disabled={busy} onClick={() => handlers.onKeep(d.b, d.a, key)}>Keep B, supersede A</SmallButton>
+                  <SmallButton disabled={busy} onClick={() => handlers.onKeep(d.a, d.b, key)}>Keep A</SmallButton>
+                  <SmallButton disabled={busy} onClick={() => handlers.onKeep(d.b, d.a, key)}>Keep B</SmallButton>
                 </div>
               </div>
             );
@@ -735,14 +773,14 @@ export function AttentionList({ review, clients, agents, linkFor, limits, busyKe
       ) : null}
 
       {review.noisy.length ? (
-        <Group title={`Noisy facts (${review.noisy.length})`} hint="Agents said these did not help more often than they did. Archive keeps them but stops using them.">
+        <Group title={`Facts that do not help (${review.noisy.length})`} hint="Agents said these did not help more often than they did. Archive keeps them but stops using them.">
           {review.noisy.map((n) => {
             const key = `noisy:${n.id}`;
             return (
               <div key={key} style={{ ...cardBox, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ display: "grid", gap: 4, flex: "1 1 260px", minWidth: 0 }}>
                   <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{n.text}</span>
-                  <span style={{ fontSize: 12, color: tokens.muted }}><FactId id={n.id} /> · <span style={{ color: tone("warn").fg, fontWeight: 600 }}>{formatCount(n.noise)} noise</span> vs {formatCount(n.helpful)} helpful</span>
+                  <span style={{ fontSize: 12, color: tokens.muted }}><span style={{ color: tone("warn").fg, fontWeight: 600 }}>{formatCount(n.noise)} times no help</span> vs {formatCount(n.helpful)} helpful</span>
                 </div>
                 <SmallButton disabled={busyKey === key} onClick={() => handlers.onArchive(n.id, key)}>Archive</SmallButton>
               </div>
@@ -764,7 +802,7 @@ export function AttentionList({ review, clients, agents, linkFor, limits, busyKe
       ) : null}
 
       {review.overCap.length ? (
-        <Group title={`Full scopes (${review.overCap.length})`} hint={`Above ${limits.scopeActiveCap} active facts in one client and area, the daily upkeep archives the least useful ones. Merge or archive some to choose yourself.`}>
+        <Group title={`Too many facts for one client and area (${review.overCap.length})`} hint={`Above ${limits.scopeActiveCap} active facts for one client and area, the daily clean-up archives the least useful ones. Merge or archive some to choose yourself.`}>
           {review.overCap.map((o) => {
             const scope = scopeInfo(o.scope, clients);
             return (

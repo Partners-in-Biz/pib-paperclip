@@ -1,15 +1,21 @@
 /**
- * Plan upgrade to template version 3 for sprints seeded before it: the old
- * person tasks become agent tasks (issue reassigned to the SEO Specialist,
- * title and description rewritten, agent woken), code fixes a person was
- * given go back to the agent, and agent tasks that were blocked on a person
- * are retried with the new tools. Done and skipped tasks are left alone.
+ * Plan upgrades for sprints seeded on an older template, done and skipped
+ * tasks left alone:
+ * - version 3: the old person tasks become agent tasks (issue reassigned to
+ *   the SEO Specialist, title and description rewritten, agent woken), code
+ *   fixes a person was given go back to the agent, and agent tasks that were
+ *   blocked on a person are retried with the new tools;
+ * - version 4: the w5/w6 repurpose tasks stop drafting social posts (the
+ *   Social agent owns repurposing): they mark the post live and link the
+ *   Social drafts, with no sign-off.
  */
 import * as db from "../db.js";
 import { taskIssueDescription, taskIssueTitle } from "../engine/copy.js";
 import { isCodeTask } from "../engine/site-change.js";
 import { decideAssignee, TERMINAL_TASK_STATUSES, type AgentAvailability } from "../engine/sprint.js";
-import { templateTask, TEMPLATE_V3_CHANGES, TEMPLATE_VERSION } from "../templates/outrank-90.js";
+import { templateTask, TEMPLATE_V3_CHANGES, TEMPLATE_V4_CHANGES, TEMPLATE_VERSION } from "../templates/outrank-90.js";
+import { businessTypeOf } from "../templates/plans.js";
+import { plural } from "../engine/plain.js";
 import { assignableUser, cockpitPath, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, patchIssue } from "./issues.js";
@@ -23,9 +29,26 @@ export interface UpgradeResult {
 }
 
 const CHANGED = new Set<string>(TEMPLATE_V3_CHANGES);
+const CHANGED_V4 = new Set<string>(TEMPLATE_V4_CHANGES);
+
+type Target = { owner: "agent"; autopilotEligible: boolean; title: string; playbookKey: string | null; reason: string };
+
+/** What a task becomes in version 4, or null when it stays as it is. */
+export function v4Target(task: db.SprintTask): Target | null {
+  if ((TERMINAL_TASK_STATUSES as string[]).includes(task.status)) return null;
+  if (!task.templateKey || !CHANGED_V4.has(task.templateKey)) return null;
+  const tpl = templateTask(task.templateKey);
+  if (!tpl) return null;
+  return { owner: "agent", autopilotEligible: tpl.autopilotEligible, title: tpl.title, playbookKey: tpl.playbook, reason: "The Social agent now owns repurposing: this task marks the post live and links the Social drafts to it (no sign-off needed)." };
+}
+
+/** What a task becomes when its sprint is on `fromVersion`, or null. */
+export function upgradeTarget(task: db.SprintTask, fromVersion: number): Target | null {
+  return (fromVersion < 4 ? v4Target(task) : null) ?? (fromVersion < 3 ? v3Target(task) : null);
+}
 
 /** What a task becomes in version 3, or null when it stays as it is. */
-export function v3Target(task: db.SprintTask): { owner: "agent"; autopilotEligible: boolean; title: string; playbookKey: string | null; reason: string } | null {
+export function v3Target(task: db.SprintTask): Target | null {
   if ((TERMINAL_TASK_STATUSES as string[]).includes(task.status)) return null;
   if (task.templateKey && CHANGED.has(task.templateKey)) {
     const tpl = templateTask(task.templateKey);
@@ -49,10 +72,15 @@ function blockedOnPerson(task: db.SprintTask): boolean {
 export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.Sprint, agent: AgentAvailability): Promise<UpgradeResult> {
   const result: UpgradeResult = { upgraded: false, rewritten: 0, reassigned: 0, retried: 0 };
   if (!sprint.seededAt || sprint.templateVersion >= TEMPLATE_VERSION) return result;
+  // The v3/v4 rewrites are for the software plan's older tasks; the other plans start on the current version.
+  if (businessTypeOf(sprint.templateId) !== "saas") {
+    await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { template_version: TEMPLATE_VERSION });
+    return { ...result, upgraded: true };
+  }
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
   for (const original of tasks) {
-    const target = v3Target(original);
-    const retry = !target && blockedOnPerson(original);
+    const target = upgradeTarget(original, sprint.templateVersion);
+    const retry = !target && sprint.templateVersion < 3 && blockedOnPerson(original);
     if (!target && !retry) continue;
     const task: db.SprintTask = target
       ? { ...original, owner: target.owner, autopilotEligible: target.autopilotEligible, title: target.title, playbookKey: target.playbookKey }
@@ -63,7 +91,8 @@ export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.
     }
     if (!task.issueId) continue;
     const issue = await getIssue(env, sprint.companyId, task.issueId);
-    if (!issue || !OPEN_ISSUE_STATUSES.has(String(issue.status)) || String(issue.status) === "in_review") continue;
+    // A sign-off already with its reviewer stays there: only v3 moved work between people and agents.
+    if (!issue || !OPEN_ISSUE_STATUSES.has(String(issue.status)) || (String(issue.status) === "in_review" && !(target && CHANGED_V4.has(task.templateKey ?? "")))) continue;
     const assignment = decideAssignee({ owner: task.owner, autopilotEligible: task.autopilotEligible, mode: sprint.autopilotMode, agent, ownerUserId: assignableUser(sprint.ownerUserId) });
     const description = taskIssueDescription(taskCopy(task), sprintCopy(sprint), { assignment, context: task.context, cockpitPath: cockpitPath(info, sprint), site: siteCopyFor(sprint, task) });
     const patch = {
@@ -92,7 +121,7 @@ export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.
       result.reassigned += 1;
       if (assignment.wake) {
         try {
-          await env.ctx.issues.requestWakeup(task.issueId, sprint.companyId, { reason: "SEO task moved to the agent (plan v3)", idempotencyKey: `wake:${task.issueId}:v3` });
+          await env.ctx.issues.requestWakeup(task.issueId, sprint.companyId, { reason: `SEO task moved to the agent (plan v${TEMPLATE_VERSION})`, idempotencyKey: `wake:${task.issueId}:v${TEMPLATE_VERSION}` });
         } catch (error) {
           env.ctx.logger.info("SEO wake skipped", { issueId: task.issueId, error: errorMessage(error) });
         }
@@ -107,7 +136,7 @@ export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.
       env,
       sprint.companyId,
       sprint.rootIssueId,
-      `Plan upgraded to Outrank-90 v${TEMPLATE_VERSION}: ${result.rewritten} task(s) that waited on a person are now the SEO Specialist's (${result.reassigned} open issue(s) reassigned), ${result.retried} blocked task(s) retried. What still needs a person is batched in one weekly **Needs you** issue.`,
+      `Plan upgraded to Outrank-90 v${TEMPLATE_VERSION}: ${plural(result.rewritten, "task")} rewritten (${plural(result.reassigned, "open issue")} reassigned to the SEO Specialist), ${plural(result.retried, "blocked task")} retried. Repurposing posts for social is the Social agent's job; the SEO tasks mark posts live and link the drafts. What still needs a person is batched in one weekly **Needs you** issue.`,
     );
   }
   return result;

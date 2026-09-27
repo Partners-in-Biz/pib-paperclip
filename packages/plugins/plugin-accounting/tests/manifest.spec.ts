@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { LEDGER_SOURCES, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, COMPANY_OS_HIRE_SKILL, LEDGER_SOURCES, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import { SKILL_CANONICAL_KEY, SKILL_SLUG, SKILLS } from "../src/skills.js";
@@ -38,7 +38,7 @@ describe("manifest", () => {
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.1.7");
+    expect(manifest.version).toBe("0.2.0");
   });
 
   it("schedules redeliver, month-end and FX jobs", () => {
@@ -61,22 +61,56 @@ describe("manifest", () => {
     expect(LEDGER_SOURCES).toEqual([PIB_PLUGINS.billing, PIB_PLUGINS.payroll]);
   });
 
-  it("ships the tools the Bookkeeper needs", () => {
+  it("ships the tools the Bookkeeper needs for the whole monthly cycle", () => {
     expect(ACCOUNTING_TOOLS.map((t) => t.name).sort()).toEqual(
-      ["accept-categorisation", "balance-sheet", "create-manual-journal", "gl", "list-accounts", "list-bank-lines", "period-close-checklist", "pnl", "suggest-categorisation", "trial-balance", "vat-summary"].sort(),
+      [
+        "accept-categorisation", "balance-sheet", "create-manual-journal", "gl", "import-statement", "list-accounts", "list-bank-accounts", "list-bank-lines",
+        "period-close-checklist", "pnl", "prepare-reconciliation", "prepare-vat201", "suggest-categorisation", "trial-balance", "vat-summary",
+      ].sort(),
     );
     for (const tool of ACCOUNTING_TOOLS) expect(manifest.tools?.some((t) => t.name === tool.name)).toBe(true);
+  });
+
+  it("every tool parameter has a description, and fixed values an enum", () => {
+    type Prop = { description?: string; enum?: unknown[]; items?: Prop & { properties?: Record<string, Prop> }; properties?: Record<string, Prop> };
+    const walk = (tool: string, props: Record<string, Prop>, path: string) => {
+      for (const [name, prop] of Object.entries(props)) {
+        expect(prop.description, `${tool}.${path}${name}`).toMatch(/\S/);
+        if (prop.items?.properties) walk(tool, prop.items.properties, `${path}${name}[].`);
+      }
+    };
+    for (const tool of ACCOUNTING_TOOLS) {
+      expect(tool.description.length, tool.name).toBeGreaterThan(20);
+      walk(tool.name, ((tool.parametersSchema as { properties?: Record<string, Prop> }).properties ?? {}), "");
+    }
+    const props = (name: string) => (ACCOUNTING_TOOLS.find((t) => t.name === name)!.parametersSchema as { properties: Record<string, Prop> }).properties;
+    expect(props("import-statement").format!.enum).toEqual(["auto", "csv", "ofx", "mt940"]);
+    expect(props("list-bank-lines").status!.enum).toEqual(["unreconciled", "matching", "reconciled", "excluded"]);
+    expect(props("accept-categorisation").taxCode!.enum).toContain("za_std_15");
   });
 
   it("the managed skill has a unique pib- slug and the hire role points at it", () => {
     expect(SKILLS).toHaveLength(1);
     expect(SKILLS[0]!.slug).toBe("pib-bookkeeping");
     expect(SKILLS[0]!.markdown).toMatch(/^---\nname: pib-bookkeeping\nslug: pib-bookkeeping/);
-    expect(SKILLS[0]!.markdown).toMatch(/Never post, lock or approve on your own/);
+    expect(SKILLS[0]!.markdown).toMatch(/Never post, lock or approve yourself/);
     expect(SKILL_CANONICAL_KEY).toBe("plugin/partnersinbiz-accounting/bookkeeping");
     expect(BOOKKEEPER_ROLE).toMatchObject({ roleKey: "bookkeeper", displayName: "Bookkeeper", pluginKey: PLUGIN_ID, budgetMonthlyCents: 2000 });
     expect(BOOKKEEPER_ROLE.capabilities).toContain("80%");
     expect(BOOKKEEPER_ROLE.skills[0]).toMatchObject({ key: SKILL_CANONICAL_KEY, slug: SKILL_SLUG });
+    // The company operating manual is always last.
+    expect(BOOKKEEPER_ROLE.skills.at(-1)).toEqual(COMPANY_OS_HIRE_SKILL);
+  });
+
+  it("the skill walks the whole monthly cycle and asks people through ask-owner, never in comments", () => {
+    const md = SKILLS[0]!.markdown!;
+    for (const step of ["### 1. Statement in", "### 2. Match", "### 3. Reconcile", "### 4. VAT201", "### 5. Month-end close", "## What only a person does"]) expect(md, step).toContain(step);
+    for (const tool of ACCOUNTING_TOOLS) expect(md, tool.name).toContain(`\`${tool.name}\``);
+    expect(md).toContain("partnersinbiz.mailbox:get-attachment");
+    expect(md).toContain(ASK_OWNER_TOOL);
+    expect(md).not.toMatch(/leave a comment|comment on your issue for a person|tell a person/i);
+    expect(BOOKKEEPER_ROLE.instructions).toContain(ASK_OWNER_TOOL);
+    expect(BOOKKEEPER_ROLE.instructions).not.toMatch(/leave a comment/i);
   });
 
   it("merges the plugin tools grant without duplicating it", () => {

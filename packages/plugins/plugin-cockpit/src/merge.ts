@@ -11,13 +11,15 @@ import {
   type HealthCheck,
   type HealthStatus,
   type QualityMetric,
+  type TeamMemberReport,
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit/cockpit";
-import { MODULES, moduleOfPlugin, setupProgress, type ModuleKey, type SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
+import { MODULES, moduleOfPlugin, setupLeftLabel, setupSummary, type ModuleKey, type SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
+import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { BUDGET_ALERT_RATIO, PLUGIN_KEY, STALE_AFTER_MS } from "./constants.js";
 
-export type { ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, Tone, WaitingItem };
+export type { ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -56,6 +58,7 @@ function parseKpi(row: Record<string, unknown>): CockpitKpi | null {
     raw: num(row.raw),
     tone: TONES.includes(row.tone as Tone) ? (row.tone as Tone) : "neutral",
     delta: str(row.delta),
+    hint: str(row.hint),
     href: str(row.href),
     group: KPI_GROUPS.includes(row.group as CockpitKpi["group"]) ? (row.group as CockpitKpi["group"]) : "other",
   };
@@ -117,6 +120,25 @@ function compact<T>(items: Array<T | null>): T[] {
 }
 
 /**
+ * The team roles a snapshot reports (kit `CockpitSnapshot.team`). A plugin
+ * may only report the roles it owns (kit `TEAM_ROLES`), once each.
+ */
+export function parseTeam(value: unknown, pluginKey: string): TeamMemberReport[] {
+  const out: TeamMemberReport[] = [];
+  for (const row of records(value)) {
+    const role = TEAM_ROLES.find((r) => r.key === row.role && r.pluginKey === pluginKey);
+    if (!role || out.some((m) => m.role === role.key)) continue;
+    out.push({ role: role.key, agentId: str(row.agentId), status: str(row.status) });
+  }
+  return out;
+}
+
+/** A stable string for comparing two team reports (role, agent, status). */
+export function teamSignature(team: TeamMemberReport[] | null | undefined): string {
+  return [...(team ?? [])].map((m) => `${m.role}=${m.agentId ?? ""}:${m.status ?? ""}`).sort().join("|");
+}
+
+/**
  * A `CockpitSnapshot` from a route body or event payload (plain, or wrapped
  * in `{ data }` / `{ snapshot }`). The plugin comes from the caller (the
  * subscription or route that delivered it), so a payload cannot claim to be
@@ -134,6 +156,7 @@ export function parseSnapshot(body: unknown, pluginKey: string): CockpitSnapshot
   const source = root as Record<string, unknown>;
   const lists = ["kpis", "health", "waiting", "activity", "quality"];
   if (!lists.some((key) => Array.isArray(source[key]))) return null;
+  const team = parseTeam(source.team, pluginKey);
   return {
     plugin: pluginKey,
     title: str(source.title) ?? pluginTitle(pluginKey),
@@ -145,6 +168,7 @@ export function parseSnapshot(body: unknown, pluginKey: string): CockpitSnapshot
       .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
       .slice(0, 10),
     quality: compact(records(source.quality).map(parseQuality)),
+    ...(team.length ? { team } : {}),
   };
 }
 
@@ -186,10 +210,38 @@ export const KIND_LABEL: Record<WaitingItem["kind"], string> = {
   other: "Other",
 };
 
+/** A question an agent asked the owner (`ask-owner`), when a waiting item is one. */
+export interface WaitingAskInfo {
+  id: string;
+  kind: "decision" | "grant" | "money" | "legal" | "info";
+  question: string;
+  options: string[];
+  why: string | null;
+  askedBy: string | null;
+  askedAt: string;
+  dueBy: string | null;
+  clientName: string | null;
+}
+
+/** A waiting item as a source gives it: plain, a question for the owner, or a count with a few examples. */
+export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[] };
+
+export interface WaitingExample {
+  title: string;
+  href: string | null;
+  since?: string | null;
+  /** The issue it stands for, so a row listed on its own is not counted again. */
+  issueId?: string | null;
+}
+
 export interface WaitingEntry extends WaitingItem {
-  /** Where it came from: a plugin key, or `host`. */
+  /** Where it came from: a plugin key, `asks` or `host`. */
   source: string;
   sourceTitle: string;
+  /** Set for questions agents asked the owner: they come first. */
+  ask?: WaitingAskInfo;
+  /** A few of the items a count stands for (unassigned issues), with links. */
+  examples?: WaitingExample[];
 }
 
 function sinceMs(item: WaitingItem): number {
@@ -198,11 +250,12 @@ function sinceMs(item: WaitingItem): number {
 }
 
 /**
- * All waiting items, deduped and ordered: money and legal first, then grants,
- * judgement, reviews; oldest first within a kind. Duplicates (same key, or the
- * same issue) keep the first source given, so pass plugins before the host.
+ * All waiting items, deduped and ordered: questions agents asked the owner
+ * first, then money and legal, grants, judgement, reviews; oldest first
+ * within a kind. Duplicates (same key, or the same issue) keep the first
+ * source given, so pass asks, then plugins, then the host.
  */
-export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: string; items: WaitingItem[] }>): WaitingEntry[] {
+export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: string; items: WaitingInput[] }>): WaitingEntry[] {
   const seenKeys = new Set<string>();
   const seenIssues = new Set<string>();
   const out: WaitingEntry[] = [];
@@ -215,7 +268,42 @@ export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: stri
       out.push({ ...item, source, sourceTitle: sourceTitle ?? pluginTitle(source) });
     }
   }
-  return out.sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || sinceMs(a) - sinceMs(b) || a.title.localeCompare(b.title));
+  return out.sort((a, b) => (a.ask ? 0 : 1) - (b.ask ? 0 : 1) || KIND_RANK[a.kind] - KIND_RANK[b.kind] || sinceMs(a) - sinceMs(b) || a.title.localeCompare(b.title));
+}
+
+/**
+ * Open issues nobody is assigned to (older than a day), as one waiting item
+ * with the first few as examples. Issues already listed on their own row
+ * (`shown`: an approval a plugin lists, the Finish setup issue) are left out
+ * of the count and the examples, so nothing is listed twice.
+ */
+export function unassignedWaiting(
+  input: { count: number; items: Array<{ id: string; identifier?: string | null; title: string; createdAt?: string | null }> } | null | undefined,
+  shown: ReadonlySet<string> = new Set(),
+): WaitingInput[] {
+  if (!input || input.count <= 0) return [];
+  const items = input.items.filter((item) => !shown.has(item.id));
+  const count = Math.max(0, input.count - (input.items.length - items.length));
+  if (count <= 0) return [];
+  const oldest = items.reduce<string | null>((min, item) => (item.createdAt && (!min || Date.parse(item.createdAt) < Date.parse(min)) ? item.createdAt : min), null);
+  const first = items[0];
+  return [{
+    key: "unassigned-issues",
+    title: `${count} open ${count === 1 ? "issue has" : "issues have"} nobody assigned`,
+    why: "Nobody picks these up. The Operator routes them each morning; route any it missed, or assign them yourself.",
+    href: count === 1 && first ? issueHref(first) : null,
+    issueId: null,
+    kind: "other",
+    since: oldest,
+    examples: items.slice(0, 5).map((item) => ({ title: item.identifier ? `${item.identifier} ${item.title}` : item.title, href: issueHref(item), since: item.createdAt ?? null, issueId: item.id })),
+  }];
+}
+
+/** Issue ids that have a row of their own, for `unassignedWaiting`. */
+export function shownIssueIds(sources: Array<{ items: WaitingInput[] }>): Set<string> {
+  const out = new Set<string>();
+  for (const source of sources) for (const item of source.items) if (item.issueId) out.add(item.issueId);
+  return out;
 }
 
 export interface ApprovalLite {
@@ -274,9 +362,25 @@ export function issueHref(issue: Pick<IssueLite, "id" | "identifier">): string {
   return `/issues/${issue.identifier || issue.id}`;
 }
 
-/** Waiting items from the host: open approvals, open issues assigned to the person, missing setup items. */
-export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: IssueLite[]; setupMissing?: number | null }): WaitingItem[] {
+/**
+ * Waiting items from the host: setup steps left (with the Finish setup issue,
+ * so that issue is not listed again), open approvals, open issues assigned to
+ * the person.
+ */
+export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: IssueLite[]; setupMissing?: number | null; setupIssueId?: string | null }): WaitingItem[] {
   const items: WaitingItem[] = [];
+  if (input.setupMissing && input.setupMissing > 0) {
+    items.push({
+      key: "setup:missing",
+      // Kit wording, the same number as the Setup page, its sidebar badge and the weekly issue.
+      title: `Finish setup: ${setupLeftLabel(input.setupMissing)}`,
+      why: "Agents cannot run these parts on their own until they are set up.",
+      href: "/setup",
+      issueId: input.setupIssueId ?? null,
+      kind: "grant",
+      since: null,
+    });
+  }
   for (const approval of input.approvals ?? []) {
     if (!OPEN_APPROVAL.has(approval.status)) continue;
     items.push({
@@ -301,28 +405,18 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
       since: issue.updatedAt ?? issue.createdAt ?? null,
     });
   }
-  if (input.setupMissing && input.setupMissing > 0) {
-    items.push({
-      key: "setup:missing",
-      title: `Finish setup: ${input.setupMissing} required ${input.setupMissing === 1 ? "item" : "items"}`,
-      why: "Agents cannot run these parts on their own until they are set up.",
-      href: "/setup",
-      issueId: null,
-      kind: "grant",
-      since: null,
-    });
-  }
   return items;
 }
 
-/** Missing required setup items across enabled modules (from Setup statuses). */
+/**
+ * Required setup steps left across enabled modules (kit `setupSummary`, the
+ * one count). Used when the Setup plugin's own count is not available.
+ */
 export function setupMissingCount(statuses: Record<string, SetupStatus | null | undefined>, modules: Partial<Record<ModuleKey, boolean>> | null | undefined): number {
-  let missing = 0;
-  for (const [pluginKey, status] of Object.entries(statuses)) {
-    if (!status || !pluginEnabled(modules, pluginKey)) continue;
-    missing += setupProgress(status.items ?? []).missing.length;
-  }
-  return missing;
+  const list = Object.entries(statuses)
+    .filter(([pluginKey, status]) => !!status && pluginEnabled(modules, pluginKey))
+    .map(([pluginKey, status]) => ({ module: status!.module ?? moduleOfPlugin(pluginKey), items: status!.items ?? [] }));
+  return setupSummary(list, modules ?? null).requiredLeft;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +466,8 @@ const HEALTH_RANK: Record<HealthStatus, number> = { bad: 0, warn: 1, ok: 2 };
 export interface HealthEntry extends HealthCheck {
   plugin: string;
   pluginTitle: string;
+  /** A raw error behind `detail` (shown under Details), when there is one. */
+  raw?: string | null;
 }
 
 export interface HealthGroup {
@@ -475,6 +571,8 @@ export interface AgentLite {
 }
 
 export interface RunLite {
+  /** The run's id (links to its log); older sources do not send it. */
+  id?: string | null;
   agentId: string;
   status: string;
   startedAt: string | null;
@@ -485,7 +583,11 @@ export interface RunLite {
 export interface AgentRow extends AgentLite {
   budgetRatio: number | null;
   alert: "budget" | "error" | null;
+  /** Plain words ("Stopped with an error."); the adapter's own text is `alertRaw`. */
   alertText: string | null;
+  alertRaw: string | null;
+  /** The agent's latest failed run, to open its log. */
+  lastFailedRunId: string | null;
   runs: { total: number; failed: number };
   quality: QualityMetric[];
 }
@@ -501,14 +603,21 @@ export function formatCents(cents: number): string {
   return `$${(Math.max(0, cents) / 100).toFixed(2)}`;
 }
 
-/** Budget (≥80%) and error alerts for one agent. */
-export function agentAlert(agent: AgentLite): { alert: AgentRow["alert"]; text: string | null } {
-  if (agent.status === "error") return { alert: "error", text: agent.errorReason ? `In error: ${agent.errorReason}` : "In error." };
+/**
+ * Budget (≥80%) and error alerts for one agent, in plain words. An error says
+ * "Stopped with an error."; the adapter's own text ("Hermes exited with code
+ * 1") is `raw`, for a Details disclosure and for the Operator.
+ */
+export function agentAlert(agent: AgentLite): { alert: AgentRow["alert"]; text: string | null; raw: string | null } {
+  if (agent.status === "error") {
+    // The reason is the adapter's own output: it goes under Details, never in the sentence.
+    return { alert: "error", text: "Stopped with an error.", raw: agent.errorReason?.trim() || null };
+  }
   const ratio = budgetRatio(agent);
   if (ratio !== null && ratio >= BUDGET_ALERT_RATIO) {
-    return { alert: "budget", text: `Used ${Math.round(ratio * 100)}% of its ${formatCents(agent.budgetMonthlyCents)} monthly budget (${formatCents(agent.spentMonthlyCents)}).` };
+    return { alert: "budget", text: `Used ${Math.round(ratio * 100)}% of its ${formatCents(agent.budgetMonthlyCents)} monthly budget (${formatCents(agent.spentMonthlyCents)}).`, raw: null };
   }
-  return { alert: null, text: null };
+  return { alert: null, text: null, raw: null };
 }
 
 export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapshots?: CockpitSnapshot[]; since?: Date } = {}): AgentRow[] {
@@ -520,11 +629,15 @@ export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapsh
       quality.set(metric.agentId, [...(quality.get(metric.agentId) ?? []), metric]);
     }
   }
-  const runs = new Map<string, { total: number; failed: number; last: string | null }>();
+  const runs = new Map<string, { total: number; failed: number; last: string | null; failedAt: number; failedId: string | null }>();
   for (const run of input.runs ?? []) {
     const at = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
-    const entry = runs.get(run.agentId) ?? { total: 0, failed: 0, last: null };
+    const entry = runs.get(run.agentId) ?? { total: 0, failed: 0, last: null, failedAt: Number.NEGATIVE_INFINITY, failedId: null };
     if (!Number.isNaN(at) && (!entry.last || at > Date.parse(entry.last))) entry.last = run.startedAt;
+    if (FAILED_RUN.has(run.status) && run.id && !Number.isNaN(at) && at > entry.failedAt) {
+      entry.failedAt = at;
+      entry.failedId = run.id;
+    }
     if (!Number.isNaN(at) && at >= since) {
       entry.total += 1;
       if (FAILED_RUN.has(run.status)) entry.failed += 1;
@@ -534,7 +647,7 @@ export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapsh
   return agents
     .filter((agent) => !INACTIVE_AGENT.has(agent.status))
     .map((agent) => {
-      const { alert, text } = agentAlert(agent);
+      const { alert, text, raw } = agentAlert(agent);
       const run = runs.get(agent.id);
       const lastRunAt = latest(agent.lastRunAt ?? null, run?.last ?? null);
       return {
@@ -543,6 +656,8 @@ export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapsh
         budgetRatio: budgetRatio(agent),
         alert,
         alertText: text,
+        alertRaw: raw,
+        lastFailedRunId: run?.failedId ?? null,
         runs: { total: run?.total ?? 0, failed: run?.failed ?? 0 },
         quality: quality.get(agent.id) ?? [],
       };
@@ -561,17 +676,18 @@ export function agentHealth(agents: AgentLite[]): HealthEntry[] {
   const out: HealthEntry[] = [];
   for (const agent of agents) {
     if (INACTIVE_AGENT.has(agent.status)) continue;
-    const { alert, text } = agentAlert(agent);
+    const { alert, text, raw } = agentAlert(agent);
     if (!alert) continue;
     out.push({
       key: `agent:${alert}:${agent.id}`,
-      title: alert === "budget" ? `${agent.name} is near its budget` : `${agent.name} is in error`,
+      title: alert === "budget" ? `${agent.name} is near its budget` : `${agent.name} stopped with an error`,
       status: alert === "error" ? "bad" : (budgetRatio(agent) ?? 0) >= 1 ? "bad" : "warn",
       detail: text,
+      raw,
       href: `/agents/${agent.urlKey || agent.id}`,
       fix: alert === "budget"
         ? "Check what it is spending on (Costs), then raise its budget or narrow its work. It stops at 100%."
-        : "Open the agent, read the error on its last run, fix the cause (often the model key), then clear the error and resume it.",
+        : "Open the agent's last run to see what failed, fix the cause (often the model key), then clear the error and resume it.",
       since: null,
       plugin: "agents",
       pluginTitle: "Agents",

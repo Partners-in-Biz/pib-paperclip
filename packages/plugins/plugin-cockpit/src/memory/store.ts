@@ -3,7 +3,7 @@
  * primitive parameters (lists travel as JSON strings), like the host requires.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { isMemoryArea, isMemoryKind } from "@partnersinbiz/pib-plugin-kit";
+import { isMemoryArea, isMemoryKind, textArrayParam } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../namespace.js";
 import type { FactOrigin, FactStatus, MemoryFact } from "./engine.js";
 
@@ -147,6 +147,12 @@ export async function getFacts(ctx: PluginContext, companyId: string, ids: strin
   return rows.map(factFrom);
 }
 
+/** Any fact with this text in the company, whatever its status (imports never resurrect retired facts). */
+export async function findAnyByHash(ctx: PluginContext, companyId: string, textHash: string): Promise<MemoryFact | null> {
+  const rows = await ctx.db.query<Raw>(`SELECT ${FACT_COLUMNS} FROM ${T.facts} WHERE company_id = $1 AND text_hash = $2 ORDER BY updated_at DESC LIMIT 1`, [companyId, textHash]);
+  return rows[0] ? factFrom(rows[0]) : null;
+}
+
 export async function findActiveByHash(ctx: PluginContext, companyId: string, textHash: string): Promise<MemoryFact | null> {
   const rows = await ctx.db.query<Raw>(`SELECT ${FACT_COLUMNS} FROM ${T.facts} WHERE company_id = $1 AND text_hash = $2 AND status = 'active' LIMIT 1`, [companyId, textHash]);
   return rows[0] ? factFrom(rows[0]) : null;
@@ -157,11 +163,21 @@ export async function findActiveByHash(ctx: PluginContext, companyId: string, te
  * given clients plus company-wide ones (or every client's, for an explicit
  * search with no client). Pinned and newest first; `limit` caps the scan.
  */
-export async function scanCandidates(ctx: PluginContext, companyId: string, clientRefs: string[] | "all", limit: number): Promise<MemoryFact[]> {
+export async function scanCandidates(
+  ctx: PluginContext,
+  companyId: string,
+  clientRefs: string[] | "all",
+  limit: number,
+  options: { includeArchived?: boolean } = {},
+): Promise<MemoryFact[]> {
+  // Briefs use live facts only; an explicit search may also look at archived ones (kept, never deleted).
+  const statusSql = options.includeArchived
+    ? "(status = 'active' AND (expires_at IS NULL OR expires_at > now()) OR status = 'archived')"
+    : "status = 'active' AND (expires_at IS NULL OR expires_at > now())";
   if (clientRefs === "all") {
     const all = await ctx.db.query<Raw>(
       `SELECT ${FACT_COLUMNS} FROM ${T.facts}
-        WHERE company_id = $1 AND status = 'active' AND (expires_at IS NULL OR expires_at > now())
+        WHERE company_id = $1 AND ${statusSql}
         ORDER BY pinned DESC, updated_at DESC
         LIMIT $2`,
       [companyId, limit],
@@ -170,12 +186,18 @@ export async function scanCandidates(ctx: PluginContext, companyId: string, clie
   }
   const rows = await ctx.db.query<Raw>(
     `SELECT ${FACT_COLUMNS} FROM ${T.facts}
-      WHERE company_id = $1 AND status = 'active' AND (expires_at IS NULL OR expires_at > now())
+      WHERE company_id = $1 AND ${statusSql}
         AND (client_ref IS NULL OR client_ref IN (SELECT jsonb_array_elements_text($2::jsonb)))
       ORDER BY pinned DESC, updated_at DESC
       LIMIT $3`,
     [companyId, JSON.stringify(clientRefs), limit],
   );
+  return rows.map(factFrom);
+}
+
+/** Every fact of a company, any status (export / backup). */
+export async function exportFacts(ctx: PluginContext, companyId: string): Promise<MemoryFact[]> {
+  const rows = await ctx.db.query<Raw>(`SELECT ${FACT_COLUMNS} FROM ${T.facts} WHERE company_id = $1 ORDER BY created_at LIMIT 50000`, [companyId]);
   return rows.map(factFrom);
 }
 
@@ -317,6 +339,8 @@ export async function activeFacts(ctx: PluginContext, companyId: string, limit =
 export interface FactFilter {
   status?: FactStatus | "all";
   clientRef?: string | null;
+  /** Several refs for one client (the same name known under two refs); wins over `clientRef`. */
+  clientRefs?: string[] | null;
   own?: boolean;
   area?: string | null;
   q?: string | null;
@@ -334,7 +358,10 @@ export async function listFacts(ctx: PluginContext, companyId: string, filter: F
     where.push(`status = $${params.length}`);
   }
   if (filter.own) where.push("client_ref IS NULL");
-  else if (filter.clientRef) {
+  else if (filter.clientRefs?.length) {
+    params.push(JSON.stringify(filter.clientRefs));
+    where.push(`client_ref = ANY(${textArrayParam(params.length)})`);
+  } else if (filter.clientRef) {
     params.push(filter.clientRef);
     where.push(`client_ref = $${params.length}`);
   }

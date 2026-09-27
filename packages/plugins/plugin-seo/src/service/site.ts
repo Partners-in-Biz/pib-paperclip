@@ -2,6 +2,7 @@
  * The sprint's site link: which Paperclip project (workspace = the site repo)
  * code and content tasks run in, and the change policy for the agent's PRs.
  */
+import { plural } from "../engine/plain.js";
 import { PLUGIN_ID } from "../namespace.js";
 import * as db from "../db.js";
 import {
@@ -165,7 +166,7 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
     }
     if (fresh.rootIssueId) {
       const what = fresh.siteAccess === "repo" ? `the repo project (${fresh.repoUrl ?? "no repo URL on its workspace yet"})` : fresh.siteAccess === "none" ? "no repo access (change sets go through Needs you)" : "nothing (unlinked)";
-      await commentOn(env, companyId, fresh.rootIssueId, `Site linked to ${what} by ${actorLabel(actor)}. Change policy: ${fresh.changePolicy.replace(/_/g, " ")}.${moved.moved + moved.opened > 0 ? ` ${moved.moved} code task(s) moved, ${moved.opened} issue(s) opened.` : ""}`);
+      await commentOn(env, companyId, fresh.rootIssueId, `Site linked to ${what} by ${actorLabel(actor)}. Change policy: ${fresh.changePolicy.replace(/_/g, " ")}.${moved.moved + moved.opened > 0 ? ` ${plural(moved.moved, "code task")} moved, ${plural(moved.opened, "issue")} opened.` : ""}`);
     }
   }
   const warnings: string[] = [];

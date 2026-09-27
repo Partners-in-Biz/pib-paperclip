@@ -1,30 +1,26 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
-  useHostContext,
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Activity, Bot, Button, EmptyState, Field, HeartPulse, Inbox, Lightbulb, NewTaskDialog, PageFrame, PageHeader, PageMessage, Select, Tabs, Users, errorText, tokens, tone, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
-import { assignableUser, PLUGIN_KEY, type RoleKind } from "../constants.js";
-import type { AgentLite, RunLite } from "../merge.js";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, PageFrame, PageHeader, PageMessage, Tabs, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
+import { PLUGIN_KEY } from "../constants.js";
+import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
-import { fetchUsers, savePluginConfig, type UserLite } from "./api.js";
-import { attachAgentSkills, missingAgentSkills, pluginSkillKey } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
 import { uiBase, useCockpitData, useSidebarView } from "./data.js";
+import { dedupeKpis, visibleKpis } from "./kpis.js";
+import { runAlert, runStats } from "./series.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
+import { ProfilePanel } from "./profile.js";
 
 export { ClientsNav, FinanceNav, MarketingNav } from "./nav.js";
-
-const ROLE_SKILL: Record<RoleKind, string> = {
-  operator: pluginSkillKey("partnersinbiz.cockpit", "operator"),
-  reviewer: pluginSkillKey("partnersinbiz.cockpit", "reviewer"),
-};
 
 export { buildView } from "../view.js";
 
@@ -37,14 +33,37 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "team", "memory"] as const;
+const TAB_IDS = ["overview", "profile", "memory"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
-/** `?tab=team` / `?tab=memory` opens that tab; anything else is the overview. */
+/** `?tab=profile` and `?tab=memory` open those tabs; anything else is the overview. */
 export function tabFromSearch(search: string | null | undefined): TabId {
   const value = new URLSearchParams(search ?? "").get("tab");
   return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
 }
+
+/**
+ * The team is staffed in Setup → Team now (the Cockpit has no Team tab). An
+ * old `/cockpit?tab=team` link goes there; null for every other address.
+ */
+export function movedTabTarget(search: string | null | undefined): string | null {
+  return new URLSearchParams(search ?? "").get("tab") === "team" ? teamSetupPath() : null;
+}
+
+/** "Fix in Setup": a small primary link to Setup → Team (the host only styles its own class names). */
+export const setupLinkStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  height: 32,
+  padding: "0 12px",
+  borderRadius: 8,
+  background: tokens.primary,
+  color: tokens.primaryFg,
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+  whiteSpace: "nowrap",
+};
 
 // ---------------------------------------------------------------------------
 // Page
@@ -58,13 +77,19 @@ export function CockpitPage({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [windowHours, setWindowHours] = useState(24);
   const data = useCockpitData(companyId, { windowHours });
-  const [message, setMessage] = useState("");
   const [memoryTick, setMemoryTick] = useState(0);
+  const [profileTick, setProfileTick] = useState(0);
+  const moved = movedTabTarget(location.search);
 
   // Follow the address (a `/cockpit?tab=memory` link while the page is open).
   useEffect(() => {
     setTab(tabFromSearch(location.search));
   }, [location.search]);
+
+  // `?tab=team` (old links): the team lives in Setup → Team.
+  useEffect(() => {
+    if (moved) navigation.navigate(moved, { replace: true });
+  }, [moved]);
 
   const selectTab = (id: TabId) => {
     setTab(id);
@@ -77,15 +102,17 @@ export function CockpitPage({ context }: PluginPageProps) {
 
   const view = data.view;
   const memoryTab = tab === "memory";
+  const profileTab = tab === "profile";
+  const pageTab = memoryTab || profileTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
       <PageHeader
         title="Cockpit"
-        description="What waits on you, what the agents did, the numbers, agent cost and quality, company memory, and system health."
+        description="What needs you, what the agents did, and how the company is doing."
         actions={(
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {/* Setup leaves the sidebar once it is finished; it stays one click away here. */}
+            {/* Setup leaves the sidebar once it is finished; it stays one click away here (the team is staffed there). */}
             <a
               {...linkFor("/setup")}
               style={{ display: "inline-flex", alignItems: "center", height: 34, padding: "0 12px", borderRadius: 8, border: `1px solid ${tokens.border}`, fontSize: 13, fontWeight: 600, color: tokens.fg, textDecoration: "none" }}
@@ -95,46 +122,56 @@ export function CockpitPage({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : void data.reload())}
-              disabled={!memoryTab && data.loading}
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : void data.reload())}
+              disabled={!pageTab && data.loading}
             >
-              {!memoryTab && data.loading ? "Loading…" : "Refresh"}
+              {!pageTab && data.loading ? "Loading…" : "Refresh"}
             </Button>
           </div>
         )}
       />
-      <PageMessage message={message || data.error || undefined} tone={!message && data.error ? "bad" : undefined} />
+      <PageMessage message={data.error || undefined} tone={data.error ? "bad" : undefined} />
+      {moved ? <Muted>The team moved to <a {...linkFor(moved)} style={{ color: tokens.primary, fontWeight: 600 }}>Setup → Team</a>.</Muted> : null}
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
-          { id: "team", label: "Team", icon: Users },
+          { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
         ]}
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
       />
-      {tab === "overview" ? (
-        view ? <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onTeam={() => selectTab("team")} /> : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>
-      ) : memoryTab ? (
+      {memoryTab ? (
         <MemoryPanel key={companyId} agents={data.raw?.agents ?? []} linkFor={linkFor} settingsHref={settingsHref} refreshKey={memoryTick} />
-      ) : data.raw ? (
-        <TeamPanel companyId={companyId} load={data.raw.load} agents={data.raw.agents} onSaved={async (note) => { setMessage(note); await data.reload(); }} onMessage={setMessage} />
-      ) : <Muted>Loading…</Muted>}
+      ) : profileTab ? (
+        <ProfilePanel
+          key={companyId}
+          refreshKey={profileTick}
+          linkFor={linkFor}
+          billingSettingsHref={settingsPath(data.raw?.installed?.[MODULES.billing.plugins[0]]?.id ?? null)}
+          accountingSettingsHref={settingsPath(data.raw?.installed?.[MODULES.accounting.plugins[0]]?.id ?? null)}
+        />
+      ) : view ? (
+        <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} />
+      ) : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>}
     </Shell>
   );
 }
 
-export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onTeam, now = new Date() }: {
+const NUMBER_GROUPS = ["money", "pipeline", "marketing", "delivery"] as const;
+
+export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now = new Date() }: {
   view: CockpitView;
   load: LoadResult;
-  /** Host heartbeat runs, for the runs-per-day chart. */
+  /** Host heartbeat runs, for the runs-per-day chart and the Today card's run line. */
   runs?: RunLite[];
   linkFor: LinkPropsFor;
   windowHours: number;
   onWindow: (hours: number) => void;
-  onTeam?: () => void;
   now?: Date;
 }) {
+  const [showAllNumbers, setShowAllNumbers] = useState(false);
+  const [showAllChecks, setShowAllChecks] = useState(false);
   const accent = tone("accent");
   const toggle = (
     <div role="group" aria-label="Period" style={{ display: "inline-flex", border: `1px solid ${tokens.border}`, borderRadius: 9, overflow: "hidden" }}>
@@ -144,7 +181,7 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onT
           type="button"
           aria-pressed={windowHours === h}
           onClick={() => onWindow(h)}
-          style={{ appearance: "none", border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", background: windowHours === h ? accent.soft : "transparent", color: windowHours === h ? accent.fg : tokens.muted }}
+          style={{ appearance: "none", border: "none", minHeight: 32, padding: "6px 12px", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", background: windowHours === h ? accent.soft : "transparent", color: windowHours === h ? accent.fg : tokens.muted }}
         >
           {label}
         </button>
@@ -154,14 +191,23 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onT
   const agentAlerts = view.agents.filter((a) => a.alert).length;
   const activeAgents = view.agents.length ? view.agents.filter((a) => ["active", "running", "idle"].includes(a.status)).length : null;
   const failing = view.healthGroups.reduce((sum, g) => sum + g.checks.filter((c) => c.status !== "ok").length, 0);
+  const warnings = view.healthGroups.reduce((sum, g) => sum + g.checks.filter((c) => c.status === "warn").length, 0);
+  const totalChecks = view.healthGroups.reduce((sum, g) => sum + g.checks.length, 0);
+  // Failing runs lead the Today card, over the same period as "What the agents did".
+  const runLine = runs ? runAlert(runStats(runs, now, windowHours * 3_600_000), windowHours) : null;
+  const numbers = NUMBER_GROUPS.map((group) => ({ group, all: dedupeKpis(view.kpis[group]), shown: visibleKpis(view.kpis[group], showAllNumbers) }));
+  const totalNumbers = numbers.reduce((sum, g) => sum + g.all.length, 0);
+  const shownNumbers = numbers.reduce((sum, g) => sum + g.shown.length, 0);
+  const quietGroups = numbers.filter((g) => g.all.length > 0 && g.shown.length === 0).map((g) => KPI_GROUP_TITLES[g.group]);
+  const smallToggle = { minHeight: 40 } as const;
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <TodayHero health={view.health} today={view.today} waiting={view.waiting} problems={view.problems} agentAlerts={agentAlerts} activeAgents={activeAgents}>
+      <TodayHero health={view.health} today={view.today} waiting={view.waiting} problems={view.problems} warnings={warnings} agentAlerts={agentAlerts} activeAgents={activeAgents} runAlert={runLine} linkFor={linkFor}>
         {!load.roles?.operatorAgentId ? (
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: accent.soft, border: `1px solid ${accent.border}` }}>
             <Bot size={16} color={accent.solid} aria-hidden="true" style={{ flexShrink: 0 }} />
             <span style={{ fontSize: 13, color: tokens.fg, lineHeight: 1.5, flex: "1 1 220px" }}>No Operator yet. The Operator checks all of this every morning and sends you one short brief.</span>
-            {onTeam ? <Button type="button" variant="secondary" onClick={onTeam}>Set up the team</Button> : null}
+            <a {...linkFor(teamSetupPath("operator"))} style={setupLinkStyle}>Fix in Setup</a>
           </div>
         ) : null}
       </TodayHero>
@@ -171,14 +217,34 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onT
         title={`Waiting on you${view.waiting.length ? ` (${view.waiting.length})` : ""}`}
         icon={Inbox}
         tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.length ? "warn" : "ok"}
-        subtitle="Decisions only you can make, most urgent first."
+        subtitle={view.waiting.some((w) => w.ask) ? "Questions from agents first, then decisions only you can make." : "Decisions only you can make, most urgent first."}
         actions={<WaitingKinds items={view.waiting} />}
       >
         <WaitingList items={view.waiting} linkFor={linkFor} now={now} />
       </Card>
 
-      <div style={grid(420, 16)}>
-        {(["money", "pipeline", "marketing", "delivery"] as const).map((group) => <KpiGroup key={group} group={group} kpis={view.kpis[group]} linkFor={linkFor} />)}
+      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        {shownNumbers > 0 || showAllNumbers ? (
+          <div style={grid(420, 16)}>
+            {numbers.filter((g) => showAllNumbers || g.shown.length > 0).map((g) => (
+              <KpiGroup key={g.group} group={g.group} kpis={g.shown} hidden={g.all.length - g.shown.length} linkFor={linkFor} now={now} />
+            ))}
+          </div>
+        ) : null}
+        {totalNumbers > shownNumbers || showAllNumbers ? (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", minWidth: 0 }}>
+            <Muted>
+              {showAllNumbers
+                ? `All ${totalNumbers} numbers, zeros included.`
+                : shownNumbers === 0
+                  ? `No numbers need you: all ${totalNumbers} are at zero.`
+                  : `${totalNumbers - shownNumbers} more ${totalNumbers - shownNumbers === 1 ? "number is" : "numbers are"} at zero${quietGroups.length ? ` (nothing to report in ${quietGroups.join(", ")})` : ""}.`}
+            </Muted>
+            <Button type="button" variant="secondary" style={smallToggle} onClick={() => setShowAllNumbers((v) => !v)} aria-expanded={showAllNumbers}>
+              {showAllNumbers ? "Show fewer numbers" : "Show all numbers"}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <Card title="What the agents did" icon={Activity} subtitle={windowHours === 24 ? "The last 24 hours" : "The last 7 days"} actions={toggle}>
@@ -186,244 +252,39 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onT
       </Card>
 
       <Card
+        id="agents"
         title="Agents"
         icon={Bot}
         subtitle="Status, spend against budget, and quality this month."
-        actions={<a {...linkFor("/costs")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Costs →</a>}
+        actions={<a {...linkFor("/costs")} style={{ display: "inline-flex", alignItems: "center", minHeight: 32, fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Costs →</a>}
       >
         <AgentsTable rows={view.agents} linkFor={linkFor} now={now} />
       </Card>
 
       <Card
+        id="health"
         title="System health"
         icon={HeartPulse}
         tone={view.health}
         strip={view.health !== "ok"}
-        subtitle={failing ? `${failing} ${failing === 1 ? "check needs" : "checks need"} attention.` : "Every check passes."}
-        actions={<Light status={view.health} />}
+        subtitle={failing ? `${view.problems} ${view.problems === 1 ? "problem" : "problems"} · ${warnings} ${warnings === 1 ? "warning" : "warnings"}. The checks that pass are hidden.` : "Every check passes."}
+        actions={(
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Light status={view.health} />
+            {totalChecks > failing || showAllChecks ? (
+              <Button type="button" variant="secondary" style={smallToggle} onClick={() => setShowAllChecks((v) => !v)} aria-expanded={showAllChecks}>
+                {showAllChecks ? "Show problems only" : `Show all ${totalChecks} checks`}
+              </Button>
+            ) : null}
+          </div>
+        )}
       >
         <HealthSummary groups={view.healthGroups} />
         {load.healthIssueId ? (
           <a {...linkFor(`/issues/${load.healthIssueId}`)} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Open the System health issue →</a>
         ) : null}
-        <HealthList groups={view.healthGroups} linkFor={linkFor} now={now} backup={view.backup} />
+        <HealthList groups={view.healthGroups} linkFor={linkFor} now={now} backup={view.backup} showAll={showAllChecks} />
       </Card>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Team
-// ---------------------------------------------------------------------------
-
-interface HireOptions {
-  draft: { title: string; description: string };
-  agents: Array<{ id: string; name: string; title: string | null; role: string | null; status: string }>;
-  defaultAssigneeAgentId: string | null;
-}
-
-const ROLE_TEXT: Record<RoleKind, { title: string; what: string }> = {
-  operator: { title: "Operator", what: "Chief of staff. Reviews every module each morning, assigns and escalates work, keeps agents unblocked, and sends you one daily brief. Budget $30 a month." },
-  reviewer: { title: "Reviewer", what: "Quality reviewer. Checks posts, campaign emails, invoice and quote emails, sequence emails and SEO pull requests before you approve them. Budget $20 a month." },
-};
-
-export function TeamPanel({ companyId, load, agents, onSaved, onMessage }: {
-  companyId: string;
-  load: LoadResult;
-  agents: AgentLite[];
-  onSaved: (note: string) => Promise<void>;
-  onMessage: (note: string) => void;
-}) {
-  const host = useHostContext();
-  const linkFor = useLinkFor();
-  const saveTeam = usePluginAction("cockpit.save-team");
-  const hireOptions = usePluginAction("cockpit.hire-options");
-  const startHire = usePluginAction("cockpit.start-hire");
-  const me = assignableUser(host.userId);
-  const [users, setUsers] = useState<UserLite[]>([]);
-  const [operator, setOperator] = useState(load.roles?.operatorAgentId ?? "");
-  const [reviewer, setReviewer] = useState(load.roles?.reviewerAgentId ?? "");
-  const [owner, setOwner] = useState(load.roles?.ownerUserId ?? me ?? "");
-  const [reviewOutward, setReviewOutward] = useState(load.roles?.reviewOutward ?? false);
-  const [busy, setBusy] = useState<"" | "save" | RoleKind>("");
-  const [dialog, setDialog] = useState<{ kind: RoleKind; options: HireOptions } | null>(null);
-  const [steps, setSteps] = useState<string[]>([]);
-
-  useEffect(() => {
-    void fetchUsers(companyId).then(setUsers);
-  }, [companyId]);
-  useEffect(() => {
-    setOperator(load.roles?.operatorAgentId ?? "");
-    setReviewer(load.roles?.reviewerAgentId ?? "");
-    setOwner(load.roles?.ownerUserId ?? me ?? "");
-    setReviewOutward(load.roles?.reviewOutward ?? false);
-  }, [load.roles?.updatedAt]);
-
-  // Agents linked automatically (after a hire) may not have the role skill yet: attach it for the person viewing.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const notes: string[] = [];
-      for (const kind of ["operator", "reviewer"] as RoleKind[]) {
-        const agent = load.team?.[kind]?.agent;
-        if (!agent) continue;
-        const missing = await missingAgentSkills(agent.id, companyId, [ROLE_SKILL[kind]]);
-        if (missing.length === 0) continue;
-        try {
-          await attachAgentSkills(agent.id, companyId, missing);
-          notes.push(`Attached the ${ROLE_TEXT[kind].title} skill to ${agent.name}.`);
-        } catch {
-          notes.push(`${agent.name} is missing the ${ROLE_TEXT[kind].title} skill. Add it in Agents → ${agent.name} → Skills.`);
-        }
-      }
-      if (!cancelled && notes.length) setSteps((prev) => [...prev, ...notes]);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [companyId, load.team?.operator?.agent?.id, load.team?.reviewer?.agent?.id]);
-
-  const agentOptions = useMemo(() => agents.filter((a) => !["terminated", "archived", "deleted"].includes(a.status)).sort((a, b) => a.name.localeCompare(b.name)), [agents]);
-  const userOptions = useMemo(() => {
-    const list = [...users];
-    if (me && !list.some((u) => u.id === me)) list.unshift({ id: me, name: "Me" });
-    if (owner && !list.some((u) => u.id === owner)) list.push({ id: owner, name: owner });
-    return list;
-  }, [users, me, owner]);
-
-  async function doSave() {
-    setBusy("save");
-    onMessage("");
-    try {
-      const result = (await saveTeam({ operatorAgentId: operator || null, reviewerAgentId: reviewer || null, ownerUserId: owner || null, reviewOutward })) as { steps: string[]; firstSave: boolean };
-      let note = "Team saved. Every PiB plugin picks this up within a minute.";
-      if (!load.settingsSaved) {
-        try {
-          await savePluginConfig(companyId, { healthIssue: true });
-        } catch (error) {
-          note += ` Cockpit settings could not be saved (${errorText(error)}). Save them once in Settings → Plugins → Cockpit, or the hourly health check cannot act for this company.`;
-        }
-      }
-      const skillSteps: string[] = [];
-      for (const [kind, agentId] of [["operator", operator], ["reviewer", reviewer]] as Array<[RoleKind, string]>) {
-        if (!agentId) continue;
-        const name = agentOptions.find((a) => a.id === agentId)?.name ?? "The agent";
-        try {
-          const added = await attachAgentSkills(agentId, companyId, [ROLE_SKILL[kind]]);
-          skillSteps.push(added.length ? `Attached the ${kind === "operator" ? "pib-operator" : "pib-reviewer"} skill to ${name}, so it knows the ${ROLE_TEXT[kind].title} routine.` : `${name} already has the ${kind === "operator" ? "pib-operator" : "pib-reviewer"} skill.`);
-        } catch (error) {
-          skillSteps.push(`Could not attach the ${ROLE_TEXT[kind].title} skill to ${name} (${errorText(error)}). Add it in Agents → ${name} → Skills.`);
-        }
-      }
-      setSteps([...(result.steps ?? []), ...skillSteps]);
-      await onSaved(note);
-    } catch (error) {
-      onMessage(errorText(error));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function openHire(kind: RoleKind) {
-    setBusy(kind);
-    onMessage("");
-    try {
-      setDialog({ kind, options: (await hireOptions({ role: kind })) as HireOptions });
-    } catch (error) {
-      onMessage(errorText(error));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  const assignees: TaskAssigneeOption[] = [
-    ...(me ? [{ kind: "user" as const, id: me, name: "Me" }] : []),
-    ...(dialog?.options.agents ?? []).map((a) => ({ kind: "agent" as const, id: a.id, name: a.name, detail: [a.title, a.role].filter(Boolean).join(" · ") || null, status: a.status })),
-  ];
-
-  const roleRow = (kind: RoleKind, value: string, onChange: (next: string) => void) => {
-    const team = load.team?.[kind] ?? null;
-    const pending = !team?.agent && team?.hire?.status === "open" ? team.hire : null;
-    return (
-      <div style={{ display: "grid", gap: 8, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, background: tokens.bg, minWidth: 0 }}>
-        <div style={{ display: "grid", gap: 3 }}>
-          <strong style={{ fontSize: 14 }}>{ROLE_TEXT[kind].title}{kind === "reviewer" ? <span style={{ fontWeight: 500, color: tokens.muted }}> (optional)</span> : null}</strong>
-          <Muted>{ROLE_TEXT[kind].what}</Muted>
-        </div>
-        <Field label="Agent">
-          <Select value={value} onChange={(event) => onChange(event.target.value)} aria-label={`${ROLE_TEXT[kind].title} agent`}>
-            <option value="">No agent</option>
-            {agentOptions.map((a) => <option key={a.id} value={a.id}>{a.name}{a.title ? ` · ${a.title}` : ""}{a.status === "paused" ? " (paused)" : ""}</option>)}
-          </Select>
-        </Field>
-        {pending ? (
-          <Muted>
-            Hire task <a {...linkFor(`/issues/${pending.identifier ?? pending.issueId}`)} style={{ color: tokens.primary }}>{pending.identifier ?? "open"}</a> is open. The Cockpit links the new agent automatically when it appears.
-          </Muted>
-        ) : null}
-        {team?.agent ? (
-          <Muted>
-            Linked: <strong style={{ color: tokens.fg }}>{team.agent.name}</strong>{team.agent.status ? ` (${team.agent.status})` : ""}. Pick another agent above and save to change it.
-          </Muted>
-        ) : pending ? null : (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void openHire(kind)}>
-              {busy === kind ? "Opening…" : `Hire ${ROLE_TEXT[kind].title}`}
-            </Button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <Card title="Team" icon={Users} subtitle="The Operator runs the day; the Reviewer checks outward-facing work.">
-        <Muted>Pick an existing agent for each role, or hire one (opens a hire task for whoever hires for this company). Save sends the team to every PiB plugin.</Muted>
-        <div style={grid(300, 12)}>
-          {roleRow("operator", operator, setOperator)}
-          {roleRow("reviewer", reviewer, setReviewer)}
-        </div>
-        <div style={grid(260, 12)}>
-          <Field label="Owner (gets the daily brief and approvals)">
-            <Select value={owner} onChange={(event) => setOwner(event.target.value)} aria-label="Owner">
-              <option value="">Nobody</option>
-              {userOptions.map((u) => <option key={u.id} value={u.id}>{u.id === me ? `${u.name === "Me" ? "Me" : `${u.name} (me)`}` : u.name}</option>)}
-            </Select>
-          </Field>
-          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45, cursor: "pointer", paddingTop: 20 }}>
-            <input type="checkbox" checked={reviewOutward} onChange={(event) => setReviewOutward(event.target.checked)} style={{ marginTop: 3 }} />
-            <span>
-              <strong>Review outward-facing work before I approve</strong>
-              <span style={{ display: "block", color: tokens.muted }}>Posts, campaigns, invoices, quotes and sequence emails go to the Reviewer first. You still approve.</span>
-            </span>
-          </label>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Button type="button" onClick={() => void doSave()} disabled={busy !== ""}>{busy === "save" ? "Saving…" : "Save team"}</Button>
-        </div>
-        {steps.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 12.5, lineHeight: 1.6 }}>
-            {steps.map((step, index) => <li key={index}>{step}</li>)}
-          </ul>
-        ) : null}
-      </Card>
-      <NewTaskDialog
-        open={!!dialog}
-        prefix={host.companyPrefix}
-        initialTitle={dialog?.options.draft.title ?? ""}
-        initialDescription={dialog?.options.draft.description ?? ""}
-        assignees={assignees}
-        defaultAssignee={dialog?.options.defaultAssigneeAgentId ? `agent:${dialog.options.defaultAssigneeAgentId}` : undefined}
-        note="Give it to the agent that hires for this company (usually the CEO), or to yourself. When the new agent appears, the Cockpit links it, grants its tools and sets up its routines."
-        onClose={() => setDialog(null)}
-        onCreate={async (task) => {
-          const kind = dialog!.kind;
-          await startHire({ role: kind, ...task });
-          setDialog(null);
-          await onSaved(`Opened a hire task for the ${ROLE_TEXT[kind].title}.`);
-        }}
-      />
     </div>
   );
 }
@@ -445,6 +306,7 @@ export function CockpitSidebar({ context }: PluginSidebarProps) {
   // Shared with the Clients / Marketing / Finance groups: one light load for the whole sidebar.
   const view = useSidebarView(context.companyId, location.pathname);
   const waiting = view?.waiting.length ?? 0;
+  const urgent = view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ?? false;
   const health = view?.health ?? "ok";
   const href = hostNavigation.resolveHref("/cockpit");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
@@ -471,8 +333,8 @@ export function CockpitSidebar({ context }: PluginSidebarProps) {
       <span className="flex-1 truncate">Cockpit</span>
       {waiting ? (
         <span
-          aria-label={`${waiting} waiting on you`}
-          style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tone("warn").soft, color: tone("warn").fg }}
+          aria-label={`${waiting} waiting on you${urgent ? " (money or legal)" : ""}`}
+          style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: tone(urgent ? "bad" : "warn").soft, color: tone(urgent ? "bad" : "warn").fg }}
         >
           {waiting}
         </span>

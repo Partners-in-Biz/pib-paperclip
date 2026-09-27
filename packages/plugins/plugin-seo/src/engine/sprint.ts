@@ -68,7 +68,7 @@ export function selectDueTasks<T extends DueCandidate>(tasks: T[], day: number):
   return tasks.filter((task) => task.status === "not_started" && !task.issueId && isDue(task, day));
 }
 
-export type AgentAvailability = { id: string; status: string } | null;
+export type AgentAvailability = { id: string; status: string; name?: string | null } | null;
 
 export type Assignment =
   | { kind: "agent"; agentId: string; reviewGate: boolean; wake: boolean }

@@ -20,6 +20,7 @@ import {
   StackedBar,
   Users,
   fluidColumns,
+  formatShortDate,
   tokens,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
@@ -65,17 +66,12 @@ function sum(values: number[]): number {
   return values.reduce((total, v) => total + v, 0);
 }
 
-const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 function weekColumns(weeks: SendWeek[]) {
-  return weeks.map((week) => {
-    const d = new Date(`${week.start}T12:00:00Z`);
-    return {
-      label: `${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`,
-      title: `Week of ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`,
-      values: { sent: week.sent, replies: week.replies },
-    };
-  });
+  return weeks.map((week) => ({
+    label: formatShortDate(week.start),
+    title: `Week of ${formatShortDate(week.start)}`,
+    values: { sent: week.sent, replies: week.replies },
+  }));
 }
 
 /** Deliverability tone for a bounce rate: ok below 2%, warn below 5%, then bad. */
@@ -88,18 +84,22 @@ export function bounceTone(rate: number | null): ToneInput {
 // Overview
 // ---------------------------------------------------------------------------
 
-export function CampaignsOverview({ campaigns, series, onNew, onList, onAb }: {
+export function CampaignsOverview({ campaigns, series, suppressed = 0, onNew, onList, onAb, onOpen }: {
   campaigns: OverviewCampaign[];
   series: CampaignSeries | undefined;
+  /** Addresses on the do-not-email list (shared with the CRM and the Mailbox). */
+  suppressed?: number;
   onNew?: ReactNode;
   onList?: () => void;
   onAb?: (campaignId: string) => void;
+  /** Opens a campaign's detail (every email, who gets it and when). */
+  onOpen?: (campaignId: string) => void;
 }) {
   if (campaigns.length === 0) {
     return (
       <EmptyState
         title="No campaigns yet"
-        description="Create a campaign, add email steps, then launch it. Sends and replies show up here."
+        description="Create a campaign and add its emails, then request approval. It launches by itself once a person approves. Sends and replies show up here."
         action={onNew}
       />
     );
@@ -169,13 +169,14 @@ export function CampaignsOverview({ campaigns, series, onNew, onList, onAb }: {
           invert
         />
         <KpiCard label="In a campaign now" value={running} hint={`${enrolled} enrolled in total`} icon={Users} />
+        <KpiCard label="Do not email" value={suppressed} hint="Unsubscribed or bounced; never enrolled or emailed" icon={CircleAlert} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(320), gap: 16, alignItems: "start" }}>
         <SectionCard
           title="Sends and replies per week"
           icon={ChartColumn}
-          subtitle={allSent ? `${allSent} sent and ${allReplies} ${allReplies === 1 ? "reply" : "replies"} in 12 weeks (${percent(allReplies / allSent)}).` : "Nothing sent in the last 12 weeks."}
+          subtitle={allSent ? `${allSent} sent and ${allReplies} ${allReplies === 1 ? "reply" : "replies"} in 12 weeks (${percent(allReplies / allSent)}).` : "Last 12 weeks"}
         >
           <BarChart
             data={weekColumns(weeks)}
@@ -220,7 +221,7 @@ export function CampaignsOverview({ campaigns, series, onNew, onList, onAb }: {
                 size="sm"
                 done={c.stats.done}
                 total={c.stats.enrolled}
-                label={<span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}><StatusPill status={c.status} /> <span title={c.name}>{short(c.name, 34)}</span></span>}
+                label={<span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}><StatusPill status={c.status} /> <CampaignName name={c.name} max={34} onOpen={onOpen ? () => onOpen(c.id) : undefined} /></span>}
                 valueText={`${c.stats.done} of ${c.stats.enrolled} finished`}
               />
             ))}
@@ -236,7 +237,7 @@ export function CampaignsOverview({ campaigns, series, onNew, onList, onAb }: {
             return (
               <div key={c.id} style={{ display: "grid", gap: 8, paddingTop: 4, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <strong style={{ fontSize: 13, flex: "1 1 180px", minWidth: 0, overflowWrap: "anywhere" }}>{c.name}</strong>
+                  <strong style={{ fontSize: 13, flex: "1 1 180px", minWidth: 0, overflowWrap: "anywhere" }}><CampaignName name={c.name} onOpen={onOpen ? () => onOpen(c.id) : undefined} /></strong>
                   {c.winnerVariant
                     ? <Pill tone="ok" icon={CircleCheckBig}>{c.winnerVariant.toUpperCase()} won</Pill>
                     : leader ? <Pill tone="info" dot>{leader.toUpperCase()} leading</Pill> : <Pill>Too early</Pill>}
@@ -265,6 +266,22 @@ export function CampaignsOverview({ campaigns, series, onNew, onList, onAb }: {
         </SectionCard>
       </div>
     </div>
+  );
+}
+
+/** A campaign name that opens its detail when the page allows it. */
+function CampaignName({ name, max, onOpen }: { name: string; max?: number; onOpen?: () => void }) {
+  const text = max ? short(name, max) : name;
+  if (!onOpen) return <span title={name}>{text}</span>;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`Open ${name}`}
+      style={{ appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", fontWeight: "inherit", color: "inherit", cursor: "pointer", textAlign: "left", textDecoration: "underline", textUnderlineOffset: 3, textDecorationColor: tokens.border, overflowWrap: "anywhere" }}
+    >
+      {text}
+    </button>
   );
 }
 

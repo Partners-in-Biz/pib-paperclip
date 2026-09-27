@@ -1,25 +1,43 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
-import { ALL_PLATFORMS } from "./platforms.js";
+import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
-const text = { type: "string" } satisfies JsonSchema;
-const ids = { type: "array", items: { type: "string" } } satisfies JsonSchema;
-const override: JsonSchema = {
+/** Every param has a short, exact description, and an enum where the values are fixed. */
+const text = (description: string): JsonSchema => ({ type: "string", description });
+const int = (description: string): JsonSchema => ({ type: "integer", description });
+const ids = (description: string): JsonSchema => ({ type: "array", items: { type: "string" }, description });
+const choice = (values: readonly string[], description: string): JsonSchema => ({ type: "string", enum: [...values], description });
+
+const POST_ID = text("Post id (from create-post, list-posts or the issue)");
+const ACCOUNT_ID = text("Account id (from list-connected-accounts)");
+const FEED_ID = text("Feed id (from list-rss-feeds)");
+const ITEM_ID = text("Inbox item id (from list-inbox or the reply issue)");
+const ISO_TIME = "ISO date-time with offset, e.g. 2026-10-05T07:30:00+02:00";
+
+/** Which override fields each platform takes, for the description. */
+const FIELDS_BY_PLATFORM = ALL_PLATFORMS.map((p) => `${p}: ${OVERRIDE_FIELDS[p].join("/")}`).join("; ");
+
+/**
+ * The per-platform override schema, defined once and shared by create-post
+ * and update-post: one entry schema for every platform key (the service
+ * refuses unknown platforms and fields a platform does not take).
+ */
+export const OVERRIDE_ENTRY: JsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    text,
-    title: text,
-    link: text,
-    privacy: text,
-    subreddit: text,
-    boardId: text,
+    text: text("Post text for this platform instead of the main body"),
+    title: text("Title (YouTube, TikTok, Pinterest, Reddit, Dribbble)"),
+    link: text("https:// link: link card or pin destination"),
+    privacy: text("youtube: private|unlisted|public; tiktok: SELF_ONLY|MUTUAL_FOLLOW_FRIENDS|FOLLOWER_OF_CREATOR|PUBLIC_TO_EVERYONE; mastodon: public|unlisted|private"),
+    subreddit: text("Reddit subreddit name, e.g. smallbusiness"),
+    boardId: text("Pinterest board id"),
   },
 };
-const overrides: JsonSchema = {
+
+export const OVERRIDES: JsonSchema = {
   type: "object",
-  description: `Per-platform overrides keyed by platform (${ALL_PLATFORMS.join(", ")}).`,
-  properties: Object.fromEntries(ALL_PLATFORMS.map((p) => [p, override])),
-  additionalProperties: false,
+  description: `Per-platform overrides keyed by platform (${ALL_PLATFORMS.join(", ")}). Fields per platform: ${FIELDS_BY_PLATFORM}. Anything not overridden uses the main body.`,
+  additionalProperties: OVERRIDE_ENTRY,
 };
 
 /**
@@ -27,20 +45,25 @@ const overrides: JsonSchema = {
  * `client: "company:<id>"` / `"contact:<id>"`, or `clientKind` + `clientRef`.
  */
 const scope: Record<string, JsonSchema> = {
-  client: {
-    type: "string",
-    description: 'The client this is for: "company:<id>" or "contact:<id>" (the `client` value from list-clients). Omit for PiB\'s own work.',
-  },
-  clientKind: { type: "string", enum: ["company", "contact"], description: "Kind of clientRef. Default company." },
-  clientRef: { type: "string", description: "CRM company or contact id from list-clients. Omit for PiB's own work." },
+  client: text('The client this is for: "company:<id>" or "contact:<id>" (the `client` value from list-clients). Omit for PiB\'s own work.'),
+  clientKind: choice(["company", "contact"], "With clientRef: the kind of CRM record (default company). Prefer client."),
+  clientRef: text("CRM company or contact id (from list-clients), with clientKind. Prefer client."),
 };
 
-const OWN = " Omit the client for PiB's own work; pass client (or clientKind + clientRef) for a client. Never mix clients.";
+const OWN = " Omit the client for PiB's own work; pass client for a client. Never mix clients.";
 
 /** Growth Lab tag on a post. */
 const experimentTag: Record<string, JsonSchema> = {
-  experimentId: { type: "string", description: "Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag." },
-  arm: { type: "string", enum: ["control", "variant"], description: "Which arm of the experiment the post is: control (what we do now) or variant (the change)." },
+  experimentId: text("Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag."),
+  arm: choice(["control", "variant"], "Which arm of the experiment the post is: control (what we do now) or variant (the change)."),
+};
+
+const post: Record<string, JsonSchema> = {
+  accountIds: ids("Destination account ids of the post's scope (list-connected-accounts; status connected)"),
+  mediaAssetIds: ids("Media asset ids of the post's scope (list-media-assets or import-media-from-url); order = carousel order"),
+  firstComment: text("Posted as the first comment (X: a reply to the post) where the platform allows"),
+  scheduledAt: text(`Proposed publish time, ${ISO_TIME}. When a person approves the post it is scheduled for this time if it is still ahead.`),
+  overrides: OVERRIDES,
 };
 
 const arms: JsonSchema = {
@@ -50,9 +73,15 @@ const arms: JsonSchema = {
     type: "object",
     required: ["key", "description"],
     additionalProperties: false,
-    properties: { key: { type: "string", enum: ["control", "variant"] }, description: text },
+    properties: {
+      key: choice(["control", "variant"], "control (what we do now) or variant (the change)"),
+      description: text("What posts in this arm do, in one line"),
+    },
   },
 };
+
+/** Growth Lab experiment statuses (list-experiments filter). */
+export const EXPERIMENT_STATUSES = ["proposed", "running", "measured", "rejected", "abandoned"] as const;
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -63,40 +92,37 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "list-clients",
     displayName: "List clients",
     description:
-      "Return the clients this workspace posts for: CRM companies, then CRM contacts (sole traders). Each has kind, id and client (\"company:<id>\" / \"contact:<id>\"). Pass client, or clientKind + clientRef, to the other tools. PiB's own work needs no client.",
+      "Return the clients this workspace posts for: CRM companies, then CRM contacts (sole traders). Each has kind, id and client (\"company:<id>\" / \"contact:<id>\"). Pass client to the other tools. PiB's own work needs no client.",
     parametersSchema: schema([], {}),
   },
   {
     name: "list-connected-accounts",
     displayName: "List connected accounts",
-    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry. Filter by platform.${OWN}`,
-    parametersSchema: schema([], { ...scope, platform: text }),
+    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry.${OWN}`,
+    parametersSchema: schema([], { ...scope, platform: choice(ALL_PLATFORMS, "Only accounts on this platform") }),
   },
   {
     name: "connect-account",
     displayName: "Connect social account",
-    description: "Accounts are connected by a person on the Social page. Returns the steps to tell them.",
-    parametersSchema: schema(["platform"], { platform: text }),
+    description: "A person connects accounts (signing in is a one-time grant). Returns the deep link and exact steps to put in one partnersinbiz.cockpit:ask-owner request.",
+    parametersSchema: schema(["platform"], { platform: choice(ALL_PLATFORMS, "Platform to connect"), ...scope }),
   },
   {
     name: "refresh-account",
     displayName: "Refresh account token",
     description: "Refresh an account's access token now (platforms with refresh tokens or long-lived tokens).",
-    parametersSchema: schema(["accountId"], { accountId: text }),
+    parametersSchema: schema(["accountId"], { accountId: ACCOUNT_ID }),
   },
   {
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with accountIds (destinations), mediaAssetIds (order = carousel order), firstComment and per-platform overrides. Accounts and media must belong to the same client as the post (or all be own work).${OWN} The separate scope field is org (default) or personal. Tag a Growth Lab experiment arm with experimentId + arm (same client).`,
+      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
     parametersSchema: schema(["body"], {
-      body: text,
-      scope: text,
+      body: text("Main post text (used by every platform without a text override)"),
       ...scope,
-      accountIds: ids,
-      mediaAssetIds: ids,
-      firstComment: text,
-      overrides,
+      visibility: choice(["org", "personal"], "org (default): a company or client page. personal: a person's own profile, only that person's accounts."),
+      ...post,
       ...experimentTag,
     }),
   },
@@ -104,82 +130,87 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "update-post",
     displayName: "Update post",
     description:
-      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, overrides (replaces them). Leave the client out to keep the post's client. Moving a post to another client (client: \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag (or with experimentId \"\" clear) the Growth Lab experiment arm.",
+      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, scheduledAt (\"\" clears it), overrides (replaces them). Leave the client out to keep the post's client; moving it to another client (client \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag the Growth Lab arm (experimentId \"\" clears it).",
     parametersSchema: schema(["postId"], {
-      postId: text,
-      body: text,
+      postId: POST_ID,
+      body: text("New main post text"),
       ...scope,
-      accountIds: ids,
-      mediaAssetIds: ids,
-      firstComment: text,
-      overrides,
+      ...post,
       ...experimentTag,
     }),
   },
   {
     name: "get-post",
     displayName: "Get post",
-    description: "Return a post with its media, overrides and each destination's status, attempts, link and last error.",
-    parametersSchema: schema(["postId"], { postId: text }),
+    description: "Return a post with its media, overrides, proposed or scheduled time and each destination's status, attempts, link and last error.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "list-posts",
     displayName: "List posts",
-    description: `List the posts of one scope, newest first. Filter by status.${OWN}`,
-    parametersSchema: schema([], { status: text, ...scope, limit: { type: "integer" } }),
+    description: `List the posts of one scope, newest first.${OWN}`,
+    parametersSchema: schema([], {
+      status: choice(POST_STATUSES, "Only posts in this status (approved = approved but not scheduled yet)"),
+      ...scope,
+      limit: int("Most posts to return, 1–1000 (default 50)"),
+    }),
   },
   {
     name: "validate-post",
     displayName: "Validate post",
-    description: "Check a post against every destination's platform rules (length, media, subreddit, board). Returns the problems to fix.",
-    parametersSchema: schema(["postId"], { postId: text }),
+    description: "Check a post against every destination's platform rules (length, media, subreddit, board, account connected). Returns the problems to fix.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "attach-destination",
     displayName: "Attach destination",
     description: "Add an account as a destination of a post. The account must belong to the post's client (or both be own work). An org post cannot target a personal account.",
-    parametersSchema: schema(["postId", "accountId"], { postId: text, accountId: text }),
+    parametersSchema: schema(["postId", "accountId"], { postId: POST_ID, accountId: ACCOUNT_ID }),
   },
   {
     name: "detach-destination",
     displayName: "Detach destination",
     description: "Remove a pending or failed destination from a post.",
-    parametersSchema: schema(["postId", "accountId"], { postId: text, accountId: text }),
+    parametersSchema: schema(["postId", "accountId"], { postId: POST_ID, accountId: ACCOUNT_ID }),
   },
   {
     name: "request-review",
     displayName: "Request review",
-    description: "Move a draft post to review. A person approves it.",
-    parametersSchema: schema(["postId"], { postId: text }),
+    description: "Send a draft for approval. A person approves (the Reviewer checks first when the Cockpit has one); approval schedules it at its proposed time.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "schedule-post",
     displayName: "Schedule post",
-    description: "Schedule an approved post at an ISO time. Fails if a destination would certainly fail (validate-post).",
-    parametersSchema: schema(["postId", "scheduledAt"], { postId: text, scheduledAt: text }),
+    description: "Schedule an approved post that has no time yet. Fails if a destination would certainly fail (see validate-post).",
+    parametersSchema: schema(["postId", "scheduledAt"], { postId: POST_ID, scheduledAt: text(`Publish time, ${ISO_TIME}; now or earlier publishes within 5 minutes`) }),
   },
   {
     name: "bulk-schedule",
     displayName: "Bulk schedule posts",
-    description: "Schedule several approved posts at the same time.",
-    parametersSchema: schema(["postIds", "scheduledAt"], { postIds: ids, scheduledAt: text }),
+    description: "Schedule several approved posts at the same time. Returns one result per post.",
+    parametersSchema: schema(["postIds", "scheduledAt"], { postIds: ids("Approved post ids"), scheduledAt: text(`Publish time for all of them, ${ISO_TIME}`) }),
   },
   {
     name: "retry-post",
     displayName: "Retry post",
     description: "Retry the failed destinations of a failed or partially published post. Published destinations are never published again.",
-    parametersSchema: schema(["postId"], { postId: text }),
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "create-template",
     displayName: "Create post template",
-    description: "Save reusable post copy.",
-    parametersSchema: schema(["name", "body"], { name: text, body: text, platform: text }),
+    description: "Save reusable post copy. Templates are shared by every scope: never put a client's name, offer or claims in one.",
+    parametersSchema: schema(["name", "body"], {
+      name: text("Template name"),
+      body: text("The reusable copy"),
+      platform: choice(ALL_PLATFORMS, "Platform it is written for (omit for any)"),
+    }),
   },
   {
     name: "list-templates",
     displayName: "List post templates",
-    description: "Return the saved post templates.",
+    description: "Return the saved post templates (shared by every scope).",
     parametersSchema: schema([], {}),
   },
   {
@@ -192,19 +223,35 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-media-asset",
     displayName: "Create media asset",
     description: `Register an image or video that is already hosted on a public https URL (prefer import-media-from-url so platforms can fetch it from R2).${OWN}`,
-    parametersSchema: schema(["url"], { url: text, name: text, kind: text, altText: text, ...scope }),
+    parametersSchema: schema(["url"], {
+      url: text("Public https URL of the file"),
+      name: text("Display name (default: the file name)"),
+      kind: choice(["image", "video"], "Media kind (default: from the file type)"),
+      altText: text("What the image or video shows, for screen readers"),
+      ...scope,
+    }),
   },
   {
     name: "import-media-from-url",
     displayName: "Import media from URL",
     description: `Download a public https image (JPEG, PNG, GIF, WebP) or video (MP4, MOV) up to 512 MB and store it on the R2 media domain. Returns the asset id.${OWN}`,
-    parametersSchema: schema(["url"], { url: text, name: text, altText: text, ...scope }),
+    parametersSchema: schema(["url"], {
+      url: text("Public https URL to download"),
+      name: text("Display name (default: the file name)"),
+      altText: text("What the image or video shows, for screen readers"),
+      ...scope,
+    }),
   },
   {
     name: "create-rss-feed",
     displayName: "Create RSS feed",
     description: `Track an RSS or Atom feed. New items become draft posts (with the given destination accounts, all of the feed's scope) for review.${OWN}`,
-    parametersSchema: schema(["url"], { url: text, accountIds: ids, accountId: text, ...scope }),
+    parametersSchema: schema(["url"], {
+      url: text("Feed URL (RSS or Atom)"),
+      accountIds: ids("Destination account ids for the drafts (organisation accounts of the feed's scope)"),
+      accountId: text("One destination account id (older form of accountIds)"),
+      ...scope,
+    }),
   },
   {
     name: "list-rss-feeds",
@@ -216,136 +263,153 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "pause-rss-feed",
     displayName: "Pause RSS feed",
     description: "Stop polling an RSS feed.",
-    parametersSchema: schema(["feedId"], { feedId: text }),
+    parametersSchema: schema(["feedId"], { feedId: FEED_ID }),
   },
   {
     name: "resume-rss-feed",
     displayName: "Resume RSS feed",
     description: "Resume polling an RSS feed.",
-    parametersSchema: schema(["feedId"], { feedId: text }),
+    parametersSchema: schema(["feedId"], { feedId: FEED_ID }),
   },
   {
     name: "record-inbox-item",
     displayName: "Record inbox item",
-    description: `Record a mention, comment or message by hand. With accountId it belongs to that account's scope.${OWN}`,
-    parametersSchema: schema(["kind", "body"], { kind: text, body: text, accountId: text, author: text, ...scope }),
+    description: `Record a mention, comment or message by hand (from a platform the inbox does not poll). With accountId it belongs to that account's scope; it is triaged on the next inbox run.${OWN}`,
+    parametersSchema: schema(["kind", "body"], {
+      kind: choice(["comment", "mention", "message"], "What it is"),
+      body: text("The text, as written"),
+      accountId: text("The account it came in on (from list-connected-accounts)"),
+      author: text("Who wrote it (name or handle)"),
+      ...scope,
+    }),
   },
   {
     name: "list-inbox",
     displayName: "List social inbox",
-    description: `Return the comments and mentions of one scope, newest first. Filter by status (new, read, replied). With a Jev key, items carry triage (needsReply, intent, sentiment, escalate); never reply to escalated items.${OWN}`,
-    parametersSchema: schema([], { status: text, limit: { type: "integer" }, ...scope }),
+    description: `Return the comments and mentions of one scope, newest first. Every triaged item carries triage (needsReply, intent, sentiment, escalate, source jev or rules); never reply to escalated items.${OWN}`,
+    parametersSchema: schema([], {
+      status: choice(["new", "read", "replied"], "Only items in this status"),
+      limit: int("Most items to return, 1–500 (default 50)"),
+      ...scope,
+    }),
   },
   {
     name: "mark-inbox-read",
     displayName: "Mark inbox item read",
-    description: "Mark an inbox item as read.",
-    parametersSchema: schema(["itemId"], { itemId: text }),
+    description: "Mark an inbox item as read (handled, or nothing to answer).",
+    parametersSchema: schema(["itemId"], { itemId: ITEM_ID }),
   },
   {
     name: "reply-inbox",
     displayName: "Reply to inbox item",
     description:
       "Reply to a comment or mention through the platform. Unless agent replies are enabled in settings, the reply is saved as a suggestion that a person sends. Platforms without a reply API get a draft post.",
-    parametersSchema: schema(["itemId", "body"], { itemId: text, body: text }),
+    parametersSchema: schema(["itemId", "body"], { itemId: ITEM_ID, body: text("The reply text") }),
   },
   {
     name: "record-post-metrics",
     displayName: "Record post metrics",
-    description: "Record engagement for a post by hand (non-negative integers).",
+    description: "Record engagement you saw on the platform for a post the metrics job cannot read. Only numbers you observed; never estimates.",
     parametersSchema: schema(["postId"], {
-      postId: text,
-      views: { type: "integer" },
-      likes: { type: "integer" },
-      comments: { type: "integer" },
-      shares: { type: "integer" },
+      postId: POST_ID,
+      views: int("Views or impressions seen (whole number ≥ 0)"),
+      likes: int("Likes or reactions seen (whole number ≥ 0)"),
+      comments: int("Comments seen (whole number ≥ 0)"),
+      shares: int("Shares, reposts or saves seen (whole number ≥ 0)"),
     }),
   },
   {
     name: "post-analytics",
     displayName: "Post analytics",
     description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,
-    parametersSchema: schema([], { postId: text, ...scope }),
+    parametersSchema: schema([], { postId: text("One post's numbers (omit for the scope's totals)"), ...scope }),
   },
   {
     name: "performance-review",
     displayName: "Performance review",
     description:
-      `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first). periodDays 7-90 (default 28).${OWN}`,
-    parametersSchema: schema([], { ...scope, periodDays: { type: "integer" } }),
+      `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first).${OWN}`,
+    parametersSchema: schema([], { ...scope, periodDays: int("Days to review, 7–90 (default 28)") }),
   },
   {
     name: "get-playbook",
     displayName: "Get playbook",
-    description: `The scope's playbook (markdown rules to follow when planning posts), its version, recent versions and pending changes. Created on first use.${OWN}`,
+    description: `The scope's playbook (markdown rules to follow when planning posts: rules, what to avoid, constraints such as brand voice and the booking link), its version, recent versions and pending changes. Created on first use.${OWN}`,
     parametersSchema: schema([], { ...scope }),
   },
   {
     name: "propose-playbook-change",
     displayName: "Propose playbook change",
     description:
-      `Propose one playbook edit with a reason: op add (section rules, avoid, open, constraints or goal; text = the rule), remove (text = the exact line) or replace (playbook = the whole new markdown). A person keeps or discards it unless autopilot is full.${OWN}`,
+      `Propose one playbook edit with a reason: op add (a line in a section), remove (the exact line) or replace (the whole markdown). A person keeps or discards it unless autopilot is full.${OWN}`,
     parametersSchema: schema(["reason"], {
       ...scope,
-      op: { type: "string", enum: ["add", "remove", "replace"] },
-      section: { type: "string", enum: ["rules", "avoid", "open", "constraints", "goal"] },
-      text,
-      playbook: text,
-      reason: text,
+      op: choice(["add", "remove", "replace"], "add (default) a line, remove an exact line, or replace the whole playbook"),
+      section: choice(["rules", "avoid", "open", "constraints", "goal"], "For add: rules we follow, things to avoid, open questions, constraints (brand voice, links, banned words) or the goal"),
+      text: text("add: the rule, one line; remove: the exact line from get-playbook"),
+      playbook: text("replace: the whole new playbook markdown"),
+      reason: text("Why, with the evidence (post ids, measured lift)"),
     }),
   },
   {
     name: "decide-playbook-change",
     displayName: "Decide playbook change",
     description: "Keep (new playbook version) or discard a pending playbook change. Agents may only decide when the program's autopilot is full; otherwise a person decides on the Growth tab.",
-    parametersSchema: schema(["changeId", "decision"], { changeId: text, decision: { type: "string", enum: ["keep", "discard"] }, note: text }),
+    parametersSchema: schema(["changeId", "decision"], {
+      changeId: text("Pending change id (from get-playbook)"),
+      decision: choice(["keep", "discard"], "keep writes a new playbook version; discard drops the change"),
+      note: text("Why (shown with the decision)"),
+    }),
   },
   {
     name: "list-experiments",
     displayName: "List experiments",
-    description: `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard. Filter by status (proposed, running, measured, rejected, abandoned; comma-separated).${OWN}`,
-    parametersSchema: schema([], { ...scope, status: text }),
+    description: `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard.${OWN}`,
+    parametersSchema: schema([], {
+      ...scope,
+      status: { type: "array", items: { type: "string", enum: [...EXPERIMENT_STATUSES] }, description: "Only experiments in these statuses (default all)" },
+    }),
   },
   {
     name: "propose-experiment",
     displayName: "Propose experiment",
     description:
-      `Propose one experiment that changes one variable: hypothesis, hypothesisType (feature:value, e.g. hook:question; pick from performance-review's ranked types), variable, arms control/variant with descriptions, minPerArm (default 3). At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
+      `Propose one experiment that changes one variable. At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
     parametersSchema: schema(["hypothesis", "hypothesisType", "variable", "arms"], {
       ...scope,
-      hypothesis: text,
-      hypothesisType: text,
-      variable: text,
+      hypothesis: text("What you expect and why, one sentence"),
+      hypothesisType: text("feature:value being tested, e.g. hook:question (pick from performance-review's ranked types)"),
+      variable: text("The one thing the variant changes"),
       arms,
-      minPerArm: { type: "integer" },
-      windowDays: { type: "integer" },
+      minPerArm: int("Posts needed per arm before measuring, 2–20 (default 3)"),
+      windowDays: int("Scoring window in days; only 7 is supported (the default)"),
     }),
   },
   {
     name: "approve-experiment",
     displayName: "Approve experiment",
     description: "Start a proposed experiment. Only on full autopilot may an agent approve; otherwise a person approves on the Growth tab.",
-    parametersSchema: schema(["experimentId"], { experimentId: text, note: text }),
+    parametersSchema: schema(["experimentId"], { experimentId: text("Proposed experiment id (from list-experiments)"), note: text("Why (shown with the decision)") }),
   },
   {
     name: "reject-experiment",
     displayName: "Reject experiment",
     description: "Reject a proposed experiment with a reason (its post tags are cleared). Only on full autopilot may an agent reject.",
-    parametersSchema: schema(["experimentId", "reason"], { experimentId: text, reason: text }),
+    parametersSchema: schema(["experimentId", "reason"], { experimentId: text("Proposed experiment id (from list-experiments)"), reason: text("Why it is rejected") }),
   },
   {
     name: "propose-feature-question",
     displayName: "Propose feature question",
     description:
-      `Feature discovery: add a question Jev answers about every post caption (op add: key, type noul/choice/score, question, options for choice, levels for score, lowest first), or retire one (op retire + key). New questions apply to new posts and backfill the last 90 days; at most 12 active. Propose questions that separate the top posts from the bottom ones in performance-review.${OWN}`,
+      `Feature discovery: add a question Jev answers about every post caption, or retire one. New questions apply to new posts and backfill the last 90 days; at most 12 active. Propose questions that separate the top posts from the bottom ones in performance-review.${OWN}`,
     parametersSchema: schema([], {
       ...scope,
-      op: { type: "string", enum: ["add", "retire"] },
-      key: text,
-      type: { type: "string", enum: ["noul", "choice", "score"] },
-      question: text,
-      options: ids,
-      levels: ids,
+      op: choice(["add", "retire"], "add (default) a question, or retire one by key"),
+      key: text("Short snake_case key, e.g. has_price (retire: the key to retire)"),
+      type: choice(["noul", "choice", "score"], "noul (yes/no), choice (one of options) or score (one of levels)"),
+      question: text("The question about the caption, e.g. Does the caption mention a price?"),
+      options: ids("choice: the allowed answers"),
+      levels: ids("score: the levels, lowest first"),
     }),
   },
   {

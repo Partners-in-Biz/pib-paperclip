@@ -9,6 +9,10 @@
  *   throws, so nothing is stored and the sender's outbox retries.
  * - No account, a bad address, an attachment that cannot be downloaded or a
  *   message Gmail refuses → `failed` with `permanent: true`.
+ * - The do-not-email list (`suppression.ts`): marketing sends leave out every
+ *   suppressed address and carry List-Unsubscribe; any send leaves out hard
+ *   bounces. No recipient left → `failed`, `permanent: true`, with the
+ *   `suppressed` addresses so the sender stops for good.
  */
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
@@ -22,7 +26,8 @@ import { ensureLabelIds } from "./labels.js";
 import { buildMime, htmlToText, messageIdFor, type MimeAttachment } from "./mime.js";
 import { messageRowId } from "./sync.js";
 import { withGmail } from "./tokens.js";
-import type { AccountRow, SendContext, SendRecordInput, SendRow } from "./types.js";
+import { checkSuppression, listUnsubscribeHeader } from "../suppression.js";
+import type { AccountRow, SendContext, SendRecordInput, SendRow, SkippedRecipient } from "./types.js";
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const SUFFIX = `.${MAIL_EVENTS.sendRequested}`;
@@ -117,6 +122,7 @@ export function normaliseRequest(payload: unknown, sender: string): { request: M
     inReplyToMessageId: str(p.inReplyToMessageId, 1000),
     context,
     labels: (Array.isArray(p.labels) ? p.labels : []).map((l) => str(l, 200)).filter((l): l is string => Boolean(l)).slice(0, 10),
+    marketing: p.marketing === true,
   };
   if (to.length + cc.length + bcc.length === 0 && problems.length === 0) problems.push("The message has no recipients");
   if (!request.html && !request.text) problems.push("The message has no body");
@@ -124,7 +130,11 @@ export function normaliseRequest(payload: unknown, sender: string): { request: M
   return { request, problem: problems[0] ?? null };
 }
 
-export function resultFromRow(row: SendRow): MailSendResult {
+/** A send result; `suppressed` lists recipients left out because they are on the do-not-email list. */
+export type SendResult = MailSendResult & { suppressed?: SkippedRecipient[] };
+
+export function resultFromRow(row: SendRow): SendResult {
+  const skipped = row.skipped ?? [];
   return {
     key: row.key,
     status: row.status === "sent" ? "sent" : "failed",
@@ -134,11 +144,12 @@ export function resultFromRow(row: SendRow): MailSendResult {
     error: row.status === "sent" ? null : row.error,
     permanent: row.status === "sent" ? false : row.permanent,
     context: row.context,
+    ...(skipped.length ? { suppressed: skipped } : {}),
   };
 }
 
-function failed(request: MailSendRequested, error: string): MailSendResult {
-  return { key: request.key, status: "failed", messageId: null, threadId: null, sentAt: null, error, permanent: true, context: request.context };
+function failed(request: MailSendRequested, error: string, suppressed?: SkippedRecipient[]): SendResult {
+  return { key: request.key, status: "failed", messageId: null, threadId: null, sentAt: null, error, permanent: true, context: request.context, ...(suppressed?.length ? { suppressed } : {}) };
 }
 
 async function pickAccount(env: Env, companyId: string, from: string | null | undefined): Promise<AccountRow | null> {
@@ -253,7 +264,7 @@ export interface SendOptions {
 }
 
 /** Send one request. Throws on transient trouble; returns `failed` only when retrying will not help. */
-export async function performSend(env: Env, companyId: string, request: MailSendRequested, options: SendOptions, problem: string | null = null): Promise<MailSendResult> {
+export async function performSend(env: Env, companyId: string, request: MailSendRequested, options: SendOptions, problem: string | null = null): Promise<SendResult> {
   const before = await env.store.getSend(companyId, request.key);
   if (before?.status === "sent") return resultFromRow(before);
   if (before?.status === "failed" && before.permanent && !options.force) return resultFromRow(before);
@@ -271,17 +282,23 @@ export async function performSend(env: Env, companyId: string, request: MailSend
     context: request.context,
     request,
   };
+  // Never email a suppressed address: marketing skips every one, any send skips hard bounces.
+  const check = problem ? null : await checkSuppression(env.store, companyId, request);
+  const blocked = check?.blocked ? check.skipped : undefined;
   const permanentProblem =
     problem ??
+    (check?.blocked ? check.error : null) ??
     (!account
       ? request.from
         ? `No connected Gmail account for ${request.from} in Mailbox`
         : "No Gmail account is connected in Mailbox"
       : null);
   if (permanentProblem) {
-    await env.store.recordSendFailure(record, permanentProblem, true);
-    return failed(request, permanentProblem);
+    await env.store.recordSendFailure(record, permanentProblem, true, blocked ?? []);
+    return failed(request, permanentProblem, blocked);
   }
+  const outgoing = check?.request ?? request;
+  const skipped = check?.skipped ?? [];
   const sender = account!;
   if (sender.status === "needs_reconnect") {
     const message = `Gmail for ${sender.address} must be reconnected before mail can be sent`;
@@ -306,7 +323,7 @@ export async function performSend(env: Env, companyId: string, request: MailSend
       const found = await withGmail(env, loaded, sender, (token) => listMessages(env.fetch, token, `rfc822msgid:${rfcMessageId}`, { maxResults: 1 }));
       if (found.messages[0]) sent = { id: found.messages[0].id, threadId: found.messages[0].threadId, labelIds: [] };
     }
-    if (!sent) sent = await sendNow(env, loaded, sender, request, rfcMessageId);
+    if (!sent) sent = await sendNow(env, loaded, sender, outgoing, rfcMessageId);
   } catch (error) {
     const message = errorMessage(error);
     if ((error instanceof AttachmentError && error.permanent) || isPermanentGmail(error)) {
@@ -318,7 +335,7 @@ export async function performSend(env: Env, companyId: string, request: MailSend
   }
   // Gmail has the message now. A failure below leaves the claim in place (never "retrying"), so a
   // later delivery finds the sent message by its Message-ID instead of sending it again.
-  return finishSent(env, loaded, sender, request, options, sent, rfcMessageId);
+  return finishSent(env, loaded, sender, outgoing, options, sent, rfcMessageId, skipped);
 }
 
 async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string) {
@@ -337,6 +354,7 @@ async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, reque
     inReplyTo: thread.inReplyTo,
     references: thread.references,
     date: new Date(env.now()),
+    listUnsubscribe: request.marketing ? listUnsubscribeHeader(sender.address) : null,
   });
   return withGmail(env, loaded, sender, (token) => sendRaw(env.fetch, token, mime, thread.threadId));
 }
@@ -349,7 +367,8 @@ async function finishSent(
   options: SendOptions,
   sent: { id: string; threadId: string; labelIds: string[] },
   generatedRfcId: string,
-): Promise<MailSendResult> {
+  skipped: SkippedRecipient[] = [],
+): Promise<SendResult> {
   let rfcMessageId: string | null = generatedRfcId;
   let labelIds = sent.labelIds;
   try {
@@ -372,7 +391,7 @@ async function finishSent(
     }
   }
   const fields = { gmailMessageId: sent.id, gmailThreadId: sent.threadId || sent.id, rfcMessageId, accountId: account.id, fromAddress: account.address };
-  await env.store.markSendSent(request.key, fields);
+  await env.store.markSendSent(request.key, { ...fields, skipped });
   if (options.draftRowId) {
     try {
       await env.store.markDraftSent(account.company_id, options.draftRowId, { ...fields, context: request.context, sendKey: request.key });
@@ -418,13 +437,14 @@ async function finishSent(
     error: null,
     permanent: false,
     context: request.context,
+    ...(skipped.length ? { suppressed: skipped } : {}),
   };
 }
 
 /** Event handler for `plugin.<sender>.mail.send.requested`. */
 export const MAILBOX_OFF = "The Mailbox is switched off for this company. Turn it on in Setup, then retry the send from the Mailbox.";
 
-export async function handleSendRequested(env: Env, event: PluginEvent): Promise<MailSendResult | null> {
+export async function handleSendRequested(env: Env, event: PluginEvent): Promise<SendResult | null> {
   const sender = senderOf(event.eventType) ?? "unknown";
   const companyId = event.companyId;
   const normalised = normaliseRequest(event.payload, sender);
@@ -439,8 +459,8 @@ export async function handleSendRequested(env: Env, event: PluginEvent): Promise
     const { result } = await receiveOnce(env.ctx, companyId, event.eventType, request.key, () =>
       performSend(env, companyId, request, { sourcePlugin: sender }, problem).then((r) => r as unknown as Record<string, unknown>),
     );
-    const out = result as unknown as MailSendResult;
-    await env.ctx.events.emit(MAIL_EVENTS.sendResult, companyId, out);
+    const out = result as unknown as SendResult;
+    await env.ctx.events.emit(MAIL_EVENTS.sendResult, companyId, out as unknown as Record<string, unknown>);
     return out;
   } catch (error) {
     // Nothing stored: the sender's outbox asks again later.
@@ -450,7 +470,7 @@ export async function handleSendRequested(env: Env, event: PluginEvent): Promise
 }
 
 /** Board action: send a failed or waiting request again and tell the sender. */
-export async function retrySend(env: Env, companyId: string, key: string): Promise<MailSendResult> {
+export async function retrySend(env: Env, companyId: string, key: string): Promise<SendResult> {
   const row = await env.store.getSend(companyId, key);
   if (!row) throw new MailboxError("Send request not found");
   if (row.status === "sent") return resultFromRow(row);

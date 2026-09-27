@@ -12,7 +12,7 @@ import { reviewerAgentId, reviewerBrief, wakeIssue } from "@partnersinbiz/pib-pl
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { destinationsForPost, getAccountsByIds, postMedia, table, type PostRow } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, scopeLine, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, socialProjectId } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
 import { isSocialPlatform, PLATFORM_LABELS, type PostStatus } from "./platforms.js";
 
@@ -40,14 +40,6 @@ function errorMessage(error: unknown): string {
 
 function platformName(platform: string): string {
   return isSocialPlatform(platform) ? PLATFORM_LABELS[platform] : platform;
-}
-
-async function defaultPerson(ctx: PluginContext, companyId: string): Promise<string | null> {
-  try {
-    return (await ctx.companies.get(companyId))?.defaultResponsibleUserId ?? null;
-  } catch {
-    return null;
-  }
 }
 
 async function reviewIssueOf(ctx: PluginContext, companyId: string, postId: string): Promise<string | null> {
@@ -101,7 +93,7 @@ export async function routePostReview(ctx: PluginContext, actor: ReviewActor, po
   try {
     const reviewer = await reviewerAgentId(ctx, companyId);
     if (!reviewer) return null;
-    const person = post.owner_user_id ?? (await defaultPerson(ctx, companyId));
+    const person = (await personAssignee(ctx, companyId, post.owner_user_id)) ?? null;
     const handTo = { userId: person, label: person ? `user \`${person}\` (who approves this post)` : "a board user who approves posts" };
     const existing = await reviewIssueOf(ctx, companyId, post.id);
     if (existing && (await issueOpen(ctx, companyId, existing))) {
@@ -140,9 +132,10 @@ export async function routePostReview(ctx: PluginContext, actor: ReviewActor, po
 /**
  * A post left review. A person sending it back to draft counts as "changes
  * requested" (Cockpit quality). The Reviewer's issue, if any, is closed with
- * a note. Never throws.
+ * a note (`approvedNote` says what happened to the schedule on approval).
+ * Never throws.
  */
-export async function closePostReview(ctx: PluginContext, actor: ReviewActor, post: PostRow, to: PostStatus): Promise<void> {
+export async function closePostReview(ctx: PluginContext, actor: ReviewActor, post: PostRow, to: PostStatus, approvedNote?: string): Promise<void> {
   if (post.status !== "review" || (to !== "approved" && to !== "draft")) return;
   const companyId = actor.companyId;
   const byPerson = !actor.isAgent && Boolean(actor.userId);
@@ -156,7 +149,7 @@ export async function closePostReview(ctx: PluginContext, actor: ReviewActor, po
     );
     if (!issueId || !(await issueOpen(ctx, companyId, issueId))) return;
     const note = to === "approved"
-      ? "A person approved the post. It can be scheduled now."
+      ? approvedNote ?? "A person approved the post."
       : `${byPerson ? "A person" : "The agent"} moved the post back to draft for changes. A new review opens when it is sent for review again.`;
     await ctx.issues.createComment(issueId, note, companyId);
     await ctx.issues.update(issueId, { status: "done" }, companyId);

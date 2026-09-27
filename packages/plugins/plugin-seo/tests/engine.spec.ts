@@ -135,7 +135,7 @@ describe("audits, proposals and keyword status", () => {
 describe("completion guards", () => {
   const facts = { activeKeywords: 12, keywordsWithoutIntent: 0, priorityKeywords: 5, directoriesNotStarted: 0, latestSnapshotDay: 90 };
   it("refuses status-only completion of directory submissions", () => {
-    expect(completionBlocker("directory-submission", { ...facts, directoriesNotStarted: 4 })).toMatch(/4 directory/);
+    expect(completionBlocker("directory-submission", { ...facts, directoriesNotStarted: 4 })).toMatch(/4 directories or citations are still not started/);
     expect(completionBlocker("directory-submission", facts)).toBeNull();
   });
   it("checks keyword and audit work", () => {

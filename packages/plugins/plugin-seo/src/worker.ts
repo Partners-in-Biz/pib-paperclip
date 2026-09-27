@@ -49,16 +49,18 @@ import {
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
-import { SEO_ROLE } from "./service/hire.js";
+import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
 import { findClient, scopeParam } from "./service/scope.js";
 import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
+import { displayTitle, sprintOverviews } from "./service/overview.js";
 import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
 import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
+import { routineViews, saveRoutineReport } from "./service/routines.js";
 import { siteProjectOptions } from "./service/site.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS } from "./tools.js";
@@ -97,7 +99,8 @@ const plugin = definePlugin({
       if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);
     });
     // Links the agent hired through the hire task as soon as it appears.
-    registerHireWatch(ctx, [{ role: SEO_ROLE, onLinked: seoOnLinked(e) }]);
+    // Matching leaves out the operating manual every PiB agent carries (see SEO_MATCH_ROLE).
+    registerHireWatch(ctx, [{ role: SEO_MATCH_ROLE, onLinked: seoOnLinked(e) }]);
     // Module switches from the Setup plugin: jobs and agent tools skip companies that switched SEO off.
     registerModuleWatch(ctx);
     // Cockpit roles: sign-offs and out-of-scope PRs go to the Reviewer first when one is set.
@@ -227,9 +230,9 @@ function registerActions(e: Env) {
     // Backstop for missed agent events: link a pending hire that now has its agent.
     await linkPendingHire(e, companyId);
     const userId = actor.kind === "user" ? actor.userId : null;
-    const [sprints, counts, client, agent, hire] = await Promise.all([
-      db.listSprints(ctx.db, companyId, { scope }),
-      db.sprintCounts(ctx.db, companyId),
+    const [sprints, client, agent, hire] = await Promise.all([
+      // The SEO home lists every sprint (our own first, then each client's); a client's workspace only that client's.
+      db.listSprints(ctx.db, companyId, scope ? { scope } : {}),
       scope ? findClient(e, companyId, scope) : Promise.resolve(null),
       resolveAgent(e, companyId),
       // The agent banner lives on the own page only.
@@ -249,7 +252,11 @@ function registerActions(e: Env) {
     };
     const base = info.loaded.config.publicBaseUrl;
     const serviceAccount = await loadServiceAccount(info);
+    // Due, overdue, stuck and waiting: one definition (engine/due.ts) for this page, the tools and the Cockpit.
+    const overviews = await sprintOverviews(ctx.db, companyId, sprints, info.today, agent);
     const setup = scope ? [] : await setupChecklist(e, info, null).catch(() => []);
+    // Own page: the routines, so the page (a board user) can read their schedules and switch them on.
+    const routines = scope ? [] : await routineViews(e, companyId).catch(() => []);
     return {
       today: info.today,
       timezone: info.timezone,
@@ -271,6 +278,7 @@ function registerActions(e: Env) {
       agent,
       hire,
       setup,
+      routines,
       skillKey: SKILL_CANONICAL_KEY,
       scope: scopeParamValue(scope),
       client: scope
@@ -286,7 +294,7 @@ function registerActions(e: Env) {
       clientError: scope && !client
         ? "This client is not in the SEO plugin's CRM list (deleted, or the CRM has not synced it yet). Run CRM resync, then reload. New sprints need the CRM record."
         : null,
-      sprints: sprints.map((s) => sprintView(s, info.today, counts[s.id])),
+      sprints: sprints.map((s) => sprintView(s, info.today, overviews.get(s.id))),
     };
   });
 
@@ -306,7 +314,7 @@ function registerActions(e: Env) {
     const requested = scopeParam(params);
     const redirect = requested === undefined ? null : scopeRedirect(requested, sprintScope(sprint));
     if (redirect) return { redirect: { ...redirect, clientName: sprint.clientName } };
-    const [tasks, keywords, backlinks, content, snapshots, findings, optimizations, integrations, health, counts] = await Promise.all([
+    const [tasks, keywords, backlinks, content, snapshots, findings, optimizations, integrations, health, agent] = await Promise.all([
       db.listTasks(ctx.db, companyId, sprintId),
       db.listKeywords(ctx.db, companyId, sprintId, { includeRetired: true }),
       db.listBacklinks(ctx.db, companyId, sprintId),
@@ -316,27 +324,29 @@ function registerActions(e: Env) {
       db.listOptimizations(ctx.db, companyId, sprintId),
       db.listIntegrations(ctx.db, companyId, sprintId),
       db.latestPageHealth(ctx.db, sprintId),
-      db.sprintCounts(ctx.db, companyId),
+      resolveAgent(e, companyId),
     ]);
     const [history, traffic] = await Promise.all([
       db.sprintHistory(ctx.db, sprintId, "2000-01-01"),
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
-    const [needsYou, setup, projects, playbook] = await Promise.all([
+    const [needsYou, setup, projects, playbook, overviews] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
       siteProjectOptions(e, companyId, sprint.siteUrl).catch(() => []),
       playbookSummary(e, sprint).catch(() => null),
+      sprintOverviews(ctx.db, companyId, [sprint], info.today, agent),
     ]);
     const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
     for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
     return {
-      sprint: sprintView(sprint, info.today, counts[sprintId]),
+      sprint: sprintView(sprint, info.today, overviews.get(sprintId)),
       prefix: info.prefix,
       scoreboard: sprint.scoreboard,
       today: sprint.today,
-      tasks,
+      // Template tasks read in their plan's current (plain) words.
+      tasks: tasks.map((task) => ({ ...task, title: displayTitle(task, sprint.templateId) })),
       keywords: keywords.map((k) => ({ ...k, history: (byKeyword[k.id] ?? []).slice(-60) })),
       backlinks,
       content,
@@ -430,6 +440,12 @@ function registerActions(e: Env) {
     requireUser(actor);
     await unlinkAgent(ctx, companyId, SEO_ROLE);
     return { status: await seoHireStatus(e, companyId) };
+  });
+
+  // The page (a board user) read a routine's schedule triggers from the host; the worker cannot.
+  action("seo.routine-report", async (companyId, actor, params) => {
+    requireUser(actor);
+    return saveRoutineReport(e, companyId, params);
   });
 
   // "Re-sync": wires the linked agent again. It never creates an agent.

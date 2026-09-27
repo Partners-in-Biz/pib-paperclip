@@ -186,7 +186,7 @@ export async function retireKeyword(env: Env, companyId: string, params: Params)
   return { keywordId: keyword.id, retired: true };
 }
 
-/** Manual position (and the legacy record-rank alias). */
+/** A position the agent observed itself (GSC positions arrive on their own). */
 export async function recordPosition(env: Env, companyId: string, actor: Actor, params: Params) {
   let keyword: db.Keyword | null = null;
   if (params.keywordId) keyword = await requireKeyword(env, companyId, params);
@@ -203,7 +203,7 @@ export async function recordPosition(env: Env, companyId: string, actor: Actor, 
     }
   }
   if (!keyword) throw new SeoError("Keyword could not be resolved");
-  const position = num(params, "position", { min: 0.5, max: 500 }) ?? num(params, "rank", { min: 1, max: 500, integer: true });
+  const position = num(params, "position", { min: 0.5, max: 500 });
   if (position == null) throw new SeoError("position is required (the rank you observed, e.g. 12)");
   const info = await companyInfo(env, companyId);
   const recordedOn = isoDateParam(params, "recordedOn") ?? info.today;
@@ -438,9 +438,9 @@ export async function addContent(env: Env, companyId: string, params: Params) {
     taskId: str(params, "taskId") ?? null,
     notes: str(params, "notes", { max: 4000 }) ?? null,
   });
-  // Live now: Social repurposes it (content.published).
-  if (status === "live") await contentWentLive(env, companyId, id);
-  return { contentId: id, sprintId: sprint.id, status };
+  // Live: Social repurposes it (content.published) once the page answers 200.
+  const handOff = status === "live" ? await contentWentLive(env, companyId, id) : null;
+  return { contentId: id, sprintId: sprint.id, status, ...(handOff ? { socialHandOff: { status: handOff.status, reason: handOff.reason } } : {}) };
 }
 
 export async function updateContentTool(env: Env, companyId: string, params: Params) {
@@ -483,32 +483,26 @@ export async function updateContentTool(env: Env, companyId: string, params: Par
   if (params.notes !== undefined) patch.notes = str(params, "notes", { max: 4000 }) ?? null;
   if (Object.keys(patch).length === 0) throw new SeoError("Nothing to update");
   await db.updateContent(env.ctx.db, companyId, content.id, patch);
-  if (status === "live" && content.status !== "live") await contentWentLive(env, companyId, content.id);
-  return { contentId: content.id, updated: Object.keys(patch) };
+  // Newly live (or a new live URL): Social repurposes it once the page answers 200.
+  const handOff = (status === "live" && content.status !== "live") || (target && (status ?? content.status) === "live")
+    ? await contentWentLive(env, companyId, content.id)
+    : null;
+  return { contentId: content.id, updated: Object.keys(patch), ...(handOff ? { socialHandOff: { status: handOff.status, reason: handOff.reason } } : {}) };
 }
 
+/** The Social plugin's platforms (link-social-post `platform`). */
+export const SOCIAL_PLATFORMS = ["facebook", "instagram", "threads", "linkedin", "x", "tiktok", "youtube", "pinterest", "reddit", "bluesky", "mastodon", "dribbble"] as const;
+
+/** Record a Social post that repurposes a content row (idempotent per post id). */
 export async function linkSocialPost(env: Env, companyId: string, params: Params) {
   const id = reqStr(params, "contentId");
   const content = await db.getContent(env.ctx.db, companyId, id);
   if (!content) throw new SeoError(`Content ${id} was not found`);
   const postId = reqStr(params, "socialPostId", { max: 200 });
-  const entry = [postId, str(params, "platform", { max: 40 }), str(params, "url", { max: 1000 })].filter(Boolean).join("|");
+  const entry = [postId, oneOf(params, "platform", SOCIAL_PLATFORMS), str(params, "url", { max: 1000 })].filter(Boolean).join("|");
   const existing = content.socialPostIds.filter((e) => e.split("|")[0] !== postId);
   await db.updateContent(env.ctx.db, companyId, content.id, { social_post_ids: [...existing, entry] });
   return { contentId: content.id, socialPosts: [...existing, entry] };
-}
-
-export async function addPage(env: Env, companyId: string, params: Params) {
-  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
-  const id = randomUUID();
-  await db.insertPage(env.ctx.db, {
-    id,
-    companyId,
-    sprintId: sprint.id,
-    url: urlParam(reqStr(params, "url", { max: 1000 }), sprint.siteUrl),
-    title: str(params, "title", { max: 300 }) ?? "",
-  });
-  return { pageId: id, sprintId: sprint.id };
 }
 
 // ---------------------------------------------------------------------------
@@ -523,8 +517,7 @@ export async function recordFinding(env: Env, companyId: string, actor: Actor, p
     companyId,
     sprintId: sprint.id,
     finding: reqStr(params, "finding", { max: 1000 }),
-    // Lenient for the legacy record-audit alias, which accepted any severity text.
-    severity: (FINDING_SEVERITIES as readonly string[]).includes(String(params.severity ?? "")) ? String(params.severity) : "info",
+    severity: oneOf(params, "severity", FINDING_SEVERITIES) ?? "info",
     category: str(params, "category", { max: 40 }) ?? "manual",
     url: url ? urlParam(url, sprint.siteUrl) : null,
     source: actor.kind === "agent" ? "agent" : "manual",

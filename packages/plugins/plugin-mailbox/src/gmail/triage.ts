@@ -139,10 +139,16 @@ export function ruleCategory(facts: TriageFacts): MailCategory {
   return "other";
 }
 
-/** Rough needs-reply probability for the rules path. */
+/**
+ * Rough needs-reply probability for the rules path. A lead, a client or
+ * someone asking for help wrote to a person and expects an answer: above the
+ * 0.7 action threshold, so a reply issue opens without Jev too. Replies to
+ * our own mail are handled by the plugin that sent it.
+ */
 export function ruleNeedsReply(category: MailCategory, facts: TriageFacts): number {
   if (facts.bulk) return 0.05;
-  if (["lead", "client", "reply", "support"].includes(category)) return 0.6;
+  if (["lead", "client", "support"].includes(category)) return 0.75;
+  if (category === "reply") return 0.6;
   if (/\?/.test(facts.subject) || /\?/.test(facts.snippet)) return 0.5;
   return 0.2;
 }

@@ -95,18 +95,18 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
   const jev = jevKeySet(config);
   items.push({
     key: "jev",
-    title: "Add the Jev (TypeSafe) key",
+    title: "Smart reply sorting (optional)",
     status: jev ? "done" : "optional",
     required: false,
     detail: jev
-      ? "Campaign replies are sorted with Jev."
-      : "Optional. Used to sort campaign replies (interested, not now, unsubscribe). Without it Campaigns uses its built-in rules.",
+      ? "Campaign replies are sorted by the smart sorting service."
+      : "Optional. Sorts campaign replies more accurately (interested, not now, unsubscribe). Without it Campaigns uses its built-in rules.",
     href: settings,
     hrefLabel: "Open settings",
     steps: jev ? undefined : [
-      "Create an API key at typesafe.ai → API keys.",
-      "In the Campaigns settings, pick or create a Paperclip secret for Jev → TypeSafe API key.",
-      "Click Save Configuration.",
+      "An admin creates an API key with the smart sorting service (typesafe.ai → API keys).",
+      "In the Campaigns settings, find **Smart sorting (Jev by TypeSafe)** and pick or create a Paperclip secret for the API key.",
+      "Click **Save Configuration**.",
     ],
     agentNext: "Stops a contact's campaign when they reply, and hands interested replies to a person.",
   });
@@ -130,9 +130,10 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     required: false,
     detail: blocked
       ? "Active campaigns send email, but the Mailbox module is switched off. Turn it on in Setup and connect Gmail."
-      : "Campaigns set to email delivery send through the Mailbox (Gmail). Connect Gmail there first. Campaigns set to issues need nothing more.",
-    href: "/mailbox",
-    hrefLabel: "Open Mailbox",
+      : "Campaigns set to email delivery send through the Mailbox (Gmail). Connect Gmail there first. Campaigns delivered as tasks for the agent need nothing more.",
+    // The Mailbox page starts the Google sign-in at once from this link.
+    href: blocked ? "/setup" : "/mailbox?tab=mailboxes&connect=gmail",
+    hrefLabel: blocked ? "Turn on the Mailbox" : "Connect Gmail",
     agentNext: "Email campaigns send each due step without a person opening an issue.",
   });
 

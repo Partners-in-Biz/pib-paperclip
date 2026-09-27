@@ -7,6 +7,11 @@
  * Old-system bugs not copied: ageing uses what is still owed (partly paid
  * invoices included, not their full total); revenue and client value use
  * money actually received, not invoice totals.
+ *
+ * Every figure is "as at" the report's end date (today by default): an
+ * invoice sent or a payment dated after it counts nowhere, not even in the
+ * current month's bar. "Received" is the money that came in (the payment
+ * amount, an overpayment included), the same figure as Accounting's bank.
  */
 import { monthlyMinor } from "./money.js";
 
@@ -101,6 +106,8 @@ export interface RevenuePayment {
   currency: string;
   paidAt: string;
   allocatedMinor: number;
+  /** The money that came in (allocated plus any overpayment kept as credit); defaults to `allocatedMinor`. */
+  amountMinor?: number;
   fxRate?: number | null;
   clientKey: string;
   clientName: string;
@@ -108,6 +115,16 @@ export interface RevenuePayment {
 
 function month(value: string): string {
   return value.slice(0, 7);
+}
+
+/** Dated after the report's end (a date or timestamp compared as `YYYY-MM-DD`): counts nowhere yet. */
+function afterEnd(value: string, to: string): boolean {
+  return value.slice(0, 10) > to.slice(0, 10);
+}
+
+/** Money received by a payment: its full amount (an overpayment is money in too). */
+export function receivedMinor(payment: Pick<RevenuePayment, "allocatedMinor" | "amountMinor">): number {
+  return payment.amountMinor ?? payment.allocatedMinor;
 }
 
 export function monthsBetween(from: string, to: string): string[] {
@@ -123,7 +140,7 @@ export function revenueByMonth(input: { invoices: RevenueInvoice[]; payments: Re
   const rows = new Map(monthsBetween(input.from, input.to).map((m) => [m, { month: m, invoicedMinor: 0, vatMinor: 0, collectedMinor: 0, invoices: 0 }]));
   let unconverted = 0;
   for (const invoice of input.invoices) {
-    if (!invoice.sentAt || invoice.status === "draft" || invoice.status === "cancelled") continue;
+    if (!invoice.sentAt || invoice.status === "draft" || invoice.status === "cancelled" || afterEnd(invoice.sentAt, input.to)) continue;
     const row = rows.get(month(invoice.sentAt));
     if (!row) continue;
     const net = input.convert(invoice.subtotalMinor, invoice.currency, invoice.fxRate);
@@ -137,9 +154,10 @@ export function revenueByMonth(input: { invoices: RevenueInvoice[]; payments: Re
     row.invoices += 1;
   }
   for (const payment of input.payments) {
+    if (afterEnd(payment.paidAt, input.to)) continue;
     const row = rows.get(month(payment.paidAt));
     if (!row) continue;
-    const amount = input.convert(payment.allocatedMinor, payment.currency, payment.fxRate);
+    const amount = input.convert(receivedMinor(payment), payment.currency, payment.fxRate);
     if (amount == null) {
       unconverted += 1;
       continue;
@@ -189,8 +207,9 @@ export function revenueByClient(input: { invoices: ClientBalanceInput[]; payment
     }
   }
   for (const payment of input.payments) {
+    if (afterEnd(payment.paidAt, input.to)) continue;
     const r = row(payment.clientKey, payment.clientName);
-    const amount = input.convert(payment.allocatedMinor, payment.currency, payment.fxRate);
+    const amount = input.convert(receivedMinor(payment), payment.currency, payment.fxRate);
     if (amount == null) continue;
     r.lifetimePaidMinor += amount;
     if (inWindow(payment.paidAt)) r.collectedMinor += amount;
@@ -266,7 +285,7 @@ export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: 
     }
     const started = Date.parse(item.startedAt);
     const cancelled = item.cancelledAt ? Date.parse(item.cancelledAt) : null;
-    if (item.status === "active") {
+    if (item.status === "active" && !(Number.isFinite(started) && started > input.now.getTime())) {
       mrrMinor += monthly;
       active += 1;
       if (Number.isFinite(started) && started >= windowStart) newMinor += monthly;
@@ -296,10 +315,11 @@ export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: 
  * cancelled by then. Paused retainers are left out of every month, because
  * the pause date is not stored.
  */
-export function mrrTrend(input: { items: RecurringRevenue[]; months: string[]; book: string; convert: Convert }) {
+export function mrrTrend(input: { items: RecurringRevenue[]; months: string[]; book: string; convert: Convert; now?: Date }) {
   return input.months.map((month) => {
     const [y, m] = month.split("-").map(Number) as [number, number];
-    const end = Date.UTC(y, m, 1) - 1;
+    // The current month is "as at now": a retainer starting later this month is not counted yet.
+    const end = Math.min(Date.UTC(y, m, 1) - 1, input.now ? input.now.getTime() : Number.POSITIVE_INFINITY);
     let mrrMinor = 0;
     let active = 0;
     for (const item of input.items) {

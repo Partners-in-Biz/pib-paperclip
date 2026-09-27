@@ -1,8 +1,13 @@
-import { useState, type ReactNode } from "react";
-import { useHostContext, usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Modal, NewTaskDialog, Select, errorText, tokens, type TaskAssigneeOption } from "@partnersinbiz/pib-plugin-ui";
-import { Banner, IssueLink, small, words } from "./shared.js";
-import { HIRE_STALE_DAYS, ROLE_SKILL_PURPOSE, ROLE_SKILLS, dropSkillAsks, roleView } from "./role-skills.js";
+/**
+ * The Bookkeeper box. The Bookkeeper is hired, picked, changed or removed in
+ * Setup → Team; the Accounting page shows this box only when something is
+ * wrong, with one line and "Fix in Setup".
+ */
+import { useState, type CSSProperties } from "react";
+import { useHostContext, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { Button, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Banner, small } from "./shared.js";
+import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
 
 export interface HireAgent {
@@ -29,198 +34,65 @@ export interface HireView {
   candidates: HireAgent[];
 }
 
-interface HireOptions {
-  draft: { title: string; description: string };
-  agents: HireAgent[];
-  defaultAssigneeAgentId: string | null;
-  status: HireView;
-}
+/** "Fix in Setup": a small primary link (the host only styles its own class names). */
+const fixLink: CSSProperties = { display: "inline-flex", alignItems: "center", height: 28, padding: "0 10px", borderRadius: 8, background: tokens.primary, color: tokens.primaryFg, fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" };
 
-const LOCAL_BOARD_USER_ID = "local-board";
-
-function detail(a: HireAgent): string | null {
-  return a.title && a.title !== a.name ? a.title : a.role ? words(a.role) : null;
-}
-
-/** The Bookkeeper card: hire through a task, link an existing agent, re-sync. */
-export function BookkeeperPanel({ hire, refresh, onMessage }: { hire: HireView | null; refresh: () => Promise<void>; onMessage: (m: string) => void }) {
+/**
+ * Nothing while the Bookkeeper works. One line and "Fix in Setup" when there
+ * is no Bookkeeper, a hire is open, it is paused, in error or waiting for
+ * approval, or `pib-bookkeeping` is missing (then Attach skills and Re-sync
+ * fix it here).
+ */
+export function BookkeeperBox({ hire, refresh, onMessage }: { hire: HireView | null; refresh: () => Promise<void>; onMessage: (m: string) => void }) {
   const host = useHostContext();
-  const loadOptions = usePluginAction("accounting.hire-options");
-  const startHire = usePluginAction("accounting.start-hire");
-  const linkAgent = usePluginAction("accounting.link-agent");
-  const unlinkAgent = usePluginAction("accounting.unlink-agent");
+  const nav = useHostNavigation();
   const resync = usePluginAction("accounting.resync-agent");
-  const [busy, setBusy] = useState("");
-  const [hireOptions, setHireOptions] = useState<HireOptions | null>(null);
-  const [linkOptions, setLinkOptions] = useState<HireOptions | null>(null);
-  const [linkId, setLinkId] = useState("");
-  const [steps, setSteps] = useState<{ title: string; steps: string[]; instructions: string[] } | null>(null);
+  const [resyncing, setResyncing] = useState(false);
+  const agent = hire?.agent ?? null;
+  // The page attaches pib-bookkeeping to the linked agent for the person viewing (a plugin worker cannot).
+  const skills = useRoleSkills({ companyId: host.companyId, agent, skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE, onAttached: () => void refresh().catch(() => undefined) });
+  if (!hire) return null;
+  const problem = agentProblem({
+    agent,
+    hire: hire.hire,
+    missingSkills: agent ? stillMissing({ checked: skills.checked, attached: Boolean(skills.note?.ok), attachFailed: skills.missing }) : [],
+    candidates: hire.candidates.length,
+  });
+  if (!problem) return null;
 
-  async function run(kind: string, fn: () => Promise<void>) {
-    setBusy(kind);
+  async function doResync() {
+    setResyncing(true);
     onMessage("");
     try {
-      await fn();
+      const r = (await resync({})) as { agent: { name: string }; instructions: string[] };
+      onMessage([`Re-synced ${r.agent.name}.`, ...r.instructions].join(" "));
+      await refresh();
     } catch (error) {
       onMessage(errorText(error));
     } finally {
-      setBusy("");
+      setResyncing(false);
     }
   }
 
-  const agent = hire?.agent ?? null;
-  // Hire only with no agent linked and no hire task open (no duplicate hires).
-  const role = roleView({ agentId: agent?.id, hire: hire?.hire });
-  const openRequest = role.mode === "hiring" ? hire?.hire ?? null : null;
-  // The page attaches pib-bookkeeping to the linked agent for the person viewing (a plugin worker cannot).
-  const skills = useRoleSkills({ companyId: host.companyId, agent, skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE, onAttached: () => void refresh().catch(() => undefined) });
-  const me = host.userId && host.userId !== LOCAL_BOARD_USER_ID ? host.userId : null;
-  const assignees: TaskAssigneeOption[] = [
-    ...(me ? [{ kind: "user" as const, id: me, name: "Me" }] : []),
-    ...(hireOptions?.agents ?? []).map((a) => ({ kind: "agent" as const, id: a.id, name: a.name, detail: detail(a), status: a.status })),
-  ];
-  const openLink = () =>
-    run("link", async () => {
-      const options = (await loadOptions({})) as HireOptions;
-      setLinkId(options.status.candidates[0]?.id ?? "");
-      setLinkOptions(options);
-    });
-  const actions = (buttons: ReactNode) => <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>{buttons}</div>;
-
-  let banner: ReactNode;
-  if (!hire) banner = null;
-  else if (agent) {
-    banner = (
-      <Banner tone={agent.status === "paused" || agent.status === "pending_approval" ? "warn" : "info"}>
-        <span>
-          <strong>Bookkeeper: {agent.name}</strong> ({words(agent.status)})
-          {hire.linkedBy ? <span style={{ color: tokens.muted }}> · {hire.linkedBy === "auto" ? "linked from the hire task" : "linked by hand"}</span> : null}
-        </span>
-        {agent.status === "paused" ? <span>Open Agents → {agent.name}, check its adapter has a working model key, then click Resume.</span> : null}
-        {agent.status === "pending_approval" ? <span>Approve the hire in Approvals, then resume the agent.</span> : null}
-        {actions(
-          <>
-            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void run("resync", async () => {
-              const r = (await resync({})) as { agent: { name: string }; steps: string[]; instructions: string[] };
-              setSteps({ title: `Re-synced ${r.agent.name}`, steps: r.steps, instructions: r.instructions });
-              await refresh();
-            })}>{busy === "resync" ? "Re-syncing…" : "Re-sync"}</Button>
-            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>Change agent</Button>
-          </>,
-        )}
-      </Banner>
-    );
-  } else if (openRequest) {
-    const closed = role.closed;
-    banner = (
-      <Banner tone={closed ? "warn" : "info"}>
-        <span>
-          <strong>Hire request <IssueLink id={openRequest.issueId} identifier={openRequest.identifier} label={openRequest.identifier ?? "hire task"} /></strong>{" "}
-          {closed ? `is ${words(openRequest.issueStatus)}, but no Bookkeeper was linked. Link it, or open a new hire task.` : `is open (${openRequest.assigneeName ? `assigned to ${openRequest.assigneeName}` : "not assigned yet"}). The plugin links the new agent automatically when it appears.`}
-        </span>
-        {!closed && role.stale ? <span>It has been open for more than {HIRE_STALE_DAYS} days. If nobody is working on it, open a new hire task.</span> : null}
-        {hire.candidates.length > 1 ? <span>More than one new agent looks like the Bookkeeper ({hire.candidates.map((c) => c.name).join(", ")}). Pick one with Link agent.</span> : null}
-        {actions(
-          <>
-            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>Link agent</Button>
-            {role.canRehire ? <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void run("hire", async () => setHireOptions((await loadOptions({})) as HireOptions))}>Open a new hire task</Button> : null}
-          </>,
-        )}
-      </Banner>
-    );
-  } else {
-    banner = (
-      <Banner>
-        <span>
-          <strong>No Bookkeeper yet.</strong> Hire Bookkeeper opens a hire task with the agent's spec for whoever hires for this company. The Bookkeeper reconciles the bank, categorises lines and runs the month-end checklist; a person still approves anything that posts or locks.
-        </span>
-        {actions(
-          <>
-            <Button type="button" style={small} disabled={busy !== ""} onClick={() => void run("hire", async () => setHireOptions((await loadOptions({})) as HireOptions))}>{busy === "hire" ? "Opening…" : "Hire Bookkeeper"}</Button>
-            <Button type="button" variant="secondary" style={small} disabled={busy !== ""} onClick={() => void openLink()}>Link an existing agent</Button>
-          </>,
-        )}
-      </Banner>
-    );
+  async function doAttach() {
+    onMessage("");
+    const note = await skills.attach();
+    if (note) onMessage(note.line);
   }
 
+  const busy = resyncing || skills.busy;
   return (
-    <>
-      {banner}
-      {skills.note ? <Banner tone={skills.note.ok ? "info" : "warn"}><span>{skills.note.line}</span></Banner> : null}
-      {steps ? (
-        <Banner>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-            <strong style={{ minWidth: 0 }}>{steps.title}</strong>
-            <button type="button" onClick={() => setSteps(null)} style={{ border: "none", background: "transparent", color: tokens.muted, cursor: "pointer", minWidth: 32, flexShrink: 0 }} aria-label="Dismiss">×</button>
-          </div>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>{steps.steps.map((s) => <li key={s}>{s}</li>)}</ul>
-          {steps.instructions.length ? <ol style={{ margin: 0, paddingLeft: 18 }}>{steps.instructions.map((s) => <li key={s}>{s}</li>)}</ol> : null}
-        </Banner>
-      ) : null}
-      <NewTaskDialog
-        open={!!hireOptions}
-        prefix={host.companyPrefix}
-        initialTitle={hireOptions?.draft.title ?? ""}
-        initialDescription={hireOptions?.draft.description ?? ""}
-        assignees={assignees}
-        defaultAssignee={hireOptions?.defaultAssigneeAgentId ? `agent:${hireOptions.defaultAssigneeAgentId}` : undefined}
-        note="Give it to the agent that hires for this company (usually the CEO), or to yourself. When the new agent appears, Accounting links it and grants its tools."
-        onClose={() => setHireOptions(null)}
-        onCreate={async (task) => {
-          await startHire(task);
-          setHireOptions(null);
-          await refresh();
-        }}
-      />
-      {linkOptions ? (
-        <Modal
-          open
-          title={agent ? "Change Bookkeeper" : "Link Bookkeeper"}
-          description="Pick the agent that keeps the books. Accounting gives it tool access and sends it bank and month-end work. The agent's own settings are not changed."
-          onClose={() => setLinkOptions(null)}
-          footer={
-            <>
-              {agent ? (
-                <Button type="button" variant="secondary" disabled={busy !== ""} onClick={() => void run("link", async () => {
-                  await unlinkAgent({});
-                  setLinkOptions(null);
-                  onMessage("The Bookkeeper was unlinked. The agent itself was not changed.");
-                  await refresh();
-                })}>Unlink</Button>
-              ) : null}
-              <Button type="button" variant="secondary" onClick={() => setLinkOptions(null)}>Cancel</Button>
-              <Button type="button" disabled={!linkId || busy !== ""} onClick={() => void run("link", async () => {
-                skills.claim(linkId);
-                let r: { agent: HireAgent; steps: string[]; instructions: string[] };
-                try {
-                  r = (await linkAgent({ agentId: linkId })) as typeof r;
-                } catch (error) {
-                  skills.release(linkId);
-                  throw error;
-                }
-                setLinkOptions(null);
-                const skill = await skills.afterLink(r.agent.id, r.agent.name);
-                // The worker asked for the skill by hand before the page attached it.
-                const done = skill.ok ? dropSkillAsks(r.steps, ROLE_SKILLS) : r.steps;
-                const instructions = skill.ok ? dropSkillAsks(r.instructions, ROLE_SKILLS) : r.instructions;
-                setSteps({ title: `Linked ${r.agent.name} as the Bookkeeper`, steps: [...done, skill.line], instructions });
-                await refresh();
-              })}>{busy === "link" ? "Linking…" : "Link agent"}</Button>
-            </>
-          }
-        >
-          <Field label="Agent">
-            <Select value={linkId} onChange={(e) => setLinkId(e.target.value)}>
-              <option value="">Choose an agent…</option>
-              {linkOptions.agents.map((a) => (
-                <option key={a.id} value={a.id}>{`${a.name}${detail(a) ? ` · ${detail(a)}` : ""}${a.status === "paused" ? " (paused)" : ""}`}</option>
-              ))}
-            </Select>
-          </Field>
-          <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted }}>Linking attaches the <code>pib-bookkeeping</code> skill to the agent for you (its other skills stay).</p>
-        </Modal>
-      ) : null}
-    </>
+    <Banner tone={problem.tone}>
+      <span>{problem.text}</span>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
+        <a {...nav.linkProps(TEAM_SETUP_HREF)} style={fixLink}>Fix in Setup</a>
+        {problem.skills ? (
+          <>
+            <Button type="button" variant="secondary" style={small} disabled={busy} onClick={() => void doAttach()}>{skills.busy ? "Attaching…" : "Attach skills"}</Button>
+            <Button type="button" variant="secondary" style={small} disabled={busy} onClick={() => void doResync()}>{resyncing ? "Re-syncing…" : "Re-sync"}</Button>
+          </>
+        ) : null}
+      </div>
+    </Banner>
   );
 }

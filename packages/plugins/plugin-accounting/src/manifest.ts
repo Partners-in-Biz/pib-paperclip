@@ -25,7 +25,7 @@ const instanceConfigSchema: JsonSchema = {
     agentsMayAcceptCategorisation: {
       type: "boolean",
       title: "Agents may accept bank categorisation",
-      description: "Let the Bookkeeper accept bank suggestions (only exact invoice/bill matches). Off: a person accepts every suggestion.",
+      description: "Let the Bookkeeper accept bank suggestions and categorise lines itself (an invoice or bill match only when it is exact). Off: it proposes, and a person accepts every line.",
       default: false,
     },
     jev: jevConfigSchema() as unknown as JsonSchema,
@@ -48,7 +48,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.7",
+  version: "0.2.0",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",
@@ -94,7 +94,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "month-end",
       displayName: "Depreciation and month-end",
-      description: "Posts depreciation up to last month, revalues open foreign-currency items at the last month end, opens the Bookkeeper's month-end close issue and checks the journal audit chain.",
+      description: "Posts depreciation up to last month, revalues open foreign-currency items at the last month end, opens the month-end close issue (for the Bookkeeper, else the Operator or the owner) and checks the journal audit chain.",
       schedule: "20 3 * * *",
     },
     {

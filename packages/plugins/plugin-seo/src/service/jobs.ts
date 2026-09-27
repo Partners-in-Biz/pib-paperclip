@@ -26,6 +26,7 @@ import { gscCheckAccess, gscPull, GscUnavailable, settingsPath } from "./gsc.js"
 import { loadServiceAccount } from "./google-access.js";
 import { indexingFollowUp } from "./indexing.js";
 import { addNeedsYou, recheckNeedsYou } from "./needs-you.js";
+import { activateShippedRoutines } from "./routines.js";
 import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { detectSignals, measureDue } from "./optimize.js";
@@ -305,6 +306,8 @@ export async function linkPendingHires(env: Env): Promise<number> {
   for (const companyId of companies) {
     if (!(await seoOn(env, companyId))) continue;
     if (await linkPendingHire(env, companyId)) linked += 1;
+    // Routines an older version created paused go active once an agent works the sprints.
+    if (await resolveAgent(env, companyId)) await activateShippedRoutines(env, companyId);
   }
   return linked;
 }

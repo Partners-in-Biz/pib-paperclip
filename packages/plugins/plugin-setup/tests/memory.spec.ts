@@ -284,14 +284,17 @@ describe("Company wiki in guided mode, stand-ins and the Finish setup issue", ()
     const onlyMemory = Object.fromEntries(MODULE_KEYS.map((key) => [key, key === "memory"]));
     const installed = { [WIKI_PLUGIN]: { id: "w" } };
     const unchecked = finishSetupContent({ modules: onlyMemory, statuses: {}, installed, prefix: "PIB" });
-    expect(unchecked?.title).toBe("Finish setup: 3 items left");
+    expect(unchecked?.title).toBe("Finish setup: 3 steps left");
     expect(unchecked?.description).toContain("## Company wiki (0 of 3 done)");
     expect(unchecked?.description).toContain(MEMORY_NOT_CHECKED);
     const reported = finishSetupContent({ modules: onlyMemory, statuses: { [WIKI_PLUGIN]: memoryStatus(FRESH) }, installed, prefix: "PIB" });
     expect(reported?.description).toContain("[Open the wiki](/PIB/wiki)");
     expect(reported?.description).toContain('The Setup page can do this for you: "Set up company memory".');
     expect(finishSetupContent({ modules: onlyMemory, statuses: { [WIKI_PLUGIN]: memoryStatus(snapshot()) }, installed, prefix: "PIB" })).toBeNull();
-    expect(finishSetupContent({ modules: onlyMemory, statuses: {}, installed: {}, prefix: null })).toBeNull();
+    // Switched on but not installed: one step (install it, or switch the module off), counted like the page counts it.
+    const notInstalled = finishSetupContent({ modules: onlyMemory, statuses: {}, installed: {}, prefix: null });
+    expect(notInstalled?.title).toBe("Finish setup: 1 step left");
+    expect(notInstalled?.description).toContain("**Install the LLM Wiki plugin**");
   });
 });
 

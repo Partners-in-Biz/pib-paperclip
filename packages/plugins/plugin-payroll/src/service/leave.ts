@@ -3,8 +3,9 @@
  * balances and opening balances. Approved unpaid leave flows into the next
  * pay run for the period it falls in.
  */
-import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
+import { companyRoles, createWorkIssue, reopenApprovalForPerson } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
+import { readableDate } from "../dates.js";
 import type { Actor } from "../domain.js";
 import { assertLeaveType, checkLeaveRequest, LEAVE_LABELS, leaveBalances, workingDaysBetween, type LeaveBalance } from "../leave.js";
 import { PayrollError } from "../money.js";
@@ -74,18 +75,20 @@ export async function requestLeave(env: Env, companyId: string, actor: Actor, pa
   };
   await db.insertLeave(env.ctx, companyId, request);
   const config = await env.config(companyId);
-  const approver = assignableUser(config.leaveApproverUserId);
+  // The leave approver, else the company owner (Cockpit roles), but never the person who asked.
+  const candidates = [assignableUser(config.leaveApproverUserId), assignableUser((await companyRoles(env.ctx, companyId))?.ownerUserId)];
+  const approver = candidates.find((id) => id && id !== request.requestedByUserId) ?? null;
   try {
     const issue = await createWorkIssue(env.ctx, {
       companyId,
-      title: `Approve leave: ${employee.name}, ${LEAVE_LABELS[type].toLowerCase()} ${startDate}${endDate !== startDate ? ` to ${endDate}` : ""}`,
+      title: `Approve leave: ${employee.name}, ${LEAVE_LABELS[type].toLowerCase()} ${readableDate(startDate)}${endDate !== startDate ? ` to ${readableDate(endDate)}` : ""}`,
       description: [
-        `${employee.name} asked for **${days} day(s)** of ${LEAVE_LABELS[type].toLowerCase()} from ${startDate} to ${endDate}.`,
+        `${employee.name} asked for **${days} day(s)** of ${LEAVE_LABELS[type].toLowerCase()} from ${readableDate(startDate)} to ${readableDate(endDate)}.`,
         request.reason ? `Reason: ${request.reason}` : "",
         type === "unpaid" ? "Unpaid leave is deducted from pay in the pay run for that period." : "",
         "Mark this issue done to approve, or cancel it to decline. You can also decide on the Payroll page (Leave tab).",
       ].filter(Boolean).join("\n\n"),
-      ...(approver && approver !== request.requestedByUserId ? { assigneeUserId: approver } : {}),
+      ...(approver ? { assigneeUserId: approver } : {}),
       originKind: LEAVE_ORIGIN as Parameters<typeof createWorkIssue>[1]["originKind"],
       originId: request.id,
       wake: false,
@@ -130,6 +133,12 @@ export async function onLeaveIssueUpdated(env: Env, companyId: string, issueId: 
   if (!issue) return;
   if (issue.status !== "done" && issue.status !== "cancelled") return;
   const decision = issue.status === "done" ? "approve" : "reject";
+  if (event.actorType === "agent") {
+    // Only a person decides leave: reopened, taken off the agent and handed to the leave approver.
+    const config = await env.config(companyId);
+    await reopenApprovalForPerson(env.ctx, { issueId, companyId, userId: assignableUser(config.leaveApproverUserId), what: "a leave request" });
+    return;
+  }
   if (event.actorType !== "user" || !event.actorId) {
     if (decision === "approve") {
       await env.ctx.issues.update(issueId, { status: "todo" }, companyId).catch(() => undefined);

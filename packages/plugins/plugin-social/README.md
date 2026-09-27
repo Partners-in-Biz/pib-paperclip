@@ -19,16 +19,17 @@ Every account, post, media asset, RSS feed and inbox item belongs to one scope: 
    `<publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html`.
    The host serves plugin files only by installation id (not by plugin key); the id changes only if the plugin is uninstalled and installed again.
 3. R2 bucket CORS must allow the Paperclip origin to `PUT` with a `Content-Type` header.
-4. Social page → Overview → **Hire Social agent** (or **Use an existing agent**), then Resume the agent once its adapter has a working model key. See "The Social agent" below.
+4. **Setup → Team → Social agent**: hire one or pick an agent you already have, then Resume it once its adapter has a working model key. See "The Social agent" below.
 
 ## The Social agent
 
 The plugin never creates its agent. Every agent is hired the same way, through a normal Paperclip task:
 
-- **Hire Social agent** opens a New task popup prefilled with the hire request (`src/hire.ts`: name "Social Media Manager", role `general`, adapter `hermes_local` then `claude_local`, skills `pib-social-publish` + `pib-social-content`, budget $0, a short AGENTS.md). The person picks the assignee (usually the CEO / hiring agent, or themselves) and a task is created with `originId: hire:social-media-manager`.
+- **Hire** (in Setup → Team; `social.hire-options` for the draft, `social.start-hire` to open it) creates a task prefilled with the hire request (`src/hire.ts`: name "Social Media Manager", role `general`, adapter `hermes_local` then `claude_local`, skills `pib-social-publish` + `pib-social-content`, budget $0, a short AGENTS.md). The person picks the assignee (usually the CEO / hiring agent, or themselves) and a task is created with `originId: hire:social-media-manager`.
 - When an agent matching the spec appears (created after the task, with a social skill or the name/title "Social Media Manager"), the plugin links it automatically: on `agent.created` / `agent.updated` / `agent.status_changed` / `approval.decided`, on the Social page load, and from the hourly `refresh-tokens` job. It comments on the hire task with what it did.
-- **Use an existing agent** / **Link agent** / **Change agent** links any agent by hand (for example an existing "Outbound & Social Specialist"). The plugin cannot attach skills to an agent it did not create, so the page and the link result say which of `pib-social-publish` / `pib-social-content` still have to be attached on the agent's Skills tab.
-- Wiring a linked agent (`wireAgent`): merges a `tools:use` grant for plugin tools (Social + CRM), reconciles the Social project and assigns the weekly "Weekly social review & plan" routine (key `plan-next-week`) to it (an existing routine owned by another agent is reassigned and keeps its status; the Monday trigger stays off until enabled). Failed-post issues go to the linked agent from then on.
+- **Pick / change / remove** in Setup → Team links any agent by hand (for example an existing "Outbound & Social Specialist") or forgets the link. The worker cannot attach skills to an agent it did not create; the Social page attaches `pib-social-publish` / `pib-social-content` for the person viewing it.
+- **The Social page** (Overview) shows an agent box only when something is wrong: no agent and no open hire, a hire open without an agent, the agent paused, in error or waiting for approval, or a social skill missing. One line plus **Fix in Setup** (Setup → Team); a missing skill also gets **Attach skills** and **Re-sync**. When the agent is fine the page shows nothing.
+- Wiring a linked agent (`wireAgent`): gives it plugin tool access with the kit's `mergePluginToolsGrant` (the host keeps one `tools:use` grant per agent: it is widened, never duplicated; a grant limited to named tools is left alone and the steps say what a person must do), reconciles the Social project and assigns the weekly "Weekly social review & plan" routine (key `plan-next-week`) to it (an existing routine owned by another agent is reassigned and keeps its status). The routine ships paused with its Monday trigger off; Setup's "Switch it on" link (`/social?routine=on`) switches both on in one click as the board user. Failed posts, the daily reply queue, repurpose tasks and approved posts without a time go to the linked agent from then on (kit `routeWork`: else the Operator, else a person).
 - **Re-sync** (`social.activate-agent`) wires the linked agent again. Agents activated before 0.4.0 (host-managed from the manifest `agents` declaration) are still found through `ctx.agents.managed.get` and keep working.
 - Actions (people only): `social.hire-options`, `social.start-hire`, `social.link-agent` `{ agentId }`, `social.unlink-agent`, `social.activate-agent`. The link lives in plugin state (`pib-hire` / `role:social-media-manager`, company scope).
 
@@ -37,16 +38,16 @@ The plugin never creates its agent. Every agent is hired the same way, through a
 - OAuth returns to a static bridge page (`dist/ui/oauth-callback.html`) that posts the code to `POST /api/plugins/partnersinbiz.social/api/oauth/complete` with the board session.
 - Tokens are sealed with AES-256-GCM (kit `sealJson`) under the configured key; a missing key fails closed.
 - Jobs: `publish-due` (5 min, retries 1/5/15/60 min, 5 attempts), `refresh-tokens` (hourly), `collect-metrics` (30 min), `poll-inbox` and `poll-rss` (15 min), `score-posts` (daily 03:25) and `measure-experiments` (daily 03:50). Every job takes company ids from its own rows and passes them explicitly.
-- One post targets many accounts. Organisation posts cannot use a personal account. A person approves before a post can be scheduled.
+- One post targets many accounts. Organisation posts cannot use a personal account. A person approves before a post can be scheduled; approval schedules it at its proposed time (see 0.6.0).
 
 ## Jev inbox triage (0.5.0)
 
-Settings → Social → **Jev decisions**: pick the TypeSafe API key secret (the same one in every PiB plugin), keep the pinned model, leave **Use Jev** on. Without a key nothing changes: inbox items stay `new` and nothing is sent anywhere.
+Settings → Social → **Jev decisions**: pick the TypeSafe API key secret (the same one in every PiB plugin), keep the pinned model, leave **Use Jev** on. Without a key the built-in keyword rules triage the inbox instead (0.6.0, below).
 
 - After each `poll-inbox` run (and for items recorded by hand) every new item gets **one** Jev call with only `platform`, `kind`, `text` (600 characters at most) and `post` (the caption it is on, 200 at most). Questions: `needs_reply` (noul), `intent` (question / complaint / praise / lead / spam / other), `sentiment` (negative / neutral / positive), `escalate` (legal, safety or PR risk).
 - Actions: spam with confidence ≥ 0.7 (kit `update`) → marked read. `escalate` yes (≥ `read`) → an issue for a person (the post owner, else the account's creator, else the company's default person); the item is not queued for the agent. `needs_reply` yes and not spam → one issue **per account per day** for the Social agent ("Reply to social comments: …"); later items that day are added as comments and wake the agent.
 - The answers are stored on the item (`inbox_items.triage`) and logged in `decisions` (kit `decisionsMigration`), with `acted` set on the answers the plugin acted on. The inbox shows chips; **Fix** corrects an answer (kit `correctDecision`, labelled data for later). Correcting a spam item to anything else brings it back to `new`.
-- Failed calls are retried on the next poll, at most 3 times per item.
+- Failed calls are retried on the next poll; on the last of 3 tries the built-in rules triage the item, so nothing is left untriaged.
 
 ## Growth Lab (0.5.0)
 
@@ -63,3 +64,15 @@ An autoresearch-style loop per scope (own work, and each CRM client), channel `s
 
 - New capability `issues.update` (closing approval issues): approve the upgrade.
 - The weekly routine keeps its key `plan-next-week` but is now titled "Weekly social review & plan". The host's routine reconcile never rewrites an existing routine, so companies that already have it keep the old title and description until it is reset (Routines page), or until Re-sync reassigns it from another agent. The procedure the agent follows lives in the `pib-social-content` and `pib-social-publish` skills, which the skill syncer updates automatically.
+
+## 0.6.0
+
+- **Inbox triage without a Jev key.** `ruleTriage` (keywords and patterns) answers the same four questions: lead, question, complaint, praise, spam or other; sentiment; needs a reply; escalate (legal action, regulators, the press, injury or safety, harassment, discrimination, fraud accusations, ID or card numbers). Leads, the daily reply queue and escalations work without a key; Jev replaces the rules when a key is set. The triage carries `source` (`jev` or `rules`) and, for rules, `reasons`.
+- **Approval keeps the proposed time.** `create-post` / `update-post` take `scheduledAt` (the proposed time; `""` clears it). When a person approves, the post goes straight to `scheduled` at that time if it is still ahead and every destination passes `validate-post`; otherwise the Social agent gets one "Schedule approved social posts" issue per scope (`posts.schedule_issue_id`). The Cockpit lists approved posts without a time (and accounts to reconnect) as waiting. Unscheduling clears the time; going back to draft keeps it.
+- **Leads through the kit outbox.** `lead.captured` is stored in `outbox` (migration `014_social.sql`) and re-sent by the `redeliver` job (every 10 minutes, with backoff, about three days) until the CRM answers `lead.captured.result` (stored, held or ignored). The client scope travels with the lead. The Cockpit health shows unanswered or failed deliveries.
+- **Repurposing.** The SEO hand-off asks for a LinkedIn post, an X post with a first-comment reply (X takes one post plus one reply) and an Instagram post, drafted with proposed times.
+- **Tools.** One shared per-platform override schema; create-post's org/personal param is now `visibility` (the old `scope` is still accepted, and a client value in it is read as `client`); every param has a description and an enum where values are fixed. `connect-account` returns the deep link and steps for one `partnersinbiz.cockpit:ask-owner` request.
+- **Weekly routine.** The setup item counts as done only when the routine is active and its Monday trigger is on. The worker cannot read triggers, so the Social page (as the board user) reads them from the host and reports them (`social.routine-report`).
+- **Team.** The hire role ends with the company operating manual (`pib-company-os`); the page attaches it to linked agents. Hire matching leaves the manual out (`SOCIAL_MATCH_ROLE`), because every PiB agent carries it. The Cockpit snapshot reports the Social agent in `team`. The legacy AGENTS.md is gone: the manifest's managed agent uses the hire's.
+- **Overview.** A "Finish setting up Social" card (pib-plugin-ui `GetStarted`) from the plugin's own setup checklist.
+

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import { COCKPIT_EVENTS, COCKPIT_PLUGIN, COCKPIT_ROUTE, hireTaskDraft, PIB_PLUGINS, SETUP_STATUS_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_EVENTS, COCKPIT_PLUGIN, COCKPIT_ROUTE, COMPANY_OS_HIRE_SKILL, crmProjectionMigration, hireTaskDraft, PIB_PLUGINS, SETUP_STATUS_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief, postDailyBrief, runTool, weekKey } from "../src/brief.js";
 import { JOBS, ROUTINES } from "../src/constants.js";
 import { createEnv, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
@@ -55,7 +55,8 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.2.3");
+    expect(manifest.version).toBe("0.3.0");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
@@ -75,11 +76,19 @@ describe("manifest and migration", () => {
       [ROUTINES.weekly, "0 8 * * 1", "Africa/Johannesburg"],
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
-      "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief",
+      "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
     ]);
+    // Every tool parameter says what it is; fixed values are enums.
+    for (const tool of manifest.tools ?? []) {
+      for (const [name, prop] of Object.entries((tool.parametersSchema as { properties?: Record<string, { description?: string }> }).properties ?? {})) {
+        if (tool.name.startsWith("memory-")) continue;
+        expect(prop.description, `${tool.name}.${name}`).toBeTruthy();
+      }
+    }
+    expect((manifest.tools!.find((t) => t.name === "ask-owner")!.parametersSchema as { properties: Record<string, { enum?: string[] }> }).properties.kind!.enum).toEqual(["decision", "grant", "money", "legal", "info"]);
     expect((manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.jev).toBeTruthy();
-    expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer"]);
+    expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer", "pib-company-os"]);
   });
 
   it("passes the host migration guard", () => {
@@ -90,6 +99,20 @@ describe("manifest and migration", () => {
     const memory = splitSqlStatements(readFileSync(new URL("../migrations/002_cockpit.sql", import.meta.url), "utf8"));
     expect(memory).toHaveLength(9);
     for (const statement of memory) validateMigrationStatement(statement, NAMESPACE);
+    const third = readFileSync(new URL("../migrations/003_cockpit.sql", import.meta.url), "utf8");
+    const thirdStatements = splitSqlStatements(third);
+    expect(thirdStatements).toHaveLength(12);
+    for (const statement of thirdStatements) validateMigrationStatement(statement, NAMESPACE);
+    // Migration comments carry no quotes or apostrophes (host rule).
+    for (const line of third.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line, line).not.toMatch(/['"]/);
+  });
+
+  it("carries the kit CRM projection tables exactly", () => {
+    const third = readFileSync(new URL("../migrations/003_cockpit.sql", import.meta.url), "utf8");
+    const normal = (sql: string) => splitSqlStatements(sql).map((statement) => statement.replace(/--.*$/gm, "").replace(/\s+/g, " ").trim());
+    const kit = normal(crmProjectionMigration(NAMESPACE));
+    expect(kit).toHaveLength(4);
+    expect(normal(third).slice(0, 4)).toEqual(kit);
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
@@ -105,8 +128,10 @@ describe("hire roles", () => {
   it("Operator and Reviewer have the agreed titles, budgets and skills", () => {
     expect(OPERATOR_ROLE).toMatchObject({ pluginKey: COCKPIT_PLUGIN, roleKey: "operator", displayName: "Operator", title: "Chief of staff", budgetMonthlyCents: 3000 });
     expect(REVIEWER_ROLE).toMatchObject({ pluginKey: COCKPIT_PLUGIN, roleKey: "reviewer", displayName: "Reviewer", title: "Quality reviewer", budgetMonthlyCents: 2000 });
-    expect(OPERATOR_ROLE.skills).toEqual([expect.objectContaining({ key: OPERATOR_SKILL_KEY, slug: "pib-operator" })]);
-    expect(REVIEWER_ROLE.skills).toEqual([expect.objectContaining({ key: REVIEWER_SKILL_KEY, slug: "pib-reviewer" })]);
+    expect(OPERATOR_ROLE.skills).toEqual([expect.objectContaining({ key: OPERATOR_SKILL_KEY, slug: "pib-operator" }), expect.objectContaining({ key: "paperclipai/paperclip/paperclip", slug: "paperclip" }), COMPANY_OS_HIRE_SKILL]);
+    expect(REVIEWER_ROLE.skills).toEqual([expect.objectContaining({ key: REVIEWER_SKILL_KEY, slug: "pib-reviewer" }), expect.objectContaining({ key: "paperclipai/paperclip/paperclip", slug: "paperclip" }), COMPANY_OS_HIRE_SKILL]);
+    expect(OPERATOR_ROLE.capabilities).toContain("the owner");
+    expect(JSON.stringify([OPERATOR_ROLE, REVIEWER_ROLE])).not.toMatch(/Peet/);
     expect(OPERATOR_SKILL_KEY).toBe("plugin/partnersinbiz-cockpit/operator");
     const draft = hireTaskDraft(OPERATOR_ROLE);
     expect(draft.title).toBe("Hire: Operator (Cockpit agent)");
@@ -173,7 +198,12 @@ describe("team roles", () => {
     expect(result.roles).toEqual({ companyId: A, operatorAgentId: "op", reviewerAgentId: "rev", ownerUserId: "user-1", reviewOutward: true, updatedAt: "2026-09-26T10:00:00.000Z" });
     expect(store.roles).toHaveLength(1);
     const events = emitted.filter((e) => e.name === COCKPIT_EVENTS.rolesUpdated);
-    expect(events.at(-1)).toEqual({ name: "roles.updated", companyId: A, payload: result.roles });
+    // The broadcast adds each role agent's status and the team, so plugins skip a paused Reviewer (kit routeWork).
+    expect(events.at(-1)).toEqual({
+      name: "roles.updated",
+      companyId: A,
+      payload: { ...result.roles, operatorStatus: "active", reviewerStatus: "paused", team: { operator: { agentId: "op", status: "active" }, reviewer: { agentId: "rev", status: "paused" } } },
+    });
     // Wiring: tool grant for both, routines for the Operator, skills synced.
     expect(grants.get("op")).toEqual([{ permissionKey: "tools:use", scope: { providerType: "paperclip_plugin" } }]);
     expect(grants.get("rev")).toEqual([{ permissionKey: "tools:use", scope: { providerType: "paperclip_plugin" } }]);
@@ -284,7 +314,7 @@ describe("System health issue", () => {
     wakeups.length = 0;
     list.find((a) => a.id === "ceo")!.status = "error";
     expect(await refreshHealthIssue(env, A)).toMatchObject({ action: "updated", problems: 2 });
-    expect(issues.get(id)!.description).toContain("CEO is in error");
+    expect(issues.get(id)!.description).toContain("CEO stopped with an error");
     expect(wakeups).toContain(id);
   });
 
@@ -367,14 +397,15 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    for (const tool of COCKPIT_TOOLS.filter((t) => t.name !== TOOL_NAMES.postBrief && !t.name.startsWith("memory-"))) {
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile]);
+    for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
       expect(typeof result.data).toBe("object");
       expect(Array.isArray(result.data)).toBe(false);
     }
-    // Memory tools (tested end to end in memory.pg.spec.ts) refuse empty input softly: an object, never a throw.
-    for (const tool of COCKPIT_TOOLS.filter((t) => t.name.startsWith("memory-"))) {
+    // Memory and write tools refuse empty input softly: an object, never a throw.
+    for (const tool of COCKPIT_TOOLS.filter((t) => t.name.startsWith("memory-") || writes.has(t.name))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(typeof result.data).toBe("object");
       expect(Array.isArray(result.data)).toBe(false);
@@ -416,12 +447,23 @@ describe("own routes", () => {
     const snap = await handleApiRoute(env, apiInput("cockpit"));
     expect(snap.status).toBe(200);
     expect((snap.body as CockpitSnapshot).plugin).toBe(COCKPIT_PLUGIN);
-    expect((snap.body as CockpitSnapshot).health.find((h) => h.key === "operator")?.status).toBe("warn");
+    expect((snap.body as CockpitSnapshot).health.find((h) => h.key === "operator")).toMatchObject({ status: "warn", href: "/setup?section=team#team-operator" });
+    expect((snap.body as CockpitSnapshot).health.find((h) => h.key === "reviewer")).toBeUndefined();
     const before = await ownSetupStatus(env, A);
-    expect(before.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "missing"], ["operator_agent", "missing"], ["reviewer_agent", "optional"], ["routines", "blocked"], ["memory_jev", "optional"]]);
+    expect(before.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "missing"], ["operator_agent", "missing"], ["reviewer_agent", "optional"], ["routines", "blocked"], ["company_profile", "missing"], ["memory_jev", "optional"]]);
+    // The team is staffed in Setup → Team: every team item links there.
+    expect(before.items.filter((i) => ["owner", "operator_agent", "reviewer_agent", "routines"].includes(i.key)).map((i) => [i.key, i.href, i.hrefLabel])).toEqual([
+      ["owner", "/setup?section=team", "Open Team in Setup"],
+      ["operator_agent", "/setup?section=team#team-operator", "Open Team in Setup"],
+      ["reviewer_agent", "/setup?section=team#team-reviewer", "Open Team in Setup"],
+      ["routines", "/setup?section=team#team-operator", "Open Team in Setup"],
+    ]);
+    expect(JSON.stringify(before)).not.toContain("tab=team");
+    expect(before.items.find((i) => i.key === "operator_agent")!.steps).toEqual(["Open Setup → Team → Operator.", "Hire an Operator (opens a hire task), or pick an existing agent."]);
     await saveTeam(env, A, { operatorAgentId: "op", reviewerAgentId: "rev" }, "user-1");
     const after = await ownSetupStatus(env, A);
-    expect(after.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "done"], ["operator_agent", "done"], ["reviewer_agent", "done"], ["routines", "done"], ["memory_jev", "optional"]]);
+    expect(after.items.map((i) => [i.key, i.status])).toEqual([["settings", "done"], ["owner", "done"], ["operator_agent", "done"], ["reviewer_agent", "done"], ["routines", "done"], ["company_profile", "missing"], ["memory_jev", "optional"]]);
+    expect(after.items.find((i) => i.key === "company_profile")).toMatchObject({ required: true, href: "/cockpit?tab=profile", hrefLabel: "Open the profile" });
     expect((await handleApiRoute(env, apiInput("setup-status"))).status).toBe(200);
     expect((await handleApiRoute(env, apiInput("nope"))).status).toBe(404);
   });

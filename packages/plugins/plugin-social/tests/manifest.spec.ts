@@ -1,7 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { withMemoryInstruction } from "@partnersinbiz/pib-plugin-kit";
+import { SOCIAL_HIRE_INSTRUCTIONS } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { SKILLS, DESIRED_SKILLS } from "../src/skills.js";
 import { SOCIAL_TOOLS } from "../src/tools.js";
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
 type SafeParse = { safeParse(value: unknown): { success: true } | { success: false; error: { issues: Array<{ path: PropertyKey[]; message: string }> } } };
 
@@ -42,7 +47,8 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.5.6");
+    expect(manifest.version).toBe("0.6.0");
+    expect(manifest.version).toBe(pkg.version);
   });
 
   it("requires the public base URL and uses secret-ref fields without a type", () => {
@@ -62,8 +68,10 @@ describe("manifest", () => {
     expect(agent).toMatchObject({ agentKey: "social-media-manager", adapterType: "hermes_local", status: "paused", budgetMonthlyCents: 0 });
     expect(agent.adapterPreference).toEqual(["hermes_local", "claude_local"]);
     expect((agent.adapterConfig as any).paperclipSkillSync.desiredSkills).toEqual(DESIRED_SKILLS);
-    expect(manifest.routines![0]).toMatchObject({ routineKey: "plan-next-week", status: "paused" });
-    expect(manifest.routines![0]!.triggers![0]).toMatchObject({ enabled: false, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg" });
+    // One AGENTS.md: the hire's (the legacy copy is gone).
+    expect(agent.instructions?.content).toBe(withMemoryInstruction(SOCIAL_HIRE_INSTRUCTIONS));
+    expect(manifest.routines![0]).toMatchObject({ routineKey: "plan-next-week", status: "active" });
+    expect(manifest.routines![0]!.triggers![0]).toMatchObject({ enabled: true, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg" });
     expect(manifest.projects![0]!.projectKey).toBe("social");
   });
 
@@ -93,6 +101,6 @@ describe("manifest", () => {
   });
 
   it("schedules every job", () => {
-    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss", "score-posts", "measure-experiments"]);
+    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss", "score-posts", "measure-experiments", "redeliver"]);
   });
 });

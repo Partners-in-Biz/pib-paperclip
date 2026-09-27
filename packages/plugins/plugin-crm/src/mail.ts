@@ -12,7 +12,6 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import {
-  companyRoles,
   configSaved,
   createWorkIssue,
   decide,
@@ -23,7 +22,7 @@ import {
   readConfig,
   receiveOnce,
   redeliver,
-  reviewerAgentId,
+  reopenApprovalForPerson,
   reviewerBrief,
   settleOutbox,
   shouldAct,
@@ -64,7 +63,6 @@ import {
   assertNextAction,
   columnKeysFor,
   isReplyKind,
-  LOCAL_BOARD_USER_ID,
   personalize,
   pushDate,
   REPLY_KIND_LABELS,
@@ -79,7 +77,10 @@ import {
 } from "./domain.js";
 import { jevConfigFor, LEAD_QUESTIONS, leadScoreState, REPLY_QUESTIONS, replyState, scoreValue } from "./jev.js";
 import type { LeadScore } from "./lead-levels.js";
+import { emitSuppressed } from "./handoffs.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { companyPrefix, crmLink, refOf } from "./refs.js";
+import { approvalAssignee, recordAssignee, teamAssignee, type Assignee } from "./routing.js";
 
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
@@ -95,28 +96,23 @@ function pct(confidence: number): string {
 // Who gets CRM work for a contact
 // ---------------------------------------------------------------------------
 
-/** The contact's agent, else its owner (not the local board sentinel), else nobody. Honours `sequenceIssueAssignee`. */
+/**
+ * Who gets CRM work about a contact: its own agent (when it can work) or owner,
+ * else the Account Manager, then the Operator, then the company owner. With
+ * `sequenceIssueAssignee: team` the contact's owner is skipped.
+ */
 export async function contactAssignee(
   ctx: PluginContext,
   companyId: string,
   contact: Pick<ContactDraft, "assigneeAgentId" | "ownerUserId">,
-): Promise<{ assigneeAgentId?: string; assigneeUserId?: string }> {
-  let mode = "contact";
-  try {
-    mode = String((await readConfig(ctx, companyId)).sequenceIssueAssignee ?? "contact");
-  } catch {
-    mode = "contact";
-  }
-  if (mode === "none") return {};
-  if (contact.assigneeAgentId) return { assigneeAgentId: contact.assigneeAgentId };
-  if (contact.ownerUserId && contact.ownerUserId !== LOCAL_BOARD_USER_ID) return { assigneeUserId: contact.ownerUserId };
-  return {};
+): Promise<Assignee> {
+  return recordAssignee(ctx, companyId, contact);
 }
 
 /** Opens an issue once per origin id (a retried event must not open a second one). */
 export async function openIssueOnce(
   ctx: PluginContext,
-  input: { companyId: string; originId: string; title: string; description: string; assignee: { assigneeAgentId?: string; assigneeUserId?: string }; wakeReason: string },
+  input: { companyId: string; originId: string; title: string; description: string; assignee: Assignee; wakeReason: string },
 ): Promise<string> {
   try {
     const existing = await ctx.issues.list({ companyId: input.companyId, originKind: ORIGIN, originId: input.originId, limit: 1 });
@@ -242,35 +238,44 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       await pushEnrollmentDue(ctx, enrollment.id, pushDate(enrollment.nextDueAt, now, plan.pushDays));
     }
   }
-  if (plan.emailStatus) await saveEmailStatus(ctx, contact.id, plan.emailStatus);
+  if (plan.emailStatus) {
+    await saveEmailStatus(ctx, contact.id, plan.emailStatus);
+    // Campaigns and the Mailbox keep their own lists: tell them (contact.suppressed).
+    for (const email of suppressedAddresses(mail, contact, plan.emailStatus)) {
+      await emitSuppressed(ctx, companyId, { email, reason: plan.emailStatus === "bounced" ? "bounced" : "unsubscribed", clientKind: "contact", clientRef: contact.id }).catch((error) =>
+        ctx.logger.info("CRM suppression emit failed", { contactId: contact.id, error: message(error) }));
+    }
+  }
   if (plan.addTag || plan.nextActionDays) await patchContact(ctx, contact, plan.addTag, plan.nextActionDays, now);
 
   let issueId: string | null = null;
   if (plan.issue) {
     const name = contact.name;
     const reason = !config
-      ? "Jev is not set up, so the CRM did not read the reply."
+      ? "Smart sorting is not set up, so the CRM did not read the reply."
       : !decision
-        ? "Jev could not be reached, so the CRM did not read the reply."
+        ? "Smart sorting could not be reached, so the CRM did not read the reply."
         : kind && !confident
-          ? `Jev thinks it is ${REPLY_KIND_LABELS[kind]} but is only ${pct(confidence ?? 0)} sure.`
+          ? `Smart sorting thinks it is ${REPLY_KIND_LABELS[kind]} but is only ${pct(confidence ?? 0)} sure.`
           : kind
-            ? `Jev read it as ${REPLY_KIND_LABELS[kind]}.`
-            : "Jev could not tell what kind of reply it is.";
+            ? `Smart sorting read it as ${REPLY_KIND_LABELS[kind]}.`
+            : "Smart sorting could not tell what kind of reply it is.";
     const followUp = plan.issue === "follow-up";
+    const prefix = await companyPrefix(ctx, companyId);
     const lines = followUp
       ? [
-        `${name} replied to a sequence email. Jev read it as **${REPLY_KIND_LABELS[kind!]}** (${pct(confidence ?? 0)} sure), so the sequence is stopped.`,
+        `${name} replied to a sequence email. Smart sorting read it as **${REPLY_KIND_LABELS[kind!]}** (${pct(confidence ?? 0)} sure), so the sequence is stopped.`,
         "",
-        "Reply from Gmail, then log what happens next on the contact.",
+        "Draft the answer in the Mailbox in the same thread (`mailbox-draft` skill); a person approves sending. Then log what happens next on the contact (`log-activity`, next action, a deal when they want a quote).",
       ]
       : [
         `${name} replied while in a running sequence. ${reason}`,
         "",
-        "Decide what to do: stop the sequence, set a next action, or let it carry on.",
+        "Decide what to do: stop the sequence (a lost deal or `set-email-status` when they opted out), set a next action, or let it carry on. Comment what you decided.",
       ];
     lines.push("", `**Subject:** ${subject}`, "", `> ${mail.snippet.replace(/\n+/g, " ").slice(0, 500)}`);
-    if (mail.threadId) lines.push("", `Gmail thread: ${mail.threadId}`);
+    lines.push("", `- Mailbox message: \`${mail.messageId}\`${mail.threadId ? `, thread \`${mail.threadId}\`` : ""}`);
+    lines.push(`- Contact: \`${refOf("contact", contact.id)}\` · ${crmLink(prefix, "contact", contact.id)}`);
     issueId = await openIssueOnce(ctx, {
       companyId,
       originId: `reply:${mail.messageId}`,
@@ -295,6 +300,24 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
   });
 
   return { matched: true, contactId: contact.id, enrollments: running.length, kind, confidence, acted: confident, issueId };
+}
+
+/**
+ * The addresses a reply suppresses. An unsubscribe: the address that wrote
+ * plus the one sequences mail. A bounce comes from a mailer daemon: the
+ * failed recipients it names, else the address sequences mail.
+ */
+export function suppressedAddresses(mail: Pick<MailReceived, "from" | "bounce">, contact: Pick<ContactDraft, "emails">, status: "bounced" | "unsubscribed" | "ok"): string[] {
+  const primary = contact.emails.find((email) => email.includes("@")) ?? null;
+  const out = new Set<string>();
+  if (status === "bounced") {
+    for (const email of mail.bounce?.recipients ?? []) if (email.includes("@")) out.add(email.trim().toLowerCase());
+    if (out.size === 0 && primary) out.add(primary.trim().toLowerCase());
+  } else if (status === "unsubscribed") {
+    if (mail.from.email.includes("@")) out.add(mail.from.email.trim().toLowerCase());
+    if (primary) out.add(primary.trim().toLowerCase());
+  }
+  return [...out];
 }
 
 /** Adds a tag and/or sets the next action, as an agent would (filled human-owned fields are kept). */
@@ -411,23 +434,26 @@ export async function setDelivery(
         .map((step) => `${step.position}. **${step.title}** (after ${step.delayMinutes} min)\n${step.body || "(no body)"}`)
         .join("\n\n");
       const description = [
-        `The CRM wants to send the steps of sequence "${sequence.name}" as email from the Mailbox.`,
-        "A board user approves by marking this issue done. Until then no step is emailed.",
-        "Tokens such as {{first_name}} and {{company}} are filled in per contact.",
+        `The CRM wants to send the steps of sequence "${sequence.name}" as marketing email from the Mailbox.`,
+        "A person approves by marking this issue **done**, or refuses by marking it **cancelled** (the sequence then goes back to opening an issue per step). Until then no step is emailed; due steps wait and show in the Cockpit.",
+        "Tokens such as {{first_name}} and {{company}} are filled in per contact. The Mailbox skips anyone who unsubscribed and adds an unsubscribe header.",
         "",
         preview || "(no steps yet)",
       ].join("\n");
-      // Email to contacts is outward-facing: the Reviewer checks it first when the company has one.
-      const reviewer = await reviewerAgentId(ctx, companyId);
+      // Email to contacts is outward-facing: the Reviewer checks it first when the company has one, then a person decides.
+      const { reviewer, approverUserId } = await approvalAssignee(ctx, companyId);
       const sender = reviewer ? await senderLabel(ctx, companyId) : "";
-      const approver = reviewer ? (await companyRoles(ctx, companyId))?.ownerUserId ?? null : null;
       const issue = await createWorkIssue(ctx, {
         companyId,
         title: `Approve email sending: ${sequence.name}`,
-        description: reviewer ? `${description}\n${sequenceReviewBrief(sequence.name, sender, approver)}` : description,
+        description: reviewer ? `${description}\n${sequenceReviewBrief(sequence.name, sender, approverUserId)}` : description,
         originKind: ORIGIN,
         originId: `sequence-email:${sequence.id}`,
-        ...(reviewer ? { assigneeAgentId: reviewer, wake: true, wakeReason: "Review a sequence before it switches to email" } : { wake: false }),
+        ...(reviewer
+          ? { assigneeAgentId: reviewer, wake: true, wakeReason: "Review a sequence before it switches to email" }
+          : approverUserId
+            ? { assigneeUserId: approverUserId, wake: false }
+            : { wake: false }),
       });
       approvalIssueId = issue.id;
     }
@@ -446,9 +472,10 @@ export function sequenceReviewBrief(sequenceName: string, sender: string, approv
   return reviewerBrief({
     what: `sequence "${sequenceName}" before its steps are emailed to contacts`,
     checks: [
-      "Personalisation: every {{first_name}}, {{name}} and {{company}} token is spelled right and reads well when filled in, with a fallback (e.g. {{first_name|there}}) where a contact may have no first name.",
+      "Personalisation: every {{first_name}}, {{last_name}}, {{name}}, {{company}} and {{email}} token is spelled right and reads well when filled in, with a fallback (e.g. {{first_name|there}}) where a contact may have no first name.",
       "Tone: sounds like us, friendly and direct, no pushy or spammy lines, right length for a cold or follow-up email.",
       "Claims: prices, results, client names and guarantees are accurate and we can back them up.",
+      "Who we are: each email names Partners in Biz and the person writing.",
       "Unsubscribe: each email tells the reader how to stop the emails (for example \"Reply STOP and we won't email again\").",
       `Sender: the mail goes out from ${sender}. That address is right for this audience.`,
     ],
@@ -456,18 +483,67 @@ export function sequenceReviewBrief(sequenceName: string, sender: string, approv
   });
 }
 
-/** A board user marked an approval issue done: email sending is approved for good. */
+/**
+ * The approval issue of a sequence's email sending changed.
+ * - Done by a person: email sending is approved for good.
+ * - Done or cancelled by an agent (the Reviewer, or the agent that asked):
+ *   only a person decides, so it is reopened and handed to the approver.
+ * - Cancelled by a person: refused. The sequence goes back to opening an
+ *   issue per step, and the Account Manager gets a hand-off.
+ * Returns true when the issue is a sequence approval.
+ */
 export async function onApprovalIssue(ctx: PluginContext, event: PluginEvent, issueStatus: string): Promise<boolean> {
   if (!event.entityId) return false;
   const sequence = await sequenceByApprovalIssue(ctx, event.entityId);
   if (!sequence || sequence.company_id !== event.companyId) return false;
-  if (issueStatus !== "done") return true;
+  if (sequenceEmailApproved(sequence)) return true;
+  if (issueStatus !== "done" && issueStatus !== "cancelled") return true;
   if (event.actorType !== "user") {
-    ctx.logger.info("Sequence email approval ignored: only a board user can approve", { sequenceId: sequence.id, actorType: event.actorType ?? null });
+    const { approverUserId } = await approvalAssignee(ctx, event.companyId);
+    const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, userId: approverUserId, what: `email sending for sequence "${sequence.name}"` });
+    if (!reopened) ctx.logger.info("Sequence email approval closed by an agent could not be reopened", { sequenceId: sequence.id, actorType: event.actorType ?? null });
     return true;
   }
-  await approveSequenceEmail(ctx, sequence.id, `user:${event.actorId ?? "unknown"}`);
+  if (issueStatus === "done") {
+    await approveSequenceEmail(ctx, sequence.id, `user:${event.actorId ?? "unknown"}`);
+    return true;
+  }
+  await refuseSequenceEmail(ctx, event.companyId, sequence, event.entityId);
   return true;
+}
+
+/** A person refused email sending: back to issue delivery, and a hand-off for the Account Manager. */
+async function refuseSequenceEmail(ctx: PluginContext, companyId: string, sequence: SequenceRow, approvalIssueId: string): Promise<void> {
+  await saveSequenceDelivery(ctx, { id: sequence.id, delivery: "issue", approvalIssueId: null });
+  const prefix = await companyPrefix(ctx, companyId);
+  await openIssueOnce(ctx, {
+    companyId,
+    originId: `handoff:sequence-refused:${approvalIssueId}`,
+    title: `Hand-off: email sending refused for sequence "${sequence.name}"`.slice(0, 200),
+    description: [
+      `A person refused email sending for sequence "${sequence.name}" (\`${sequence.id}\`). Its due steps now open an issue for you again, so no contact is left waiting.`,
+      "",
+      `1. Read why on the approval issue: ${prefix ? `/${prefix}` : ""}/issues/${approvalIssueId}.`,
+      "2. To email instead, create a corrected sequence with `create-sequence` (delivery email: tone, claims, who we are and the opt-out line) and enroll new contacts there; a person approves it once.",
+      "3. Otherwise do this sequence's steps by hand as their issues arrive.",
+      "",
+      "Comment what you did, then mark this issue done.",
+    ].join("\n"),
+    assignee: await teamAssignee(ctx, companyId),
+    wakeReason: "A sequence's email sending was refused",
+  });
+}
+
+/**
+ * An email sequence has due steps but no open approval (it was closed without
+ * a decision, or deleted): ask again so the steps do not wait unseen.
+ */
+export async function ensureApprovalOpen(ctx: PluginContext, companyId: string, sequence: SequenceRow): Promise<"open" | "asked"> {
+  const id = sequence.email_approval_issue_id ?? null;
+  const issue = id ? await ctx.issues.get(id, companyId).catch(() => null) : null;
+  if (issue && issue.status !== "done" && issue.status !== "cancelled") return "open";
+  await setDelivery(ctx, companyId, sequence, "email");
+  return "asked";
 }
 
 async function companyNameFor(ctx: PluginContext, contactId: string): Promise<string | null> {
@@ -516,6 +592,8 @@ export async function sendSequenceStep(
     inReplyToMessageId: enrollment.mailLastMessageId ?? null,
     context: { plugin: PLUGIN_ID, kind: "sequence_step", id: enrollment.id, clientKind: "contact", clientRef: contact.id },
     labels: ["PiB/Sequences"],
+    // Sequence email is marketing: the Mailbox skips suppressed addresses and adds List-Unsubscribe.
+    marketing: true,
   };
   const { created } = await enqueue(ctx, enrollment.companyId, MAIL_EVENTS.sendRequested, payload as unknown as { key: string } & Record<string, unknown>);
   await saveEnrollment(ctx, { ...enrollment, sendingKey: key });
@@ -614,13 +692,13 @@ async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, error: 
     originId: `send-failed:${enrollment.sendingKey ?? enrollment.id}`,
     title: `Email not sent: ${step?.title ?? "Sequence step"}: ${name}`.slice(0, 200),
     description: [
-      `The Mailbox could not send this sequence email: ${error}`,
+      `The Mailbox could not send this sequence email to ${contact ? `\`${refOf("contact", contact.id)}\`` : "the contact"}: ${error}`,
       "",
-      "Send it yourself (or fix the address), then mark this issue done to move the contact to the next step.",
+      "Fix the address (`update-contact`) or reach them another way, then mark this issue done to move the contact to the next step. A bounced address: `set-email-status` bounced instead.",
       "",
       step?.body ?? "",
     ].join("\n"),
-    assignee: contact ? await contactAssignee(ctx, enrollment.companyId, contact) : {},
+    assignee: contact ? await contactAssignee(ctx, enrollment.companyId, contact) : await teamAssignee(ctx, enrollment.companyId),
     wakeReason: "A CRM sequence email failed",
   });
   await saveEnrollment(ctx, { ...enrollment, sendingKey: null, openIssueId: issueId });

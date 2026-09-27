@@ -22,9 +22,9 @@ function account(id: string): AccountRow {
 }
 
 /** Posts in memory, host issues and cockpit roles in fakes. */
-function world(opts: { reviewer?: string | null; reviewIssue?: string | null; issueStatus?: string } = {}) {
+function world(opts: { reviewer?: string | null; reviewIssue?: string | null; issueStatus?: string; scheduledAt?: string | null } = {}) {
   const post: Record<string, unknown> = {
-    id: "p1", company_id: "co", body: "We shipped the new site. Read the case study.", overrides: {}, media: [], status: "draft", scheduled_at: null, scope: "org",
+    id: "p1", company_id: "co", body: "We shipped the new site. Read the case study.", overrides: {}, media: [], status: "draft", scheduled_at: opts.scheduledAt ?? null, scope: "org",
     owner_user_id: "owner-1", client_kind: null, client_ref: null, client_name: null, first_comment: null, source: "manual", source_ref: null, failure_issue_id: null,
     published_at: null, error: null, created_by_agent_id: "ag-1", created_at: new Date(), updated_at: new Date(),
   };
@@ -74,7 +74,11 @@ function world(opts: { reviewer?: string | null; reviewIssue?: string | null; is
         return [];
       },
       executeResult: (sql, params) => {
-        if (sql.includes("SET status = $3")) post.status = params[2];
+        if (sql.includes("SET status = $3")) {
+          post.status = params[2];
+          if (params[3] === true) post.scheduled_at = params[4];
+        }
+        if (sql.includes("SET schedule_issue_id = $3")) post.schedule_issue_id = params[2];
         if (sql.includes("SET review_issue_id = $3")) reviewIssue = String(params[2]);
         if (sql.includes("SET review_issue_id = NULL")) reviewIssue = null;
         return 1;
@@ -121,10 +125,66 @@ describe("reviewer routing for posts", () => {
     const w = world({ reviewer: "rev-1", reviewIssue: "iss-9" });
     w.post.status = "review";
     await expect(transitionPost(w.ctx, AGENT, "p1", "approved")).rejects.toThrow("A person approves");
-    await transitionPost(w.ctx, PERSON, "p1", "approved");
-    expect(w.comments.map((c) => c.body)).toEqual(["A person approved the post. It can be scheduled now."]);
+    const result = await transitionPost(w.ctx, PERSON, "p1", "approved") as { approval?: { scheduled: boolean; reason?: string; issueId?: string | null } };
+    // No proposed time: it stays approved and the Social agent (here: the post owner, no agent) gets a task to pick one.
+    expect(result.approval).toMatchObject({ scheduled: false, reason: "no_time", issueId: "iss-1" });
+    expect(w.post.status).toBe("approved");
+    expect(w.created).toHaveLength(1);
+    expect(w.created[0]).toMatchObject({ title: "Schedule approved social posts", originId: "schedule:own:p1", assigneeUserId: "owner-1" });
+    expect(String(w.created[0]!.description)).toContain("`p1`");
+    expect(w.post.schedule_issue_id).toBe("iss-1");
+    expect(w.comments.map((c) => c.body)).toEqual(["A person approved the post, but it is not scheduled: it has no proposed time. The Social agent has a task to pick a time."]);
     expect(w.updates).toEqual([{ id: "iss-9", patch: { status: "done" } }]);
     expect(w.reviewIssueId()).toBeNull();
+  });
+
+  it("approval keeps the proposed time: the post goes straight to scheduled", async () => {
+    const at = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const w = world({ reviewer: "rev-1", reviewIssue: "iss-9", scheduledAt: at });
+    w.post.status = "review";
+    const result = await transitionPost(w.ctx, PERSON, "p1", "approved") as { status: string; scheduledAt: string | null; approval?: { scheduled: boolean; scheduledAt: string | null } };
+    expect(result.approval).toMatchObject({ scheduled: true, scheduledAt: at });
+    expect(w.post).toMatchObject({ status: "scheduled", scheduled_at: at });
+    // Approved → scheduled in two guarded moves, the time never cleared on the way.
+    const moves = w.ctx.fakeDb.executes.filter((e) => e.sql.includes("SET status = $3"));
+    expect(moves.map((m) => [m.params[2], m.params[3], m.params[4]])).toEqual([["approved", false, null], ["scheduled", true, at]]);
+    expect(w.created).toEqual([]);
+    expect(w.comments[0]!.body).toMatch(/^A person approved the post\. It is scheduled for /);
+  });
+
+  it("a proposed time that has passed is handed to the agent instead", async () => {
+    const w = world({ scheduledAt: new Date(Date.now() - 3600_000).toISOString() });
+    w.post.status = "review";
+    const result = await transitionPost(w.ctx, PERSON, "p1", "approved") as { approval?: { scheduled: boolean; reason?: string } };
+    expect(result.approval).toMatchObject({ scheduled: false, reason: "time_passed" });
+    expect(w.post.status).toBe("approved");
+    expect(String(w.created[0]!.description)).toContain("had passed when it was approved");
+  });
+
+  it("another approved post without a time joins the scope's open task (comment and wake-up, no new issue)", async () => {
+    const w = world();
+    w.post.status = "review";
+    const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+    mock(w.ctx.state.get).mockImplementation(async (key: { namespace?: string; stateKey: string }) => (key.namespace === "social-schedule" && key.stateKey === "task:own" ? "iss-open" : null));
+    mock(w.ctx.issues.get).mockImplementation(async (id: string) => ({ id, status: "todo", assigneeAgentId: id === "iss-open" ? "ag-social" : null }));
+    const result = await transitionPost(w.ctx, PERSON, "p1", "approved") as { approval?: { issueId?: string | null } };
+    expect(result.approval).toMatchObject({ issueId: "iss-open" });
+    expect(w.created).toEqual([]);
+    expect(w.comments.find((c) => c.id === "iss-open")?.body).toContain("Another approved post needs a time");
+    expect(w.wakeups).toContain("iss-open");
+    expect(w.post.schedule_issue_id).toBe("iss-open");
+  });
+
+  it("unscheduling clears the time; going back to draft keeps the proposed time", async () => {
+    const at = new Date(Date.now() + 86_400_000).toISOString();
+    const w = world({ scheduledAt: at });
+    w.post.status = "scheduled";
+    await transitionPost(w.ctx, PERSON, "p1", "approved");
+    expect(w.post.scheduled_at).toBeNull();
+    const back = world({ scheduledAt: at });
+    back.post.status = "review";
+    await transitionPost(back.ctx, PERSON, "p1", "draft");
+    expect(back.post.scheduled_at).toBe(at);
   });
 
   it("a person sending it back to draft counts a return (quality metric)", async () => {
@@ -207,12 +267,16 @@ describe("SEO → Social repurpose hand-off", () => {
     expect(issue).toMatchObject({ title: "[Acme] Repurpose for social: How we price websites", originId: "repurpose:seo:content:ct-1", status: "todo", assigneeAgentId: "soc-1" });
     const text = String(issue.description);
     expect(text).toContain("LinkedIn post");
-    expect(text).toContain("X thread");
-    expect(text).toContain("Instagram idea");
+    expect(text).toContain("An X post");
+    expect(text).toContain("first-comment reply");
+    expect(text).not.toContain("X thread");
+    expect(text).toContain("scheduledAt");
+    expect(text).toContain("An Instagram post");
     expect(text).toContain("utm_source=linkedin");
     expect(text).toContain("Target keyword: website pricing");
     expect(text).toContain('clientKind: "company"');
-    expect(text).toContain("Drafts only");
+    expect(text).toContain("Drafts with a proposed time");
+    expect(text).toContain("Never approve");
     // Re-emitted by SEO an hour later: nothing new.
     const again = await onContentPublished(w.ctx, event);
     expect(again).toEqual({ issueId: "iss-1" });

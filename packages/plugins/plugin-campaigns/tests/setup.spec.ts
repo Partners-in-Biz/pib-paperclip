@@ -18,6 +18,7 @@ const ROUTES: Route[] = [
     return (s.campaign_enrollments ?? []).filter((e) => e.status === "running" && e.open_issue_id == null && e.sending_key == null && e.next_due_at && Date.parse(e.next_due_at) <= Date.now() && active.has(e.campaign_id));
   }],
   [/JOIN \S+\.outbox o/, () => []],
+  [/JOIN public\.issues/, () => []],
 ];
 
 function campaign(id: string, extra: Row = {}): Row {
@@ -61,8 +62,8 @@ describe("Campaigns setup status", () => {
     expect(manifest.apiRoutes).toContainEqual(expect.objectContaining({ routeKey: SETUP_STATUS_ROUTE.routeKey, path: "/setup-status" }));
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit"]));
-    expect(manifest.version).toBe("0.3.6");
-    expect(PLUGIN_VERSION).toBe("0.3.6");
+    expect(manifest.version).toBe("0.4.0");
+    expect(PLUGIN_VERSION).toBe("0.4.0");
   });
 
   it("an unconfigured company: settings missing, Jev and Mailbox optional", async () => {
@@ -72,7 +73,7 @@ describe("Campaigns setup status", () => {
     expect(status.items.map((row) => row.key)).toEqual(["settings", "jev", "mailbox"]);
     expect(item(status, "settings")).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(status, "jev")).toMatchObject({ status: "optional", required: false });
-    expect(item(status, "mailbox")).toMatchObject({ status: "optional", required: false, href: "/mailbox" });
+    expect(item(status, "mailbox")).toMatchObject({ status: "optional", required: false, href: "/mailbox?tab=mailboxes&connect=gmail", hrefLabel: "Connect Gmail" });
   });
 
   it("a configured company with a Jev key", async () => {
@@ -86,7 +87,7 @@ describe("Campaigns setup status", () => {
     const { harness } = await boot({ campaigns: [campaign("camp-mail", { delivery: "email" })] });
     expect(item(await setupStatus(harness.ctx, CO), "mailbox").status).toBe("optional");
     await harness.emit(SETUP_EVENT, { companyId: CO, modules: { mailbox: false }, updatedAt: "2026-09-26T08:00:00Z" }, { companyId: CO });
-    expect(item(await setupStatus(harness.ctx, CO), "mailbox").status).toBe("blocked");
+    expect(item(await setupStatus(harness.ctx, CO), "mailbox")).toMatchObject({ status: "blocked", href: "/setup", hrefLabel: "Turn on the Mailbox" });
   });
 
   it("serves GET /setup-status and publishes it hourly", async () => {

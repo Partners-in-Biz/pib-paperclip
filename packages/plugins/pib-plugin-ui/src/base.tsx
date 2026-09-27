@@ -75,6 +75,8 @@ ${THEME_CSS}
 .pib-ui :where(table){border-collapse:collapse}
 .pib-scroll-x{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;max-width:100%;min-width:0}
 .pib-span-first > :first-child{grid-column:1 / -1}
+.pib-ui .pib-select{width:auto;max-width:100%}
+.pib-ui .pib-field .pib-select{width:100%}
 .pib-tabs{scrollbar-width:none;-ms-overflow-style:none}
 .pib-tabs::-webkit-scrollbar{display:none}
 .pib-link-card{transition:background-color 120ms ease,border-color 120ms ease}

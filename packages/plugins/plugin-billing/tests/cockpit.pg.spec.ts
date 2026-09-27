@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
+import { shortDayText } from "../src/domain.js";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
@@ -19,7 +20,7 @@ const OTHER = "22222222-2222-2222-2222-222222222222";
 describe("manifest", () => {
   it("declares the cockpit route", () => {
     expect(manifest.apiRoutes).toContainEqual(COCKPIT_ROUTE);
-    expect(manifest.version).toBe("0.3.6");
+    expect(manifest.version).toBe("0.4.0");
   });
 });
 
@@ -108,11 +109,12 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
 
     const s = await route();
     expect(s.health.find((c) => c.key === "settings")).toBeUndefined();
-    expect(kpi(s, "outstanding")).toMatchObject({ value: "R 1,150.00", raw: 115_000 });
-    expect(kpi(s, "overdue")).toMatchObject({ value: "1 · R 1,150.00", raw: 115_000, tone: "bad" });
+    const asAt = `as at ${shortDayText(new Date().toISOString().slice(0, 10))}`;
+    expect(kpi(s, "outstanding")).toMatchObject({ value: "R 1,150.00", raw: 115_000, delta: `1 invoice, ${asAt}` });
+    expect(kpi(s, "overdue")).toMatchObject({ value: "R 1,150.00", raw: 115_000, tone: "bad", delta: `1 invoice, ${asAt}` });
     expect(kpi(s, "received_month")).toMatchObject({ value: "R 230.00", raw: 23_000 });
     expect(kpi(s, "open_quotes")).toMatchObject({ raw: 1 });
-    expect(kpi(s, "bills_due")).toMatchObject({ value: "1 · R 300.00", tone: "warn" });
+    expect(kpi(s, "bills_due")).toMatchObject({ value: "R 300.00", hint: "1 bill", tone: "warn" });
     expect(kpi(s, "mrr")).toMatchObject({ raw: 0 });
 
     expect(health(s, "pops")).toMatchObject({ status: "warn" });
@@ -120,7 +122,7 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
     expect(health(s, "ledger")).toMatchObject({ status: "bad" });
 
     expect(s.waiting).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: `approval:${issueId}`, issueId, kind: "review", href: `/issues/${issueId}`, title: `Approve sending invoice ${waitingSend.number}` }),
+      expect.objectContaining({ key: `approval:${issueId}`, issueId, kind: "review", href: `/issues/${issueId}`, title: "Approve sending invoice to Lumen Digital (R 575.00)" }),
       expect.objectContaining({ key: "pop:issue-pop", issueId: "issue-pop", kind: "money" }),
     ]));
     expect(s.activity.length).toBeGreaterThanOrEqual(3);
@@ -129,6 +131,53 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
       `Received R 230.00 for invoice ${paid.number} from Lumen Digital`,
     ]));
     expect(s.quality.map((q) => q.key)).toEqual(["approvals_rejected", "decisions_corrected"]);
+  });
+
+  it("counts money as at today: a payment dated tomorrow is still owed, not received, and flagged (the review's Northwind case)", async () => {
+    h.config.set(COMPANY, { ...SETTINGS });
+    await seedClient(h, { id: "ct-north", name: "Northwind", email: "ap@north.test" });
+    const part = await sent("ct-north", 1_000_000); // R 11,500.00
+    await h.call("billing.record-payment", { invoiceId: part.id, amountMinor: 400_000 });
+    const full = await sent("ct-north", 500_000); // R 5,750.00
+    await h.call("billing.record-payment", { invoiceId: full.id, amountMinor: 575_000 });
+    // As older versions stored it: paid, with the (bank) payment dated tomorrow.
+    await h.client.query(`UPDATE ${NAMESPACE}.payments SET paid_at = date_trunc('day', now()) + interval '1 day' + interval '2 hours' WHERE invoice_id = $1`, [full.id]);
+
+    const s = await route();
+    expect(kpi(s, "outstanding")).toMatchObject({ value: "R 13,250.00", raw: 1_325_000 });
+    expect(kpi(s, "received_month")).toMatchObject({ value: "R 4,000.00", raw: 400_000 });
+    expect(health(s, "future_payments")).toMatchObject({ status: "warn", href: "/billing?tab=payments" });
+    expect(s.activity.map((a) => a.text)).not.toContain(`Received R 5,750.00 for invoice ${full.number} from Northwind`);
+
+    // The page, the CRM card and the reports say the same.
+    const page = await h.call<{ asOf: string; invoices: Array<{ id: string; status: string; outstandingMinor: number; futurePaidMinor?: number }>; futurePayments: Array<{ number: string; amountMinor: number }> }>("billing.load", {});
+    expect(page.asOf).toBe(new Date().toISOString().slice(0, 10));
+    expect(page.invoices.find((i) => i.id === full.id)).toMatchObject({ status: "sent", outstandingMinor: 575_000, futurePaidMinor: 575_000 });
+    expect(page.futurePayments).toEqual([expect.objectContaining({ number: full.number, amountMinor: 575_000 })]);
+    const stored = await h.client.query(`SELECT status, paid_at FROM ${NAMESPACE}.invoices WHERE id = $1`, [full.id]);
+    expect(stored.rows[0]).toMatchObject({ status: "sent", paid_at: null });
+    const reports = await h.call<{ revenue: { months: Array<{ month: string; collectedMinor: number }> }; clients: { clients: Array<{ clientName: string; collectedMinor: number; outstandingMinor: number }> }; agedDebtors: { totalMinor: number } }>("billing.reports", {});
+    expect(reports.revenue.months.at(-1)!.collectedMinor).toBe(400_000);
+    expect(reports.clients.clients.find((c) => c.clientName === "Northwind")).toMatchObject({ collectedMinor: 400_000, outstandingMinor: 1_325_000 });
+    expect(reports.agedDebtors.totalMinor).toBe(1_325_000);
+    const card = await plugin.definition.onApiRequest!({ routeKey: "client-summary", method: "GET", path: "/client-summary", params: {}, query: { companyId: COMPANY, kind: "contact", id: "ct-north" }, body: null, actor: { actorType: "user", actorId: "user-1" }, companyId: COMPANY, headers: {} } as PluginApiRequestInput);
+    expect((card.body as { stats: Array<{ label: string; value: unknown }> }).stats[0]).toEqual({ label: "Outstanding", value: "R 13,250.00" });
+
+    // Once its day has come, the payment counts and the invoice is paid (on that date).
+    await h.client.query(`UPDATE ${NAMESPACE}.payments SET paid_at = now() - interval '1 hour' WHERE invoice_id = $1`, [full.id]);
+    await h.call("billing.load", {});
+    const after = (await h.client.query(`SELECT status, paid_at FROM ${NAMESPACE}.invoices WHERE id = $1`, [full.id])).rows[0] as { status: string; paid_at: unknown };
+    expect(after.status).toBe("paid");
+    expect(after.paid_at).not.toBeNull();
+    expect(kpi(await route(), "outstanding")).toMatchObject({ raw: 750_000 });
+  });
+
+  it("refuses a payment a person types in with a date after today", async () => {
+    h.config.set(COMPANY, { ...SETTINGS });
+    await seedClient(h, { id: "ct-north", name: "Northwind", email: "ap@north.test" });
+    const invoice = await sent("ct-north", 100_000);
+    const tomorrow = new Date(Date.now() + 36 * 3_600_000).toISOString().slice(0, 10);
+    await expect(h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: 115_000, paidAt: tomorrow })).rejects.toThrow(/after today/);
   });
 
   it("keeps the rest of the snapshot when one query fails", async () => {

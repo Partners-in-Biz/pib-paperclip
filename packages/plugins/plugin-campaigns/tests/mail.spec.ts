@@ -21,6 +21,7 @@ import {
   type ReplyKind,
 } from "../src/domain.js";
 import { createFakeDb, type Route, type Row, type Store } from "./helpers/fake-db.js";
+import { SWEEP_ROUTES } from "./helpers/harness.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 
 const CO = "co-1";
@@ -40,6 +41,7 @@ const ROUTES: Route[] = [
     (s.campaign_enrollments ?? [])
       .filter((e) => e.status === "running" && (s.outbox ?? []).some((o) => o.key === e.sending_key && o.status === "failed"))
       .map((e) => ({ ...e, last_error: (s.outbox ?? []).find((o) => o.key === e.sending_key)?.last_error ?? null }))],
+  ...SWEEP_ROUTES,
 ];
 
 function contact(id: string, name: string, emails: string[], extra: Row = {}): Row {
@@ -109,7 +111,7 @@ async function boot(options: { jev?: boolean; store?: Store } = {}) {
   clearJevCache();
   const store = options.store ?? seed();
   const harness = createTestHarness({ manifest, config: { timezone: "Africa/Johannesburg", ...(options.jev === false ? {} : { jev: { apiKey: "test-key" } }) } });
-  harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never] });
+  harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never], agents: [{ id: "agent-camp", companyId: CO, name: "Campaigner", status: "idle" } as never] });
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
     coreReadTables: ["heartbeat_runs", "issues"],
@@ -229,7 +231,7 @@ describe("campaign email delivery", () => {
     stubJev();
     const store = seed();
     const { harness, emit } = await boot({ store });
-    harness.seed({ issues: [{ id: "appr-1", companyId: CO, title: "Approve", status: "done" } as never] });
+    harness.seed({ issues: [{ id: "appr-1", companyId: CO, title: "Approve", status: "done", description: "- **Audience:** All contacts (4)." } as never] });
     store.campaigns!.push(campaign("camp-draft", { status: "draft", approval_issue_id: "appr-1" }));
     store.campaign_steps!.push(
       step("camp-draft", 1, "a", "Hi {{first_name}}", "Hello {{first_name}} at {{company}}"),
@@ -287,7 +289,9 @@ describe("campaign email delivery", () => {
       key: "campaigns:step:e1:1", status: "failed", permanent: true, error: "Mailbox not connected", context: { plugin: "partnersinbiz.campaigns", kind: "campaign_step", id: "e1" },
     }, { companyId: CO });
     const [issue] = await harness.ctx.issues.list({ companyId: CO });
-    expect(issue).toMatchObject({ title: "Email not sent: Hi {{first_name}}: Ada Lovelace", assigneeAgentId: "agent-camp" });
+    // The subject is filled in for the contact, so whoever sends it by hand sends the real text.
+    expect(issue).toMatchObject({ title: "Email not sent: Hi Ada: Ada Lovelace", assigneeAgentId: "agent-camp" });
+    expect(issue!.description).toContain("Hello Ada at Acme Plumbing");
     expect(store.campaign_enrollments![0]).toMatchObject({ open_issue_id: issue!.id, sending_key: null });
     expect(store.outbox![0]!.status).toBe("failed");
   });
@@ -410,7 +414,7 @@ describe("campaign replies", () => {
     expect(store.campaign_enrollments!.find((row) => row.id === "e-ada")!.status).toBe("running");
     const [issue] = await harness.ctx.issues.list({ companyId: CO });
     expect(issue!.title).toBe("Check reply from Ada Lovelace: Re: Hi Ada");
-    expect(issue!.description).toMatch(/Jev is not set up/);
+    expect(issue!.description).toMatch(/Smart sorting is not set up/);
   });
 
   it("handles a repeated delivery once", async () => {

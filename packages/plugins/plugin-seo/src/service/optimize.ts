@@ -295,7 +295,7 @@ export async function approveOptimization(env: Env, companyId: string, actor: Ac
     );
     opened = result.created;
   }
-  if (o.approvalIssueId) await commentOn(env, companyId, o.approvalIssueId, `Approved by ${actorLabel(actor)}: ${o.hypothesis}. ${tasks.length} task(s) created for week ${week}; measured on ${measureOn}.`);
+  if (o.approvalIssueId) await commentOn(env, companyId, o.approvalIssueId, `Approved by ${actorLabel(actor)}: ${o.hypothesis}. ${tasks.length === 1 ? "1 task" : `${tasks.length} tasks`} created for week ${week}; measured on ${measureOn}.`);
   await closeApprovalIssueIfDecided(env, companyId, sprint.id, o.approvalIssueId);
   return { optimizationId: o.id, status: "approved", taskIds: tasks.map((t) => t.id), issuesOpened: opened, week, measureOn, baseline };
 }

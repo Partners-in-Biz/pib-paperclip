@@ -2,15 +2,21 @@ import { useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Modal, Select } from "@partnersinbiz/pib-plugin-ui";
 import { Card, ClientSelect, Muted, Row, SmallButton, Status, TaxCodeSelect, fmtDate, money, toMinor, today, useBilling, words } from "./parts.js";
+import { documentLabel } from "./series.js";
 
 const PERIODS = ["monthly", "quarterly", "yearly"];
 
-export function RetainersTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => void }) {
+/** The Recurring tab: `retainers` (subscriptions and plans) or `repeating` (recurring invoices). */
+export function RetainersTab({ onOpenInvoice, part = "retainers" }: { onOpenInvoice: (id: string) => void; part?: "retainers" | "repeating" }) {
   const { snapshot, call, run, scope, clientName } = useBilling();
   const plans = snapshot.retainers?.plans ?? [];
   const subs = snapshot.retainers?.subscriptions ?? [];
   const recurring = snapshot.recurring ?? [];
-  const numberOf = (id: string) => snapshot.invoices.find((i) => i.id === id)?.number ?? "invoice";
+  // The template is a draft: name it by client and amount, not by a draft number.
+  const numberOf = (id: string) => {
+    const invoice = snapshot.invoices.find((i) => i.id === id);
+    return invoice ? documentLabel(invoice, money) : "the invoice";
+  };
   const [planOpen, setPlanOpen] = useState(false);
   const [subOpen, setSubOpen] = useState(false);
   const [plan, setPlan] = useState({ name: "", price: "", period: "monthly", taxCode: snapshot.defaults?.taxCode ?? "za_std_15", currency: snapshot.defaults?.currency ?? "ZAR" });
@@ -20,8 +26,9 @@ export function RetainersTab({ onOpenInvoice }: { onOpenInvoice: (id: string) =>
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      {part === "retainers" ? <>
       <Card title="Subscriptions" actions={<SmallButton variant="primary" onClick={() => setSubOpen(true)}>+ Put a client on a retainer</SmallButton>}>
-        <Muted>Each period a draft invoice is created for a person to send, unless the subscription is set to send on its own.</Muted>
+        <Muted>Each period Billing drafts the invoice; the Account Manager asks for it to be sent (it is on the daily Drafts to send issue). A subscription set to send on its own skips that.</Muted>
         {subs.length === 0 ? <Muted>{scope ? `${clientName} has no retainer.` : "No retainers yet."}</Muted> : (
           <DataTable
             columns={[
@@ -57,8 +64,11 @@ export function RetainersTab({ onOpenInvoice }: { onOpenInvoice: (id: string) =>
         </Card>
       ) : null}
 
-      <Card title="Recurring invoices" actions={<SmallButton onClick={() => { setRec({ ...rec, templateInvoiceId: snapshot.invoices[0]?.id ?? "" }); setRecurringOpen(true); }}>+ Repeat an invoice</SmallButton>}>
-        {recurring.length === 0 ? <Muted>No recurring invoices. Any invoice can repeat monthly, quarterly or yearly; every field and line is copied.</Muted> : recurring.map((r) => (
+      </> : null}
+
+      {part === "repeating" ? (
+      <Card title="Repeating invoices" actions={<SmallButton onClick={() => { setRec({ ...rec, templateInvoiceId: snapshot.invoices[0]?.id ?? "" }); setRecurringOpen(true); }}>+ Repeat an invoice</SmallButton>}>
+        {recurring.length === 0 ? <Muted>No repeating invoices. Any invoice can repeat monthly, quarterly or yearly; every field and line is copied into a new draft.</Muted> : recurring.map((r) => (
           <Row key={r.id} style={{ justifyContent: "space-between", fontSize: 13 }}>
             <span>Copy of <SmallButton onClick={() => onOpenInvoice(r.templateInvoiceId)}>{numberOf(r.templateInvoiceId)}</SmallButton> · {r.frequency} · next {fmtDate(r.nextRunAt)}{r.autoSend ? " · sends itself" : ""}{r.endsAt ? ` · until ${fmtDate(r.endsAt)}` : ""}</span>
             <Row style={{ gap: 4 }}>
@@ -69,6 +79,7 @@ export function RetainersTab({ onOpenInvoice }: { onOpenInvoice: (id: string) =>
           </Row>
         ))}
       </Card>
+      ) : null}
 
       <Modal open={planOpen} title="New retainer plan" onClose={() => setPlanOpen(false)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setPlanOpen(false)}>Cancel</Button>
@@ -116,7 +127,7 @@ export function RetainersTab({ onOpenInvoice }: { onOpenInvoice: (id: string) =>
       </>}>
         <Field label="Invoice to copy">
           <Select value={rec.templateInvoiceId} onChange={(e) => setRec({ ...rec, templateInvoiceId: e.target.value })}>
-            {snapshot.invoices.filter((i) => !i.shared).map((i) => <option key={i.id} value={i.id}>{i.number} · {i.customerName ?? i.customerRef} · {money(i.totalMinor, i.currency)}</option>)}
+            {snapshot.invoices.filter((i) => !i.shared).map((i) => <option key={i.id} value={i.id}>{i.status === "draft" ? documentLabel(i, money) : `${i.number} · ${i.customerName ?? i.customerRef} · ${money(i.totalMinor, i.currency)}`}</option>)}
           </Select>
         </Field>
         <Row>

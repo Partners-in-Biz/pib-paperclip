@@ -1,32 +1,25 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
-import { Banknote, Button, ChartColumn, ClientWorkspaceBar, Coins, CreditCard, FileText, LayoutDashboard, Mail, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, type TabItem } from "@partnersinbiz/pib-plugin-ui";
-import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
+import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
 import { Overview } from "./overview.js";
-import { BillingContext, Muted, useCall, type BillingApi } from "./parts.js";
-import { PaymentsTab } from "./payments.js";
+import { BillingContext, Muted, SectionNav, money, useCall, type BillingApi } from "./parts.js";
+import { CreditNotesSection, PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
 import { RemindersTab, ReportsTab } from "./reports.js";
 import { RetainersTab } from "./retainers.js";
 import { TimeTab } from "./time.js";
-import { isOverdue } from "./series.js";
+import { draftsToSend, isOverdue, waitingOnPerson } from "./series.js";
 import type { Snapshot } from "./types.js";
-
-type TabId = "overview" | "invoices" | "quotes" | "payments" | "bills" | "expenses" | "time" | "retainers" | "reports" | "reminders";
-const TAB_IDS: readonly TabId[] = ["overview", "invoices", "quotes", "payments", "bills", "expenses", "time", "retainers", "reports", "reminders"];
-
-/** `?tab=invoices` (Cockpit links) opens that tab. */
-function tabFromSearch(search: string): TabId {
-  const value = new URLSearchParams(search).get("tab");
-  return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
-}
+import { openFormFor, resolveView, sectionsFor, tabsFor, TOP_TABS, VIEW_IDS, viewForTab, type TopTab, type View } from "./views.js";
 
 const PLUGIN_KEY = "partnersinbiz.billing";
+const TAB_ICON: Record<TopTab, TabItem["icon"]> = { overview: LayoutDashboard, invoices: Receipt, quotes: FileText, recurring: RefreshCw, costs: Coins, time: Timer };
 
 /** null while loading, false when the company switched Billing off in Setup. */
 function useModuleEnabled(companyId: string | null | undefined): boolean | null {
@@ -60,15 +53,21 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
 export function BillingPage({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
+  // "Finish setting up Billing" on the overview until its required setup is done.
+  const setupStatus = usePluginSetupStatus(PLUGIN_KEY, context.companyId);
   const scope = useMemo(() => clientScopeFromSearch(location.search), [location.search]);
   const scopeKey = scope ? formatClientParam(scope) : "own";
   const call = useCall();
   const [snapshot, setSnapshot] = useState<Snapshot>({ invoices: [] });
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
+  // `?tab=` is a tab or a section (payments, reminders, bills…); every pre-0.4 value still opens the same place.
+  const [view, setView] = useUrlTab<View>(VIEW_IDS, "overview", { path: "/billing", search: location.search, navigate: navigation.navigate });
+  const { tab, section } = resolveView(view, Boolean(scope));
   const [openInvoice, setOpenInvoice] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [openQuote, setOpenQuote] = useState<string | null>(null);
+  const [creating, setCreating] = useState<"invoice" | "quote" | null>(null);
+  const [prefillDeal, setPrefillDeal] = useState<string | null>(null);
   const enabled = useModuleEnabled(context.companyId);
 
   async function refresh() {
@@ -82,9 +81,27 @@ export function BillingPage({ context }: PluginPageProps) {
     setLoaded(false);
     setMessage("");
     setOpenInvoice(null);
-    if (scope && ["bills", "expenses", "reports", "reminders"].includes(tab)) setTab("overview");
+    setOpenQuote(null);
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId, scopeKey, enabled === false]);
+
+  // A deep link (the CRM deal drawer's "Draft a quote"): ?tab=quotes&new=1&client=company:<id>&dealId=<id>
+  // opens the new-quote form for that client and deal; `tab=invoices` does the same for an invoice. The one-off
+  // `new` and `dealId` are then taken out of the address, so a refresh does not open the form again.
+  useEffect(() => {
+    if (!loaded) return;
+    const params = new URLSearchParams(location.search);
+    if (params.get("new") !== "1") return;
+    const kind = openFormFor(params.get("tab"));
+    if (kind) {
+      setPrefillDeal(params.get("dealId")?.trim() || null);
+      setCreating(kind);
+    }
+    params.delete("new");
+    params.delete("dealId");
+    const rest = params.toString();
+    navigation.navigate(`/billing${rest ? `?${rest}` : ""}`, { replace: true });
+  }, [loaded, location.search]);
 
   if (enabled === false) {
     return (
@@ -121,8 +138,12 @@ export function BillingPage({ context }: PluginPageProps) {
   };
 
   const openInvoiceTab = (id: string) => {
-    setTab("invoices");
+    setView("invoices");
     setOpenInvoice(id);
+  };
+  const openQuoteTab = (id: string) => {
+    setView("quotes");
+    setOpenQuote(id);
   };
 
   const pending = (snapshot.pops ?? []).filter((p) => p.status === "pending").length;
@@ -131,40 +152,61 @@ export function BillingPage({ context }: PluginPageProps) {
   const billsDue = (snapshot.bills ?? []).filter((b) => b.outstandingMinor > 0 && b.dueDate && Date.parse(b.dueDate) < Date.now() + 7 * 86_400_000).length;
   const expensesToCheck = (snapshot.expenses ?? []).filter((e) => e.status === "draft" || e.needsReview).length;
   const running = (snapshot.time ?? []).filter((t) => t.running).length;
-  const tabs: Array<TabItem & { id: TabId }> = [
-    { id: "overview", label: "Overview", icon: LayoutDashboard, count: overdueCount + failedCount + pending || null, countTone: overdueCount + failedCount ? "bad" : "warn" },
-    { id: "invoices", label: "Invoices", icon: Receipt, count: snapshot.invoices.length, countTone: overdueCount || failedCount ? "bad" : undefined },
-    { id: "quotes", label: "Quotes", icon: FileText, count: snapshot.quotes?.length ?? 0 },
-    { id: "payments", label: "Payments", icon: Banknote, count: pending || null, countTone: "warn" },
-    ...(scope ? [] : [
-      { id: "bills" as const, label: "Bills", icon: CreditCard, count: snapshot.bills?.length ?? 0, countTone: billsDue ? "warn" as const : undefined },
-      { id: "expenses" as const, label: "Expenses", icon: Coins, count: snapshot.expenses?.length ?? 0, countTone: expensesToCheck ? "warn" as const : undefined },
-    ]),
-    { id: "time", label: "Time", icon: Timer, count: running || null, countTone: "info" },
-    { id: "retainers", label: "Retainers", icon: RefreshCw },
-    ...(scope ? [] : [{ id: "reports" as const, label: "Reports", icon: ChartColumn }, { id: "reminders" as const, label: "Reminders", icon: Mail }]),
-  ];
+  const waiting = waitingOnPerson(snapshot, money).length;
+  const drafts = draftsToSend(snapshot);
+  const quoteDrafts = drafts.filter((d) => d.kind === "quote").length;
+  const invoiceDrafts = drafts.length - quoteDrafts;
+  const counts: Record<TopTab, Pick<TabItem, "count" | "countTone">> = {
+    overview: { count: waiting || null, countTone: "warn" },
+    invoices: { count: overdueCount + failedCount || invoiceDrafts || null, countTone: overdueCount || failedCount ? "bad" : "info" },
+    quotes: { count: quoteDrafts || null, countTone: "info" },
+    recurring: { count: null },
+    costs: { count: billsDue + expensesToCheck || null, countTone: "warn" },
+    time: { count: running || null, countTone: "info" },
+  };
+  const tabs: TabItem[] = tabsFor(Boolean(scope)).map((id) => ({ id, label: TOP_TABS.find((t) => t.id === id)!.label, icon: TAB_ICON[id], ...counts[id] }));
+  const sectionCount: Partial<Record<View, { count: number | null; tone?: "warn" | "bad" | "info" }>> = {
+    payments: { count: pending || null, tone: "warn" },
+    expenses: { count: expensesToCheck || null, tone: "warn" },
+    bills: { count: billsDue || null, tone: "warn" },
+  };
+  const sections = sectionsFor(tab, Boolean(scope)).map((s) => ({ id: s.view, label: s.label, count: sectionCount[s.view]?.count ?? null, tone: sectionCount[s.view]?.tone }));
 
-  const draftInvoiceButton = <Button type="button" onClick={() => setCreating(true)}>+ Draft invoice</Button>;
+  // One main action, and it follows the open tab. A list with nothing in it offers it in its empty state instead.
+  const invoiceCount = snapshot.invoices.length;
+  const quoteCount = (snapshot.quotes ?? []).length;
+  const headerAction = !loaded
+    ? null
+    : tab === "quotes"
+      ? (quoteCount > 0 ? <Button type="button" onClick={() => setCreating("quote")}>+ Draft quote</Button> : null)
+      : tab === "overview" || (tab === "invoices" && !(section === "invoices" && invoiceCount === 0))
+        ? <Button type="button" onClick={() => setCreating("invoice")}>+ Draft invoice</Button>
+        : null;
+  // The module already has real data: the setup card starts as one line.
+  const hasData = invoiceCount + quoteCount + (snapshot.bills ?? []).length + (snapshot.expenses ?? []).length + (snapshot.time ?? []).length > 0;
   const pageMessage = message
-    || (scope && loaded && client && !client.found ? `${client.name ?? "This client"} is not in the Billing client list yet. Run the CRM "resync" action so new invoices pick up the CRM name.` : undefined)
+    || (scope && loaded && client && !client.found ? `${client.name ?? "This client"} is not in Billing's client list yet. The CRM shares new clients within 15 minutes; until then new documents use the name typed on them.` : undefined)
     || (loaded && snapshot.settingsSaved === false ? "Billing settings are not saved for this company. Open Settings → Plugins → Billing, add your business, VAT and EFT details, and click Save — they print on every invoice." : undefined);
 
   const body = (
     <BillingContext.Provider value={api}>
-      <Tabs tabs={tabs} active={tab} onChange={(id) => setTab(id as TabId)} />
+      <Tabs tabs={tabs} active={tab} onChange={(id) => setView(viewForTab(id as TopTab))} />
+      <SectionNav items={sections} active={section} onChange={(id) => setView(id as View)} />
       {!loaded ? <Muted>Loading…</Muted> : null}
-      {loaded && tab === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setTab} onOpenInvoice={openInvoiceTab} /> : null}
-      {loaded && tab === "invoices" ? <InvoicesTab openId={openInvoice} setOpenId={setOpenInvoice} /> : null}
-      {loaded && tab === "quotes" ? <QuotesTab onOpenInvoice={openInvoiceTab} /> : null}
-      {loaded && tab === "payments" ? <PaymentsTab onOpenInvoice={openInvoiceTab} /> : null}
-      {loaded && tab === "bills" && !scope ? <BillsTab /> : null}
-      {loaded && tab === "expenses" && !scope ? <ExpensesTab /> : null}
-      {loaded && tab === "time" ? <TimeTab onOpenInvoice={openInvoiceTab} /> : null}
-      {loaded && tab === "retainers" ? <RetainersTab onOpenInvoice={openInvoiceTab} /> : null}
-      {loaded && tab === "reports" && !scope ? <ReportsTab /> : null}
-      {loaded && tab === "reminders" && !scope ? <RemindersTab /> : null}
-      <NewDocumentModal kind="invoice" open={creating} onClose={() => setCreating(false)} onCreated={openInvoiceTab} />
+      {!scope && section === "overview" ? <GetStarted status={setupStatus} moduleName="Billing" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
+      {loaded && section === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setView} onOpenInvoice={openInvoiceTab} onOpenQuote={openQuoteTab} /> : null}
+      {loaded && section === "reports" && !scope ? <ReportsTab /> : null}
+      {loaded && section === "invoices" ? <InvoicesTab openId={openInvoice} setOpenId={setOpenInvoice} onCreate={() => setCreating("invoice")} /> : null}
+      {loaded && section === "payments" ? <PaymentsTab onOpenInvoice={openInvoiceTab} /> : null}
+      {loaded && section === "credit-notes" ? <CreditNotesSection onOpenInvoice={openInvoiceTab} /> : null}
+      {loaded && section === "reminders" && !scope ? <RemindersTab /> : null}
+      {loaded && section === "quotes" ? <QuotesTab onOpenInvoice={openInvoiceTab} openId={openQuote} setOpenId={setOpenQuote} onCreate={() => setCreating("quote")} /> : null}
+      {loaded && (section === "retainers" || section === "repeating") ? <RetainersTab onOpenInvoice={openInvoiceTab} part={section} /> : null}
+      {loaded && section === "bills" && !scope ? <BillsTab /> : null}
+      {loaded && section === "expenses" && !scope ? <ExpensesTab /> : null}
+      {loaded && section === "time" ? <TimeTab onOpenInvoice={openInvoiceTab} /> : null}
+      <NewDocumentModal kind="invoice" open={creating === "invoice"} dealId={prefillDeal} onClose={() => { setCreating(null); setPrefillDeal(null); }} onCreated={openInvoiceTab} />
+      <NewDocumentModal kind="quote" open={creating === "quote"} dealId={prefillDeal} onClose={() => { setCreating(null); setPrefillDeal(null); }} onCreated={openQuoteTab} />
     </BillingContext.Provider>
   );
 
@@ -178,7 +220,7 @@ export function BillingPage({ context }: PluginPageProps) {
             linkProps={navigation.linkProps}
             ownPath="/billing"
             ownLabel="All billing"
-            actions={draftInvoiceButton}
+            actions={headerAction}
           />
         )}
         message={pageMessage}
@@ -191,9 +233,9 @@ export function BillingPage({ context }: PluginPageProps) {
   return (
     <Page
       title="Billing"
-      description="PiB's invoices, quotes, payments, bills, expenses, time and retainers. Agents draft; a person approves sending and confirms money."
+      description="PiB's invoices, quotes, payments, retainers, bills and time. Agents draft and ask; a person approves sending and money."
       message={pageMessage}
-      actions={draftInvoiceButton}
+      actions={headerAction}
       accent="billing"
     >
       {body}

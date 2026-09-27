@@ -10,7 +10,7 @@ import {
   type SocialPlatform,
 } from "../platforms.js";
 import { ExperimentSelect } from "./growth.js";
-import { Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel } from "./parts.js";
+import { Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel, toLocalInput } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
 type Overrides = Partial<Record<SocialPlatform, PlatformOverride>>;
@@ -118,6 +118,8 @@ export function Composer({ snapshot, post, run, onClose }: {
   );
   const [mediaIds, setMediaIds] = useState<string[]>(post?.media.map((m) => m.assetId).filter((id): id is string => Boolean(id)) ?? []);
   const [firstComment, setFirstComment] = useState(post?.firstComment ?? "");
+  // The proposed publish time: approval schedules the post for it.
+  const [when, setWhen] = useState(post?.scheduledAt ? toLocalInput(new Date(post.scheduledAt)) : "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
   const [overrideTab, setOverrideTab] = useState<string>("");
   const initialTag = post?.experimentId && post.experimentArm ? `${post.experimentId}|${post.experimentArm}` : "";
@@ -188,6 +190,8 @@ export function Composer({ snapshot, post, run, onClose }: {
         mediaAssetIds: mediaIds,
         firstComment: firstComment || null,
         overrides: cleanOverrides,
+        // "" clears a proposed time on an existing post.
+        ...(when ? { scheduledAt: new Date(when).toISOString() } : post ? { scheduledAt: "" } : {}),
         ...tagParams,
       };
       const saved = (post
@@ -213,7 +217,7 @@ export function Composer({ snapshot, post, run, onClose }: {
     <Modal
       open
       title={post ? "Edit post" : "New post"}
-      description="Write once, then adjust per platform. A person approves before anything is scheduled."
+      description="Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."
       onClose={onClose}
       footer={(
         <>
@@ -271,6 +275,11 @@ export function Composer({ snapshot, post, run, onClose }: {
           </div>
         )}
       </div>
+
+      <Field label={`Proposed publish time (optional, your local time; calendar shows ${snapshot.config.timezone})`}>
+        <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+      </Field>
+      <Muted style={{ marginTop: -6 }}>Approving the post schedules it for this time. Without a time, the Social agent picks one after approval.</Muted>
 
       <ExperimentSelect snapshot={snapshot} value={tag} onChange={setTag} />
 

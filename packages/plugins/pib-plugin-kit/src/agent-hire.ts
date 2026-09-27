@@ -15,6 +15,7 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
+import { COMPANY_OS_INSTRUCTION, COMPANY_OS_SKILL } from "./asking.js";
 
 export interface HireSkill {
   /** Canonical key the host gives the managed skill, e.g. `plugin/partnersinbiz-seo/seo-sprint`. */
@@ -118,8 +119,10 @@ async function writeHireState(ctx: PluginContext, companyId: string, roleKey: st
 
 /** The role's AGENTS.md plus the company memory line (once). */
 export function withMemoryInstruction(instructions: string): string {
-  const text = instructions.trim();
-  return text.includes(COMPANY_MEMORY_INSTRUCTION) ? text : `${text}\n\n${COMPANY_MEMORY_INSTRUCTION}`;
+  let text = instructions.trim();
+  if (!text.includes(COMPANY_MEMORY_INSTRUCTION)) text = `${text}\n\n${COMPANY_MEMORY_INSTRUCTION}`;
+  if (!text.includes(COMPANY_OS_INSTRUCTION)) text = `${text}\n\n${COMPANY_OS_INSTRUCTION}`;
+  return text;
 }
 
 function money(cents: number): string {
@@ -127,8 +130,20 @@ function money(cents: number): string {
 }
 
 /** Title and markdown description for the hire task. Deterministic, so the popup can show it. */
+/** The company operating manual every PiB hire gets, as a hire skill. */
+export const COMPANY_OS_HIRE_SKILL: HireSkill = {
+  key: COMPANY_OS_SKILL.key,
+  slug: COMPANY_OS_SKILL.slug,
+  purpose: "The company operating manual: modules, clients, hand-offs, approvals, asking a person and memory.",
+};
+
+/** The role's skills plus the company operating manual (once, last). */
+export function hireSkills(role: HireRole): HireSkill[] {
+  return role.skills.some((s) => s.key === COMPANY_OS_HIRE_SKILL.key) ? role.skills : [...role.skills, COMPANY_OS_HIRE_SKILL];
+}
+
 export function hireTaskDraft(role: HireRole): { title: string; description: string } {
-  const skillLines = role.skills.map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
+  const skillLines = hireSkills(role).map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
   const setupLines = role.pluginSetup.map((line) => `- ${line}`).join("\n");
   const description = `The ${role.pluginName} plugin needs an agent. Please hire it the way we hire every agent, so it sits in the right place in the org chart.
 
@@ -164,7 +179,7 @@ The ${role.pluginName} plugin notices the new agent (it looks for an agent creat
 
 ${setupLines}
 
-It comments here when that is done. Do not grant plugin tool access by hand; the plugin does it. If the link does not happen within a few minutes, open the ${role.pluginName} page and use **Link agent**.
+It comments here when that is done. Do not grant plugin tool access by hand; the plugin does it. If the link does not happen within a few minutes, open **Setup → Team** and use **Pick existing** on the ${role.title} row.
 
 ## Done when
 
@@ -209,10 +224,15 @@ function norm(value: string | null | undefined): string {
   return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** True when the agent has one of the role's skills or carries the role's name or title. */
+/**
+ * True when the agent has one of the role's own skills or carries the role's
+ * name or title. Skills every PiB agent carries (the company operating
+ * manual) never count, or any new PiB agent would match any open hire.
+ */
 export function matchesRole(agent: Record<string, unknown>, role: HireRole): boolean {
   const skills = desiredSkills(agent).map((s) => s.toLowerCase());
-  const hasSkill = role.skills.some((s) =>
+  const ownSkills = role.skills.filter((s) => s.key !== COMPANY_OS_HIRE_SKILL.key && s.slug !== COMPANY_OS_HIRE_SKILL.slug);
+  const hasSkill = ownSkills.some((s) =>
     skills.some((k) => k === s.key.toLowerCase() || k === s.slug.toLowerCase() || k.endsWith(`/${s.slug.toLowerCase()}`) || k.endsWith(`/${s.key.split("/").pop()!.toLowerCase()}`)),
   );
   if (hasSkill) return true;
@@ -332,7 +352,7 @@ export async function linkAgent(
   try {
     steps = await options.onLinked(companyId, agent.id, { userId: options.userId });
   } catch (error) {
-    steps = [`Setup did not finish: ${error instanceof Error ? error.message : String(error)}. Open the ${role.pluginName} page and click Link agent again.`];
+    steps = [`Setup did not finish: ${error instanceof Error ? error.message : String(error)}. Open Setup → Team and pick the agent again on the ${role.title} row.`];
   }
   if (state.hire?.status === "open") {
     const how = options.by === "auto" ? "found" : "was given";

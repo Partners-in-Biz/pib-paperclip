@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, ChartLegend, EmptyState, Field, FileText, Input, Pill, Sheet, Toolbar, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
 import { Thumb } from "./composer.js";
-import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton } from "./parts.js";
+import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
-import type { Post, RunAction, Snapshot } from "./types.js";
+import type { ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -15,11 +15,6 @@ const FILTERS = [
   { id: "published", label: "Published" },
   { id: "problems", label: "Failed" },
 ];
-
-function toLocalInput(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; onOpen: (post: Post) => void; onNew: () => void }) {
   const [filter, setFilter] = useState("all");
@@ -56,11 +51,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
                   <PostStatus status={post.status} />
                   {post.source !== "manual" ? <Muted>{post.source.replace("_", " ")}</Muted> : null}
                 </Row>
-                <Muted>
-                  {post.status === "published" || post.status === "partially_published"
-                    ? `Published ${fmtDate(post.publishedAt, snapshot.config.timezone)}`
-                    : post.scheduledAt ? `Scheduled ${fmtDate(post.scheduledAt, snapshot.config.timezone)}` : `Updated ${fmtDate(post.updatedAt, snapshot.config.timezone)}`}
-                </Muted>
+                <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
               </Row>
               <div style={{ fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{post.body}</div>
               <Row>
@@ -80,8 +71,14 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
 export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Post; snapshot: Snapshot; run: RunAction; onClose: () => void; onEdit: (post: Post) => void }) {
   const [problems, setProblems] = useState<string[] | null>(null);
   const [when, setWhen] = useState(toLocalInput(new Date(Date.now() + 60 * 60_000)));
+  const [approval, setApproval] = useState<ApprovalOutcome | null>(null);
   const tz = snapshot.config.timezone;
   const isUser = Boolean(snapshot.viewer.userId);
+  const proposed = (post.status === "draft" || post.status === "review") && post.scheduledAt ? post.scheduledAt : null;
+  const approve = () =>
+    run("social.approve", { postId: post.id })
+      .then((res) => setApproval((res as { approval?: ApprovalOutcome } | null)?.approval ?? { scheduled: false, scheduledAt: null, message: "Approved." }))
+      .catch(ignore);
 
   useEffect(() => {
     if (post.status === "published") return;
@@ -111,6 +108,10 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind }} />)}</Row>
       ) : null}
       {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
+      {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
+      {proposed ? (
+        <Muted>Proposed time: <strong>{fmtDate(proposed, tz)}</strong>. {post.status === "review" ? "Approving schedules it for then." : "Once approved it is scheduled for then."}</Muted>
+      ) : null}
       {post.experimentId ? (
         <Muted>Growth Lab: {post.experimentArm} arm of "{snapshot.experiments.find((e) => e.experimentId === post.experimentId)?.hypothesis ?? "a closed experiment"}"</Muted>
       ) : null}
@@ -155,7 +156,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       <Row>
         {post.status === "draft" || post.status === "review" ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
         {post.status === "draft" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
-        {post.status === "review" && isUser ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => act("social.approve", "Approved")}>Approve</Button> : null}
+        {post.status === "review" && isUser ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void approve()}>{proposed ? "Approve & schedule" : "Approve"}</Button> : null}
         {post.status === "review" || post.status === "approved" ? <SmallButton onClick={() => act("social.back-to-draft", "Moved back to draft")}>Back to draft</SmallButton> : null}
         {post.status === "scheduled" ? <SmallButton onClick={() => act("social.unschedule", "Unscheduled")}>Unschedule</SmallButton> : null}
         {(post.status === "failed" || post.status === "partially_published") && failed ? (
@@ -170,6 +171,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
 
       {post.status === "approved" ? (
         <Card style={{ gap: 8 }}>
+          <Muted>{post.scheduleIssueId ? "No publish time yet: the Social agent has a task to pick one. Or set it here." : "No publish time yet. Set it here."}</Muted>
           <Field label={`Publish at (your local time; calendar shows ${tz})`}>
             <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
           </Field>

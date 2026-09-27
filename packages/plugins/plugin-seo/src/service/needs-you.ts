@@ -65,7 +65,7 @@ async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mod
     if (previous.issueId) {
       const old = await getIssue(env, sprint.companyId, previous.issueId);
       if (old && OPEN_ISSUE_STATUSES.has(String(old.status))) {
-        await commentOn(env, sprint.companyId, previous.issueId, carried.length > 0 ? `${carried.length} open item(s) moved to this week's Needs you issue.` : "Nothing is open any more.");
+        await commentOn(env, sprint.companyId, previous.issueId, carried.length > 0 ? `${carried.length} open ${carried.length === 1 ? "item" : "items"} moved to this week's Needs you issue.` : "Nothing is open any more.");
         await patchIssue(env, sprint.companyId, previous.issueId, { status: "done" });
       }
     }

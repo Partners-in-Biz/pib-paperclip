@@ -18,10 +18,13 @@ const FULL_CONFIG = {
 const ACCOUNT = { id: "acct-1", company_id: "co", platform: "linkedin", scope: "org", status: "connected", display_name: "PiB", token_enc: "v1:sealed", client_ref: null };
 const PROGRAM = { id: "prog-1", company_id: "co", channel: "social", objective: "More leads", autopilot: "safe", client_ref: null };
 
-function world(input: { config?: Record<string, unknown>; configured?: boolean; modules?: Record<string, boolean> | null } = {}) {
+function world(input: { config?: Record<string, unknown>; configured?: boolean; modules?: Record<string, boolean> | null; triggersOn?: boolean | null } = {}) {
   const configured = input.configured ?? false;
   const state = new Map<string, unknown>();
   if (input.modules) state.set("modules", { companyId: "co", modules: input.modules, updatedAt: "2026-09-01T00:00:00Z" });
+  // What the Social page last read about the routine's Monday trigger (the worker cannot read triggers).
+  const triggersOn = input.triggersOn === undefined ? configured : input.triggersOn;
+  if (triggersOn !== null) state.set("report:plan-next-week", { routineId: "r1", status: "active", triggersOn, checkedAt: "2026-09-26T09:00:00Z" });
   const emit = vi.fn(async () => undefined);
   const ctx = fakeCtx({
     config: { get: vi.fn(async () => input.config ?? (configured ? FULL_CONFIG : {})) },
@@ -59,7 +62,7 @@ describe("social setup status", () => {
   it("lists exact next steps for a new company", async () => {
     const { ctx } = world();
     const status = await socialSetupStatus(ctx, "co", new Date("2026-09-26T10:00:00Z"));
-    expect(status).toMatchObject({ plugin: "partnersinbiz.social", module: "social", title: "Social", version: "0.5.6", checkedAt: "2026-09-26T10:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.social", module: "social", title: "Social", version: "0.6.0", checkedAt: "2026-09-26T10:00:00.000Z" });
     expect(status.items[0]!.key).toBe("settings");
     const items = byKey(status.items);
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins/e588ce00-a14b-49fc-b62d-54b0208daafa" });
@@ -69,7 +72,8 @@ describe("social setup status", () => {
     expect(items.platform_apps).toMatchObject({ status: "missing", required: true });
     expect(items.redirect_uri).toMatchObject({ status: "blocked", required: false, blockedBy: ["base_url_key"] });
     expect(items.own_accounts).toMatchObject({ status: "blocked", required: true, href: "/social?tab=accounts", blockedBy: ["base_url_key", "platform_apps"] });
-    expect(items.agent).toMatchObject({ status: "missing", required: true, href: "/social", action: { plugin: "partnersinbiz.social", key: "social.start-hire" } });
+    expect(items.agent).toMatchObject({ status: "missing", required: true, href: "/setup?section=team#team-social", hrefLabel: "Open Team in Setup", action: { plugin: "partnersinbiz.social", key: "social.start-hire" } });
+    expect(items.agent.steps).toEqual(["Open Setup → Team → Social agent.", "Hire one (a hire task for your hiring agent or a person), or pick an agent you already have.", "Approve and resume the new agent once it exists."]);
     expect(items.routine).toMatchObject({ status: "blocked", required: true, blockedBy: ["agent"] });
     expect(items.jev).toMatchObject({ status: "optional", required: false });
     expect(items.growth_program).toMatchObject({ status: "optional", required: false, action: { key: "social.growth-load" } });
@@ -92,10 +96,26 @@ describe("social setup status", () => {
     expect(items.redirect_uri).toMatchObject({ status: "unknown" });
     expect(items.redirect_uri.detail).toContain(`https://paperclip.example.com${TEST_UI_BASE}oauth-callback.html`);
     expect(items.own_accounts.detail).toContain("LinkedIn · PiB");
-    expect(items.agent.action).toBeNull();
-    expect(items.routine).toMatchObject({ status: "done", href: "/routines/r1" });
+    expect(items.agent).toMatchObject({ status: "done", href: "/setup?section=team#team-social", hrefLabel: "Open Team in Setup", action: null });
+    expect(items.routine).toMatchObject({ status: "done", href: "/routines/r1", hrefLabel: "Open the routine" });
     expect(items.jev.status).toBe("done");
     expect(items.growth_program).toMatchObject({ status: "done", action: null });
+  });
+
+  it("the routine counts as done only when it is active and its Monday trigger is on", async () => {
+    const off = byKey((await socialSetupStatus(world({ configured: true, triggersOn: false }).ctx, "co")).items);
+    expect(off.routine).toMatchObject({ status: "missing", required: true, href: "/social?routine=on", hrefLabel: "Switch it on" });
+    expect(off.routine.detail).toContain("trigger is off");
+    const unknown = byKey((await socialSetupStatus(world({ configured: true, triggersOn: null }).ctx, "co")).items);
+    expect(unknown.routine).toMatchObject({ status: "unknown", href: "/social", hrefLabel: "Open Social" });
+  });
+
+  it("says the built-in rules triage the inbox without a Jev key", async () => {
+    const { ctx } = world({ config: { ...FULL_CONFIG, jev: undefined }, configured: true });
+    const items = byKey((await socialSetupStatus(ctx, "co")).items);
+    expect(items.jev).toMatchObject({ status: "optional", required: false });
+    expect(items.jev.detail).toContain("built-in keyword rules triage the inbox");
+    expect(items.jev.detail).toContain("leads, the reply queue and escalations already work");
   });
 
   it("publishes the status hourly for saved companies with the module on", async () => {

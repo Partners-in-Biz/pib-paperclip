@@ -1,6 +1,8 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
-import { KpiCard, Pill, errorText, tokens, tone, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { CircleAlert, KpiCard, Pill, TriangleAlert, errorText, tokens, tone, useIsNarrow, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { readableDates } from "../domain/dates.js";
+import { cleanMemo } from "../domain/memo.js";
 
 export interface Account {
   id: string;
@@ -34,13 +36,45 @@ export const TAX_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "za_out_of_scope", label: "Out of scope" },
 ];
 
-/** R 1 234.56 (cents in, rand out). */
-export function rand(minor: number | null | undefined): string {
-  if (minor == null || !Number.isFinite(minor)) return "—";
-  const sign = minor < 0 ? "-" : "";
-  const abs = Math.abs(Math.round(minor));
-  const whole = Math.floor(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${sign}R ${whole}.${String(abs % 100).padStart(2, "0")}`;
+/** A VAT code as people read it ("Standard 15%"); the code itself only when it is unknown. */
+export function taxLabel(code: string | null | undefined): string {
+  if (!code) return "No VAT";
+  return TAX_OPTIONS.find((t) => t.value === code)?.label ?? code;
+}
+
+/** Journal kinds in plain words (the filter and the journal list). */
+export const KIND_LABELS: Record<string, string> = {
+  event: "From Billing or Payroll",
+  manual: "Manual",
+  reversal: "Reversal",
+  bank: "Bank",
+  opening: "Opening balances",
+  depreciation: "Depreciation",
+  disposal: "Asset sold or scrapped",
+  fx_revaluation: "Exchange-rate revaluation",
+};
+
+export function kindLabel(kind: string | null | undefined): string {
+  return KIND_LABELS[kind ?? ""] ?? capitalise(words(kind));
+}
+
+/** The module a journal or posting came from, by name (never the plugin id). */
+export function sourceName(plugin: string | null | undefined): string {
+  const id = (plugin ?? "").toLowerCase();
+  if (!id || id.endsWith(".accounting") || id === "accounting") return "Accounting";
+  if (id.endsWith(".billing")) return "Billing";
+  if (id.endsWith(".payroll")) return "Payroll";
+  const last = id.split(".").pop() ?? "";
+  return last ? capitalise(words(last)) : "Another module";
+}
+
+/** A journal memo for people: no database ids, readable dates; `fallback` when nothing is left. */
+export function memoText(memo: string | null | undefined, fallback = "—"): string {
+  return readableDates(cleanMemo(memo)) || fallback;
+}
+
+export function capitalise(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
 }
 
 /** "1 234,50" / "1234.5" / "-12" → cents. Empty → null. */
@@ -75,6 +109,83 @@ export function Banner({ tone: t = "info", children }: { tone?: "warn" | "info" 
     <div role="status" style={{ fontSize: 13, lineHeight: 1.5, padding: "10px 14px", borderRadius: 10, border: `1px solid ${colors ? colors.border : tokens.border}`, borderLeft: `3px solid ${colors ? colors.solid : tokens.border}`, background: colors ? colors.soft : tokens.secondary, display: "grid", gap: 4, minWidth: 0, overflowWrap: "anywhere" }}>
       {children}
     </div>
+  );
+}
+
+/**
+ * A one-line notice with the fix beside it (settings not saved, roles
+ * without an account). The page shows these in the same place on every tab.
+ */
+export function NoticeLine({ tone: t = "warn", children, action }: { tone?: "warn" | "bad" | "info"; children: ReactNode; action?: ReactNode }) {
+  const colors = tone(t);
+  const Glyph = t === "bad" ? CircleAlert : TriangleAlert;
+  return (
+    <div role="status" style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px 6px 12px", borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.soft, fontSize: 13, lineHeight: 1.4, minWidth: 0 }}>
+      <Glyph size={15} aria-hidden="true" style={{ color: colors.fg, flexShrink: 0 }} />
+      <span style={{ flex: "1 1 auto", minWidth: 0, color: tokens.fg, overflowWrap: "anywhere" }}>{children}</span>
+      {action ? <span style={{ flexShrink: 0, display: "inline-flex" }}>{action}</span> : null}
+    </div>
+  );
+}
+
+/** The fix in a NoticeLine: a link (`linkProps`) or a button, at least 40px tall on a phone. */
+export function NoticeAction({ children, onClick, link }: { children: ReactNode; onClick?: () => void; link?: Record<string, unknown> }) {
+  const narrow = useIsNarrow();
+  const style: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, minHeight: narrow ? 40 : 30, padding: "0 12px", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, fontSize: 12.5, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit" };
+  if (link) return <a {...link} style={style}>{children} →</a>;
+  return <button type="button" onClick={onClick} style={style}>{children} →</button>;
+}
+
+/** Sections inside a top tab (pills). Nothing when the tab has one section. */
+export function SectionNav({ items, active, onChange }: { items: Array<{ id: string; label: string; count?: number | null; tone?: ToneInput }>; active: string; onChange: (id: string) => void }) {
+  if (items.length < 2) return null;
+  return (
+    <div role="tablist" aria-label="Sections" style={{ display: "flex", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
+      {items.map((item) => {
+        const selected = item.id === active;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(item.id)}
+            style={{
+              appearance: "none",
+              border: `1px solid ${selected ? tokens.fg : tokens.border}`,
+              background: selected ? tokens.fg : tokens.bg,
+              color: selected ? tokens.bg : tokens.fg,
+              borderRadius: 999,
+              padding: "0 12px",
+              minHeight: 30,
+              fontSize: 12.5,
+              fontWeight: selected ? 650 : 500,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.label}
+            {item.count ? (
+              <span style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: item.tone ? tone(item.tone).soft : tokens.secondary, color: item.tone ? tone(item.tone).fg : tokens.secondaryFg }}>{item.count}</span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Technical detail for an accountant (codes, keys, hashes), closed by default. */
+export function Details({ children, summary = "Details" }: { children: ReactNode; summary?: string }) {
+  return (
+    <details style={{ fontSize: 12.5, color: tokens.muted, minWidth: 0 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600, color: tokens.fg, minHeight: 28, display: "flex", alignItems: "center" }}>{summary}</summary>
+      <div style={{ display: "grid", gap: 4, paddingTop: 6, overflowWrap: "anywhere" }}>{children}</div>
+    </details>
   );
 }
 
@@ -192,12 +303,16 @@ export function accountLabel(accounts: Account[], code: string | null | undefine
   return a ? `${a.code} ${a.name}` : code;
 }
 
-export function AccountSelect({ accounts, value, onChange, filter, placeholder = "Choose an account…" }: {
+export function AccountSelect({ accounts, value, onChange, filter, placeholder = "Choose an account…", fullWidth = false, label }: {
   accounts: Account[];
   value: string;
   onChange: (code: string) => void;
   filter?: (a: Account) => boolean;
   placeholder?: string;
+  /** Fill the box it sits in (filter rows, forms) instead of its own width. */
+  fullWidth?: boolean;
+  /** Accessible name when there is no visible label. */
+  label?: string;
 }) {
   const list = accounts.filter((a) => a.active && (!filter || filter(a)));
   const groups: Array<[string, Account[]]> = [
@@ -210,8 +325,9 @@ export function AccountSelect({ accounts, value, onChange, filter, placeholder =
   return (
     <select
       value={value}
+      aria-label={label}
       onChange={(e) => onChange(e.target.value)}
-      style={{ height: 36, borderRadius: 8, border: `1px solid ${tokens.input}`, background: tokens.bg, color: tokens.fg, padding: "0 8px", fontSize: 13, fontFamily: "inherit", minWidth: "min(220px, 100%)", maxWidth: "min(360px, 100%)" }}
+      style={{ height: 36, borderRadius: 8, border: `1px solid ${tokens.input}`, background: tokens.bg, color: tokens.fg, padding: "0 8px", fontSize: 13, fontFamily: "inherit", ...(fullWidth ? { width: "100%", minWidth: 0, maxWidth: "100%" } : { minWidth: "min(220px, 100%)", maxWidth: "min(360px, 100%)" }) }}
     >
       <option value="">{placeholder}</option>
       {groups.filter(([, items]) => items.length).map(([label, items]) => (
@@ -233,8 +349,8 @@ export function AccountSelect({ accounts, value, onChange, filter, placeholder =
 export function statusTone(status: string): "ok" | "warn" | "bad" | "info" | "neutral" {
   if (["reconciled", "posted", "locked", "open", "settled", "resolved", "approved", "submitted", "ok", "in_use", "active"].includes(status)) return "ok";
   if (["matching", "pending_approval", "soft_closed", "unreconciled", "not_prepared", "pending", "due", "to_do", "review"].includes(status)) return "warn";
-  if (["rejected", "failed", "overdue", "blocked"].includes(status)) return "bad";
-  if (["draft", "prepared", "scheduled", "in_progress"].includes(status)) return "info";
+  if (["rejected", "failed", "overdue", "blocked", "late"].includes(status)) return "bad";
+  if (["draft", "prepared", "scheduled", "in_progress", "running"].includes(status)) return "info";
   return "neutral";
 }
 

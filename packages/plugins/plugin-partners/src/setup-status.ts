@@ -92,7 +92,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     detail: active > 0 ? `${active} active partner link${active === 1 ? "" : "s"}.` : "Optional. Only needed when you share records with another Paperclip company.",
     href: "/partners",
     hrefLabel: "Open Partners",
-    steps: active > 0 ? undefined : ["Open Partners.", "Click + Propose link and enter the other company's Paperclip id.", "Ask the other company to accept the link."],
+    steps: active > 0 ? undefined : ["Open Partners.", "Click + Propose link and pick the partner company.", "Ask the other company to accept the link on its Partners page."],
     agentNext: null,
   });
 

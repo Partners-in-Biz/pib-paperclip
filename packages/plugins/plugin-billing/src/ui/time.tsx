@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Field, Input, Modal, Select } from "@partnersinbiz/pib-plugin-ui";
 import { Card, ClientSelect, Muted, Row, SmallButton, fmtDate, minorToInput, money, toMinor, today, useBilling } from "./parts.js";
+import { documentLabel } from "./series.js";
 
 function hours(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -109,7 +110,7 @@ export function TimeTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => void
         <Field label="Draft invoice">
           <Select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)}>
             <option value="">Choose a draft…</option>
-            {drafts.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.customerName ?? i.customerRef}</option>)}
+            {drafts.map((i) => <option key={i.id} value={i.id}>{documentLabel(i, money)}</option>)}
           </Select>
         </Field>
         {drafts.length === 0 ? <Muted>Draft an invoice for the client first.</Muted> : null}

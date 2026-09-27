@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { assertDelivery, audienceSource, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type EnrollmentDraft } from "./domain.js";
+import { assertDelivery, audienceSource, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type CampaignSuppressionReason, type EnrollmentDraft } from "./domain.js";
 import { clientWhere, listCrmContacts, listCrmContactsAtCompany, textArrayParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 
 export function table(ctx: PluginContext, name: string): string {
@@ -30,10 +30,13 @@ export interface CampaignRow {
   delivery?: string | null;
   owner_user_id?: string | null;
   owner_agent_id?: string | null;
+  approved_by_user_id?: string | null;
+  launched_at?: unknown;
+  launch_error?: string | null;
 }
 
 const CAMPAIGN_COLUMNS =
-  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id";
+  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, approved_by_user_id, launched_at, launch_error";
 
 export interface StepRow {
   id: string;
@@ -85,6 +88,13 @@ function asIso(value: unknown): string | null {
   return String(value);
 }
 
+/** A driver time (Date, ISO or Postgres text) as ISO; null when missing or unreadable. */
+export function isoTime(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
 function mapCampaign(row: CampaignRow): CampaignDraft {
   return {
     id: row.id,
@@ -107,6 +117,9 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     delivery: row.delivery === "email" ? "email" : "issue",
     ownerUserId: row.owner_user_id ?? null,
     ownerAgentId: row.owner_agent_id ?? null,
+    approvedByUserId: row.approved_by_user_id ?? null,
+    launchedAt: asIso(row.launched_at),
+    launchError: row.launch_error ?? null,
   };
 }
 
@@ -207,6 +220,76 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
       assertDelivery(campaign.delivery),
     ],
   );
+}
+
+/** The draft (or launched) campaign an approval issue belongs to. */
+export async function campaignByApprovalIssue(ctx: PluginContext, issueId: string): Promise<CampaignDraft | null> {
+  const rows = await ctx.db.query<CampaignRow>(
+    `SELECT ${CAMPAIGN_COLUMNS}
+       FROM ${table(ctx, "campaigns")} WHERE approval_issue_id = $1 LIMIT 1`,
+    [issueId],
+  );
+  return rows[0] ? mapCampaign(rows[0]) : null;
+}
+
+/**
+ * Moves the campaign from `fromStatus` to active. False when another launch
+ * got there first (the status changed meanwhile), so enrollment runs once.
+ */
+export async function claimLaunch(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "approvedByUserId">, fromStatus: string, approvedByUserId: string | null): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")}
+        SET status = 'active', launched_at = now(), launch_error = NULL, approved_by_user_id = $3, updated_at = now()
+      WHERE id = $1 AND status = $2`,
+    [campaign.id, fromStatus, approvedByUserId ?? campaign.approvedByUserId ?? null],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+/** Why the last launch on approval failed; null clears it. */
+export async function setLaunchError(ctx: PluginContext, campaignId: string, error: string | null): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")} SET launch_error = $2, updated_at = now() WHERE id = $1`,
+    [campaignId, error ? error.slice(0, 500) : null],
+  );
+}
+
+/** Forgets the approval issue so the draft can be sent for approval again. */
+export async function clearApproval(ctx: PluginContext, campaignId: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")} SET approval_issue_id = NULL, launch_error = NULL, updated_at = now() WHERE id = $1`,
+    [campaignId],
+  );
+}
+
+export interface ApprovalIssueRow extends CampaignRow {
+  issue_status: string;
+  issue_agent_id: string | null;
+  issue_user_id: string | null;
+}
+
+/** Drafts whose approval issue is done: the launch event may have been missed (events are at-most-once). */
+export async function approvedDrafts(ctx: PluginContext, limit = 50): Promise<Array<{ campaign: CampaignDraft; issueAgentId: string | null; issueUserId: string | null }>> {
+  const rows = await ctx.db.query<ApprovalIssueRow>(
+    `SELECT c.${CAMPAIGN_COLUMNS.split(", ").join(", c.")}, i.status AS issue_status, i.assignee_agent_id AS issue_agent_id, i.assignee_user_id AS issue_user_id
+       FROM ${table(ctx, "campaigns")} c JOIN public.issues i ON i.id::text = c.approval_issue_id
+      WHERE c.status = 'draft' AND i.status = 'done'
+      ORDER BY c.updated_at
+      LIMIT ${Math.max(1, Math.min(limit, 200))}`,
+  );
+  return rows.map((row) => ({ campaign: mapCampaign(row), issueAgentId: row.issue_agent_id ?? null, issueUserId: row.issue_user_id ?? null }));
+}
+
+/** Running enrollments whose step issue was closed without us hearing about it. */
+export async function closedStepIssues(ctx: PluginContext, limit = 200): Promise<Array<EnrollmentDraft & { issueStatus: string }>> {
+  const rows = await ctx.db.query<EnrollmentRow & { issue_status: string }>(
+    `SELECT e.id, e.company_id, e.campaign_id, e.contact_id, e.status, e.step_position, e.variant, e.next_due_at, e.open_issue_id,
+            e.sending_key, e.mail_thread_id, e.mail_last_message_id, i.status AS issue_status
+       FROM ${table(ctx, "campaign_enrollments")} e JOIN public.issues i ON i.id::text = e.open_issue_id
+      WHERE e.status = 'running' AND i.status IN ('done', 'cancelled')
+      LIMIT ${Math.max(1, Math.min(limit, 500))}`,
+  );
+  return rows.map((row) => ({ ...mapEnrollment(row), issueStatus: row.issue_status }));
 }
 
 export async function listSteps(ctx: PluginContext, campaignId: string): Promise<CampaignStepDraft[]> {
@@ -356,6 +439,46 @@ export async function campaignStats(ctx: PluginContext, campaignId: string): Pro
     if (row.status === "done") stats.done = count;
   }
   return stats;
+}
+
+export interface EnrollmentView {
+  contactId: string;
+  /** From the CRM projection; null when the contact is no longer there. */
+  name: string | null;
+  status: string;
+  stepPosition: number;
+  variant: string;
+  nextDueAt: string | null;
+  /** A step task is open and waits for the agent. */
+  waiting: boolean;
+  /** The Mailbox is sending the step email now. */
+  sending: boolean;
+}
+
+/** A campaign's enrollments for the detail view: running ones first, soonest due first. */
+export async function enrollmentViews(ctx: PluginContext, campaignId: string, limit = 500): Promise<EnrollmentView[]> {
+  const rows = await ctx.db.query<{
+    contact_id: string; status: string; step_position: number; variant: string | null; next_due_at: unknown;
+    open_issue_id: string | null; sending_key: string | null; name: string | null;
+  }>(
+    `SELECT e.contact_id, e.status, e.step_position, e.variant, e.next_due_at, e.open_issue_id, e.sending_key, c.name
+       FROM ${table(ctx, "campaign_enrollments")} e
+       LEFT JOIN ${table(ctx, "crm_contacts")} c ON c.id = e.contact_id
+      WHERE e.campaign_id = $1
+      ORDER BY (e.status = 'running') DESC, e.next_due_at ASC NULLS LAST, e.created_at
+      LIMIT ${Math.max(1, Math.min(limit, 1000))}`,
+    [campaignId],
+  );
+  return rows.map((row) => ({
+    contactId: row.contact_id,
+    name: row.name ?? null,
+    status: row.status,
+    stepPosition: Number(row.step_position),
+    variant: row.variant ?? "a",
+    nextDueAt: isoTime(row.next_due_at),
+    waiting: Boolean(row.open_issue_id),
+    sending: Boolean(row.sending_key),
+  }));
 }
 
 /**
@@ -651,15 +774,88 @@ export async function isSuppressed(ctx: PluginContext, companyId: string, email:
   return rows.length > 0;
 }
 
-export async function addSuppression(
-  ctx: PluginContext,
-  input: { companyId: string; email: string; reason: "unsubscribe" | "bounce"; contactId: string | null; campaignId: string | null },
-): Promise<void> {
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "suppressions")} (company_id, email, reason, contact_id, campaign_id)
-     VALUES ($1, $2, $3, $4, $5)
+/** Which of these addresses may not get campaigns (any reason, any scope). */
+export async function suppressedEmails(ctx: PluginContext, companyId: string, emails: string[]): Promise<Set<string>> {
+  const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+  if (wanted.length === 0) return new Set();
+  const rows = await ctx.db.query<{ email: string }>(
+    `SELECT email FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND email = ANY(${textArrayParam(2)})`,
+    [companyId, JSON.stringify(wanted)],
+  );
+  return new Set(rows.map((row) => row.email));
+}
+
+export interface SuppressionInput {
+  companyId: string;
+  email: string;
+  reason: CampaignSuppressionReason;
+  /** marketing: campaigns and sequences only; all: a hard bounce stops every email. */
+  scope: "marketing" | "all";
+  /** The plugin that saw it. */
+  source: string;
+  contactId: string | null;
+  campaignId: string | null;
+}
+
+/**
+ * Stores a suppression once per address. A later hard bounce widens a
+ * marketing-only row to all mail. True when the address was new.
+ */
+export async function addSuppression(ctx: PluginContext, input: SuppressionInput): Promise<boolean> {
+  const email = input.email.trim().toLowerCase();
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "suppressions")} (company_id, email, reason, scope, source, contact_id, campaign_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (company_id, email) DO NOTHING`,
-    [input.companyId, input.email.trim().toLowerCase(), input.reason, input.contactId, input.campaignId],
+    [input.companyId, email, input.reason, input.scope, input.source, input.contactId, input.campaignId],
+  );
+  const created = (res?.rowCount ?? 0) > 0;
+  if (!created && input.scope === "all") {
+    await ctx.db.execute(
+      `UPDATE ${table(ctx, "suppressions")} SET scope = 'all', updated_at = now() WHERE company_id = $1 AND email = $2 AND scope = 'marketing'`,
+      [input.companyId, email],
+    );
+  }
+  return created;
+}
+
+export interface SuppressionRow {
+  company_id: string;
+  email: string;
+  reason: CampaignSuppressionReason;
+  scope: "marketing" | "all";
+  source: string;
+  contact_id: string | null;
+  created_at: unknown;
+}
+
+/** Suppressions this plugin found since `sinceIso`, re-announced hourly because events are at-most-once. */
+export async function ownSuppressionsSince(ctx: PluginContext, source: string, sinceIso: string, limit = 200): Promise<SuppressionRow[]> {
+  return ctx.db.query<SuppressionRow>(
+    `SELECT company_id, email, reason, scope, source, contact_id, created_at
+       FROM ${table(ctx, "suppressions")}
+      WHERE source = $1 AND created_at >= $2::timestamptz
+      ORDER BY created_at
+      LIMIT ${Math.max(1, Math.min(limit, 1000))}`,
+    [source, sinceIso],
+  );
+}
+
+/** How many addresses may not get campaigns, for the page. */
+export async function suppressionCount(ctx: PluginContext, companyId: string): Promise<number> {
+  const rows = await ctx.db.query<{ n: string | number }>(
+    `SELECT count(*)::text AS n FROM ${table(ctx, "suppressions")} WHERE company_id = $1`,
+    [companyId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** Running enrollments of a contact that still wait on a step issue. */
+export async function openStepIssuesForContact(ctx: PluginContext, companyId: string, contactId: string): Promise<Array<{ id: string; open_issue_id: string }>> {
+  return ctx.db.query<{ id: string; open_issue_id: string }>(
+    `SELECT id, open_issue_id FROM ${table(ctx, "campaign_enrollments")}
+      WHERE company_id = $1 AND contact_id = $2 AND status = 'running' AND open_issue_id IS NOT NULL`,
+    [companyId, contactId],
   );
 }
 

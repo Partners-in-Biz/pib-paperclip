@@ -7,12 +7,19 @@
  * and never creates one.
  *
  * `permissions.pluginTools` is not enforced by the host and the tool gateway
- * denies by default, so wiring also merges a `tools:use` grant for plugin
- * tools into the agent's existing grants (`grants.set` replaces the whole set).
+ * denies by default, so wiring also gives the agent plugin tool access with
+ * the kit's `mergePluginToolsGrant`: the host keeps ONE `tools:use` grant per
+ * agent and `grants.set` replaces the whole set, so the existing tools grant
+ * is widened (never a second one added) and every other grant is kept.
  */
 import {
+  COMPANY_OS_HIRE_SKILL,
   hireStatus,
   linkedAgentId,
+  mergePluginToolsGrant,
+  PLUGIN_TOOLS_GRANT as KIT_PLUGIN_TOOLS_GRANT,
+  type GrantLike,
+  type MergedGrants,
   tryLinkPendingHire,
   wakeIssue,
   type HireAgentSummary,
@@ -24,39 +31,15 @@ import { AGENT_KEY, PROJECT_KEY, ROUTINE_KEYS, ROUTINE_TITLES, SKILL_KEY, SKILL_
 import * as db from "../db.js";
 import type { AgentAvailability } from "../engine/sprint.js";
 import { assignableUser, errorMessage, SeoError, type Actor, type Env } from "./common.js";
-import { SEO_ROLE } from "./hire.js";
+import { SEO_MATCH_ROLE, SEO_ROLE } from "./hire.js";
 import { getIssue, patchIssue } from "./issues.js";
+import { activateShippedRoutines } from "./routines.js";
 
-export const PLUGIN_TOOLS_GRANT = { permissionKey: "tools:use", scope: { providerType: "paperclip_plugin" } } as const;
+export const PLUGIN_TOOLS_GRANT = KIT_PLUGIN_TOOLS_GRANT;
 
-type GrantInput = { permissionKey: string; scope?: Record<string, unknown> | null };
-
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${stable((value as Record<string, unknown>)[k])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value ?? null);
-}
-
-/** Existing grants plus the plugin-tools grant, without duplicates. */
-export function mergeGrants(existing: GrantInput[], add: GrantInput): { grants: GrantInput[]; added: boolean } {
-  const key = (g: GrantInput) => `${g.permissionKey}|${stable(g.scope ?? null)}`;
-  const seen = new Set<string>();
-  const grants: GrantInput[] = [];
-  for (const g of existing) {
-    const k = key(g);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    grants.push({ permissionKey: g.permissionKey, scope: g.scope ?? null });
-  }
-  const addKey = key(add);
-  if (seen.has(addKey)) return { grants, added: false };
-  grants.push({ permissionKey: add.permissionKey, scope: add.scope ?? null });
-  return { grants, added: true };
+/** The agent's grants with plugin tool access merged in (kit `mergePluginToolsGrant`: one `tools:use` grant, widened, never duplicated). */
+export function mergeGrants(existing: GrantLike[]): MergedGrants {
+  return mergePluginToolsGrant(existing);
 }
 
 /** The SEO Specialist the host created before hiring moved to tasks. */
@@ -74,7 +57,7 @@ export async function resolveAgent(env: Env, companyId: string): Promise<AgentAv
     if (!id) return null;
     const agent = await env.ctx.agents.get(id, companyId);
     if (!agent) return null;
-    return { id, status: String(agent.status) };
+    return { id, status: String(agent.status), name: agent.name ?? null };
   } catch (error) {
     env.ctx.logger.info("SEO agent lookup failed", { companyId, error: errorMessage(error) });
     return null;
@@ -95,7 +78,7 @@ export interface WireResult {
   agent: { id: string; name: string; status: string };
   project: { id: string | null; status: string };
   routines: Array<{ key: string; id: string | null; status: string; routineStatus: string | null; reassigned: boolean; lostStatus: string | null }>;
-  grant: "added" | "already_present" | "failed";
+  grant: "added" | "already_present" | "conflict" | "failed";
   grantError?: string;
   adoptedIssues: number;
   skills: Array<{ skillKey: string; action: string; error?: string }>;
@@ -120,8 +103,17 @@ function desiredSkills(agent: unknown): string[] {
   return Array.isArray(list) ? list.filter((s): s is string => typeof s === "string") : [];
 }
 
+/** True when the agent carries the company operating manual (`pib-company-os`). */
+export function hasCompanyOs(agent: unknown): boolean {
+  const key = COMPANY_OS_HIRE_SKILL.key.toLowerCase();
+  const slug = COMPANY_OS_HIRE_SKILL.slug.toLowerCase();
+  return desiredSkills(agent)
+    .map((s) => s.toLowerCase())
+    .some((k) => k === key || k === slug || k.endsWith(`/${slug}`) || k.endsWith("/company-os"));
+}
+
 function hasSeoSkill(agent: unknown): boolean {
-  const keys = SEO_ROLE.skills.map((s) => s.key.toLowerCase());
+  const keys = SEO_MATCH_ROLE.skills.map((s) => s.key.toLowerCase());
   return desiredSkills(agent)
     .map((s) => s.toLowerCase())
     .some((k) => keys.includes(k) || k === SKILL_SLUG || k.endsWith(`/${SKILL_SLUG}`) || k.endsWith(`/${SKILL_KEY}`));
@@ -178,11 +170,16 @@ export async function wireAgent(env: Env, companyId: string, agentId: string, us
   steps.push(
     skillFailed.length === 0
       ? `Synced the \`${SKILL_SLUG}\` skill to its latest version.`
-      : `The \`${SKILL_SLUG}\` skill did not sync (${skillFailed.map((s) => s.error ?? "failed").join("; ")}). Re-sync from the SEO page.`,
+      : `The \`${SKILL_SLUG}\` skill did not sync (${skillFailed.map((s) => s.error ?? "failed").join("; ")}). Re-sync the SEO agent in Setup → Team to try again.`,
   );
   const skillAttached = hasSeoSkill(agent);
   if (!skillAttached) {
     const ask = `Attach the \`${SKILL_SLUG}\` skill to ${name} (Agents → ${name} → Skills). The plugin keeps the skill up to date but cannot attach it.`;
+    steps.push(ask);
+    instructions.push(ask);
+  }
+  if (!hasCompanyOs(agent)) {
+    const ask = `Attach the company operating manual \`${COMPANY_OS_HIRE_SKILL.slug}\` to ${name} (Agents → ${name} → Skills); opening the SEO page attaches it for you.`;
     steps.push(ask);
     instructions.push(ask);
   }
@@ -214,6 +211,10 @@ export async function wireAgent(env: Env, companyId: string, agentId: string, us
   for (const r of routines.filter((r) => !r.id)) {
     steps.push(`The "${ROUTINE_TITLES[r.key as keyof typeof ROUTINE_TITLES] ?? r.key}" routine could not be set up (${r.status}).`);
   }
+  // Routines created paused by an older version go active (a person's pause is kept).
+  const activated = await activateShippedRoutines(env, companyId);
+  for (const r of routines) if (activated.includes(r.key as (typeof activated)[number])) r.routineStatus = "active";
+  if (activated.length) steps.push(`Switched on ${activated.map((key) => `"${ROUTINE_TITLES[key]}"`).join(" and ")}.`);
   for (const r of readyRoutines.filter((r) => r.lostStatus)) {
     const title = ROUTINE_TITLES[r.key as keyof typeof ROUTINE_TITLES] ?? r.key;
     const ask = `Moving "${title}" to ${name} set it to ${words(r.routineStatus ?? "paused")} (it was ${words(r.lostStatus!)}). Open Routines → "${title}" and set it ${words(r.lostStatus!)} again.`;
@@ -221,20 +222,18 @@ export async function wireAgent(env: Env, companyId: string, agentId: string, us
     instructions.push(ask);
   }
   if (readyRoutines.some((r) => r.routineStatus !== "active" && !r.lostStatus)) {
-    instructions.push(
-      "Open Routines → \"Run today's SEO\" and \"Weekly SEO review\": set each routine active and enable its schedule trigger (they are created paused with triggers off).",
-    );
+    instructions.push("An SEO routine is paused. Switch it on from the SEO page (one click), or under Routines.");
+  }
+  if (readyRoutines.length) {
+    steps.push("The routines run daily at 06:30 and Mondays at 07:00. Routines from an older version may still have their schedule off: the SEO page shows it and switches it on in one click.");
   }
 
   let grant: WireResult["grant"] = "failed";
   let grantError: string | undefined;
   try {
     const existing = await env.ctx.authorization.grants.list({ companyId, principalType: "agent", principalId: agentId });
-    const merged = mergeGrants(
-      existing.map((g) => ({ permissionKey: String(g.permissionKey), scope: (g.scope as Record<string, unknown> | null) ?? null })),
-      PLUGIN_TOOLS_GRANT,
-    );
-    if (merged.added) {
+    const merged = mergeGrants(existing.map((g) => ({ permissionKey: String(g.permissionKey), scope: (g.scope as Record<string, unknown> | null) ?? null })));
+    if (merged.changed) {
       await env.ctx.authorization.grants.set({
         companyId,
         principalType: "agent",
@@ -242,16 +241,23 @@ export async function wireAgent(env: Env, companyId: string, agentId: string, us
         grants: merged.grants as Parameters<Env["ctx"]["authorization"]["grants"]["set"]>[0]["grants"],
         grantedByUserId: assignableUser(userId),
       });
-      grant = "added";
+    }
+    if (merged.conflict) {
+      grant = "conflict";
+      grantError = merged.conflict;
     } else {
-      grant = "already_present";
+      grant = merged.changed ? "added" : "already_present";
     }
   } catch (error) {
     grantError = errorMessage(error);
   }
   if (grant === "added") steps.push("Granted plugin tool access (`tools:use` for plugin tools).");
   else if (grant === "already_present") steps.push("Plugin tool access was already granted.");
-  else {
+  else if (grant === "conflict") {
+    const ask = `${name} cannot use the SEO tools yet. ${grantError}`;
+    steps.push(ask);
+    instructions.push(ask);
+  } else {
     const ask = `Tool access could not be granted automatically (${grantError ?? "unknown error"}). Grant the agent tools:use for plugin tools in its permissions.`;
     steps.push(ask);
     instructions.push(ask);
@@ -291,7 +297,7 @@ export async function resyncAgent(env: Env, companyId: string, actor: Actor): Pr
   if (actor.kind !== "user") throw new SeoError("Only a board user can re-sync the SEO agent");
   const agentId = await linkedAgentId(env.ctx, companyId, SEO_ROLE, legacyAgentLookup(env));
   if (!agentId) {
-    throw new SeoError("No SEO agent is linked yet. Click Activate SEO agent to open a hire task, or Link agent to pick an agent that already exists.");
+    throw new SeoError("No SEO agent is linked yet. Hire one or pick an agent you already have in Setup → Team.");
   }
   return wireAgent(env, companyId, agentId, actor.userId);
 }
@@ -308,7 +314,7 @@ export function seoOnLinked(env: Env, capture?: (result: WireResult) => void): O
 /** Link the pending hire when exactly one new agent matches. Never throws. */
 export async function linkPendingHire(env: Env, companyId: string): Promise<HireAgentSummary | null> {
   try {
-    return await tryLinkPendingHire(env.ctx, companyId, SEO_ROLE, seoOnLinked(env));
+    return await tryLinkPendingHire(env.ctx, companyId, SEO_MATCH_ROLE, seoOnLinked(env));
   } catch (error) {
     env.ctx.logger.info("SEO hire link check failed", { companyId, error: errorMessage(error) });
     return null;
@@ -316,7 +322,7 @@ export async function linkPendingHire(env: Env, companyId: string): Promise<Hire
 }
 
 export function seoHireStatus(env: Env, companyId: string): Promise<HireStatus> {
-  return hireStatus(env.ctx, companyId, SEO_ROLE, legacyAgentLookup(env));
+  return hireStatus(env.ctx, companyId, SEO_MATCH_ROLE, legacyAgentLookup(env));
 }
 
 export interface HireView {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, Modal, Section, Select, Sheet, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CompactRows, EmptyState, Field, Input, Modal, Pill, Section, Select, Sheet, tokens, tone, formatDate, formatMoney, formatShortDate, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { cleanMemo } from "../domain/memo.js";
 import type { LoadResult } from "./overview.js";
 import {
   AccountSelect,
@@ -9,7 +10,6 @@ import {
   centsToInput,
   IssueLink,
   Muted,
-  rand,
   Row,
   small,
   Table,
@@ -117,11 +117,16 @@ interface Summary {
 }
 
 function describe(s: Suggestion, accounts: LoadResult["accounts"]): string {
-  if (s.kind === "open_item") return `${s.itemKind === "receivable" ? "Invoice" : "Bill"} ${s.number}${s.counterparty ? ` (${s.counterparty})` : ""} · ${s.basis === "exact" ? "amount and number match" : s.basis === "amount" ? "same amount" : `part payment of ${rand(s.outstandingMinor)}`}`;
-  if (s.kind === "journal") return `Journal ${s.number} on ${s.date}${s.memo ? ` – ${s.memo}` : ""}`;
-  const tax = s.taxCode ? ` · ${TAX_OPTIONS.find((t) => t.value === s.taxCode)?.label ?? s.taxCode}` : "";
-  const from = s.source === "rule" ? "rule" : `Jev ${Math.round(s.confidence * 100)}%${s.isTransfer != null && s.isTransfer >= 0.7 ? ", looks like a transfer" : ""}`;
+  if (s.kind === "open_item") return `${s.itemKind === "receivable" ? "Invoice" : "Bill"} ${s.number}${s.counterparty ? ` (${s.counterparty})` : ""} · ${s.basis === "exact" ? "amount and number match" : s.basis === "amount" ? "same amount" : `part payment of ${formatMoney(s.outstandingMinor)}`}`;
+  if (s.kind === "journal") return `Journal ${s.number} on ${formatShortDate(s.date)}${s.memo ? ` – ${cleanMemo(s.memo)}` : ""}`;
+  const tax = s.taxCode ? ` · ${TAX_OPTIONS.find((t) => t.value === s.taxCode)?.label ?? "VAT code"}` : "";
+  const from = s.source === "rule" ? "bank rule" : `smart match ${Math.round(s.confidence * 100)}%${s.isTransfer != null && s.isTransfer >= 0.7 ? ", looks like a transfer" : ""}`;
   return `${accountLabel(accounts, s.accountCode)}${tax} · ${from}`;
+}
+
+/** A statement only holds money that already moved: a line dated after `asOf` is almost always a wrong date. */
+function datedLater(date: string, asOf: string): boolean {
+  return date > asOf;
 }
 
 function lastMonth(): { start: string; end: string } {
@@ -168,6 +173,10 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const [excludeNote, setExcludeNote] = useState("");
 
   const accounts = data.accounts;
+  const narrow = useIsNarrow();
+  const asOf = data.overview.asOf ?? new Date().toISOString().slice(0, 10);
+  const futureLines = (data.overview.future?.items ?? []).filter((i) => i.kind === "bank_line");
+  const futureCount = data.overview.future?.bankLines ?? futureLines.length;
 
   async function refreshAll(nextBank = bankId, nextStatus = status) {
     const s = (await loadBank({})) as BankSnapshot;
@@ -219,7 +228,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
     }, (r) =>
       r.duplicateFile
         ? "This file was imported before; nothing new was added."
-        : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (Jev looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}`,
+        : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (smart matching looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}${Number(r.futureLines) ? ` ${r.futureLines} line(s) are dated after today (first ${formatShortDate(String(r.firstFutureDate))}): check those dates on the statement. They count in no balance until then.` : ""}`,
     );
   }
 
@@ -247,34 +256,11 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
       <Row>
         <Field label="Bank account">
           <Select value={bankId} onChange={(e) => { setBankId(e.target.value); void run("load", () => refreshAll(e.target.value)); }}>
-            {(snap?.bankAccounts ?? []).map((b) => <option key={b.id} value={b.id}>{`${b.name}${b.numberLast4 ? ` ••${b.numberLast4}` : ""} (${b.accountCode})`}</option>)}
+            {(snap?.bankAccounts ?? []).map((b) => <option key={b.id} value={b.id}>{`${b.name}${b.numberLast4 ? ` ••${b.numberLast4}` : ""}`}</option>)}
           </Select>
         </Field>
         <Button type="button" variant="secondary" onClick={() => setNewAccount(true)}>+ Add bank account</Button>
       </Row>
-
-      <Section title="Import statement">
-        <Row>
-          <Field label="File (CSV, OFX or MT940)">
-            <input type="file" accept=".csv,.txt,.ofx,.qfx,.sta,.mt940,.940" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ fontSize: 13 }} />
-          </Field>
-          <Field label="Format">
-            <Select value={format} onChange={(e) => setFormat(e.target.value)}>
-              <option value="auto">Detect</option>
-              <option value="csv">CSV</option>
-              <option value="ofx">OFX</option>
-              <option value="mt940">MT940</option>
-            </Select>
-          </Field>
-          <Button type="button" disabled={!file || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : "Import"}</Button>
-        </Row>
-        <Muted>
-          Lines already in the books are skipped, so overlapping statements are safe. {data.settings.r2Configured ? "Files over 1 MB go to the private bucket first." : "Files over 1 MB need the private R2 bucket (Accounting settings)."}
-        </Muted>
-        {statements.length ? (
-          <Muted>Recent: {statements.map((s) => `${s.fileName || s.format} (${s.periodStart ?? "?"} to ${s.periodEnd ?? "?"}, ${s.newCount} new)`).join(" · ")}</Muted>
-        ) : null}
-      </Section>
 
       <Section
         title="Statement lines"
@@ -295,12 +281,38 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
           </Row>
         }
       >
+        {futureCount > 0 ? (
+          <Banner tone="warn">
+            <span>
+              <strong>{futureCount} bank line{futureCount === 1 ? " is" : "s are"} dated after today{futureLines[0] ? ` (first ${formatShortDate(futureLines[0].date)})` : ""}.</strong> A statement only holds money that already moved, so the date is probably wrong (often the day and month swapped). {futureCount === 1 ? "It counts" : "They count"} in no balance until then, and the Bookkeeper leaves {futureCount === 1 ? "it" : "them"} for you.
+            </span>
+          </Banner>
+        ) : null}
         {lines.length === 0 ? (
           <Muted>{status === "unreconciled" ? "Nothing to reconcile on this account." : "No lines."}</Muted>
+        ) : narrow ? (
+          <CompactRows
+            rows={lines}
+            label="Statement lines"
+            title={(line) => line.description}
+            meta={(line) => [formatShortDate(line.date), datedLater(line.date, asOf) ? "dated after today" : null, line.status === "unreconciled" ? (line.suggestions[0] ? describe(line.suggestions[0], accounts) : "No suggestion") : words(line.status)].filter(Boolean).join(" · ")}
+            trailing={(line) => <span style={{ color: line.amountMinor > 0 ? tone("ok").fg : tokens.fg }}>{formatMoney(line.amountMinor)}</span>}
+            onOpen={(line) => pick(line)}
+          />
         ) : (
           <DataTable
             columns={[
-              { key: "date", header: "Date", width: "96px" },
+              {
+                key: "date",
+                header: "Date",
+                width: "110px",
+                render: (v) => (
+                  <div style={{ display: "grid", gap: 3, justifyItems: "start" }}>
+                    <span style={{ whiteSpace: "nowrap" }}>{formatShortDate(String(v))}</span>
+                    {datedLater(String(v), asOf) ? <Pill tone="warn" size="sm">After today</Pill> : null}
+                  </div>
+                ),
+              },
               {
                 key: "description",
                 header: "Description",
@@ -312,7 +324,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                   </div>
                 ),
               },
-              { key: "amount", header: "Amount", width: "120px", render: (_v, row) => <span style={{ fontVariantNumeric: "tabular-nums", color: Number(row.amountMinor) < 0 ? tokens.fg : tone("ok").fg, fontWeight: Number(row.amountMinor) > 0 ? 600 : undefined }}>{rand(Number(row.amountMinor))}</span> },
+              { key: "amount", header: "Amount", width: "120px", render: (_v, row) => <span style={{ fontVariantNumeric: "tabular-nums", color: Number(row.amountMinor) < 0 ? tokens.fg : tone("ok").fg, fontWeight: Number(row.amountMinor) > 0 ? 600 : undefined }}>{formatMoney(Number(row.amountMinor))}</span> },
               { key: "status", header: "Status", width: "120px", render: (v) => <StatusPill status={String(v)} /> },
               {
                 key: "suggestion",
@@ -349,6 +361,29 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
         )}
       </Section>
 
+      <Section title="Import statement">
+        <Row>
+          <Field label="File (CSV, OFX or MT940)">
+            <input type="file" accept=".csv,.txt,.ofx,.qfx,.sta,.mt940,.940" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ fontSize: 13 }} />
+          </Field>
+          <Field label="Format">
+            <Select value={format} onChange={(e) => setFormat(e.target.value)}>
+              <option value="auto">Detect</option>
+              <option value="csv">CSV</option>
+              <option value="ofx">OFX</option>
+              <option value="mt940">MT940</option>
+            </Select>
+          </Field>
+          <Button type="button" disabled={!file || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : "Import"}</Button>
+        </Row>
+        <Muted>
+          Lines already in the books are skipped, so overlapping statements are safe. {data.settings.r2Configured ? "Files over 1 MB go to the private bucket first." : "Files over 1 MB need the private R2 bucket (Accounting settings)."}
+        </Muted>
+        {statements.length ? (
+          <Muted>Recent: {statements.map((s) => `${s.fileName || s.format.toUpperCase()} (${s.periodStart ? formatShortDate(s.periodStart) : "?"} to ${s.periodEnd ? formatShortDate(s.periodEnd) : "?"}, ${s.newCount} new)`).join(" · ")}</Muted>
+        ) : null}
+      </Section>
+
       <Section title="Reconcile" actions={bank ? <span style={{ fontSize: 12, color: tokens.muted }}>{bank.name} · ledger account {accountLabel(accounts, bank.accountCode)}</span> : null}>
         <Row>
           <Field label="From"><Input type="date" value={recForm.start} onChange={(e) => setRecForm({ ...recForm, start: e.target.value })} /></Field>
@@ -365,13 +400,13 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
         {prepared ? (
           <div style={{ display: "grid", gap: 10 }}>
             <Table head={["", { label: "Amount", right: true }]}>
-              <tr><Td>Opening balance</Td><Td right>{rand(prepared.summary.openingMinor)}</Td></tr>
-              <tr><Td>Lines in the period</Td><Td right>{rand(prepared.summary.linesTotalMinor)}</Td></tr>
-              <tr><Td>Opening + lines</Td><Td right>{rand(prepared.summary.computedClosingMinor)}</Td></tr>
-              <tr><Td>Closing balance (statement)</Td><Td right>{rand(prepared.summary.closingMinor)}</Td></tr>
-              <tr><Td strong>Difference</Td><Td right strong>{rand(prepared.summary.differenceMinor)}</Td></tr>
-              <tr><Td muted>Ledger balance of the bank account</Td><Td right muted>{rand(prepared.summary.glBalanceMinor)}</Td></tr>
-              <tr><Td muted>Statement minus ledger</Td><Td right muted>{rand(prepared.summary.glDifferenceMinor)}</Td></tr>
+              <tr><Td>Opening balance</Td><Td right>{formatMoney(prepared.summary.openingMinor)}</Td></tr>
+              <tr><Td>Lines in the period</Td><Td right>{formatMoney(prepared.summary.linesTotalMinor)}</Td></tr>
+              <tr><Td>Opening + lines</Td><Td right>{formatMoney(prepared.summary.computedClosingMinor)}</Td></tr>
+              <tr><Td>Closing balance (statement)</Td><Td right>{formatMoney(prepared.summary.closingMinor)}</Td></tr>
+              <tr><Td strong>Difference</Td><Td right strong>{formatMoney(prepared.summary.differenceMinor)}</Td></tr>
+              <tr><Td muted>Ledger balance of the bank account</Td><Td right muted>{formatMoney(prepared.summary.glBalanceMinor)}</Td></tr>
+              <tr><Td muted>Statement minus ledger</Td><Td right muted>{formatMoney(prepared.summary.glDifferenceMinor)}</Td></tr>
             </Table>
             {prepared.summary.blockers.length ? <Banner tone="warn">{prepared.summary.blockers.map((b) => <span key={b}>{b}</span>)}</Banner> : <Banner tone="ok"><span>Balances agree and every line is reconciled.</span></Banner>}
             <Row>
@@ -397,9 +432,9 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
           <Table head={["Period", { label: "Closing", right: true }, { label: "Difference", right: true }, "Status", ""]}>
             {recs.map((r) => (
               <tr key={r.id}>
-                <Td>{`${r.periodStart} to ${r.periodEnd}`}</Td>
-                <Td right>{rand(r.closingMinor)}</Td>
-                <Td right>{rand(r.differenceMinor)}</Td>
+                <Td>{`${formatShortDate(r.periodStart)} to ${formatShortDate(r.periodEnd)}`}</Td>
+                <Td right>{formatMoney(r.closingMinor)}</Td>
+                <Td right>{formatMoney(r.differenceMinor)}</Td>
                 <Td><StatusPill status={r.status} /></Td>
                 <Td>
                   {r.status !== "locked" ? (
@@ -423,7 +458,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
             {(snap?.rules ?? []).map((r) => (
               <tr key={r.id}>
                 <Td>{r.name}{r.active ? "" : " (off)"}</Td>
-                <Td>{r.operator === "amount_between" ? `amount ${rand(r.amountMinMinor ?? 0)} – ${r.amountMaxMinor == null ? "any" : rand(r.amountMaxMinor)}` : `${r.field} ${words(r.operator)} "${r.value}"`}{r.direction !== "any" ? ` · money ${r.direction}` : ""}</Td>
+                <Td>{r.operator === "amount_between" ? `amount ${formatMoney(r.amountMinMinor ?? 0)} – ${r.amountMaxMinor == null ? "any" : formatMoney(r.amountMaxMinor)}` : `${r.field} ${words(r.operator)} "${r.value}"`}{r.direction !== "any" ? ` · money ${r.direction}` : ""}</Td>
                 <Td>{accountLabel(accounts, r.accountCode)}</Td>
                 <Td>{TAX_OPTIONS.find((t) => t.value === (r.taxCode ?? ""))?.label ?? r.taxCode}</Td>
                 <Td>
@@ -442,7 +477,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
         {selected ? (
           <div style={{ display: "grid", gap: 14, fontSize: 13 }}>
             <div style={{ display: "grid", gap: 3 }}>
-              <strong>{rand(selected.amountMinor)} on {selected.date}</strong>
+              <strong>{formatMoney(selected.amountMinor)} on {formatDate(selected.date)}</strong>
+              {datedLater(selected.date, asOf) ? <span style={{ color: tone("warn").fg, fontWeight: 600 }}>Dated after today: check this date on the statement before you reconcile it.</span> : null}
               <span>{selected.description}</span>
               {selected.counterparty ? <span style={{ color: tokens.muted }}>Counterparty: {selected.counterparty}</span> : null}
               {selected.reference ? <span style={{ color: tokens.muted }}>Reference: {selected.reference}</span> : null}
@@ -483,7 +519,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                   <strong>{selected.amountMinor > 0 ? "Match to an invoice" : "Match to a bill"}</strong>
                   <Select value={matchKey} onChange={(e) => setMatchKey(e.target.value)}>
                     <option value="">Choose…</option>
-                    {matchable.map((i) => <option key={i.key} value={i.key}>{`${i.number} ${i.counterpartyName} (${rand(i.outstandingMinor)} open${i.dueDate ? `, due ${i.dueDate}` : ""})`}</option>)}
+                    {matchable.map((i) => <option key={i.key} value={i.key}>{`${i.number} ${i.counterpartyName} (${formatMoney(i.outstandingMinor)} open${i.dueDate ? `, due ${formatShortDate(i.dueDate)}` : ""})`}</option>)}
                   </Select>
                   <div>
                     <Button type="button" variant="secondary" disabled={!matchKey || busy !== ""} onClick={() => void run("match", async () => {

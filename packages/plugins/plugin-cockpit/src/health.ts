@@ -6,11 +6,14 @@
  */
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { reconcileAsks } from "./asks.js";
 import { ORIGIN, PLUGIN_KEY } from "./constants.js";
 import { clearHealthIssue, getHealthIssue, getRoles, listRoles, listSnapshots, saveHealthIssue } from "./db.js";
 import { message, readInstalled, type Env } from "./env.js";
+import { NAMESPACE } from "./namespace.js";
 import { agentHealth, parseSnapshot, staleChecks, type AgentLite, type CockpitSnapshot, type HealthEntry } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { plainDetail } from "./plain.js";
 import { operatorAgentId } from "./roles.js";
 
 const CLOSED = new Set(["done", "cancelled"]);
@@ -83,17 +86,84 @@ export interface Problems {
   keys: string[];
 }
 
-/** Everything the System health issue lists, worst first. */
-export async function collectProblems(env: Env, companyId: string, input?: { snapshots?: CockpitSnapshot[]; agents?: AgentLite[]; listeningSince?: string | null }): Promise<Problems> {
+/** A warning that lasts longer than this reaches the System health issue (a "bad" check goes there at once). */
+export const WARN_ESCALATE_MS = 24 * 3_600_000;
+const WARNINGS = `${NAMESPACE}.health_warnings`;
+
+function isoOf(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  const t = Date.parse(String(value ?? ""));
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+/** When the Cockpit first saw each current warning (`<plugin>:<check key>`). */
+export async function warningSince(env: Env, companyId: string): Promise<Record<string, string>> {
+  try {
+    const rows = await env.ctx.db.query<Record<string, unknown>>(`SELECT key, first_seen_at FROM ${WARNINGS} WHERE company_id = $1`, [companyId]);
+    return Object.fromEntries(rows.map((row) => [String(row.key), isoOf(row.first_seen_at)]).filter((pair): pair is [string, string] => !!pair[1]));
+  } catch {
+    return {};
+  }
+}
+
+/** Remembers when each current warning was first seen and forgets the ones that cleared (hourly job). */
+export async function trackWarnings(env: Env, companyId: string, keys: string[], now: string): Promise<Record<string, string>> {
+  const known = await warningSince(env, companyId);
+  const current = new Set(keys);
+  for (const key of current) {
+    if (known[key]) continue;
+    await env.ctx.db.execute(
+      `INSERT INTO ${WARNINGS} (company_id, key, first_seen_at, last_seen_at) VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, key) DO NOTHING`,
+      [companyId, key.slice(0, 300), now, now],
+    );
+    known[key] = now;
+  }
+  for (const key of Object.keys(known)) {
+    if (current.has(key)) continue;
+    await env.ctx.db.execute(`DELETE FROM ${WARNINGS} WHERE company_id = $1 AND key = $2`, [companyId, key]);
+    delete known[key];
+  }
+  return known;
+}
+
+/** How long a warning has lasted: its own `since` when it has one, else when the Cockpit first saw it. */
+export function warningAgeMs(check: Pick<HealthEntry, "since">, firstSeen: string | null | undefined, now: Date): number {
+  const own = check.since ? Date.parse(check.since) : Number.NaN;
+  const seen = firstSeen ? Date.parse(firstSeen) : Number.NaN;
+  const start = Number.isFinite(own) ? own : seen;
+  return Number.isFinite(start) ? Math.max(0, now.getTime() - start) : 0;
+}
+
+/**
+ * Everything the System health issue lists, worst first: "bad" checks,
+ * warnings unresolved for more than a day, plugins not reporting and agent
+ * alerts. `trackWarnings` (the hourly job) records when warnings started.
+ */
+export async function collectProblems(env: Env, companyId: string, input?: { snapshots?: CockpitSnapshot[]; agents?: AgentLite[]; listeningSince?: string | null; trackWarnings?: boolean }): Promise<Problems> {
   const stored = input?.snapshots
     ? input.snapshots.map((snapshot) => ({ snapshot, receivedAt: snapshot.checkedAt }))
     : [...(await storedSnapshots(env, companyId)), { snapshot: await ownSnapshot(env, companyId), receivedAt: env.now().toISOString() }];
   const roles = input?.listeningSince !== undefined ? null : await getRoles(env.ctx, companyId);
   const listeningSince = input?.listeningSince !== undefined ? input.listeningSince : roles?.createdAt ?? null;
+  const now = env.now();
+  const warnKeys = stored.flatMap(({ snapshot }) => snapshot.health.filter((check) => check.status === "warn").map((check) => `${snapshot.plugin}:${check.key}`));
+  const since = input?.trackWarnings ? await trackWarnings(env, companyId, warnKeys, now.toISOString()) : await warningSince(env, companyId);
   const entries: HealthEntry[] = [];
   for (const { snapshot } of stored) {
     for (const check of snapshot.health) {
-      if (check.status === "bad") entries.push({ ...check, plugin: snapshot.plugin, pluginTitle: snapshot.title });
+      // Raw service errors in plain words; the raw text goes under Details.
+      const plain = plainDetail(check.detail);
+      if (check.status === "bad") entries.push({ ...check, detail: plain?.text ?? null, raw: plain?.raw ?? null, plugin: snapshot.plugin, pluginTitle: snapshot.title });
+      else if (check.status === "warn" && warningAgeMs(check, since[`${snapshot.plugin}:${check.key}`], now) >= WARN_ESCALATE_MS) {
+        entries.push({
+          ...check,
+          detail: [plain?.text, "Unresolved for more than a day."].filter(Boolean).join(" "),
+          raw: plain?.raw ?? null,
+          since: check.since ?? since[`${snapshot.plugin}:${check.key}`] ?? null,
+          plugin: snapshot.plugin,
+          pluginTitle: snapshot.title,
+        });
+      }
     }
   }
   const last = Object.fromEntries(stored.map(({ snapshot }) => [snapshot.plugin, snapshot.checkedAt]));
@@ -125,11 +195,14 @@ export function healthIssueContent(entries: HealthEntry[], prefix: string | null
       group = entry.pluginTitle;
       lines.push("", `## ${group}`, "");
     }
+    const plain = entry.raw ? { text: entry.detail ?? "", raw: entry.raw } : plainDetail(entry.detail);
     const parts = [`- [ ] **${entry.status === "bad" ? "Problem" : "Warning"}: ${entry.title}**`];
-    if (entry.detail) parts.push(`— ${entry.detail}`);
+    if (plain?.text) parts.push(`— ${plain.text}`);
     if (entry.href) parts.push(`[Open](${linkFor(entry.href, prefix)})`);
     lines.push(parts.join(" "));
     if (entry.fix) lines.push(`  - Fix: ${entry.fix}`);
+    // The service's own words, kept for whoever fixes it.
+    if (plain?.raw) lines.push(`  - Details: ${plain.raw.replace(/\s+/g, " ").replace(/`/g, "'").slice(0, 400)}`);
   }
   return {
     title: `System health: ${entries.length} ${entries.length === 1 ? "problem" : "problems"}`,
@@ -162,7 +235,7 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
   const roles = await getRoles(env.ctx, companyId);
   if (!roles) return { action: "skipped", reason: "Cockpit settings not saved" };
   if (!(await healthIssueOn(env, companyId))) return { action: "skipped", reason: "health issue switched off" };
-  const found = problems ?? (await collectProblems(env, companyId));
+  const found = problems ?? (await collectProblems(env, companyId, { trackWarnings: true }));
   const content = healthIssueContent(found.entries, await companyPrefix(env, companyId));
   const existing = await getHealthIssue(env.ctx, companyId);
   const issue = existing ? await env.ctx.issues.get(existing.issueId, companyId).catch(() => null) : null;
@@ -218,13 +291,19 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
   return { action: "created", issueId: created.id, problems: found.entries.length };
 }
 
-/** Hourly job: every company with saved Cockpit settings. */
+/** Hourly job: every company with saved Cockpit settings. Also settles questions whose reply or close event was missed. */
 export async function healthAlerts(env: Env): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const row of await listRoles(env.ctx)) {
     let key: string;
     if (!(await configSaved(env.ctx, row.companyId))) key = "skipped";
     else {
+      try {
+        const asks = await reconcileAsks(env, row.companyId);
+        if (asks.answered || asks.closed) counts.asksSettled = (counts.asksSettled ?? 0) + asks.answered + asks.closed;
+      } catch (error) {
+        env.ctx.logger.info("Question check failed", { companyId: row.companyId, error: message(error) });
+      }
       try {
         key = (await refreshHealthIssue(env, row.companyId)).action;
       } catch (error) {

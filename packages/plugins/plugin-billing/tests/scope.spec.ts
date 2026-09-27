@@ -1,7 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
-import { customerInvoiceBalances, listCreditNotes, listInvoices, listQuotes, listRecurring } from "../src/db.js";
-import { clientBillingSummary, isOverdueInvoice, outstandingMinor, type SummaryInvoice } from "../src/domain.js";
+import { AS_AT_CUTOFF_SQL, customerLastPaidAt, listCreditNotes, listInvoices, listQuotes, listRecurring } from "../src/db.js";
+import { clientBillingSummary, dayText, formatMoney, isOverdueInvoice, outstandingMinor, shortDayText, type SummaryInvoice } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 function fakeCtx(rows: unknown[] = []) {
@@ -54,13 +54,12 @@ describe("billing load filter", () => {
     expect(calls[1]!.params).toEqual(["w", "company", "co-acme"]);
   });
 
-  it("reads balances for one customer, skipping cancelled invoices", async () => {
-    const { ctx, calls } = fakeCtx();
-    await customerInvoiceBalances(ctx, "w", ada);
+  it("reads one customer's last payment as at today, ignoring payments dated later", async () => {
+    const { ctx, calls } = fakeCtx([{ at: "2026-09-26T11:51:52.903Z" }]);
+    expect(await customerLastPaidAt(ctx, "w", ada)).toBe("2026-09-26T11:51:52.903Z");
     const sql = compact(calls[0]!.sql);
-    expect(sql).toContain(`FROM ${NAMESPACE}.payments p WHERE p.invoice_id = i.id`);
-    expect(sql).toContain(`FROM ${NAMESPACE}.credit_notes c WHERE c.invoice_id = i.id`);
-    expect(sql).toContain("i.customer_kind = $2 AND i.customer_ref = $3 AND i.status <> 'cancelled'");
+    expect(sql).toContain(`FROM ${NAMESPACE}.payments p WHERE p.company_id = $1 AND p.customer_kind = $2 AND p.customer_ref = $3 AND p.paid_at < ${AS_AT_CUTOFF_SQL}`);
+    expect(sql).toContain("i.status = 'paid'");
     expect(calls[0]!.params).toEqual(["w", "contact", "ct-ada"]);
   });
 });
@@ -103,12 +102,20 @@ describe("billing client summary", () => {
       ],
       quotes: [{ status: "draft" }, { status: "sent" }, { status: "accepted" }, { status: "declined" }],
     });
-    expect(summary.headline).toMatch(/^ZAR\s12,400\.00 outstanding$/);
-    expect(summary.stats[0]).toMatchObject({ label: "Outstanding" });
-    expect(String(summary.stats[0]!.value)).toMatch(/^ZAR\s12,400\.00$/);
+    expect(summary.headline).toBe("R 12,400.00 outstanding");
+    expect(summary.stats[0]).toEqual({ label: "Outstanding", value: "R 12,400.00" });
     expect(summary.stats[1]).toEqual({ label: "Overdue invoices", value: 1, tone: "bad" });
     expect(summary.stats[2]).toEqual({ label: "Open quotes", value: 2 });
-    expect(summary.stats[3]).toEqual({ label: "Last paid", value: "2026-09-14" });
+    expect(summary.stats[3]).toEqual({ label: "Last paid", value: "14 Sep" });
+    const lastYear = clientBillingSummary({ now, invoices: [invoice({ status: "paid", totalMinor: 1, lastPaidAt: "2025-12-01T09:00:00.000Z" })], quotes: [] });
+    expect(lastYear.stats[3]).toEqual({ label: "Last paid", value: "1 Dec 2025" });
+  });
+
+  it("says which day the figures are for", () => {
+    const summary = clientBillingSummary({ now, asOf: "2026-09-26", invoices: [invoice({ totalMinor: 750_000 })], quotes: [] });
+    expect(summary.headline).toBe("R 7,500.00 outstanding as at 26 Sep");
+    const settled = clientBillingSummary({ now, asOf: "2026-09-26", invoices: [invoice({ status: "paid", totalMinor: 100 })], quotes: [] });
+    expect(settled.headline).toBe("Nothing outstanding as at 26 Sep");
   });
 
   it("adds up each currency on its own", () => {
@@ -117,7 +124,7 @@ describe("billing client summary", () => {
       invoices: [invoice({ totalMinor: 10_000 }), invoice({ currency: "USD", totalMinor: 2_500 })],
       quotes: [],
     });
-    expect(summary.headline).toMatch(/^ZAR\s100\.00 \+ \$25\.00 outstanding$/);
+    expect(summary.headline).toBe("R 100.00 + $25.00 outstanding");
   });
 
   it("says when nothing is owed and when there are no invoices", () => {
@@ -127,7 +134,24 @@ describe("billing client summary", () => {
     expect(settled.stats[1]).toEqual({ label: "Overdue invoices", value: 0, tone: "ok" });
     const empty = clientBillingSummary({ now, invoices: [], quotes: [], defaultCurrency: "ZAR" });
     expect(empty.headline).toBe("No invoices");
-    expect(String(empty.stats[0]!.value)).toMatch(/^ZAR\s0\.00$/);
+    expect(empty.stats[0]!.value).toBe("R 0.00");
     expect(empty.stats[3]).toEqual({ label: "Last paid", value: "Never" });
+  });
+});
+
+describe("worker-side money and dates", () => {
+  it("shows rand as R with the amount (never ZAR), other currencies by symbol or code", () => {
+    expect(formatMoney(750_000, "ZAR")).toBe("R 7,500.00");
+    expect(formatMoney(-12_345, "zar")).toBe("-R 123.45");
+    expect(formatMoney(120_000, "USD")).toBe("$1,200.00");
+    expect(formatMoney(120_000, "CHF")).toBe("CHF 1,200.00");
+  });
+
+  it("writes days as 14 Sep 2026, and the short form without this year", () => {
+    expect(dayText("2026-09-14")).toBe("14 Sep 2026");
+    expect(dayText("2026-09-28T00:00:00.000Z")).toBe("28 Sep 2026");
+    expect(dayText(null)).toBe("–");
+    expect(shortDayText("2026-09-28", new Date("2026-09-27T10:00:00Z"))).toBe("28 Sep");
+    expect(shortDayText("2025-12-01", new Date("2026-09-27T10:00:00Z"))).toBe("1 Dec 2025");
   });
 });

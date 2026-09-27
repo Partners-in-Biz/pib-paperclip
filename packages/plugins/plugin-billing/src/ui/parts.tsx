@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Pill, SectionCard, Select, fluidColumns, oneColumn, tokens, tone, useIsNarrow, usePibBaseStyles, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { formatMoney, formatShortDate, Button, Field, Input, Pill, SectionCard, Select, fluidColumns, oneColumn, tokens, tone, useIsNarrow, usePibBaseStyles, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 import { statusTone } from "./series.js";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import type { Client, Snapshot } from "./types.js";
@@ -59,12 +59,8 @@ export function useBilling(): BillingApi {
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 export function money(minor: number | null | undefined, currency = "ZAR"): string {
-  const value = Number(minor ?? 0) / 100;
-  try {
-    return new Intl.NumberFormat("en-ZA", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
-  } catch {
-    return `${currency} ${value.toFixed(2)}`;
-  }
+  // One money format across PiB pages and documents: R 12,345.67.
+  return formatMoney(Number(minor ?? 0), currency);
 }
 
 /** "1 234,50" / "1234.5" / "R 99" → minor units. */
@@ -79,11 +75,9 @@ export function minorToInput(minor: number | null | undefined): string {
   return minor == null ? "" : (Number(minor) / 100).toFixed(2);
 }
 
+/** `28 Sep` (the year only when it is not this year), the same on every PiB page. */
 export function fmtDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+  return formatShortDate(value);
 }
 
 export function dayInput(value: string | null | undefined): string {
@@ -153,6 +147,62 @@ export function Card({ title, children, actions, icon, subtitle, tone: t, strip 
 }
 
 /** Money coloured by meaning: `in` (received) green, `overdue` red, otherwise plain. */
+/**
+ * The sections of a tab: a row of pills that wraps on a phone (no sideways
+ * scroll). Hidden when a tab has one section.
+ */
+export function SectionNav({ items, active, onChange }: { items: Array<{ id: string; label: string; count?: number | null; tone?: ToneInput }>; active: string; onChange: (id: string) => void }) {
+  if (items.length < 2) return null;
+  return (
+    <div role="tablist" aria-label="Sections" style={{ display: "flex", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
+      {items.map((item) => {
+        const selected = item.id === active;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(item.id)}
+            style={{
+              appearance: "none",
+              border: `1px solid ${selected ? tokens.fg : tokens.border}`,
+              background: selected ? tokens.fg : tokens.bg,
+              color: selected ? tokens.bg : tokens.fg,
+              borderRadius: 999,
+              padding: "0 12px",
+              minHeight: 30,
+              fontSize: 12.5,
+              fontWeight: selected ? 650 : 500,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.label}
+            {item.count ? (
+              <span style={{ minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, fontSize: 11, fontWeight: 650, display: "inline-grid", placeItems: "center", background: item.tone ? tone(item.tone).soft : tokens.secondary, color: item.tone ? tone(item.tone).fg : tokens.secondaryFg }}>{item.count}</span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A link to a Paperclip issue (by id), in the host's router. */
+export function IssueLink({ issueId, children = "Open issue" }: { issueId: string; children?: ReactNode }) {
+  const nav = useHostNavigation();
+  return (
+    <a {...nav.linkProps(`/issues/${issueId}`)} style={{ color: tokens.primary, fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap", textDecoration: "none" }}>
+      {children}
+    </a>
+  );
+}
+
 export function Money({ minor, currency, kind }: { minor: number | null | undefined; currency: string; kind?: "in" | "overdue" | null }) {
   const color = kind === "in" ? tone("ok").fg : kind === "overdue" ? tone("bad").fg : undefined;
   return <span style={{ fontVariantNumeric: "tabular-nums", color, fontWeight: kind ? 600 : undefined }}>{money(minor, currency)}</span>;

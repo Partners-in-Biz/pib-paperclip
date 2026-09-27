@@ -123,3 +123,69 @@ export function monthSpan(range: DateRange): number {
 export function monthRange(month: string): DateRange {
   return { start: firstDayOfMonth(month), end: lastDayOfMonth(month) };
 }
+
+// ---------------------------------------------------------------------------
+// When the books start
+// ---------------------------------------------------------------------------
+
+/** Where the start date comes from: opening balances, the earliest journal, or the day the book was set up. */
+export type BooksStartSource = "cutover" | "first_journal" | "set_up";
+
+export interface BooksStart {
+  /** The first day these books cover (YYYY-MM-DD). */
+  date: string;
+  from: BooksStartSource;
+}
+
+function nextDay(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * The first day these books cover, worked out in one place for the page and
+ * the agent tools:
+ * - with opening balances, the day after the cut-over date (the opening
+ *   journal holds the previous books' closing balances at the end of that
+ *   day, so everything up to it was kept in the previous books);
+ * - else the date of the earliest journal;
+ * - else the day the book was set up (a timestamp is read as its UTC date).
+ * Null when none is known (no book yet).
+ */
+export function booksStart(input: { cutoverDate?: string | null; firstJournalDate?: string | null; seededAt?: string | null }): BooksStart | null {
+  const cutover = utcDay(input.cutoverDate);
+  if (cutover) return { date: nextDay(cutover), from: "cutover" };
+  const first = utcDay(input.firstJournalDate);
+  if (first) return { date: first, from: "first_journal" };
+  const seeded = utcDay(input.seededAt);
+  return seeded ? { date: seeded, from: "set_up" } : null;
+}
+
+/**
+ * YYYY-MM-DD of a date or a timestamp. A timestamp (`2026-09-28 00:01:12+02`,
+ * as Postgres writes timestamptz, or ISO) is read as its UTC day, like
+ * `todayIso()`. Null when it is not a date.
+ */
+function utcDay(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(value.trim())) return null;
+  const text = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? text.slice(0, 10) : parsed.toISOString().slice(0, 10);
+}
+
+/**
+ * VAT periods these books can file: none that ended before the books start
+ * (their VAT201 came from the previous books), except a period that already
+ * has a return here (`keep`). Order is kept.
+ */
+export function vatPeriodsInBooks<T extends DateRange>(periods: T[], start: string | null | undefined, keep: (period: T) => boolean = () => false): T[] {
+  if (!start) return periods;
+  return periods.filter((p) => p.end >= start || keep(p));
+}
+
+/** True when a VAT period ended before the books start. */
+export function endsBeforeBooks(period: DateRange, start: string | null | undefined): boolean {
+  return Boolean(start) && period.end < String(start);
+}

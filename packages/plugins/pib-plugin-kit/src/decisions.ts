@@ -146,13 +146,13 @@ export function isYes(answer: JevAnswer | undefined | null, risk: DecisionRisk =
 export function jevConfigSchema() {
   return {
     type: "object",
-    title: "Jev decisions (TypeSafe)",
+    title: "Smart sorting (Jev by TypeSafe)",
     description:
-      "Fast typed decisions (triage, routing, categories) with TypeSafe's Jev. Pick the same Paperclip secret in every PiB plugin. Leave empty to use the plugin's built-in rules.",
+      "Optional smarter sorting and routing (triage, categories, lead scoring) with TypeSafe's Jev. Pick the same Paperclip secret in every PiB plugin. Leave it empty and the built-in rules are used.",
     properties: {
       apiKey: secretField("TypeSafe API key", "From typesafe.ai → API keys. Stored as a Paperclip secret."),
       model: { type: "string", title: "Model", default: JEV_MODEL_DEFAULT, description: "Pinned version, e.g. jev-1.13.0. Change it on purpose; thresholds are tuned per version." },
-      enabled: { type: "boolean", title: "Use Jev", default: true },
+      enabled: { type: "boolean", title: "Use smart sorting", default: true },
     },
   } as const;
 }

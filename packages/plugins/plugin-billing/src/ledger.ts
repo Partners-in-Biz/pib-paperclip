@@ -134,7 +134,8 @@ export function paymentJournal(input: PaymentInput): LedgerPostRequested {
   const client = clientOf(input.customerKind, input.customerRef);
   const dims: Record<string, string> = { invoice: input.invoiceNumber, method: input.method };
   if (input.bankTxId) dims.bankTxId = input.bankTxId;
-  const memo = `Payment for ${input.invoiceNumber}${input.reference ? ` (${input.reference})` : ""}${input.bankTxId ? ` bank tx ${input.bankTxId}` : ""}`;
+  // People read the memo: no database ids (the bank line id travels in dimensions.bankTxId).
+  const memo = `Payment for ${input.invoiceNumber}${input.reference ? ` (${input.reference})` : ""}`;
   const bank = bankSide(input.bankAccountRole, input.bankAccountCode);
   return request({
     key: `billing:payment:${input.id}${input.keySuffix ? `:${input.keySuffix}` : ""}`,
@@ -339,7 +340,7 @@ export function billPaymentJournal(input: {
   supplierRef?: string | null;
 }): LedgerPostRequested {
   const supplier = input.supplierRef ? clientOf(input.supplierKind, input.supplierRef) : {};
-  const memo = `Payment to ${input.supplierName}${input.bankTxId ? ` bank tx ${input.bankTxId}` : ""}`;
+  const memo = `Payment to ${input.supplierName}`;
   const dims = input.bankTxId ? { bankTxId: input.bankTxId } : undefined;
   const bank = bankSide(input.bankAccountRole, input.bankAccountCode);
   return request({

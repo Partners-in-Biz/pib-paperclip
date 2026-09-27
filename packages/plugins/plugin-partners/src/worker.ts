@@ -104,8 +104,22 @@ runWorker(plugin, import.meta.url);
 async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
     const body = objectParams(params);
-    if (name === "propose-link") return { content: "Link proposed", data: await proposeLink(ctx, run.companyId, body) };
-    if (name === "propose-grant") return { content: "Grant proposed", data: await proposeNamedGrant(ctx, run.companyId, body) };
+    if (name === "list-links") {
+      const data = await listLinks(ctx, run.companyId, body);
+      return { content: `${data.links.length} partner link(s)`, data };
+    }
+    if (name === "list-grants") {
+      const data = await listGrants(ctx, run.companyId, body);
+      return { content: `${data.grants.length} grant(s)`, data };
+    }
+    if (name === "propose-link") {
+      const link = await proposeLink(ctx, run.companyId, body);
+      return { content: link.status === "active" ? "Link is already active" : "Link proposed", data: { ...link, next: link.status === "active" ? "Share a record with propose-grant." : "A person at each company accepts it on the Partners page (Partner links tab)." } };
+    }
+    if (name === "propose-grant") {
+      const grant = await proposeNamedGrant(ctx, run.companyId, body);
+      return { content: grant.status === "active" ? "Already shared" : "Grant proposed", data: grant };
+    }
     if (name === "revoke-grant") return { content: "Grant revoked", data: await revokeGrant(ctx, run.companyId, body) };
     return { error: "Unknown partners tool" };
   } catch (error) {
@@ -113,6 +127,11 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
   }
 }
 
+/**
+ * The Partners page: links and grants (times as ISO), and the name of every
+ * company on them, so a person can judge a link proposed by a company they
+ * are not a member of.
+ */
 async function load(ctx: PluginContext, companyId: string) {
   const links = await ctx.db.query<LinkRow>(
     `SELECT id, company_a_id, company_b_id, accepted_a, accepted_b, status, created_at
@@ -128,7 +147,28 @@ async function load(ctx: PluginContext, companyId: string) {
       ORDER BY created_at DESC`,
     [companyId],
   );
-  return { links, grants };
+  const ids = new Set<string>([companyId]);
+  for (const link of links) ids.add(link.company_a_id).add(link.company_b_id);
+  for (const grant of grants) ids.add(grant.source_company_id).add(grant.grantee_company_id);
+  return {
+    links: links.map((row) => ({ ...row, created_at: isoTime(row.created_at) })),
+    grants: grants.map((row) => ({ ...row, created_at: isoTime(row.created_at) })),
+    companies: await companyNames(ctx, [...ids]),
+  };
+}
+
+/** `{ id, name, prefix }` for each company the host knows; unknown ones are left out. */
+async function companyNames(ctx: PluginContext, ids: string[]): Promise<Array<{ id: string; name: string; prefix: string | null }>> {
+  const out: Array<{ id: string; name: string; prefix: string | null }> = [];
+  for (const id of ids.slice(0, 100)) {
+    try {
+      const company = await ctx.companies.get(id);
+      if (company?.name) out.push({ id, name: company.name, prefix: company.issuePrefix ?? null });
+    } catch {
+      // not visible to the plugin: the page falls back to "Partner company"
+    }
+  }
+  return out;
 }
 
 async function proposeLink(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
@@ -168,7 +208,7 @@ async function proposeNamedGrant(ctx: PluginContext, companyId: string, params: 
   const granteeCompanyId = requiredString(params, "granteeCompanyId");
   const other = link.company_a_id === companyId ? link.company_b_id : link.company_a_id;
   if (granteeCompanyId !== other) throw new PartnerError("The grantee must be the other company on the link");
-  const proposed = proposeGrant({ linkStatus: link.status, recordId, recordType });
+  proposeGrant({ linkStatus: link.status, recordId, recordType });
   const id = randomUUID();
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "grants")}
@@ -177,7 +217,119 @@ async function proposeNamedGrant(ctx: PluginContext, companyId: string, params: 
      ON CONFLICT (record_type, record_id, grantee_company_id) DO NOTHING`,
     [id, link.id, recordType, recordId, companyId, granteeCompanyId],
   );
-  return { ...proposed, linkId: link.id, granteeCompanyId };
+  // One grant per record and partner: report the real row (a revoked one is proposed again).
+  const [existing] = await ctx.db.query<GrantRow>(
+    `SELECT id, link_id, record_type, record_id, source_company_id, grantee_company_id, status
+       FROM ${table(ctx, "grants")} WHERE record_type = $1 AND record_id = $2 AND grantee_company_id = $3 LIMIT 1`,
+    [recordType, recordId, granteeCompanyId],
+  );
+  if (!existing) throw new PartnerError("The grant could not be saved");
+  if (existing.source_company_id !== companyId) throw new PartnerError("That record is shared with this partner by another company");
+  if (existing.status === "revoked") {
+    await ctx.db.execute(`UPDATE ${table(ctx, "grants")} SET status = 'proposed', link_id = $2 WHERE id = $1`, [existing.id, link.id]);
+    existing.status = "proposed";
+  }
+  return {
+    grantId: existing.id,
+    linkId: link.id,
+    recordType,
+    recordId,
+    granteeCompanyId,
+    status: existing.status,
+    copiedRecord: null,
+    next: existing.status === "active"
+      ? "Already shared with this partner."
+      : "A person at this company accepts it on the Partners page (Shared records tab); only then does the partner see the record.",
+  };
+}
+
+/** ISO time from a driver value (Date or Postgres text); null when unreadable. */
+function isoTime(value: unknown): string | null {
+  if (value == null) return null;
+  const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function optionalChoice<T extends string>(params: Record<string, unknown>, key: string, choices: readonly T[]): T | null {
+  const value = params[key];
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || !(choices as readonly string[]).includes(value)) throw new PartnerError(`${key} must be ${choices.join(" or ")}`);
+  return value as T;
+}
+
+/** `list-links`: this company's partner links, with the other company and who still has to accept. */
+async function listLinks(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const status = optionalChoice(params, "status", ["pending", "active"] as const);
+  const rows = await ctx.db.query<LinkRow>(
+    `SELECT id, company_a_id, company_b_id, accepted_a, accepted_b, status, created_at
+       FROM ${table(ctx, "links")}
+      WHERE company_a_id = $1 OR company_b_id = $1
+      ORDER BY created_at DESC
+      LIMIT 200`,
+    [companyId],
+  );
+  const links = rows
+    .filter((row) => !status || row.status === status)
+    .map((row) => {
+      const weAreA = row.company_a_id === companyId;
+      const otherId = weAreA ? row.company_b_id : row.company_a_id;
+      const acceptedByUs = weAreA ? row.accepted_a : row.accepted_b;
+      const acceptedByThem = weAreA ? row.accepted_b : row.accepted_a;
+      return {
+        linkId: row.id,
+        otherCompanyId: otherId,
+        status: row.status,
+        acceptedByUs: Boolean(acceptedByUs),
+        acceptedByThem: Boolean(acceptedByThem),
+        createdAt: isoTime(row.created_at),
+        next: row.status === "active"
+          ? "Share one record with propose-grant."
+          : acceptedByUs
+            ? "Waiting for the other company to accept."
+            : "A person here accepts it on the Partners page (Partner links tab).",
+      };
+    });
+  return { links };
+}
+
+const CRM_REF_TYPES = new Set(["company", "contact"]);
+
+/** `list-grants`: named records shared out (outgoing) and in (incoming). */
+async function listGrants(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const direction = optionalChoice(params, "direction", ["outgoing", "incoming"] as const);
+  const status = optionalChoice(params, "status", ["proposed", "active", "revoked"] as const);
+  const recordType = params.recordType == null || params.recordType === "" ? null : assertRecordType(requiredString(params, "recordType"));
+  const rows = await ctx.db.query<GrantRow>(
+    `SELECT id, link_id, record_type, record_id, source_company_id, grantee_company_id, status, created_at
+       FROM ${table(ctx, "grants")}
+      WHERE source_company_id = $1 OR grantee_company_id = $1
+      ORDER BY created_at DESC
+      LIMIT 500`,
+    [companyId],
+  );
+  const grants = rows
+    .map((row) => ({ row, outgoing: row.source_company_id === companyId }))
+    .filter(({ row, outgoing }) => (!direction || (direction === "outgoing") === outgoing) && (!status || row.status === status) && (!recordType || row.record_type === recordType))
+    .map(({ row, outgoing }) => {
+      const otherId = outgoing ? row.grantee_company_id : row.source_company_id;
+      return {
+        grantId: row.id,
+        linkId: row.link_id,
+        direction: outgoing ? "outgoing" : "incoming",
+        recordType: row.record_type,
+        recordId: row.record_id,
+        record: CRM_REF_TYPES.has(row.record_type) ? `${row.record_type}:${row.record_id}` : null,
+        otherCompanyId: otherId,
+        status: row.status,
+        createdAt: isoTime(row.created_at),
+        next: row.status === "revoked"
+          ? "No longer shared."
+          : outgoing
+            ? row.status === "proposed" ? "A person here accepts it on the Partners page (Shared records tab)." : "Shared. revoke-grant stops it."
+            : row.status === "proposed" ? "Waiting for the owner company to accept." : "You can see this record.",
+      };
+    });
+  return { grants };
 }
 
 async function acceptNamedGrant(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {

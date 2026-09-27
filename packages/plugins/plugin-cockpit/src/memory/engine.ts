@@ -322,7 +322,7 @@ export function rankFacts(facts: MemoryFact[], task: TaskContext, now: Date): Ra
 
 /** One brief line. Ids let agents give feedback and supersede. */
 export function factLine(fact: MemoryFact): string {
-  const scope = [fact.clientName ?? (fact.clientRef ? "client" : "company-wide"), fact.area, fact.kind !== "fact" ? fact.kind : null, fact.pinned ? "pinned" : null]
+  const scope = [fact.clientName ?? (fact.clientRef ? "client" : "company-wide"), fact.area, fact.kind !== "fact" ? fact.kind : null, fact.pinned ? "pinned" : null, fact.status === "archived" ? "archived" : null]
     .filter(Boolean)
     .join(" · ");
   const source = [fact.sourceIdentifier, fact.createdAt ? fact.createdAt.slice(0, 10) : null].filter(Boolean).join(", ");

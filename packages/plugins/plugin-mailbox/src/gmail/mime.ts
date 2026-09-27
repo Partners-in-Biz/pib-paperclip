@@ -32,6 +32,8 @@ export interface MimeInput {
   inReplyTo?: string | null;
   references?: string[];
   date?: Date;
+  /** `List-Unsubscribe` value for marketing mail, e.g. `<mailto:a@b.co?subject=unsubscribe>`. */
+  listUnsubscribe?: string | null;
   /** Test hook for stable boundaries. */
   boundary?: (depth: number) => string;
 }
@@ -191,6 +193,7 @@ export function buildMime(input: MimeInput): string {
   if (input.inReplyTo) headers.push(`In-Reply-To: ${singleLine(input.inReplyTo)}`);
   const refs = (input.references ?? []).map(singleLine).filter(Boolean);
   if (refs.length > 0) headers.push(`References: ${refs.join(`${CRLF} `)}`);
+  if (input.listUnsubscribe) headers.push(`List-Unsubscribe: ${singleLine(input.listUnsubscribe)}`);
   headers.push("MIME-Version: 1.0");
 
   const html = input.html?.trim() ? input.html : null;

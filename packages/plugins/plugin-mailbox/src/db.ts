@@ -17,8 +17,29 @@ import type {
   SendRecordInput,
   SendRow,
   SendStatus,
+  SkippedRecipient,
+  SuppressionInput,
+  SuppressionRow,
+  SuppressionScope,
   TriageWrite,
 } from "./gmail/types.js";
+
+/** A row of `recentMessages`: drafts and other unsent mail. */
+export interface RecentMessageRow {
+  id: string;
+  account_id: string;
+  subject: string;
+  body: string | null;
+  status: string;
+  direction: string;
+  is_read: boolean;
+  to_addrs: MailAddress[] | null;
+  cc_addrs: MailAddress[] | null;
+  bcc_addrs: MailAddress[] | null;
+  draft: DraftExtras | null;
+  send_error: string | null;
+  created_at: unknown;
+}
 
 export interface DbClient {
   namespace: string;
@@ -75,7 +96,8 @@ export interface GmailStore {
   setTriage(companyId: string, id: string, write: TriageWrite): Promise<void>;
   recentInbound(accountId: string, minutes: number, limit: number): Promise<MessageRow[]>;
   getMessage(companyId: string, id: string): Promise<MessageRow | null>;
-  getMessageByGmailId(companyId: string, gmailMessageId: string): Promise<MessageRow | null>;
+  /** By Gmail message id; `accountId` narrows it to one mailbox when several are connected. */
+  getMessageByGmailId(companyId: string, gmailMessageId: string, accountId?: string | null): Promise<MessageRow | null>;
   getMessageByRfcId(companyId: string, rfcMessageId: string): Promise<MessageRow | null>;
   outboundByRfcIds(companyId: string, ids: string[]): Promise<MessageRow[]>;
   outboundInThread(companyId: string, threadId: string): Promise<MessageRow | null>;
@@ -87,9 +109,9 @@ export interface GmailStore {
   // send requests
   recentClaims(accountId: string): Promise<number>;
   claimSend(input: SendRecordInput, force: boolean): Promise<boolean>;
-  recordSendFailure(input: SendRecordInput, error: string, permanent: boolean): Promise<void>;
+  recordSendFailure(input: SendRecordInput, error: string, permanent: boolean, skipped?: SkippedRecipient[]): Promise<void>;
   markRetrying(input: SendRecordInput, error: string): Promise<void>;
-  markSendSent(key: string, fields: SentFields): Promise<void>;
+  markSendSent(key: string, fields: SentFields & { skipped?: SkippedRecipient[] }): Promise<void>;
   getSend(companyId: string, key: string): Promise<SendRow | null>;
   listSends(companyId: string, options: { status?: SendStatus | null; limit: number }): Promise<SendRow[]>;
   sendByThread(companyId: string, threadId: string): Promise<SendRow | null>;
@@ -104,6 +126,16 @@ export interface GmailStore {
   insertOAuthSession(row: { state: string; companyId: string; createdByUserId: string | null; returnTo: string | null; ttlSeconds: number }): Promise<void>;
   getOAuthSession(state: string): Promise<OAuthSessionRow | null>;
   deleteOAuthSession(state: string): Promise<void>;
+  // delegations
+  delegationFor(accountId: string, agentId: string): Promise<{ can_read: boolean; can_draft: boolean; can_send: boolean } | null>;
+  // do-not-email list
+  /** The rows for these addresses (lower case). */
+  suppressionsFor(companyId: string, emails: string[]): Promise<SuppressionRow[]>;
+  /** Adds the address once; a later `all` widens a `marketing` row. Returns whether it is new and the scope now stored. */
+  upsertSuppression(input: SuppressionInput): Promise<{ created: boolean; widened: boolean; scope: SuppressionScope }>;
+  listSuppressions(companyId: string, limit: number): Promise<SuppressionRow[]>;
+  /** Rows this plugin found since `sinceIso`, across companies (re-announced hourly). */
+  ownSuppressionsSince(source: string, sinceIso: string, limit: number): Promise<SuppressionRow[]>;
   // CRM projection
   crmContactsByEmail(companyId: string, email: string): Promise<CrmClientRow[]>;
   crmCompaniesByDomain(companyId: string, domain: string): Promise<CrmClientRow[]>;
@@ -118,7 +150,9 @@ const MESSAGE_COLUMNS =
   "id, company_id, account_id, subject, body, direction, status, created_at, read_at, gmail_message_id, gmail_thread_id, rfc_message_id, in_reply_to, refs, from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, triage, triaged_at, category, urgency, needs_reply, phishing, client_kind, client_ref, reply_to, sent_context, send_key, draft, send_error, bounce";
 
 const SEND_COLUMNS =
-  "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at";
+  "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at, skipped";
+
+const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, created_at, updated_at";
 
 /** Column → SQL cast for account patches. Only these columns can be patched. */
 const ACCOUNT_PATCH_CASTS: Record<keyof AccountPatch, string> = {
@@ -188,7 +222,12 @@ function normaliseSend(row: SendRow): SendRow {
     created_at: iso(row.created_at) ?? "",
     updated_at: iso(row.updated_at) ?? "",
     to_addrs: row.to_addrs ?? [],
+    skipped: row.skipped ?? [],
   };
+}
+
+function normaliseSuppression(row: SuppressionRow): SuppressionRow {
+  return { ...row, created_at: iso(row.created_at) ?? "", updated_at: iso(row.updated_at) ?? "" };
 }
 
 interface CrmContactDb {
@@ -414,11 +453,16 @@ export class SqlStore implements GmailStore {
     return rows[0] ? normaliseMessage(rows[0]) : null;
   }
 
-  async getMessageByGmailId(companyId: string, gmailMessageId: string): Promise<MessageRow | null> {
-    const rows = await this.db.query<MessageRow>(
-      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")} WHERE company_id = $1 AND gmail_message_id = $2 ORDER BY created_at LIMIT 1`,
-      [companyId, gmailMessageId],
-    );
+  async getMessageByGmailId(companyId: string, gmailMessageId: string, accountId: string | null = null): Promise<MessageRow | null> {
+    const rows = accountId
+      ? await this.db.query<MessageRow>(
+        `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")} WHERE company_id = $1 AND gmail_message_id = $2 AND account_id = $3 LIMIT 1`,
+        [companyId, gmailMessageId, accountId],
+      )
+      : await this.db.query<MessageRow>(
+        `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")} WHERE company_id = $1 AND gmail_message_id = $2 ORDER BY created_at LIMIT 1`,
+        [companyId, gmailMessageId],
+      );
     return rows[0] ? normaliseMessage(rows[0]) : null;
   }
 
@@ -541,12 +585,12 @@ export class SqlStore implements GmailStore {
     return (res.rowCount ?? 0) > 0;
   }
 
-  async recordSendFailure(input: SendRecordInput, error: string, permanent: boolean): Promise<void> {
+  async recordSendFailure(input: SendRecordInput, error: string, permanent: boolean, skipped: SkippedRecipient[] = []): Promise<void> {
     await this.db.execute(
       `INSERT INTO ${this.t("send_requests")} AS sr
-        (key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, error, context, request)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'failed', $8, 1, $9, $10::jsonb, $11::jsonb)
-       ON CONFLICT (key) DO UPDATE SET status = 'failed', permanent = EXCLUDED.permanent, error = EXCLUDED.error, updated_at = now()
+        (key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, error, context, request, skipped)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'failed', $8, 1, $9, $10::jsonb, $11::jsonb, $12::jsonb)
+       ON CONFLICT (key) DO UPDATE SET status = 'failed', permanent = EXCLUDED.permanent, error = EXCLUDED.error, skipped = EXCLUDED.skipped, updated_at = now()
        WHERE sr.status <> 'sent'`,
       [
         input.key,
@@ -560,6 +604,7 @@ export class SqlStore implements GmailStore {
         error.slice(0, 1000),
         json(input.context),
         json(input.request),
+        json(skipped),
       ],
     );
   }
@@ -586,12 +631,12 @@ export class SqlStore implements GmailStore {
     );
   }
 
-  async markSendSent(key: string, fields: SentFields): Promise<void> {
+  async markSendSent(key: string, fields: SentFields & { skipped?: SkippedRecipient[] }): Promise<void> {
     await this.db.execute(
       `UPDATE ${this.t("send_requests")} SET status = 'sent', permanent = false, error = NULL, gmail_message_id = $2, gmail_thread_id = $3,
-         rfc_message_id = $4, account_id = $5, from_address = $6, sent_at = now(), updated_at = now()
+         rfc_message_id = $4, account_id = $5, from_address = $6, skipped = $7::jsonb, sent_at = now(), updated_at = now()
         WHERE key = $1`,
-      [key, fields.gmailMessageId, fields.gmailThreadId, fields.rfcMessageId, fields.accountId, fields.fromAddress],
+      [key, fields.gmailMessageId, fields.gmailThreadId, fields.rfcMessageId, fields.accountId, fields.fromAddress, json(fields.skipped ?? [])],
     );
   }
 
@@ -685,6 +730,51 @@ export class SqlStore implements GmailStore {
     await this.db.execute(`DELETE FROM ${this.t("oauth_sessions")} WHERE state = $1 OR expires_at < now() - interval '1 day'`, [state]);
   }
 
+  // ── do-not-email list ───────────────────────────────────────────────────
+
+  async suppressionsFor(companyId: string, emails: string[]): Promise<SuppressionRow[]> {
+    const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (wanted.length === 0) return [];
+    const rows = await this.db.query<SuppressionRow>(
+      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE company_id = $1 AND email = ANY(${textArray(2)})`,
+      [companyId, json(wanted)],
+    );
+    return rows.map(normaliseSuppression);
+  }
+
+  async upsertSuppression(input: SuppressionInput): Promise<{ created: boolean; widened: boolean; scope: SuppressionScope }> {
+    const email = input.email.trim().toLowerCase();
+    const res = await this.db.execute(
+      `INSERT INTO ${this.t("suppressions")} (company_id, email, scope, reason, source, detail) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (company_id, email) DO NOTHING`,
+      [input.companyId, email, input.scope, input.reason, input.source, input.detail?.slice(0, 500) ?? null],
+    );
+    if ((res.rowCount ?? 0) > 0) return { created: true, widened: false, scope: input.scope };
+    if (input.scope !== "all") return { created: false, widened: false, scope: "marketing" };
+    const widened = await this.db.execute(
+      `UPDATE ${this.t("suppressions")} SET scope = 'all', reason = $3, source = $4, detail = $5, updated_at = now()
+        WHERE company_id = $1 AND email = $2 AND scope = 'marketing'`,
+      [input.companyId, email, input.reason, input.source, input.detail?.slice(0, 500) ?? null],
+    );
+    return { created: false, widened: (widened.rowCount ?? 0) > 0, scope: "all" };
+  }
+
+  async listSuppressions(companyId: string, limit: number): Promise<SuppressionRow[]> {
+    const rows = await this.db.query<SuppressionRow>(
+      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE company_id = $1 ORDER BY updated_at DESC LIMIT $2`,
+      [companyId, Math.max(1, Math.min(limit, 1000))],
+    );
+    return rows.map(normaliseSuppression);
+  }
+
+  async ownSuppressionsSince(source: string, sinceIso: string, limit: number): Promise<SuppressionRow[]> {
+    const rows = await this.db.query<SuppressionRow>(
+      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE source = $1 AND updated_at >= $2::timestamptz ORDER BY updated_at LIMIT $3`,
+      [source, sinceIso, Math.max(1, Math.min(limit, 1000))],
+    );
+    return rows.map(normaliseSuppression);
+  }
+
   // ── CRM projection ──────────────────────────────────────────────────────
 
   async crmContactsByEmail(companyId: string, email: string): Promise<CrmClientRow[]> {
@@ -742,9 +832,11 @@ export class SqlStore implements GmailStore {
     );
   }
 
+  /** Adds a delegation; an existing one for the same mailbox and agent only gains rights, never loses them. */
   async insertDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean }): Promise<void> {
     await this.db.execute(
-      `INSERT INTO ${this.t("delegations")} (id, company_id, account_id, agent_id, can_read, can_draft, can_send) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO ${this.t("delegations")} AS d (id, company_id, account_id, agent_id, can_read, can_draft, can_send) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (account_id, agent_id) DO UPDATE SET can_read = d.can_read OR EXCLUDED.can_read, can_draft = d.can_draft OR EXCLUDED.can_draft, can_send = d.can_send OR EXCLUDED.can_send`,
       [row.id, row.companyId, row.accountId, row.agentId, row.canRead, row.canDraft, row.canSend],
     );
   }
@@ -783,9 +875,10 @@ export class SqlStore implements GmailStore {
     );
   }
 
+  /** Drafts and other unsent mail for the page, with what the draft preview shows (body capped at 20,000 characters). */
   async recentMessages(companyId: string, limit: number) {
-    return this.db.query<Record<string, unknown>>(
-      `SELECT id, account_id, subject, status, direction, read_at IS NOT NULL AS is_read, to_addrs, send_error, created_at
+    return this.db.query<RecentMessageRow>(
+      `SELECT id, account_id, subject, left(body, 20000) AS body, status, direction, read_at IS NOT NULL AS is_read, to_addrs, cc_addrs, bcc_addrs, draft, send_error, created_at
          FROM ${this.t("messages")} WHERE company_id = $1 AND ((direction = 'outbound' AND status <> 'sent') OR gmail_message_id IS NULL)
         ORDER BY created_at DESC LIMIT $2`,
       [companyId, limit],

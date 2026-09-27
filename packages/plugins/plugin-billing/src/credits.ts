@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { invoiceBalances, iso } from "./balances.js";
+import { creditNoteAvailable, invoiceBalances, iso } from "./balances.js";
 import { emailEnabled, loadBilling, privateR2, type BillingSettings } from "./config.js";
 import { asObject, getCreditNote, getInvoice, insertCreditNote, table, type CreditNoteRow } from "./db.js";
 import { docFileName, renderDocument, statementPdfSpec, type DocView, type StatementEntry, type StatementView } from "./documents.js";
@@ -19,16 +19,60 @@ import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage
 import { actorLabel, integer, optionalString, readClientScope, requiredCompany, requiredString, requirePerson } from "./util.js";
 import { renderDocumentPdf, type ClientRef } from "@partnersinbiz/pib-plugin-kit";
 
+/** A person issues a credit note on the page (agents go through `requestCreditDecision`). */
 export async function createCreditNoteAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
-  const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
+  return issueCreditNote(ctx, {
+    companyId,
+    invoiceId: requiredString(params, "invoiceId"),
+    amountMinor: integer(params.amountMinor, "amountMinor"),
+    reason: optionalString(params, "reason") ?? null,
+    createdBy: actorLabel(context),
+  });
+}
+
+/** Checks a credit note must pass (before asking a person, and again when applying it). */
+export async function checkCreditNote(ctx: PluginContext, companyId: string, invoiceId: string, amountMinor: number, reason?: string | null, id?: string) {
+  const invoice = await requireOwnInvoice(ctx, companyId, invoiceId);
   if (invoice.status === "draft") throw new BillingError("Credit notes are for sent invoices. Change the draft instead.");
   if (invoice.status === "cancelled") throw new BillingError("This invoice is cancelled");
-  const draft = createCreditNote({ companyId, invoiceId: invoice.id, amountMinor: integer(params.amountMinor, "amountMinor"), reason: optionalString(params, "reason") });
+  const draft = createCreditNote({ companyId, invoiceId: invoice.id, amountMinor, reason: reason ?? undefined, ...(id ? { id } : {}) });
   const already = await creditedOnInvoice(ctx, invoice.id);
   if (already + draft.amountMinor > Number(invoice.total_minor)) {
     throw new BillingError(`Credit notes on ${invoice.number} would exceed its total`);
   }
+  return { invoice, draft };
+}
+
+/**
+ * Number, store, apply and post a credit note. With `id` (a person's decision)
+ * it is idempotent: a repeat finishes what an interrupted run left undone
+ * (applying, the journal, the open item) instead of issuing a second note.
+ */
+export async function issueCreditNote(ctx: PluginContext, input: { companyId: string; invoiceId: string; amountMinor: number; reason: string | null; createdBy: string | null; id?: string }) {
+  const companyId = input.companyId;
+  const existing = input.id ? await getCreditNote(ctx, input.id) : null;
+  if (existing) {
+    if (existing.company_id !== companyId || existing.invoice_id !== input.invoiceId) throw new BillingError("Credit note was not found");
+    const invoice = await requireOwnInvoice(ctx, companyId, existing.invoice_id);
+    const { settings } = await loadBilling(ctx, companyId);
+    const applied = await afterCreditNote(ctx, { id: existing.id, number: existing.number ?? `CN-${existing.id.slice(0, 8)}`, amount_minor: existing.amount_minor, created_at: existing.created_at }, invoice, settings, input.createdBy);
+    const fresh = await getCreditNote(ctx, existing.id);
+    return {
+      id: existing.id,
+      companyId,
+      invoiceId: existing.invoice_id,
+      amountMinor: Number(existing.amount_minor),
+      reason: existing.reason,
+      number: existing.number ?? null,
+      status: fresh?.status ?? existing.status,
+      appliedMinor: applied.appliedMinor,
+      creditMinor: await creditNoteAvailable(ctx, existing.id),
+      invoiceStatus: applied.status,
+      repeat: true,
+    };
+  }
+  const { invoice, draft } = await checkCreditNote(ctx, companyId, input.invoiceId, input.amountMinor, input.reason, input.id);
   const { settings } = await loadBilling(ctx, companyId);
   const customer = asObject(invoice.customer_snapshot ?? invoice.customer);
   const number = await nextDocumentNumber(ctx, companyId, "credit_note", { kind: invoice.customer_kind, ref: invoice.customer_ref, name: String(customer.name ?? invoice.customer_ref) }, settings);
@@ -45,12 +89,12 @@ export async function createCreditNoteAction(ctx: PluginContext, context: Plugin
     customer_kind: invoice.customer_kind,
     customer_ref: invoice.customer_ref,
     issued_on: new Date().toISOString().slice(0, 10),
-    created_by: actorLabel(context),
+    created_by: input.createdBy,
   };
   await insertCreditNote(ctx, row);
-  const applied = await afterCreditNote(ctx, { id: row.id, number, amount_minor: row.amount_minor, created_at: row.created_at }, invoice, settings, actorLabel(context));
+  const applied = await afterCreditNote(ctx, { id: row.id, number, amount_minor: row.amount_minor, created_at: row.created_at }, invoice, settings, input.createdBy);
   const fresh = await getCreditNote(ctx, row.id);
-  return { ...draft, number, status: fresh?.status ?? draft.status, appliedMinor: applied.appliedMinor, creditMinor: draft.amountMinor - applied.appliedMinor, invoiceStatus: applied.status };
+  return { ...draft, number, status: fresh?.status ?? draft.status, appliedMinor: applied.appliedMinor, creditMinor: draft.amountMinor - applied.appliedMinor, invoiceStatus: applied.status, repeat: false };
 }
 
 export function publicCreditNote(note: CreditNoteRow, invoiceNumber?: string | null) {

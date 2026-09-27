@@ -11,9 +11,13 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
-import { dunningStages, type BillingSettings, type DunningStage } from "./config.js";
+import { dunningStages, emailEnabled, loadBilling, privateR2, type BillingSettings, type DunningStage, type PrivateR2 } from "./config.js";
 import { asObject, table } from "./db.js";
-import { daysPastDue } from "./domain.js";
+import { docFileName, renderDocument } from "./documents.js";
+import { dayText, daysPastDue } from "./domain.js";
+import { invoiceView, recipientsFor } from "./invoices.js";
+import { parseAddresses, queueMail, reminderEmail } from "./mail.js";
+import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
 
 export const DUNNABLE = new Set(["sent", "viewed", "overdue", "partially_paid"]);
 
@@ -47,6 +51,8 @@ export function planReminders(input: {
   for (const balance of input.balances) {
     const invoice = balance.invoice;
     if (!DUNNABLE.has(invoice.status) || balance.outstandingMinor <= 0) continue;
+    // A payment dated in the future is on the invoice: a person checks that date before anyone chases the customer.
+    if ((balance.futurePaidMinor ?? 0) > 0) continue;
     if (input.optedOut.has(`${invoice.customer_kind}:${invoice.customer_ref}`)) continue;
     const dueAt = iso(invoice.due_at);
     if (!dueAt || Date.parse(dueAt) >= input.now.getTime()) continue;
@@ -67,7 +73,8 @@ export function reminderVars(balance: InvoiceBalance, daysOverdue: number, setti
     total: formatMoneyMinor(Number(invoice.total_minor), invoice.currency),
     clientName: typeof customer.name === "string" && customer.name ? customer.name : "there",
     orgName: typeof customer.name === "string" && customer.name ? customer.name : "there",
-    dueDate: (iso(invoice.due_at) ?? "").slice(0, 10),
+    // Customers read this: "10 Oct 2026", not 2026-10-10.
+    dueDate: dayText(iso(invoice.due_at)),
     daysOverdue: String(daysOverdue),
     businessName: typeof sender.name === "string" && sender.name ? sender.name : String(asObject(settings.sender).name ?? "Partners in Biz"),
   };
@@ -115,4 +122,104 @@ export async function plannedReminders(ctx: PluginContext, companyId: string, se
   const balances = await invoiceBalances(ctx, companyId, { openOnly: true });
   const plans = planReminders({ balances, stages, sentByInvoice: await sentStages(ctx, companyId), optedOut: await optedOutClients(ctx, companyId), now });
   return { stages, balances, plans };
+}
+
+export type RequestStage =
+  | { stage: number }
+  | { stage: null; reason: "all_sent"; sent: number }
+  | { stage: null; reason: "not_due"; nextStage: number; dueInDays: number };
+
+/**
+ * The stage an agent may ask a person to send now: the latest stage that is
+ * due and not sent yet (like the automatic run). When the next stage is not
+ * due yet, or every stage went out, there is nothing to send.
+ */
+export function requestStage(stages: DunningStage[], daysOverdue: number, sent: number[]): RequestStage {
+  const highest = sent.length ? Math.max(...sent) : -1;
+  if (highest >= stages.length - 1) return { stage: null, reason: "all_sent", sent: stages.length };
+  const due = stageToSend(stages, daysOverdue, sent);
+  if (due != null) return { stage: due };
+  const next = highest + 1;
+  return { stage: null, reason: "not_due", nextStage: next, dueInDays: Math.max(0, stages[next]!.daysAfterDue - daysOverdue) };
+}
+
+export interface ReminderOutcome {
+  status: "queued" | "skipped" | "failed" | "already";
+  deliveryKey?: string;
+  error?: string;
+}
+
+/**
+ * Send one reminder stage for one invoice through the Mailbox (with the
+ * invoice PDF when private storage is set up). The (invoice, stage) claim
+ * makes sure a stage goes out once, whoever asks.
+ */
+export async function queueReminderStage(
+  ctx: PluginContext,
+  input: { companyId: string; balance: InvoiceBalance; stageIndex: number; daysOverdue: number; settings: BillingSettings; r2: PrivateR2 | null; createdBy: string },
+): Promise<ReminderOutcome> {
+  const stages = dunningStages(input.settings);
+  const stage = stages[input.stageIndex];
+  if (!stage) return { status: "skipped", error: "That reminder stage no longer exists" };
+  const reminderId = await claimReminder(ctx, input.companyId, { invoiceId: input.balance.invoice.id, stage: input.stageIndex, daysOverdue: input.daysOverdue });
+  if (!reminderId) return { status: "already" };
+  try {
+    const to = await recipientsFor(ctx, input.companyId, input.balance.invoice);
+    if (to.length === 0) {
+      await setReminderStatus(ctx, reminderId, "skipped", { error: "No email address for this customer" });
+      return { status: "skipped", error: "No email address for this customer" };
+    }
+    const vars = reminderVars(input.balance, input.daysOverdue, input.settings);
+    const payment = asObject(asObject(input.balance.invoice.sender_snapshot).payment ?? input.settings.payment ?? {});
+    const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, input.balance.invoice.number);
+    let attachments: Array<{ url: string; filename: string; mime: string; bytes: number }> = [];
+    if (input.r2) {
+      const view = await invoiceView(ctx, input.balance.invoice, input.settings);
+      const bytes = await renderDocument(view);
+      const filename = docFileName(view);
+      const key = documentKey(input.r2, input.companyId, "invoice", filename, "pdf");
+      await putObject(input.r2, key, bytes, "application/pdf");
+      attachments = [{ url: presignGet(input.r2, key, MAIL_LINK_SECONDS, filename), filename, mime: "application/pdf", bytes: bytes.byteLength }];
+    }
+    const deliveryKey = await queueMail(ctx, input.companyId, {
+      kind: "reminder",
+      docId: input.balance.invoice.id,
+      seq: input.stageIndex + 1,
+      to,
+      cc: parseAddresses(input.settings.email?.cc ?? ""),
+      from: input.settings.email?.from?.trim() || null,
+      content,
+      attachments,
+      clientKind: input.balance.invoice.customer_kind,
+      clientRef: input.balance.invoice.customer_ref,
+      threadId: null,
+      createdBy: input.createdBy,
+    });
+    await setReminderStatus(ctx, reminderId, "queued", { deliveryKey });
+    return { status: "queued", deliveryKey };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await setReminderStatus(ctx, reminderId, "failed", { error: message });
+    return { status: "failed", error: message };
+  }
+}
+
+/** Send today's reminders for one company. `force` runs even when the schedule is off (a person pressed "Send now"). */
+export async function runDunningFor(ctx: PluginContext, companyId: string, force = false): Promise<{ sent: number; skipped: number; reason?: string }> {
+  const { settings, resolver } = await loadBilling(ctx, companyId);
+  if (!force && settings.dunning?.enabled !== true) return { sent: 0, skipped: 0, reason: "Reminders are off" };
+  if (!emailEnabled(settings)) return { sent: 0, skipped: 0, reason: "Email is off" };
+  const { balances, plans } = await plannedReminders(ctx, companyId, settings);
+  const byId = new Map(balances.map((b) => [b.invoice.id, b]));
+  const r2 = settings.dunning?.attachInvoice === false ? null : await privateR2(resolver, settings).catch(() => null);
+  let sent = 0;
+  let skipped = 0;
+  for (const plan of plans) {
+    const balance = byId.get(plan.invoiceId);
+    if (!balance) continue;
+    const outcome = await queueReminderStage(ctx, { companyId, balance, stageIndex: plan.stage, daysOverdue: plan.daysOverdue, settings, r2, createdBy: "dunning" });
+    if (outcome.status === "queued") sent += 1;
+    else if (outcome.status === "skipped") skipped += 1;
+  }
+  return { sent, skipped };
 }

@@ -1,45 +1,60 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
-export const CRM_RECORDS_SKILL = `# CRM records
+export const CRM_RECORDS_SKILL = `# CRM records and the client lifecycle
 
-Use the \`partnersinbiz.crm\` tools to keep people and the companies they work for.
+The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is a CRM company, or a contact with no company (a sole trader). Name it as \`company:<id>\` or \`contact:<id>\` everywhere, never by name alone; every module's client workspace uses that ref (\`?client=company:<id>\`). Our own work has no client. One client per task.
 
-- A CRM company is the account. It is not the Paperclip workspace.
-- Create contacts and companies, then link them. A contact may link to many companies. Put the role on the link (\`buyer\`, \`staff\`, or a label this workspace uses).
-- Log activities on the contact, company, or deal. Include \`issueId\` when the note belongs to a Paperclip issue.
-- Deal amounts are integers in minor units plus a currency code.
-- Moving a deal to a won or lost stage stops that contact's running sequence enrollments.
-- Human-owned fields keep the person's value. You may fill an empty human-owned field. You may not replace one that already has a value. A refused write stores a fact and leaves the value unchanged.
-- If a tool returns "Record is not visible", stop. Do not invent a substitute record.
-- \`share-record\` names a board user or an agent. Sharing with another Paperclip company is a partner grant, not this tool.
-- \`create-product\` and \`update-product\` keep the product or service catalog. Use it when a deal or invoice needs a line item. Amounts are integers in minor units plus a currency code.
-- \`score-contact\` returns a 0-100 rule score with a breakdown and, when Jev is set up, fit, intent and urgency levels (0-3) that are stored on the contact. Contacts are also scored after each create or update. Use scores to prioritise follow-up. A score is a hint, not a fact: never overwrite a human-owned field because a score says so.
-- Emails from a contact arrive from the Mailbox and are logged on the contact (\`email_received\`). A contact whose email is \`unsubscribed\` or \`bounced\` is never emailed by a sequence.
-- \`find-duplicates\` returns contacts that share an email. \`merge-contacts\` folds a duplicate into a primary, moving its links, deals, activities, facts, and enrollments. Only merge when a person confirms the two are the same person.
-- \`create-saved-view\` / \`list-saved-views\` / \`delete-saved-view\` keep reusable filter views for contacts, companies, or deals.
-- \`export-contacts\` returns the visible contacts as CSV. \`import-contacts\` creates contacts from CSV with a header row of name, emails, phones, lifecycle, tags. emails and phones are semicolon-separated.
-- \`field-history\` returns the recorded field changes and facts for a record. Use it to explain why a value is what it is.
-- \`bulk-tag-contacts\` adds or removes tags on many visible contacts at once. \`contact-graph\` returns a contact's companies, deals, and recent activity in one view.
-- \`pipeline-forecast\` returns the open pipeline value by stage with a weighted forecast. Use it to report expected revenue, not a guarantee.
-- \`add-deal-product\` / \`list-deal-products\` attach product lines to a deal. Use them to itemise what a deal sells.
-- A CRM company is also a PiB **client**. Social accounts, posts and SEO sprints point at it by id (\`clientRef\`), so use the real CRM company id, never a name.
+## Find the client first
+- \`find-records\` by name, email, domain, phone or tag before you create anything. Create only when nothing matches, then link people to their company with \`link-contact\`.
+- \`get-company\` / \`get-contact\` give the profile, people, open deals, the last 10 activities and \`workspaceLinks\` to each module's client workspace.
+- \`get-client-profile\` says how to talk for the client (brand voice, audience, services they buy, website, booking link, banned words, tone). Read it before you write anything for or to them.
+- "Record is not visible": stop. Never invent a substitute record.
+
+## Keeping records
+- Money is an integer in minor units plus a currency: R 1,500.00 is \`150000\` ZAR.
+- Log calls, meetings and decisions with \`log-activity\` (add the \`issueId\`). Set the next step on the contact (nextActionKind and nextActionDueAt).
+- A field a person owns keeps its value: fill it only while it is empty. A refused write is noted on the record; do not retry it.
+- Merge duplicates only after a person confirmed they are the same person.
+- New and changed clients reach the other modules within 15 minutes. If a module does not show a client yet, wait 15 minutes; do not ask anyone to resync.
+
+## The client lifecycle
+1. **Lead.** New person or company (lifecycle \`lead\`). Qualify: an owner-led business that needs what we sell, with budget and a reason to start soon.
+2. **Qualified.** Set lifecycle \`prospect\` and \`create-deal\` with the value and the client. Fix a deal later with \`update-deal\` (title, value, its client, its stage): a deal without its client or value cannot be quoted, and the CRM overview lists it.
+3. **Proposal.** Move the deal to the Proposal stage (\`list-stages\`, \`move-deal\`). Draft the quote in Billing (\`pib-invoice-draft\`) with the deal id, so the customer's acceptance closes the deal. A person approves sending.
+4. **Won.** When the customer accepts, Billing tells the CRM and the deal moves to won; or move it yourself (\`move-deal\` to \`won\`). The CRM sets lifecycle \`customer\`, logs the win and tells Billing and the Cockpit. On a first win the Cockpit opens onboarding.
+5. **Onboarding** (the Cockpit's onboarding issue). Fill the whole client profile (\`update-client-profile\`) from the proposal, your notes and their website. Then open one hand-off issue per module for the role that owns it, titled \`Hand-off: <what> (company:<id>)\`: social accounts to connect (the owner does the logins), the SEO sprint, the retainer or first invoice, campaigns. Log each hand-off on the client.
+6. **Monthly client report** (first week of the month, per customer). For that client only, pull: Billing (invoices sent and paid, what is overdue), SEO (positions and the audit summary), Social (account analytics and the performance review), Campaigns (sends, opens, replies) and the CRM (deals, activity). Write 5-8 plain lines: results, what we did, what is next. Draft the email in the Mailbox for approval and log it on the client.
+7. **Offboarding.** Set lifecycle \`churned\` (that stops their sequences), move open deals to lost, then open a hand-off issue for each module that still works for them (stop the SEO sprint, disconnect or pause social, end the retainer). Log it.
+
+## Leads from a client's own channels
+A message to a client's own social account or mailbox is that client's lead. The CRM keeps it on the client's page (Leads from their channels), never as our contact. Never add those people to our CRM, sequences or campaigns (POPIA); the client's work in Social answers them.
 `;
 
-export const CRM_OUTBOUND_SKILL = `# CRM outbound
+export const CRM_OUTBOUND_SKILL = `# CRM outbound: leads, sequences and marketing email
 
-Use \`partnersinbiz.crm:enroll-contact\` and \`partnersinbiz.crm:complete-step\`.
+## A lead came in
+Social and the Mailbox hand leads to the CRM; each opens one "Follow up lead" issue for you with the message, the inbox item or Gmail message id and who replies.
+- **Social DM or comment:** the Social agent replies in the Social inbox. Do not reply to it yourself.
+- **Email:** you draft the reply in the Mailbox in the same thread (\`pib-mailbox-draft\`); a person approves sending.
+- **Your part, within one working day:** qualify, \`log-activity\`, set the next action, \`create-deal\` when they want a quote, lifecycle \`prospect\` once qualified.
 
-- Enroll a contact once. A second running enrollment in the same sequence is refused.
-- A due step opens a Paperclip issue. Do not copy tokens or mailbox credentials into that issue.
-- \`manual\` sequences complete when a person marks that issue done. Call \`complete-step\` only after the issue status is done.
-- \`sent\` sequences complete when you set \`sentConfirmed\` after the message has actually been sent.
-- Won or lost deals stop running enrollments for the contact. Do not re-enroll them in the same sequence while it is still running.
-- A due step's issue is assigned to the contact's agent when it has one (you are woken), otherwise to the contact owner.
-- A sequence has a delivery: \`issue\` (default, a due step opens an issue) or \`email\` (the Mailbox sends the step: title = subject, body = text; \`{{first_name}}\`, \`{{name}}\`, \`{{company}}\` are filled per contact). Switch with \`set-sequence-delivery\`. The first switch to email opens an approval issue; nothing is emailed until a board user marks it done. You cannot approve it. When the company has a Reviewer, that issue goes to the Reviewer first; the Reviewer comments PASS or CHANGES NEEDED and reassigns it to the person.
-- Leads from Social (inbox) and the Mailbox (mail triaged as a lead) arrive by themselves: the CRM finds or creates the contact (lifecycle lead), logs a \`lead_captured\` activity, scores it and opens one \`Follow up … lead\` issue for the contact's agent or owner. Work that issue: reply in the same channel, log the outcome, set the next action.
-- A sent email moves the contact to the next step by itself. If the Mailbox cannot send it, you get an issue: send it another way, then mark it done.
-- Replies are read by Jev: interested or a question stops the sequence and opens a follow-up issue for you; not now stops it and sets an email next action in 30 days; unsubscribe and bounces stop every sequence and mark the email; out of office moves the next step 5 days later. When Jev is unsure or not set up, you get an issue to decide. Answer the contact from Gmail, then log what happens next.
+## Sequences
+- Find one with \`list-sequences\`; \`enroll-contact\` once per contact per sequence.
+- **Issue delivery:** each due step opens an issue for you with the step text. Do it, log it, then mark the issue done: that moves the contact on. For \`sent\` sequences mark it done only once the message really went out.
+- **Email delivery:** the Mailbox sends each step once a person approved the sequence (\`set-sequence-delivery\` asks; you cannot approve it). Until then due steps wait and show in the Cockpit. If the person refuses, the steps come back to you as issues.
+- A won or lost deal, an opt-out, a bounce or lifecycle \`churned\` stops a contact's sequences.
+- **Replies** are sorted by Jev: interested or a question stop the sequence and give you a "Reply from" issue (answer from the Mailbox); not now sets an email next action in 30 days; unsubscribe and bounces suppress the address everywhere; out of office moves the next step 5 days. When Jev is unsure you get an issue to decide.
+
+## Merge tokens
+\`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}\`, \`{{email}}\`. Add a fallback for empty values: \`{{first_name|there}}\`. An unknown token is sent as typed, so check the spelling.
+
+## Every marketing email (sequences, campaigns, follow-ups you write)
+- **POPIA:** email only people who agreed to hear from us, or existing clients about similar services we sell them. Never bought lists, never a client's leads.
+- **Who we are:** say it is Partners in Biz and who is writing; use the sender the sequence or Mailbox sets.
+- **Opt-out:** every email says how to stop, e.g. "Reply STOP and we won't email again."
+- **An opt-out is final:** the moment someone asks to stop, by any channel, \`set-email-status\` unsubscribed. Never re-add or re-enroll them; only a person can allow email again.
+- No claims we cannot back up, no pressure, no guarantees.
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [
@@ -47,9 +62,9 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: "crm-records",
     displayName: "CRM records",
     slug: "pib-crm-records",
-    description: "Create and update people and companies without overwriting human-owned fields.",
+    description: "Find clients, keep CRM records right, and run the client lifecycle from lead to offboarding.",
     markdown: withFrontmatter(
-      { name: "pib-crm-records", description: "Create and update CRM people and companies (PiB clients) without overwriting human-owned fields." },
+      { name: "pib-crm-records", description: "Find clients (company:<id> / contact:<id>), keep CRM records and client profiles right, and run the client lifecycle: lead, qualified, proposal, won, onboarding, monthly report, offboarding." },
       CRM_RECORDS_SKILL,
     ),
   },
@@ -57,9 +72,9 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: "crm-outbound",
     displayName: "CRM outbound",
     slug: "pib-crm-outbound",
-    description: "Enroll contacts in sequences and complete steps only by the sequence rule.",
+    description: "Follow up leads, run sequences and replies, and keep every marketing email POPIA-safe.",
     markdown: withFrontmatter(
-      { name: "pib-crm-outbound", description: "Enroll CRM contacts in sequences and complete steps only by the sequence rule." },
+      { name: "pib-crm-outbound", description: "Follow up leads (who replies to what), run CRM sequences and replies, merge tokens, and the POPIA, opt-out and sender rules for every marketing email." },
       CRM_OUTBOUND_SKILL,
     ),
   },

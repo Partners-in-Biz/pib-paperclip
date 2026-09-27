@@ -16,6 +16,10 @@ const ROUTES: Route[] = [
   [/\bUNION\b/, (_p, s) => [...new Set([...(s.companies ?? []), ...(s.contacts ?? [])].map((row) => row.company_id))].map((company_id) => ({ company_id }))],
   [/make_interval/, () => []],
   [/record_grants/, () => []],
+  [/min\(held_at\)::text AS oldest/, (p, s) => {
+    const rows = (s.held_leads ?? []).filter((row) => row.company_id === p[0] && !row.processed_at);
+    return [{ count: String(rows.length), oldest: rows.map((row) => row.held_at).sort()[0] ?? null }];
+  }],
 ];
 
 function seed(withRows: boolean): Store {
@@ -63,20 +67,52 @@ describe("CRM setup status", () => {
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit", "plugin.state.read"]));
     expect(manifest.version).toBe(PLUGIN_VERSION);
-    expect(PLUGIN_VERSION).toBe("0.3.6");
+    expect(PLUGIN_VERSION).toBe("0.4.0");
   });
 
   it("an unconfigured company: settings missing, the rest optional, settings link falls back to the plugin list", async () => {
     const { harness } = await boot({ config: {}, rows: false });
     const status = await setupStatus(harness.ctx, CO);
     expect(status).toMatchObject({ plugin: "partnersinbiz.crm", module: "crm", title: "CRM", version: PLUGIN_VERSION });
-    expect(status.items.map((row) => row.key)).toEqual(["settings", "jev", "clients", "shared", "mailbox"]);
+    expect(status.items.map((row) => row.key)).toEqual(["settings", "agent", "jev", "clients", "shared", "mailbox"]);
     expect(item(status, "settings")).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(status, "jev")).toMatchObject({ status: "optional", required: false });
     expect(item(status, "jev").detail).toMatch(/lead scoring and reply classification/);
     expect(item(status, "clients")).toMatchObject({ status: "optional", required: false, href: "/crm" });
     expect(item(status, "shared")).toMatchObject({ status: "optional", required: false, action: null });
     expect(item(status, "mailbox")).toMatchObject({ status: "optional", href: "/mailbox" });
+    expect(item(status, "agent")).toMatchObject({
+      status: "missing",
+      required: true,
+      title: "Hire or link the Account Manager",
+      href: "/setup?section=team#team-account-manager",
+      hrefLabel: "Open Team in Setup",
+      action: { plugin: "partnersinbiz.crm", key: "crm.start-hire", params: {}, label: "Open a hire task" },
+    });
+    expect(item(status, "agent").steps?.[0]).toBe("Open Setup → Team → Account Manager.");
+  });
+
+  it("the agent item is done once an Account Manager is linked, and names it", async () => {
+    const { harness } = await boot();
+    harness.seed({ agents: [{ id: "am-1", companyId: CO, name: "Nomsa", status: "idle" } as never] });
+    await harness.ctx.state.set({ scopeKind: "company", scopeId: CO, namespace: "pib-hire", stateKey: "role:account-manager" }, { agentId: "am-1", linkedAt: "2026-09-27T08:00:00Z", linkedBy: "manual", hire: null });
+    const agent = item(await setupStatus(harness.ctx, CO), "agent");
+    expect(agent).toMatchObject({ status: "done", action: null, detail: "Nomsa is the Account Manager (idle)." });
+    expect(agent.steps).toBeUndefined();
+  });
+
+  it("an open hire task hides the hire action", async () => {
+    const { harness } = await boot();
+    await harness.performAction("crm.start-hire", {}, { companyId: CO, actor: BOARD });
+    const agent = item(await setupStatus(harness.ctx, CO), "agent");
+    expect(agent).toMatchObject({ status: "missing", action: null });
+    expect(agent.detail).toMatch(/hire task .* is open/);
+  });
+
+  it("names the held leads in the settings item while the settings are unsaved", async () => {
+    const { harness, store } = await boot({ config: {}, rows: false });
+    store.held_leads = [{ id: "h1", key: "mail:1", company_id: CO, event: "x", payload: {}, reason: "unsaved", attempts: 0, held_at: "2026-09-27T08:00:00Z", processed_at: null }];
+    expect(item(await setupStatus(harness.ctx, CO), "settings").detail).toMatch(/^1 lead is waiting until the settings are saved/);
   });
 
   it("a configured company with clients: sharing is required until the resync action runs", async () => {

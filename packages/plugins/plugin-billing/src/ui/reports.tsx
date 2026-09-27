@@ -145,7 +145,9 @@ export function RemindersTab() {
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <Card title="Payment reminders" icon={Mail} tone={data.enabled ? "ok" : "neutral"} actions={<span style={{ fontSize: 12, fontWeight: 600, color: data.enabled ? tone("ok").fg : tokens.muted }}>{data.enabled ? "On" : "Off"}</span>}>
-        <Muted>{data.enabled ? "On. Each morning the latest due stage is emailed once per invoice, from the Mailbox." : "Off. Switch them on in Settings → Plugins → Billing → Payment reminders."} Invoices waiting on a proof-of-payment check get no reminder.</Muted>
+        <Muted>{data.enabled
+          ? "On. Each morning the latest due stage is emailed once per invoice, from the Mailbox."
+          : "Off. The Account Manager asks for each reminder from its weekly Overdue invoices issue, and a person approves every email. To send them by themselves, switch them on in Settings → Plugins → Billing → Payment reminders."} Invoices waiting on a proof-of-payment check get no reminder.</Muted>
         <div style={{ display: "grid", gap: 6 }}>
           {data.stages.map((stage, i) => (
             <div key={i} style={{ padding: "8px 10px", borderRadius: 8, background: tokens.secondary, fontSize: 13 }}>

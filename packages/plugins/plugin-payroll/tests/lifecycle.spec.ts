@@ -293,6 +293,7 @@ describe("agent tools", () => {
       "list-leave": {},
       "leave-balances": {},
       "emp201-summary": { month: "2026-09" },
+      "emp501-summary": { period: "interim" },
     };
     expect(Object.keys(calls).sort()).toEqual([...PAYROLL_TOOL_NAMES].sort());
     for (const [name, params] of Object.entries(calls)) {

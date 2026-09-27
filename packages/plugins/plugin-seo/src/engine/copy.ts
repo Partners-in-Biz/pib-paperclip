@@ -13,6 +13,8 @@ export interface SprintCopy {
   clientName: string | null;
   autopilotMode: AutopilotMode;
   notes?: string | null;
+  /** The plan's name, e.g. "90-day local SEO plan" (templates/plans.ts). */
+  planName?: string | null;
 }
 
 export interface TaskCopy {
@@ -62,7 +64,7 @@ export function rootIssueDescription(sprint: SprintCopy, input: { startDate: str
     `- Autopilot: ${sprint.autopilotMode}`,
     input.cockpitPath ? `- Cockpit: [SEO → this sprint](${input.cockpitPath})` : null,
     "",
-    "Each task of the Outrank-90 plan becomes a sub-issue of this issue on the day it is due and is worked by the SEO Specialist. Code and content tasks open in the site's repo project. The few things only a person can do (one-time grants, out-of-scope PRs, messages from personal accounts) are batched in one weekly **Needs you** issue. Closing a sub-issue closes the task in the sprint.",
+    `Each task of the ${sprint.planName ?? "Outrank-90 plan"} becomes a sub-issue of this issue on the day it is due and is worked by the SEO Specialist. Code and content tasks open in the site's repo project. The few things only a person can do (one-time grants, out-of-scope PRs, messages from personal accounts) are batched in one weekly **Needs you** issue. Closing a sub-issue closes the task in the sprint.`,
     "",
     "The SEO Specialist posts a short digest here after each daily run.",
     "",
@@ -133,7 +135,7 @@ export function taskIssueDescription(
   } else if (a.kind === "user" && a.reason === "autopilot_off") {
     lines.push("> Autopilot is **off** for this sprint, so this agent task is assigned to the sprint owner. Assign it to the SEO Specialist to have it done for you.", "");
   } else if (a.kind === "unassigned") {
-    lines.push("> The SEO Specialist is not linked yet. This issue is assigned to it as soon as it is (SEO page → Activate SEO agent).", "");
+    lines.push("> The SEO Specialist is not linked yet. This issue is assigned to it as soon as it is (Setup → Team → SEO Specialist).", "");
   }
   if (task.description && task.description.trim()) lines.push(task.description.trim(), "");
   if (input.context && input.context.trim()) lines.push("## Why this task exists", input.context.trim(), "");

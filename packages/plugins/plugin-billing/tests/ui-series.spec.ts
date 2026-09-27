@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { billingActivity, invoiceAgeing, invoiceMonths, invoiceStatusCounts, isOverdue, lastMonths, monthLabel, percentDelta, statusTone } from "../src/ui/series.js";
 import type { Invoice } from "../src/ui/types.js";
+import { openFormFor } from "../src/ui/views.js";
 
 const now = Date.parse("2026-09-26T12:00:00Z");
 const inv = (id: string, status: string, extra: Partial<Invoice> = {}): Invoice => ({ id, number: id.toUpperCase(), status, currency: "ZAR", customerRef: "c1", customerName: "Lumen", totalMinor: 10_000, outstandingMinor: 10_000, ...extra });
@@ -66,5 +67,14 @@ describe("billing UI series", () => {
       ["B email failed", "bad"],
       ["A sent", "info"],
     ]);
+  });
+});
+
+describe("billing deep links", () => {
+  it("opens the new-quote form from the CRM's Draft a quote link, and the invoice form from the Invoices tab", () => {
+    expect(openFormFor("quotes")).toBe("quote");
+    expect(openFormFor("invoices")).toBe("invoice");
+    expect(openFormFor("overview")).toBeNull();
+    expect(openFormFor(null)).toBeNull();
   });
 });

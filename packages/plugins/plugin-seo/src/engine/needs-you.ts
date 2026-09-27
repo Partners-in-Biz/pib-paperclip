@@ -91,6 +91,24 @@ export function openItems(items: NeedsYouItem[]): NeedsYouItem[] {
   return items.filter((i) => i.status === "open");
 }
 
+/**
+ * Open, required Needs you items per sprint across its open digests (an item
+ * carried into a newer week counts once): what the Cockpit lists as waiting.
+ */
+export function countOpenNeedsYou(digests: Array<{ sprintId: string; items: NeedsYouItem[] }>): Map<string, number> {
+  const seen = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const digest of digests) {
+    for (const item of digest.items ?? []) {
+      const key = `${digest.sprintId}:${item.key}`;
+      if (item.status !== "open" || item.optional || seen.has(key)) continue;
+      seen.add(key);
+      counts.set(digest.sprintId, (counts.get(digest.sprintId) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 /** Open items carried from last week's digest into this week's. */
 export function carryOver(previous: NeedsYouItem[], current: NeedsYouItem[]): NeedsYouItem[] {
   const keys = new Set(current.map((i) => i.key));

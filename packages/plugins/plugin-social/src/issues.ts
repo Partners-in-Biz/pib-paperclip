@@ -4,7 +4,7 @@
  * woken (kit createWorkIssue); plugin-created issues do not wake on their own.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue, linkedAgentId } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, companyRoles, createWorkIssue, linkedAgentId, routeWork } from "@partnersinbiz/pib-plugin-kit";
 import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import type { AccountRow, DestinationRow, PostRow } from "./db.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
@@ -12,6 +12,44 @@ import { PLATFORM_LABELS, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY, isSoc
 
 export { SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY };
 export const ORIGIN_KIND = `plugin:${PLUGIN_ID}` as const;
+
+/** The company's default person, then the Cockpit owner: who gets person-only work nobody else owns. */
+export async function fallbackPerson(ctx: PluginContext, companyId: string): Promise<string | undefined> {
+  try {
+    const person = (await ctx.companies.get(companyId))?.defaultResponsibleUserId;
+    if (person) return person;
+  } catch {
+    // fall through to the Cockpit owner
+  }
+  return (await companyRoles(ctx, companyId))?.ownerUserId ?? undefined;
+}
+
+export interface SocialAssignee {
+  assigneeAgentId?: string;
+  assigneeUserId?: string;
+  /** `social` (the Social agent), another kit role (the Operator), `person`, or `none`. */
+  via: string;
+}
+
+/**
+ * Who gets Social agent work: the linked Social agent when it runs, else the
+ * kit route (a running Social agent the Cockpit knows, else the Operator),
+ * else `person` (who owns the account or post), else the company's default
+ * person or the Cockpit owner. Nothing is left unassigned when anyone exists.
+ */
+export async function socialAssignee(ctx: PluginContext, companyId: string, person?: string | null): Promise<SocialAssignee> {
+  const agent = await socialAgent(ctx, companyId);
+  if (agent.active && agent.agentId) return { assigneeAgentId: agent.agentId, via: "social" };
+  const route = await routeWork(ctx, companyId, ["social"]).catch(() => null);
+  if (route?.assigneeAgentId) return { assigneeAgentId: route.assigneeAgentId, via: route.via };
+  const userId = person ?? (await fallbackPerson(ctx, companyId)) ?? route?.assigneeUserId ?? undefined;
+  return userId ? { assigneeUserId: userId, via: "person" } : { via: "none" };
+}
+
+/** A person decides (risky comments, reconnects): `person` if known, else the default person or the Cockpit owner. */
+export async function personAssignee(ctx: PluginContext, companyId: string, person?: string | null): Promise<string | undefined> {
+  return person ?? (await fallbackPerson(ctx, companyId));
+}
 
 const INACTIVE_AGENT = new Set(["paused", "terminated", "pending_approval", "archived", "deleted"]);
 
@@ -83,7 +121,7 @@ export async function openPublishFailureIssue(
   },
 ): Promise<string | null> {
   const { companyId, post } = input;
-  const agent = await socialAgent(ctx, companyId);
+  const assignee = await socialAssignee(ctx, companyId, post.owner_user_id);
   const lines = input.failed.map(({ destination, account }) => {
     const who = account ? `${label(account.platform)} · ${account.display_name}` : `account ${destination.account_id}`;
     return `- **${who}**: ${destination.last_error ?? "failed"} (attempts: ${destination.attempts})`;
@@ -101,10 +139,11 @@ export async function openPublishFailureIssue(
     "> " + excerpt.replace(/\n/g, "\n> "),
     "",
     "What to do:",
-    "1. Read the error. Token or permission errors mean the account must be reconnected on the Social page (Accounts tab).",
-    "2. Content errors (too long, missing media, wrong format) need a fix: move the post back to draft, change the per-platform override, re-approve and schedule it.",
-    "3. Transient errors can be retried with the `retry-post` tool or the Retry button on the post.",
-    "Destinations that already published are never published again.",
+    "1. Read the error with `get-post`.",
+    "2. Token or permission errors: the account needs a person to sign in again (a one-time grant). The hourly token job opens a \"Reconnect …\" issue for them; check `list-connected-accounts` shows it as needs_reconnect. If no reconnect issue exists, ask once with `" + ASK_OWNER_TOOL + "` and the Social → Accounts link. Retry with `retry-post` once it is connected again.",
+    "3. Content errors (too long, missing media, wrong format): move the post back to draft, fix the per-platform override, and send it for review again; approval schedules it at its proposed time.",
+    "4. Transient errors (timeouts, rate limits, 5xx): `retry-post`.",
+    "Destinations that already published are never published again. Close this issue with what you did.",
   ].join("\n");
   try {
     const issue = await createWorkIssue(ctx, {
@@ -115,8 +154,8 @@ export async function openPublishFailureIssue(
       priority: "high",
       originKind: ORIGIN_KIND,
       originId: post.id,
-      assigneeAgentId: agent.active && agent.agentId ? agent.agentId : undefined,
-      assigneeUserId: agent.active ? undefined : post.owner_user_id ?? undefined,
+      assigneeAgentId: assignee.assigneeAgentId,
+      assigneeUserId: assignee.assigneeUserId,
       wakeReason: "Social post failed to publish",
     });
     return issue.id;
@@ -127,14 +166,8 @@ export async function openPublishFailureIssue(
 }
 
 export async function openReconnectIssue(ctx: PluginContext, companyId: string, account: AccountRow, reason: string): Promise<string | null> {
-  let assigneeUserId: string | undefined = account.created_by_user_id ?? undefined;
-  if (!assigneeUserId) {
-    try {
-      assigneeUserId = (await ctx.companies.get(companyId))?.defaultResponsibleUserId ?? undefined;
-    } catch {
-      assigneeUserId = undefined;
-    }
-  }
+  // Signing in again is a person's one-time grant: whoever connected it, else the default person or the Cockpit owner.
+  const assigneeUserId = await personAssignee(ctx, companyId, account.created_by_user_id);
   try {
     const issue = await createWorkIssue(ctx, {
       companyId,

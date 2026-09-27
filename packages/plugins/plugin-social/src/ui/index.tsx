@@ -17,6 +17,7 @@ import {
   ClientWorkspaceBar,
   EmptyState,
   FileText,
+  GetStarted,
   Inbox,
   LayoutDashboard,
   Megaphone,
@@ -30,6 +31,7 @@ import {
   TrendingUp,
   errorText,
   tokens,
+  usePluginSetupStatus,
 } from "@partnersinbiz/pib-plugin-ui";
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
@@ -38,6 +40,7 @@ import { platformLabel, Row } from "./parts.js";
 import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { GrowthTab } from "./growth.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
+import { RoutineSwitchOn, useWeeklyRoutine } from "./routine.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
@@ -73,10 +76,6 @@ const ACTION_KEYS = [
   "social.mark-inbox-read",
   "social.reply-inbox",
   "social.activate-agent",
-  "social.hire-options",
-  "social.start-hire",
-  "social.link-agent",
-  "social.unlink-agent",
   "social.correct-triage",
   "social.growth-load",
   "social.growth-update-program",
@@ -86,10 +85,11 @@ const ACTION_KEYS = [
   "social.growth-abandon-experiment",
   "social.growth-decide-change",
   "social.growth-retire-question",
+  "social.routine-report",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.hire-options", "social.growth-load"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.growth-load", "social.routine-report"]);
 
 type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "growth" | "media" | "feeds" | "templates";
 const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "growth", "media", "feeds", "templates"];
@@ -131,7 +131,10 @@ export function SocialPage({ context }: PluginPageProps) {
   }, [location.search]);
   const scope: ClientScope = useMemo(() => parseClientParam(scopeKey), [scopeKey]);
   const tab = tabFrom(location.search);
+  // Setup's "Switch it on" link for the weekly routine (own page only).
+  const wantsRoutineOn = !scopeKey && new URLSearchParams(location.search).get("routine") === "on";
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [setupKey, setSetupKey] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
   const [composer, setComposer] = useState<{ post: Post | null } | null>(null);
@@ -201,6 +204,16 @@ export function SocialPage({ context }: PluginPageProps) {
 
   const setTab = (id: TabId) => navigation.navigate(pagePath(id === "overview" ? "" : `tab=${id}`), { replace: true });
 
+  // Own page: "finish setting up" (the same checklist Setup shows) and the weekly routine's real state.
+  const setup = usePluginSetupStatus(PLUGIN_ID, !scopeKey && !off ? context.companyId : null, setupKey);
+  const routineRef = !scopeKey ? snapshot?.routine ?? null : null;
+  const weekly = useWeeklyRoutine({
+    routine: routineRef,
+    report: (params) => fnsRef.current["social.routine-report"]!(params),
+    onReported: () => setSetupKey((k) => k + 1),
+  });
+  const closeRoutinePrompt = () => navigation.navigate("/social", { replace: true });
+
   const posts = snapshot?.posts ?? [];
   const detail = detailId ? posts.find((p) => p.id === detailId) ?? null : null;
   const newItems = snapshot?.inbox.filter((i) => i.status === "new").length ?? 0;
@@ -223,7 +236,9 @@ export function SocialPage({ context }: PluginPageProps) {
     />
   ) : !snapshot ? <p style={{ margin: 0, fontSize: 13 }}>Loading…</p> : (
     <>
-      {tab !== "accounts" ? <SetupBanners snapshot={snapshot} /> : null}
+      {/* The overview shows the setup checklist (it covers the settings); other tabs keep the short banners. */}
+      {tab === "overview" && !scope ? <GetStarted status={setup} linkFor={(href) => ({ ...navigation.linkProps(href) })} moduleName="Social" /> : null}
+      {tab !== "accounts" && (tab !== "overview" || scope || !setup) ? <SetupBanners snapshot={snapshot} /> : null}
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -254,6 +269,21 @@ export function SocialPage({ context }: PluginPageProps) {
       ) : null}
       {detail && !composer ? (
         <PostDetail post={detail} snapshot={snapshot} run={run} onClose={() => setDetailId(null)} onEdit={(p) => setComposer({ post: p })} />
+      ) : null}
+      {wantsRoutineOn ? (
+        <RoutineSwitchOn
+          routine={routineRef}
+          info={weekly.info}
+          report={(params) => fnsRef.current["social.routine-report"]!(params)}
+          onClose={closeRoutinePrompt}
+          onSwitched={(info) => {
+            weekly.setInfo(info);
+            setSetupKey((k) => k + 1);
+            notify("Weekly plan switched on", "success", "Every Monday at 07:00 the Social agent drafts next week's posts for approval.");
+            closeRoutinePrompt();
+            refresh().catch(() => undefined);
+          }}
+        />
       ) : null}
       {pickerId ? (
         <PickerModal

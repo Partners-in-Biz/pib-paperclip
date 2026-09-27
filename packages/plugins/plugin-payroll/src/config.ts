@@ -57,17 +57,36 @@ export const instanceConfigSchema: JsonSchema = {
         from: { type: "string", title: "Send from (Mailbox address)", description: "Leave empty to use the company's default Mailbox account." },
         subject: { type: "string", title: "Subject", default: DEFAULT_PAYSLIP_SUBJECT },
         body: { type: "string", title: "Message", default: DEFAULT_PAYSLIP_BODY, description: "Placeholders: {{firstName}}, {{employer}}, {{period}}, {{payDate}}." },
-        sendOnLock: { type: "boolean", title: "Email payslips when a run is locked", default: false },
+        sendOnLock: {
+          type: "boolean",
+          title: "Email payslips when a run is locked",
+          description: "On: each employee with an email address gets their payslip through the Mailbox as soon as the run is locked, and when a payslip is made later. Off: a board member clicks Email payslips on the run.",
+          default: false,
+        },
       },
     },
     defaultPayDay: { type: "integer", title: "Default pay day of the month", default: 25, minimum: 1, maximum: 31 },
+    prepareDaysBefore: {
+      type: "integer",
+      title: "Start the pay run this many days before pay day",
+      description: "The Payroll Clerk (else the Operator or the owner) gets a \"Prepare pay run\" issue this many days before the monthly pay day, so there is time to approve it.",
+      default: 5,
+      minimum: 1,
+      maximum: 20,
+    },
     approval: {
       type: "object",
       title: "Approval",
       description: "Every pay run is approved by a board user who did not prepare it.",
       properties: {
-        defaultApproverUserId: { type: "string", title: "Default approver (user ID)" },
+        defaultApproverUserId: { type: "string", title: "Default approver (user ID)", description: "Easier: choose them by name on the Payroll page, under Pay runs → Who approves pay runs." },
         leaveApproverUserId: { type: "string", title: "Leave approver (user ID)", description: "Leave requests go to this person. Defaults to the pay run approver." },
+        lockOnApproval: {
+          type: "boolean",
+          title: "Lock on approval",
+          description: "On: when the approver approves (on the page or by marking the approval issue done), the run is locked at once as that same person: it posts to Accounting and the payslips are made. Off: a board member locks it as a separate step.",
+          default: true,
+        },
       },
     },
     sdlMode: {
@@ -99,8 +118,12 @@ export interface PayrollConfig {
   r2Configured: boolean;
   payslipEmail: { from: string | null; subject: string; body: string; sendOnLock: boolean };
   defaultPayDay: number;
+  /** Days before the monthly pay day that the "Prepare pay run" issue opens. */
+  prepareDaysBefore: number;
   defaultApproverUserId: string | null;
   leaveApproverUserId: string | null;
+  /** Approving also locks the run, as the same person (default on). */
+  lockOnApproval: boolean;
   sdlMode: SdlMode;
   etiRegistered: boolean;
   keyring(): Promise<TokenKeyring>;
@@ -136,6 +159,7 @@ export function payrollConfigFrom(ctx: PluginContext, companyId: string, raw: Re
   const r2Configured = Boolean(str(r2.accountId) && str(r2.bucket) && str(r2.accessKeyId) && hasValue(r2.secretAccessKey));
   const sdlMode = raw.sdlMode === "registered" || raw.sdlMode === "exempt" ? raw.sdlMode : "auto";
   const payDay = typeof raw.defaultPayDay === "number" && raw.defaultPayDay >= 1 && raw.defaultPayDay <= 31 ? Math.round(raw.defaultPayDay) : 25;
+  const prepareDays = typeof raw.prepareDaysBefore === "number" && raw.prepareDaysBefore >= 1 && raw.prepareDaysBefore <= 20 ? Math.round(raw.prepareDaysBefore) : 5;
   let keyringPromise: Promise<TokenKeyring> | null = null;
   return {
     companyId,
@@ -158,8 +182,10 @@ export function payrollConfigFrom(ctx: PluginContext, companyId: string, raw: Re
       sendOnLock: email.sendOnLock === true,
     },
     defaultPayDay: payDay,
+    prepareDaysBefore: prepareDays,
     defaultApproverUserId: str(approval.defaultApproverUserId),
     leaveApproverUserId: str(approval.leaveApproverUserId) ?? str(approval.defaultApproverUserId),
+    lockOnApproval: approval.lockOnApproval !== false,
     sdlMode,
     etiRegistered: raw.etiRegistered === true,
     keyring() {
@@ -182,7 +208,7 @@ export function payrollConfigFrom(ctx: PluginContext, companyId: string, raw: Re
       return keyringPromise;
     },
     async r2() {
-      if (!r2Configured) throw new Error("Private storage is not set up. Fill in the R2 section of the Payroll settings (use a private bucket).");
+      if (!r2Configured) throw new Error("Private storage is not set up yet. Fill in Private document storage in the Payroll settings.");
       const secretAccessKey = await secrets.require("r2.secretAccessKey", "R2 secret access key");
       return {
         accountId: str(r2.accountId)!,

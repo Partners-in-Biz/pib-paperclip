@@ -15,10 +15,8 @@ import {
   configSaved,
   correctDecision,
   createSkillSyncer,
-  createWorkIssue,
   listCrmClients,
   parseClientParam,
-  PIB_PLUGINS,
   redeliver,
   registerCrmProjection,
   registerModuleWatch,
@@ -26,25 +24,24 @@ import {
   rememberPluginUiBase,
   resolveCrmClient,
   retryOutbox,
-  reviewerAgentId,
-  reviewerBrief,
+  SETUP_EVENTS,
+  SETUP_PLUGIN,
   SETUP_STATUS_ROUTE,
   TAX_CODES,
   toolFail,
   toolOk,
   trackJob,
   type ClientRef,
+  type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
+import { backpostTotal, postMissingJournals } from "./backpost.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
-import { customerCredit, invoiceBalance, invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
+import { asAtDate, customerCredit, invoiceBalance, invoiceBalances, iso, refreshAsAtStatuses, statusAsAtToday, type InvoiceBalance } from "./balances.js";
 import { BANK_MATCHED_EVENT } from "./bank.js";
 import {
-  anthropicConfig,
   billingSettings,
-  dunningStages,
   emailEnabled,
   expenseCategories,
-  jevFor,
   ledgerEnabled,
   loadBilling,
   privateR2,
@@ -75,7 +72,7 @@ import { createCreditNoteAction, creditNotePdf, publicCreditNote, sendCreditNote
 import {
   asObject,
   billingCompanyIds,
-  customerInvoiceBalances,
+  customerLastPaidAt,
   dueRecurring,
   getExpense,
   getInvoice,
@@ -92,14 +89,14 @@ import {
   markOverdue,
   paymentsForInvoice,
   saveRecurring,
-  saveTotalsAndStatus,
   table,
   type InvoiceRow,
 } from "./db.js";
-import { clientBillingSummary, assertAgentMaySend, assertFrequency, assertTaxRate, BillingError, buildInvoiceHtml, canSeeInvoice, type ClientSummary } from "./domain.js";
-import { claimReminder, plannedReminders, reminderVars, setReminderStatus } from "./dunning.js";
-import { docFileName, renderDocument } from "./documents.js";
+import { clientBillingSummary, assertFrequency, assertTaxRate, BillingError, buildInvoiceHtml, canSeeInvoice, QUOTE_STATUSES, type ClientSummary } from "./domain.js";
+import { plannedReminders, runDunningFor } from "./dunning.js";
+import { DEAL_WON_EVENT, onDealWon, syncDraftsDigest, syncOverdueDigest } from "./followups.js";
 import { refreshDailyRates } from "./fx.js";
+import { reemitHandoffs } from "./handoff.js";
 import { markFailedDeliveries, MAIL_RECEIVED_EVENT, MAIL_RESULT_EVENT, onBankMatchedEvent, onIssueUpdated, onLedgerPostResult, onMailReceived, onMailResult } from "./inbound.js";
 import {
   addLine,
@@ -134,22 +131,34 @@ import {
   updateQuote,
   updateQuoteLine,
 } from "./invoices.js";
-import { deliveriesFor, failStaleDeliveries, parseAddresses, queueMail, reminderEmail } from "./mail.js";
+import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { nextDocumentNumber } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
-import { confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
+import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
 import { buildReports } from "./reporting.js";
+import {
+  openDecisionList,
+  requestCreditDecision,
+  requestInvoiceSend,
+  requestPayApproval,
+  requestPaymentCheck,
+  requestPaymentDecision,
+  requestQuoteSend,
+  requestReminderSend,
+  retitleSendApprovals,
+} from "./requests.js";
 import { createPlan, createSubscription, listRetainers, runSubscriptions, setSubscriptionStatus, updatePlan } from "./retainers.js";
+import { teamStatus } from "./routing.js";
 import { applyCustomerCredit, settle, writeOff } from "./settle.js";
 import { billingOn, knownCompanyIds, publishAllSetupStatus, setupStatus } from "./setup.js";
 import { SKILLS } from "./skills.js";
-import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject, assertOwnKey } from "./storage.js";
+import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
+import { openWorkIssues } from "./workissues.js";
 import {
   actorLabel,
-  dayOf,
   errorMessage,
   integer,
   isoOrNull,
@@ -181,8 +190,8 @@ const ACTIONS: Record<string, Handler> = {
   "billing.remove-line": removeLine,
   "billing.update-invoice": updateInvoice,
   "billing.invoice-detail": (ctx, context, params) => invoiceDetail(ctx, context, params),
-  "billing.request-send": (ctx, context, params) => requestDecision(ctx, context, params, "send"),
-  "billing.request-pay": (ctx, context, params) => requestDecision(ctx, context, params, "pay"),
+  "billing.request-send": requestInvoiceSend,
+  "billing.request-pay": requestPayApproval,
   "billing.mark-sent": markSentAction,
   "billing.retry-send": retrySend,
   "billing.cancel-invoice": cancelInvoice,
@@ -194,7 +203,10 @@ const ACTIONS: Record<string, Handler> = {
   "billing.update-quote": updateQuote,
   "billing.quote-detail": (ctx, context, params) => quoteDetail(ctx, context, params),
   "billing.set-quote-status": setQuoteStatus,
-  "billing.request-quote-send": (ctx, context, params) => requestQuoteSend(ctx, context, params),
+  "billing.request-quote-send": requestQuoteSend,
+  "billing.list-quotes": (ctx, context, params) => listQuotesAction(ctx, context, params),
+  "billing.request-payment-check": requestPaymentCheck,
+  "billing.request-reminder-send": (ctx, context, params) => requestReminderSend(ctx, context, params),
   "billing.convert-quote": convertQuote,
   "billing.create-expense": createExpenseAction,
   "billing.update-expense": updateExpense,
@@ -212,10 +224,11 @@ const ACTIONS: Record<string, Handler> = {
   "billing.pause-recurring": (ctx, context, params) => setRecurringActive(ctx, context, params, false),
   "billing.resume-recurring": (ctx, context, params) => setRecurringActive(ctx, context, params, true),
   "billing.update-recurring": (ctx, context, params) => updateRecurring(ctx, context, params),
-  "billing.record-payment": (ctx, context, params) => recordPayment(ctx, context, params),
+  // Money guard: an agent never records money; it asks a person on a decision issue. People act directly.
+  "billing.record-payment": (ctx, context, params) => (context.actor.type === "agent" ? requestPaymentDecision(ctx, context, params) : recordPayment(ctx, context, params)),
   "billing.invoice-payments": (ctx, context, params) => invoicePayments(ctx, context, params),
   "billing.set-invoice-tax": (ctx, context, params) => setInvoiceTax(ctx, context, params, assertTaxRate(params.taxRate)),
-  "billing.create-credit-note": createCreditNoteAction,
+  "billing.create-credit-note": (ctx, context, params) => (context.actor.type === "agent" ? requestCreditDecision(ctx, context, params) : createCreditNoteAction(ctx, context, params)),
   "billing.list-credit-notes": (ctx, context) => listCreditNotesAction(ctx, context),
   "billing.credit-note-pdf": creditNotePdf,
   "billing.send-credit-note": sendCreditNote,
@@ -250,14 +263,14 @@ const ACTIONS: Record<string, Handler> = {
       reference: optionalString(params, "reference") ?? null,
       createdBy,
     }, await billingSettings(ctx, companyId));
-    await closePopIssue(ctx, companyId, requiredString(params, "popId"));
+    await closePopIssues(ctx, companyId, [requiredString(params, "popId")]);
     return result;
   },
   "billing.reject-pop": async (ctx, context, params) => {
     const reviewedBy = requirePerson(context, "rejecting a proof of payment");
     const companyId = requiredCompany(context);
     const result = await rejectPop(ctx, { companyId, popId: requiredString(params, "popId"), reason: optionalString(params, "reason") ?? null, reviewedBy });
-    await closePopIssue(ctx, companyId, requiredString(params, "popId"), "cancelled");
+    await closePopIssues(ctx, companyId, [requiredString(params, "popId")], "cancelled");
     return result;
   },
   "billing.pop-file": async (ctx, context, params) => {
@@ -348,6 +361,9 @@ const plugin = definePlugin({
     ctx.jobs.register("emit-open-items-all", () => trackJob(ctx, "emit-open-items-all", () => emitOpenItemsJob(ctx, null)));
     ctx.jobs.register("dunning", () => trackJob(ctx, "dunning", () => dunningJob(ctx)));
     ctx.jobs.register("fx-rates", () => trackJob(ctx, "fx-rates", () => fxJob(ctx)));
+    ctx.jobs.register("drafts-to-send", () => trackJob(ctx, "drafts-to-send", () => draftsJob(ctx)));
+    ctx.jobs.register("overdue-invoices", () => trackJob(ctx, "overdue-invoices", () => overdueJob(ctx)));
+    ctx.jobs.register("post-missing-journals", () => trackJob(ctx, "post-missing-journals", () => backpostJob(ctx)));
 
     const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
       try {
@@ -357,12 +373,15 @@ const plugin = definePlugin({
         throw error;
       }
     };
-    ctx.events.on("issue.updated", guard("issue update", (event) => onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType)));
+    ctx.events.on("issue.updated", guard("issue update", (event) => onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType, event.actorId)));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on(MAIL_RESULT_EVENT, guard("mail result", (event) => onMailResult(ctx, event)));
     ctx.events.on(MAIL_RECEIVED_EVENT, guard("inbound mail", (event) => onMailReceived(ctx, event)));
     ctx.events.on(LEDGER_RESULT_EVENT, guard("ledger result", (event) => onLedgerPostResult(ctx, event)));
     ctx.events.on(BANK_MATCHED_EVENT, guard("bank match", (event) => onBankMatchedEvent(ctx, event)));
+    ctx.events.on(DEAL_WON_EVENT, guard("deal won", (event) => onDealWon(ctx, event)));
+    // After registerModuleWatch (handlers run in order): Accounting switched on → post the journals it missed.
+    ctx.events.on(`plugin.${SETUP_PLUGIN}.${SETUP_EVENTS.modulesUpdated}`, guard("module switch", (event) => onModulesUpdated(ctx, event)));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
@@ -384,31 +403,46 @@ runWorker(plugin, import.meta.url);
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
-const TOOL_ACTIONS: Record<string, { action: string; message: string; person?: boolean }> = {
-  "create-invoice": { action: "billing.create-invoice", message: "Draft invoice created" },
+type ToolMessage = string | ((data: Record<string, unknown>) => string);
+
+/** Tool name → action handler and the one-line result for the agent. */
+const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
+  "create-invoice": { action: "billing.create-invoice", message: "Draft invoice created. Add lines, then request-invoice-send." },
   "add-line": { action: "billing.add-line", message: "Invoice line added" },
   "update-line": { action: "billing.update-line", message: "Invoice line changed" },
   "remove-line": { action: "billing.remove-line", message: "Invoice line removed" },
   "update-invoice": { action: "billing.update-invoice", message: "Invoice changed" },
   "invoice-detail": { action: "billing.invoice-detail", message: "Invoice loaded" },
-  "create-quote": { action: "billing.create-quote", message: "Draft quote created" },
-  "add-quote-line": { action: "billing.add-quote-line", message: "Quote line added" },
-  "convert-quote": { action: "billing.convert-quote", message: "Quote converted to invoice" },
-  "set-quote-status": { action: "billing.set-quote-status", message: "Quote status changed" },
-  "create-expense": { action: "billing.create-expense", message: "Expense recorded" },
+  "list-open-invoices": { action: "billing.open-invoices", message: "Open invoices listed" },
+  "request-invoice-send": { action: "billing.request-send", message: (d) => (d.already ? "A send approval is already open for this invoice" : "Send approval issue opened for a person") },
   "invoice-html": { action: "billing.invoice-html", message: "Invoice HTML generated" },
+  "set-invoice-tax": { action: "billing.set-invoice-tax", message: "Invoice tax set" },
+  "invoice-payments": { action: "billing.invoice-payments", message: "Payments listed" },
+  "create-quote": { action: "billing.create-quote", message: "Draft quote created. Add lines, then request-quote-send." },
+  "add-quote-line": { action: "billing.add-quote-line", message: "Quote line added" },
+  "remove-quote-line": { action: "billing.remove-quote-line", message: "Quote line removed" },
+  "update-quote": { action: "billing.update-quote", message: "Quote changed" },
+  "quote-detail": { action: "billing.quote-detail", message: "Quote loaded" },
+  "list-quotes": { action: "billing.list-quotes", message: "Quotes listed" },
+  "request-quote-send": { action: "billing.request-quote-send", message: (d) => (d.already ? "A send approval is already open for this quote" : "Send approval issue opened for a person") },
+  "set-quote-status": { action: "billing.set-quote-status", message: (d) => (d.status === "accepted" ? "Quote accepted (the CRM is told). Next: convert-quote." : "Quote status changed") },
+  "convert-quote": { action: "billing.convert-quote", message: "Quote converted to a draft invoice. Check it, then request-invoice-send." },
+  "quote-html": { action: "billing.quote-html", message: "Quote HTML generated" },
+  "request-payment-check": { action: "billing.request-payment-check", message: (d) => (d.already ? "A payment check is already open for this invoice; your note was added" : "Payment check opened for a person") },
+  "record-payment": { action: "billing.record-payment", message: (d) => (d.recorded ? "This payment is already recorded" : d.already ? "A person is already asked to record this payment" : "Asked a person to record the payment (decision issue)") },
+  "create-credit-note": { action: "billing.create-credit-note", message: (d) => (d.already ? "A person is already asked for this credit note" : "Asked a person to issue the credit note (decision issue)") },
+  "list-credit-notes": { action: "billing.list-credit-notes", message: "Credit notes listed" },
+  "customer-credit": { action: "billing.customer-credit", message: "Customer credit listed" },
+  "list-proofs-of-payment": { action: "billing.pops", message: "Proofs of payment listed" },
+  "request-reminder-send": { action: "billing.request-reminder-send", message: (d) => (d.already ? "A reminder approval is already open for this invoice" : "Reminder approval issue opened for a person") },
   "create-recurring-invoice": { action: "billing.create-recurring", message: "Recurring invoice scheduled" },
   "list-recurring-invoices": { action: "billing.list-recurring", message: "Recurring invoices listed" },
   "pause-recurring-invoice": { action: "billing.pause-recurring", message: "Recurring invoice paused" },
   "resume-recurring-invoice": { action: "billing.resume-recurring", message: "Recurring invoice resumed" },
-  "record-payment": { action: "billing.record-payment", message: "Payment recorded" },
-  "invoice-payments": { action: "billing.invoice-payments", message: "Payments listed" },
-  "set-invoice-tax": { action: "billing.set-invoice-tax", message: "Invoice tax set" },
-  "quote-html": { action: "billing.quote-html", message: "Quote HTML generated" },
-  "create-credit-note": { action: "billing.create-credit-note", message: "Credit note created" },
-  "list-credit-notes": { action: "billing.list-credit-notes", message: "Credit notes listed" },
-  "list-open-invoices": { action: "billing.open-invoices", message: "Open invoices listed" },
-  "list-proofs-of-payment": { action: "billing.pops", message: "Proofs of payment listed" },
+  "create-retainer-plan": { action: "billing.create-plan", message: "Retainer plan created" },
+  "create-subscription": { action: "billing.create-subscription", message: "Retainer subscription created" },
+  "list-retainers": { action: "billing.retainers", message: "Retainers listed" },
+  "create-expense": { action: "billing.create-expense", message: "Expense recorded" },
   "create-bill": { action: "billing.create-bill", message: "Draft bill created" },
   "add-bill-line": { action: "billing.add-bill-line", message: "Bill line added" },
   "request-bill-approval": { action: "billing.request-bill-approval", message: "Bill approval issue opened" },
@@ -418,11 +452,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: string; person?: b
   "log-time": { action: "billing.log-time", message: "Time logged" },
   "list-time-entries": { action: "billing.list-time", message: "Time entries listed" },
   "bill-time": { action: "billing.bill-time", message: "Time added to the invoice" },
-  "create-retainer-plan": { action: "billing.create-plan", message: "Retainer plan created" },
-  "create-subscription": { action: "billing.create-subscription", message: "Retainer subscription created" },
-  "list-retainers": { action: "billing.retainers", message: "Retainers listed" },
   "billing-report": { action: "billing.reports", message: "Billing reports built" },
-  "customer-credit": { action: "billing.customer-credit", message: "Customer credit listed" },
 };
 
 ACTIONS["billing.open-invoices"] = async (ctx, context, params) => {
@@ -440,7 +470,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     const entry = TOOL_ACTIONS[name];
     const handler = entry ? ACTIONS[entry.action] : undefined;
     if (!entry || !handler) return toolFail("Unknown billing tool");
-    return toolOk(entry.message, await handler(ctx, toolContext(run), body));
+    const result = toolOk("", await handler(ctx, toolContext(run), body));
+    return { ...result, content: typeof entry.message === "function" ? entry.message(result.data) : entry.message };
   } catch (error) {
     return toolFail(error instanceof Error ? error.message : "Billing tool failed");
   }
@@ -448,14 +479,17 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 // ── Page snapshot ──────────────────────────────────────────────────────────
 
+/** An invoice with its balance as at today (a payment dated after today is left out, shown apart and flagged). */
 export function balanceOut(balance: InvoiceBalance) {
   return {
     ...publicInvoice(balance.invoice),
+    status: statusAsAtToday(balance),
     paidMinor: balance.state.paidMinor,
     creditedMinor: balance.state.creditedMinor,
     writtenOffMinor: balance.state.writtenOffMinor,
     outstandingMinor: balance.outstandingMinor,
     pendingPops: balance.state.pendingPops,
+    ...(balance.futurePayments > 0 ? { futurePaidMinor: balance.futurePaidMinor, futurePayments: balance.futurePayments, nextFuturePaidAt: balance.nextFuturePaidAt } : {}),
   };
 }
 
@@ -494,6 +528,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   // The page reports /_plugins/<installation uuid>/ui/ so Setup can link to the settings page.
   await rememberPluginUiBase(ctx, params.uiBase);
   const scope = readClientScope(params) ?? null;
+  // Statuses follow "as at today" before anything is read (usually nothing to change).
+  await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
   const invoices = await listInvoices(ctx, companyId, scope);
   const own = await invoiceBalances(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {});
   const byId = new Map(own.map((b) => [b.invoice.id, b]));
@@ -523,12 +559,25 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const optedOut = scope
     ? (await ctx.db.query(`SELECT 1 AS x FROM ${table(ctx, "dunning_optouts")} WHERE company_id = $1 AND customer_kind = $2 AND customer_ref = $3`, [companyId, scope.kind, scope.id])).length > 0
     : false;
+  // What waits on a person (money decisions and reminder approvals), and Billing's standing issues for the Account Manager.
+  const invoiceClient = new Map(own.map((b) => [b.invoice.id, `${b.invoice.customer_kind}:${b.invoice.customer_ref}`]));
+  const scopeKey = scope ? `${scope.kind}:${scope.id}` : null;
+  const decisions = (await openDecisionList(ctx, companyId).catch(() => []))
+    .filter((d) => !scopeKey || (d.invoiceId != null && invoiceClient.get(d.invoiceId) === scopeKey));
+  const workIssues = scope ? [] : (await openWorkIssues(ctx, companyId).catch(() => [])).map((w) => ({ kind: w.kind, issueId: w.issue_id, subjectId: w.subject_id }));
+  // Payments dated after today: in no total until their day; a person checks the date.
+  const futurePayments = own
+    .filter((b) => b.futurePayments > 0)
+    .map((b) => ({ invoiceId: b.invoice.id, number: b.invoice.number, customerName: customerNameOf(b.invoice.customer_snapshot ?? b.invoice.customer) ?? b.invoice.customer_ref, amountMinor: b.futurePaidMinor, currency: b.invoice.currency, paidAt: b.nextFuturePaidAt, count: b.futurePayments }));
   return {
+    asOf: asAtDate(),
+    futurePayments,
     settingsSaved: Object.keys(settings).length > 0,
     defaults: {
       currency: settings.defaultCurrency ?? "ZAR",
       taxRate: Number(settings.defaultTaxRate ?? 0),
-      taxCode: settings.defaultTaxCode ?? null,
+      // The code new lines get (out of scope when "VAT registered" is off).
+      taxCode: settings.vatRegistered === false ? "za_out_of_scope" : settings.defaultTaxCode ?? null,
       senderName: String(asObject(settings.sender).name ?? "Partners in Biz"),
       pricesIncludeVat: Boolean(settings.pricesIncludeVat),
       reportingCurrency: reportingCurrency(settings),
@@ -559,6 +608,9 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     retainers,
     customerCredit: scope ? await customerCredit(ctx, companyId, scope.kind, scope.id) : [],
     dunningOptOut: optedOut,
+    decisions,
+    workIssues,
+    team: await teamStatus(ctx, companyId).catch(() => null),
   };
 }
 
@@ -659,93 +711,15 @@ async function quoteDetail(ctx: PluginContext, context: PluginPerformActionConte
   };
 }
 
-// ── Approvals ──────────────────────────────────────────────────────────────
-
-async function requestDecision(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, action: "send" | "pay") {
-  if (context.actor.type === "agent") assertAgentMaySend();
+/** Quotes for an agent: optionally one client, status or deal. */
+async function listQuotesAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
-  const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
-  if (action === "send" && invoice.status !== "draft") throw new BillingError("Only a draft invoice can be sent");
-  if (action === "send" && invoice.delivery_status === "queued") throw new BillingError("This invoice is already being sent");
-  if (action === "send" && Number(invoice.total_minor) <= 0) throw new BillingError("Add a line before sending the invoice");
-  const balance = await invoiceBalance(ctx, invoice.id);
-  if (action === "pay" && (!balance || balance.outstandingMinor <= 0 || invoice.status === "draft")) {
-    throw new BillingError("This invoice cannot be marked paid");
-  }
-  const { settings } = await loadBilling(ctx, companyId);
-  if (action === "send" && "sendTo" in params) {
-    await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET send_to = $2::jsonb WHERE id = $1`, [invoice.id, JSON.stringify(parseAddresses(params.sendTo))]);
-    invoice.send_to = parseAddresses(params.sendTo);
-  }
-  const recipients = action === "send" && emailEnabled(settings) ? await recipientsFor(ctx, companyId, invoice) : [];
-  const amount = balance ? balance.outstandingMinor : Number(invoice.total_minor);
-  const money = new Intl.NumberFormat("en-ZA", { style: "currency", currency: invoice.currency }).format(amount / 100);
-  // Sending is outward-facing: the Reviewer checks it first when the company has one. Money (pay) goes straight to the person.
-  const reviewer = action === "send" ? await reviewerAgentId(ctx, invoice.company_id) : null;
-  const description = action === "send"
-      ? recipients.length
-        ? `Open invoice ${invoice.number} on the Billing page and check it. Mark this issue done to email it (with the PDF) to ${recipients.map((r) => r.email).join(", ")} from the Mailbox. The plugin records it as sent when the email goes out, and freezes the sender and customer details.`
-        : `Open invoice ${invoice.number} on the Billing page and check it. There is no email address for this customer${emailEnabled(settings) ? "" : " (email is off in settings)"}, so mark this issue done after you have sent it yourself. The plugin then records it as sent and freezes the sender and customer details.`
-      : `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`;
-  const issue = await createWorkIssue(ctx, {
-    companyId: invoice.company_id,
-    title: action === "send" ? `Approve sending invoice ${invoice.number}` : `Approve payment of invoice ${invoice.number}`,
-    description: reviewer ? `${description}\n${sendReviewBrief(`invoice ${invoice.number} before it is emailed`, recipients.length > 0, settings.reviewerUserId)}` : description,
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
-    ...approvalAssignee(reviewer, settings.reviewerUserId),
-  });
-  invoice.approval_issue_id = issue.id;
-  invoice.pending_action = action;
-  await saveTotalsAndStatus(ctx, invoice);
-  return { invoiceId: invoice.id, issueId: issue.id, pendingAction: action, recipients };
-}
-
-async function requestQuoteSend(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  if (context.actor.type === "agent") assertAgentMaySend();
-  const companyId = requiredCompany(context);
-  const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
-  if (quote.status !== "draft" && quote.status !== "sent") throw new BillingError("Only a draft or sent quote can be emailed");
-  if (Number(quote.total_minor) <= 0) throw new BillingError("Add a line before sending the quote");
-  const { settings } = await loadBilling(ctx, companyId);
-  const recipients = emailEnabled(settings) ? await recipientsFor(ctx, companyId, quote) : [];
-  const reviewer = await reviewerAgentId(ctx, companyId);
-  const description = recipients.length
-    ? `Check quote ${quote.number} on the Billing page, then mark this issue done to email it (with the PDF) to ${recipients.map((r) => r.email).join(", ")}.`
-    : `Check quote ${quote.number} on the Billing page. There is no email address for this customer, so mark this issue done after you have sent it yourself.`;
-  const issue = await createWorkIssue(ctx, {
-    companyId,
-    title: `Approve sending quote ${quote.number}`,
-    description: reviewer ? `${description}\n${sendReviewBrief(`quote ${quote.number} before it is emailed`, recipients.length > 0, settings.reviewerUserId)}` : description,
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: quote.id,
-    ...approvalAssignee(reviewer, settings.reviewerUserId),
-  });
-  await ctx.db.execute(`UPDATE ${table(ctx, "quotes")} SET approval_issue_id = $2, pending_action = 'send', updated_at = now() WHERE id = $1`, [quote.id, issue.id]);
-  return { quoteId: quote.id, issueId: issue.id, recipients };
-}
-
-/** Reviewer agent first when set; otherwise the person who checks payments (unchanged). */
-export function approvalAssignee(reviewer: string | null, personId: string | null | undefined): { assigneeAgentId?: string; assigneeUserId?: string } {
-  if (reviewer) return { assigneeAgentId: reviewer };
-  return personId ? { assigneeUserId: personId } : {};
-}
-
-/** What the Reviewer checks on an invoice, quote or statement before a person approves sending it. */
-export function sendReviewBrief(what: string, emailed: boolean, personId: string | null | undefined): string {
-  return reviewerBrief({
-    what,
-    checks: [
-      "Customer and amounts: the right customer, lines, quantities and prices match the work or agreement.",
-      "VAT: the right VAT code on each line, and the document is a Tax invoice only when your VAT number is set.",
-      "Due date (or valid-until date) is correct for this customer.",
-      "Bank details: account name, number and branch code on the document match your EFT details.",
-      "PDF attached: the Billing page shows the document and it renders correctly.",
-      emailed ? "Email wording: subject and message are plain, polite and name the right document." : "No email address: the person sends it themselves.",
-      emailed ? "Recipients: the addresses listed above belong to this customer." : "Recipients: add the customer's billing email in the CRM if one should exist.",
-    ],
-    handTo: personId ? { userId: personId, label: `the person who checks payments (user ${personId})` } : { label: "a board member (leave it unassigned for the board)" },
-  });
+  const scope = readClientScope(params) ?? null;
+  const status = optionalString(params, "status");
+  if (status && !(QUOTE_STATUSES as readonly string[]).includes(status)) throw new BillingError(`status is one of ${QUOTE_STATUSES.join(", ")}`);
+  const dealId = optionalString(params, "dealId");
+  const rows = (await listQuotes(ctx, companyId, scope)).filter((quote) => (!status || quote.status === status) && (!dealId || quote.deal_id === dealId));
+  return rows.slice(0, 100).map(publicQuote);
 }
 
 // ── Payments ───────────────────────────────────────────────────────────────
@@ -766,7 +740,7 @@ async function recordPayment(ctx: PluginContext, context: PluginPerformActionCon
     paidAt: optionalString(params, "paidAt") ?? null,
     createdBy: actorLabel(context),
   }, await billingSettings(ctx, companyId));
-  for (const popId of result.confirmedPopIds) await closePopIssue(ctx, companyId, popId);
+  await closePopIssues(ctx, companyId, result.confirmedPopIds);
   return {
     id: result.paymentId,
     invoiceId: invoice.id,
@@ -819,17 +793,6 @@ async function registerPop(ctx: PluginContext, context: PluginPerformActionConte
     createdBy: actorLabel(context),
   }, settings);
   return recorded;
-}
-
-async function closePopIssue(ctx: PluginContext, companyId: string, popId: string, status: "done" | "cancelled" = "done") {
-  const pop = await getPop(ctx, popId);
-  if (!pop?.issue_id) return;
-  await ctx.db.execute(`UPDATE ${table(ctx, "decision_issues")} SET status = 'resolved', resolved_at = now() WHERE issue_id = $1 AND status = 'open'`, [pop.issue_id]);
-  try {
-    await ctx.issues.update(pop.issue_id, { status }, companyId);
-  } catch (error) {
-    ctx.logger.info("Could not close the POP issue", { popId, error: errorMessage(error) });
-  }
 }
 
 // ── Printable HTML (0.2 tools) ─────────────────────────────────────────────
@@ -1012,12 +975,16 @@ async function listCreditNotesAction(ctx: PluginContext, context: PluginPerformA
 
 // ── Reports ────────────────────────────────────────────────────────────────
 
+/** Reports "as at" `to` (default today, and never after today). With `client`, one customer's figures (the client workspace). */
 async function reportsAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
-  const to = optionalString(params, "to") ?? new Date().toISOString().slice(0, 10);
+  const today = asAtDate();
+  const asked = optionalString(params, "to") ?? today;
+  const to = asked > today ? today : asked;
   const from = optionalString(params, "from") ?? `${new Date(Date.UTC(new Date(to).getUTCFullYear(), new Date(to).getUTCMonth() - 11, 1)).toISOString().slice(0, 7)}-01`;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new BillingError("from and to must be dates (YYYY-MM-DD)");
-  return buildReports(ctx, companyId, await billingSettings(ctx, companyId), { from, to });
+  const scope = readClientScope(params) ?? null;
+  return { asOf: to, ...(await buildReports(ctx, companyId, await billingSettings(ctx, companyId), { from, to }, new Date(), scope)) };
 }
 
 // ── Dunning ────────────────────────────────────────────────────────────────
@@ -1063,64 +1030,6 @@ async function setDunningOptOut(ctx: PluginContext, context: PluginPerformAction
   return { client: scope, optOut };
 }
 
-/** Send today's reminders for one company. `force` runs even when the schedule is off (a person pressed "Send now"). */
-async function runDunningFor(ctx: PluginContext, companyId: string, force = false) {
-  const { settings, resolver } = await loadBilling(ctx, companyId);
-  if (!force && settings.dunning?.enabled !== true) return { sent: 0, skipped: 0, reason: "Reminders are off" };
-  if (!emailEnabled(settings)) return { sent: 0, skipped: 0, reason: "Email is off" };
-  const { stages, balances, plans } = await plannedReminders(ctx, companyId, settings);
-  const byId = new Map(balances.map((b) => [b.invoice.id, b]));
-  const r2 = settings.dunning?.attachInvoice === false ? null : await privateR2(resolver, settings).catch(() => null);
-  let sent = 0;
-  let skipped = 0;
-  for (const plan of plans) {
-    const balance = byId.get(plan.invoiceId);
-    const stage = stages[plan.stage];
-    if (!balance || !stage) continue;
-    const reminderId = await claimReminder(ctx, companyId, plan);
-    if (!reminderId) continue;
-    try {
-      const to = await recipientsFor(ctx, companyId, balance.invoice);
-      if (to.length === 0) {
-        await setReminderStatus(ctx, reminderId, "skipped", { error: "No email address for this customer" });
-        skipped += 1;
-        continue;
-      }
-      const vars = reminderVars(balance, plan.daysOverdue, settings);
-      const payment = asObject(asObject(balance.invoice.sender_snapshot).payment ?? settings.payment ?? {});
-      const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, balance.invoice.number);
-      let attachments: Array<{ url: string; filename: string; mime: string; bytes: number }> = [];
-      if (r2) {
-        const view = await invoiceView(ctx, balance.invoice, settings);
-        const bytes = await renderDocument(view);
-        const filename = docFileName(view);
-        const key = documentKey(r2, companyId, "invoice", filename, "pdf");
-        await putObject(r2, key, bytes, "application/pdf");
-        attachments = [{ url: presignGet(r2, key, MAIL_LINK_SECONDS, filename), filename, mime: "application/pdf", bytes: bytes.byteLength }];
-      }
-      const deliveryKey = await queueMail(ctx, companyId, {
-        kind: "reminder",
-        docId: balance.invoice.id,
-        seq: plan.stage + 1,
-        to,
-        cc: parseAddresses(settings.email?.cc ?? ""),
-        from: settings.email?.from?.trim() || null,
-        content,
-        attachments,
-        clientKind: balance.invoice.customer_kind,
-        clientRef: balance.invoice.customer_ref,
-        threadId: null,
-        createdBy: "dunning",
-      });
-      await setReminderStatus(ctx, reminderId, "queued", { deliveryKey });
-      sent += 1;
-    } catch (error) {
-      await setReminderStatus(ctx, reminderId, "failed", { error: errorMessage(error) });
-    }
-  }
-  return { sent, skipped };
-}
-
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
 /** Companies scheduled jobs work for: settings saved and the Billing module not switched off. */
@@ -1145,15 +1054,66 @@ function moduleCache(ctx: PluginContext): (companyId: string) => Promise<boolean
   };
 }
 
-/** Hourly: overdue invoices (not for companies with Billing off), then the setup status for the Setup plugin. */
+/** Hourly: overdue invoices (not for companies with Billing off), the setup status, the Cockpit numbers and recent hand-offs again. */
 async function markOverdueJob(ctx: PluginContext) {
   const off: string[] = [];
   for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
-    if (!(await billingOn(ctx, companyId))) off.push(companyId);
+    if (!(await billingOn(ctx, companyId))) {
+      off.push(companyId);
+      continue;
+    }
+    // "As at today": a payment dated in the future counts once its day comes (and an early "paid" is undone).
+    await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
+    await retitleSendApprovals(ctx, companyId).catch((error) => ctx.logger.info("Approval titles not synced", { companyId, error: errorMessage(error) }));
   }
   await markOverdue(ctx, off);
   await publishAllSetupStatus(ctx);
   await publishAllCockpit(ctx);
+  await reemitHandoffs(ctx).catch((error) => ctx.logger.info("Hand-off re-send skipped", { error: errorMessage(error) }));
+}
+
+/** Daily: the "Drafts to send" issue for each company, and the "Overdue invoices" issue kept current. */
+async function draftsJob(ctx: PluginContext) {
+  for (const companyId of await companiesWithSettings(ctx)) {
+    try {
+      await syncDraftsDigest(ctx, companyId);
+      await syncOverdueDigest(ctx, companyId, { weekly: false });
+    } catch (error) {
+      ctx.logger.info("Drafts to send skipped", { companyId, error: errorMessage(error) });
+    }
+  }
+}
+
+/** Weekly (Mondays): the "Overdue invoices" issue with the next step for each. */
+async function overdueJob(ctx: PluginContext) {
+  for (const companyId of await companiesWithSettings(ctx)) {
+    try {
+      await syncOverdueDigest(ctx, companyId, { weekly: true });
+    } catch (error) {
+      ctx.logger.info("Overdue invoices skipped", { companyId, error: errorMessage(error) });
+    }
+  }
+}
+
+/** Nightly: journals skipped while Accounting (or posting) was off. */
+async function backpostJob(ctx: PluginContext) {
+  for (const companyId of await companiesWithSettings(ctx)) {
+    try {
+      const counts = await postMissingJournals(ctx, companyId);
+      if (backpostTotal(counts) > 0) ctx.logger.info("Posted journals skipped while Accounting was off", { companyId, ...counts });
+    } catch (error) {
+      ctx.logger.info("Journal back-posting skipped", { companyId, error: errorMessage(error) });
+    }
+  }
+}
+
+/** Setup's module switches (re-sent hourly): with Accounting on, post what it missed. */
+async function onModulesUpdated(ctx: PluginContext, event: PluginEvent) {
+  const payload = event.payload as ModulesPayload | undefined;
+  const companyId = payload?.companyId ?? event.companyId;
+  if (!companyId || !payload?.modules || payload.modules.accounting === false) return;
+  const counts = await postMissingJournals(ctx, companyId);
+  if (backpostTotal(counts) > 0) ctx.logger.info("Accounting is on: posted the journals it missed", { companyId, ...counts });
 }
 
 async function redeliverJob(ctx: PluginContext) {
@@ -1221,25 +1181,35 @@ async function clientSummaryRoute(ctx: PluginContext, input: PluginApiRequestInp
   }
 }
 
+/**
+ * The CRM company page's Billing card: the same balances as the Billing
+ * page and the Cockpit, as at today (a payment dated after today is not
+ * counted yet).
+ */
 async function clientSummary(ctx: PluginContext, companyId: string, scope: ClientRef): Promise<ClientSummary> {
-  const [balances, quotes, settings] = await Promise.all([
-    customerInvoiceBalances(ctx, companyId, scope),
+  const [balances, quotes, settings, lastPaidAt] = await Promise.all([
+    invoiceBalances(ctx, companyId, { customerKind: scope.kind, customerRef: scope.id }),
     listQuotes(ctx, companyId, scope),
     billingSettings(ctx, companyId),
+    customerLastPaidAt(ctx, companyId, scope),
   ]);
+  const now = new Date();
   return clientBillingSummary({
-    invoices: balances.map((row) => ({
-      status: row.status,
-      currency: row.currency,
-      totalMinor: Number(row.total_minor),
-      paidMinor: Number(row.paid_minor ?? 0),
-      creditedMinor: Number(row.credited_minor ?? 0),
-      dueAt: isoOrNull(row.due_at),
-      lastPaidAt: isoOrNull(row.last_paid_at),
-    })),
+    invoices: balances
+      .filter((b) => b.invoice.status !== "cancelled")
+      .map((b, index) => ({
+        status: statusAsAtToday(b, now),
+        currency: b.invoice.currency,
+        totalMinor: Number(b.invoice.total_minor),
+        paidMinor: b.state.paidMinor,
+        creditedMinor: b.state.creditedMinor + b.state.writtenOffMinor,
+        dueAt: isoOrNull(b.invoice.due_at),
+        lastPaidAt: index === 0 ? lastPaidAt : null,
+      })),
     quotes: quotes.map((quote) => ({ status: quote.status })),
-    now: new Date(),
+    now,
     defaultCurrency: settings.defaultCurrency,
+    asOf: asAtDate(now),
   });
 }
 

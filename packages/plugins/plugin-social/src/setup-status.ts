@@ -6,14 +6,16 @@
  * Read-only: never creates a program, agent or routine.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { hireStatus, pluginUiBase, settingsItem, type SetupItem, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import { loadSocialConfig, type SocialConfig } from "./config.js";
 import { listAccounts } from "./db.js";
 import { GROWTH_CHANNEL } from "./growth/engine.js";
 import { sqlGrowthStore } from "./growth/sql.js";
-import { legacySocialAgent, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE } from "./hire.js";
+import { legacySocialAgent, SOCIAL_AGENT_NAME, SOCIAL_MATCH_ROLE } from "./hire.js";
 import manifest from "./manifest.js";
 import { ALL_PLATFORMS, NEEDS_APP_CREDENTIALS, PLAN_ROUTINE_KEY, PLATFORM_LABELS, PLUGIN_ID, type SocialPlatform } from "./platforms.js";
+import { routineReport } from "./routine-state.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet } from "./triage.js";
 
@@ -181,6 +183,54 @@ export function redirectItem(config: SocialConfig, uiBase: string | null): Setup
   };
 }
 
+/** Where a person switches the weekly routine on in one click: the Social page's switch-on prompt. */
+export const ROUTINE_SWITCH_ON_PATH = "/social?routine=on";
+
+/**
+ * The weekly routine counts as done only when it is active and its Monday
+ * trigger is on. The trigger state comes from the Social page (the worker
+ * cannot read triggers): unknown until someone opens the page. Pure.
+ */
+export function routineItem(input: {
+  ok: boolean;
+  error?: string | null;
+  routine: { id: string; status: string; assigneeAgentId?: string | null } | null;
+  /** From the page's last report; null when not reported yet. */
+  triggersOn: boolean | null;
+  agentLinked: boolean;
+}): SetupItem {
+  const r = input.routine;
+  const active = r?.status === "active";
+  const on = active && input.triggersOn === true;
+  const status: SetupItem["status"] = !input.ok ? "unknown" : on ? "done" : !r ? (input.agentLinked ? "missing" : "blocked") : active && input.triggersOn === null ? "unknown" : "missing";
+  const detail = !input.ok
+    ? `Could not check the routine: ${input.error ?? "unknown error"}`
+    : !r
+      ? "Created when the Social agent is linked."
+      : on
+        ? `On: every Monday 07:00 the agent reviews performance and drafts next week's posts${r.assigneeAgentId ? "" : " (not assigned to an agent yet)"}.`
+        : active && input.triggersOn === null
+          ? "Active, but its Monday trigger has not been checked yet. Open the Social page once: it checks the trigger itself."
+          : active
+            ? "Active, but its Monday 07:00 trigger is off, so it never runs."
+            : `The routine is ${r.status}, so the agent does not plan next week's posts.`;
+  return {
+    key: "routine",
+    title: `Turn on the weekly "${PLAN_ROUTINE_TITLE}" routine`,
+    status,
+    required: true,
+    detail,
+    href: !r ? "/routines" : on ? `/routines/${r.id}` : active && input.triggersOn === null ? "/social" : ROUTINE_SWITCH_ON_PATH,
+    hrefLabel: !r ? "Open Routines" : on ? "Open the routine" : active && input.triggersOn === null ? "Open Social" : "Switch it on",
+    steps: on || !r ? undefined : [
+      "Open the link and click **Switch on**: it sets the routine active and its Monday 07:00 trigger on.",
+      `Or open Routines → "${PLAN_ROUTINE_TITLE}", set it active and switch its schedule trigger on.`,
+    ],
+    blockedBy: !r && !input.agentLinked ? ["agent"] : undefined,
+    agentNext: "Every Monday the agent reviews performance and drafts next week's posts for approval.",
+  };
+}
+
 /** Everything a company still needs. Host calls that fail become `unknown` items. */
 export async function socialSetupStatus(ctx: PluginContext, companyId: string, now = new Date()): Promise<SetupStatus> {
   const config = await loadSocialConfig(ctx, companyId);
@@ -219,7 +269,7 @@ export async function socialSetupStatus(ctx: PluginContext, companyId: string, n
     agentNext: "The agent drafts posts for these accounts and works their inbox.",
   });
 
-  const hire = await attempt(ctx, "agent", () => hireStatus(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx)));
+  const hire = await attempt(ctx, "agent", () => hireStatus(ctx, companyId, SOCIAL_MATCH_ROLE, legacySocialAgent(ctx)));
   const agent = hire.ok ? hire.value.agent : null;
   const openHire = hire.ok && hire.value.hire?.status === "open" ? hire.value.hire : null;
   items.push({
@@ -232,13 +282,14 @@ export async function socialSetupStatus(ctx: PluginContext, companyId: string, n
       : agent
         ? `${agent.name || SOCIAL_AGENT_NAME} is the Social agent (${agent.status}).`
         : openHire
-          ? `The hire task ${openHire.identifier ?? openHire.title} is open. The agent is linked once it appears, or link one on the Social page.`
+          ? `The hire task ${openHire.identifier ?? openHire.title} is open. The agent is linked once it appears, or pick one in Setup → Team.`
           : `No ${SOCIAL_AGENT_NAME} yet. A hire task asks your hiring agent (or a person) to create one; the plugin links and wires it.`,
-    href: "/social",
-    hrefLabel: "Open Social",
+    // Staffed in Setup → Team (hire, pick, change, remove).
+    href: teamSetupPath("social"),
+    hrefLabel: "Open Team in Setup",
     steps: agent ? undefined : [
-      "Open Social and click \"Hire Social agent\" (or \"Use an existing agent\").",
-      "Assign the hire task to your hiring agent or a person.",
+      "Open Setup → Team → Social agent.",
+      "Hire one (a hire task for your hiring agent or a person), or pick an agent you already have.",
       "Approve and resume the new agent once it exists.",
     ],
     action: !agent && !openHire && hire.ok ? { plugin: PLUGIN_ID, key: "social.start-hire", params: {}, label: "Open a hire task" } : null,
@@ -247,40 +298,22 @@ export async function socialSetupStatus(ctx: PluginContext, companyId: string, n
 
   const routine = await attempt(ctx, "routine", () => ctx.routines.managed.get(PLAN_ROUTINE_KEY, companyId));
   const r = routine.ok ? routine.value.routine : null;
-  const active = r?.status === "active";
-  items.push({
-    key: "routine",
-    title: `Turn on the weekly "${PLAN_ROUTINE_TITLE}" routine`,
-    status: !routine.ok ? "unknown" : active ? "done" : !agent && !r ? "blocked" : "missing",
-    required: true,
-    detail: !routine.ok
-      ? `Could not check the routine: ${routine.error}`
-      : !r
-        ? "Created when the Social agent is linked."
-        : active
-          ? `Active${r.assigneeAgentId ? "" : " but not assigned to an agent"}. Make sure its Monday 07:00 trigger is enabled.`
-          : `The routine is ${r.status}. The agent plans next week's posts every Monday once it is active.`,
-    href: r ? `/routines/${r.id}` : "/routines",
-    hrefLabel: "Open the routine",
-    steps: active ? undefined : [
-      "Open Routines and pick \"" + PLAN_ROUTINE_TITLE + "\".",
-      "Set it to active and enable the Monday 07:00 trigger.",
-    ],
-    blockedBy: !agent && !r ? ["agent"] : undefined,
-    agentNext: "Every Monday the agent reviews performance and drafts next week's posts for approval.",
-  });
+  const report = r ? await routineReport(ctx, companyId, PLAN_ROUTINE_KEY, r.id) : null;
+  items.push(routineItem({ ok: routine.ok, error: routine.ok ? null : routine.error, routine: r, triggersOn: report ? report.triggersOn : null, agentLinked: Boolean(agent) }));
 
   const jev = jevKeySet(config.raw);
   items.push({
     key: "jev",
-    title: "Add a Jev key",
+    title: "Smart sorting key (optional)",
     status: jev ? "done" : "optional",
     required: false,
-    detail: jev ? "Inbox items are triaged and Growth Lab posts are tagged by Jev." : "Optional. With a Jev key, inbox items are triaged (spam, questions, escalations) and Growth Lab tags post features. Without it, built-in rules are used.",
+    detail: jev
+      ? "Smart sorting (Jev by TypeSafe) triages the inbox, reading context the built-in rules miss, and tags Growth Lab post features."
+      : "Optional. Without it, built-in keyword rules triage the inbox (leads, questions, complaints, spam and risky items), so leads, the reply queue and escalations already work. Smart sorting (Jev by TypeSafe) reads context better and also tags Growth Lab post features (hook, call to action, topic, tone and your own questions); without it only format, length and posting time are tagged.",
     href: settingsHref(uiBase),
     hrefLabel: "Open settings",
-    steps: jev ? undefined : settingsSteps(["Under Jev, pick the API key (a Paperclip secret) and keep it enabled."]),
-    agentNext: jev ? null : "Inbox triage and feature tagging start on the next runs.",
+    steps: jev ? undefined : settingsSteps(["Under **Smart sorting (Jev by TypeSafe)**, pick the API key (a Paperclip secret) and keep it switched on."]),
+    agentNext: jev ? null : "Smart sorting triages new inbox items and tags post features from the next runs.",
   });
 
   const program = await attempt(ctx, "growth program", () => sqlGrowthStore(ctx).findProgram(companyId, GROWTH_CHANNEL, null));

@@ -54,22 +54,23 @@ import {
 } from "./service/agent.js";
 import {
   acceptSuggestion,
+  bankAccountsView,
   categorise,
   excludeLine,
   importStatement,
+  importStatementTool,
   matchToJournal,
   matchToOpenItem,
   refreshSuggestions,
   saveBankAccount,
   saveRule,
-  setBookkeeperLookup,
   statementUploadUrl,
   undoLine,
 } from "./service/bank.js";
-import { ensureBook, loadChart, mapRole, roleGaps, saveAccount, setPeriod } from "./service/books.js";
+import { booksStartFor, ensureBook, loadChart, mapRole, roleGaps, saveAccount, setPeriod } from "./service/books.js";
 import { closeChecklist } from "./service/close.js";
 import { commentOn, errorMessage, issueStatus, ORIGIN, privateR2, readSettings, requireUser, newId, type Actor } from "./service/common.js";
-import { postCutover, previewCutover } from "./service/cutover.js";
+import { postCutover, previewCutover, skipCutover, undoSkipCutover } from "./service/cutover.js";
 import { fetchRates, revalueMonth } from "./service/fx.js";
 import {
   approveDraft,
@@ -83,9 +84,9 @@ import {
 import { dismissRejection, receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection, senderOf } from "./service/ledger.js";
 import { buildPack } from "./service/pack.js";
 import { publishStatusThrottled, setupStatus } from "./service/setup.js";
-import { approveReconciliation, onReconciliationIssue, prepareReconciliation, requestReconciliationApproval } from "./service/reconcile.js";
+import { approveReconciliation, onReconciliationIssue, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval } from "./service/reconcile.js";
 import { forecast, overview, runReport, trends } from "./service/reports.js";
-import { approveVatReturn, computeForPeriod, onVatIssue, prepareVatReturn, requestVatApproval, vatCsv, vatPeriods } from "./service/vat.js";
+import { approveVatReturn, computeForPeriod, onVatIssue, prepareVat201Tool, prepareVatReturn, requestVatApproval, vatCsv, vatPeriods } from "./service/vat.js";
 import { SKILLS } from "./skills.js";
 import { ACCOUNTING_TOOLS } from "./tools.js";
 import { vatPeriodFor } from "./domain/periods.js";
@@ -214,8 +215,11 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.periods": async (ctx, companyId) => {
     const stored = await db.listPeriods(ctx.db, companyId);
     const now = monthOf(todayIso());
-    const months = Array.from({ length: 18 }, (_, i) => addMonths(now, -i));
-    return { periods: months.map((m) => stored.find((s) => s.period === m) ?? { period: m, status: "open", changedBy: null, changedAt: null }) };
+    // Months before the books start are left out (the previous books kept them), unless one was closed or reopened here.
+    const books = await booksStartFor(ctx, companyId);
+    const first = books ? monthOf(books.date) : null;
+    const months = Array.from({ length: 18 }, (_, i) => addMonths(now, -i)).filter((m) => !first || m >= first || m === now || stored.some((s) => s.period === m));
+    return { periods: months.map((m) => stored.find((s) => s.period === m) ?? { period: m, status: "open", changedBy: null, changedAt: null }), booksStart: books?.date ?? null };
   },
   "accounting.set-period": (ctx, companyId, actor, p) => {
     requireUser(actor, "open or close a period");
@@ -260,7 +264,7 @@ const ACTIONS: Record<string, Handler> = {
   },
   "accounting.statement-upload-url": (ctx, companyId, _a, p) => statementUploadUrl(ctx, companyId, { fileName: p.fileName, bytes: p.bytes }),
   "accounting.import-statement": (ctx, companyId, actor, p) =>
-    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, fileName: p.fileName, format: p.format }),
+    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format }),
   "accounting.bank-lines": async (ctx, companyId, _a, p) => {
     const statuses = Array.isArray(p.statuses) ? p.statuses.map(String) : optStr(p, "status") ? [optStr(p, "status")!] : null;
     const lines = await db.listBankLines(ctx.db, companyId, { bankAccountId: optStr(p, "bankAccountId"), statuses, from: optStr(p, "from"), to: optStr(p, "to"), limit: Number(p.limit ?? 300) });
@@ -355,6 +359,9 @@ const ACTIONS: Record<string, Handler> = {
   // Cut-over and the accountant pack
   "accounting.cutover-preview": (ctx, companyId, _a, p) => previewCutover(ctx, companyId, { csv: p.csv }),
   "accounting.cutover-post": (ctx, companyId, actor, p) => postCutover(ctx, companyId, actor, { csv: p.csv, date: p.date, balanceToEquity: p.balanceToEquity }),
+  // "We started on these books" (board users only): no opening balances to bring over.
+  "accounting.skip-cutover": (ctx, companyId, actor) => skipCutover(ctx, companyId, actor),
+  "accounting.undo-skip-cutover": (ctx, companyId, actor) => undoSkipCutover(ctx, companyId, actor),
   "accounting.pack": (ctx, companyId, actor, p) => buildPack(ctx, companyId, actor, { from: p.from, to: p.to }),
   "accounting.decisions": async (ctx, companyId) => ({ stats: await decisionStats(ctx, companyId, 90) }),
 
@@ -396,7 +403,7 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.resync-agent": async (ctx, companyId, actor) => {
     const userId = requireUser(actor, "re-sync the Bookkeeper");
     const agent = await bookkeeper(ctx, companyId);
-    if (!agent) throw new AccountingError("No Bookkeeper is linked yet. Use Hire Bookkeeper, or Link agent to pick one that exists.");
+    if (!agent) throw new AccountingError("No Bookkeeper is linked yet. Hire one or pick an agent you already have in Setup → Team.");
     return wireAgent(ctx, companyId, agent.id, userId, syncSkills);
   },
   "accounting.sync-skills": async (_ctx, companyId, actor) => {
@@ -432,6 +439,14 @@ async function dispatchTool(ctx: PluginContext, name: string, p: Record<string, 
         roles: Object.fromEntries(chart.roles),
       };
     }
+    case "list-bank-accounts":
+      return bankAccountsView(ctx, companyId, p.includeInactive === true);
+    case "import-statement":
+      return importStatementTool(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, url: p.url, fileName: p.fileName, format: p.format });
+    case "prepare-reconciliation":
+      return prepareReconciliationTool(ctx, companyId, actor, p);
+    case "prepare-vat201":
+      return prepareVat201Tool(ctx, companyId, actor, { periodStart: p.periodStart, periodEnd: p.periodEnd, date: p.date, requestApproval: p.requestApproval });
     case "list-bank-lines": {
       const lines = await db.listBankLines(ctx.db, companyId, {
         bankAccountId: optStr(p, "bankAccountId"),
@@ -480,7 +495,18 @@ async function dispatchTool(ctx: PluginContext, name: string, p: Record<string, 
       }
       const saved = await db.vatReturnByPeriod(ctx.db, companyId, start, end);
       const result = await computeForPeriod(ctx, companyId, start, end, (saved?.adjustments ?? {}) as Record<string, number>);
-      return { periodStart: start, periodEnd: end, status: saved?.status ?? "not_prepared", boxes: result.boxes, labels: VAT_FIELD_LABELS, warnings: result.warnings };
+      const books = await booksStartFor(ctx, companyId);
+      const beforeBooks = Boolean(books && end < books.date && !saved);
+      return {
+        periodStart: start,
+        periodEnd: end,
+        status: saved?.status ?? (beforeBooks ? "before_books_start" : "not_prepared"),
+        booksStart: books?.date ?? null,
+        boxes: result.boxes,
+        labels: VAT_FIELD_LABELS,
+        warnings: result.warnings,
+        ...(beforeBooks ? { note: `This period ended before these books start (${books!.date}); its VAT201 came from the previous books. Nothing to prepare here.` } : {}),
+      };
     }
     case "create-manual-journal": {
       const draft = await saveDraft(ctx, companyId, { date: p.date, memo: p.memo, lines: p.lines }, actor);
@@ -652,7 +678,6 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
-    setBookkeeperLookup((c, companyId) => bookkeeper(c, companyId));
 
     for (const tool of ACCOUNTING_TOOLS) ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
     for (const [key, handler] of Object.entries(ACTIONS)) ctx.actions.register(key, (params, context) => runAction(ctx, key, handler, params, context));

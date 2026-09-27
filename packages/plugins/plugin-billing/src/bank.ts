@@ -12,6 +12,7 @@ import { invoiceBalance } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { BillingError } from "./domain.js";
 import { recordDecisionIssue } from "./pop.js";
+import { personAssignee } from "./routing.js";
 import { billPaidMinor, getBill, settle, settleBill, unreconciledPayment } from "./settle.js";
 
 export const BANK_MATCHED_EVENT = `plugin.${PIB_PLUGINS.accounting}.${OPEN_ITEM_EVENTS.bankMatched}` as const;
@@ -69,7 +70,8 @@ async function openReview(ctx: PluginContext, companyId: string, match: BankMatc
       ].join("\n"),
       originKind: `plugin:${PIB_PLUGINS.billing}`,
       originId: match.key,
-      ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+      // Money: a person decides (the Billing approver, else the owner).
+      ...(await personAssignee(ctx, companyId, settings)),
     });
     await recordDecisionIssue(ctx, { issueId: issue.id, companyId, kind: "bank_match", subjectKind: match.kind === "payable" ? "bill" : "invoice", subjectId: parseOpenItemKey(match.openItemKey)?.id ?? "", payload: match as unknown as Record<string, unknown> });
     return issue.id;

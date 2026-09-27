@@ -43,31 +43,29 @@ import { PAYROLL_TOOLS } from "./tools.js";
 import { employeeView, revealEmployeeField, saveComponent, saveEmployee, saveTerms, setRecurring, terminateEmployee, termsView } from "./service/employees.js";
 import { actionActor, asParams, assignableUser, createEnv, errorMessage, optStr, reqStr, requireUser, today, type Env } from "./service/env.js";
 import { cancelLeave, decideLeave, leaveOverview, onLeaveIssueUpdated, requestLeave, setLeaveOpening } from "./service/leave.js";
-import { emailPayslips, generatePayslips, onMailResult, payslipDownload, queuePayslipEmails } from "./service/payslips.js";
+import { emailPayslips, generatePayslips, onMailResult, payslipDownload } from "./service/payslips.js";
 import {
   adjustItem,
-  approveRun,
   calculateRun,
   cancelRun,
   correctRun,
   createRun,
-  lockRun,
-  onApprovalIssueUpdated,
   onLedgerResult,
   rejectRun,
   repostLedger,
   requestApproval,
-  requireRun,
   reverseRun,
   runDetail,
   runSummary,
   runVariances,
 } from "./service/runs.js";
+import { approveFromPage, lockAndIssuePayslips, onApprovalIssue } from "./service/lock.js";
 import { certificates, emp201, emp501, exportDownload, exportStatutory, importYtd, netPayFile } from "./service/statutory.js";
 import { overview, rulesView, runTool } from "./service/agent-tools.js";
 import { followUp } from "./service/jobs.js";
 import { cockpitSnapshot } from "./service/cockpit.js";
-import { markRulesReviewed, rulesReviewed, setupStatus } from "./service/setup.js";
+import { markRulesReviewed } from "./service/rules-review.js";
+import { settingsHref, setupStatus } from "./service/setup.js";
 
 export const LEDGER_RESULT_EVENT = pluginEvent(PIB_PLUGINS.accounting, LEDGER_EVENTS.postResult);
 export const MAIL_RESULT_EVENT = pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult);
@@ -96,7 +94,8 @@ const plugin = definePlugin({
     ctx.events.on("issue.updated", async (event: PluginEvent) => {
       if (!event.entityId || !event.companyId) return;
       try {
-        await onApprovalIssueUpdated(e, event.companyId, event.entityId, { actorType: event.actorType, actorId: event.actorId, status: statusOf(event.payload) });
+        // A person's "done" approves (and, with "Lock on approval", locks as them); an agent's is handed back to the person.
+        await onApprovalIssue(e, event.companyId, event.entityId, { actorType: event.actorType, actorId: event.actorId, status: statusOf(event.payload) });
         await onLeaveIssueUpdated(e, event.companyId, event.entityId, { actorType: event.actorType, actorId: event.actorId });
       } catch (error) {
         ctx.logger.error("Payroll issue update failed", { issueId: event.entityId, error: errorMessage(error) });
@@ -181,7 +180,8 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
     const me = actor.kind === "user" ? actor.userId : null;
     await tryLinkPendingHire(ctx, companyId, CLERK_ROLE, onLinked).catch(() => null);
     const date = today(e);
-    const [data, employees, terms, recurring, runs, custom, hire, reviewed] = await Promise.all([
+    const [data, employees, terms, recurring, runs, custom, hire, settings] = await Promise.all([
+      // Includes rulesReviewed and rulesReview ({ accountantName, checkedOn, at } | null).
       overview(e, companyId, true, me),
       db.listEmployees(ctx, companyId),
       db.termsOn(ctx, companyId, "9999-12-31"),
@@ -189,11 +189,12 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
       db.listRuns(ctx, companyId, 60),
       db.listCustomComponents(ctx, companyId),
       hireStatus(ctx, companyId, CLERK_ROLE).catch(() => null),
-      rulesReviewed(e, companyId),
+      settingsHref(ctx).catch(() => ({ pluginId: null, href: "/company/settings/instance/plugins" })),
     ]);
     return {
       ...data,
-      rulesReviewed: reviewed,
+      /** The host's Payroll settings page (the page's "Open settings" links). */
+      settingsHref: settings.href,
       me,
       employees: employees.map((x) => employeeView(x, terms.get(x.id) ?? null, recurring.filter((r) => r.employeeId === x.id), date)),
       runs: runs.map(runSummary),
@@ -202,7 +203,8 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
     };
   });
 
-  action("payroll.review-rules", (companyId, actor) => markRulesReviewed(e, companyId, actor));
+  // { accountantName (required), checkedOn?: YYYY-MM-DD (default today, not in the future) } → { reviewed, unverified, review }.
+  action("payroll.review-rules", (companyId, actor, params) => markRulesReviewed(e, companyId, actor, params));
   action("payroll.rules", async (_companyId, _actor, params) => rulesView(e, optStr(params, "taxYear", 7) ?? taxYearOf(today(e))));
   action("payroll.employee-terms", async (companyId, _actor, params) => ({ terms: (await db.listTerms(ctx, companyId, reqStr(params, "employeeId", 64))).map(termsView) }));
   action("payroll.save-employee", (companyId, actor, params) => saveEmployee(e, companyId, actor, params));
@@ -223,21 +225,9 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
     requireUser(actor);
     return requestApproval(e, companyId, actor, params);
   });
-  action("payroll.approve-run", (companyId, actor, params) => approveRun(e, companyId, actor, params));
+  action("payroll.approve-run", (companyId, actor, params) => approveFromPage(e, companyId, actor, params));
   action("payroll.reject-run", (companyId, actor, params) => rejectRun(e, companyId, actor, params));
-  action("payroll.lock-run", async (companyId, actor, params) => {
-    const locked = await lockRun(e, companyId, actor, params);
-    const run = await requireRun(e, companyId, locked.runId);
-    let payslips: { created: number; skipped: string | null } = { created: 0, skipped: null };
-    try {
-      payslips = await generatePayslips(e, companyId, run.id);
-      const config = await e.config(companyId);
-      if (config.payslipEmail.sendOnLock && !payslips.skipped) await queuePayslipEmails(e, companyId, run, null);
-    } catch (error) {
-      payslips = { created: 0, skipped: errorMessage(error) };
-    }
-    return { ...locked, payslips };
-  });
+  action("payroll.lock-run", (companyId, actor, params) => lockAndIssuePayslips(e, companyId, actor, reqStr(params, "runId", 64)));
   action("payroll.reverse-run", async (companyId, actor, params) => {
     requireUser(actor);
     return reverseRun(e, companyId, actor, params);

@@ -3,6 +3,7 @@
  * plugin (live → stored), module switches, and everything the sections show.
  */
 import type { ModuleKey } from "@partnersinbiz/pib-plugin-kit/setup";
+import { askWaitingItem, type AskView } from "./ask-model.js";
 import { BACKUP_STALE_HOURS, PLUGIN_KEY } from "./constants.js";
 import {
   activityGroups,
@@ -15,8 +16,10 @@ import {
   parseSnapshot,
   pluginEnabled,
   setupMissingCount,
+  shownIssueIds,
   staleChecks,
   todayLine,
+  unassignedWaiting,
   worstOf,
   type ActivityGroup,
   type AgentLite,
@@ -58,6 +61,12 @@ export interface LoadResult {
     linkedBy: string | null;
   }> | null;
   healthIssueId: string | null;
+  /** Questions agents asked the owner that wait for a reply (older workers do not send it). */
+  asks?: AskView[];
+  /** Open issues nobody is assigned to, older than a day: the count and the first five. */
+  unassigned?: { count: number; items: Array<{ id: string; identifier: string | null; title: string; status?: string; createdAt: string | null }> };
+  /** When the Cockpit first saw each warning (`<plugin>:<check key>`), for checks that do not say. */
+  warningSince?: Record<string, string>;
 }
 
 export type SnapshotSource = "live" | "stored";
@@ -76,8 +85,10 @@ export interface ViewInput {
   live: Record<string, CockpitSnapshot | null | undefined>;
   approvals?: ApprovalLite[];
   myIssues?: IssueLite[];
-  /** From the Setup plugin's live data when available; falls back to the Cockpit projection. */
+  /** Required setup steps left: the Setup plugin's own count (kit `setupSummary`) when available; falls back to the Cockpit projection. */
   setupMissing?: number | null;
+  /** The open Finish setup issue, so it is listed once (as the setup item). */
+  setupIssueId?: string | null;
   agents?: AgentLite[];
   hostActivity?: HostActivityLite[];
   runs?: RunLite[];
@@ -132,8 +143,17 @@ export function backupInfo(backup: ViewInput["backup"], now: Date): BackupInfo |
   return { at: backup.mtime, ageHours: age, status, text };
 }
 
+/** Warnings that do not say since when get the time the Cockpit first saw them. */
+export function withWarningSince(snapshots: Array<CockpitSnapshot & { source: SnapshotSource }>, since: Record<string, string> | null | undefined): Array<CockpitSnapshot & { source: SnapshotSource }> {
+  if (!since || Object.keys(since).length === 0) return snapshots;
+  return snapshots.map((snapshot) => ({
+    ...snapshot,
+    health: snapshot.health.map((check) => (check.status === "warn" && !check.since && since[`${snapshot.plugin}:${check.key}`] ? { ...check, since: since[`${snapshot.plugin}:${check.key}`] } : check)),
+  }));
+}
+
 export function buildView(input: ViewInput): CockpitView {
-  const snapshots = pickSnapshots(input);
+  const snapshots = withWarningSince(pickSnapshots(input), input.load.warningSince);
   const storedTimes = Object.fromEntries(
     Object.entries(input.load.snapshots ?? {}).map(([key, row]) => [key, parseSnapshot(row.snapshot, key)?.checkedAt ?? row.receivedAt]),
   );
@@ -169,10 +189,14 @@ export function buildView(input: ViewInput): CockpitView {
     Object.fromEntries(Object.entries(input.load.setupStatuses ?? {}).filter(([, s]) => s && typeof s === "object" && Array.isArray((s as { items?: unknown }).items))) as Record<string, never>,
     input.modules,
   );
-  const waiting = mergeWaiting([
+  const own = [
+    { source: "asks", sourceTitle: "Asked by agents", items: (input.load.asks ?? []).map(askWaitingItem) },
     ...snapshots.map((s) => ({ source: s.plugin, sourceTitle: s.title, items: s.waiting })),
-    { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: input.approvals, myIssues: input.myIssues, setupMissing }) },
-  ]);
+  ];
+  const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: input.approvals, myIssues: input.myIssues, setupMissing, setupIssueId: input.setupIssueId }) };
+  // An issue with a row of its own is not counted again among the unassigned ones.
+  const unassigned = { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(input.load.unassigned, shownIssueIds([...own, host])) };
+  const waiting = mergeWaiting([...own, unassigned, host]);
   const agents = agentRows((input.agents ?? []).filter((a) => !INACTIVE.has(a.status)), { runs: input.runs, snapshots, since: new Date(input.now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots, host: input.hostActivity, runs: input.runs, agents: input.agents, now: input.now, windowMs: input.windowMs });
   const health = worstOf(groups.map((g) => g.status));

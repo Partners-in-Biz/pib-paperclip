@@ -12,18 +12,20 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 
 1. Call ${tool(TOOL_NAMES.brief)}.
 2. Health first: follow each problem's fix; hand broken work to the agent that owns it and wake it. Comment what you did on the System health issue.
-3. Unblock agents: answer from context, reassign, or hand off. Only a real grant or decision goes to the owner.
-4. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
-5. Make sure today's important work has an agent and is not blocked.
-6. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (with links), risks, today's plan. Short.
-7. Close this issue with one line: fixed, handed off, waiting on the owner.
+3. Check the team: routines on, roles staffed (Setup → Team), questions to the owner answered (\`asks\`, oldest first on the brief).
+4. Route every unassigned issue (\`unassigned\`) to the agent in the role that owns the work.
+5. Unblock agents: answer from context, reassign, or hand off. Only a real grant or decision goes to the owner, with ${tool(TOOL_NAMES.askOwner)}.
+6. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
+7. Make sure today's important work has an agent and is not blocked.
+8. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
+9. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
 
 export const WEEKLY_ROUTINE_DESCRIPTION = `Weekly retro. Follow the ${SKILL_SLUGS.operator} skill.
 
 1. Call ${tool(TOOL_NAMES.brief)} with windowHours 168, and ${tool(TOOL_NAMES.scorecards)}.
-2. Call ${tool(MEMORY_TOOLS.review)}. Merge likely duplicates (keep the better one, mark the other superseded), fix or archive noisy and wrong facts, and note how briefs did.
+2. Call ${tool(MEMORY_TOOLS.review)}. Merge likely duplicates (keep the better one, mark the other superseded), fix or archive noisy and wrong facts, move company-wide facts that name a client to that client, and note how briefs did.
 3. Post a "Weekly retro" with ${tool(TOOL_NAMES.postBrief)}: what worked, what failed, one scorecard line per agent (runs, failures, spend vs budget, key quality metric), one line on company memory (facts, briefs, feedback), and at most 3 proposals (mark the ones that need the owner's yes).
 4. Carry out the proposals that do not need the owner, then close this issue.`;
 
@@ -31,7 +33,7 @@ const instanceConfigSchema: JsonSchema = {
   type: "object",
   title: "Cockpit settings",
   description:
-    "The Cockpit page saves this for you the first time you save the team. Saving is what lets the hourly jobs keep the System health issue and the team roles up to date for this company.",
+    "Save this once for each company. Saving is what lets the Cockpit act for that company on its own: the hourly System health issue and team roles, answers to agents' questions, client onboarding, and the CRM client list company memory uses.",
   properties: {
     healthIssue: {
       type: "boolean",
@@ -41,9 +43,9 @@ const instanceConfigSchema: JsonSchema = {
     },
     jev: {
       ...jevConfigSchema(),
-      title: "Jev for company memory (TypeSafe)",
+      title: "Smart matching for company memory (optional)",
       description:
-        "Jev picks which remembered facts each task needs, so agents get a short, relevant brief. Only the task's title and description and the candidate facts are sent. Without a key, briefs use keyword and recency matching (same size limit). Pick the same Paperclip secret you use in the other PiB plugins.",
+        "An AI service (Jev, from TypeSafe) picks which remembered facts each task needs, so agents get a short, relevant brief. Only the task's title and description and the candidate facts are sent. Without a key, briefs use keyword and recency matching (same size limit). Pick the same Paperclip secret you use in the other PiB plugins.",
     },
   },
 };
@@ -54,7 +56,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: VERSION,
   displayName: "Cockpit",
   description:
-    "One place to run the company: what waits on you, what the agents did, money, pipeline, marketing, delivery, agent cost and quality, and system health. Owns the Operator (chief of staff) and Reviewer roles, and the company memory every agent reads (a short, filtered brief per task).",
+    "One place to run the company: what waits on you (questions from agents first), what the agents did, money, pipeline, marketing, delivery, agent cost and quality, and system health. Owns the Operator (chief of staff) and Reviewer roles, the company operating manual and profile, and the company memory every agent reads (a short, filtered brief per task).",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
@@ -94,13 +96,13 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOBS.reemitRoles,
       displayName: "Re-send team roles",
-      description: "Every hour, re-sends each company's Operator, Reviewer and owner to the other plugins (events can be lost), and links hires whose agent appeared.",
+      description: "Every hour, re-sends each company's team (Operator, Reviewer, owner, and every role's agent and status) to the other plugins (events can be lost), and links hires whose agent appeared.",
       schedule: "10 * * * *",
     },
     {
       jobKey: JOBS.healthAlerts,
       displayName: "System health check",
-      description: "Every hour: opens, updates or closes one System health issue per company (bad checks, plugins not reporting, agents in error or at 80% of budget).",
+      description: "Every hour: opens, updates or closes one System health issue per company (bad checks, warnings older than a day, plugins not reporting, agents in error or at 80% of budget), and settles questions to the owner whose reply was missed.",
       schedule: "20 * * * *",
     },
     {

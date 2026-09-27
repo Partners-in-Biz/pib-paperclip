@@ -122,7 +122,9 @@ describe("Cockpit series", () => {
     expect(days).toHaveLength(14);
     expect(days[13]).toEqual({ date: "2026-09-26", succeeded: 1, failed: 1, other: 0, total: 2 });
     expect(days[12]!.other).toBe(1);
-    expect(runColumns(days)[13]).toMatchObject({ label: "9/26", title: "Sat 26 Sep", values: { succeeded: 1, failed: 1, other: 0 } });
+    // The shared short date ("26 Sep"), never US month/day.
+    expect(runColumns(days, new Date("2026-09-26T10:00:00.000Z"))[13]).toMatchObject({ label: "26 Sep", title: "Sat 26 Sep", values: { succeeded: 1, failed: 1, other: 0 } });
+    expect(runColumns(days, new Date("2027-01-05T10:00:00.000Z"))[13]!.label).toBe("26 Sep 2026");
   });
 
   it("counts health checks per status and tones waiting kinds", () => {

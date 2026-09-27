@@ -2,6 +2,8 @@
  * Status tones and chart series for the SEO page (pure, no React).
  */
 import type { BarListItem, Segment, ToneName } from "@partnersinbiz/pib-plugin-ui";
+import { taskState, type TaskState, type TimedTask } from "../engine/due.js";
+import { STATE_SHORT, STATE_TONE } from "./words.js";
 
 // ── One status → tone mapping for the whole page ────────────────────────────
 
@@ -20,50 +22,25 @@ export function statusTone(status: string | null | undefined): ToneName {
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
+// A task's state comes from engine/due.ts, the same rules the tools and the Cockpit use.
 
-export type ChipState = "done" | "in_progress" | "blocked" | "due" | "future" | "skipped";
+export type ChipState = TaskState;
 
-export const CHIP_TONE: Record<ChipState, ToneName> = {
-  done: "ok",
-  in_progress: "info",
-  blocked: "bad",
-  due: "warn",
-  future: "neutral",
-  skipped: "neutral",
-};
+export const CHIP_TONE: Record<ChipState, ToneName> = STATE_TONE;
+export const CHIP_LABEL: Record<ChipState, string> = STATE_SHORT;
 
-export const CHIP_LABEL: Record<ChipState, string> = {
-  done: "Done",
-  in_progress: "In progress",
-  due: "Due",
-  blocked: "Blocked",
-  future: "Upcoming",
-  skipped: "Skipped",
-};
+/** The stacked bar and the plan legend, in this order. */
+export const CHIP_ORDER: ChipState[] = ["done", "in_progress", "due", "overdue", "waiting", "stuck", "upcoming", "skipped"];
 
-export interface TaskLike {
-  status: string;
-  dueDay: number | null;
+export function chipState(task: TimedTask, day: number, canWork = true): ChipState {
+  return taskState(task, day, canWork);
 }
 
-/** Open tasks that are due (what the Today list shows). */
-export function dueOpen(tasks: TaskLike[], day: number): number {
-  return tasks.filter((t) => ["not_started", "in_progress", "blocked"].includes(t.status) && (t.dueDay == null || t.dueDay <= day)).length;
-}
-
-export function chipState(task: TaskLike, day: number): ChipState {
-  if (task.status === "done") return "done";
-  if (task.status === "skipped" || task.status === "na") return "skipped";
-  if (task.status === "blocked") return "blocked";
-  if (task.status === "in_progress") return "in_progress";
-  return task.dueDay == null || task.dueDay <= day ? "due" : "future";
-}
-
-/** Tasks by plan state, for a StackedBar: done → in progress → due → blocked → upcoming → skipped. */
-export function taskSegments(tasks: TaskLike[], day: number): Segment[] {
-  const counts: Record<ChipState, number> = { done: 0, in_progress: 0, due: 0, blocked: 0, future: 0, skipped: 0 };
-  for (const task of tasks) counts[chipState(task, day)] += 1;
-  return (Object.keys(counts) as ChipState[]).map((key) => ({ key, label: CHIP_LABEL[key], value: counts[key], tone: CHIP_TONE[key] }));
+/** Tasks by plan state, for a StackedBar and the legend. */
+export function taskSegments(tasks: TimedTask[], day: number, canWork = true): Segment[] {
+  const counts = Object.fromEntries(CHIP_ORDER.map((k) => [k, 0])) as Record<ChipState, number>;
+  for (const task of tasks) counts[chipState(task, day, canWork)] += 1;
+  return CHIP_ORDER.map((key) => ({ key, label: CHIP_LABEL[key], value: counts[key], tone: CHIP_TONE[key] }));
 }
 
 // ── Keywords ────────────────────────────────────────────────────────────────

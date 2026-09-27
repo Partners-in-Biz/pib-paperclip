@@ -150,18 +150,22 @@ export async function forecast(ctx: PluginContext, companyId: string, months: nu
   return { asOf, recurringCostsMinor, basedOn: { from: fromMonth, to: lastFull }, rows, manualLines: manual };
 }
 
-/** Overview numbers for the first tab. */
-export async function overview(ctx: PluginContext, companyId: string) {
+/**
+ * Overview numbers for the first tab, all "as at today": a journal or bank
+ * line dated after today counts in no figure (cash, receivables, this
+ * month's profit) and is listed in `future` so a person checks its date.
+ */
+export async function overview(ctx: PluginContext, companyId: string, today = todayIso()) {
   await ensureBook(ctx, companyId);
   const chart = await loadChart(ctx, companyId);
-  const today = todayIso();
   const month = monthRange(monthOf(today));
-  const [balances, monthTotals, lineCounts, rejections, drafts] = await Promise.all([
+  const [balances, monthTotals, lineCounts, rejections, drafts, dated] = await Promise.all([
     db.accountTotals(ctx.db, companyId, { to: today }),
-    db.accountTotals(ctx.db, companyId, { from: month.start, to: month.end }),
+    db.accountTotals(ctx.db, companyId, { from: month.start, to: today }),
     db.lineCounts(ctx.db, companyId),
     db.listRejections(ctx.db, companyId, "open"),
     db.listDrafts(ctx.db, companyId, ["pending_approval"]),
+    db.datedAfter(ctx.db, companyId, today),
   ]);
   const balanceOf = (role: string, sign: 1 | -1) => {
     const account = roleAccount(chart, role);
@@ -183,6 +187,9 @@ export async function overview(ctx: PluginContext, companyId: string) {
     bankLines: lineCounts,
     rejectedPostings: rejections.length,
     pendingApprovals: drafts.length,
+    asOf: today,
+    journalCount: dated.journalCount,
+    future: { journals: dated.journals, bankLines: dated.bankLines, items: dated.items },
   };
 }
 
@@ -190,7 +197,9 @@ export async function overview(ctx: PluginContext, companyId: string) {
  * Read-only series for the Overview charts: income, expenses, profit and
  * closing cash for the last `months` months, the largest expense accounts in
  * the financial year so far, reconciliation per bank account and the current
- * VAT period with its due date.
+ * VAT period with its due date. The current month runs to today, so its
+ * closing cash is the same figure as the "Cash and bank" tile: nothing dated
+ * after today counts.
  */
 export async function trends(ctx: PluginContext, companyId: string, monthsInput: unknown = 12, today = todayIso()) {
   await ensureBook(ctx, companyId);
@@ -203,7 +212,7 @@ export async function trends(ctx: PluginContext, companyId: string, monthsInput:
   const fy = financialYear(today, settings.yearEndMonth);
   const [opening, monthly, yearTotals, lineRows] = await Promise.all([
     db.accountTotals(ctx.db, companyId, { to: addDays(from, -1) }),
-    db.monthlyTotals(ctx.db, companyId, from, lastDayOfMonth(last)),
+    db.monthlyTotals(ctx.db, companyId, from, today),
     db.accountTotals(ctx.db, companyId, { from: fy.start, to: today }),
     db.lineCountsByAccount(ctx.db, companyId),
   ]);

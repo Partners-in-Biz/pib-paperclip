@@ -15,7 +15,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig } from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
-import { createIssueSafely, ORIGIN_KIND, socialProjectId } from "../issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, socialProjectId } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
@@ -187,14 +187,6 @@ async function issueOpen(env: GrowthEnv, companyId: string, issueId: string): Pr
   }
 }
 
-async function defaultPerson(env: GrowthEnv, companyId: string): Promise<string | undefined> {
-  try {
-    return (await env.ctx.companies.get(companyId))?.defaultResponsibleUserId ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** This week's approval issue for the program: comment on it, or open it. */
 async function announce(env: GrowthEnv, config: SocialConfig, program: Program, lines: string[]): Promise<string | null> {
   const companyId = program.companyId;
@@ -213,7 +205,8 @@ async function announce(env: GrowthEnv, config: SocialConfig, program: Program, 
       priority: "medium",
       originKind: ORIGIN_KIND,
       originId: `growth:${program.id}:${week}`,
-      assigneeUserId: program.ownerUserId ?? (await defaultPerson(env, companyId)),
+      // A person decides experiments and playbook changes: the program owner, else the default person or the Cockpit owner.
+      assigneeUserId: await personAssignee(env.ctx, companyId, program.ownerUserId),
       wake: false,
     });
     await env.store.updateProgram(companyId, program.id, { approvalIssueId: issue.id, approvalWeek: week });
@@ -403,12 +396,24 @@ export async function abandonExperiment(env: GrowthEnv, actor: GrowthActor, para
 
 export async function listExperimentsRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
   const program = await programForParams(env, actor, params);
-  const status = optString(params, "status");
-  const statuses = status ? (status.split(",").map((s) => s.trim()) as Experiment["status"][]) : undefined;
+  const statuses = experimentStatuses(params.status);
   const list = await env.store.listExperiments(actor.companyId, program.id, statuses);
   const out = [];
   for (const e of list.slice(0, 50)) out.push(experimentOut(e, OPEN_EXPERIMENTS.includes(e.status) ? await armCounts(env, e) : undefined));
   return { programId: program.id, client: programOut(program).client, scoreboard: program.scoreboard, experiments: out };
+}
+
+const EXPERIMENT_STATUS_VALUES: Experiment["status"][] = ["proposed", "running", "measured", "rejected", "abandoned"];
+
+/** `status` as a list of statuses, or the older comma-separated text. Unknown values are refused. */
+export function experimentStatuses(value: unknown): Experiment["status"][] | undefined {
+  if (value == null || value === "") return undefined;
+  const list = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(",") : null;
+  if (!list) throw new E.GrowthError(`status must be a list of: ${EXPERIMENT_STATUS_VALUES.join(", ")}`);
+  const out = list.map((s) => s.trim()).filter(Boolean);
+  const bad = out.find((s) => !(EXPERIMENT_STATUS_VALUES as string[]).includes(s));
+  if (bad) throw new E.GrowthError(`Unknown experiment status "${bad}" (use ${EXPERIMENT_STATUS_VALUES.join(", ")})`);
+  return out.length ? (out as Experiment["status"][]) : undefined;
 }
 
 /** Experiments a post in this scope can be tagged with (composer select). */

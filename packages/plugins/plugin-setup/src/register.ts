@@ -4,7 +4,7 @@ import { getChoice } from "./db.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
 import { JOBS } from "./manifest.js";
 import { SetupError } from "./modules.js";
-import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, saveModules, weeklyFinishSetup } from "./service.js";
+import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
 
 /** Registers everything; exported for tests. */
 export function registerSetup(ctx: PluginContext): void {
@@ -34,6 +34,12 @@ export function registerSetup(ctx: PluginContext): void {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new SetupError("Only the Setup page can report Company wiki");
     return { status: await reportMemory(ctx, companyId, params.snapshot) };
+  });
+  // The Setup page reports the statuses it just checked live, so every count agrees with the page.
+  ctx.actions.register("setup.report-statuses", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new SetupError("Only the Setup page can report setup statuses");
+    return reportStatuses(ctx, companyId, params.statuses);
   });
   ctx.jobs.register(JOBS.reemitModules, async () => {
     const result = await reemitModules(ctx);

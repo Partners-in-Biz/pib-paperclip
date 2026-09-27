@@ -141,24 +141,86 @@ function sendHealth(counts: Counts): HealthCheck {
   return { key: "campaigns:sends", title: "Campaign emails", status: "ok" };
 }
 
+interface ApprovalRow {
+  id: string;
+  name: string;
+  client_name: string | null;
+  client_ref: string | null;
+  approval_issue_id: string;
+  launch_error: string | null;
+  issue_status: string;
+  issue_agent_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** An approval an agent has held this long is shown to the person too (a stuck Reviewer must not stall a launch). */
+export const AGENT_HOLD_MS = 24 * 3_600_000;
+
+/**
+ * Draft campaigns and their launch approval:
+ * - open with a person: approve it (with the launch error when an earlier try failed);
+ * - held by an agent (the Reviewer) for over a day: the person takes it over;
+ * - done but not launched: it launches on the next check; if not, click Launch.
+ */
+export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingItem[] {
+  const items: WaitingItem[] = [];
+  for (const row of rows) {
+    const title = `${clientPrefix(row.client_ref ? row.client_name : null)}Approve campaign ${row.name}`;
+    const href = `/issues/${row.approval_issue_id}`;
+    if (row.issue_status === "done") {
+      items.push({
+        key: `launch:${row.id}`,
+        title: `${clientPrefix(row.client_ref ? row.client_name : null)}Launch approved campaign ${row.name}`,
+        why: row.launch_error
+          ? `Approved, but it could not launch: ${row.launch_error}`
+          : "Approved, not launched yet. It launches on the next check (within 5 minutes); if it stays here, open Campaigns and click Launch.",
+        href: "/campaigns?tab=campaigns",
+        issueId: row.approval_issue_id,
+        kind: "review",
+        since: row.updated_at ?? row.created_at,
+      });
+      continue;
+    }
+    if (row.issue_agent_id) {
+      const held = row.created_at ? now - Date.parse(row.created_at) : 0;
+      if (!(held > AGENT_HOLD_MS)) continue;
+      items.push({
+        key: `approval:${row.approval_issue_id}`,
+        title,
+        why: "An agent (the Reviewer) has held this launch approval for over a day. Check it yourself: mark the issue done to approve, or cancel it.",
+        href,
+        issueId: row.approval_issue_id,
+        kind: "review",
+        since: row.created_at,
+      });
+      continue;
+    }
+    items.push({
+      key: `approval:${row.approval_issue_id}`,
+      title,
+      why: row.launch_error
+        ? `It could not launch after the last approval: ${row.launch_error} Fix it, then mark the issue done again.`
+        : "A person approves every campaign. Mark the issue done and it launches by itself.",
+      href,
+      issueId: row.approval_issue_id,
+      kind: "review",
+      since: row.created_at,
+    });
+  }
+  return items;
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
-  const rows = await ctx.db.query<{ id: string; name: string; client_name: string | null; client_ref: string | null; approval_issue_id: string; created_at: string | null }>(
-    `SELECT c.id, c.name, c.client_name, c.client_ref, c.approval_issue_id, i.created_at::text AS created_at
+  const rows = await ctx.db.query<ApprovalRow>(
+    `SELECT c.id, c.name, c.client_name, c.client_ref, c.approval_issue_id, c.launch_error, i.status AS issue_status,
+            i.assignee_agent_id AS issue_agent_id, i.created_at::text AS created_at, i.updated_at::text AS updated_at
        FROM ${t(ctx, "campaigns")} c JOIN public.issues i ON i.id::text = c.approval_issue_id
-      WHERE c.company_id = $1 AND c.status = 'draft' AND c.approval_issue_id IS NOT NULL
-        AND i.status NOT IN ('done', 'cancelled') AND i.assignee_agent_id IS NULL
+      WHERE c.company_id = $1 AND c.status = 'draft' AND c.approval_issue_id IS NOT NULL AND i.status <> 'cancelled'
       ORDER BY i.created_at LIMIT 20`,
     [companyId],
   );
-  return rows.map((row) => ({
-    key: `approval:${row.approval_issue_id}`,
-    title: `${clientPrefix(row.client_ref ? row.client_name : null)}Approve campaign ${row.name}`,
-    why: "A person approves every campaign before it launches. Mark the issue done to approve.",
-    href: `/issues/${row.approval_issue_id}`,
-    issueId: row.approval_issue_id,
-    kind: "review" as const,
-    since: row.created_at,
-  }));
+  return approvalWaiting(rows);
 }
 
 const EVENT_TEXT: Record<string, (count: number, name: string) => string> = {

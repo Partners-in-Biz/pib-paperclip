@@ -8,7 +8,10 @@
  *   an issue. The `redeliver-mail` job re-emits unanswered requests.
  * - `mail.received` from a contact we emailed records a `reply`, `bounce` or
  *   `unsubscribe` step event and, with Jev, acts on it: stop, suppress, push
- *   or open an issue for the campaign owner.
+ *   or open an issue for the campaign's agent (else the Account Manager).
+ * - Campaign email is marketing (`marketing: true`): the Mailbox skips
+ *   suppressed addresses and adds List-Unsubscribe. An unsubscribe reply is
+ *   announced as `contact.suppressed` so the CRM and the Mailbox stop too.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import {
@@ -16,6 +19,7 @@ import {
   createWorkIssue,
   decide,
   enqueue,
+  PIB_PLUGINS,
   isModuleEnabled,
   outboxStatus,
   getCrmCompany,
@@ -29,10 +33,10 @@ import {
   type MailSendRequested,
   type MailSendResult,
   type OutboxRow,
+  type SuppressionReason,
 } from "@partnersinbiz/pib-plugin-kit";
 import {
   abEvents,
-  addSuppression,
   crmContactsByEmail,
   enrollmentById,
   enrollmentsForContacts,
@@ -53,7 +57,9 @@ import {
 import {
   abSuggestion,
   advanceEnrollment,
+  campaignAddress,
   campaignMailKey,
+  campaignSuppressionReason,
   campaignReplyPlan,
   clientPrefix,
   isReplyKind,
@@ -66,13 +72,15 @@ import {
   type CampaignDraft,
   type CampaignStepDraft,
   type EnrollmentDraft,
+  type PersonalVars,
   type ReplyKind,
 } from "./domain.js";
 import { jevConfigFor, REPLY_QUESTIONS, replyState } from "./jev.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { assigneeFields, workOwner } from "./owner.js";
+import { announceSuppression, suppressAddress, suppressionPayload } from "./suppress.js";
 
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
-const LOCAL_BOARD_USER_ID = "local-board";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -91,14 +99,12 @@ function record(value: unknown): Record<string, unknown> {
   return {};
 }
 
-/** The campaign's creator: its agent (woken) or its user; nobody for older campaigns. */
-export function campaignAssignee(campaign: Pick<CampaignDraft, "ownerAgentId" | "ownerUserId">): { assigneeAgentId?: string; assigneeUserId?: string } {
-  if (campaign.ownerAgentId) return { assigneeAgentId: campaign.ownerAgentId };
-  if (campaign.ownerUserId && campaign.ownerUserId !== LOCAL_BOARD_USER_ID) return { assigneeUserId: campaign.ownerUserId };
-  return {};
+/** Campaign work goes to the campaign's agent while it runs, else the Account Manager (then the Operator, then the owner). */
+export async function campaignAssignee(ctx: PluginContext, companyId: string, campaign: Pick<CampaignDraft, "ownerAgentId"> | null): Promise<{ assigneeAgentId?: string; assigneeUserId?: string }> {
+  return assigneeFields(await workOwner(ctx, companyId, campaign ?? { ownerAgentId: null }));
 }
 
-async function openIssueOnce(
+export async function openIssueOnce(
   ctx: PluginContext,
   input: { companyId: string; originId: string; title: string; description: string; assignee: { assigneeAgentId?: string; assigneeUserId?: string }; wakeReason: string },
 ): Promise<string> {
@@ -124,6 +130,24 @@ async function openIssueOnce(
 // Sending
 // ---------------------------------------------------------------------------
 
+/** Merge values for a contact: name, first and last name, email, and their company (or the client company). */
+export async function personalVars(
+  ctx: PluginContext,
+  companyId: string,
+  campaign: Pick<CampaignDraft, "clientKind" | "clientName"> | null,
+  contact: { name: string; emails?: string[] | null; account_ids?: string[] | null } | null,
+): Promise<PersonalVars> {
+  if (!contact) return { name: "" };
+  const accountId = contact.account_ids?.[0];
+  const company = accountId ? (await getCrmCompany(ctx, ctx.db.namespace, companyId, accountId).catch(() => null))?.name ?? null : null;
+  return { name: contact.name, email: campaignAddress(contact.emails), company: company ?? (campaign?.clientKind === "company" ? campaign.clientName : null) };
+}
+
+/** A step with its subject and body filled in for one contact. */
+export function personalStep(step: CampaignStepDraft, vars: PersonalVars): CampaignStepDraft {
+  return { ...step, subject: personalize(step.subject, vars), body: personalize(step.body, vars) };
+}
+
 /**
  * Sends one due step of an active email campaign. A suppressed address stops
  * the enrollment; a contact without an address gets the usual step issue.
@@ -134,7 +158,7 @@ export async function sendCampaignStep(
 ): Promise<"sent" | "stopped" | "issue"> {
   const { campaign, enrollment, step } = input;
   const contact = await getCrmContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
-  const to = contact?.emails?.find((email) => email.includes("@")) ?? null;
+  const to = campaignAddress(contact?.emails);
   if (!contact || !to) {
     await input.issueFallback("This contact has no email address in the CRM, so the step was not emailed. Reach them another way, then mark this issue done.");
     return "issue";
@@ -143,9 +167,7 @@ export async function sendCampaignStep(
     await saveEnrollment(ctx, { ...enrollment, status: "stopped", nextDueAt: null });
     return "stopped";
   }
-  const accountId = contact.account_ids?.[0];
-  const company = accountId ? (await getCrmCompany(ctx, ctx.db.namespace, enrollment.companyId, accountId).catch(() => null))?.name ?? null : null;
-  const vars = { name: contact.name, email: to, company: company ?? (campaign.clientKind === "company" ? campaign.clientName : null) };
+  const vars = await personalVars(ctx, enrollment.companyId, campaign, contact);
   const text = personalize(step.body, vars);
   const key = campaignMailKey(enrollment.id, step.position);
   const payload: MailSendRequested = {
@@ -165,6 +187,8 @@ export async function sendCampaignStep(
       clientRef: campaign.clientRef,
     },
     labels: ["PiB/Campaigns"],
+    // Marketing: the Mailbox skips suppressed addresses and adds List-Unsubscribe.
+    marketing: true,
   };
   const { created } = await enqueue(ctx, enrollment.companyId, MAIL_EVENTS.sendRequested, payload as unknown as { key: string } & Record<string, unknown>);
   await saveEnrollment(ctx, { ...enrollment, sendingKey: key });
@@ -177,6 +201,20 @@ export async function sendCampaignStep(
     }
   }
   return "sent";
+}
+
+/** Addresses the Mailbox refused as suppressed (`suppressed` on its failed result). */
+export function suppressedFromResult(result: MailSendResult): Array<{ email: string; reason: SuppressionReason; scope: "marketing" | "all" }> {
+  const list = (result as MailSendResult & { suppressed?: unknown }).suppressed;
+  if (!Array.isArray(list)) return [];
+  const out: Array<{ email: string; reason: SuppressionReason; scope: "marketing" | "all" }> = [];
+  for (const item of list) {
+    const entry = record(item);
+    if (typeof entry.email !== "string" || !entry.email.includes("@")) continue;
+    const reason = (["unsubscribed", "bounced", "complained", "manual"] as const).find((r) => r === entry.reason) ?? "manual";
+    out.push({ email: entry.email.toLowerCase(), reason, scope: entry.scope === "all" ? "all" : "marketing" });
+  }
+  return out;
 }
 
 function asSendResult(payload: unknown): MailSendResult | null {
@@ -221,6 +259,15 @@ async function applySendResult(ctx: PluginContext, row: OutboxRow, result: MailS
       await saveEnrollment(ctx, { ...enrollment, sendingKey: null });
       return "ignored";
     }
+    // The Mailbox refused because the address is on its do-not-email list: stop, never hand it to a person to send.
+    const blocked = suppressedFromResult(result);
+    if (blocked.length > 0) {
+      for (const entry of blocked) {
+        await suppressAddress(ctx, { companyId: enrollment.companyId, email: entry.email, reason: campaignSuppressionReason(entry.reason), scope: entry.scope, source: PIB_PLUGINS.mailbox, contactId: enrollment.contactId });
+      }
+      await saveEnrollment(ctx, { ...enrollment, sendingKey: null, status: "stopped", nextDueAt: null });
+      return "failed";
+    }
     await failStep(ctx, enrollment, steps, result.error ?? "The Mailbox could not send it");
     return "failed";
   }
@@ -255,7 +302,8 @@ async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, steps: 
     getCampaign(ctx, enrollment.campaignId),
     getCrmContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId).catch(() => null),
   ]);
-  const step = stepFor(steps, enrollment.stepPosition, enrollment.variant);
+  const raw = stepFor(steps, enrollment.stepPosition, enrollment.variant);
+  const step = raw ? personalStep(raw, await personalVars(ctx, enrollment.companyId, campaign, contact)) : null;
   const name = contact?.name ?? enrollment.contactId;
   const to = contact?.emails?.[0] ? `\n\nSend to: ${name} <${contact.emails[0]}>` : "";
   const issueId = await openIssueOnce(ctx, {
@@ -263,13 +311,15 @@ async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, steps: 
     originId: `send-failed:${enrollment.sendingKey ?? enrollment.id}`,
     title: `${clientPrefix(campaign?.clientRef ? campaign.clientName : null)}Email not sent: ${step?.subject ?? "Campaign step"}: ${name}`,
     description: [
-      `The Mailbox could not send this campaign email: ${error}`,
+      `The Mailbox could not send this campaign email to \`contact:${enrollment.contactId}\`: ${error}`,
       "",
-      "Send it yourself (or fix the address), then mark this issue done to move the contact to the next step.",
+      "Fix the cause if you can (reconnect Gmail on the Mailbox page, or correct the address on the contact in the CRM), then send it: draft it with `partnersinbiz.mailbox:create-draft` and send it with `send-draft`, or send it from Gmail. Mark this issue **done** to move the contact to the next step, or **cancelled** to stop the campaign for them.",
+      "",
+      `**Subject:** ${step?.subject ?? ""}`,
       "",
       step?.body ?? "",
     ].join("\n") + to,
-    assignee: campaign ? campaignAssignee(campaign) : {},
+    assignee: await campaignAssignee(ctx, enrollment.companyId, campaign),
     wakeReason: "A campaign email failed",
   });
   await saveEnrollment(ctx, { ...enrollment, sendingKey: null, openIssueId: issueId });
@@ -406,9 +456,17 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
   if (plan.suppress) {
     // A bounce comes from a mailer daemon: suppress the address we sent to, not the sender.
     const address = plan.suppress === "bounce"
-      ? (typeof sent?.meta.to === "string" ? sent.meta.to : null) ?? (await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null))?.emails?.[0] ?? null
+      ? (typeof sent?.meta.to === "string" ? sent.meta.to : null) ?? campaignAddress((await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null))?.emails)
       : mail.from.email;
-    if (address) await addSuppression(ctx, { companyId, email: address, reason: plan.suppress, contactId: enrollment.contactId, campaignId: campaign.id });
+    if (address) {
+      const scope = plan.suppress === "bounce" ? "all" : "marketing";
+      // Stops every campaign of the contact and cancels open step issues (POPIA).
+      await suppressAddress(ctx, { companyId, email: address, reason: plan.suppress, scope, source: PLUGIN_ID, contactId: enrollment.contactId, campaignId: campaign.id });
+      // Unsubscribes are shared; the Mailbox decides for itself which bounces are hard.
+      if (plan.suppress === "unsubscribe") {
+        await announceSuppression(ctx, companyId, suppressionPayload({ email: address, reason: "unsubscribe", scope, clientKind: campaign.clientRef ? campaign.clientKind : null, clientRef: campaign.clientRef }));
+      }
+    }
   }
   if (plan.stop === "contact") await stopEnrollmentsForContact(ctx, companyId, enrollment.contactId);
   if (plan.stop === "this" && enrollment.status === "running") await stopEnrollment(ctx, enrollment.id);
@@ -423,24 +481,28 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
     const subject = mail.subject.trim() || "(no subject)";
     const followUp = plan.issue === "follow-up";
     const reason = !config
-      ? "Jev is not set up, so the reply was not read."
+      ? "Smart sorting is not set up, so the reply was not read."
       : !decision
-        ? "Jev could not be reached, so the reply was not read."
+        ? "Smart sorting could not be reached, so the reply was not read."
         : kind && !confident
-          ? `Jev thinks it is ${REPLY_KIND_LABELS[kind]} but is only ${pct(confidence)} sure.`
+          ? `Smart sorting thinks it is ${REPLY_KIND_LABELS[kind]} but is only ${pct(confidence)} sure.`
           : kind
-            ? `Jev read it as ${REPLY_KIND_LABELS[kind]}.`
-            : "Jev could not tell what kind of reply it is.";
+            ? `Smart sorting read it as ${REPLY_KIND_LABELS[kind]}.`
+            : "Smart sorting could not tell what kind of reply it is.";
+    const draft = `\`partnersinbiz.mailbox:create-draft\` (replyToMessageId \`${mail.messageId}\`), then \`send-draft\` if your delegation allows sending`;
     const lines = followUp
       ? [
-        `${name} replied to campaign "${campaign.name}" (step ${stepPosition}, variant ${variant.toUpperCase()}). Jev read it as **${REPLY_KIND_LABELS[kind!]}** (${pct(confidence)} sure), so the campaign is stopped for this contact.`,
+        `${name} (\`contact:${enrollment.contactId}\`) replied to campaign "${campaign.name}" (step ${stepPosition}, variant ${variant.toUpperCase()}). Smart sorting read it as **${REPLY_KIND_LABELS[kind!]}** (${pct(confidence)} sure), so the campaign is stopped for this contact.`,
         "",
-        "Reply from Gmail and log the next step in the CRM.",
+        `Answer them: read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${mail.messageId}\`), draft the reply with ${draft}. Log the next step on the contact in the CRM, then mark this issue done.`,
       ]
       : [
-        `${name} replied to campaign "${campaign.name}". ${reason}`,
+        `${name} (\`contact:${enrollment.contactId}\`) replied to campaign "${campaign.name}". ${reason}`,
         "",
-        "Decide what to do: stop the campaign for this contact, or let it carry on.",
+        `Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${mail.messageId}\`), then do one of these and mark this issue done:`,
+        `- They ask to stop getting these emails: \`partnersinbiz.campaigns:suppress-address\` (email \`${mail.from.email}\`, reason \`unsubscribe\`). Every campaign stops for them and the CRM and Mailbox are told.`,
+        `- Not interested now, or they want a person: \`partnersinbiz.campaigns:stop-enrollment\` (enrollmentId \`${enrollment.id}\`), and answer them with ${draft} when they asked something.`,
+        "- An automatic reply (out of office): leave it running.",
       ];
     lines.push("", `**Subject:** ${subject}`, "", `> ${mail.snippet.replace(/\n+/g, " ").slice(0, 500)}`);
     if (mail.from.email) lines.push("", `From: ${mail.from.email}`);
@@ -449,7 +511,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       originId: `reply:${mail.messageId}`,
       title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}${followUp ? "Reply from" : "Check reply from"} ${name}: ${subject}`,
       description: lines.join("\n"),
-      assignee: campaignAssignee(campaign),
+      assignee: await campaignAssignee(ctx, companyId, campaign),
       wakeReason: "A campaign contact replied",
     });
   }

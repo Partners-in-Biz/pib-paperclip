@@ -17,7 +17,7 @@ import {
   type Account,
 } from "../domain/chart.js";
 import type { ChartIndex } from "../domain/journal.js";
-import { PERIOD_STATUSES, type PeriodStatus } from "../domain/periods.js";
+import { booksStart, PERIOD_STATUSES, type BooksStart, type PeriodStatus } from "../domain/periods.js";
 import { AccountingError, requireMonth } from "../domain/util.js";
 import { BOOK_CURRENCY, newId, withLock, type Actor } from "./common.js";
 
@@ -75,6 +75,19 @@ export async function ensureBook(ctx: PluginContext, companyId: string): Promise
     if (!book) throw new AccountingError("The book could not be set up");
     return book;
   });
+}
+
+/**
+ * When these books start (domain `booksStart`): the day after the cut-over
+ * date, else the earliest journal, else the day the book was set up. Read-only
+ * (no book is created); null when the company has no book yet. The VAT tab
+ * and the VAT tools use it to leave out periods the previous books covered.
+ */
+export async function booksStartFor(ctx: PluginContext, companyId: string, book?: db.BookRow | null): Promise<BooksStart | null> {
+  const row = book === undefined ? await db.getBook(ctx.db, companyId) : book;
+  if (!row) return null;
+  const firstJournalDate = row.cutoverDate ? null : await db.firstJournalDate(ctx.db, companyId);
+  return booksStart({ cutoverDate: row.cutoverDate, firstJournalDate, seededAt: row.seededAt });
 }
 
 export interface Chart extends ChartIndex {

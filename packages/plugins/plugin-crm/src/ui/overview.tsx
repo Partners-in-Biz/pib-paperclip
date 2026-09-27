@@ -5,10 +5,10 @@
 import type { ReactNode } from "react";
 import {
   BarChart,
-  Briefcase,
   Building2,
   ChartColumn,
   CircleAlert,
+  CircleCheck,
   Contact,
   Flame,
   Funnel,
@@ -27,8 +27,9 @@ import {
   Users,
   Workflow,
   fluidColumns,
-  formatCompact,
-  formatMinor,
+  formatMoney,
+  formatMoneyCompact,
+  formatMonth,
   tokens,
   tone,
   type LucideIcon,
@@ -84,12 +85,13 @@ export interface OverviewSummary {
 
 export interface AttentionItem { id: string; label: string; detail?: string; onClick: () => void }
 
-const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** One kind of thing that needs a person, e.g. "Deals without a value". */
+export interface NeedsGroup { key: string; title: string; action: string; items: AttentionItem[] }
 
+/** "Sep" for a chart axis, "Sep 2026" for its tooltip (`month` is `YYYY-MM`). */
 function monthLabel(month: string, long = false): string {
-  const [year, m] = month.split("-");
-  const name = MONTH[Number(m) - 1] ?? month;
-  return long ? `${name} ${year}` : name;
+  const full = formatMonth(month);
+  return long ? full : full.split(" ")[0] ?? full;
 }
 
 /** The currency with the largest open pipeline, else the first one seen, else ZAR. */
@@ -103,30 +105,26 @@ export function mainCurrency(summary: OverviewSummary | undefined, series: CrmSe
   return "ZAR";
 }
 
-/** "R 150K" style amount for chart labels. */
-export function compactMoney(minor: number, currency: string, from = 10_000): string {
-  const major = minor / 100;
-  if (Math.abs(major) < from) return formatMinor(minor, currency);
-  const symbol = formatMinor(0, currency).replace(/[\d.,\s]/g, "") || currency;
-  return `${symbol} ${formatCompact(major)}`;
-}
 
 function sum(values: number[]): number {
   return values.reduce((total, v) => total + v, 0);
 }
 
 function signed(value: number, suffix: string): string | null {
-  if (value === 0) return `No change ${suffix}`;
+  // "No change vs last month", not "No change deals vs last month".
+  if (value === 0) return `No change ${suffix.replace(/^\S+\s+(?=vs\b)/, "")}`;
   return `${value > 0 ? "+" : "−"}${Math.abs(value)} ${suffix}`;
 }
 
-export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmount, onTab }: {
+export function CrmOverview({ summary, series, stages, contacts, needs, unlinked, onTab }: {
   summary: OverviewSummary | undefined;
   series: CrmSeries | undefined;
   stages: OverviewStage[];
   contacts: Array<{ leadScore?: LeadScore | null }>;
+  /** What needs a person now (follow-ups due, deals without a value, email waiting for approval). */
+  needs: NeedsGroup[];
+  /** Contacts not linked to a company: worth a look, not a problem (a sole trader stays unlinked). */
   unlinked: AttentionItem[];
-  noAmount: AttentionItem[];
   onTab?: (tab: "companies" | "contacts" | "deals") => void;
 }) {
   const currency = mainCurrency(summary, series);
@@ -149,17 +147,20 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
 
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+      {/* What needs you comes first: the answer to "what needs me?" before any number. */}
+      <NeedsYouCard groups={needs} />
+
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 10 }}>
         <KpiCard
           label="Open pipeline"
-          value={openPipeline ? compactMoney(openPipeline, currency, 100_000) : "—"}
+          value={formatMoney(openPipeline, currency)}
           hint={`${summary?.openDealCount ?? 0} open ${summary?.openDealCount === 1 ? "deal" : "deals"}${otherCurrencies.length ? ` · also ${otherCurrencies.join(", ")}` : ""}`}
           icon={Funnel}
           sparkline={newDeals}
         />
         <KpiCard
           label="Won this month"
-          value={thisMonth?.count ? compactMoney(wonAmount, currency, 100_000) : "0"}
+          value={formatMoney(wonAmount, currency)}
           tone={thisMonth?.count ? "ok" : "neutral"}
           delta={wonCountDelta === null ? null : signed(wonCountDelta, wonCountDelta === 1 || wonCountDelta === -1 ? "deal vs last month" : "deals vs last month")}
           hint={`${thisMonth?.count ?? 0} ${thisMonth?.count === 1 ? "deal" : "deals"}`}
@@ -210,7 +211,7 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
                   // A funnel: the accent deepens towards the close.
                   color: `color-mix(in oklab, ${tone("accent").solid} ${Math.round(50 + (50 * (index + 1)) / Math.max(openStages.length, 1))}%, transparent)`,
                 }))}
-                formatValue={(v) => compactMoney(v, currency)}
+                formatValue={(v) => formatMoney(v, currency)}
               />
               {closedStages.length ? (
                 <BarChart
@@ -221,7 +222,7 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
                     value: summary?.byStage[stage.id]?.amountMinor ?? 0,
                     tone: STAGE_TONE[stage.kind],
                   }))}
-                  formatValue={(v) => compactMoney(v, currency)}
+                  formatValue={(v) => formatMoney(v, currency)}
                 />
               ) : null}
             </div>
@@ -231,18 +232,18 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
         <SectionCard
           title="Deals won per month"
           icon={ChartColumn}
-          subtitle={wonCount12 ? `${wonCount12} ${wonCount12 === 1 ? "deal" : "deals"} worth ${formatMinor(wonAmount12, currency)} in 12 months.` : "No deals won in the last 12 months."}
+          subtitle={wonCount12 ? `${wonCount12} ${wonCount12 === 1 ? "deal" : "deals"} worth ${formatMoney(wonAmount12, currency)} in 12 months.` : "No deals won in the last 12 months."}
         >
           <BarChart
             data={won.map((m) => ({ label: monthLabel(m.month), title: `${monthLabel(m.month, true)} · ${m.count} ${m.count === 1 ? "deal" : "deals"}`, values: { won: m.amountMinor[currency] ?? 0 } }))}
             series={[{ key: "won", label: `Won (${currency})`, tone: "ok" }]}
-            formatValue={(v) => compactMoney(v, currency)}
+            formatValue={(v) => formatMoneyCompact(v, currency)}
             title="Deals won per month"
             height={110}
             legend={false}
-            emptyText="No deals won in the last 12 months."
+            emptyText="Won deals appear here, one bar per month."
           />
-          <Muted>Dated by the deal's last update.</Muted>
+          {wonCount12 ? <Muted>Dated by the deal's last update.</Muted> : null}
         </SectionCard>
       </div>
 
@@ -251,7 +252,7 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
           <Distribution title="Contacts" counts={summary?.contactLifecycle ?? {}} />
           <Distribution title="Companies" counts={summary?.accountLifecycle ?? {}} />
         </SectionCard>
-        <SectionCard title="Lead scores" icon={TrendingUp} subtitle={scored ? `Jev's fit and intent score for ${scored} ${scored === 1 ? "contact" : "contacts"}.` : "Score a contact from its workspace to see it here."}>
+        <SectionCard title="Lead scores" icon={TrendingUp} subtitle={scored ? `How well ${scored} scored ${scored === 1 ? "contact fits" : "contacts fit"} and how ready ${scored === 1 ? "it is" : "they are"} to buy.` : "Score a contact from its page to see it here."}>
           <StackedBar
             title="Lead score distribution"
             segments={[
@@ -264,11 +265,43 @@ export function CrmOverview({ summary, series, stages, contacts, unlinked, noAmo
         </SectionCard>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(300), gap: 16, alignItems: "start" }}>
-        <AttentionCard title="Contacts without a company" icon={Contact} empty="Every contact is linked." items={unlinked} />
-        <AttentionCard title="Deals without an amount" icon={Briefcase} empty="Every deal has an amount." items={noAmount} />
-      </div>
+      {unlinked.length > 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: fluidColumns(320), gap: 16, alignItems: "start" }}>
+          <AttentionCard
+            title="Contacts without a company"
+            subtitle="Link each one to the company they work for. A sole trader can stay as they are."
+            icon={Contact}
+            tone="info"
+            action="Open"
+            items={unlinked}
+          />
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+/** "Needs you": the only warning block on the overview. One calm line when nothing does. */
+export function NeedsYouCard({ groups }: { groups: NeedsGroup[] }) {
+  const shown = groups.filter((group) => group.items.length > 0);
+  const total = sum(shown.map((group) => group.items.length));
+  if (total === 0) {
+    return (
+      <p style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: tokens.muted }}>
+        <CircleCheck size={15} aria-hidden="true" style={{ color: tone("ok").solid, flexShrink: 0 }} />
+        Nothing in the CRM needs you right now.
+      </p>
+    );
+  }
+  return (
+    <SectionCard title="Needs you" icon={CircleAlert} tone="warn" strip actions={<Pill tone="warn" size="sm" dot>{total}</Pill>}>
+      {shown.map((group) => (
+        <div key={group.key} style={{ display: "grid", gap: 2, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: tokens.muted }}>{group.title} · {group.items.length}</span>
+          <AttentionList items={group.items} action={group.action} tone="warn" />
+        </div>
+      ))}
+    </SectionCard>
   );
 }
 
@@ -285,34 +318,52 @@ function Distribution({ title, counts }: { title: string; counts: Record<string,
   );
 }
 
-export function AttentionCard({ title, icon, empty, items }: { title: string; icon: LucideIcon; empty: string; items: AttentionItem[] }) {
+/** A short list of records to look at. `tone` "info" is a list to check, not a problem. */
+export function AttentionCard({ title, subtitle, icon, tone: t = "warn", action = "Fix", items }: {
+  title: string;
+  subtitle?: string;
+  icon: LucideIcon;
+  tone?: "warn" | "info";
+  action?: string;
+  items: AttentionItem[];
+}) {
+  const warn = t === "warn";
   return (
     <SectionCard
       title={title}
-      icon={items.length ? CircleAlert : icon}
-      tone={items.length ? "warn" : "ok"}
-      strip={items.length > 0}
-      actions={<Pill tone={items.length ? "warn" : "ok"} size="sm" dot>{items.length ? `${items.length} to fix` : "All good"}</Pill>}
+      subtitle={subtitle}
+      icon={warn ? CircleAlert : icon}
+      tone={warn ? "warn" : undefined}
+      strip={warn}
+      actions={<Pill tone={warn ? "warn" : "neutral"} size="sm" dot={warn}>{warn ? `${items.length} to fix` : `${items.length} to check`}</Pill>}
     >
-      {items.length === 0 ? <Muted>{empty}</Muted> : (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid" }}>
-          {items.slice(0, 8).map((item, index) => (
-            <li key={item.id} style={{ borderTop: index === 0 ? "none" : `1px solid ${tokens.border}` }}>
-              <button
-                type="button"
-                onClick={item.onClick}
-                style={{ appearance: "none", border: "none", background: "transparent", color: tokens.fg, padding: "9px 0", width: "100%", textAlign: "left", fontSize: 13, fontWeight: 550, cursor: "pointer", fontFamily: "inherit", display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}
-              >
-                <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: tone("warn").solid, flexShrink: 0 }} />
-                <span style={{ flex: "1 1 auto", minWidth: 0, overflowWrap: "anywhere" }}>{item.label}</span>
-                <span style={{ color: tokens.primary, fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap" }}>Fix →</span>
-              </button>
-            </li>
-          ))}
-          {items.length > 8 ? <li><Muted>And {items.length - 8} more.</Muted></li> : null}
-        </ul>
-      )}
+      <AttentionList items={items} action={action} tone={t} />
     </SectionCard>
+  );
+}
+
+function AttentionList({ items, action, tone: t }: { items: AttentionItem[]; action: string; tone: "warn" | "info" }) {
+  return (
+    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid" }}>
+      {items.slice(0, 8).map((item, index) => (
+        <li key={item.id} style={{ borderTop: index === 0 ? "none" : `1px solid ${tokens.border}` }}>
+          <button
+            type="button"
+            onClick={item.onClick}
+            className="pib-link-card"
+            style={{ appearance: "none", border: "none", background: "transparent", color: tokens.fg, padding: "8px 4px", minHeight: 40, width: "100%", textAlign: "left", fontSize: 13, fontWeight: 550, cursor: "pointer", fontFamily: "inherit", display: "flex", gap: 8, alignItems: "center", minWidth: 0, borderRadius: 8 }}
+          >
+            <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: t === "warn" ? tone("warn").solid : tokens.border, flexShrink: 0 }} />
+            <span style={{ flex: "1 1 auto", minWidth: 0, display: "grid", gap: 1 }}>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+              {item.detail ? <span style={{ fontSize: 12, fontWeight: 500, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.detail}</span> : null}
+            </span>
+            <span style={{ color: tokens.primary, fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap" }}>{action} →</span>
+          </button>
+        </li>
+      ))}
+      {items.length > 8 ? <li><Muted>And {items.length - 8} more.</Muted></li> : null}
+    </ul>
   );
 }
 
@@ -327,9 +378,17 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   email_sent: "Email sent",
   reply_classified: "Reply read",
   deal_moved: "Deal moved",
+  deal_won: "Deal won",
+  quote_accepted: "Quote accepted",
+  invoice_paid: "Invoice paid",
+  lead_captured: "Lead",
+  email_suppressed: "Opted out",
+  email_status: "Email status",
   note: "Note",
   call: "Call",
   meeting: "Meeting",
+  message: "Message",
+  task: "Task",
 };
 
 const ACTIVITY_LOOK: Record<string, { tone: ToneInput; icon?: LucideIcon }> = {
@@ -337,6 +396,12 @@ const ACTIVITY_LOOK: Record<string, { tone: ToneInput; icon?: LucideIcon }> = {
   email_sent: { tone: "ok", icon: MailCheck },
   reply_classified: { tone: "accent", icon: MessageSquare },
   deal_moved: { tone: "accent", icon: Workflow },
+  deal_won: { tone: "ok", icon: Target },
+  quote_accepted: { tone: "ok", icon: Target },
+  invoice_paid: { tone: "ok", icon: Target },
+  lead_captured: { tone: "info", icon: Flame },
+  email_suppressed: { tone: "warn", icon: CircleAlert },
+  email_status: { tone: "warn", icon: CircleAlert },
   note: { tone: "neutral", icon: MessageSquare },
 };
 
@@ -385,7 +450,7 @@ export function LeadScoreCard({ score, when }: { score: LeadScore; when: string 
             <strong style={{ fontSize: 14 }}>Lead score</strong>
             <BandPill band={band} />
           </div>
-          <span style={{ fontSize: 12, color: tokens.muted }}>Jev, {Math.round(score.confidence * 100)}% sure{when ? ` · ${when}` : ""}</span>
+          <span style={{ fontSize: 12, color: tokens.muted }}>{Math.round(score.confidence * 100)}% sure{when ? ` · ${when}` : ""}</span>
         </div>
       </div>
       <div style={{ display: "grid", gap: 8 }}>

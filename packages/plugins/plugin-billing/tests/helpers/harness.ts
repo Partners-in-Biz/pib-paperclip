@@ -22,7 +22,9 @@ export interface Harness {
   ctx: PluginContext;
   client: PgClient;
   emitted: Array<{ name: string; companyId: string; payload: unknown }>;
-  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null }>;
+  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; identifier?: string }>;
+  comments: Array<{ issueId: string; body: string }>;
+  wakeups: string[];
   handlers: Map<string, Array<(event: PluginEvent) => Promise<void>>>;
   config: Map<string, Record<string, unknown>>;
   statements: string[];
@@ -54,7 +56,7 @@ const TABLES_IN_ORDER = [
   "credit_applications", "payments", "credit_notes", "reminders", "pops", "invoice_lines", "invoice_grants", "recurring_invoices",
   "time_entries", "subscriptions", "retainer_plans", "bill_payments", "bill_lines", "bills", "quote_lines", "quotes", "invoices",
   "expenses", "numbering_counters", "number_claims", "client_prefixes", "outbox", "inbox", "decisions", "deliveries",
-  "decision_issues", "fx_rates", "dunning_optouts", "crm_companies", "crm_contacts",
+  "decision_issues", "fx_rates", "dunning_optouts", "crm_companies", "crm_contacts", "work_issues", "handoffs",
 ];
 
 export async function startHarness(): Promise<Harness> {
@@ -77,6 +79,8 @@ export async function startHarness(): Promise<Harness> {
 
   const emitted: Harness["emitted"] = [];
   const issues: Harness["issues"] = new Map();
+  const comments: Harness["comments"] = [];
+  const wakeups: Harness["wakeups"] = [];
   const handlers: Harness["handlers"] = new Map();
   const config: Harness["config"] = new Map();
   const statements: string[] = [];
@@ -128,8 +132,17 @@ export async function startHarness(): Promise<Harness> {
         Object.assign(issue, patch);
         return issue;
       },
-      requestWakeup: async () => ({ queued: true }),
+      createComment: async (issueId: string, body: string) => {
+        if (!issues.has(issueId)) throw new Error("no issue");
+        comments.push({ issueId, body });
+        return { id: `comment-${comments.length}`, issueId, body };
+      },
+      requestWakeup: async (issueId: string) => {
+        wakeups.push(issueId);
+        return { queued: true };
+      },
     },
+    companies: { get: async (id: string) => ({ id, name: "Partners in Biz", issuePrefix: "PIB" }) },
     config: { get: async (companyId: string) => config.get(companyId) ?? {} },
     secrets: { resolve: async (ref: { secretId: string }) => `secret-${ref.secretId}` },
     state: {
@@ -150,6 +163,8 @@ export async function startHarness(): Promise<Harness> {
     client,
     emitted,
     issues,
+    comments,
+    wakeups,
     handlers,
     config,
     statements,
@@ -171,6 +186,8 @@ export async function startHarness(): Promise<Harness> {
       for (const name of TABLES_IN_ORDER) await client.query(`DELETE FROM ${NAMESPACE}.${name}`);
       emitted.length = 0;
       issues.clear();
+      comments.length = 0;
+      wakeups.length = 0;
       config.clear();
     },
     async stop() {

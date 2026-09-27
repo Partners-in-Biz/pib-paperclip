@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
-import { SETUP_EVENTS, type ModulesPayload, type SetupStatus } from "./kit-setup.js";
+import { moduleOfPlugin, MODULES, SETUP_EVENTS, type ModulesPayload, type SetupStatus, type SetupSummary } from "./kit-setup.js";
 import {
   clearFinishIssue,
   getChoice,
@@ -17,11 +17,25 @@ import {
   saveFinishIssue,
   upsertStatus,
 } from "./db.js";
-import { finishSetupContent, type InstalledPlugin } from "./finish-issue.js";
+import { finishSetupContent, finishSetupSummary, type InstalledPlugin } from "./finish-issue.js";
 import { memoryStatus, parseWikiSnapshot, WIKI_PLUGIN } from "./memory.js";
 import { normalizeModules, type ModuleChoice } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { parseSetupStatus } from "./status.js";
+
+/**
+ * Setup → Cockpit: the one setup count for a company, sent whenever it is
+ * worked out (and hourly), so the Operator's brief says the same number as
+ * the Setup page. Arrives as `plugin.partnersinbiz.setup.setup.summary`.
+ */
+export const SUMMARY_EVENT = "setup.summary";
+
+export interface SummaryPayload extends SetupSummary {
+  companyId: string;
+  /** The open Finish setup issue, when there is one (so the Cockpit lists it once). */
+  finishIssueId: string | null;
+  updatedAt: string;
+}
 
 export interface Clock {
   now(): Date;
@@ -79,6 +93,14 @@ export async function reemitModules(ctx: PluginContext): Promise<{ emitted: numb
       result.failed += 1;
       ctx.logger.info("Module switch re-emit failed", { companyId: choice.companyId, error: message(error) });
     }
+    // The setup count too (the Cockpit's copy of it), for the same reason.
+    try {
+      const summary = await storedSummary(ctx, choice.companyId);
+      const issue = await getFinishIssue(ctx, choice.companyId);
+      if (summary) await emitSummary(ctx, choice.companyId, summary, issue?.issueId ?? null);
+    } catch (error) {
+      ctx.logger.info("Setup summary re-emit failed", { companyId: choice.companyId, error: message(error) });
+    }
   }
   return result;
 }
@@ -103,6 +125,41 @@ export async function onStatusEvent(ctx: PluginContext, pluginKey: string, event
     ctx.logger.info("Finish setup refresh failed", { companyId, error: message(error) });
   }
   return true;
+}
+
+/** The PiB plugins behind the modules (Company wiki reports through `reportMemory`). */
+const REPORTABLE = new Set<string>(Object.values(MODULES).flatMap((module) => [...module.plugins] as string[]).filter((key) => key !== WIKI_PLUGIN));
+
+/**
+ * The Setup page checks each plugin live (`GET /setup-status`, board session)
+ * and reports what it saw, so the stored statuses, the sidebar badge, the
+ * Finish setup issue and the Cockpit count the same steps as the page. A
+ * plugin's own hourly push replaces it again (newest `checkedAt` wins); a
+ * reported time is never later than now, so it cannot block those pushes.
+ */
+export async function reportStatuses(ctx: PluginContext, companyId: string, statuses: unknown, clock: Clock = systemClock): Promise<{ stored: string[]; summary: SetupSummary | null }> {
+  const stored: string[] = [];
+  if (statuses && typeof statuses === "object" && !Array.isArray(statuses)) {
+    const now = clock.now();
+    for (const [pluginKey, raw] of Object.entries(statuses as Record<string, unknown>).slice(0, 40)) {
+      if (!REPORTABLE.has(pluginKey)) continue;
+      const parsed = parseSetupStatus(raw, pluginKey);
+      if (!parsed) continue;
+      const checked = Date.parse(parsed.checkedAt);
+      const checkedAt = Number.isFinite(checked) && checked <= now.getTime() ? new Date(checked).toISOString() : now.toISOString();
+      const status: SetupStatus = { ...parsed, plugin: pluginKey, module: parsed.module ?? moduleOfPlugin(pluginKey), checkedAt };
+      await upsertStatus(ctx, { companyId, pluginKey, status, checkedAt, receivedAt: now.toISOString() });
+      stored.push(pluginKey);
+    }
+  }
+  let summary: SetupSummary | null = null;
+  try {
+    const result = await refreshFinishIssue(ctx, companyId, { allowCreate: false }, clock);
+    summary = result.summary ?? null;
+  } catch (error) {
+    ctx.logger.info("Finish setup refresh failed", { companyId, error: message(error) });
+  }
+  return { stored, summary };
 }
 
 /**
@@ -162,10 +219,28 @@ export async function readInstalled(ctx: PluginContext): Promise<Record<string, 
 // ---------------------------------------------------------------------------
 
 export type RefreshResult =
-  | { action: "skipped"; reason: string }
-  | { action: "created" | "updated" | "unchanged" | "closed" | "none"; issueId: string | null; missing: number };
+  | { action: "skipped"; reason: string; summary?: SetupSummary }
+  | { action: "created" | "updated" | "unchanged" | "closed" | "none"; issueId: string | null; missing: number; summary: SetupSummary };
 
 const CLOSED = new Set(["done", "cancelled"]);
+
+/** Tell the Cockpit the company's setup count (events can be lost: the hourly job sends it again). */
+export async function emitSummary(ctx: PluginContext, companyId: string, summary: SetupSummary, finishIssueId: string | null, clock: Clock = systemClock): Promise<void> {
+  const payload: SummaryPayload = { companyId, ...summary, finishIssueId, updatedAt: clock.now().toISOString() };
+  try {
+    await ctx.events.emit(SUMMARY_EVENT, companyId, payload as unknown as Record<string, unknown>);
+  } catch (error) {
+    ctx.logger.info("Setup summary emit failed", { companyId, error: message(error) });
+  }
+}
+
+/** The company's setup count from what is stored now (the same count the issue, the sidebar and the Cockpit show). */
+export async function storedSummary(ctx: PluginContext, companyId: string): Promise<SetupSummary | null> {
+  const choice = await getChoice(ctx, companyId);
+  if (!choice) return null;
+  const statuses = Object.fromEntries((await listStatuses(ctx, companyId)).map((row) => [row.pluginKey, row.status]));
+  return finishSetupSummary({ modules: choice.modules, statuses, installed: await readInstalled(ctx) });
+}
 
 export function fingerprint(title: string, description: string): string {
   return createHash("sha256").update(`${title}\n${description}`).digest("hex").slice(0, 32);
@@ -201,13 +276,28 @@ export async function refreshFinishIssue(
 ): Promise<RefreshResult> {
   const choice = await getChoice(ctx, companyId);
   if (!choice) return { action: "skipped", reason: "no module choice saved" };
+  const result = await refreshIssue(ctx, companyId, choice, options, clock);
+  // The Cockpit lists the same count (and the issue once) on Waiting on you and in the daily brief.
+  await emitSummary(ctx, companyId, result.summary!, "issueId" in result && result.action !== "closed" ? result.issueId : null, clock);
+  return result;
+}
+
+async function refreshIssue(
+  ctx: PluginContext,
+  companyId: string,
+  choice: { modules: Partial<Record<string, boolean>>; updatedBy: string | null },
+  options: { allowCreate: boolean },
+  clock: Clock,
+): Promise<RefreshResult> {
   const statuses = Object.fromEntries((await listStatuses(ctx, companyId)).map((row) => [row.pluginKey, row.status]));
-  const content = finishSetupContent({
+  const input = {
     modules: choice.modules,
     statuses,
     installed: await readInstalled(ctx),
     prefix: await companyPrefix(ctx, companyId),
-  });
+  };
+  const summary = finishSetupSummary(input);
+  const content = finishSetupContent(input);
   const existing = await getFinishIssue(ctx, companyId);
   const issue = existing ? await ctx.issues.get(existing.issueId, companyId).catch(() => null) : null;
   const open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
@@ -217,21 +307,21 @@ export async function refreshFinishIssue(
     if (open) {
       await ctx.issues.update(open.id, { status: "done", description: `${open.description ?? ""}\n\nEverything required is set up. Closed by the Setup plugin.`.trim() }, companyId);
       await clearFinishIssue(ctx, companyId);
-      return { action: "closed", issueId: open.id, missing: 0 };
+      return { action: "closed", issueId: open.id, missing: 0, summary };
     }
     if (existing) await clearFinishIssue(ctx, companyId);
-    return { action: "none", issueId: null, missing: 0 };
+    return { action: "none", issueId: null, missing: 0, summary };
   }
 
   const print = fingerprint(content.title, content.description);
   if (open) {
-    if (existing?.fingerprint === print) return { action: "unchanged", issueId: open.id, missing: content.missing.length };
+    if (existing?.fingerprint === print) return { action: "unchanged", issueId: open.id, missing: content.missing.length, summary };
     await ctx.issues.update(open.id, { title: content.title, description: content.description }, companyId);
     await saveFinishIssue(ctx, { companyId, issueId: open.id, fingerprint: print, missingCount: content.missing.length }, now);
-    return { action: "updated", issueId: open.id, missing: content.missing.length };
+    return { action: "updated", issueId: open.id, missing: content.missing.length, summary };
   }
-  if (!options.allowCreate) return { action: "none", issueId: null, missing: content.missing.length };
-  if (!(await weeklyIssueOn(ctx, companyId))) return { action: "skipped", reason: "weekly issue switched off" };
+  if (!options.allowCreate) return { action: "none", issueId: null, missing: content.missing.length, summary };
+  if (!(await weeklyIssueOn(ctx, companyId))) return { action: "skipped", reason: "weekly issue switched off", summary };
   const created = await createWorkIssue(ctx, {
     companyId,
     title: content.title,
@@ -241,7 +331,7 @@ export async function refreshFinishIssue(
     ...(choice.updatedBy ? { assigneeUserId: choice.updatedBy } : {}),
   });
   await saveFinishIssue(ctx, { companyId, issueId: created.id, fingerprint: print, missingCount: content.missing.length }, now);
-  return { action: "created", issueId: created.id, missing: content.missing.length };
+  return { action: "created", issueId: created.id, missing: content.missing.length, summary };
 }
 
 /** Weekly job: every company with a saved module choice and saved Setup settings. */
@@ -286,6 +376,10 @@ export async function loadSetup(ctx: PluginContext, companyId: string, params: R
     finishIssueId: issue?.issueId ?? null,
     settingsSaved: saved,
     installed,
+    // The one setup count (kit setupSummary): the sidebar badge and the Cockpit show it as it is.
+    summary: choice
+      ? finishSetupSummary({ modules: choice.modules, statuses: Object.fromEntries(statuses.map((row) => [row.pluginKey, row.status])), installed })
+      : null,
   };
 }
 

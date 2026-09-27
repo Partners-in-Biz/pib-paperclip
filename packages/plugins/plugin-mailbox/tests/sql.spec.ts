@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { crmProjectionMigration, decisionsMigration, inboxMigration } from "@partnersinbiz/pib-plugin-kit";
+import { crmProjectionMigration, decisionsMigration, inboxMigration, outboxMigration } from "@partnersinbiz/pib-plugin-kit";
 import { SqlStore, type DbClient } from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
 import type { SendRecordInput } from "../src/gmail/types.js";
@@ -10,8 +10,16 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–002 and adds 003–006", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql"]);
+  it("keeps 001–002 and adds 003–007", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql"]);
+  });
+
+  it("adds the do-not-email list and the kit outbox, with no quotes in comments", () => {
+    const sql = readFileSync(new URL("007_suppressions_outbox.sql", migrationsDir), "utf8");
+    expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.suppressions`);
+    expect(sql).toContain("CHECK (scope IN ('marketing', 'all'))");
+    expect(sql).toContain(outboxMigration(NAMESPACE).trim());
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
   });
 
   it("pass the host migration guard statement by statement", () => {
@@ -143,6 +151,13 @@ describe("runtime SQL passes the host guard", () => {
     await s.sendCounts(c);
     await s.categoryCounts(c);
     await s.dailyCounts(c, 14);
+    await s.suppressionsFor(c, ["A@b.co", "x@y.co"]);
+    await s.suppressionsFor(c, []);
+    await s.upsertSuppression({ companyId: c, email: "a@b.co", scope: "marketing", reason: "unsubscribed", source: "partnersinbiz.crm" });
+    await s.listSuppressions(c, 50);
+    await s.ownSuppressionsSince("partnersinbiz.mailbox", new Date().toISOString(), 100);
+    await s.recordSendFailure(input, "suppressed", true, [{ email: "a@b.co", scope: "all", reason: "bounced" }]);
+    await s.markSendSent("k", { gmailMessageId: "g", gmailThreadId: "t", rfcMessageId: "<r>", accountId: "a", fromAddress: "x@y.co", skipped: [{ email: "c@d.co", scope: "marketing", reason: "unsubscribed" }] });
     expect(calls.length).toBeGreaterThan(60);
   });
 

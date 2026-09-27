@@ -12,8 +12,10 @@ export interface PartnerSummary {
   /** Pending links this company still has to accept. */
   linksToAccept: number;
   activeGrants: number;
-  /** Proposed grants shared with this company, waiting for its acceptance. */
+  /** Our records proposed for sharing: a person here accepts them (only the owner company can). */
   grantsToAccept: number;
+  /** Partners' records proposed to us, waiting for the owner company. */
+  grantsIncoming: number;
   revokedGrants: number;
   /** Active grants per record type, most first. */
   byType: Array<{ type: string; count: number }>;
@@ -38,6 +40,17 @@ export function acceptedByMe(link: LinkLite, companyId: string | null | undefine
   return false;
 }
 
+/** The other company on a link. */
+export function otherCompany(link: LinkLite, companyId: string | null | undefined): string {
+  return link.company_a_id === companyId ? link.company_b_id : link.company_a_id;
+}
+
+/** What a link needs, in plain words: it is active, it waits for this company, or it waits for the partner. */
+export function linkState(link: LinkLite, companyId: string | null | undefined): "active" | "waiting-for-you" | "waiting-for-partner" {
+  if (link.status === "active") return "active";
+  return acceptedByMe(link, companyId) ? "waiting-for-partner" : "waiting-for-you";
+}
+
 export function partnerSummary(links: LinkLite[], grants: GrantLite[], companyId: string | null | undefined): PartnerSummary {
   const active = grants.filter((g) => g.status === "active");
   const types = new Map<string, number>();
@@ -54,7 +67,8 @@ export function partnerSummary(links: LinkLite[], grants: GrantLite[], companyId
     pendingLinks: pending.length,
     linksToAccept: pending.filter((l) => !acceptedByMe(l, companyId)).length,
     activeGrants: active.length,
-    grantsToAccept: grants.filter((g) => g.status === "proposed" && g.grantee_company_id === companyId).length,
+    grantsToAccept: grants.filter((g) => g.status === "proposed" && g.source_company_id === companyId).length,
+    grantsIncoming: grants.filter((g) => g.status === "proposed" && g.grantee_company_id === companyId && g.source_company_id !== companyId).length,
     revokedGrants: grants.filter((g) => g.status === "revoked").length,
     byType: ranked(types).map(([type, count]) => ({ type, count })),
     byPartner: ranked(partners).map(([companyId, count]) => ({ companyId, count })),

@@ -20,6 +20,7 @@ import { billJournal, postJournal, reverseJournal } from "./ledger.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue } from "./money.js";
 import { emitBillItem } from "./openitems.js";
 import { postBill, postExpense, type ExpenseForPosting } from "./posting.js";
+import { assigneeOf, personAssignee, workRoute } from "./routing.js";
 import { decideExpense, expenseState, extractReceipt, ruleVatClaimable, type ReceiptFields } from "./receipts.js";
 import { billColumns, billPaidMinor, BILL_COLUMNS, getBill, settleBill, type BillRow } from "./settle.js";
 import { assertOwnKey, assertUploadable, documentKey, getObject, presignGet, presignPut } from "./storage.js";
@@ -237,10 +238,11 @@ export async function requestBillApproval(ctx: PluginContext, context: PluginPer
   const issue = await createWorkIssue(ctx, {
     companyId,
     title: `Approve bill from ${bill.supplier_name}${bill.supplier_reference ? ` (${bill.supplier_reference})` : ""}`,
-    description: `Open Billing → Bills, check the bill's lines and VAT against the supplier's invoice, then mark this issue done. The plugin then approves the bill and posts it to the books. Cancel this issue to leave it as a draft.`,
+    description: `Open Billing → Costs → Bills, check the bill's lines and VAT against the supplier's invoice, then mark this issue done. The plugin then approves the bill and posts it to the books. Cancel this issue to leave it as a draft.`,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: bill.id,
-    ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+    // Money: a person approves (the Billing approver, else the owner).
+    ...(await personAssignee(ctx, companyId, settings)),
   });
   await ctx.db.execute(`UPDATE ${table(ctx, "bills")} SET approval_issue_id = $2, pending_action = 'approve', updated_at = now() WHERE id = $1`, [bill.id, issue.id]);
   return { billId: bill.id, issueId: issue.id };
@@ -406,10 +408,18 @@ export async function draftBillFromEmail(
     await createWorkIssue(ctx, {
       companyId,
       title: `Complete the bill from ${input.supplier.name || input.fromEmail}`,
-      description: `A supplier invoice arrived by email ("${input.subject}"). Billing drafted a bill for it. Open Billing → Bills, add the lines and VAT from the attachment in the Mailbox, then approve it.`,
+      description: [
+        `A supplier invoice arrived by email ("${input.subject}", Mailbox message ${input.messageId}). Billing drafted bill ${id} for it (supplier ${input.supplier.kind}:${input.supplier.ref}).`,
+        "",
+        "1. Read the supplier's invoice (the attachment on that message in the Mailbox).",
+        `2. Add each line with \`partnersinbiz.billing:add-bill-line\` (billId ${id}): amounts in cents, the VAT code and the expense category.`,
+        `3. Ask a person to approve it with \`partnersinbiz.billing:request-bill-approval\`. Never pay a bill yourself.`,
+        "",
+        "Done when the bill has its lines and an approval issue is open. If the email is not a bill, say so here and close this issue.",
+      ].join("\n"),
       originKind: `plugin:${PIB_PLUGINS.billing}`,
       originId: id,
-      ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+      ...assigneeOf(await workRoute(ctx, companyId)),
     });
   } catch (error) {
     ctx.logger.info("Draft bill issue not opened", { billId: id, error: error instanceof Error ? error.message : String(error) });
@@ -455,7 +465,7 @@ export async function attachBillFile(ctx: PluginContext, context: PluginPerformA
 
 // ── Expenses ───────────────────────────────────────────────────────────────
 
-function forPosting(row: ExpenseRow): ExpenseForPosting {
+export function forPosting(row: ExpenseRow): ExpenseForPosting {
   return {
     id: row.id,
     company_id: row.company_id,

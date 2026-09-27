@@ -1,15 +1,17 @@
 /**
  * Bank reconciliation per bank account and statement period:
- * prepare (balances and blockers) → approval issue → a person approves →
- * the period's lines are locked to the reconciliation.
+ * prepare (balances and blockers) → approval issue for a person (the owner,
+ * else whoever asked) → a person approves → the period's lines are locked
+ * to the reconciliation. The Bookkeeper prepares and asks; only a person
+ * approves (an agent closing the issue reopens it for the person).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { reconciliationSummary, type ReconciliationSummary } from "../domain/reconcile.js";
-import { AccountingError, addDays, formatRand, requireDate } from "../domain/util.js";
+import { AccountingError, addDays, addMonths, lastDayOfMonth, monthOf, requireDate, requireMonth, todayIso } from "../domain/util.js";
+import { resolveBankAccount } from "./bank.js";
 import { loadChart } from "./books.js";
-import { actorRecord, closeIssue, commentOn, newId, ORIGIN, requireUser, type Actor } from "./common.js";
+import { actorRecord, approverFor, closeIssue, commentOn, money, newId, openIssue, ORIGIN, reopenForPerson, requireUser, type Actor } from "./common.js";
 
 export interface PreparedReconciliation {
   reconciliation: db.ReconciliationRow;
@@ -99,24 +101,26 @@ export async function requestReconciliationApproval(ctx: PluginContext, companyI
     closingMinor: rec.closingMinor,
   });
   if (!summary.ready) throw new AccountingError(summary.blockers.join(" "), "conflict");
-  const issue = await createWorkIssue(ctx, {
+  const approver = await approverFor(ctx, companyId, actor);
+  const issue = await openIssue(ctx, {
     companyId,
     title: `Approve bank reconciliation: ${bank.name} ${rec.periodStart} to ${rec.periodEnd}`,
     description: [
       `| | |`,
       `|---|---:|`,
-      `| Opening balance | ${formatRand(summary.openingMinor)} |`,
-      `| Lines in the period | ${formatRand(summary.linesTotalMinor)} |`,
-      `| Closing balance (statement) | ${formatRand(summary.closingMinor)} |`,
-      `| Difference | ${formatRand(summary.differenceMinor)} |`,
-      `| Ledger balance of ${bank.accountCode} | ${formatRand(summary.glBalanceMinor)} |`,
+      `| Opening balance | ${money(summary.openingMinor)} |`,
+      `| Lines in the period | ${money(summary.linesTotalMinor)} |`,
+      `| Closing balance (statement) | ${money(summary.closingMinor)} |`,
+      `| Difference | ${money(summary.differenceMinor)} |`,
+      `| Ledger balance of ${bank.accountCode} | ${money(summary.glBalanceMinor)} |`,
       "",
-      "Every line is reconciled or excluded. Approving locks these lines. Approve it under **Accounting → Bank → Reconcile**, or mark this issue done yourself (a person must do it).",
+      `Prepared by ${actor.kind === "agent" ? "the Bookkeeper" : "a board user"}. Every line is reconciled or excluded, and the statement difference is zero. Approving locks these lines.`,
+      "To approve, mark this issue done yourself, or approve it under **Accounting → Bank → Reconcile**. Only a person can approve: if an agent closes it, it opens again for you. To refuse, cancel this issue; the reconciliation goes back to draft.",
     ].join("\n"),
+    priority: "high",
     originKind: ORIGIN,
     originId: `reconciliation:${rec.id}`,
-    wake: false,
-  });
+  }, { assigneeUserId: approver });
   await db.setReconciliationStatus(ctx.db, companyId, rec.id, "draft", { status: "pending_approval", approvalIssueId: issue.id });
   return (await db.getReconciliation(ctx.db, companyId, rec.id))!;
 }
@@ -141,8 +145,78 @@ export async function approveReconciliation(ctx: PluginContext, companyId: strin
   return (await db.getReconciliation(ctx.db, companyId, rec.id))!;
 }
 
+/**
+ * The `prepare-reconciliation` tool: prepare one bank account's
+ * reconciliation for a calendar month (or an exact statement period) and,
+ * when it is ready, open its approval issue for a person.
+ */
+export async function prepareReconciliationTool(
+  ctx: PluginContext,
+  companyId: string,
+  actor: Actor,
+  input: { bankAccountId?: unknown; month?: unknown; periodStart?: unknown; periodEnd?: unknown; openingMinor?: unknown; closingMinor?: unknown; requestApproval?: unknown },
+) {
+  const bank = await resolveBankAccount(ctx, companyId, input.bankAccountId);
+  let start: string;
+  let end: string;
+  if (input.periodStart || input.periodEnd) {
+    start = requireDate(input.periodStart, "periodStart");
+    end = requireDate(input.periodEnd, "periodEnd");
+  } else {
+    const month = typeof input.month === "string" && input.month.trim() ? requireMonth(input.month.trim(), "month") : addMonths(monthOf(todayIso()), -1);
+    start = `${month}-01`;
+    end = lastDayOfMonth(month);
+  }
+  const existing = await db.reconciliationByPeriod(ctx.db, companyId, bank.id, start, end);
+  if (existing && existing.status !== "draft") {
+    return {
+      reconciliationId: existing.id,
+      bankAccount: { id: bank.id, name: bank.name },
+      periodStart: start,
+      periodEnd: end,
+      status: existing.status,
+      approvalIssueId: existing.approvalIssueId,
+      next: existing.status === "locked" ? "Already approved and locked. Nothing to do." : "Already waiting for a person's approval on its issue. Nothing to do.",
+    };
+  }
+  const prepared = await prepareReconciliation(ctx, companyId, actor, { bankAccountId: bank.id, periodStart: start, periodEnd: end, openingMinor: input.openingMinor, closingMinor: input.closingMinor });
+  let rec = prepared.reconciliation;
+  const s = prepared.summary;
+  const wantApproval = input.requestApproval !== false;
+  if (wantApproval && s.ready) rec = await requestReconciliationApproval(ctx, companyId, actor, rec.id);
+  const next = rec.status === "pending_approval"
+    ? "Approval issue opened for a person. Nothing more to do here; it shows in the Cockpit until they approve."
+    : s.ready
+      ? "Ready. Run again without requestApproval: false to open the approval issue."
+      : s.unreconciledCount > 0
+        ? `Reconcile the ${s.unreconciledCount} open line(s) first (list-bank-lines with bankAccountId and to: ${end}), then run this again.`
+        : `The statement does not add up (difference ${money(s.differenceMinor)}): check the opening and closing balance on the statement (pass openingMinor and closingMinor), or a line may be missing. If you cannot tell, ask with the ask-owner tool.`;
+  return {
+    reconciliationId: rec.id,
+    bankAccount: { id: bank.id, name: bank.name },
+    periodStart: start,
+    periodEnd: end,
+    status: rec.status,
+    openingMinor: s.openingMinor,
+    closingMinor: s.closingMinor,
+    linesTotalMinor: s.linesTotalMinor,
+    differenceMinor: s.differenceMinor,
+    openLines: s.unreconciledCount,
+    ledgerBalanceMinor: s.glBalanceMinor,
+    ledgerDifferenceMinor: s.glDifferenceMinor,
+    ready: s.ready,
+    blockers: s.blockers,
+    approvalIssueId: rec.approvalIssueId,
+    next,
+  };
+}
+
 export async function onReconciliationIssue(ctx: PluginContext, companyId: string, rec: db.ReconciliationRow, status: string, actor: { type?: string; id?: string }): Promise<void> {
   if (rec.status !== "pending_approval") return;
+  if (actor.type === "agent" && (status === "done" || status === "cancelled")) {
+    await reopenForPerson(ctx, companyId, rec.approvalIssueId, `bank reconciliation ${rec.periodStart} to ${rec.periodEnd}`);
+    return;
+  }
   if (status === "cancelled") {
     await db.setReconciliationStatus(ctx.db, companyId, rec.id, "pending_approval", { status: "draft" });
     return;

@@ -1,18 +1,18 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE, withMemoryInstruction } from "@partnersinbiz/pib-plugin-kit";
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
-import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE } from "./hire.js";
+import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_INSTRUCTIONS, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
-import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS, SOCIAL_AGENT_INSTRUCTIONS } from "./skills.js";
+import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.5.6",
+  version: "0.6.0",
   displayName: "Social",
   description:
-    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Jev inbox triage; Growth Lab scores, experiments and playbook. " +
+    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Inbox triage (built-in rules, or Jev); Growth Lab scores, experiments and playbook. " +
     "OAuth redirect URI for every provider (shown on the Social page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
@@ -96,6 +96,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Measures running experiments once each arm has its 7-day scores (or after 21 days), updates the scoreboard and drafts playbook changes.",
       schedule: "50 3 * * *",
     },
+    {
+      jobKey: "redeliver",
+      displayName: "Re-send leads to the CRM",
+      description: "Re-sends inbox leads the CRM has not answered yet (lead.captured.result), with backoff, for about three days.",
+      schedule: "*/10 * * * *",
+    },
   ],
   apiRoutes: [
     {
@@ -139,7 +145,8 @@ const manifest: PaperclipPluginManifestV1 = {
       permissions: { pluginTools: [PLUGIN_ID, "partnersinbiz.crm"] },
       status: "paused",
       budgetMonthlyCents: 0,
-      instructions: { entryFile: "AGENTS.md", content: SOCIAL_AGENT_INSTRUCTIONS },
+      // One AGENTS.md for every Social agent: the hire's (never materialised by this plugin; kept for the host's drift check).
+      instructions: { entryFile: "AGENTS.md", content: withMemoryInstruction(SOCIAL_HIRE_INSTRUCTIONS) },
     },
   ],
   projects: [
@@ -156,7 +163,8 @@ const manifest: PaperclipPluginManifestV1 = {
       routineKey: PLAN_ROUTINE_KEY,
       title: PLAN_ROUTINE_TITLE,
       description: PLAN_ROUTINE_DESCRIPTION,
-      status: "paused",
+      // Ships on: it is the agent's own weekly planning (drafts still need a person's approval).
+      status: "active",
       priority: "medium",
       assigneeRef: { resourceKind: "agent", resourceKey: SOCIAL_AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: SOCIAL_PROJECT_KEY },
@@ -166,7 +174,7 @@ const manifest: PaperclipPluginManifestV1 = {
         {
           kind: "schedule",
           label: "Mondays 07:00",
-          enabled: false,
+          enabled: true,
           cronExpression: "0 7 * * 1",
           timezone: DEFAULT_TIMEZONE,
           signingMode: null,

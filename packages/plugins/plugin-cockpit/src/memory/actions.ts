@@ -3,11 +3,12 @@
  */
 import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { isMemoryArea, MEMORY_AREAS, MEMORY_KINDS, MEMORY_LIMITS } from "@partnersinbiz/pib-plugin-kit";
+import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { assignableUser } from "../constants.js";
 import { CockpitError, type Env } from "../env.js";
 import { SELECTION, type FactStatus } from "./engine.js";
 import { memoryJevConfig } from "./jev.js";
-import { addFact, feedback, MemoryError, recall, review, updateFact, type Actor } from "./service.js";
+import { addFact, clientDirectory, exportMemory, feedback, importMemory, MemoryError, recall, review, uniqueClients, updateFact, type Actor } from "./service.js";
 import * as store from "./store.js";
 
 function companyOf(context: PluginPerformActionContext): string {
@@ -38,13 +39,15 @@ export function registerMemoryActions(env: Env): void {
 
   ctx.actions.register("memory.overview", async (_params, context) => {
     const companyId = companyOf(context);
-    const [stats, briefs, jev, clients, coverage] = await Promise.all([
+    const [stats, briefs, jev, known, coverage] = await Promise.all([
       store.memoryStats(ctx, companyId),
       store.recentBriefs(ctx, companyId, 20),
       memoryJevConfig(ctx, companyId),
-      store.knownClients(ctx, companyId),
+      clientDirectory(env, companyId),
       store.recallCoverage(ctx, companyId).catch(() => []),
     ]);
+    // Every CRM client plus clients only memory knows, by name (so a fact can be added for a new client).
+    const clients = uniqueClients(known).sort((a, b) => a.clientName.localeCompare(b.clientName)).slice(0, 500);
     return {
       stats,
       coverage,
@@ -74,10 +77,15 @@ export function registerMemoryActions(env: Env): void {
     const companyId = companyOf(context);
     const status = ["active", "superseded", "archived", "all"].includes(String(params.status)) ? (String(params.status) as FactStatus | "all") : "active";
     const client = str(params.client, 200);
+    // One client known under several refs (the page shows it once): `clients: [ref, …]`.
+    const clientRefs = Array.isArray(params.clients)
+      ? [...new Set(params.clients.filter((ref): ref is string => typeof ref === "string" && !!parseClientParam(ref)))].slice(0, 20)
+      : [];
     const result = await store.listFacts(ctx, companyId, {
       status,
-      own: client === "own",
+      own: client === "own" && clientRefs.length === 0,
       clientRef: client && client !== "own" ? client : null,
+      clientRefs: clientRefs.length ? clientRefs : null,
       area: isMemoryArea(params.area) ? params.area : null,
       q: str(params.q, 200),
       pinned: params.pinned === true,
@@ -122,4 +130,17 @@ export function registerMemoryActions(env: Env): void {
   });
 
   ctx.actions.register("memory.review", async (_params, context) => wrap(() => review(env, companyOf(context))));
+
+  // Backup / restore (board users): a JSON file with every fact, and its import.
+  ctx.actions.register("memory.export", async (_params, context) => {
+    const companyId = companyOf(context);
+    userActor(context);
+    return wrap(() => exportMemory(env, companyId));
+  });
+
+  ctx.actions.register("memory.import", async (params, context) => {
+    const companyId = companyOf(context);
+    const actor = userActor(context);
+    return wrap(() => importMemory(env, companyId, params.data, actor));
+  });
 }

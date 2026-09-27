@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, CircleCheck, EmptyState, Field, FileText, Input, Modal, Select, Timeline, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleCheck, EmptyState, Field, FileText, Input, Modal, Select, Timeline, TriangleAlert, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { statusTone } from "./series.js";
 import { Card, Muted, Row, SmallButton, Status, fmtDate, minorToInput, money, openBase64Pdf, openUrl, today, toMinor, useBilling, words } from "./parts.js";
 import type { Pop } from "./types.js";
@@ -10,9 +10,43 @@ const BASIS: Record<string, string> = {
   thread: "reply to our invoice",
   sender: "sender's only open invoice",
   upload: "uploaded",
+  agent: "an agent's request",
   manual: "picked by a person",
   none: "not matched",
 };
+
+function popFrom(pop: Pop): string {
+  if (pop.source === "email") return `${pop.fromName ? `${pop.fromName} ` : ""}${pop.fromEmail ?? ""}${pop.subject ? ` — ${pop.subject}` : ""}`;
+  if (pop.source === "agent") return `Agent: ${pop.snippet ?? "the customer says they paid"}`;
+  return "Upload";
+}
+
+/** Credit notes (the Invoices tab's Credit notes section). */
+export function CreditNotesSection({ onOpenInvoice }: { onOpenInvoice: (id: string) => void }) {
+  const { snapshot, call, say } = useBilling();
+  const notes = snapshot.creditNotes ?? [];
+  return (
+    <Card title="Credit notes" subtitle="A credit note lowers what an invoice owes; the rest stays with the customer as credit. Agents ask for one; a person issues it.">
+      {notes.length === 0 ? <Muted>No credit notes yet. Issue one from a sent invoice (open it → Credit note).</Muted> : (
+        <DataTable
+          columns={[
+            { key: "number", header: "Number" },
+            { key: "invoice", header: "Invoice" },
+            { key: "amount", header: "Amount" },
+            { key: "status", header: "Status", render: (value) => <Status status={String(value)} /> },
+            { key: "id", header: "", width: "150px", render: (_v, row) => (
+              <Row style={{ gap: 4 }}>
+                <SmallButton onClick={() => void call<{ base64: string; filename: string }>("billing.credit-note-pdf", { creditNoteId: String(row.id) }).then((r) => openBase64Pdf(r.base64, r.filename)).catch((e: unknown) => say(errorText(e)))}>PDF</SmallButton>
+                <SmallButton onClick={() => onOpenInvoice(String(row.invoiceId))}>Invoice</SmallButton>
+              </Row>
+            ) },
+          ]}
+          rows={notes.map((n) => ({ ...n, number: n.number ?? "—", invoice: n.invoiceNumber ?? "", amount: money(n.amountMinor, n.currency ?? "ZAR") }))}
+        />
+      )}
+    </Card>
+  );
+}
 
 export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => void }) {
   const { snapshot, call, run, say, scope } = useBilling();
@@ -28,11 +62,26 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
 
   const view = (pop: Pop) => void call<{ url: string }>("billing.pop-file", { popId: pop.id }).then((r) => openUrl(r.url)).catch((e: unknown) => say(errorText(e)));
 
+  const future = snapshot.futurePayments ?? [];
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      {future.length > 0 ? (
+        <Card title="Payments dated in the future" icon={TriangleAlert} tone="warn" strip>
+          <Muted>A payment counts from its date, so these are in no total yet. Money can't arrive before today: the date is probably wrong (often the day and month swapped on a bank statement). Check each one against the bank statement.</Muted>
+          <div style={{ display: "grid", gap: 6 }}>
+            {future.map((p) => (
+              <Row key={p.invoiceId} style={{ justifyContent: "space-between", fontSize: 13 }}>
+                <span style={{ minWidth: 0, overflowWrap: "anywhere" }}><strong>{p.number}</strong> · {p.customerName} · {money(p.amountMinor, p.currency)} dated {fmtDate(p.paidAt)}</span>
+                <SmallButton onClick={() => onOpenInvoice(p.invoiceId)}>Open invoice</SmallButton>
+              </Row>
+            ))}
+          </div>
+        </Card>
+      ) : null}
       <Card title={`Proof of payment to check (${pending.length})`} icon={FileText} tone={pending.length ? "warn" : "ok"} strip={pending.length > 0}>
-        <Muted>Proofs of payment come in by email (the Mailbox) or by upload. Billing never records money from a proof alone: check the bank, then confirm or reject.</Muted>
-        {pending.length === 0 ? <EmptyState compact tone="ok" icon={CircleCheck} title="Nothing to check" description="New proofs of payment from the Mailbox land here." /> : (
+        <Muted>Proofs of payment come in by email (the Mailbox), by upload, or from an agent when a customer says they paid. Billing never records money from a proof alone: check the bank, then confirm or reject.</Muted>
+        {pending.length === 0 ? <EmptyState compact tone="ok" icon={CircleCheck} title="Nothing to check" description="Proofs of payment from the Mailbox, uploads and agents' payment checks land here." /> : (
           <DataTable
             columns={[
               { key: "received", header: "Received" },
@@ -59,7 +108,7 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
             rows={pending.map((pop) => ({
               ...pop,
               received: fmtDate(pop.receivedAt),
-              from: pop.source === "email" ? `${pop.fromName ? `${pop.fromName} ` : ""}${pop.fromEmail ?? ""}${pop.subject ? ` — ${pop.subject}` : ""}` : "Upload",
+              from: popFrom(pop),
               matched: BASIS[pop.matchBasis ?? "none"] ?? pop.matchBasis ?? "",
             }))}
           />
@@ -72,31 +121,11 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
             id: pop.id,
             at: pop.receivedAt,
             title: `${pop.invoiceNumber ?? "Proof of payment"} · ${words(pop.status)}`,
-            detail: `${pop.fromEmail ?? "Upload"}${pop.rejectReason ? ` · ${pop.rejectReason}` : ""}`,
+            detail: `${pop.source === "agent" ? "Agent request" : pop.fromEmail ?? "Upload"}${pop.rejectReason ? ` · ${pop.rejectReason}` : ""}`,
             tone: statusTone(pop.status),
           }))} />
         </Card>
       ) : null}
-
-      <Card title="Credit notes">
-        {(snapshot.creditNotes ?? []).length === 0 ? <Muted>No credit notes yet. Issue one from a sent invoice.</Muted> : (
-          <DataTable
-            columns={[
-              { key: "number", header: "Number" },
-              { key: "invoice", header: "Invoice" },
-              { key: "amount", header: "Amount" },
-              { key: "status", header: "Status", render: (value) => <Status status={String(value)} /> },
-              { key: "id", header: "", width: "150px", render: (_v, row) => (
-                <Row style={{ gap: 4 }}>
-                  <SmallButton onClick={() => void call<{ base64: string; filename: string }>("billing.credit-note-pdf", { creditNoteId: String(row.id) }).then((r) => openBase64Pdf(r.base64, r.filename)).catch((e: unknown) => say(errorText(e)))}>PDF</SmallButton>
-                  <SmallButton onClick={() => onOpenInvoice(String(row.invoiceId))}>Invoice</SmallButton>
-                </Row>
-              ) },
-            ]}
-            rows={(snapshot.creditNotes ?? []).map((n) => ({ ...n, number: n.number ?? "—", invoice: n.invoiceNumber ?? "", amount: money(n.amountMinor, n.currency ?? "ZAR") }))}
-          />
-        )}
-      </Card>
 
       {scope ? <ClientMoney /> : null}
 
@@ -114,7 +143,7 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
           </Select>
         </Field>
         <Field label={`Amount in the bank (${currencyOf(invoiceId || null)})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-        <Field label="Date it cleared"><Input type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} /></Field>
+        <Field label="Date it cleared"><Input type="date" value={paidAt} max={today()} onChange={(e) => setPaidAt(e.target.value)} /></Field>
       </Modal>
     </div>
   );

@@ -73,6 +73,7 @@ export interface Post extends Scoped {
   status: "draft" | "review" | "approved" | "scheduled" | "publishing" | "published" | "partially_published" | "failed";
   scope: string;
   ownerUserId: string | null;
+  /** Draft or in review: the proposed time (approval schedules it). Scheduled: the publish time. */
   scheduledAt: string | null;
   publishedAt: string | null;
   firstComment: string | null;
@@ -82,6 +83,8 @@ export interface Post extends Scoped {
   /** Growth Lab: the experiment and arm this post tests. */
   experimentId: string | null;
   experimentArm: "control" | "variant" | null;
+  /** Approved without a time: the Social agent's task to pick one. */
+  scheduleIssueId: string | null;
   error: string | null;
   failureIssueId: string | null;
   createdAt: string | null;
@@ -124,7 +127,7 @@ export interface InboxItem extends Scoped {
   repliedAt: string | null;
   receivedAt: string | null;
   canReply: boolean;
-  /** Jev triage; null when not triaged (no key, or not yet). */
+  /** Triage (Jev, or the built-in rules); null until triaged. */
   triage: InboxTriage | null;
 }
 
@@ -138,6 +141,10 @@ export interface InboxTriage {
   corrected: string[];
   issueId: string | null;
   model: string;
+  /** `jev`, or `rules` (the built-in keyword rules). */
+  source?: "jev" | "rules";
+  /** Rules only: what matched. */
+  reasons?: string[];
   triagedAt: string | null;
 }
 
@@ -189,10 +196,30 @@ export interface Snapshot {
   stats?: ScopeStats;
   agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
+  /** Own page: the weekly plan routine and its last trigger report (null until the agent is linked). */
+  routine?: WeeklyRoutineRef | null;
   viewer: { userId: string | null };
 }
 
-/** An agent in the company (hire popup assignees, link picker). */
+export interface WeeklyRoutineRef {
+  id: string;
+  key: string;
+  title: string;
+  status: string;
+  /** From the page's last report; null when never checked. */
+  triggersOn: boolean | null;
+}
+
+/** What approving a post did to its time (`social.approve` result). */
+export interface ApprovalOutcome {
+  scheduled: boolean;
+  scheduledAt: string | null;
+  reason?: "no_time" | "time_passed" | "invalid";
+  issueId?: string | null;
+  message: string;
+}
+
+/** An agent in the company (new agents that look like an open hire). */
 export interface AgentOption {
   id: string;
   name: string;
@@ -201,7 +228,7 @@ export interface AgentOption {
   status: string;
   icon: string | null;
   createdAt: string | null;
-  /** Social skill slugs the agent does not have (hire-options only). */
+  /** Social skill slugs the agent does not have (`social.hire-options` only). */
   missingSkills?: string[];
 }
 
@@ -218,7 +245,7 @@ export interface HireRecord {
 
 export type LinkedBy = "auto" | "manual" | "managed" | null;
 
-/** The Social agent card. `hire` and `candidates` are only filled on the own page. */
+/** The Social agent box. `hire` and `candidates` are only filled on the own page. */
 export interface SocialAgent {
   agentKey: string;
   agentId: string | null;
@@ -229,14 +256,6 @@ export interface SocialAgent {
   hire: HireRecord | null;
   candidates: AgentOption[];
   missingSkills: string[];
-}
-
-/** `social.hire-options`. */
-export interface HireOptions {
-  draft: { title: string; description: string };
-  agents: AgentOption[];
-  defaultAssigneeAgentId: string | null;
-  status: { agent: AgentOption | null; linkedBy: LinkedBy; hire: HireRecord | null; candidates: AgentOption[] };
 }
 
 export type RunAction = (key: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;

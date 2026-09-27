@@ -4,9 +4,10 @@
  * Accounting through the outbox → payslips. Reverse or correct with a new
  * run; a locked run is never edited.
  */
-import { createWorkIssue, enqueue, isModuleEnabled, LEDGER_EVENTS, outboxStatus, PIB_PLUGINS, retryOutbox, settleOutbox, type LedgerPostResult } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, enqueue, isModuleEnabled, LEDGER_EVENTS, outboxStatus, PIB_PLUGINS, reopenApprovalForPerson, retryOutbox, settleOutbox, type LedgerPostResult } from "@partnersinbiz/pib-plugin-kit";
 import { mergeComponents } from "../components.js";
 import * as db from "../db.js";
+import { readableDate } from "../dates.js";
 import {
   assertApproverAllowed,
   assertCanAdjust,
@@ -29,8 +30,10 @@ import { paidLeaveHoursInPeriod, unpaidLeaveHoursInPeriod } from "../leave.js";
 import { addTotals, EMPTY_RUN_TOTALS, ledgerKey, ledgerPostFor, type RunTotals } from "../ledger.js";
 import { formatRand, PayrollError, toCentiHours } from "../money.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { ruleLabel, rulesCheckText } from "../rule-labels.js";
 import { ruleVersionFor, taxYearOf, type PayFrequency, type RuleVersion } from "../rules.js";
 import { assignableUser, errorMessage, optDate, optStr, reqStr, requireUser, today, type Env } from "./env.js";
+import { readRulesReview, reviewCovers } from "./rules-review.js";
 
 export const APPROVAL_ORIGIN = `plugin:${PLUGIN_ID}:approval`;
 
@@ -280,7 +283,10 @@ export async function calculateRun(env: Env, companyId: string, actor: Actor, pa
   const context: CalculationContext = { run, version, employees, terms, inputs, recurring, leave, etiMonths, sdlOn, etiRegistered: config.etiRegistered };
 
   const warnings: string[] = [];
-  if (version.unverified.length) warnings.push(`${version.unverified.length} payroll rule(s) for ${version.taxYear} are not confirmed yet; check them before relying on the figures.`);
+  // Until an accountant checked them (Payroll → Statutory), say so on the run and its approval issue.
+  if (version.unverified.length && !reviewCovers(await readRulesReview(ctx, companyId).catch(() => null), version)) {
+    warnings.push(`${rulesCheckText(version.unverified.length)} (${version.taxYear}): ${version.unverified.map((u) => ruleLabel(u.path)).join(", ")}. Check the figures they touch before approving.`);
+  }
   if (!sdlOn && config.sdlMode === "auto") warnings.push(`SDL is not charged: yearly payroll looks like ${formatRand(projected)}, under the ${formatRand(version.rules.sdl.annualExemptionThresholdMinor)} exemption.`);
   if (!employees.length) warnings.push(`No ${run.frequency} employees with employment terms were found for this period.`);
   const noTerms = inPeriod.filter((e) => !terms.has(e.id));
@@ -394,7 +400,7 @@ export async function requestApproval(env: Env, companyId: string, actor: Actor,
   if (actor.kind === "user" && actor.userId === approver) throw new PayrollError("You cannot send a pay run to yourself for approval. Choose someone else.");
   const t = run.totals;
   const description = [
-    `Pay run **${run.number}** (${run.frequency}, ${run.periodStart} to ${run.periodEnd}, paid ${run.payDate}) is ready for approval.`,
+    `Pay run **${run.number}** (${run.frequency}, ${readableDate(run.periodStart)} to ${readableDate(run.periodEnd)}, paid ${readableDate(run.payDate)}) is ready for approval.`,
     "",
     `| | |`,
     `|---|---|`,
@@ -408,8 +414,11 @@ export async function requestApproval(env: Env, companyId: string, actor: Actor,
     `| Cost to company | ${formatRand(t.employerCostMinor)} |`,
     "",
     ...(run.warnings.length ? ["**Check first:**", ...run.warnings.map((w) => `- ${w}`), ""] : []),
-    "Open **Payroll → Pay runs** to review each employee's calculation, then click **Approve** (or mark this issue done).",
-    "The person who prepared the run cannot approve it. Approving does not pay anyone; after approval a board member locks the run, which posts it to Accounting and creates payslips.",
+    "Open **Payroll → Pay runs** to review each employee's calculation, then click **Approve** there, or mark this issue done. Cancel this issue to send it back.",
+    config.lockOnApproval
+      ? `Approving also locks the run as you: it posts to Accounting and the payslips are made${config.payslipEmail.sendOnLock ? " and emailed" : ""}. Nothing is paid: you upload the net pay file to the bank yourself.`
+      : "Approving does not pay anyone; after approval a board member locks the run, which posts it to Accounting and makes the payslips.",
+    "The person who prepared the run cannot approve it, and only a person can: if an agent closes this issue, it opens again for you.",
   ].join("\n");
   const issue = await createWorkIssue(env.ctx, {
     companyId,
@@ -440,10 +449,11 @@ export async function approveRun(env: Env, companyId: string, actor: Actor, para
   const approver = assertCanApprove(run, actor);
   const changed = await db.updateRun(env.ctx, companyId, run.id, { status: "approved", approved_by_user_id: approver, approved_at: new Date().toISOString() }, ["pending_approval"]);
   if (!changed) throw new PayrollError("The pay run is no longer waiting for approval");
-  if (run.approvalIssueId && !fromIssue) await closeApprovalIssue(env, companyId, run.approvalIssueId, "done", "Approved in Payroll.");
+  const lockNext = (await env.config(companyId)).lockOnApproval ? "" : " A board member can now lock the pay run in Payroll.";
+  if (run.approvalIssueId && !fromIssue) await closeApprovalIssue(env, companyId, run.approvalIssueId, "done", `Approved in Payroll.${lockNext}`);
   else if (run.approvalIssueId) {
     try {
-      await env.ctx.issues.createComment(run.approvalIssueId, "Approved. A board member can now lock the pay run in Payroll.", companyId);
+      await env.ctx.issues.createComment(run.approvalIssueId, `Approved.${lockNext}`, companyId);
     } catch {
       // comment is best effort
     }
@@ -466,31 +476,40 @@ export async function rejectRun(env: Env, companyId: string, actor: Actor, param
 
 /**
  * The approval issue changed. Done by a board member who did not prepare
- * the run approves it; done by anyone else reopens the issue with a note.
- * Cancelled sends the run back.
+ * the run approves it (returns who, so "Lock on approval" can lock as that
+ * person); done by another person reopens the issue with a note; cancelled
+ * by a person sends the run back. Only a person decides: an agent closing
+ * or cancelling it gets the kit `reopenApprovalForPerson` (reopened, taken
+ * off the agent, handed to the approver).
  */
-export async function onApprovalIssueUpdated(env: Env, companyId: string, issueId: string, event: { actorType?: string; actorId?: string; status?: string }) {
-  if (event.actorType === "plugin") return;
+export async function onApprovalIssueUpdated(env: Env, companyId: string, issueId: string, event: { actorType?: string; actorId?: string; status?: string }): Promise<{ runId: string; userId: string } | null> {
+  if (event.actorType === "plugin") return null;
   const run = await db.getRunByApprovalIssue(env.ctx, companyId, issueId);
-  if (!run || run.status !== "pending_approval") return;
+  if (!run || run.status !== "pending_approval") return null;
   const issue = await env.ctx.issues.get(issueId, companyId);
   const status = issue?.status ?? event.status;
-  if (status === "done") {
-    const actor: Actor = event.actorType === "user" && event.actorId
-      ? { kind: "user", userId: event.actorId, agentId: null }
-      : { kind: event.actorType === "agent" ? "agent" : "system", userId: null, agentId: event.actorType === "agent" ? event.actorId ?? null : null };
-    try {
-      await approveRun(env, companyId, actor, { runId: run.id }, true);
-    } catch (error) {
-      try {
-        await env.ctx.issues.update(issueId, { status: "todo" }, companyId);
-        await env.ctx.issues.createComment(issueId, `Not approved: ${errorMessage(error)} The issue was reopened.`, companyId);
-      } catch (inner) {
-        env.ctx.logger.info("Could not reopen the approval issue", { issueId, error: errorMessage(inner) });
-      }
-    }
-  } else if (status === "cancelled") {
+  if (status !== "done" && status !== "cancelled") return null;
+  if (event.actorType === "agent") {
+    const ok = await reopenApprovalForPerson(env.ctx, { issueId, companyId, userId: assignableUser(run.approverUserId), what: `pay run ${run.number}` });
+    if (!ok) env.ctx.logger.info("Could not hand the pay run approval back to a person", { issueId });
+    return null;
+  }
+  if (status === "cancelled") {
     await db.updateRun(env.ctx, companyId, run.id, { status: "calculated", approver_user_id: null, approval_issue_id: null, approval_requested_at: null }, ["pending_approval"]);
+    return null;
+  }
+  const actor: Actor = event.actorType === "user" && event.actorId ? { kind: "user", userId: event.actorId, agentId: null } : { kind: "system", userId: null, agentId: null };
+  try {
+    await approveRun(env, companyId, actor, { runId: run.id }, true);
+    return { runId: run.id, userId: actor.userId! };
+  } catch (error) {
+    try {
+      await env.ctx.issues.update(issueId, { status: "todo" }, companyId);
+      await env.ctx.issues.createComment(issueId, `Not approved: ${errorMessage(error)} The issue was reopened.`, companyId);
+    } catch (inner) {
+      env.ctx.logger.info("Could not reopen the approval issue", { issueId, error: errorMessage(inner) });
+    }
+    return null;
   }
 }
 

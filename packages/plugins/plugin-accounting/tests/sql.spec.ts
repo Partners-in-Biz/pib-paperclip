@@ -51,6 +51,9 @@ describe("runtime SQL", () => {
     await db.insertBook(d, c, "ZAR", "t");
     await db.setRejectionIssue(d, c, null);
     await db.setCutover(d, c, "2026-02-28", "j");
+    await db.setCutoverSkipped(d, c, { kind: "user", userId: "u" });
+    await db.clearCutoverSkipped(d, c);
+    await db.firstJournalDate(d, c);
     await db.bookCompanies(d);
     await db.seedAccounts(d, c, [{ id: "a" }]);
     await db.listAccounts(d, c);

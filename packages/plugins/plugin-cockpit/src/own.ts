@@ -13,27 +13,42 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
+import { TEAM_SETUP_PATH, teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
+import { countActivitySince, recentActivity, toActivityItems } from "./activity.js";
+import { ASK_STALE_DAYS, staleAsks } from "./ask-model.js";
+import { openAskViews } from "./asks.js";
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, VERSION } from "./constants.js";
 import { getRoles } from "./db.js";
 import { message, type Env } from "./env.js";
 import { memoryJevConfig } from "./memory/jev.js";
 import { memoryStats } from "./memory/store.js";
+import { profileSetupItem, readProfile } from "./profile.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
+/** The team (Operator, Reviewer, owner) is staffed in Setup → Team. */
+const TEAM_LABEL = "Open Team in Setup";
+/** Setup → Team, at "Who gets the daily brief". */
+export const OWNER_SETUP_PATH = `${TEAM_SETUP_PATH}#team-owner`;
 
 function installationId(uiBase: string | null): string | null {
   return uiBase ? /\/_plugins\/([^/]+)\//.exec(uiBase)?.[1] ?? null : null;
 }
 
-async function agentUsable(env: Env, companyId: string, agentId: string | null): Promise<{ id: string; name: string; status: string } | null> {
-  if (!agentId) return null;
+type UsableAgent = { id: string; name: string; status: string };
+
+/** The agent when it exists and is not terminated; `undefined` when the lookup itself failed. */
+async function lookupAgent(env: Env, companyId: string, agentId: string): Promise<UsableAgent | null | undefined> {
   try {
     const agent = await env.ctx.agents.get(agentId, companyId);
     if (!agent || ["terminated", "archived", "deleted"].includes(String(agent.status))) return null;
     return { id: agent.id, name: String(agent.name), status: String(agent.status) };
   } catch {
-    return null;
+    return undefined;
   }
+}
+
+async function agentUsable(env: Env, companyId: string, agentId: string | null): Promise<UsableAgent | null> {
+  return agentId ? (await lookupAgent(env, companyId, agentId)) ?? null : null;
 }
 
 async function routineStates(env: Env, companyId: string): Promise<Array<{ key: string; title: string; status: string | null; assigneeAgentId: string | null }>> {
@@ -54,7 +69,7 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
   const [saved, roles, uiBase] = await Promise.all([configSaved(env.ctx, companyId), getRoles(env.ctx, companyId).catch(() => null), pluginUiBase(env.ctx)]);
   const id = installationId(uiBase);
   const settings: SetupItem = {
-    ...settingsItem({ saved, pluginId: id ?? "", detail: "The Cockpit saves these for you the first time you save the team. The hourly health check and role updates need them.", agentNext: "The hourly System health check and role updates start for this company." }),
+    ...settingsItem({ saved, pluginId: id ?? "", detail: "The hourly System health check, role updates, answers to agents' questions, client onboarding and memory's CRM client list need them. Open the Cockpit settings and click Save once.", agentNext: "The Cockpit acts for this company on its own: health checks, role updates, questions, onboarding and memory." }),
     href: id ? `${PLUGINS_PATH}/${id}` : "/cockpit",
     hrefLabel: id ? "Open settings" : "Open the Cockpit",
     action: null,
@@ -71,9 +86,9 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       status: roles?.ownerUserId ? "done" : "missing",
       required: true,
       detail: roles?.ownerUserId ? "The owner gets the daily brief and approvals by default." : "The owner gets the daily brief and approvals by default. Saving the team sets it to you.",
-      href: "/cockpit?tab=team",
-      hrefLabel: "Open Team",
-      steps: roles?.ownerUserId ? undefined : ["Open the Cockpit → Team.", "Pick the owner (defaults to you).", "Click Save team."],
+      href: teamSetupPath(),
+      hrefLabel: TEAM_LABEL,
+      steps: roles?.ownerUserId ? undefined : ["Open Setup → Team.", "Pick the owner (it defaults to you) and save the team."],
       agentNext: "The Operator posts the daily brief to the owner.",
     },
     {
@@ -84,9 +99,9 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       detail: operator
         ? `${operator.name} is the Operator${operator.status === "paused" ? " (paused: resume it once its model key works)" : ""}.`
         : "The Operator reviews every module each morning, keeps agents unblocked and sends one daily brief. Hire one, or pick an existing agent.",
-      href: "/cockpit?tab=team",
-      hrefLabel: "Open Team",
-      steps: operator ? undefined : ["Open the Cockpit → Team.", "Click Hire Operator (opens a hire task), or pick an existing agent.", "Click Save team."],
+      href: teamSetupPath("operator"),
+      hrefLabel: TEAM_LABEL,
+      steps: operator ? undefined : ["Open Setup → Team → Operator.", "Hire an Operator (opens a hire task), or pick an existing agent."],
       agentNext: "Runs the Daily operations review at 07:00 and the Weekly retro on Mondays.",
       blockedBy: saved ? undefined : ["settings"],
     },
@@ -98,8 +113,8 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       detail: reviewer
         ? `${reviewer.name} reviews outward-facing work${roles?.reviewOutward ? " before you approve it" : " (switch on \"Review outward-facing work before I approve\" to use it)"}.`
         : "Optional. The Reviewer checks posts, campaign emails, invoice and quote emails and SEO pull requests before you approve them.",
-      href: "/cockpit?tab=team",
-      hrefLabel: "Open Team",
+      href: teamSetupPath("reviewer"),
+      hrefLabel: TEAM_LABEL,
       agentNext: "Comments PASS or CHANGES NEEDED on approval issues, then hands them to you.",
     },
     {
@@ -111,28 +126,96 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
         ? "Created when the Operator is linked."
         : routinesOk
           ? "\"Daily operations review\" (07:00 SAST) and \"Weekly retro\" (Mondays 08:00 SAST) are active."
-          : `Check the routines are active and assigned to ${operator.name}: ${routines.map((r) => `${r.title} (${r.status ?? "missing"})`).join(", ")}. Save the team again to re-create them.`,
-      href: "/routines",
-      hrefLabel: "Open Routines",
+          : `Check the routines are active and assigned to ${operator.name}: ${routines.map((r) => `${r.title} (${r.status ?? "missing"})`).join(", ")}. Save the Operator again in Setup → Team to re-create them.`,
+      href: teamSetupPath("operator"),
+      hrefLabel: TEAM_LABEL,
       agentNext: "The Operator is woken every morning and every Monday.",
       blockedBy: ["operator_agent"],
     },
   ];
+  const profile = await readProfile(env.ctx, companyId).catch(() => null);
+  items.push(profileSetupItem(profile?.profile ?? {}));
   const jev = await memoryJevConfig(env.ctx, companyId).catch(() => null);
   items.push({
     key: "memory_jev",
-    title: "Let Jev pick each task's memory",
+    title: "Smart matching for memory (optional)",
     status: jev ? "done" : "optional",
     required: false,
     detail: jev
-      ? "Every agent's memory brief is filtered by Jev: only the facts the task needs, at most 12."
-      : "Company memory already works: each task gets up to 12 remembered facts matched by keywords and recency. With a TypeSafe key, Jev picks only the facts the task needs, so briefs are shorter and more relevant.",
+      ? "Every agent's memory brief is picked by smart matching: only the facts the task needs, at most 12."
+      : "Company memory already works: each task gets up to 12 remembered facts matched by keywords. Smart matching (an optional AI service) picks only the facts each task needs, so briefs are shorter and more relevant.",
     href: id ? `${PLUGINS_PATH}/${id}` : "/cockpit?tab=memory",
     hrefLabel: id ? "Open settings" : "Open Memory",
-    steps: jev ? undefined : ["Open the Cockpit settings.", "Under Jev for company memory, pick the TypeSafe API key secret (the same one the other PiB plugins use).", "Click Save Configuration."],
-    agentNext: "Briefs switch to Jev on the next task; the Memory tab shows how often Jev and the keyword baseline would have differed.",
+    steps: jev ? undefined : ["Open the Cockpit settings.", "Under **Smart matching for company memory**, pick the API key secret (the same one the other PiB plugins use).", "Click **Save Configuration**."],
+    agentNext: "Briefs switch to smart matching on the next task; the Memory tab shows how often it and keyword matching would have differed.",
   });
   return { plugin: PLUGIN_KEY, module: null, title: "Cockpit", version: VERSION, items, checkedAt: env.now().toISOString() };
+}
+
+/** What to do about a role's agent that is not working, or null when it works. */
+function agentFix(agent: UsableAgent): string | null {
+  if (agent.status === "paused") return "Check its adapter has a working model key, then resume it.";
+  if (agent.status === "pending_approval") return "Approve the hire in Approvals, then resume the agent once its model key works.";
+  if (agent.status === "error") return "Open the agent, read the error on its last run, fix the cause (often the model key), then resume it.";
+  return null;
+}
+
+/**
+ * The Operator check. Empty, paused, waiting for approval or in error link to
+ * Setup → Team ("Fix in Setup" on the page). An error stays a warning here:
+ * the System health issue already lists agents in error.
+ */
+export function operatorCheck(operator: UsableAgent | null): HealthCheck {
+  if (!operator) return { key: "operator", title: "Operator", status: "warn", detail: "No Operator yet, so nobody reviews the company each morning.", href: teamSetupPath("operator"), fix: "Hire an Operator or pick an existing agent in Setup → Team." };
+  const fix = agentFix(operator);
+  return fix
+    ? { key: "operator", title: "Operator", status: "warn", detail: `${operator.name} (${operator.status.replace(/_/g, " ")}), so the company is not reviewed each morning.`, href: teamSetupPath("operator"), fix }
+    : { key: "operator", title: "Operator", status: "ok", detail: `${operator.name} (${operator.status}).`, href: `/agents/${operator.id}`, fix: null };
+}
+
+/**
+ * The Reviewer check, only for a linked Reviewer that is gone, paused,
+ * waiting for approval or in error (it is optional, so none linked is fine).
+ */
+export function reviewerCheck(reviewer: UsableAgent | null, reviewOutward: boolean): HealthCheck | null {
+  const waits = reviewOutward ? " Outward-facing work waits for its review." : "";
+  if (!reviewer) return { key: "reviewer", title: "Reviewer", status: "warn", detail: `The Reviewer agent was terminated or removed.${waits}`, href: teamSetupPath("reviewer"), fix: "Pick another Reviewer in Setup → Team, or remove it." };
+  const fix = agentFix(reviewer);
+  return fix ? { key: "reviewer", title: "Reviewer", status: "warn", detail: `${reviewer.name} (${reviewer.status.replace(/_/g, " ")}).${waits}`, href: teamSetupPath("reviewer"), fix } : null;
+}
+
+/**
+ * Nobody to report to: agents' questions have nowhere to go and the daily
+ * brief has no reader. Refused questions in the last week make it urgent.
+ */
+export function ownerCheck(ownerUserId: string | null | undefined, refusedAsks7d: number): HealthCheck | null {
+  if (ownerUserId) return null;
+  return {
+    key: "owner",
+    title: "Nobody gets the daily brief",
+    status: "warn",
+    detail: refusedAsks7d > 0
+      ? `Agents asked ${refusedAsks7d} ${refusedAsks7d === 1 ? "question" : "questions"} this week that could not reach anyone, and the daily brief has no reader.`
+      : "Questions from agents have nowhere to go, and the daily brief has no reader.",
+    href: OWNER_SETUP_PATH,
+    fix: "Choose who gets the daily brief in Setup → Team.",
+  };
+}
+
+/** Questions to the owner waiting more than three days. */
+export function staleAsksCheck(asks: Array<{ identifier: string | null; issueId: string; askedAt: string }>, now: Date): HealthCheck | null {
+  const stale = staleAsks(asks, now);
+  if (stale.length === 0) return null;
+  const refs = stale.slice(0, 3).map((a) => a.identifier ?? "an issue").join(", ");
+  return {
+    key: "asks",
+    title: `${stale.length} ${stale.length === 1 ? "question waits" : "questions wait"} on the owner for more than ${ASK_STALE_DAYS} days`,
+    status: "warn",
+    detail: `${refs}${stale.length > 3 ? " and more" : ""}: the agents wait on these answers.`,
+    href: stale.length === 1 ? `/issues/${stale[0]!.identifier ?? stale[0]!.issueId}` : "/cockpit",
+    fix: "Answer each on its issue (Cockpit → Waiting on you); the reply goes straight back to the agent.",
+    since: stale[0]!.askedAt,
+  };
 }
 
 export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitSnapshot> {
@@ -162,11 +245,32 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
   try {
     const roles = await getRoles(env.ctx, companyId);
     const operator = await agentUsable(env, companyId, roles?.operatorAgentId ?? null);
-    health.push(operator
-      ? { key: "operator", title: "Operator", status: operator.status === "paused" || operator.status === "pending_approval" ? "warn" : "ok", detail: `${operator.name} (${operator.status}).`, href: `/agents/${operator.id}`, fix: operator.status === "paused" ? "Check its adapter has a working model key, then resume it." : null }
-      : { key: "operator", title: "Operator", status: "warn", detail: "No Operator yet, so nobody reviews the company each morning.", href: "/cockpit?tab=team", fix: "Open the Cockpit → Team and hire or pick an Operator." });
+    health.push(operatorCheck(operator));
+    const reviewer = roles?.reviewerAgentId ? await lookupAgent(env, companyId, roles.reviewerAgentId) : undefined;
+    // Only a linked Reviewer that could be looked up: a failed lookup says nothing.
+    const reviewerHealth = reviewer !== undefined ? reviewerCheck(reviewer, roles?.reviewOutward ?? false) : null;
+    if (reviewerHealth) health.push(reviewerHealth);
+    const weekAgo = new Date(env.now().getTime() - 7 * 86_400_000).toISOString();
+    const owner = ownerCheck(roles?.ownerUserId, roles?.ownerUserId ? 0 : await countActivitySince(env.ctx, companyId, "ask_refused", weekAgo).catch(() => 0));
+    if (owner) health.push(owner);
+    // The roles the Cockpit staffs, like every plugin reports its own (kit CockpitSnapshot.team).
+    const team = [];
+    if (roles?.operatorAgentId) team.push({ role: "operator" as const, agentId: roles.operatorAgentId, status: (await lookupAgent(env, companyId, roles.operatorAgentId))?.status ?? null });
+    if (roles?.reviewerAgentId) team.push({ role: "reviewer" as const, agentId: roles.reviewerAgentId, status: reviewer?.status ?? null });
+    if (team.length) snapshot.team = team;
   } catch (error) {
     env.ctx.logger.info("Cockpit roles check failed", { error: message(error) });
+  }
+  try {
+    const asks = staleAsksCheck(await openAskViews(env, companyId), env.now());
+    if (asks) health.push(asks);
+  } catch (error) {
+    env.ctx.logger.info("Cockpit question check failed", { error: message(error) });
+  }
+  try {
+    snapshot.activity = toActivityItems(await recentActivity(env.ctx, companyId, 10));
+  } catch (error) {
+    env.ctx.logger.info("Cockpit activity read failed", { error: message(error) });
   }
   snapshot.health = health;
   return snapshot;

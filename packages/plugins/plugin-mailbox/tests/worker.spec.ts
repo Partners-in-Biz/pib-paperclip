@@ -78,3 +78,30 @@ describe("worker wiring", () => {
     ).rejects.toThrow(/board users/);
   });
 });
+
+describe("drafts record who saved them", () => {
+  it("a person on the page and an agent's tool each leave their name on the draft", async () => {
+    const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20) } });
+    const inserts: unknown[][] = [];
+    const db = {
+      namespace: NAMESPACE,
+      async query(sql: string, params: unknown[] = []) {
+        validateRuntimeQuery(sql, NAMESPACE);
+        validateParams(sql, params);
+        // The agent's delegation on the mailbox.
+        return sql.includes(".delegations WHERE account_id") ? [{ can_read: true, can_draft: true, can_send: false }] : [];
+      },
+      async execute(sql: string, params: unknown[] = []) {
+        validateRuntimeExecute(sql, NAMESPACE);
+        validateParams(sql, params);
+        if (sql.includes(".messages (id, company_id, account_id, subject, body, direction, status")) inserts.push(params);
+        return { rowCount: 1 };
+      },
+    };
+    (harness.ctx as unknown as { db: typeof db }).db = db;
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("mailbox.create-draft", { accountId: "acc-1", subject: "Hi", to: "ada@x.test" }, { companyId: CO, actor: { type: "user", userId: "user-peet" } });
+    await harness.executeTool("create-draft", { accountId: "acc-1", subject: "Hello", to: "ada@x.test" }, { agentId: "agent-am", companyId: CO });
+    expect(inserts.map((params) => JSON.parse(String(params[8])).by)).toEqual([{ kind: "user", id: "user-peet" }, { kind: "agent", id: "agent-am" }]);
+  });
+});

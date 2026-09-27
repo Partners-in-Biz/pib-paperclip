@@ -37,6 +37,26 @@ export interface Invoice {
   notes?: string | null;
   sendTo?: Address[];
   shared?: boolean;
+  recurringId?: string | null;
+  subscriptionId?: string | null;
+  quoteId?: string | null;
+  dealId?: string | null;
+  createdAt?: string | null;
+  /** Payments dated after today: in no total until that day (the page flags them). */
+  futurePaidMinor?: number;
+  futurePayments?: number;
+  nextFuturePaidAt?: string | null;
+}
+
+/** A payment dated after today (Billing counts it from that day; a person checks the date). */
+export interface FuturePayment {
+  invoiceId: string;
+  number: string;
+  customerName: string;
+  amountMinor: number;
+  currency: string;
+  paidAt: string | null;
+  count: number;
 }
 
 export interface Quote {
@@ -56,9 +76,14 @@ export interface Quote {
   pricesIncludeVat?: boolean;
   notes?: string | null;
   pendingAction?: string | null;
+  approvalIssueId?: string | null;
   deliveryStatus?: string | null;
   deliveryError?: string | null;
   sendTo?: Address[];
+  dealId?: string | null;
+  sentAt?: string | null;
+  acceptedAt?: string | null;
+  createdAt?: string | null;
 }
 
 export interface Line {
@@ -232,6 +257,7 @@ export interface Bill {
   hasFile: boolean;
   fileName: string | null;
   pendingAction: string | null;
+  approvalIssueId?: string | null;
   ledgerStatus: string | null;
   ledgerError: string | null;
   journalNumber: string | null;
@@ -309,7 +335,36 @@ export interface WorkspaceClient {
   found: boolean;
 }
 
+/** An open decision or reminder approval waiting on a person. */
+export interface Decision {
+  issueId: string;
+  kind: "pop" | "bank_match" | "payment" | "credit_note" | "reminder" | string;
+  title: string;
+  invoiceId: string | null;
+  amountMinor: number | null;
+  currency: string | null;
+  createdAt: string | null;
+}
+
+/** Billing's standing issues for the Account Manager (drafts to send, overdue invoices, quote replies, won deals). */
+export interface WorkIssue {
+  kind: "drafts" | "overdue" | "quote_reply" | "deal_won" | string;
+  issueId: string;
+  subjectId: string | null;
+}
+
+export interface TeamStatus {
+  /** A running Account Manager agent takes Billing's follow-ups. */
+  accountManager: boolean;
+  /** Who the follow-ups go to now. */
+  via: string;
+  setupHref: string;
+}
+
 export interface Snapshot {
+  /** The day every money figure is for (`YYYY-MM-DD`): nothing dated later counts. */
+  asOf?: string;
+  futurePayments?: FuturePayment[];
   settingsSaved?: boolean;
   defaults?: { currency: string; taxRate: number; taxCode: string | null; senderName: string; pricesIncludeVat: boolean; reportingCurrency: string; hourlyRateMinor: number };
   features?: { email: boolean; r2: boolean; receipts: boolean; jev: boolean; ledger: boolean; dunning: boolean; numbering: string };
@@ -328,4 +383,7 @@ export interface Snapshot {
   retainers?: { plans: Plan[]; subscriptions: Subscription[] };
   customerCredit?: CreditSource[];
   dunningOptOut?: boolean;
+  decisions?: Decision[];
+  workIssues?: WorkIssue[];
+  team?: TeamStatus | null;
 }

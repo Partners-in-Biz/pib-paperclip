@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { sameClient } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
+import { announcementLine } from "./handoff.js";
 import { digestComment, rootIssueDescription, rootIssueTitle } from "../engine/copy.js";
 import {
   AUTOPILOT_MODES,
@@ -18,8 +19,11 @@ import {
 } from "../engine/sprint.js";
 import { scopeParamValue, sprintScope } from "../engine/scope.js";
 import { addDays } from "../engine/time.js";
-import { DEFAULT_DIRECTORIES, dueDayFor, OUTRANK_90, PHASE_NAMES, TEMPLATE_ID, TEMPLATE_VERSION, type SprintPhase } from "../templates/outrank-90.js";
+import { dueDayFor, PHASE_NAMES, TEMPLATE_VERSION, type SprintPhase } from "../templates/outrank-90.js";
+import { BUSINESS_TYPES, businessTypeOf, defaultBusinessType, planFor, planOf, type BusinessType, type PlanVariant } from "../templates/plans.js";
 import { ensureProject, resolveAgent } from "./agent.js";
+import { sprintOverviews, type SprintOverview } from "./overview.js";
+import { plural } from "../engine/plain.js";
 import {
   actorLabel,
   assignableUser,
@@ -47,10 +51,15 @@ import { playbookSummary } from "./playbook.js";
 import { siteLinkView } from "./site.js";
 import { isCodeTask } from "../engine/site-change.js";
 
-export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks: number; backlinks: number }> {
+/** The plan to seed: `businessType` when given, else local for a client and software for our own sites. */
+export function businessTypeParam(params: Params, forClient: boolean): BusinessType {
+  return oneOf(params, "businessType", BUSINESS_TYPES) ?? defaultBusinessType(forClient);
+}
+
+export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVariant = planOf(sprint.templateId)): Promise<{ tasks: number; backlinks: number }> {
   const tasks = await db.insertTasks(
     env.ctx.db,
-    OUTRANK_90.tasks.map((task) => ({
+    plan.tasks.map((task) => ({
       id: randomUUID(),
       companyId: sprint.companyId,
       sprintId: sprint.id,
@@ -72,7 +81,7 @@ export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks
   );
   const backlinks = await db.insertBacklinks(
     env.ctx.db,
-    DEFAULT_DIRECTORIES.map((dir) => ({
+    plan.sources.map((dir) => ({
       id: randomUUID(),
       companyId: sprint.companyId,
       sprintId: sprint.id,
@@ -80,7 +89,7 @@ export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks
       domain: dir.domain,
       url: null,
       submitUrl: null,
-      type: "directory",
+      type: dir.type ?? "directory",
       dr: dir.dr,
       status: "not_started",
       notes: null,
@@ -92,7 +101,7 @@ export async function seedTemplate(env: Env, sprint: db.Sprint): Promise<{ tasks
   }
   await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, {
     seeded_at: new Date().toISOString(),
-    template_id: TEMPLATE_ID,
+    template_id: plan.id,
     template_version: TEMPLATE_VERSION,
   });
   return { tasks, backlinks };
@@ -155,6 +164,7 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   const ownerParam = str(params, "ownerUserId", { max: 200 });
   const ownerUserId = ownerParam === "none" ? null : ownerParam ?? (await responsibleUser(env, companyId, actor));
   const clock = sprintClock(startDate, info.today);
+  const plan = planFor(businessTypeParam(params, Boolean(client)));
   const id = randomUUID();
   await db.insertSprint(env.ctx.db, {
     id,
@@ -167,14 +177,14 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     clientName,
     status: clock.runningStatus,
     startDate,
-    templateId: TEMPLATE_ID,
+    templateId: plan.id,
     templateVersion: TEMPLATE_VERSION,
     autopilotMode,
     ownerUserId,
     notes: str(params, "notes", { max: 4000 }) ?? null,
   });
   let sprint = await requireSprint(env, companyId, id);
-  const seeded = await seedTemplate(env, sprint);
+  const seeded = await seedTemplate(env, sprint, plan);
   await env.skills.ensure(companyId).catch(() => []);
   const projectId = await ensureProject(env, companyId);
   const warnings: string[] = [];
@@ -207,6 +217,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     week: clock.week,
     autopilotMode,
     ownerUserId,
+    businessType: plan.businessType,
+    plan: plan.label,
     rootIssueId: sprint.rootIssueId,
     seededTasks: seeded.tasks,
     seededBacklinks: seeded.backlinks,
@@ -214,7 +226,7 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     issuesPending: materialised.remaining,
     warnings,
     next:
-      "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue.",
+      "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.",
   };
 }
 
@@ -226,6 +238,7 @@ export async function upgradeLegacySprint(env: Env, companyId: string, actor: Ac
   const info = await companyInfo(env, companyId);
   const startDate = isoDateParam(params, "startDate") ?? info.today;
   const clock = sprintClock(startDate, info.today);
+  const plan = planFor(businessTypeParam(params, Boolean(sprint.clientRef)));
   await db.updateSprint(env.ctx.db, companyId, sprint.id, {
     start_date: startDate,
     status: clock.runningStatus,
@@ -233,13 +246,19 @@ export async function upgradeLegacySprint(env: Env, companyId: string, actor: Ac
     autopilot_mode: info.loaded.config.defaultAutopilotMode,
   });
   const fresh = await requireSprint(env, companyId, sprint.id);
-  const seeded = await seedTemplate(env, fresh);
-  return { sprintId: sprint.id, startDate, seededTasks: seeded.tasks, seededBacklinks: seeded.backlinks, next: "The next daily run opens the due tasks as issues." };
+  const seeded = await seedTemplate(env, fresh, plan);
+  return { sprintId: sprint.id, startDate, businessType: plan.businessType, plan: plan.label, seededTasks: seeded.tasks, seededBacklinks: seeded.backlinks, next: "The next daily run opens the due tasks as issues." };
 }
 
-export function sprintView(sprint: db.Sprint, today: string, counts?: { open: number; due: number; done: number; total: number; blocked: number; proposals: number }) {
+/**
+ * A sprint as tools and the page see it. With its overview: `tasks` holds the
+ * counts (due, overdue, stuck and waiting follow engine/due.ts) and `next` the
+ * next thing due.
+ */
+export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOverview) {
   const clock = sprintClock(sprint.startDate, today);
   const running = isRunning(sprint.status);
+  const plan = planOf(sprint.templateId);
   return {
     sprintId: sprint.id,
     siteName: sprint.siteName,
@@ -258,6 +277,9 @@ export function sprintView(sprint: db.Sprint, today: string, counts?: { open: nu
     phase: clock.phase,
     phaseName: PHASE_NAMES[clock.phase as SprintPhase],
     calendarStatus: running ? clock.runningStatus : sprint.status,
+    /** The 90-day plan the sprint follows (local, professional, ecommerce or saas). */
+    businessType: businessTypeOf(sprint.templateId),
+    plan: plan.label,
     autopilotMode: sprint.autopilotMode,
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
@@ -266,7 +288,7 @@ export function sprintView(sprint: db.Sprint, today: string, counts?: { open: nu
     lastDailyOn: sprint.lastDailyOn,
     notes: sprint.notes,
     site: siteLinkView(sprint),
-    ...(counts ? { tasks: counts } : {}),
+    ...(overview ? { tasks: overview.numbers, next: overview.next } : {}),
   };
 }
 
@@ -274,13 +296,13 @@ export async function listSprintsTool(env: Env, companyId: string, params: Param
   const info = await companyInfo(env, companyId);
   const status = str(params, "status");
   const sprints = await db.listSprints(env.ctx.db, companyId, { status, scope: scopeParam(params) });
-  const counts = await db.sprintCounts(env.ctx.db, companyId);
-  return { today: info.today, sprints: sprints.map((s) => sprintView(s, info.today, counts[s.id])) };
+  const overviews = await sprintOverviews(env.ctx.db, companyId, sprints, info.today, await resolveAgent(env, companyId));
+  return { today: info.today, sprints: sprints.map((s) => sprintView(s, info.today, overviews.get(s.id))) };
 }
 
 export async function getSprintTool(env: Env, companyId: string, params: Params) {
   const ctx = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
-  const counts = (await db.sprintCounts(env.ctx.db, companyId))[ctx.sprint.id];
+  const overview = (await sprintOverviews(env.ctx.db, companyId, [ctx.sprint], ctx.info.today, await resolveAgent(env, companyId))).get(ctx.sprint.id);
   const [integrations, keywords, health, snapshots] = await Promise.all([
     db.listIntegrations(env.ctx.db, companyId, ctx.sprint.id),
     db.listKeywords(env.ctx.db, companyId, ctx.sprint.id),
@@ -288,7 +310,7 @@ export async function getSprintTool(env: Env, companyId: string, params: Params)
     db.listSnapshots(env.ctx.db, companyId, ctx.sprint.id),
   ]);
   return {
-    ...sprintView(ctx.sprint, ctx.info.today, counts),
+    ...sprintView(ctx.sprint, ctx.info.today, overview),
     cockpit: cockpitPath(ctx.info, ctx.sprint),
     integrations: integrations.map(integrationView),
     keywords: { tracked: keywords.length, top10: keywords.filter((k) => (k.currentPosition ?? 999) <= 10).length, priority: keywords.filter((k) => k.isPriority).map((k) => k.phrase) },
@@ -354,6 +376,8 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const sa = await loadServiceAccount(info);
   const needsYou = await needsYouView(env, info, sprint).catch(() => null);
   const playbook = await playbookSummary(env, sprint).catch(() => ({ playbookId: null, version: null, pending: 0 }));
+  // Pages marked live that Social has not been told about yet (they must answer 200 first).
+  const announcements = await env.announcements.open(sprint.companyId, sprint.id).catch(() => [] as db.Announcement[]);
   const next: string[] = [];
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
   if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
@@ -369,18 +393,19 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   }
   if (sprint.siteAccess === "unlinked") {
     const waiting = notStarted.filter((t) => t.owner === "agent" && !t.issueId && isCodeTask(t)).length;
-    if (waiting > 0) next.push(`${waiting} code task(s) wait for the site repo link (on Needs you). If you know the repo's project, link it with link-site.`);
+    if (waiting > 0) next.push(`${plural(waiting, "code task")} ${waiting === 1 ? "waits" : "wait"} for the site repo link (on Needs you). If you know the repo's project, link it with link-site.`);
   }
-  if (inProgress.length > 0) next.push(`Finish the ${inProgress.length} task(s) in progress first.`);
-  if (agentWork.length > 0) next.push(`Work the ${agentWork.length} due agent task(s), oldest week first; complete each with complete-task and evidence.`);
-  if (blocked.length > 0) next.push(`${blocked.length} task(s) are blocked; what they need is on Needs you — do not redo them.`);
-  if (needsYou && needsYou.open.length > 0) next.push(`${needsYou.open.length} item(s) wait on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
-  if (proposals.length > 0) next.push(`${proposals.length} optimization proposal(s) await approval.`);
+  if (inProgress.length > 0) next.push(`Finish the ${plural(inProgress.length, "task")} in progress first.`);
+  if (agentWork.length > 0) next.push(`Work the ${plural(agentWork.length, "due agent task")}, oldest week first; complete each with complete-task and evidence.`);
+  if (blocked.length > 0) next.push(`${plural(blocked.length, "task")} ${blocked.length === 1 ? "is" : "are"} blocked; what they need is on Needs you — do not redo them.`);
+  if (needsYou && needsYou.open.length > 0) next.push(`${plural(needsYou.open.length, "item")} ${needsYou.open.length === 1 ? "waits" : "wait"} on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
+  if (proposals.length > 0) next.push(`${plural(proposals.length, "optimization proposal")} ${proposals.length === 1 ? "waits" : "wait"} for approval.`);
+  for (const a of announcements.filter((row) => row.status === "stuck").slice(0, 3)) next.push(announcementLine(a));
   if (playbook.pending > 0) {
     next.push(
       sprint.autopilotMode === "full"
-        ? `${playbook.pending} playbook change(s) pending: keep or discard each with decide-playbook-change (full autopilot).`
-        : `${playbook.pending} playbook change(s) wait for a person (Needs you / SEO → Playbook); follow the current version meanwhile.`,
+        ? `${plural(playbook.pending, "playbook change")} pending: keep or discard each with decide-playbook-change (full autopilot).`
+        : `${plural(playbook.pending, "playbook change")} ${playbook.pending === 1 ? "waits" : "wait"} for a person (Needs you / SEO → Playbook); follow the current version meanwhile.`,
     );
   }
   if (next.length === 0) next.push("Nothing is due. Check keyword positions (list-keywords) and post a short digest.");
@@ -395,6 +420,8 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     week: clock.week,
     phase: clock.phase,
     phaseName: PHASE_NAMES[clock.phase as SprintPhase],
+    businessType: businessTypeOf(sprint.templateId),
+    plan: planOf(sprint.templateId).label,
     autopilotMode: sprint.autopilotMode,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,

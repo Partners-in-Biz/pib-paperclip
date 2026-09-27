@@ -64,6 +64,7 @@ async function boot(sprints: Row[], extra: { tasks?: Row[]; keywords?: Row[] } =
       return CRM.contacts.filter((c) => !ids || ids.includes(c.id));
     }
     if (/\.sprint_tasks WHERE company_id = \$1 AND sprint_id = \$2/.test(sql)) return (extra.tasks ?? []).filter((t) => t.sprint_id === params[1]);
+    if (/\.sprint_tasks\s+WHERE company_id = \$1 AND status IN/.test(sql)) return (extra.tasks ?? []).filter((t) => ["not_started", "in_progress", "blocked"].includes(String(t.status)));
     if (/\.keywords/.test(sql) && /sprint_id = \$2/.test(sql)) return (extra.keywords ?? []).filter((k) => k.sprint_id === params[1]);
     return [];
   };
@@ -139,14 +140,15 @@ describe("agent guidance", () => {
 describe("seo.load scope", () => {
   const all = [OWN, LEGACY, ACME, JO];
 
-  it("shows only PiB's own sprints without a client param", async () => {
+  it("the SEO home lists every sprint: our own and each client's, each with its client", async () => {
     const { harness } = await boot(all);
-    const load = await harness.performAction<{ scope: string | null; client: unknown; sprints: Array<{ sprintId: string; client: string | null; legacyClientName?: string }> } & Row>("seo.load", {}, user);
+    const load = await harness.performAction<{ scope: string | null; client: unknown; sprints: Array<{ sprintId: string; client: string | null; clientName: string | null; legacyClientName?: string }> } & Row>("seo.load", {}, user);
     expect(load.scope).toBeNull();
     expect(load.client).toBeNull();
     expect(load.clients).toBeUndefined();
-    expect(load.sprints.map((s) => s.sprintId).sort()).toEqual(["legacy-1", "own-1"]);
-    expect(load.sprints.every((s) => s.client === null)).toBe(true);
+    expect(load.sprints.map((s) => s.sprintId).sort()).toEqual(["acme-1", "jo-1", "legacy-1", "own-1"]);
+    expect(load.sprints.filter((s) => s.client === null).map((s) => s.sprintId).sort()).toEqual(["legacy-1", "own-1"]);
+    expect(load.sprints.find((s) => s.sprintId === "jo-1")).toMatchObject({ client: "contact:ct-1", clientName: "Jo Soap" });
     expect(load.sprints.find((s) => s.sprintId === "legacy-1")?.legacyClientName).toBe("Old Client Ltd");
   });
 
@@ -220,6 +222,28 @@ describe("create-sprint scope", () => {
     expect(unknown.error).toMatch(/not in the SEO plugin's client list/);
   });
 
+  it("seeds the plan for the kind of business: local for a client unless told otherwise, software for our own sites", async () => {
+    const seeded = (executes: Array<{ sql: string; params: unknown[] }>) => {
+      const sprint = executes.filter((e) => e.sql.startsWith(`INSERT INTO ${NAMESPACE}.sprints `)).at(-1)!;
+      const tasks = executes.filter((e) => e.sql.startsWith(`INSERT INTO ${NAMESPACE}.sprint_tasks`)).at(-1)!;
+      const links = executes.filter((e) => e.sql.startsWith(`INSERT INTO ${NAMESPACE}.backlinks`)).at(-1)!;
+      return { templateId: sprint.params[10], tasks: tasks.params.length / 17, domains: links.params.filter((_p, i) => i % 12 === 4) };
+    };
+    const { harness, executes } = await boot([]);
+    const client = await harness.executeTool<{ data?: Row; error?: string }>("create-sprint", { siteUrl: "https://jo.co.za", client: "contact:ct-1" }, { companyId: "co-1" });
+    expect(client.data).toMatchObject({ businessType: "local", plan: "Local service business" });
+    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90-local", tasks: 46 });
+    expect(seeded(executes).domains).toEqual(expect.arrayContaining(["business.google.com", "snupit.co.za"]));
+    const own = await harness.executeTool<{ data?: Row }>("create-sprint", { siteUrl: "https://partnersinbiz.online" }, { companyId: "co-1" });
+    expect(own.data).toMatchObject({ businessType: "saas" });
+    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90", tasks: 42 });
+    const firm = await harness.executeTool<{ data?: Row }>("create-sprint", { siteUrl: "https://acme.co.za", client: "company:crm-1", businessType: "professional" }, { companyId: "co-1" });
+    expect(firm.data).toMatchObject({ businessType: "professional", plan: "Professional services" });
+    expect(seeded(executes).templateId).toBe("outrank-90-professional");
+    const bad = await harness.executeTool<{ error?: string }>("create-sprint", { siteUrl: "https://x.co.za", businessType: "bakery" }, { companyId: "co-1" });
+    expect(bad.error).toMatch(/businessType must be one of: local, professional, ecommerce, saas/);
+  });
+
   it("lets only a person move a sprint to a client", async () => {
     const { harness, executes } = await boot([LEGACY]);
     const agentTry = await harness.executeTool<{ error?: string }>("update-sprint", { sprintId: "legacy-1", client: "company:crm-1" }, { companyId: "co-1" });
@@ -246,7 +270,7 @@ describe("client-summary route", () => {
 
   const task = (extra: Row): Row => ({ id: "t", company_id: "co-1", sprint_id: "acme-1", week: 4, phase: 1, due_day: 23, focus: "", title: "t", task_type: "custom", owner: "agent", autopilot_eligible: true, status: "not_started", source: "template", ...extra });
 
-  it("summarises the client's running sprint", async () => {
+  it("summarises the client's running sprint with the SEO page's numbers (no agent linked: due work is stuck)", async () => {
     const { harness } = await boot([OWN, ACME, JO], {
       tasks: [
         task({ id: "t1", due_day: 23 }),
@@ -262,11 +286,13 @@ describe("client-summary route", () => {
     expect(res).toEqual({
       status: 200,
       body: {
-        headline: "Day 23/90 · Foundation",
+        headline: "Day 23/90 · Foundation · Software (SaaS)",
         stats: [
-          { label: "Due today", value: 1 },
+          // t1 is due today and t2 thirteen days late (overdue); t3 waits on a person; t4 is not due yet.
+          { label: "Due now", value: 2 },
           { label: "Overdue", value: 1, tone: "warn" },
-          { label: "Blocked", value: 1, tone: "warn" },
+          { label: "Stuck (agent needs attention)", value: 2, tone: "bad" },
+          { label: "Needs you", value: 0, tone: "ok" },
           { label: "Health", value: "62/100", tone: "warn" },
           { label: "Keywords tracked", value: 2 },
         ],

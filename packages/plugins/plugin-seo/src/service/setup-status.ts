@@ -9,13 +9,15 @@
 import { configSaved, isModuleEnabled, pluginUiBase, publishSetupStatus, settingsItem, type SetupItem, type SetupItemStatus, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { sprintScope, sprintPagePath } from "../engine/scope.js";
-import { isRunning } from "../engine/sprint.js";
+import { plural } from "../engine/plain.js";
+import { isActiveSprint } from "./overview.js";
 import {
   buildSetupChecklist,
   GITHUB_PAT_URL,
   githubTokenSteps,
   SEARCH_CONSOLE_API_URL,
   SITE_VERIFICATION_API_URL,
+  SEO_TEAM_PATH,
   type SetupItem as EngineItem,
   type SetupFacts,
 } from "../engine/setup.js";
@@ -24,6 +26,7 @@ import manifest from "../manifest.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { companyInfo, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { serviceAccountAccess } from "./google-access.js";
+import { routinesItem, routineViews } from "./routines.js";
 import { companySetupFacts, sprintSetupFacts } from "./setup.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
@@ -116,7 +119,7 @@ function apiItem(saDone: boolean, probe: Awaited<ReturnType<typeof probeApis>>):
   return { ...base, status: "done", detail: "Both APIs answer for the service account.", steps: undefined };
 }
 
-/** One item for all running sprints: done when every sprint's item is done. */
+/** One item for all active sprints: done when every sprint's item is done. */
 function sprintAggregate(
   key: string,
   perSprint: Array<{ sprint: db.Sprint; item: EngineItem }>,
@@ -129,7 +132,7 @@ function sprintAggregate(
   let status: SetupItemStatus = open.length === 0 ? "done" : open.some((r) => r.status === "missing") ? "missing" : "unknown";
   if (!input.required && status === "missing") status = "optional";
   const detail = open.length === 0
-    ? rows.length === 1 ? `${rows[0]!.sprint.siteName}: ${rows[0]!.item.detail}` : `All ${rows.length} running sprints are set.`
+    ? rows.length === 1 ? `${rows[0]!.sprint.siteName}: ${rows[0]!.item.detail}` : `All ${rows.length} active sprints are set.`
     : open.slice(0, 5).map((r) => `${r.sprint.siteName}: ${r.item.detail}`).join(" ") + (open.length > 5 ? ` (+${open.length - 5} more)` : "");
   return {
     key,
@@ -151,7 +154,9 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
   const facts: SetupFacts = { ...(await companySetupFacts(env, info)), prefix: null, settingsPath: href };
   const engine = Object.fromEntries(buildSetupChecklist(facts).map((i) => [i.key, i])) as Record<string, EngineItem>;
   const sprints = await db.listSprints(env.ctx.db, companyId).catch(() => [] as db.Sprint[]);
-  const running = sprints.filter((s) => isRunning(s.status));
+  // Active = running with a 90-day plan: the same count as the SEO page and the Cockpit.
+  const running = sprints.filter(isActiveSprint);
+  const noPlan = sprints.filter((s) => !s.seededAt && s.status !== "archived").length;
 
   const items: SetupItem[] = [];
   items.push({ ...settingsItem({ saved: facts.settingsSaved, pluginId: installationId(uiBase) ?? "", detail: engine.settings!.detail, agentNext: engine.settings!.next }), href });
@@ -166,14 +171,14 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
     status: sprints.length > 0 ? "done" : "missing",
     required: true,
     detail: sprints.length > 0
-      ? `${sprints.length} sprint${sprints.length === 1 ? "" : "s"} (${running.length} running).`
+      ? `${plural(sprints.length, "sprint")}: ${running.length} active${noPlan ? `, ${noPlan} without a 90-day plan yet` : ""}.`
       : "No sprint yet. A sprint is one site's 90-day plan, worked by the SEO agent.",
     href: "/seo",
     hrefLabel: "Open SEO",
     steps: sprints.length > 0 ? undefined : [
       "Open SEO and click **New sprint**.",
-      "Enter the site URL and name; pick own site or a CRM client.",
-      "Click **Start the 90-day plan**.",
+      "Enter the site, choose who it is for (our own site or a CRM client) and the kind of business: that picks the 90-day plan.",
+      "Click **Create sprint**.",
     ],
     agentNext: "Opens the week's tasks as issues and works them every day.",
   });
@@ -197,7 +202,7 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
 
   items.push(running.length
     ? sprintAggregate("site_project", pick("site_project"), { title: "Link each site's repo project", required: true, tab: "integrations" })
-    : noSprint("site_project", "Link each site's repo project", true, "Linked per sprint once a sprint is running."));
+    : noSprint("site_project", "Link each site's repo project", true, "Linked per sprint once a sprint is active."));
 
   items.push({
     ...fromEngine(engine.github_token!, { required: false, title: "Give the agent GitHub access" }),
@@ -210,17 +215,20 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
   items.push(fromEngine(engine.bing_key!, { required: true, title: "Add the Bing Webmaster API key" }));
   items.push(fromEngine(engine.pagespeed_key!, { required: false, warnIs: "optional", title: "Add a PageSpeed API key" }));
 
+  // Staffed in Setup → Team (hire, pick, change, remove); the item links there.
   const agentItem = fromEngine(engine.agent!, { required: true, title: "Hire or link the SEO agent" });
   items.push({
     ...agentItem,
-    href: facts.agent ? `/agents/${facts.agent.id}` : "/seo",
-    hrefLabel: facts.agent ? "Open the agent" : "Open SEO",
+    href: SEO_TEAM_PATH,
+    hrefLabel: "Open Team in Setup",
     action: facts.agent ? null : { plugin: PLUGIN_ID, key: "seo.start-hire", params: {}, label: "Open a hire task" },
   });
+  // Shipped on; done only when both are active and the page saw their schedules on.
+  items.push(routinesItem({ views: await routineViews(env, companyId), agentLinked: Boolean(facts.agent) }));
 
   items.push(running.length
     ? sprintAggregate("autopilot", pick("autopilot"), { title: "Set autopilot to safe", required: true, warnIs: "done" })
-    : noSprint("autopilot", "Set autopilot to safe", true, "Set per sprint once a sprint is running."));
+    : noSprint("autopilot", "Set autopilot to safe", true, "Set per sprint once a sprint is active."));
   if (running.length) {
     items.push(sprintAggregate("gsc_property", pick("gsc_property"), { title: "Search Console property connected", required: false, tab: "integrations" }));
     items.push(sprintAggregate("bing_site", pick("bing_site"), { title: "Bing site verified", required: false, tab: "integrations" }));

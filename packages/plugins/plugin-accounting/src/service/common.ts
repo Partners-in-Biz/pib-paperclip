@@ -4,13 +4,18 @@
  * each other inside the worker.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { presignUrl, readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { companyRoles, createWorkIssue, formatMoneyMinor, presignUrl, readConfig, reopenApprovalForPerson, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { parseVatCategory, parseYearEndMonth, type VatCategory } from "../domain/periods.js";
 import { AccountingError } from "../domain/util.js";
 import { PLUGIN_ID } from "../namespace.js";
 
 export const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 export const BOOK_CURRENCY = "ZAR";
+
+/** Money in issue text and messages, the way every PiB page shows it: `R 12,345.67`. */
+export function money(minor: number): string {
+  return formatMoneyMinor(minor, BOOK_CURRENCY);
+}
 
 export type Actor =
   | { kind: "user"; userId: string }
@@ -148,6 +153,56 @@ export async function closeIssue(ctx: PluginContext, companyId: string, issueId:
   } catch (error) {
     ctx.logger.info("Accounting issue update skipped", { issueId, error: errorMessage(error) });
   }
+}
+
+/** A local_trusted install's board sentinel is not a company member, so issues cannot be assigned to it. */
+export const LOCAL_BOARD_USER_ID = "local-board";
+
+export function assignableUser(userId: string | null | undefined): string | null {
+  return userId && userId !== LOCAL_BOARD_USER_ID ? userId : null;
+}
+
+/**
+ * Who approves a manual journal, a reconciliation or a VAT201: always a
+ * person. The company owner (Cockpit roles), else the person who asked.
+ */
+export async function approverFor(ctx: PluginContext, companyId: string, actor: Actor): Promise<string | null> {
+  const owner = assignableUser((await companyRoles(ctx, companyId))?.ownerUserId);
+  if (owner) return owner;
+  return actor.kind === "user" ? assignableUser(actor.userId) : null;
+}
+
+type IssueInput = Parameters<typeof createWorkIssue>[1];
+
+/**
+ * Open an issue for an agent or a person (an agent is woken). If the host
+ * refuses the assignee (for example a user who left), the issue still opens,
+ * unassigned, so the work is never lost.
+ */
+export async function openIssue(
+  ctx: PluginContext,
+  input: Omit<IssueInput, "assigneeAgentId" | "assigneeUserId">,
+  to: { assigneeAgentId?: string | null; assigneeUserId?: string | null },
+): Promise<{ id: string; woke: boolean }> {
+  const assignee = to.assigneeAgentId ? { assigneeAgentId: to.assigneeAgentId } : assignableUser(to.assigneeUserId) ? { assigneeUserId: assignableUser(to.assigneeUserId)! } : {};
+  if (!Object.keys(assignee).length) ctx.logger.info("Accounting issue has nobody to go to (no Bookkeeper, Operator or owner yet)", { title: input.title });
+  try {
+    return await createWorkIssue(ctx, { ...input, ...assignee });
+  } catch (error) {
+    if (!Object.keys(assignee).length) throw error;
+    ctx.logger.warn("Accounting issue could not be assigned, so it opened unassigned", { title: input.title, error: errorMessage(error) });
+    return createWorkIssue(ctx, input);
+  }
+}
+
+/**
+ * An agent closed or cancelled an approval issue: only a person decides, so
+ * it is reopened and handed to the approver (kit `reopenApprovalForPerson`).
+ */
+export async function reopenForPerson(ctx: PluginContext, companyId: string, issueId: string | null, what: string): Promise<void> {
+  if (!issueId) return;
+  const ok = await reopenApprovalForPerson(ctx, { issueId, companyId, what });
+  if (!ok) ctx.logger.info("Could not hand the approval back to a person", { issueId });
 }
 
 export async function issueStatus(ctx: PluginContext, companyId: string, issueId: string | null): Promise<string | null> {

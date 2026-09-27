@@ -21,8 +21,8 @@ import {
   linesFor,
   quoteLinesFor,
   saveLineAmounts,
+  saveInvoiceTotals,
   saveQuoteStatus,
-  saveTotalsAndStatus,
   table,
   type InvoiceRow,
   type LineRow,
@@ -33,6 +33,7 @@ import { BillingError, canSeeInvoice, isOpenStatus, markSent, nextRunDate, type 
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
 import { nextDocumentNumber } from "./numbering.js";
+import { emitQuoteAccepted } from "./handoff.js";
 import { emitInvoiceItem } from "./openitems.js";
 import { postInvoiceIssue, postInvoiceVoid } from "./posting.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
@@ -170,7 +171,7 @@ export async function recomputeInvoice(ctx: PluginContext, invoice: InvoiceRow):
   invoice.total_minor = totals.totalMinor;
   invoice.subtotal_minor = totals.subtotalMinor;
   invoice.vat_minor = totals.vatMinor;
-  await saveTotalsAndStatus(ctx, invoice);
+  await saveInvoiceTotals(ctx, invoice);
   return totals;
 }
 
@@ -189,6 +190,14 @@ export async function recomputeQuote(ctx: PluginContext, quote: QuoteRow): Promi
   quote.vat_minor = totals.vatMinor;
   await saveQuoteStatus(ctx, quote);
   return totals;
+}
+
+/** A CRM deal id (optional): trimmed, at most 200 characters. */
+export function dealIdParam(params: Record<string, unknown>): string | null {
+  const value = optionalString(params, "dealId");
+  if (!value) return null;
+  if (value.length > 200 || /\s/.test(value)) throw new BillingError("dealId must be the CRM deal id");
+  return value;
 }
 
 function lineTaxCode(params: Record<string, unknown>, fallback: string | null | undefined): string | null {
@@ -231,9 +240,10 @@ export async function createInvoice(ctx: PluginContext, context: PluginPerformAc
     prices_include_vat: pricesIncludeVat,
     notes: optionalString(params, "notes") ?? null,
     send_to: params.sendTo != null ? parseAddresses(params.sendTo) : null,
+    deal_id: dealIdParam(params),
   };
   await insertInvoice(ctx, row);
-  return publicInvoice(row);
+  return publicInvoice({ ...row, created_at: new Date().toISOString() });
 }
 
 export async function addLine(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -292,6 +302,7 @@ export async function updateInvoice(ctx: PluginContext, context: PluginPerformAc
   const companyId = requiredCompany(context);
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   const draftOnly = ["currency", "pricesIncludeVat", "defaultTaxCode", "customerName"].some((key) => key in params);
+  const dealId = "dealId" in params ? dealIdParam(params) : invoice.deal_id ?? null;
   if (draftOnly) assertEditableInvoice(invoice);
   if (invoice.status === "cancelled") throw new BillingError("This invoice is cancelled");
   const dueAt = "dueAt" in params ? optionalDate(params, "dueAt") ?? null : iso(invoice.due_at);
@@ -304,9 +315,10 @@ export async function updateInvoice(ctx: PluginContext, context: PluginPerformAc
   if (optionalString(params, "customerName")) customer.name = optionalString(params, "customerName");
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")}
-        SET due_at = $2, notes = $3, send_to = $4::jsonb, currency = $5, prices_include_vat = $6, default_tax_code = $7, customer = $8::jsonb, updated_at = now()
+        SET due_at = $2, notes = $3, send_to = $4::jsonb, currency = $5, prices_include_vat = $6, default_tax_code = $7, customer = $8::jsonb,
+            deal_id = $9, updated_at = now()
       WHERE id = $1`,
-    [invoice.id, dueAt, notes, JSON.stringify(sendTo), currency, pricesIncludeVat, defaultCode, JSON.stringify(customer)],
+    [invoice.id, dueAt, notes, JSON.stringify(sendTo), currency, pricesIncludeVat, defaultCode, JSON.stringify(customer), dealId],
   );
   const fresh = (await getInvoice(ctx, invoice.id))!;
   if (fresh.status === "draft") await recomputeInvoice(ctx, fresh);
@@ -361,6 +373,9 @@ export function publicInvoice(invoice: InvoiceRow) {
     sendTo: parseAddresses(asArray(invoice.send_to)),
     recurringId: invoice.recurring_id ?? null,
     subscriptionId: invoice.subscription_id ?? null,
+    quoteId: invoice.quote_id ?? null,
+    dealId: invoice.deal_id ?? null,
+    createdAt: iso(invoice.created_at),
   };
 }
 
@@ -391,9 +406,10 @@ export async function createQuote(ctx: PluginContext, context: PluginPerformActi
     default_tax_code: params.taxCode ? assertTaxCode(params.taxCode) : defaultTaxCode(settings),
     prices_include_vat: optionalBoolean(params, "pricesIncludeVat") ?? Boolean(settings.pricesIncludeVat),
     notes: optionalString(params, "notes") ?? null,
+    deal_id: dealIdParam(params),
   };
   await insertQuote(ctx, row);
-  return publicQuote(row);
+  return publicQuote({ ...row, created_at: new Date().toISOString() });
 }
 
 function assertEditableQuote(quote: QuoteRow): void {
@@ -452,9 +468,10 @@ export async function updateQuote(ctx: PluginContext, context: PluginPerformActi
   const companyId = requiredCompany(context);
   const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
   if (quote.status !== "draft" && ["currency", "pricesIncludeVat", "defaultTaxCode"].some((k) => k in params)) throw new BillingError("Only a draft quote can change");
+  if (quote.status === "converted" && ["validUntil", "sendTo"].some((k) => k in params)) throw new BillingError("This quote is converted to an invoice; change the invoice instead");
   await ctx.db.execute(
     `UPDATE ${table(ctx, "quotes")}
-        SET valid_until = $2, notes = $3, send_to = $4::jsonb, currency = $5, prices_include_vat = $6, default_tax_code = $7, updated_at = now()
+        SET valid_until = $2, notes = $3, send_to = $4::jsonb, currency = $5, prices_include_vat = $6, default_tax_code = $7, deal_id = $8, updated_at = now()
       WHERE id = $1`,
     [
       quote.id,
@@ -464,6 +481,7 @@ export async function updateQuote(ctx: PluginContext, context: PluginPerformActi
       "currency" in params ? currencyCode(params.currency) : quote.currency,
       optionalBoolean(params, "pricesIncludeVat") ?? Boolean(quote.prices_include_vat),
       "defaultTaxCode" in params ? (params.defaultTaxCode ? assertTaxCode(params.defaultTaxCode) : null) : quote.default_tax_code ?? null,
+      "dealId" in params ? dealIdParam(params) : quote.deal_id ?? null,
     ],
   );
   const fresh = (await getQuote(ctx, quote.id))!;
@@ -483,11 +501,25 @@ export async function setQuoteStatus(ctx: PluginContext, context: PluginPerformA
   const companyId = requiredCompany(context);
   const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
   const status = requiredString(params, "status");
+  // "Sent" means a person sent it by hand; agents ask for a send with request-quote-send.
+  if (status === "sent") requirePerson(context, "marking a quote sent (ask for it with request-quote-send)");
   if (!(QUOTE_MOVES[quote.status] ?? []).includes(status)) throw new BillingError(`A ${quote.status} quote cannot become ${status}`);
+  const becameAccepted = status === "accepted" && quote.status !== "accepted";
   quote.status = status;
   if (status === "sent" && !quote.sent_at) quote.sent_at = new Date().toISOString();
+  if (becameAccepted) quote.accepted_at = new Date().toISOString();
   await saveQuoteStatus(ctx, quote);
+  if (becameAccepted) await announceAccepted(ctx, quote);
   return publicQuote(quote);
+}
+
+/** Tell the CRM (and anyone listening) that the customer accepted: `quote.accepted`, with the deal. Never blocks the change. */
+async function announceAccepted(ctx: PluginContext, quote: QuoteRow): Promise<void> {
+  try {
+    await emitQuoteAccepted(ctx, quote, String(iso(quote.accepted_at) ?? new Date().toISOString()));
+  } catch (error) {
+    ctx.logger.info("quote.accepted hand-off not sent", { quoteId: quote.id, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export async function convertQuote(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -521,6 +553,7 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
     vat_minor: Number(quote.vat_minor ?? 0),
     send_to: asArray(quote.send_to),
     quote_id: quote.id,
+    deal_id: quote.deal_id ?? null,
   };
   await insertInvoice(ctx, invoice);
   for (const line of await quoteLinesFor(ctx, quote.id)) {
@@ -537,7 +570,11 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
   quote.status = "converted";
   quote.converted_invoice_id = invoice.id;
   await saveQuoteStatus(ctx, quote);
-  return { quote: publicQuote(quote), invoice: publicInvoice(invoice) };
+  return {
+    quote: publicQuote(quote),
+    invoice: publicInvoice({ ...invoice, created_at: new Date().toISOString() }),
+    next: `Check draft invoice ${invoice.number} (invoice-detail), then ask for it to be sent with request-invoice-send.`,
+  };
 }
 
 export function publicQuote(quote: QuoteRow) {
@@ -562,6 +599,10 @@ export function publicQuote(quote: QuoteRow) {
     deliveryStatus: quote.delivery_status ?? null,
     deliveryError: quote.delivery_error ?? null,
     sendTo: parseAddresses(asArray(quote.send_to)),
+    dealId: quote.deal_id ?? null,
+    sentAt: iso(quote.sent_at),
+    acceptedAt: iso(quote.accepted_at),
+    createdAt: iso(quote.created_at),
   };
 }
 

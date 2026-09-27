@@ -7,6 +7,13 @@ export type Lifecycle = (typeof LIFECYCLES)[number];
 export const STAGE_KINDS = ["open", "won", "lost"] as const;
 export type StageKind = (typeof STAGE_KINDS)[number];
 
+/** A deal's status is its stage's kind. */
+export const DEAL_STATUSES = STAGE_KINDS;
+
+/** find-records: what to search, and the most results one call returns. */
+export const FIND_KINDS = ["company", "contact", "any"] as const;
+export const FIND_MAX = 25;
+
 export const NEXT_ACTIONS = ["call", "email", "meet"] as const;
 export type NextActionKind = (typeof NEXT_ACTIONS)[number];
 
@@ -26,6 +33,30 @@ export type SequenceDelivery = (typeof SEQUENCE_DELIVERIES)[number];
 /** Whether we may email a contact. Bounced and unsubscribed contacts are never emailed by a sequence. */
 export const EMAIL_STATUSES = ["ok", "bounced", "unsubscribed"] as const;
 export type EmailStatus = (typeof EMAIL_STATUSES)[number];
+
+/** Timeline entries people and agents log. System entries (lead_captured, email_sent, deal_won…) are written by the CRM itself. */
+export const ACTIVITY_KINDS = ["note", "call", "meeting", "email", "message", "task"] as const;
+export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
+
+export function assertActivityKind(value: unknown): ActivityKind {
+  if (value == null || value === "") return "note";
+  if (typeof value !== "string" || !(ACTIVITY_KINDS as readonly string[]).includes(value)) {
+    throw new CrmError(`Activity kind must be ${ACTIVITY_KINDS.join(", ")}`);
+  }
+  return value as ActivityKind;
+}
+
+/** Types an extra (custom) field can have. */
+export const FIELD_TYPES = ["text", "number", "date", "boolean", "url"] as const;
+export type FieldType = (typeof FIELD_TYPES)[number];
+
+export function assertFieldType(value: unknown): FieldType {
+  if (value == null || value === "") return "text";
+  if (typeof value !== "string" || !(FIELD_TYPES as readonly string[]).includes(value)) {
+    throw new CrmError(`Field type must be ${FIELD_TYPES.join(", ")}`);
+  }
+  return value as FieldType;
+}
 
 export const LOCAL_BOARD_USER_ID = "local-board";
 
@@ -447,10 +478,31 @@ export function advanceEnrollment(
   };
 }
 
-export function sequenceIssueCopy(contactName: string, step: SequenceStepDraft): { title: string; description: string } {
+/**
+ * The issue for a due step done by hand. Marking it done moves the contact to
+ * the next step (for `sent` sequences: only once the message really went out).
+ */
+export function sequenceIssueCopy(
+  contactName: string,
+  step: SequenceStepDraft,
+  context?: { contactId: string; sequenceName: string; stepCount: number; completionMode: CompletionMode; body?: string; link?: string | null },
+): { title: string; description: string } {
+  const title = `${step.title}: ${contactName}`;
+  if (!context) return { title, description: step.body };
+  const done = context.completionMode === "sent"
+    ? "Mark this issue done only once the message has really been sent: that moves the contact to the next step."
+    : "Mark this issue done when the step is done: that moves the contact to the next step.";
   return {
-    title: `${step.title}: ${contactName}`,
-    description: step.body,
+    title,
+    description: [
+      `Sequence "${context.sequenceName}", step ${step.position} of ${context.stepCount}, for \`contact:${context.contactId}\` (${contactName}).`,
+      "",
+      (context.body ?? step.body).trim() || "(no step text)",
+      "",
+      `Do the step, log what happened (\`log-activity\`), then: ${done}`,
+      "Email you write yourself is marketing email: say who we are, add an opt-out line, and skip anyone whose email status is not ok.",
+      ...(context.link ? ["", `Contact: ${context.link}`] : []),
+    ].join("\n"),
   };
 }
 

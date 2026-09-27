@@ -14,48 +14,23 @@ import {
   hireStatus,
   linkAgent,
   linkedAgentId,
+  mergePluginToolsGrant,
+  roleAgentUsable,
   tryLinkPendingHire,
   unlinkAgent,
   type HireAgentSummary,
   type HireStatus,
   type OnAgentLinked,
   type RolesPayload,
+  type TeamRoleKey,
+  type WorkRoute,
 } from "@partnersinbiz/pib-plugin-kit";
 import { assignableUser, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, type RoleKind } from "./constants.js";
 import { getRoles, listRoles, saveRoles, type RolesRow } from "./db.js";
 import { CockpitError, message, type Env } from "./env.js";
-import { HIRE_ROLES } from "./hire.js";
+import { storedSnapshots } from "./health.js";
+import { HIRE_MATCH_ROLES } from "./hire.js";
 
-export const PLUGIN_TOOLS_GRANT = { permissionKey: "tools:use", scope: { providerType: "paperclip_plugin" } } as const;
-
-type GrantInput = { permissionKey: string; scope?: Record<string, unknown> | null };
-
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${stable((value as Record<string, unknown>)[k])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value ?? null);
-}
-
-/** Existing grants plus one more, without duplicates (`grants.set` replaces the whole set). */
-export function mergeGrants(existing: GrantInput[], add: GrantInput): { grants: GrantInput[]; added: boolean } {
-  const key = (g: GrantInput) => `${g.permissionKey}|${stable(g.scope ?? null)}`;
-  const seen = new Set<string>();
-  const grants: GrantInput[] = [];
-  for (const g of existing) {
-    const k = key(g);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    grants.push({ permissionKey: g.permissionKey, scope: g.scope ?? null });
-  }
-  if (seen.has(key(add))) return { grants, added: false };
-  grants.push({ permissionKey: add.permissionKey, scope: add.scope ?? null });
-  return { grants, added: true };
-}
 
 // ---------------------------------------------------------------------------
 // Payload and events
@@ -72,15 +47,107 @@ export function rolesPayload(row: RolesRow): RolesPayload {
   };
 }
 
-export async function emitRoles(ctx: PluginContext, row: RolesRow): Promise<boolean> {
+/**
+ * An agent's current Paperclip status: null when there is no agent or the
+ * lookup failed (the kit treats unknown as usable), "terminated" when it no
+ * longer exists, so plugins stop routing work to it.
+ */
+export async function agentStatus(env: Env, companyId: string, agentId: string | null | undefined): Promise<string | null> {
+  if (!agentId) return null;
   try {
-    await ctx.events.emit(COCKPIT_EVENTS.rolesUpdated, row.companyId, rolesPayload(row) as unknown as Record<string, unknown>);
+    const agent = await env.ctx.agents.get(agentId, companyId);
+    return agent ? String(agent.status ?? "") || null : "terminated";
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every staffed role from the plugins' snapshots (kit `CockpitSnapshot.team`),
+ * with each agent's current status. Only switched-on modules count.
+ */
+export async function teamFromSnapshots(env: Env, companyId: string): Promise<NonNullable<RolesPayload["team"]>> {
+  const team: NonNullable<RolesPayload["team"]> = {};
+  for (const { snapshot } of await storedSnapshots(env, companyId)) {
+    for (const member of snapshot.team ?? []) {
+      if (team[member.role]) continue;
+      const status = member.agentId ? (await agentStatus(env, companyId, member.agentId)) ?? member.status ?? null : null;
+      team[member.role] = { agentId: member.agentId, status };
+    }
+  }
+  return team;
+}
+
+/**
+ * The broadcast: the saved roles plus the Operator's and Reviewer's current
+ * status and every staffed role (`team`), so any plugin routes work to a
+ * running agent (kit `routeWork`).
+ */
+export async function fullRolesPayload(env: Env, row: RolesRow): Promise<RolesPayload> {
+  const [operatorStatus, reviewerStatus, team] = await Promise.all([
+    agentStatus(env, row.companyId, row.operatorAgentId),
+    agentStatus(env, row.companyId, row.reviewerAgentId),
+    teamFromSnapshots(env, row.companyId).catch((error) => {
+      env.ctx.logger.info("Cockpit team read failed", { companyId: row.companyId, error: message(error) });
+      return {} as NonNullable<RolesPayload["team"]>;
+    }),
+  ]);
+  return {
+    ...rolesPayload(row),
+    operatorStatus,
+    reviewerStatus,
+    team: {
+      ...team,
+      ...(row.operatorAgentId ? { operator: { agentId: row.operatorAgentId, status: operatorStatus } } : {}),
+      ...(row.reviewerAgentId ? { reviewer: { agentId: row.reviewerAgentId, status: reviewerStatus } } : {}),
+    },
+  };
+}
+
+/** The company's roles as the Cockpit broadcasts them, or null before the team is saved. */
+export async function currentRoles(env: Env, companyId: string): Promise<RolesPayload | null> {
+  const row = await getRoles(env.ctx, companyId);
+  return row ? fullRolesPayload(env, row) : null;
+}
+
+/**
+ * Who gets a piece of work, with kit `routeWork`'s rules (the first running
+ * agent among `roles`, else the Operator, else the owner, else nobody),
+ * computed from the Cockpit's own roles so it never waits for its broadcast.
+ */
+export function routeFromRoles(roles: RolesPayload | null, wanted: TeamRoleKey[]): WorkRoute {
+  const agentFor = (role: TeamRoleKey): string | null => {
+    if (!roles) return null;
+    if (role === "operator") return roles.operatorAgentId && roleAgentUsable(roles.operatorStatus) ? roles.operatorAgentId : null;
+    if (role === "reviewer") return roles.reviewerAgentId && roleAgentUsable(roles.reviewerStatus) ? roles.reviewerAgentId : null;
+    const member = roles.team?.[role];
+    return member?.agentId && roleAgentUsable(member.status) ? member.agentId : null;
+  };
+  for (const role of [...wanted, "operator" as const]) {
+    const agentId = agentFor(role);
+    if (agentId) return { assigneeAgentId: agentId, assigneeUserId: null, via: role };
+  }
+  const owner = assignableUser(roles?.ownerUserId ?? null);
+  return owner ? { assigneeAgentId: null, assigneeUserId: owner, via: "owner" } : { assigneeAgentId: null, assigneeUserId: null, via: "none" };
+}
+
+export async function emitRoles(env: Env, row: RolesRow): Promise<boolean> {
+  try {
+    const payload = await fullRolesPayload(env, row);
+    await env.ctx.events.emit(COCKPIT_EVENTS.rolesUpdated, row.companyId, payload as unknown as Record<string, unknown>);
     return true;
   } catch (error) {
-    ctx.logger.info("Roles emit failed", { companyId: row.companyId, error: message(error) });
+    env.ctx.logger.info("Roles emit failed", { companyId: row.companyId, error: message(error) });
     return false;
   }
 }
+
+/** Re-send the roles now (a plugin's snapshot changed a role's agent or status). False before the team is saved. */
+export async function rebroadcastRoles(env: Env, companyId: string): Promise<boolean> {
+  const row = await getRoles(env.ctx, companyId);
+  return row ? emitRoles(env, row) : false;
+}
+
 
 /**
  * Events are at-most-once: re-send every company's saved roles (hourly), and
@@ -96,13 +163,13 @@ export async function reemitRoles(env: Env): Promise<{ emitted: number; skipped:
     }
     for (const kind of ["operator", "reviewer"] as const) {
       try {
-        await tryLinkPendingHire(env.ctx, row.companyId, HIRE_ROLES[kind], onLinkedFor(env, kind));
+        await tryLinkPendingHire(env.ctx, row.companyId, HIRE_MATCH_ROLES[kind], onLinkedFor(env, kind));
       } catch (error) {
         env.ctx.logger.info("Cockpit hire link check failed", { companyId: row.companyId, kind, error: message(error) });
       }
     }
     const current = (await getRoles(env.ctx, row.companyId)) ?? row;
-    if (await emitRoles(env.ctx, current)) result.emitted += 1;
+    if (await emitRoles(env, current)) result.emitted += 1;
     else result.failed += 1;
   }
   return result;
@@ -188,18 +255,18 @@ export async function saveTeam(env: Env, companyId: string, input: TeamInput, us
     const label = kind === "operator" ? "Operator" : "Reviewer";
     if (after && after !== before) {
       try {
-        const linked = await linkAgent(env.ctx, companyId, HIRE_ROLES[kind], after, { by: "manual", userId, onLinked: onLinkedFor(env, kind) });
+        const linked = await linkAgent(env.ctx, companyId, HIRE_MATCH_ROLES[kind], after, { by: "manual", userId, onLinked: onLinkedFor(env, kind) });
         steps.push(`${label}: ${linked.agent.name}.`, ...linked.steps);
       } catch (error) {
         steps.push(`${label} could not be linked: ${message(error)}`);
       }
     } else if (!after && before) {
-      await unlinkAgent(env.ctx, companyId, HIRE_ROLES[kind]);
+      await unlinkAgent(env.ctx, companyId, HIRE_MATCH_ROLES[kind]);
       steps.push(`${label} removed. The agent itself, its routines and its tasks were not changed.`);
     }
   }
   const saved = (await getRoles(env.ctx, companyId)) ?? next;
-  await emitRoles(env.ctx, saved);
+  await emitRoles(env, saved);
   return { roles: rolesPayload(saved), steps, firstSave: !previous };
 }
 
@@ -230,7 +297,7 @@ export function onLinkedFor(env: Env, kind: RoleKind): OnAgentLinked {
     const already = kind === "operator" ? current?.operatorAgentId === agentId : current?.reviewerAgentId === agentId;
     const row = already && current ? current : await setRoleAgent(env, companyId, kind, agentId);
     const steps = await wireRole(env, companyId, kind, agentId, by.userId);
-    if (!already) await emitRoles(env.ctx, row);
+    if (!already) await emitRoles(env, row);
     return steps;
   };
 }
@@ -267,14 +334,17 @@ async function assignRoutine(env: Env, companyId: string, key: string, agentId: 
   return { resolved, reassigned };
 }
 
-async function grantPluginTools(env: Env, companyId: string, agentId: string, userId: string | null): Promise<"added" | "already_present" | string> {
+/**
+ * Plugin tool access for the agent. The host keeps ONE `tools:use` grant per
+ * agent, so the kit merges plugin tools into the existing one: saved only
+ * when it changed, and a grant limited some other way is left for a person.
+ */
+export async function grantPluginTools(env: Env, companyId: string, agentId: string, userId: string | null): Promise<{ state: "added" | "already_present" | "conflict" | "failed"; detail: string | null }> {
   try {
     const existing = await env.ctx.authorization.grants.list({ companyId, principalType: "agent", principalId: agentId });
-    const merged = mergeGrants(
-      existing.map((g) => ({ permissionKey: String(g.permissionKey), scope: (g.scope as Record<string, unknown> | null) ?? null })),
-      PLUGIN_TOOLS_GRANT,
-    );
-    if (!merged.added) return "already_present";
+    const merged = mergePluginToolsGrant(existing.map((g) => ({ permissionKey: String(g.permissionKey), scope: (g.scope as Record<string, unknown> | null) ?? null })));
+    if (merged.conflict) return { state: "conflict", detail: merged.conflict };
+    if (!merged.changed) return { state: "already_present", detail: null };
     await env.ctx.authorization.grants.set({
       companyId,
       principalType: "agent",
@@ -282,9 +352,9 @@ async function grantPluginTools(env: Env, companyId: string, agentId: string, us
       grants: merged.grants as Parameters<PluginContext["authorization"]["grants"]["set"]>[0]["grants"],
       grantedByUserId: assignableUser(userId),
     });
-    return "added";
+    return { state: "added", detail: null };
   } catch (error) {
-    return message(error);
+    return { state: "failed", detail: message(error) };
   }
 }
 
@@ -300,9 +370,10 @@ export async function wireRole(env: Env, companyId: string, kind: RoleKind, agen
   steps.push(failed.length === 0 ? `Synced the \`${slug}\` skill.` : `The skills did not sync (${failed.map((s) => s.error ?? "failed").join("; ")}). Save the team again to retry.`);
 
   const grant = await grantPluginTools(env, companyId, agentId, userId);
-  if (grant === "added") steps.push("Granted plugin tool access (`tools:use` for plugin tools).");
-  else if (grant === "already_present") steps.push("Plugin tool access was already granted.");
-  else steps.push(`Tool access could not be granted automatically (${grant}). Grant ${name} tools:use for plugin tools in its permissions.`);
+  if (grant.state === "added") steps.push("Granted plugin tool access (`tools:use` for plugin tools).");
+  else if (grant.state === "already_present") steps.push("Plugin tool access was already granted.");
+  else if (grant.state === "conflict") steps.push(`Plugin tool access was not changed: ${grant.detail}`);
+  else steps.push(`Tool access could not be granted automatically (${grant.detail}). Grant ${name} tools:use for plugin tools in its permissions.`);
 
   if (kind === "operator") {
     for (const key of [ROUTINES.daily, ROUTINES.weekly]) {
@@ -337,12 +408,12 @@ export async function roleViews(env: Env, companyId: string): Promise<Record<Rol
   const out = {} as Record<RoleKind, RoleView>;
   for (const kind of ["operator", "reviewer"] as const) {
     try {
-      await tryLinkPendingHire(env.ctx, companyId, HIRE_ROLES[kind], onLinkedFor(env, kind));
+      await tryLinkPendingHire(env.ctx, companyId, HIRE_MATCH_ROLES[kind], onLinkedFor(env, kind));
     } catch (error) {
       env.ctx.logger.info("Cockpit hire link check failed", { companyId, kind, error: message(error) });
     }
     try {
-      const status = await hireStatus(env.ctx, companyId, HIRE_ROLES[kind]);
+      const status = await hireStatus(env.ctx, companyId, HIRE_MATCH_ROLES[kind]);
       out[kind] = { agent: status.agent, hire: status.hire, candidates: status.candidates, linkedBy: status.linkedBy };
     } catch {
       out[kind] = { agent: null, hire: null, candidates: [], linkedBy: null };
@@ -358,5 +429,5 @@ export async function operatorAgentId(env: Env, companyId: string): Promise<stri
     const agent = await env.ctx.agents.get(roles.operatorAgentId, companyId).catch(() => null);
     if (agent && !["terminated", "archived", "deleted"].includes(String(agent.status))) return agent.id;
   }
-  return linkedAgentId(env.ctx, companyId, HIRE_ROLES.operator).catch(() => null);
+  return linkedAgentId(env.ctx, companyId, HIRE_MATCH_ROLES.operator).catch(() => null);
 }

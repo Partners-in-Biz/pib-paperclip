@@ -16,6 +16,8 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import type { ClientKind } from "./client-ref.js";
+import { PIB_PLUGINS } from "./contracts.js";
+import { teamRoleHealth, type TeamRoleKey } from "./team.js";
 
 export const COCKPIT_PLUGIN = "partnersinbiz.cockpit";
 
@@ -41,8 +43,10 @@ export interface CockpitKpi {
   /** Stable key, e.g. `cash`, `overdue`, `pipeline`, `scheduled_posts`. */
   key: string;
   label: string;
-  /** Display value, already formatted (e.g. "R 12,400"). */
+  /** Display value, already formatted and short (e.g. "R 12,400.00"). Put any detail in `hint`. */
   value: string;
+  /** One short line under the value, e.g. "3 invoices, 1 over a day old" or "as at 27 Sep". */
+  hint?: string | null;
   /** Raw number for sorting/trends when it makes sense (minor units for money). */
   raw?: number | null;
   tone?: Tone;
@@ -111,6 +115,15 @@ export interface CockpitSnapshot {
   /** Most recent notable things the plugin (or its agent) did, newest first, ≤ 10. */
   activity: ActivityItem[];
   quality: QualityMetric[];
+  /** The team roles this plugin staffs and the agent linked to each (the Cockpit shares them in `roles.updated`). */
+  team?: TeamMemberReport[];
+}
+
+export interface TeamMemberReport {
+  role: TeamRoleKey;
+  agentId: string | null;
+  /** Paperclip agent status (`active`, `idle`, `paused`, `error`, …) when known. */
+  status?: string | null;
 }
 
 export function emptySnapshot(plugin: string, title: string): CockpitSnapshot {
@@ -225,6 +238,11 @@ export interface RolesPayload {
   ownerUserId: string | null;
   /** Review outward-facing work (posts, campaigns, invoices, emails) before the person approves. */
   reviewOutward: boolean;
+  /** Paperclip status of the role's agent when the Cockpit last checked (`active`, `idle`, `paused`, …). */
+  operatorStatus?: string | null;
+  reviewerStatus?: string | null;
+  /** Every staffed PiB role (from the plugins' snapshots), so any plugin can route work to the right agent. */
+  team?: Partial<Record<TeamRoleKey, { agentId: string | null; status?: string | null }>>;
   updatedAt: string;
 }
 
@@ -261,7 +279,51 @@ export async function companyRoles(ctx: PluginContext, companyId: string): Promi
  */
 export async function reviewerAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
   const roles = await companyRoles(ctx, companyId);
-  return roles?.reviewOutward && roles.reviewerAgentId ? roles.reviewerAgentId : null;
+  if (!roles?.reviewOutward || !roles.reviewerAgentId) return null;
+  // A paused, failing or removed Reviewer would hold approvals forever: go straight to the person.
+  return roleAgentUsable(roles.reviewerStatus) ? roles.reviewerAgentId : null;
+}
+
+/** The Operator agent (to route stuck or unowned work to), or null when there is none or it is not running. */
+export async function operatorAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const roles = await companyRoles(ctx, companyId);
+  return roles?.operatorAgentId && roleAgentUsable(roles.operatorStatus) ? roles.operatorAgentId : null;
+}
+
+/** The running agent in a team role, or null (Operator and Reviewer come from the Cockpit's own roles). */
+export async function teamAgentId(ctx: PluginContext, companyId: string, role: TeamRoleKey): Promise<string | null> {
+  const roles = await companyRoles(ctx, companyId);
+  if (!roles) return null;
+  if (role === "operator") return roles.operatorAgentId && roleAgentUsable(roles.operatorStatus) ? roles.operatorAgentId : null;
+  if (role === "reviewer") return roles.reviewerAgentId && roleAgentUsable(roles.reviewerStatus) ? roles.reviewerAgentId : null;
+  const member = roles.team?.[role];
+  return member?.agentId && roleAgentUsable(member.status) ? member.agentId : null;
+}
+
+export interface WorkRoute {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  /** Who it went to: a role, the owner (a person), or nobody. */
+  via: TeamRoleKey | "owner" | "none";
+}
+
+/**
+ * Who gets a piece of work: the first running agent among `roles` (in
+ * order), else the Operator, else the company owner, else nobody. Use it for
+ * every issue a plugin opens so nothing is left unassigned.
+ */
+export async function routeWork(ctx: PluginContext, companyId: string, roles: TeamRoleKey[]): Promise<WorkRoute> {
+  for (const role of [...roles, "operator" as const]) {
+    const agentId = await teamAgentId(ctx, companyId, role);
+    if (agentId) return { assigneeAgentId: agentId, assigneeUserId: null, via: role };
+  }
+  const owner = (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
+  return owner ? { assigneeAgentId: null, assigneeUserId: owner, via: "owner" } : { assigneeAgentId: null, assigneeUserId: null, via: "none" };
+}
+
+/** Unknown status counts as usable (older Cockpits did not send it). */
+export function roleAgentUsable(status: string | null | undefined): boolean {
+  return !status || teamRoleHealth({ agentStatus: status, hireOpen: false }) === "ok";
 }
 
 /** Text appended to an approval issue routed to the Reviewer. */
@@ -286,7 +348,23 @@ export const HANDOFF_EVENTS = {
   contentPublished: "content.published",
   /** Social / Mailbox → CRM: someone showed buying intent; CRM creates or updates the lead. */
   leadCaptured: "lead.captured",
+  /** CRM → the sender: the lead was stored or held, so the sender stops re-emitting it. */
+  leadCapturedResult: "lead.captured.result",
+  /** CRM → Billing and the Cockpit: a deal was won. Billing opens the drafting task; the Cockpit starts onboarding on a first win. */
+  dealWon: "deal.won",
+  /** Billing → CRM: the customer accepted a quote. The CRM moves its deal to won. */
+  quoteAccepted: "quote.accepted",
+  /** Billing → CRM and the Cockpit: an invoice is paid in full. */
+  invoicePaid: "invoice.paid",
+  /** CRM / Campaigns / Mailbox → each other: stop marketing email to an address (every email after a hard bounce). */
+  contactSuppressed: "contact.suppressed",
 } as const;
+
+/** Plugins that send `lead.captured` (the CRM listens to each). */
+export const LEAD_SOURCES: string[] = [PIB_PLUGINS.social, PIB_PLUGINS.mailbox];
+
+/** Plugins that send `contact.suppressed` (each listens to the others). */
+export const SUPPRESSION_SOURCES: string[] = [PIB_PLUGINS.crm, PIB_PLUGINS.campaigns, PIB_PLUGINS.mailbox];
 
 export interface ContentPublished {
   key: string; // `seo:content:<id>`
@@ -313,4 +391,79 @@ export interface LeadCaptured {
   clientRef?: string | null;
   confidence?: number | null;
   capturedAt: string;
+}
+
+export interface LeadCapturedResult {
+  /** The `LeadCaptured` key. */
+  key: string;
+  /** `stored`: in the CRM; `held`: kept until the CRM is ready (off or settings unsaved); `ignored`: not a lead (duplicate, own address). */
+  status: "stored" | "held" | "ignored";
+  contactId?: string | null;
+  reason?: string | null;
+}
+
+export interface DealWon {
+  key: string; // `crm:deal:<id>:won`
+  dealId: string;
+  title: string;
+  valueMinor: number | null;
+  currency: string;
+  clientKind: ClientKind;
+  clientRef: string;
+  clientName: string;
+  contactEmail?: string | null;
+  /** The client's first won deal: it has just become a customer, so onboarding starts. */
+  firstWin: boolean;
+  ownerAgentId?: string | null;
+  ownerUserId?: string | null;
+  wonAt: string;
+}
+
+export interface QuoteAccepted {
+  key: string; // `billing:quote:<id>:accepted`
+  quoteId: string;
+  number: string;
+  dealId?: string | null;
+  clientKind: ClientKind | null;
+  clientRef: string | null;
+  totalMinor: number;
+  currency: string;
+  acceptedAt: string;
+}
+
+export interface InvoicePaid {
+  key: string; // `billing:invoice:<id>:paid`
+  invoiceId: string;
+  number: string;
+  dealId?: string | null;
+  clientKind: ClientKind | null;
+  clientRef: string | null;
+  totalMinor: number;
+  currency: string;
+  paidAt: string;
+}
+
+export type SuppressionReason = "unsubscribed" | "bounced" | "complained" | "manual";
+
+export interface ContactSuppressed {
+  key: string; // `suppress:<email>:<reason>`
+  email: string;
+  reason: SuppressionReason;
+  /** `marketing` stops campaigns and sequences only; `all` (hard bounce) stops every email. */
+  scope: "marketing" | "all";
+  /** The plugin that saw it. */
+  source: string;
+  clientKind?: ClientKind | null;
+  clientRef?: string | null;
+  at: string;
+}
+
+/** Unsubscribes and complaints stop marketing email; a hard bounce stops everything. */
+export function suppressionScope(reason: SuppressionReason): "marketing" | "all" {
+  return reason === "bounced" ? "all" : "marketing";
+}
+
+/** Normalised address for suppression lists (trimmed, lower case). */
+export function suppressionEmail(email: string): string {
+  return email.trim().toLowerCase();
 }

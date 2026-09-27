@@ -14,9 +14,10 @@ const instanceConfigSchema: JsonSchema = {
     defaultCurrency: { type: "string", title: "Default currency", default: "ZAR", minLength: 3, maxLength: 3 },
     sequenceIssueAssignee: {
       type: "string",
-      title: "Who gets sequence step issues",
-      description: "contact: the contact's agent or owner (default). none: leave the issue unassigned.",
-      enum: ["contact", "none"],
+      title: "Who gets CRM work (lead follow-ups, replies, sequence steps)",
+      description:
+        "contact (default): the contact's own agent or owner when it has one, else the Account Manager. team: always the Account Manager. Without an Account Manager the work goes to the Operator, then to the company owner, so nothing is left unassigned.",
+      enum: ["contact", "team"],
       default: "contact",
     },
     mailFrom: {
@@ -33,13 +34,16 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "CRM",
-  description: "Companies, contacts, deals, and sequences for a Paperclip workspace.",
+  description: "Companies, contacts, deals, sequences and client profiles, with the Account Manager agent. The source of truth for clients.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
   capabilities: [
     "companies.read",
     "access.members.read",
+    "agents.read",
+    "authorization.grants.read",
+    "authorization.grants.write",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -53,7 +57,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "issues.read",
     "issues.create",
+    "issues.update",
     "issues.wakeup",
+    "issue.comments.create",
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
@@ -82,6 +88,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "*/5 * * * *",
     },
     {
+      jobKey: "held-leads",
+      displayName: "Add held leads",
+      description: "Adds leads that came in while the CRM was off or its settings were unsaved, once it is ready.",
+      schedule: "*/10 * * * *",
+    },
+    {
       jobKey: "emit-recent",
       displayName: "Share recent client changes",
       description: "Re-sends companies and contacts changed in the last 30 minutes to the other PiB plugins.",
@@ -96,7 +108,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "setup-status",
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what the CRM still needs, and sends the Cockpit snapshot, for each company.",
+      description: "Links a hired Account Manager, re-sends the last day's hand-offs, tells the Setup plugin what the CRM still needs, and sends the Cockpit snapshot, for each company.",
       schedule: "17 * * * *",
     },
   ],

@@ -75,7 +75,7 @@ describe("Gmail tokens", () => {
     gmail.tokenResponse = () => invalidGrant();
     gmail.addMessage({ id: "a1", headers: { From: "a@b.co", Subject: "hi" } });
     const result = await runSyncJob(env);
-    expect(result).toEqual({ accounts: 2, synced: 1, failed: 1 });
+    expect(result).toEqual({ accounts: 2, synced: 1, failed: 1, leadsResent: 0, leadsFailed: 0 });
     expect(store.accounts.get("acc-2")!.status).toBe("needs_reconnect");
     expect(store.accounts.get("acc-1")!.status).toBe("connected");
     expect(host.issues.size).toBe(1);

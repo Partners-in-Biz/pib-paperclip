@@ -87,6 +87,12 @@ export interface MailSendRequested {
   context: { plugin: string; kind: string; id: string; clientKind?: string | null; clientRef?: string | null };
   /** Gmail labels to add to the sent message, e.g. ["PiB/Invoices"]. */
   labels?: string[];
+  /**
+   * Marketing email (campaign steps, CRM sequences). The Mailbox skips
+   * addresses suppressed for marketing and adds a List-Unsubscribe header.
+   * Transactional email (invoices, payslips, replies) leaves it unset.
+   */
+  marketing?: boolean;
 }
 
 export interface MailSendResult {

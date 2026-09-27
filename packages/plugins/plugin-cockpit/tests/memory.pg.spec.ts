@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { clearMemoryJevCache } from "../src/memory/jev.js";
-import { harvestComment, onCommentCreated, upkeep } from "../src/memory/service.js";
+import { exportMemory, harvestComment, importMemory, onCommentCreated, upkeep } from "../src/memory/service.js";
 import * as store from "../src/memory/store.js";
 import { runMemoryTool } from "../src/memory/tools.js";
 import { SELECTION } from "../src/memory/engine.js";
@@ -227,6 +227,15 @@ d("company memory (Postgres)", () => {
     expect((await tool("memory-update", { id: "m-nope", text: "x" })).error).toContain("No fact");
   });
 
+  it("lists one client known under several refs in one go (the Memory tab shows it once)", async () => {
+    await seedNorthwind();
+    const both = await store.listFacts(h.ctx, COMPANY, { status: "active", clientRefs: ["company:nw", "company:ac"], limit: 50, offset: 0 });
+    expect(both.total).toBe(4);
+    expect(new Set(both.facts.map((f) => f.clientRef))).toEqual(new Set(["company:nw", "company:ac"]));
+    const one = await store.listFacts(h.ctx, COMPANY, { status: "active", clientRefs: ["company:nw"], limit: 50, offset: 0 });
+    expect(one.total).toBe(3);
+  });
+
   it("records feedback, bumps counters and says whether the baseline would have caught a miss", async () => {
     await seedNorthwind();
     h.addIssue({ id: "i-f", identifier: "PIB-50", title: "[Northwind] Monthly invoice", originKind: "plugin:partnersinbiz.billing" });
@@ -382,12 +391,141 @@ d("company memory (Postgres)", () => {
     expect(fact.origin).toBe("harvest");
   });
 
+  describe("a new client from the CRM (no facts yet)", () => {
+    async function crm() {
+      await h.client.query(`INSERT INTO ${NAMESPACE}.crm_companies (id, company_id, name, domain, lifecycle, updated_at) VALUES ('bs1', $1, 'Brightside Dental', 'https://www.brightsidedental.co.za', 'customer', now()), ('gone', $1, 'Old Client', null, 'churned', now())`, [COMPANY]);
+      await h.client.query(`UPDATE ${NAMESPACE}.crm_companies SET deleted = true WHERE id = 'gone'`);
+      await h.client.query(
+        `INSERT INTO ${NAMESPACE}.crm_contacts (id, company_id, name, emails, account_ids, updated_at) VALUES ('ct1', $1, 'Jane Mokoena', ARRAY['jane@brightsidedental.co.za'], ARRAY['bs1'], now()), ('ct2', $1, 'Sam', ARRAY['sam@x.co.za'], ARRAY[]::text[], now()), ('ct3', $1, 'Thabo Nkosi', ARRAY['thabo@gmail.com'], ARRAY[]::text[], now())`,
+        [COMPANY],
+      );
+    }
+
+    it("files its first Learned lines under it, never company-wide, and keeps them out of other clients' briefs", async () => {
+      await seedNorthwind();
+      await crm();
+      h.addIssue({ id: "i-bs", identifier: "PIB-100", title: "Update Brightside Dental's Google Business Profile", originKind: "plugin:partnersinbiz.seo" });
+      h.comments.push({ id: "c-bs", companyId: COMPANY, issueId: "i-bs", authorAgentId: "agent-seo", authorUserId: null, body: "Done.\n\n**Learned:**\n- Their receptionist answers email only before 10:00.\n- Preference: they want before-and-after photos in every update." });
+      const result = await harvestComment(h.env, COMPANY, { issueId: "i-bs", commentId: "c-bs", authorAgentId: "agent-seo", authorUserId: null });
+      expect(result.saved).toHaveLength(2);
+      const saved = await store.getFacts(h.ctx, COMPANY, result.saved.map((f) => f.id));
+      for (const fact of saved) {
+        expect(fact.clientRef).toBe("company:bs1");
+        expect(fact.clientName).toBe("Brightside Dental");
+      }
+      // Northwind's next brief never sees them.
+      h.addIssue({ id: "i-nw", identifier: "PIB-101", title: "[Northwind] Write the October blog post", originKind: "plugin:partnersinbiz.seo" });
+      const northwind = await recall({ issueId: "PIB-101" });
+      expect(northwind.data.facts.map((f: { text: string }) => f.text).join(" ")).not.toContain("receptionist");
+      // Brightside's next brief has them.
+      h.addIssue({ id: "i-bs2", identifier: "PIB-102", title: "Brightside Dental: monthly photo update", originKind: "plugin:partnersinbiz.seo" });
+      const brightside = await recall({ issueId: "PIB-102" });
+      expect(brightside.data.client.refs).toEqual(["company:bs1"]);
+      expect(brightside.data.facts.map((f: { text: string }) => f.text)).toContain("They want before-and-after photos in every update.");
+    });
+
+    it("recognises the client by its website domain and by a contact who works there", async () => {
+      await crm();
+      h.addIssue({ id: "i-d", identifier: "PIB-110", title: "Fix the meta titles on brightsidedental.co.za", originKind: "plugin:partnersinbiz.seo" });
+      h.comments.push({ id: "c-d", companyId: COMPANY, issueId: "i-d", authorAgentId: "agent-seo", authorUserId: null, body: "**Learned:** the site runs on Wix, so titles are set per page in the Wix editor." });
+      const byDomain = await harvestComment(h.env, COMPANY, { issueId: "i-d", commentId: "c-d", authorAgentId: "agent-seo", authorUserId: null });
+      expect((await store.getFact(h.ctx, COMPANY, byDomain.saved[0]!.id))!.clientRef).toBe("company:bs1");
+
+      h.addIssue({ id: "i-c", identifier: "PIB-111", title: "Follow up with Jane Mokoena about the quote", originKind: "plugin:partnersinbiz.crm" });
+      h.comments.push({ id: "c-c", companyId: COMPANY, issueId: "i-c", authorAgentId: "agent-am", authorUserId: null, body: "**Learned:** Jane signs off anything over R 10,000 herself." });
+      const byContact = await harvestComment(h.env, COMPANY, { issueId: "i-c", commentId: "c-c", authorAgentId: "agent-am", authorUserId: null });
+      expect((await store.getFact(h.ctx, COMPANY, byContact.saved[0]!.id))!.clientRef).toBe("company:bs1");
+
+      // A contact with no company is its own client; a one-word contact name never matches (it would catch agents called Sam).
+      h.addIssue({ id: "i-t", identifier: "PIB-112", title: "Send Thabo Nkosi the onboarding pack", originKind: "plugin:partnersinbiz.crm" });
+      h.comments.push({ id: "c-t", companyId: COMPANY, issueId: "i-t", authorAgentId: "agent-am", authorUserId: null, body: "**Learned:** Thabo prefers WhatsApp to email." });
+      const sole = await harvestComment(h.env, COMPANY, { issueId: "i-t", commentId: "c-t", authorAgentId: "agent-am", authorUserId: null });
+      expect((await store.getFact(h.ctx, COMPANY, sole.saved[0]!.id))!.clientRef).toBe("contact:ct3");
+      h.addIssue({ id: "i-s", identifier: "PIB-113", title: "Sam: tidy the routines", originKind: "plugin:partnersinbiz.cockpit" });
+      h.comments.push({ id: "c-s", companyId: COMPANY, issueId: "i-s", authorAgentId: "agent-op", authorUserId: null, body: "**Learned:** routines need a named owner." });
+      const own = await harvestComment(h.env, COMPANY, { issueId: "i-s", commentId: "c-s", authorAgentId: "agent-op", authorUserId: null });
+      expect((await store.getFact(h.ctx, COMPANY, own.saved[0]!.id))!.clientRef).toBeNull();
+      // A deleted CRM company is not a client any more.
+      h.addIssue({ id: "i-g", identifier: "PIB-114", title: "Archive Old Client files", originKind: "plugin:partnersinbiz.cockpit" });
+      h.comments.push({ id: "c-g", companyId: COMPANY, issueId: "i-g", authorAgentId: "agent-op", authorUserId: null, body: "**Learned:** archived files go to the cold-storage folder." });
+      const gone = await harvestComment(h.env, COMPANY, { issueId: "i-g", commentId: "c-g", authorAgentId: "agent-op", authorUserId: null });
+      expect((await store.getFact(h.ctx, COMPANY, gone.saved[0]!.id))!.clientRef).toBeNull();
+    });
+
+    it("lets the memory tools take the CRM name or ref (the name comes from the CRM)", async () => {
+      await crm();
+      const byName = await add({ text: "Brightside Dental closes on Wednesday afternoons.", client: "Brightside Dental" });
+      expect(byName.error).toBeUndefined();
+      expect(byName.data.fact).toMatchObject({ clientRef: "company:bs1", clientName: "Brightside Dental" });
+      const byRef = await add({ text: "Brightside Dental's brand colour is teal.", client: "company:bs1" });
+      expect(byRef.error).toBeUndefined();
+      expect(byRef.data.fact.clientName).toBe("Brightside Dental");
+      const byDomain = await add({ text: "Their booking page is on Calendly.", client: "brightsidedental.co.za" });
+      expect(byDomain.data.fact.clientRef).toBe("company:bs1");
+    });
+
+    it("the weekly review flags company-wide facts that name a client, with how to move them", async () => {
+      await crm();
+      const wide = await add({ text: "Brightside Dental wants invoices on the 1st.", client: "own", area: "billing" });
+      await add({ text: "Always reply to leads within one working day.", client: "own" });
+      const review = await tool("memory-review", {});
+      expect(review.data.misfiled).toEqual([expect.objectContaining({ id: wide.data.id, clientRef: "company:bs1", clientName: "Brightside Dental", area: "billing" })]);
+      expect(review.data.misfiled[0].suggestion).toContain(`supersedes: "${wide.data.id}"`);
+      expect(review.content).toContain("1 company-wide fact names a client");
+      // Moving it: memory-add for the client, superseding the company-wide one.
+      const moved = await add({ text: "Brightside Dental wants invoices on the 1st.", client: "company:bs1", area: "billing", supersedes: wide.data.id });
+      expect(moved.data.superseded).toBe(wide.data.id);
+      expect((await tool("memory-review", {})).data.misfiled).toEqual([]);
+    });
+  });
+
   it("unpins a rule when its kind changes to one that cannot be pinned", async () => {
     const rule = await add({ text: "Never merge on Fridays without green checks.", client: "own", kind: "rule", pinned: true });
     expect(rule.data.fact.pinned).toBe(true);
     const changed = await tool("memory-update", { id: rule.data.id, kind: "lesson" });
     expect(changed.error).toBeUndefined();
     expect((await store.getFact(h.ctx, COMPANY, rule.data.id))!.pinned).toBe(false);
+  });
+
+  it("finds archived facts only when asked to", async () => {
+    const r = await add({ text: "Northwind used to host on Afrihost before WP Engine.", client: "company:nw", clientName: "Northwind", area: "seo" });
+    await tool("memory-update", { id: r.data.id, status: "archived" });
+    const normal = await tool("memory-search", { query: "Northwind hosting Afrihost" });
+    expect(normal.data.facts).toHaveLength(0);
+    const deep = await tool("memory-search", { query: "Northwind hosting Afrihost", includeArchived: true });
+    expect(deep.data.facts.map((f: { id: string }) => f.id)).toEqual([r.data.id]);
+    expect(deep.content).toContain("archived");
+  });
+
+  it("exports everything and imports it back without duplicates; another company gets only company-wide facts", async () => {
+    await add({ text: "Northwind pays invoices on the 25th of each month.", client: "company:nw", clientName: "Northwind", area: "billing" });
+    await add({ text: "Never publish anything on Sundays.", client: "own", kind: "rule", pinned: true });
+    const old = await add({ text: "Quotes are valid for 14 days.", client: "own", area: "billing" });
+    await add({ text: "Quotes are valid for 30 days.", client: "own", area: "billing", supersedes: old.data.id });
+    const archived = await add({ text: "The office closes at 16:00 on Fridays.", client: "own", area: "operations" });
+    await tool("memory-update", { id: archived.data.id, status: "archived" });
+    const file = JSON.parse(JSON.stringify(await exportMemory(h.env, COMPANY)));
+    expect(file.format).toBe("pib-company-memory");
+    expect(file.facts).toHaveLength(5);
+
+    // Same company: nothing new (all already there), superseded history skipped.
+    const again = await importMemory(h.env, COMPANY, file, { agentId: null, runId: null, userId: "user-1" });
+    expect(again).toMatchObject({ added: 0, skippedSuperseded: 1, skippedClient: 0 });
+    expect(again.duplicates).toBe(4); // active and archived ones are already here; restoring never resurrects a retired fact
+
+    // Another company: only company-wide facts, archived stays archived, pinned rule stays pinned.
+    const other = await importMemory(h.env, OTHER_COMPANY, file, { agentId: null, runId: null, userId: "user-2" });
+    expect(other).toMatchObject({ skippedClient: 1, skippedSuperseded: 1 });
+    expect(other.added).toBe(3);
+    const otherFacts = await store.exportFacts(h.ctx, OTHER_COMPANY);
+    expect(otherFacts.every((f) => f.clientRef === null && f.origin === "person")).toBe(true);
+    expect(otherFacts.find((f) => f.text.startsWith("Never publish"))!.pinned).toBe(true);
+    expect(otherFacts.find((f) => f.text.startsWith("The office"))!.status).toBe("archived");
+
+    await expect(importMemory(h.env, COMPANY, { format: "nope" }, { agentId: null, runId: null, userId: "u" })).rejects.toThrow("not a company memory export");
+    await expect(importMemory(h.env, COMPANY, { ...file, version: 99 }, { agentId: null, runId: null, userId: "u" })).rejects.toThrow("version 99");
+    const secret = await importMemory(h.env, OTHER_COMPANY, { ...file, facts: [{ text: "The admin password: Winter2026!", status: "active" }] }, { agentId: null, runId: null, userId: "u" });
+    expect(secret.invalid[0]!.reason).toContain("password");
   });
 });
 

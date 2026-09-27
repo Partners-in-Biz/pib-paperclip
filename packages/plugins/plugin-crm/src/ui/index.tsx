@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   DataTable,
-  KeyValueList,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
@@ -23,6 +22,7 @@ import {
   Button,
   ClientWorkspaceBar,
   Clock,
+  CompactRows,
   Contact as ContactIcon,
   EmptyState,
   Field,
@@ -31,7 +31,6 @@ import {
   Input,
   KpiCard,
   LayoutDashboard,
-  MailCheck,
   Modal,
   Package,
   Page,
@@ -41,8 +40,6 @@ import {
   Pill,
   SectionCard,
   Select,
-  ShieldCheck,
-  Sheet,
   Tabs,
   Target,
   TextArea,
@@ -53,20 +50,29 @@ import {
   Workflow,
   errorText,
   fluidColumns,
-  formatMinor,
+  formatDate,
+  formatMoney,
+  formatShortDate,
   moduleAccent,
-  relativeTime,
   tokens,
   tone,
+  useIsNarrow,
+  useUiContributions,
   IconBadge,
 } from "@partnersinbiz/pib-plugin-ui";
-import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
+import { GetStarted, missingRequired, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import { leadBand, type LeadScore } from "../lead-levels.js";
 import type { CrmSeries } from "../series.js";
-import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LifecyclePill, Muted, StagePill } from "./overview.js";
+import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LIFECYCLE_LABEL, LifecyclePill, Muted, StagePill, type NeedsGroup } from "./overview.js";
+import { AccountManagerBox, type HireView } from "./agent.js";
+import { ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
+import { crmTabBadges, dealClientLabel, dealsByStage, displayText, followUpDue, moduleInstalled, parseMoneyInput, toggleOwned, type CrmTab } from "./crm-view.js";
+import { DealSheet, type DealView } from "./deal.js";
+import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts.js";
+import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
 
 interface Account {
   id: string;
@@ -81,6 +87,8 @@ interface Contact {
   emails: string[];
   lifecycle: string;
   humanOwned: string[];
+  nextActionKind?: string | null;
+  nextActionDueAt?: string | null;
   leadScore?: LeadScore | null;
 }
 
@@ -98,15 +106,6 @@ interface Link {
   contactId: string;
   accountId: string;
   roleLabel: string;
-}
-
-interface Sequence {
-  id: string;
-  name: string;
-  completionMode: string;
-  delivery?: "issue" | "email";
-  emailApproved?: boolean;
-  approvalIssueId?: string | null;
 }
 
 interface Product {
@@ -150,18 +149,19 @@ interface Summary {
 
 interface Snapshot {
   settingsSaved?: boolean;
+  hire?: HireView | null;
+  heldLeads?: number;
   accounts: Account[];
   contacts: Contact[];
   deals: Deal[];
   links: Link[];
-  sequences: Sequence[];
+  sequences: SequenceView[];
   stages: Stage[];
   products: Product[];
   summary: Summary;
   series?: CrmSeries;
 }
 
-type TabId = "overview" | "companies" | "contacts" | "deals" | "sequences" | "products";
 type CreateKind = "company" | "contact" | "deal" | "sequence" | "link" | "product" | null;
 type Detail =
   | { kind: "deal"; id: string }
@@ -169,8 +169,11 @@ type Detail =
   | null;
 
 const PLUGIN_ID = "partnersinbiz.crm";
+const BILLING_PLUGIN = "partnersinbiz.billing";
+const TAB_IDS: CrmTab[] = ["overview", "companies", "contacts", "deals", "sequences", "products"];
 const LIFECYCLE_OPTIONS = ["lead", "prospect", "customer", "churned"] as const;
 const NEXT_ACTION_OPTIONS = ["call", "email", "meet"] as const;
+const NEXT_ACTION_LABEL: Record<string, string> = { call: "Call", email: "Email", meet: "Meet" };
 
 /** `/crm` is the CRM list; `/crm?client=company:<id>` (or `contact:<id>`) is that client's workspace. */
 export function CrmPage(props: PluginPageProps) {
@@ -186,8 +189,23 @@ function clientPath(kind: ClientRef["kind"], id: string): string {
   return withClientParam("/crm", { kind, id });
 }
 
+/** "Call · due 28 Sep". */
+function nextActionText(kind: string | null | undefined, due: string | null | undefined): string {
+  if (!kind) return "";
+  const label = NEXT_ACTION_LABEL[kind] ?? kind;
+  return due ? `${label} · due ${formatShortDate(due)}` : label;
+}
+
 function CrmList({ context }: PluginPageProps) {
   const navigation = useHostNavigation();
+  const narrow = useIsNarrow();
+  // Other modules' pages: "Draft a quote" needs Billing.
+  const contributions = useUiContributions();
+  const billingInstalled = moduleInstalled(contributions, BILLING_PLUGIN) === true;
+  // "Finish setting up CRM" on the overview until its required setup is done.
+  const setupStatus = usePluginSetupStatus(PLUGIN_ID, context.companyId);
+  // The card below already asks for the Account Manager: the agent box would say it twice.
+  const agentStepShown = missingRequired(setupStatus ?? null).slice(0, 3).some((item) => item.key === "agent");
   const load = usePluginAction("crm.load");
   const createCompany = usePluginAction("crm.create-company");
   const createContact = usePluginAction("crm.create-contact");
@@ -195,16 +213,18 @@ function CrmList({ context }: PluginPageProps) {
   const createDeal = usePluginAction("crm.create-deal");
   const moveDeal = usePluginAction("crm.move-deal");
   const createSequence = usePluginAction("crm.create-sequence");
-  const setSequenceDelivery = usePluginAction("crm.set-sequence-delivery");
   const createProduct = usePluginAction("crm.create-product");
-  const activities = usePluginAction("crm.activities");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>("overview");
+  const hostLocation = useHostLocation();
+  // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
+  const [tab, setTab] = useUrlTab<CrmTab>(TAB_IDS, "overview", { path: "/crm", search: hostLocation.search, navigate: navigation.navigate });
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
   const [detail, setDetail] = useState<Detail>(null);
+  // Email steps need Gmail: checked only where sequences are shown or made.
+  const gmail = useGmailState(tab === "sequences" || create === "sequence" || detail?.kind === "sequence" ? context.companyId : null);
 
   const [companyName, setCompanyName] = useState("");
   const [contactName, setContactName] = useState("");
@@ -216,12 +236,12 @@ function CrmList({ context }: PluginPageProps) {
   const [dealAmount, setDealAmount] = useState("");
   const [dealCurrency, setDealCurrency] = useState("ZAR");
   const [dealContactId, setDealContactId] = useState("");
+  const [dealAccountId, setDealAccountId] = useState("");
   const [sequenceName, setSequenceName] = useState("");
   const [sequenceDelivery, setSequenceDeliveryChoice] = useState<"issue" | "email">("issue");
   const [productName, setProductName] = useState("");
   const [productAmount, setProductAmount] = useState("");
   const [productCurrency, setProductCurrency] = useState("ZAR");
-  const [timeline, setTimeline] = useState<Activity[]>([]);
 
   async function refresh() {
     setSnapshot((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
@@ -231,16 +251,6 @@ function CrmList({ context }: PluginPageProps) {
     if (!context.companyId) return;
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId]);
-
-  useEffect(() => {
-    if (!detail) {
-      setTimeline([]);
-      return;
-    }
-    activities({ recordType: detail.kind, recordId: detail.id })
-      .then((result) => setTimeline((result as Activity[]) ?? []))
-      .catch(() => setTimeline([]));
-  }, [detail]);
 
   async function run(work: () => Promise<unknown>, success: string) {
     setMessage("");
@@ -252,6 +262,11 @@ function CrmList({ context }: PluginPageProps) {
     } catch (error) {
       setMessage(errorText(error));
     }
+  }
+
+  function openCreate(kind: Exclude<CreateKind, null>) {
+    if (kind === "sequence") setSequenceDeliveryChoice("issue");
+    setCreate(kind);
   }
 
   const q = search.trim().toLowerCase();
@@ -283,22 +298,99 @@ function CrmList({ context }: PluginPageProps) {
 
   const stages = snapshot?.stages ?? [];
   const summary = snapshot?.summary;
-  const awaitingApproval = (snapshot?.sequences ?? []).filter((row) => row.delivery === "email" && !row.emailApproved).length;
-  const attention = (summary?.unlinkedContactIds.length ?? 0) + (summary?.dealsWithoutAmountIds.length ?? 0);
+  const now = Date.now();
+  const followUps = (snapshot?.contacts ?? []).filter((row) => followUpDue(row, now));
+  const awaitingApproval = (snapshot?.sequences ?? []).filter((row) => row.delivery === "email" && !row.emailApproved);
+  const emailSequences = (snapshot?.sequences ?? []).filter((row) => row.delivery === "email").length;
+  const badges = crmTabBadges({
+    companies: snapshot?.accounts.length ?? 0,
+    contacts: snapshot?.contacts.length ?? 0,
+    deals: snapshot?.deals.length ?? 0,
+    sequences: snapshot?.sequences.length ?? 0,
+    products: snapshot?.products.length ?? 0,
+    followUps: followUps.length,
+    dealsWithoutValue: summary?.dealsWithoutAmountIds.length ?? 0,
+    sequencesAwaitingApproval: awaitingApproval.length,
+  });
+  const hasData = Boolean(snapshot && (snapshot.accounts.length || snapshot.contacts.length || snapshot.deals.length));
 
-  const accountName = (id: string | null) => snapshot?.accounts.find((row) => row.id === id)?.name ?? "—";
-  const contactNameOf = (id: string | null) => snapshot?.contacts.find((row) => row.id === id)?.name ?? "—";
-  const stageName = (id: string) => stages.find((stage) => stage.id === id)?.name ?? id;
+  const accountNameOf = (id: string) => snapshot?.accounts.find((row) => row.id === id)?.name ?? null;
+  const contactNameOf = (id: string) => snapshot?.contacts.find((row) => row.id === id)?.name ?? null;
+  const clientOf = (deal: Deal) => dealClientLabel(deal, accountNameOf, contactNameOf);
 
   function rolesFor(contactId: string): string {
     return (snapshot?.links ?? [])
       .filter((link) => link.contactId === contactId)
-      .map((link) => `${link.roleLabel} at ${accountName(link.accountId)}`)
+      .map((link) => `${link.roleLabel} at ${accountNameOf(link.accountId) ?? "a company"}`)
       .join(", ");
   }
+  const peopleAt = (accountId: string) => (snapshot?.links ?? []).filter((link) => link.accountId === accountId).length;
 
-  const detailDeal = detail?.kind === "deal" ? snapshot?.deals.find((row) => row.id === detail.id) : null;
-  const detailSequence = detail?.kind === "sequence" ? snapshot?.sequences.find((row) => row.id === detail.id) : null;
+  const detailDeal = detail?.kind === "deal" ? snapshot?.deals.find((row) => row.id === detail.id) ?? null : null;
+  const detailSequence = detail?.kind === "sequence" ? snapshot?.sequences.find((row) => row.id === detail.id) ?? null : null;
+
+  // One main action per tab, in the header. An empty list shows it in its empty state instead.
+  const total: Record<CrmTab, number> = {
+    overview: 1,
+    companies: snapshot?.accounts.length ?? 0,
+    contacts: snapshot?.contacts.length ?? 0,
+    deals: snapshot?.deals.length ?? 0,
+    sequences: snapshot?.sequences.length ?? 0,
+    products: snapshot?.products.length ?? 0,
+  };
+  const mainAction: Record<CrmTab, { label: string; kind: Exclude<CreateKind, null> }> = {
+    overview: { label: "+ Deal", kind: "deal" },
+    companies: { label: "+ Company", kind: "company" },
+    contacts: { label: "+ Contact", kind: "contact" },
+    deals: { label: "+ Deal", kind: "deal" },
+    sequences: { label: "+ Sequence", kind: "sequence" },
+    products: { label: "+ Product", kind: "product" },
+  };
+  const action = mainAction[tab];
+  const headerAction = snapshot && total[tab] > 0
+    ? <Button type="button" onClick={() => openCreate(action.kind)}>{action.label}</Button>
+    : null;
+  const emptyAction = (kind: Exclude<CreateKind, null>, label: string) => <Button type="button" onClick={() => openCreate(kind)}>{label}</Button>;
+
+  const needs: NeedsGroup[] = [
+    {
+      key: "follow-ups",
+      title: "Contacts to follow up",
+      action: "Open",
+      items: followUps.map((row) => ({
+        id: row.id,
+        label: row.name,
+        detail: nextActionText(row.nextActionKind, row.nextActionDueAt),
+        onClick: () => navigation.navigate(clientPath("contact", row.id)),
+      })),
+    },
+    {
+      key: "no-value",
+      title: "Deals without a value",
+      action: "Add value",
+      items: (summary?.dealsWithoutAmountIds ?? []).flatMap((id) => {
+        const deal = snapshot?.deals.find((row) => row.id === id);
+        return deal ? [{ id, label: deal.title, detail: clientOf(deal) ?? "No client yet", onClick: () => setDetail({ kind: "deal", id }) }] : [];
+      }),
+    },
+    {
+      key: "approvals",
+      title: "Email sequences waiting for approval",
+      action: "Open",
+      items: awaitingApproval.map((row) => ({
+        id: row.id,
+        label: row.name,
+        detail: "A person approves the switch to email in its issue",
+        onClick: () => (row.approvalIssueId ? navigation.navigate(`/issues/${row.approvalIssueId}`) : setDetail({ kind: "sequence", id: row.id })),
+      })),
+    },
+  ];
+
+  const settingsLine = snapshot?.settingsSaved === false
+    ? `CRM settings aren't saved yet, so sequences and client sharing are on hold. Save them once in Settings → Plugins → CRM.${snapshot.heldLeads ? ` ${snapshot.heldLeads} ${snapshot.heldLeads === 1 ? "lead is" : "leads are"} waiting.` : ""}`
+    : snapshot?.heldLeads
+      ? `${snapshot.heldLeads} ${snapshot.heldLeads === 1 ? "lead is" : "leads are"} held while the CRM is switched off. Switch it on in Setup and they are added within 10 minutes.`
+      : undefined;
 
   return (
     <Page
@@ -306,34 +398,29 @@ function CrmList({ context }: PluginPageProps) {
       accent="crm"
       description="People, the companies they work for, and the deals between them."
       messageTone={message ? undefined : "warn"}
-      message={message || (snapshot && snapshot.settingsSaved === false
-        ? "CRM settings are not saved for this company yet. Open Settings → Plugins → CRM and click Save once, or sequence steps will not open issues and other plugins will not see your clients."
-        : undefined)}
-      actions={(
-        <>
-          <Button type="button" variant="secondary" onClick={() => setCreate("company")}>+ Company</Button>
-          <Button type="button" variant="secondary" onClick={() => setCreate("contact")}>+ Contact</Button>
-          <Button type="button" onClick={() => setCreate("deal")}>+ Deal</Button>
-        </>
-      )}
+      message={message || settingsLine}
+      actions={headerAction}
     >
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview", icon: LayoutDashboard, count: attention || null, countTone: "warn" },
-          { id: "companies", label: "Companies", icon: Building2, count: snapshot?.accounts.length ?? 0 },
-          { id: "contacts", label: "Contacts", icon: ContactIcon, count: snapshot?.contacts.length ?? 0, countTone: summary?.unlinkedContactIds.length ? "warn" : undefined },
-          { id: "deals", label: "Deals", icon: Briefcase, count: snapshot?.deals.length ?? 0, countTone: summary?.dealsWithoutAmountIds.length ? "warn" : undefined },
-          { id: "sequences", label: "Sequences", icon: Workflow, count: snapshot?.sequences.length ?? 0, countTone: awaitingApproval ? "warn" : undefined },
-          { id: "products", label: "Products", icon: Package, count: snapshot?.products.length ?? 0 },
+          { id: "overview", label: "Overview", icon: LayoutDashboard, ...badges.overview },
+          { id: "companies", label: "Companies", icon: Building2, ...badges.companies },
+          { id: "contacts", label: "Contacts", icon: ContactIcon, ...badges.contacts },
+          { id: "deals", label: "Deals", icon: Briefcase, ...badges.deals },
+          { id: "sequences", label: "Sequences", icon: Workflow, ...badges.sequences },
+          { id: "products", label: "Products", icon: Package, ...badges.products },
         ]}
         active={tab}
         onChange={(id) => {
-          setTab(id as TabId);
+          setTab(id as CrmTab);
           setSearch("");
         }}
       />
 
+      {/* Only when something is wrong with the Account Manager (staffed in Setup → Team), and not already a step in the card below. */}
+      {tab === "overview" && snapshot && !agentStepShown ? <AccountManagerBox hire={snapshot.hire} refresh={refresh} onMessage={setMessage} /> : null}
+      {tab === "overview" ? <GetStarted status={setupStatus} moduleName="CRM" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
       {tab === "overview" ? (
         snapshot ? (
           <CrmOverview
@@ -342,124 +429,163 @@ function CrmList({ context }: PluginPageProps) {
             stages={stages}
             contacts={snapshot.contacts}
             onTab={(next) => { setTab(next); setSearch(""); }}
+            needs={needs}
             unlinked={(summary?.unlinkedContactIds ?? []).map((id) => ({
               id,
-              label: contactNameOf(id),
+              label: contactNameOf(id) ?? "A contact",
               onClick: () => navigation.navigate(clientPath("contact", id)),
-            }))}
-            noAmount={(summary?.dealsWithoutAmountIds ?? []).map((id) => ({
-              id,
-              label: snapshot.deals.find((deal) => deal.id === id)?.title ?? id,
-              onClick: () => setDetail({ kind: "deal", id }),
             }))}
           />
         ) : <Muted>{message ? "The CRM could not load." : "Loading the CRM…"}</Muted>
       ) : null}
 
-      {tab === "companies" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search companies…">
-            <Button type="button" onClick={() => setCreate("company")}>+ Add company</Button>
-          </Toolbar>
-          {accounts.length === 0 ? (
-            <EmptyState
-              title="No companies yet"
-              icon={Building2}
-              description="Add the accounts your contacts work for."
-              action={<Button type="button" onClick={() => setCreate("company")}>+ Add company</Button>}
-            />
-          ) : (
-            <DataTable
-              columns={[
-                { key: "name", header: "Company" },
-                { key: "domain", header: "Domain" },
-                { key: "lifecycle", header: "Lifecycle", render: (value) => <LifecyclePill lifecycle={String(value)} /> },
-                {
-                  key: "id",
-                  header: "",
-                  width: "90px",
-                  render: (_value, row) => <OpenLink to={clientPath("company", String(row.id))} label={`Open ${String(row.name)}`} />,
-                },
-              ]}
-              rows={accounts.map((row) => ({ ...row, domain: row.domain ?? "—" }))}
-              emptyMessage="No companies match."
-            />
-          )}
-        </div>
+      {tab === "companies" && snapshot ? (
+        snapshot.accounts.length === 0 ? (
+          <EmptyState
+            title="No companies yet"
+            icon={Building2}
+            description="Add the companies you work with. Their people become contacts, and each one gets its own client page."
+            action={emptyAction("company", "+ Company")}
+          />
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search companies…" />
+            {narrow ? (
+              <CompactRows
+                label="Companies"
+                rows={accounts}
+                title={(row) => row.name}
+                meta={(row) => [row.domain, `${peopleAt(row.id)} ${peopleAt(row.id) === 1 ? "person" : "people"}`].filter(Boolean).join(" · ")}
+                trailing={(row) => <LifecyclePill lifecycle={row.lifecycle} size="sm" />}
+                linkFor={(row) => navigation.linkProps(clientPath("company", row.id)) as unknown as Record<string, unknown>}
+                empty="No companies match."
+              />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "name", header: "Company", render: (value, row) => <NameLink to={clientPath("company", String(row.id))} name={String(value)} /> },
+                  { key: "domain", header: "Website" },
+                  { key: "people", header: "People", width: "90px" },
+                  { key: "lifecycle", header: "Lifecycle", width: "130px", render: (value) => <LifecyclePill lifecycle={String(value)} /> },
+                  {
+                    key: "id",
+                    header: "",
+                    width: "80px",
+                    render: (_value, row) => <OpenLink to={clientPath("company", String(row.id))} label={`Open ${String(row.name)}`} />,
+                  },
+                ]}
+                rows={accounts.map((row) => ({ ...row, domain: row.domain ?? "—", people: String(peopleAt(row.id)) }))}
+                emptyMessage="No companies match."
+              />
+            )}
+          </div>
+        )
       ) : null}
 
-      {tab === "contacts" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search contacts…">
-            <Button type="button" variant="secondary" onClick={() => setCreate("link")}>Link to company</Button>
-            <Button type="button" onClick={() => setCreate("contact")}>+ Add contact</Button>
-          </Toolbar>
-          {contacts.length === 0 ? (
-            <EmptyState
-              title="No contacts yet"
-              icon={ContactIcon}
-              description="Add people, then link them to companies."
-              action={<Button type="button" onClick={() => setCreate("contact")}>+ Add contact</Button>}
-            />
-          ) : (
-            <DataTable
-              columns={[
-                { key: "name", header: "Contact" },
-                { key: "email", header: "Email" },
-                { key: "roles", header: "Company roles", render: (value) => value === "—" ? <Pill tone="warn" size="sm" dot>No company</Pill> : String(value) },
-                { key: "lifecycle", header: "Lifecycle", render: (value, row) => (
-                  <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
-                    <LifecyclePill lifecycle={String(value)} />
-                    {(row as unknown as Contact).leadScore ? <BandPill band={leadBandOf((row as unknown as Contact).leadScore!)} /> : null}
-                  </span>
-                ) },
-                {
-                  key: "id",
-                  header: "",
-                  width: "90px",
-                  render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
-                },
-              ]}
-              rows={contacts.map((row) => ({
-                ...row,
-                email: row.emails[0] ?? "—",
-                roles: rolesFor(row.id) || "—",
-              }))}
-              emptyMessage="No contacts match."
-            />
-          )}
-        </div>
+      {tab === "contacts" && snapshot ? (
+        snapshot.contacts.length === 0 ? (
+          <EmptyState
+            title="No contacts yet"
+            icon={ContactIcon}
+            description="Add the people you deal with, then link each one to their company. Leads from Social and the Mailbox arrive here on their own."
+            action={emptyAction("contact", "+ Contact")}
+          />
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search contacts…">
+              {snapshot.accounts.length > 0 ? <Button type="button" variant="secondary" onClick={() => openCreate("link")}>Link to company</Button> : null}
+            </Toolbar>
+            {narrow ? (
+              <CompactRows
+                label="Contacts"
+                rows={contacts}
+                title={(row) => row.name}
+                meta={(row) => [followUpDue(row, now) ? `Follow up: ${nextActionText(row.nextActionKind, row.nextActionDueAt)}` : null, row.emails[0], rolesFor(row.id) || "No company"].filter(Boolean).join(" · ")}
+                trailing={(row) => followUpDue(row, now) ? <Pill tone="warn" size="sm" dot>Follow up</Pill> : <LifecyclePill lifecycle={row.lifecycle} size="sm" />}
+                linkFor={(row) => navigation.linkProps(clientPath("contact", row.id)) as unknown as Record<string, unknown>}
+                empty="No contacts match."
+              />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "name", header: "Contact", render: (value, row) => <NameLink to={clientPath("contact", String(row.id))} name={String(value)} /> },
+                  { key: "email", header: "Email", render: (value) => value ? <EmailText email={String(value)} /> : <span style={{ color: tokens.muted }}>—</span> },
+                  { key: "roles", header: "Company", render: (value) => value ? String(value) : <span style={{ color: tokens.muted }}>No company</span> },
+                  { key: "next", header: "Next action", render: (_value, row) => {
+                    const contact = row as unknown as Contact;
+                    if (!contact.nextActionKind) return <span style={{ color: tokens.muted }}>—</span>;
+                    return <Pill tone={followUpDue(contact, now) ? "warn" : "info"} size="sm" icon={Clock}>{nextActionText(contact.nextActionKind, contact.nextActionDueAt)}</Pill>;
+                  } },
+                  { key: "lifecycle", header: "Lifecycle", render: (value, row) => (
+                    <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                      <LifecyclePill lifecycle={String(value)} />
+                      {(row as unknown as Contact).leadScore ? <BandPill band={leadBand((row as unknown as Contact).leadScore!)} /> : null}
+                    </span>
+                  ) },
+                  {
+                    key: "id",
+                    header: "",
+                    width: "80px",
+                    render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
+                  },
+                ]}
+                rows={contacts.map((row) => ({
+                  ...row,
+                  email: row.emails[0] ?? "",
+                  roles: rolesFor(row.id),
+                  next: "",
+                }))}
+                emptyMessage="No contacts match."
+              />
+            )}
+          </div>
+        )
       ) : null}
 
-      {tab === "deals" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search deals…">
-            <Button type="button" onClick={() => setCreate("deal")}>+ Add deal</Button>
-          </Toolbar>
-          {deals.length === 0 ? (
-            <EmptyState
-              title="No deals yet"
-              icon={Briefcase}
-              description="Track opportunities across your sales stages."
-              action={<Button type="button" onClick={() => setCreate("deal")}>+ Add deal</Button>}
-            />
-          ) : (
-            <PipelineBoard
-              columns={stages.map((stage) => {
-                const stageDeals = deals.filter((deal) => deal.stageId === stage.id);
-                const amount = stageDeals.reduce((sum, deal) => sum + deal.amountMinor, 0);
-                const currency = stageDeals[0]?.currency ?? "ZAR";
-                return {
+      {tab === "deals" && snapshot ? (
+        snapshot.deals.length === 0 ? (
+          <EmptyState
+            title="No deals yet"
+            icon={Briefcase}
+            description="A deal is a sale in progress for a client. Add one, then move it through the stages until it is won or lost."
+            action={emptyAction("deal", "+ Deal")}
+          />
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search deals…" />
+            {narrow ? (
+              <div style={{ display: "grid", gap: 16 }}>
+                {dealsByStage(stages, deals).filter((group) => group.deals.length > 0).map(({ stage, deals: stageDeals }) => (
+                  <section key={stage.id} style={{ display: "grid", gap: 4 }} aria-label={stage.name}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                      <StagePill name={stage.name} kind={stage.kind} size="sm" />
+                      <span style={{ fontSize: 12, color: tokens.muted, fontVariantNumeric: "tabular-nums" }}>{stageDeals.length} · {stageTotal(stageDeals)}</span>
+                    </div>
+                    <CompactRows
+                      label={`${stage.name} deals`}
+                      rows={stageDeals}
+                      title={(deal) => deal.title}
+                      meta={(deal) => clientOf(deal) ?? "No client yet"}
+                      trailing={(deal) => deal.amountMinor > 0 ? formatMoney(deal.amountMinor, deal.currency) : <span style={{ color: tone("warn").fg }}>No value</span>}
+                      onOpen={(deal) => setDetail({ kind: "deal", id: deal.id })}
+                    />
+                  </section>
+                ))}
+                {deals.length === 0 ? <Muted>No deals match.</Muted> : null}
+              </div>
+            ) : (
+              <PipelineBoard
+                columns={dealsByStage(stages, deals).map(({ stage, deals: stageDeals }) => ({
                   id: stage.id,
-                  title: stage.kind === "open" ? stage.name : `${stage.name} (${stage.kind === "won" ? "won" : "lost"})`,
-                  meta: `${stageDeals.length} · ${formatMinor(amount, currency)}`,
+                  title: stage.name,
+                  meta: `${stageDeals.length} · ${stageTotal(stageDeals)}`,
                   children: stageDeals.length === 0
                     ? <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Empty</p>
                     : stageDeals.map((deal) => (
                       <PipelineCard
                         key={deal.id}
                         title={deal.title}
-                        subtitle={`${deal.amountMinor > 0 ? formatMinor(deal.amountMinor, deal.currency) : "No amount"} · ${contactNameOf(deal.contactId)}`}
+                        subtitle={`${deal.amountMinor > 0 ? formatMoney(deal.amountMinor, deal.currency) : "No value yet"} · ${clientOf(deal) ?? "No client yet"}`}
                         onClick={() => setDetail({ kind: "deal", id: deal.id })}
                         footer={(
                           <Select
@@ -470,7 +596,7 @@ function CrmList({ context }: PluginPageProps) {
                               event.stopPropagation();
                               void run(() => moveDeal({ dealId: deal.id, stageId: event.target.value }), "Deal moved");
                             }}
-                            style={{ height: 28, fontSize: 12, marginTop: 6 }}
+                            style={{ height: 28, fontSize: 12, marginTop: 6, width: "100%" }}
                           >
                             {stages.map((option) => (
                               <option key={option.id} value={option.id}>{option.name}</option>
@@ -479,86 +605,107 @@ function CrmList({ context }: PluginPageProps) {
                         )}
                       />
                     )),
-                };
-              })}
-            />
-          )}
-        </div>
+                }))}
+              />
+            )}
+          </div>
+        )
       ) : null}
 
-      {tab === "sequences" ? (
+      {tab === "sequences" && snapshot ? (
         <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search sequences…">
-            <Button type="button" onClick={() => setCreate("sequence")}>+ Add sequence</Button>
-          </Toolbar>
-          {sequences.length === 0 ? (
+          <GmailBanner state={gmail} emailSequences={emailSequences} />
+          {snapshot.sequences.length === 0 ? (
             <EmptyState
               title="No sequences yet"
               icon={Workflow}
-              description="Create a sequence, then enroll contacts from their client workspace."
-              action={<Button type="button" onClick={() => setCreate("sequence")}>+ Add sequence</Button>}
+              description="A sequence is a set of follow-up steps, spaced out over days. Create one, then enroll contacts from their page."
+              action={emptyAction("sequence", "+ Sequence")}
             />
           ) : (
-            <DataTable
-              columns={[
-                { key: "name", header: "Sequence" },
-                { key: "completionMode", header: "Completion", render: (value) => <Pill>{String(value).replace(/_/g, " ")}</Pill> },
-                { key: "delivery", header: "Due steps", render: (_value, row) => <SequenceDelivery sequence={row as unknown as Sequence} /> },
-                {
-                  key: "id",
-                  header: "",
-                  width: "90px",
-                  render: (_value, row) => (
-                    <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setDetail({ kind: "sequence", id: String(row.id) })}>
-                      Open
-                    </Button>
-                  ),
-                },
-              ]}
-              rows={sequences as unknown as Record<string, unknown>[]}
-              emptyMessage="No sequences match."
-            />
+            <>
+              <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search sequences…" />
+              {narrow ? (
+                <CompactRows
+                  label="Sequences"
+                  rows={sequences}
+                  title={(row) => row.name}
+                  meta={(row) => deliveryText(row)}
+                  onOpen={(row) => setDetail({ kind: "sequence", id: row.id })}
+                  empty="No sequences match."
+                />
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: "name", header: "Sequence", render: (value, row) => <NameButton name={String(value)} onClick={() => setDetail({ kind: "sequence", id: String(row.id) })} /> },
+                    { key: "delivery", header: "Each due step", render: (_value, row) => <DeliveryPill sequence={row as unknown as SequenceView} /> },
+                    {
+                      key: "id",
+                      header: "",
+                      width: "80px",
+                      render: (_value, row) => (
+                        <Button type="button" variant="secondary" style={smallButton} onClick={() => setDetail({ kind: "sequence", id: String(row.id) })}>
+                          Open
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  rows={sequences as unknown as Record<string, unknown>[]}
+                  emptyMessage="No sequences match."
+                />
+              )}
+            </>
           )}
         </div>
       ) : null}
 
-      {tab === "products" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search products…">
-            <Button type="button" onClick={() => setCreate("product")}>+ Add product</Button>
-          </Toolbar>
-          {products.length === 0 ? (
-            <EmptyState
-              title="No products yet"
-              icon={Package}
-              description="Add the products and services you sell, then reference them in deals and invoices."
-              action={<Button type="button" onClick={() => setCreate("product")}>+ Add product</Button>}
-            />
-          ) : (
-            <DataTable
-              columns={[
-                { key: "name", header: "Product" },
-                { key: "description", header: "Description" },
-                { key: "price", header: "Price", render: (_value, row) => formatMinor((row as unknown as Product).unitAmountMinor, (row as unknown as Product).currency) },
-                { key: "isActive", header: "Status", render: (value) => <Pill tone={value ? "ok" : "neutral"} dot>{value ? "Active" : "Inactive"}</Pill> },
-              ]}
-              rows={products.map((row) => ({ ...row, price: "" }))}
-              emptyMessage="No products match."
-            />
-          )}
-        </div>
+      {tab === "products" && snapshot ? (
+        snapshot.products.length === 0 ? (
+          <EmptyState
+            title="No products yet"
+            icon={Package}
+            description="Add the products and services you sell, with their price, to itemise deals and quotes."
+            action={emptyAction("product", "+ Product")}
+          />
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search products…" />
+            {narrow ? (
+              <CompactRows
+                label="Products"
+                rows={products}
+                title={(row) => row.name}
+                meta={(row) => [row.isActive ? null : "Inactive", row.description].filter(Boolean).join(" · ") || "Active"}
+                trailing={(row) => formatMoney(row.unitAmountMinor, row.currency)}
+                empty="No products match."
+              />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "name", header: "Product" },
+                  { key: "description", header: "Description" },
+                  { key: "price", header: "Price", render: (_value, row) => formatMoney((row as unknown as Product).unitAmountMinor, (row as unknown as Product).currency) },
+                  { key: "isActive", header: "Status", render: (value) => <Pill tone={value ? "ok" : "neutral"} dot>{value ? "Active" : "Inactive"}</Pill> },
+                ]}
+                rows={products.map((row) => ({ ...row, price: "" }))}
+                emptyMessage="No products match."
+              />
+            )}
+          </div>
+        )
       ) : null}
 
       <Modal
         open={create === "company"}
-        title="Add company"
-        description="A CRM company is the account. It is not this Paperclip workspace."
+        title="Add a company"
+        description="A client or prospect company. Its people are contacts you link to it."
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!companyName.trim()}
               onClick={() => void run(async () => {
                 await createCompany({ name: companyName });
                 setCompanyName("");
@@ -576,18 +723,19 @@ function CrmList({ context }: PluginPageProps) {
 
       <Modal
         open={create === "contact"}
-        title="Add contact"
-        description="Add a person, then link them to a company."
+        title="Add a contact"
+        description="A person. Link them to their company afterwards, or leave a sole trader on their own."
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!contactName.trim()}
               onClick={() => void run(async () => {
                 await createContact({
                   name: contactName,
-                  emails: contactEmail ? [contactEmail] : [],
+                  emails: contactEmail.trim() ? [contactEmail.trim()] : [],
                 });
                 setContactName("");
                 setContactEmail("");
@@ -602,19 +750,20 @@ function CrmList({ context }: PluginPageProps) {
           <Input value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Ada Lovelace" required />
         </Field>
         <Field label="Email">
-          <Input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} placeholder="ada@northwind.test" />
+          <Input value={contactEmail} type="email" onChange={(event) => setContactEmail(event.target.value)} placeholder="ada@northwind.test" />
         </Field>
       </Modal>
 
       <Modal
         open={create === "link"}
-        title="Link contact to company"
+        title="Link a contact to a company"
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!linkContactId || !linkAccountId}
               onClick={() => void run(() => linkContact({
                 contactId: linkContactId,
                 companyRecordId: linkAccountId,
@@ -629,40 +778,43 @@ function CrmList({ context }: PluginPageProps) {
         <Field label="Contact">
           <Select value={linkContactId} onChange={(event) => setLinkContactId(event.target.value)} required>
             <option value="">Select contact</option>
-            {(snapshot?.contacts ?? []).map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}
+            {(snapshot?.contacts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
           </Select>
         </Field>
         <Field label="Company">
           <Select value={linkAccountId} onChange={(event) => setLinkAccountId(event.target.value)} required>
             <option value="">Select company</option>
-            {(snapshot?.accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+            {(snapshot?.accounts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
           </Select>
         </Field>
         <Field label="Role">
-          <Input value={linkRole} onChange={(event) => setLinkRole(event.target.value)} placeholder="buyer" />
+          <Input value={linkRole} onChange={(event) => setLinkRole(event.target.value)} placeholder="buyer, owner, staff" />
         </Field>
       </Modal>
 
       <Modal
         open={create === "deal"}
-        title="Add deal"
-        description="Amount is in minor units (cents)."
+        title="Add a deal"
+        description="A sale in progress for a client. It starts in the first stage."
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!dealTitle.trim() || parseMoneyInput(dealAmount) === null}
               onClick={() => void run(async () => {
                 await createDeal({
                   title: dealTitle,
-                  amountMinor: Number(dealAmount || 0),
-                  currency: dealCurrency,
+                  amountMinor: parseMoneyInput(dealAmount) ?? 0,
+                  currency: dealCurrency.trim().toUpperCase() || "ZAR",
+                  companyRecordId: dealAccountId || undefined,
                   contactId: dealContactId || undefined,
                 });
                 setDealTitle("");
                 setDealAmount("");
                 setDealContactId("");
+                setDealAccountId("");
               }, "Deal saved")}
             >
               Save deal
@@ -673,33 +825,36 @@ function CrmList({ context }: PluginPageProps) {
         <Field label="Title">
           <Input value={dealTitle} onChange={(event) => setDealTitle(event.target.value)} placeholder="Website rebuild" required />
         </Field>
-        <Field label="Amount (minor units)">
-          <Input value={dealAmount} onChange={(event) => setDealAmount(event.target.value)} placeholder="15000000" />
-        </Field>
-        <Field label="Currency">
-          <Input value={dealCurrency} onChange={(event) => setDealCurrency(event.target.value)} placeholder="ZAR" />
+        <MoneyFields value={dealAmount} onValue={setDealAmount} currency={dealCurrency} onCurrency={setDealCurrency} label="Value" />
+        <Field label="Company">
+          <Select value={dealAccountId} onChange={(event) => setDealAccountId(event.target.value)}>
+            <option value="">None yet</option>
+            {(snapshot?.accounts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+          </Select>
         </Field>
         <Field label="Contact">
           <Select value={dealContactId} onChange={(event) => setDealContactId(event.target.value)}>
-            <option value="">Optional</option>
-            {(snapshot?.contacts ?? []).map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}
+            <option value="">None yet</option>
+            {(snapshot?.contacts ?? []).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
           </Select>
         </Field>
       </Modal>
 
       <Modal
         open={create === "sequence"}
-        title="Add sequence"
+        title="Add a sequence"
+        description="A sequence made here has one step, Reach out. For one with several steps spaced over days, ask the Account Manager to build it."
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!sequenceName.trim()}
               onClick={() => void run(async () => {
                 await createSequence({ name: sequenceName, completionMode: "manual", delivery: sequenceDelivery });
                 setSequenceName("");
-              }, sequenceDelivery === "email" ? "Sequence saved. Mark the approval issue done to start emailing." : "Sequence saved")}
+              }, sequenceDelivery === "email" ? "Sequence saved. Nothing is emailed until a person approves it in its approval issue." : "Sequence saved")}
             >
               Save sequence
             </Button>
@@ -707,31 +862,34 @@ function CrmList({ context }: PluginPageProps) {
         )}
       >
         <Field label="Name">
-          <Input value={sequenceName} onChange={(event) => setSequenceName(event.target.value)} placeholder="Intro" required />
+          <Input value={sequenceName} onChange={(event) => setSequenceName(event.target.value)} placeholder="New lead follow-up" required />
         </Field>
-        <Field label="Due steps">
+        <Field label="Each due step">
           <Select value={sequenceDelivery} onChange={(event) => setSequenceDeliveryChoice(event.target.value === "email" ? "email" : "issue")}>
-            <option value="issue">Open an issue for a person</option>
-            <option value="email">Send as email from the Mailbox (needs approval)</option>
+            <option value="issue">Opens an issue for a person</option>
+            <option value="email" disabled={gmail === "missing" || gmail === "reconnect" || gmail === "off"}>
+              {gmail === "missing" || gmail === "reconnect" || gmail === "off" ? "Is emailed from the Mailbox (connect Gmail first)" : "Is emailed from the Mailbox (a person approves once)"}
+            </option>
           </Select>
         </Field>
       </Modal>
 
       <Modal
         open={create === "product"}
-        title="Add product"
-        description="Amount is in minor units (cents)."
+        title="Add a product"
+        description="Something you sell, with its price per unit."
         onClose={() => setCreate(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
             <Button
               type="button"
+              disabled={!productName.trim() || parseMoneyInput(productAmount) === null}
               onClick={() => void run(async () => {
                 await createProduct({
                   name: productName,
-                  unitAmountMinor: Number(productAmount || 0),
-                  currency: productCurrency,
+                  unitAmountMinor: parseMoneyInput(productAmount) ?? 0,
+                  currency: productCurrency.trim().toUpperCase() || "ZAR",
                 });
                 setProductName("");
                 setProductAmount("");
@@ -743,81 +901,50 @@ function CrmList({ context }: PluginPageProps) {
         )}
       >
         <Field label="Name">
-          <Input value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="Website rebuild" required />
+          <Input value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="SEO retainer" required />
         </Field>
-        <Field label="Unit amount (minor units)">
-          <Input value={productAmount} onChange={(event) => setProductAmount(event.target.value)} placeholder="15000000" />
-        </Field>
-        <Field label="Currency">
-          <Input value={productCurrency} onChange={(event) => setProductCurrency(event.target.value)} placeholder="ZAR" />
-        </Field>
+        <MoneyFields value={productAmount} onValue={setProductAmount} currency={productCurrency} onCurrency={setProductCurrency} label="Price" />
       </Modal>
 
-      <Sheet
-        open={detail != null}
-        title={detailDeal?.title ?? detailSequence?.name ?? "Record"}
+      <DealSheet
+        deal={detailDeal}
+        stages={stages}
+        companies={(snapshot?.accounts ?? []).map((row) => ({ id: row.id, name: row.name }))}
+        contacts={(snapshot?.contacts ?? []).map((row) => ({ id: row.id, name: row.name }))}
+        billing={billingInstalled ? { prefill: BILLING_PREFILL } : null}
         onClose={() => setDetail(null)}
-      >
-        {detailDeal ? (
-          <>
-            <KeyValueList pairs={[
-              { label: "Amount", value: detailDeal.amountMinor > 0 ? formatMinor(detailDeal.amountMinor, detailDeal.currency) : <Pill tone="warn" size="sm" dot>No amount</Pill> },
-              { label: "Stage", value: <StagePill name={stageName(detailDeal.stageId)} kind={stages.find((stage) => stage.id === detailDeal.stageId)?.kind ?? "open"} /> },
-              { label: "Contact", value: contactNameOf(detailDeal.contactId) },
-              { label: "Company", value: accountName(detailDeal.accountId) },
-            ]} />
-            <div style={{ fontSize: 12, fontWeight: 600, color: tokens.muted }}>Activity</div>
-            <ActivityTimeline items={timeline} />
-            <Field label="Move stage">
-              <Select
-                value={detailDeal.stageId}
-                onChange={(event) => void run(() => moveDeal({ dealId: detailDeal.id, stageId: event.target.value }), "Deal moved")}
-              >
-                {stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}
-              </Select>
-            </Field>
-          </>
-        ) : null}
-
-        {detailSequence ? (
-          <>
-            <KeyValueList pairs={[
-              { label: "Completion", value: <Pill>{detailSequence.completionMode.replace(/_/g, " ")}</Pill> },
-              { label: "Due steps", value: <SequenceDelivery sequence={detailSequence} /> },
-            ]} />
-            {detailSequence.delivery === "email" && !detailSequence.emailApproved ? (
-              <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted }}>
-                Nothing is emailed until a board user marks the approval issue done.
-              </p>
-            ) : null}
-            <div>
-              {detailSequence.delivery === "email" ? (
-                <Button type="button" variant="secondary" onClick={() => void run(() => setSequenceDelivery({ sequenceId: detailSequence.id, delivery: "issue" }), "Due steps open issues again")}>
-                  Open issues instead
-                </Button>
-              ) : (
-                <Button type="button" onClick={() => void run(() => setSequenceDelivery({ sequenceId: detailSequence.id, delivery: "email" }), detailSequence.emailApproved ? "Due steps are emailed" : "Approval requested. Mark the approval issue done to start emailing.")}>
-                  Send as email
-                </Button>
-              )}
-            </div>
-          </>
-        ) : null}
-      </Sheet>
+        onChanged={refresh}
+      />
+      <SequenceSheet sequence={detailSequence} gmail={gmail} onClose={() => setDetail(null)} onChanged={refresh} />
     </Page>
   );
 }
 
-/** How due steps go out, and whether email is approved yet. */
-function SequenceDelivery({ sequence }: { sequence: Sequence }) {
-  if (sequence.delivery !== "email") return <Pill tone="info" icon={Workflow}>Opens an issue</Pill>;
-  return sequence.emailApproved
-    ? <Pill tone="ok" icon={MailCheck} dot>Email · approved</Pill>
-    : <Pill tone="warn" dot>Email · awaiting approval</Pill>;
+/** Billing opens its quote form with the client and deal filled in from `new=1&dealId=`. */
+const BILLING_PREFILL = true;
+
+/** "3 · R 45,000.00": a stage's deals and value (in the first deal's currency). */
+function stageTotal(deals: Array<{ amountMinor: number; currency: string }>): string {
+  const currency = deals[0]?.currency ?? "ZAR";
+  return formatMoney(deals.filter((deal) => deal.currency === currency).reduce((sum, deal) => sum + deal.amountMinor, 0), currency);
 }
 
-function leadBandOf(score: LeadScore): string {
-  return leadBand(score);
+/** A money field typed in rand (not cents), with its currency. */
+function MoneyFields({ value, onValue, currency, onCurrency, label }: { value: string; onValue: (value: string) => void; currency: string; onCurrency: (value: string) => void; label: string }) {
+  const invalid = parseMoneyInput(value) === null;
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: 12 }}>
+        <Field label={label}>
+          <Input value={value} inputMode="decimal" onChange={(event) => onValue(event.target.value)} placeholder="15000" aria-invalid={invalid} />
+        </Field>
+        <Field label="Currency">
+          <Input value={currency} maxLength={3} onChange={(event) => onCurrency(event.target.value.toUpperCase())} placeholder="ZAR" />
+        </Field>
+      </div>
+      {invalid ? <span style={{ fontSize: 12, color: tone("bad").fg }}>Type an amount like 15000 or 15 000.50.</span> : null}
+    </div>
+  );
 }
 
 function OpenLink({ to, label, text = "Open" }: { to: string; label?: string; text?: string }) {
@@ -826,6 +953,24 @@ function OpenLink({ to, label, text = "Open" }: { to: string; label?: string; te
     <a {...navigation.linkProps(to)} aria-label={label} style={linkButtonStyle}>
       {text}
     </a>
+  );
+}
+
+/** A record's name in a table, linking to its page. */
+function NameLink({ to, name }: { to: string; name: string }) {
+  const navigation = useHostNavigation();
+  return (
+    <a {...navigation.linkProps(to)} style={{ color: tokens.fg, fontWeight: 600, textDecoration: "none", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>
+      {name}
+    </a>
+  );
+}
+
+function NameButton({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} style={{ appearance: "none", border: "none", background: "transparent", padding: 0, color: tokens.fg, fontWeight: 600, fontSize: 13, fontFamily: "inherit", cursor: "pointer", textAlign: "left" }}>
+      {name}
+    </button>
   );
 }
 
@@ -899,8 +1044,10 @@ interface WorkspaceData {
   deals?: WorkspaceDeal[];
   activities?: Activity[];
   stages?: Stage[];
-  sequences?: Sequence[];
+  sequences?: Array<{ id: string; name: string }>;
   options?: { companies: Array<{ id: string; name: string }>; contacts: Array<{ id: string; name: string }> };
+  profile?: ClientProfileView | null;
+  clientLeads?: ClientLeadView[];
 }
 
 /** What `GET /api/plugins/<key>/api/client-summary` returns for one client. */
@@ -920,17 +1067,19 @@ type ScoreResult = {
 type WorkspaceModal = "add-contact" | "link-company" | "deal" | null;
 type Patch = Record<string, unknown>;
 
+/** Each module's card on a client's page (only modules that are installed show). */
 const WORK_SOURCES = [
   { tab: "social", label: "Social", pluginKey: "partnersinbiz.social", path: "/social" },
   { tab: "seo", label: "SEO", pluginKey: "partnersinbiz.seo", path: "/seo" },
   { tab: "campaigns", label: "Campaigns", pluginKey: "partnersinbiz.campaigns", path: "/campaigns" },
-  { tab: "billing", label: "Billing", pluginKey: "partnersinbiz.billing", path: "/billing" },
+  { tab: "billing", label: "Billing", pluginKey: BILLING_PLUGIN, path: "/billing" },
 ] as const;
 
-type WorkTab = (typeof WORK_SOURCES)[number]["tab"];
+type WorkSource = (typeof WORK_SOURCES)[number];
 
 function ClientWorkspace({ companyId, client }: { companyId: string | null; client: ClientRef }) {
   const navigation = useHostNavigation();
+  const narrow = useIsNarrow();
   const load = usePluginAction("crm.client-workspace");
   const updateCompany = usePluginAction("crm.update-company");
   const updateContact = usePluginAction("crm.update-contact");
@@ -938,17 +1087,26 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   const createContact = usePluginAction("crm.create-contact");
   const linkContact = usePluginAction("crm.link-contact");
   const createDeal = usePluginAction("crm.create-deal");
-  const moveDeal = usePluginAction("crm.move-deal");
   const logActivity = usePluginAction("crm.log-activity");
   const setHumanOwned = usePluginAction("crm.set-human-owned");
   const enroll = usePluginAction("crm.enroll");
   const scoreContact = usePluginAction("crm.score-contact");
-  const summaries = useClientSummaries(companyId, client);
+  const updateProfile = usePluginAction("crm.update-client-profile");
+  const setEmailStatus = usePluginAction("crm.set-email-status");
+  const deleteCompany = usePluginAction("crm.delete-company");
+  // Only installed modules get a card, like the workspace tabs; nothing shows while that is unknown.
+  const contributions = useUiContributions();
+  const sources = WORK_SOURCES.filter((source) => moduleInstalled(contributions, source.pluginKey) === true);
+  const billingInstalled = moduleInstalled(contributions, BILLING_PLUGIN) === true;
+  const summaries = useClientSummaries(companyId, client, contributions === undefined ? null : sources);
 
   const [data, setData] = useState<WorkspaceData | null>(null);
   const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
   const [modal, setModal] = useState<WorkspaceModal>(null);
+  const [openDealId, setOpenDealId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [locking, setLocking] = useState(false);
 
   const [pickMode, setPickMode] = useState<"new" | "existing">("new");
   const [pickName, setPickName] = useState("");
@@ -960,18 +1118,11 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   const [dealCurrency, setDealCurrency] = useState("ZAR");
   const [dealPartyId, setDealPartyId] = useState("");
   const [note, setNote] = useState("");
-  const [humanOwned, setHumanOwnedFields] = useState("");
   const [enrollSequenceId, setEnrollSequenceId] = useState("");
   const [score, setScore] = useState<ScoreResult | null>(null);
 
-  function apply(next: WorkspaceData) {
-    setData(next);
-    const record = next.company ?? next.contact;
-    if (record) setHumanOwnedFields(record.humanOwned.join(", "));
-  }
-
   async function refresh() {
-    apply((await load({ kind: client.kind, id: client.id })) as WorkspaceData);
+    setData((await load({ kind: client.kind, id: client.id })) as WorkspaceData);
   }
 
   useEffect(() => {
@@ -980,7 +1131,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
     setLoadError("");
     load({ kind: client.kind, id: client.id })
       .then((result) => {
-        if (live) apply(result as WorkspaceData);
+        if (live) setData(result as WorkspaceData);
       })
       .catch((error: unknown) => {
         if (live) setLoadError(errorText(error));
@@ -1004,9 +1155,9 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
     }
   }
 
-  const back = navigation.linkProps("/crm");
+  // Before the client loads there is no workspace bar yet: the same "All clients" link stands in its place.
   const backLink = (
-    <a {...back} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content" }}>← All CRM</a>
+    <a {...navigation.linkProps("/crm?tab=companies")} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content", minHeight: 24, display: "inline-flex", alignItems: "center" }}>← All clients</a>
   );
 
   if (!data) {
@@ -1036,11 +1187,10 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   if (!data.found || (!data.company && !data.contact)) {
     return (
       <WorkspaceShell>
-        {backLink}
         <EmptyState
           title={client.kind === "company" ? "Company not found" : "Contact not found"}
           description="This client may have been deleted or merged into another record, or it has not been shared with you."
-          action={<a {...back} style={{ ...linkButtonStyle, height: 36, padding: "0 14px", fontSize: 13 }}>Back to CRM</a>}
+          action={<a {...navigation.linkProps("/crm?tab=companies")} style={{ ...linkButtonStyle, height: narrow ? 40 : 36, padding: "0 14px", fontSize: 13 }}>See all clients</a>}
         />
       </WorkspaceShell>
     );
@@ -1048,12 +1198,13 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
 
   const company = data.company ?? null;
   const contact = data.contact ?? null;
+  const record = company ?? contact!;
   const name = company?.name ?? contact?.name ?? "Client";
-  const detail = company
-    ? [company.domain, company.lifecycle].filter(Boolean).join(" · ")
-    : [contact?.emails[0], contact?.lifecycle].filter(Boolean).join(" · ");
   const contacts = data.contacts ?? [];
   const companies = data.companies ?? [];
+  const detail = company
+    ? [company.domain, LIFECYCLE_LABEL[company.lifecycle] ?? company.lifecycle].filter(Boolean).join(" · ")
+    : [LIFECYCLE_LABEL[contact!.lifecycle] ?? contact!.lifecycle, companies[0]?.name].filter(Boolean).join(" · ");
   const deals = data.deals ?? [];
   const stages = data.stages ?? [];
   const sequences = data.sequences ?? [];
@@ -1061,6 +1212,10 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   const linkedIds = new Set((company ? contacts : companies).map((row) => row.id));
   const pickChoices = (company ? options.contacts : options.companies).filter((row) => !linkedIds.has(row.id));
   const pickReady = pickMode === "new" ? pickName.trim() !== "" : pickId !== "";
+  const openDeal = openDealId ? deals.find((deal) => deal.id === openDealId) ?? null : null;
+  const dealView: DealView | null = openDeal
+    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, accountId: openDeal.accountId, contactId: openDeal.contactId }
+    : null;
 
   function openModal(next: Exclude<WorkspaceModal, null>) {
     setPickMode(next === "link-company" && pickChoices.length > 0 ? "existing" : "new");
@@ -1083,8 +1238,28 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
         : await updateContact({ contactId: contact!.id, ...patch });
       refused = (result as { refused?: string[] } | null)?.refused ?? [];
     }, "Details saved");
-    if (ok && refused.length > 0) setMessage(`Saved. These human-owned fields were kept: ${refused.join(", ")}`);
+    if (ok && refused.length > 0) setMessage(`Saved. These locked fields were kept: ${refused.join(", ")}`);
     return ok;
+  }
+
+  async function saveProfile(patch: Patch, success = "Profile saved"): Promise<boolean> {
+    let refused: string[] = [];
+    const ok = await run(async () => {
+      const result = await updateProfile({ client: `${client.kind}:${client.id}`, ...patch });
+      refused = (result as { refused?: string[] } | null)?.refused ?? [];
+    }, success);
+    if (ok && refused.length > 0) setMessage(`Saved. These fields were kept: ${refused.join(", ")}`);
+    return ok;
+  }
+
+  /** A field's lock: only people may change it once it has a value. */
+  async function toggleLock(keys: string[], lock: boolean, label: string) {
+    setLocking(true);
+    await run(
+      () => setHumanOwned({ recordType: client.kind, recordId: client.id, humanOwned: toggleOwned(record.humanOwned, keys, lock) }),
+      lock ? `${label}: only people can change it now.` : `${label}: agents can change it again.`,
+    );
+    setLocking(false);
   }
 
   function submitPick() {
@@ -1114,64 +1289,82 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
     }
   }
 
+  const scoreShown = score?.jev ?? contact?.leadScore ?? null;
+
   return (
     <WorkspaceShell>
       <ClientWorkspaceBar
         client={{ kind: client.kind, id: client.id, name, detail }}
         active="overview"
         linkProps={navigation.linkProps}
+        ownPath="/crm?tab=companies"
         actions={(
           <>
-            <Button type="button" variant="secondary" onClick={() => openModal(company ? "add-contact" : "link-company")}>
-              {company ? "+ Contact" : "Link to company"}
-            </Button>
             <Button type="button" onClick={() => openModal("deal")}>+ Deal</Button>
+            {company ? (
+              <MoreMenu
+                label={`More actions for ${name}`}
+                items={[{ key: "delete", label: "Delete company…", destructive: true, onSelect: () => setDeleting(true) }]}
+              />
+            ) : null}
           </>
         )}
       />
       <PageMessage message={message || undefined} />
 
-      <WorkspaceKpis company={company} contact={contact} deals={deals} contacts={contacts} activities={data.activities ?? []} score={score?.jev ?? contact?.leadScore ?? null} />
+      <WorkspaceKpis company={company} contact={contact} deals={deals} contacts={contacts} activities={data.activities ?? []} score={scoreShown} />
 
-      <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 12 }}>
-        {WORK_SOURCES.map((source) => (
-          <WorkCard
-            key={source.tab}
-            label={source.label}
-            module={source.tab}
-            state={summaries[source.tab]}
-            link={navigation.linkProps(withClientParam(source.path, client))}
-          />
-        ))}
-      </div>
+      {sources.length > 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 12 }}>
+          {sources.map((source) => (
+            <WorkCard
+              key={source.tab}
+              label={source.label}
+              module={source.tab}
+              state={summaries[source.tab] ?? { status: "loading" }}
+              link={navigation.linkProps(withClientParam(source.path, client))}
+            />
+          ))}
+        </div>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          {company ? <CompanyDetails company={company} onSave={saveDetails} /> : null}
-          {contact ? <ContactDetails contact={contact} onSave={saveDetails} /> : null}
+          {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
+          {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
+          {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
+          {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} /> : null}
 
           {company ? (
             <SectionCard
-              title={`Contacts (${contacts.length})`}
+              title={`People (${contacts.length})`}
               icon={Users}
               actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("add-contact")}>+ Add contact</Button>}
             >
               {contacts.length === 0 ? (
-                <Muted>No one is linked to this company yet.</Muted>
+                <Muted>No one is linked to this company yet. Add the people you deal with there.</Muted>
+              ) : narrow ? (
+                <CompactRows
+                  label="People"
+                  rows={contacts}
+                  title={(row) => row.name}
+                  meta={(row) => [row.roleLabel, row.emails[0]].filter(Boolean).join(" · ")}
+                  linkFor={(row) => navigation.linkProps(clientPath("contact", row.id)) as unknown as Record<string, unknown>}
+                />
               ) : (
                 <DataTable
                   columns={[
-                    { key: "name", header: "Name" },
-                    { key: "email", header: "Email" },
-                    { key: "roleLabel", header: "Role" },
+                    { key: "name", header: "Name", render: (value, row) => <NameLink to={clientPath("contact", String(row.id))} name={String(value)} /> },
+                    { key: "email", header: "Email", render: (value) => value ? <EmailText email={String(value)} /> : <span style={{ color: tokens.muted }}>—</span> },
+                    { key: "roleLabel", header: "Role", width: "100px" },
                     {
                       key: "id",
                       header: "",
-                      width: "80px",
+                      width: "72px",
                       render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
                     },
                   ]}
-                  rows={contacts.map((row) => ({ ...row, email: row.emails[0] ?? "—" }))}
+                  rows={contacts.map((row) => ({ ...row, email: row.emails[0] ?? "" }))}
                   emptyMessage="No contacts."
                 />
               )}
@@ -1186,16 +1379,25 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             >
               {companies.length === 0 ? (
                 <Muted>Not linked to a company. A sole trader can stay that way.</Muted>
+              ) : narrow ? (
+                <CompactRows
+                  label="Companies"
+                  rows={companies}
+                  title={(row) => row.name}
+                  meta={(row) => row.roleLabel}
+                  trailing={(row) => <LifecyclePill lifecycle={row.lifecycle} size="sm" />}
+                  linkFor={(row) => navigation.linkProps(clientPath("company", row.id)) as unknown as Record<string, unknown>}
+                />
               ) : (
                 <DataTable
                   columns={[
-                    { key: "name", header: "Company" },
+                    { key: "name", header: "Company", render: (value, row) => <NameLink to={clientPath("company", String(row.id))} name={String(value)} /> },
                     { key: "roleLabel", header: "Role" },
                     { key: "lifecycle", header: "Lifecycle", render: (value) => <LifecyclePill lifecycle={String(value)} /> },
                     {
                       key: "id",
                       header: "",
-                      width: "80px",
+                      width: "72px",
                       render: (_value, row) => <OpenLink to={clientPath("company", String(row.id))} label={`Open ${String(row.name)}`} />,
                     },
                   ]}
@@ -1206,44 +1408,38 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             </SectionCard>
           ) : null}
 
-          <SectionCard
-            title={`Deals (${deals.length})`}
-            icon={Briefcase}
-            actions={<Button type="button" variant="secondary" style={smallButton} onClick={() => openModal("deal")}>+ Deal</Button>}
-          >
+          <SectionCard title={`Deals (${deals.length})`} icon={Briefcase}>
             {deals.length === 0 ? (
-              <Muted>No deals for this client yet.</Muted>
+              <Muted>No deals for this client yet. Start one with + Deal at the top.</Muted>
+            ) : narrow ? (
+              <CompactRows
+                label="Deals"
+                rows={deals}
+                title={(deal) => deal.title}
+                meta={(deal) => [deal.stageName, company ? deal.contactName : null].filter(Boolean).join(" · ")}
+                trailing={(deal) => deal.amountMinor > 0 ? formatMoney(deal.amountMinor, deal.currency) : <span style={{ color: tone("warn").fg }}>No value</span>}
+                onOpen={(deal) => setOpenDealId(deal.id)}
+              />
             ) : (
               <DataTable
                 columns={[
-                  { key: "title", header: "Deal" },
-                  { key: "amount", header: "Amount" },
-                  { key: "stageKind", header: "Status", render: (value) => <StagePill name={STAGE_WORD[String(value)] ?? String(value)} kind={String(value)} size="sm" /> },
+                  { key: "title", header: "Deal", render: (value, row) => <NameButton name={String(value)} onClick={() => setOpenDealId(String(row.id))} /> },
+                  { key: "amount", header: "Value", render: (_value, row) => {
+                    const deal = row as unknown as WorkspaceDeal;
+                    return deal.amountMinor > 0 ? <span style={{ whiteSpace: "nowrap" }}>{formatMoney(deal.amountMinor, deal.currency)}</span> : <Pill tone="warn" size="sm" dot>No value</Pill>;
+                  } },
+                  { key: "stageName", header: "Stage", render: (value, row) => <StagePill name={String(value)} kind={String((row as unknown as WorkspaceDeal).stageKind)} size="sm" /> },
                   ...(company ? [{ key: "contactName", header: "Contact" }] : []),
                   {
-                    key: "stageId",
-                    header: "Stage",
-                    width: "170px",
-                    render: (_value, row) => {
-                      const deal = row as unknown as WorkspaceDeal;
-                      return (
-                        <Select
-                          aria-label={`Move ${deal.title}`}
-                          value={deal.stageId}
-                          onChange={(event) => void run(() => moveDeal({ dealId: deal.id, stageId: event.target.value }), "Deal moved")}
-                          style={smallButton}
-                        >
-                          {stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}
-                        </Select>
-                      );
-                    },
+                    key: "id",
+                    header: "",
+                    width: "72px",
+                    render: (_value, row) => (
+                      <Button type="button" variant="secondary" style={smallButton} onClick={() => setOpenDealId(String(row.id))}>Open</Button>
+                    ),
                   },
                 ]}
-                rows={deals.map((deal) => ({
-                  ...deal,
-                  amount: formatMinor(deal.amountMinor, deal.currency),
-                  contactName: deal.contactName ?? "—",
-                }))}
+                rows={deals.map((deal) => ({ ...deal, amount: "", contactName: deal.contactName ?? "—" }))}
                 emptyMessage="No deals."
               />
             )}
@@ -1272,63 +1468,50 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             <ActivityTimeline items={data.activities ?? []} limit={12} />
           </SectionCard>
 
+          {company || companies.length === 0 ? <ClientLeadsCard leads={data.clientLeads ?? []} /> : null}
+
           {contact ? (
             <SectionCard title="Contact tools" icon={Target}>
-              {contact.emailStatus && contact.emailStatus !== "ok" ? (
-                <Pill tone={contact.emailStatus === "bounced" ? "bad" : "warn"} dot>{contact.emailStatus === "bounced" ? "Email bounced" : "Unsubscribed"}</Pill>
-              ) : null}
-              {(score?.jev ?? contact.leadScore) ? <LeadScoreCard score={(score?.jev ?? contact.leadScore)!} when={formatDate((score?.jev ?? contact.leadScore)!.scoredAt)} /> : null}
+              <EmailStatusControl
+                key={contact.emailStatus ?? "ok"}
+                status={(contact.emailStatus ?? "ok") as EmailStatus}
+                onSave={(status, why) => run(() => setEmailStatus({ contactId: contact.id, status, note: why }), status === "ok" ? "Email allowed again" : "Email status saved. Sequences stopped and the other modules were told.")}
+              />
+              {scoreShown ? <LeadScoreCard score={scoreShown} when={formatDate(scoreShown.scoredAt)} /> : null}
               <div style={{ display: "grid", gap: 8 }}>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => void scoreContact({ contactId: contact.id })
-                    .then((result) => setScore(result as ScoreResult))
-                    .catch((error: unknown) => setMessage(errorText(error)))}
-                >
-                  Score this contact
-                </Button>
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void scoreContact({ contactId: contact.id })
+                      .then((result) => setScore(result as ScoreResult))
+                      .catch((error: unknown) => setMessage(errorText(error)))}
+                  >
+                    Score this contact
+                  </Button>
+                </div>
                 {score ? <ScoreCard score={score} /> : null}
               </div>
               {sequences.length === 0 ? (
-                <Muted>No sequences yet. Create one on the CRM Sequences tab to enroll this contact.</Muted>
+                <Muted>No sequences yet. Create one on the CRM's Sequences tab to enroll this contact.</Muted>
               ) : (
                 <Form onSubmit={(event) => {
                   event.preventDefault();
                   void run(() => enroll({ sequenceId: enrollSequenceId, contactId: contact.id }), "Contact enrolled");
                 }}>
-                  <Field label="Enroll in sequence">
+                  <Field label="Enroll in a sequence">
                     <Select value={enrollSequenceId} onChange={(event) => setEnrollSequenceId(event.target.value)} required>
-                      <option value="">Sequence</option>
+                      <option value="">Choose a sequence</option>
                       {sequences.map((sequence) => <option key={sequence.id} value={sequence.id}>{sequence.name}</option>)}
                     </Select>
                   </Field>
                   <div>
-                    <Button type="submit" disabled={!enrollSequenceId}>Enroll</Button>
+                    <Button type="submit" variant="secondary" disabled={!enrollSequenceId}>Enroll</Button>
                   </div>
                 </Form>
               )}
             </SectionCard>
           ) : null}
-
-          <SectionCard title="Human-owned fields" icon={ShieldCheck}>
-            <Muted>Agents cannot overwrite these fields once they have a value.</Muted>
-            <Form onSubmit={(event) => {
-              event.preventDefault();
-              void run(() => setHumanOwned({
-                recordType: client.kind,
-                recordId: client.id,
-                humanOwned: splitList(humanOwned),
-              }), "Human-owned fields saved");
-            }}>
-              <Field label="Fields (comma separated)">
-                <Input value={humanOwned} onChange={(event) => setHumanOwnedFields(event.target.value)} placeholder="name, lifecycle" />
-              </Field>
-              <div>
-                <Button type="submit" variant="secondary">Save ownership</Button>
-              </div>
-            </Form>
-          </SectionCard>
         </div>
       </div>
 
@@ -1365,7 +1548,7 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             </Field>
             {company ? (
               <Field label="Email">
-                <Input value={pickEmail} onChange={(event) => setPickEmail(event.target.value)} placeholder="ada@northwind.test" />
+                <Input value={pickEmail} type="email" onChange={(event) => setPickEmail(event.target.value)} placeholder="ada@northwind.test" />
               </Field>
             ) : null}
           </>
@@ -1385,18 +1568,18 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
       <Modal
         open={modal === "deal"}
         title={`New deal for ${name}`}
-        description="Amount is in minor units (cents)."
+        description="A sale in progress. It starts in the first stage."
         onClose={() => setModal(null)}
         footer={(
           <>
             <Button type="button" variant="secondary" onClick={() => setModal(null)}>Cancel</Button>
             <Button
               type="button"
-              disabled={!dealTitle.trim()}
+              disabled={!dealTitle.trim() || parseMoneyInput(dealAmount) === null}
               onClick={() => void run(() => createDeal({
                 title: dealTitle,
-                amountMinor: Number(dealAmount || 0),
-                currency: dealCurrency,
+                amountMinor: parseMoneyInput(dealAmount) ?? 0,
+                currency: dealCurrency.trim().toUpperCase() || "ZAR",
                 companyRecordId: company ? company.id : dealPartyId || undefined,
                 contactId: contact ? contact.id : dealPartyId || undefined,
               }), "Deal saved")}
@@ -1409,35 +1592,62 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
         <Field label="Title">
           <Input value={dealTitle} onChange={(event) => setDealTitle(event.target.value)} placeholder="Website rebuild" required />
         </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
-          <Field label="Amount (minor units)">
-            <Input value={dealAmount} inputMode="numeric" onChange={(event) => setDealAmount(event.target.value)} placeholder="15000000" />
-          </Field>
-          <Field label="Currency">
-            <Input value={dealCurrency} maxLength={3} onChange={(event) => setDealCurrency(event.target.value)} placeholder="ZAR" />
-          </Field>
-        </div>
+        <MoneyFields value={dealAmount} onValue={setDealAmount} currency={dealCurrency} onCurrency={setDealCurrency} label="Value" />
         {company ? (
           <Field label="Contact">
             <Select value={dealPartyId} onChange={(event) => setDealPartyId(event.target.value)}>
-              <option value="">Optional</option>
+              <option value="">None yet</option>
               {contacts.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
             </Select>
           </Field>
         ) : (
           <Field label="Company">
             <Select value={dealPartyId} onChange={(event) => setDealPartyId(event.target.value)}>
-              <option value="">Optional</option>
+              <option value="">None yet</option>
               {companies.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
             </Select>
           </Field>
         )}
       </Modal>
+
+      {company ? (
+        <DeleteCompanyDialog
+          open={deleting}
+          name={company.name}
+          onClose={() => setDeleting(false)}
+          onDelete={async () => {
+            setMessage("");
+            try {
+              await deleteCompany({ companyRecordId: company.id, confirm: company.name });
+              navigation.navigate("/crm?tab=companies");
+              return true;
+            } catch (error) {
+              setMessage(errorText(error));
+              return false;
+            }
+          }}
+        />
+      ) : null}
+
+      <DealSheet
+        deal={dealView}
+        stages={stages}
+        companies={options.companies}
+        contacts={options.contacts}
+        billing={billingInstalled ? { prefill: BILLING_PREFILL } : null}
+        onClose={() => setOpenDealId(null)}
+        onChanged={refresh}
+      />
     </WorkspaceShell>
   );
 }
 
-function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave: (patch: Patch) => Promise<boolean> }) {
+function CompanyDetails({ company, onSave, locking, onLock }: {
+  company: WorkspaceCompany;
+  onSave: (patch: Patch) => Promise<boolean>;
+  locking: boolean;
+  onLock: (keys: string[], lock: boolean, label: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
@@ -1463,6 +1673,14 @@ function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave
     if (ok) setEditing(false);
   }
 
+  const rows: FieldRow[] = [
+    { key: "name", label: "Name", value: company.name },
+    { key: "domain", label: "Website", value: company.domain ? <span style={{ overflowWrap: "anywhere" }}>{company.domain}</span> : <NotSet /> },
+    { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={company.lifecycle} /> },
+    { key: "currency", label: "Currency", value: company.currency },
+    { key: "tags", label: "Tags", value: company.tags.join(", ") || <NotSet /> },
+  ];
+
   return (
     <SectionCard
       title="Details"
@@ -1474,15 +1692,15 @@ function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave
           <Field label="Company name">
             <Input value={name} onChange={(event) => setName(event.target.value)} required />
           </Field>
-          <Field label="Domain">
+          <Field label="Website">
             <Input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="northwind.test" />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: 12 }}>
             <Field label="Lifecycle">
               <LifecycleSelect value={lifecycle} onChange={setLifecycle} />
             </Field>
             <Field label="Currency">
-              <Input value={currency} maxLength={3} onChange={(event) => setCurrency(event.target.value)} />
+              <Input value={currency} maxLength={3} onChange={(event) => setCurrency(event.target.value.toUpperCase())} />
             </Field>
           </div>
           <Field label="Tags (comma separated)">
@@ -1491,20 +1709,18 @@ function CompanyDetails({ company, onSave }: { company: WorkspaceCompany; onSave
           <EditButtons saving={saving} onCancel={() => setEditing(false)} />
         </Form>
       ) : (
-        <KeyValueList pairs={[
-          { label: "Name", value: company.name },
-          { label: "Domain", value: company.domain ?? "—" },
-          { label: "Lifecycle", value: <LifecyclePill lifecycle={company.lifecycle} /> },
-          { label: "Currency", value: company.currency },
-          { label: "Tags", value: company.tags.join(", ") || "—" },
-          { label: "Human-owned", value: company.humanOwned.join(", ") || "—" },
-        ]} />
+        <FieldList rows={rows} owned={company.humanOwned} busy={locking} onToggle={onLock} />
       )}
     </SectionCard>
   );
 }
 
-function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave: (patch: Patch) => Promise<boolean> }) {
+function ContactDetails({ contact, onSave, locking, onLock }: {
+  contact: WorkspaceContact;
+  onSave: (patch: Patch) => Promise<boolean>;
+  locking: boolean;
+  onLock: (keys: string[], lock: boolean, label: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
@@ -1542,9 +1758,25 @@ function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave
     if (ok) setEditing(false);
   }
 
-  const nextAction = contact.nextActionKind
-    ? [contact.nextActionKind, formatDate(contact.nextActionDueAt)].filter(Boolean).join(" · ")
-    : "—";
+  const rows: FieldRow[] = [
+    { key: "name", label: "Name", value: contact.name },
+    {
+      key: "emails",
+      label: contact.emails.length > 1 ? "Emails" : "Email",
+      value: contact.emails.length ? <span style={{ display: "grid", gap: 2, minWidth: 0 }}>{contact.emails.map((email) => <EmailText key={email} email={email} />)}</span> : <NotSet />,
+    },
+    { key: "phones", label: contact.phones.length > 1 ? "Phones" : "Phone", value: contact.phones.join(", ") || <NotSet /> },
+    { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={contact.lifecycle} /> },
+    {
+      key: "nextAction",
+      label: "Next action",
+      lockKeys: ["nextActionKind", "nextActionDueAt"],
+      value: contact.nextActionKind
+        ? <Pill tone={dueTone(contact.nextActionDueAt)} icon={Clock}>{nextActionText(contact.nextActionKind, contact.nextActionDueAt)}</Pill>
+        : <NotSet />,
+    },
+    { key: "tags", label: "Tags", value: contact.tags.join(", ") || <NotSet /> },
+  ];
 
   return (
     <SectionCard
@@ -1566,11 +1798,11 @@ function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave
           <Field label="Lifecycle">
             <LifecycleSelect value={lifecycle} onChange={setLifecycle} />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12 }}>
             <Field label="Next action">
               <Select value={nextKind} onChange={(event) => setNextKind(event.target.value)}>
                 <option value="">None</option>
-                {NEXT_ACTION_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                {NEXT_ACTION_OPTIONS.map((option) => <option key={option} value={option}>{NEXT_ACTION_LABEL[option]}</option>)}
               </Select>
             </Field>
             <Field label="Due">
@@ -1583,24 +1815,20 @@ function ContactDetails({ contact, onSave }: { contact: WorkspaceContact; onSave
           <EditButtons saving={saving} onCancel={() => setEditing(false)} />
         </Form>
       ) : (
-        <KeyValueList pairs={[
-          { label: "Name", value: contact.name },
-          { label: "Emails", value: contact.emails.join(", ") || "—" },
-          { label: "Phones", value: contact.phones.join(", ") || "—" },
-          { label: "Lifecycle", value: <LifecyclePill lifecycle={contact.lifecycle} /> },
-          { label: "Next action", value: contact.nextActionKind ? <Pill tone={dueTone(contact.nextActionDueAt)} icon={Clock}>{nextAction}</Pill> : nextAction },
-          { label: "Tags", value: contact.tags.join(", ") || "—" },
-          { label: "Human-owned", value: contact.humanOwned.join(", ") || "—" },
-        ]} />
+        <FieldList rows={rows} owned={contact.humanOwned} busy={locking} onToggle={onLock} />
       )}
     </SectionCard>
   );
 }
 
+function NotSet() {
+  return <span style={{ color: tokens.muted }}>Not set</span>;
+}
+
 function LifecycleSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
     <Select value={value} onChange={(event) => onChange(event.target.value)}>
-      {LIFECYCLE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+      {LIFECYCLE_OPTIONS.map((option) => <option key={option} value={option}>{LIFECYCLE_LABEL[option] ?? option}</option>)}
     </Select>
   );
 }
@@ -1614,7 +1842,17 @@ function EditButtons({ saving, onCancel }: { saving: boolean; onCancel: () => vo
   );
 }
 
+/** Why only the basic score shows (the smart scoring is an optional add-on in the CRM settings). */
+function scoreNote(score: ScoreResult): string | null {
+  if (score.jev) return null;
+  if (!score.jevNote) return null;
+  return /not set up/i.test(score.jevNote)
+    ? "Basic score. Smart scoring (optional) is off in the CRM settings."
+    : "Basic score. Smart scoring did not answer this time.";
+}
+
 function ScoreCard({ score }: { score: ScoreResult }) {
+  const note = scoreNote(score);
   return (
     <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.bg }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
@@ -1631,7 +1869,7 @@ function ScoreCard({ score }: { score: ScoreResult }) {
           ))}
         </ul>
       ) : null}
-      {score.jevNote ? <span style={{ fontSize: 11.5, color: tokens.muted }}>{score.jevNote}</span> : null}
+      {note ? <span style={{ fontSize: 11.5, color: tokens.muted }}>{note}</span> : null}
     </div>
   );
 }
@@ -1646,6 +1884,7 @@ function WorkCard({ label, module, state, link }: {
     <a
       {...link}
       aria-label={`Open ${label} for this client`}
+      className="pib-link-card"
       style={{
         display: "grid",
         gap: 10,
@@ -1668,14 +1907,14 @@ function WorkCard({ label, module, state, link }: {
         <span style={{ fontSize: 12, fontWeight: 600, color: tokens.primary }}>Open →</span>
       </div>
       {state.status === "loading" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>Loading…</span> : null}
-      {state.status === "error" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>No summary yet. Open to see this client's work.</span> : null}
+      {state.status === "error" ? <span style={{ fontSize: 12.5, color: tokens.muted }}>Nothing to show yet. Open it to see this client's work.</span> : null}
       {state.status === "ok" ? (
         <>
           {state.summary.headline ? (
-            <div style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35 }}>{state.summary.headline}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.35 }}>{displayText(state.summary.headline)}</div>
           ) : null}
           {state.summary.stats.length > 0 ? (
-            <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 8 }}>
+            <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(92px, 1fr))", gap: 8 }}>
               {state.summary.stats.map((stat) => (
                 <div key={stat.label} style={{ display: "grid", gap: 2, minWidth: 0 }}>
                   <dt style={{ fontSize: 11, color: tokens.muted, overflowWrap: "anywhere" }}>{stat.label}</dt>
@@ -1690,7 +1929,7 @@ function WorkCard({ label, module, state, link }: {
                     color: stat.tone === "bad" ? tone("bad").fg : tokens.fg,
                   }}>
                     {stat.tone ? <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, flexShrink: 0, background: tone(stat.tone).solid }} /> : null}
-                    {stat.value}
+                    <span style={{ minWidth: 0 }}>{typeof stat.value === "string" ? displayText(stat.value) : stat.value}</span>
                   </dd>
                 </div>
               ))}
@@ -1702,26 +1941,20 @@ function WorkCard({ label, module, state, link }: {
   );
 }
 
-function initialSummaries(): Record<WorkTab, SummaryState> {
-  return {
-    social: { status: "loading" },
-    seo: { status: "loading" },
-    campaigns: { status: "loading" },
-    billing: { status: "loading" },
-  };
-}
-
-/** Fetches each plugin's client summary in parallel. A missing or failing plugin shows as `error`. */
-function useClientSummaries(companyId: string | null, client: ClientRef): Record<WorkTab, SummaryState> {
-  const [states, setStates] = useState<Record<WorkTab, SummaryState>>(initialSummaries);
+/**
+ * Fetches each installed module's client summary in parallel. `sources` is
+ * null while it is not known which modules are installed (nothing is fetched
+ * yet). A failing summary shows as `error`.
+ */
+function useClientSummaries(companyId: string | null, client: ClientRef, sources: readonly WorkSource[] | null): Partial<Record<WorkSource["tab"], SummaryState>> {
+  const [states, setStates] = useState<Partial<Record<WorkSource["tab"], SummaryState>>>({});
+  const keys = sources ? sources.map((source) => source.tab).join(",") : null;
   useEffect(() => {
-    setStates(initialSummaries());
-    if (!companyId) {
-      setStates({ social: { status: "error" }, seo: { status: "error" }, campaigns: { status: "error" }, billing: { status: "error" } });
-      return;
-    }
+    if (!sources) return;
+    setStates(Object.fromEntries(sources.map((source) => [source.tab, { status: companyId ? "loading" : "error" }])));
+    if (!companyId) return;
     const controller = new AbortController();
-    for (const source of WORK_SOURCES) {
+    for (const source of sources) {
       fetchClientSummary(source.pluginKey, companyId, client, controller.signal)
         .then((summary) => {
           if (controller.signal.aborted) return;
@@ -1732,7 +1965,7 @@ function useClientSummaries(companyId: string | null, client: ClientRef): Record
         });
     }
     return () => controller.abort();
-  }, [companyId, client.kind, client.id]);
+  }, [companyId, client.kind, client.id, keys]);
   return states;
 }
 
@@ -1778,8 +2011,6 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
   return <PageFrame accent="crm">{children}</PageFrame>;
 }
 
-const STAGE_WORD: Record<string, string> = { open: "Open", won: "Won", lost: "Lost" };
-
 /** Overdue next actions are bad, due within two days warn, later ones scheduled. */
 function dueTone(due: string | null, now = Date.now()): "bad" | "warn" | "info" {
   const t = due ? Date.parse(due) : Number.NaN;
@@ -1807,17 +2038,17 @@ function WorkspaceKpis({ company, contact, deals, contacts, activities, score }:
   const quietDays = last ? Math.floor((Date.now() - last) / 86_400_000) : null;
   return (
     <div style={{ display: "grid", gridTemplateColumns: fluidColumns(150), gap: 10 }}>
-      <KpiCard size="sm" label="Open deals" value={open.length} hint={open.length ? formatMinor(openAmount, currency) : "Nothing open"} icon={Funnel} tone={open.length ? "neutral" : "neutral"} />
-      <KpiCard size="sm" label="Won" value={won.length ? formatMinor(wonAmount, currency) : "—"} tone={won.length ? "ok" : "neutral"} hint={`${won.length} ${won.length === 1 ? "deal" : "deals"}`} icon={Target} />
+      <KpiCard size="sm" label="Open deals" value={formatMoney(openAmount, currency)} hint={open.length ? `${open.length} ${open.length === 1 ? "deal" : "deals"} open` : "Nothing open"} icon={Funnel} />
+      <KpiCard size="sm" label="Won" value={formatMoney(wonAmount, currency)} tone={won.length ? "ok" : "neutral"} hint={`${won.length} ${won.length === 1 ? "deal" : "deals"}`} icon={Target} />
       <KpiCard
         size="sm"
         label="Last activity"
-        value={last ? relativeTime(last) ?? "—" : "Never"}
-        tone={quietDays === null || quietDays > 30 ? "warn" : "neutral"}
-        hint={quietDays === null ? "Log a note or email" : quietDays > 30 ? "Quiet for a month" : `${activities.length} logged`}
+        value={last ? whenText(last) ?? "—" : "None yet"}
+        tone={quietDays !== null && quietDays > 30 ? "warn" : "neutral"}
+        hint={quietDays === null ? "Log a note or an email" : quietDays > 30 ? "Quiet for over a month" : `${activities.length} logged`}
         icon={Clock}
       />
-      {company ? <KpiCard size="sm" label="Contacts" value={contacts.length} tone={contacts.length ? "neutral" : "warn"} hint={contacts.length ? "Linked people" : "Add a contact"} icon={Users} /> : null}
+      {company ? <KpiCard size="sm" label="People" value={contacts.length} tone={contacts.length ? "neutral" : "warn"} hint={contacts.length ? "Linked contacts" : "Add a contact"} icon={Users} /> : null}
       {contact ? (
         <KpiCard
           size="sm"
@@ -1841,12 +2072,6 @@ function dateInputValue(value: string | null): string {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString();
 }
 
 export function CrmSidebar({ context }: PluginSidebarProps) {

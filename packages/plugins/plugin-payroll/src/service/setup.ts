@@ -17,16 +17,27 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import * as db from "../db.js";
-import { LOCAL_BOARD_USER_ID, type Actor } from "../domain.js";
+import { readableDate } from "../dates.js";
+import { LOCAL_BOARD_USER_ID } from "../domain.js";
 import { CLERK_ROLE } from "../hire.js";
 import manifest from "../manifest.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { ruleLabel, rulesCheckText } from "../rule-labels.js";
 import { ruleVersionFor, taxYearOf, type RuleVersion } from "../rules.js";
 import { members } from "./agent-tools.js";
-import { requireUser, today, type Env } from "./env.js";
+import { today, type Env } from "./env.js";
+import { readRulesReview, reviewCovers, rulesReviewView } from "./rules-review.js";
+
+// The accountant's check of the unconfirmed rules lives in rules-review.ts.
+export { markRulesReviewed, rulesReviewed, rulesReviewState } from "./rules-review.js";
 
 const SETTINGS_FALLBACK = "/company/settings/instance/plugins";
+/** Where the "Who approves pay runs" picker is. */
+export const APPROVER_HREF = "/payroll?tab=runs";
+/** The Statutory tab; the tax rules and the accountant's check are at its top. */
+export const RULES_HREF = "/payroll?tab=statutory";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The settings page path: by installation uuid once the Payroll page has been opened, else the plugin list. */
@@ -40,52 +51,6 @@ export async function settingsHref(ctx: PluginContext): Promise<{ pluginId: stri
   const match = base ? /^\/_plugins\/([^/]+)\/ui\/$/.exec(base) : null;
   const id = match && UUID.test(match[1]!) ? match[1]!.toLowerCase() : null;
   return { pluginId: id, href: id ? `${SETTINGS_FALLBACK}/${id}` : SETTINGS_FALLBACK };
-}
-
-// ---------------------------------------------------------------------------
-// Rules review (the person confirms an accountant checked the unconfirmed rules)
-// ---------------------------------------------------------------------------
-
-const RULES_REVIEW_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "payroll-setup", stateKey: "rules-review" });
-
-interface RulesReview {
-  ruleVersionId: string;
-  contentHash: string;
-  paths: string[];
-  at: string;
-}
-
-function reviewCovers(review: RulesReview | null, version: RuleVersion): boolean {
-  if (!review || review.ruleVersionId !== version.id || review.contentHash !== version.contentHash) return false;
-  const reviewed = new Set(review.paths);
-  return version.unverified.every((u) => reviewed.has(u.path));
-}
-
-async function readRulesReview(ctx: PluginContext, companyId: string): Promise<RulesReview | null> {
-  const value = (await ctx.state.get(RULES_REVIEW_STATE(companyId))) as RulesReview | null;
-  return value && typeof value === "object" && typeof value.ruleVersionId === "string" ? value : null;
-}
-
-/** Whether the unconfirmed rules of the rule version in force today were marked as reviewed. */
-export async function rulesReviewed(e: Env, companyId: string): Promise<boolean> {
-  try {
-    const version = ruleVersionFor(await db.listRuleVersions(e.ctx), today(e));
-    if (!version || !version.unverified.length) return true;
-    return reviewCovers(await readRulesReview(e.ctx, companyId), version);
-  } catch {
-    return false;
-  }
-}
-
-/** Board action `payroll.review-rules`: records that an accountant checked the unconfirmed rules. */
-export async function markRulesReviewed(e: Env, companyId: string, actor: Actor) {
-  const user = requireUser(actor);
-  const version = ruleVersionFor(await db.listRuleVersions(e.ctx), today(e));
-  if (!version) return { reviewed: false, unverified: 0 };
-  const review: RulesReview = { ruleVersionId: version.id, contentHash: version.contentHash, paths: version.unverified.map((u) => u.path), at: e.now().toISOString() };
-  await e.ctx.state.set(RULES_REVIEW_STATE(companyId), review);
-  await db.audit(e.ctx, companyId, { userId: user.userId, agentId: null }, "rules.reviewed", "rule_version", version.id, { paths: review.paths });
-  return { reviewed: true, unverified: version.unverified.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,14 +142,14 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
   );
 
   items.push(
-    await probe(e, { key: "private_storage", title: "Private storage for payslips (Cloudflare R2)", required: true, ...inSettings }, async () => {
+    await probe(e, { key: "private_storage", title: "Private storage for payslips and bank files", required: true, ...inSettings }, async () => {
       if (!config) throw new Error("settings unavailable");
       const ok = config.r2Configured;
       return {
         status: done(true, !ok),
         detail: ok
           ? "Payslips, bank files and SARS exports are stored in the private bucket."
-          : "Payslips, bank files and SARS exports hold personal and pay details, so they go to a private bucket, never the public media bucket.",
+          : "Payslips, bank files and SARS exports hold personal and pay details, so they go to a private storage bucket (Cloudflare R2), never the public media bucket.",
         steps: ok
           ? undefined
           : [
@@ -192,7 +157,7 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
               "Keep it private: do not turn on a public r2.dev URL or a custom domain.",
               "Under the bucket's CORS policy, allow PUT (and GET) from your Paperclip address.",
               "Create an R2 API token with Object Read & Write for this bucket only.",
-              "In the Payroll settings, fill in the R2 section: account ID, bucket, access key ID and secret access key.",
+              "In the Payroll settings, fill in Private document storage: account ID, bucket, access key ID and secret access key.",
               "Click Save Configuration.",
             ],
         agentNext: "Payslips are made when a run is locked, and the Mailbox gets 7-day download links to attach.",
@@ -201,22 +166,22 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
   );
 
   items.push(
-    await probe(e, { key: "approver", title: "Choose a default approver", required: true, ...inSettings }, async () => {
+    // Chosen with the people picker on Payroll → Pay runs (it saves approval.defaultApproverUserId in the Payroll settings).
+    await probe(e, { key: "approver", title: "Choose who approves pay runs", required: true, href: APPROVER_HREF, hrefLabel: "Choose approver" }, async () => {
       if (!config) throw new Error("settings unavailable");
       const approver = config.defaultApproverUserId;
-      const rule =
-        "Every pay run is approved by a board member who did not prepare it. The person (or agent) that calculates a run cannot approve it, and the approver gets an approval issue before the run can be locked.";
+      const rule = "Every pay run is approved by someone who did not prepare it. They get an approval task before the run can be locked.";
+      const pick = [
+        "Open Payroll → Pay runs.",
+        "Under Who approves pay runs, pick a person who does not prepare the pay runs (for example the owner or the finance lead).",
+        "Click Save.",
+      ];
       if (!approver) {
         return {
           status: "missing",
-          detail: `No default approver is set. ${rule}`,
-          steps: [
-            "Pick a board member who does not prepare the pay runs (for example the owner or finance lead).",
-            "Copy their user ID from Company settings → Members.",
-            "In the Payroll settings, paste it under Approval → Default approver.",
-            "Click Save Configuration.",
-          ],
-          agentNext: "Runs sent for approval go to this person automatically.",
+          detail: `Nobody is chosen to approve pay runs yet. ${rule}`,
+          steps: pick,
+          agentNext: "Pay runs sent for approval go to this person automatically.",
         };
       }
       const runs = await db.listRuns(ctx, companyId, 60);
@@ -224,24 +189,21 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
       if (prepared > 0) {
         return {
           status: "missing",
-          detail: `The default approver also prepared ${prepared} recent pay run${prepared === 1 ? "" : "s"}, and cannot approve those. ${rule}`,
-          steps: [
-            "Choose a default approver who does not prepare runs, or let someone else (or the Payroll Clerk) prepare them.",
-            "Update Approval → Default approver in the Payroll settings and click Save Configuration.",
-          ],
-          agentNext: "Runs sent for approval go to someone who did not prepare them.",
+          detail: `The person chosen to approve pay runs also prepared ${prepared} recent pay run${prepared === 1 ? "" : "s"}, so they cannot approve ${prepared === 1 ? "it" : "those"}. Choose someone else, or let another person or the Payroll Clerk prepare the runs.`,
+          steps: pick,
+          agentNext: "Pay runs sent for approval go to someone who did not prepare them.",
         };
       }
       const list = await members(e, companyId, null);
       if (list.length && approver !== LOCAL_BOARD_USER_ID && !list.some((m) => m.userId === approver)) {
         return {
           status: "missing",
-          detail: `The default approver is not an active member of this company. ${rule}`,
-          steps: ["Copy the user ID of an active board member from Company settings → Members.", "Update Approval → Default approver in the Payroll settings and click Save Configuration."],
-          agentNext: "Runs sent for approval go to this person automatically.",
+          detail: `The person chosen to approve pay runs is no longer a member of this company. ${rule}`,
+          steps: pick,
+          agentNext: "Pay runs sent for approval go to this person automatically.",
         };
       }
-      return { status: "done", detail: rule, agentNext: "Runs sent for approval go to the default approver." };
+      return { status: "done", detail: rule, agentNext: "Pay runs sent for approval go to the chosen approver." };
     }),
   );
 
@@ -279,38 +241,44 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
 
   let version: RuleVersion | null = null;
   items.push(
-    await probe(e, { key: "tax_rules", title: "Payroll rules for this tax year", required: true, href: "/payroll?tab=statutory", hrefLabel: "Open rules" }, async () => {
+    await probe(e, { key: "tax_rules", title: "Tax rules for this tax year", required: true, href: RULES_HREF, hrefLabel: "Open tax rules" }, async () => {
       version = ruleVersionFor(await db.listRuleVersions(ctx), date);
       return version
-        ? { status: "done", detail: `The ${version.taxYear} PAYE, UIF, SDL and ETI rules are loaded.` }
+        ? { status: "done", detail: `The ${version.taxYear} rules for PAYE (income tax), UIF, SDL and ETI are loaded.` }
         : {
             status: "missing",
-            detail: `No payroll rules are loaded for ${taxYearOf(date)}, so pay runs cannot be calculated. Update the Payroll plugin to a version with this year's rules.`,
+            detail: `No tax rules are loaded for ${taxYearOf(date)}, so pay runs cannot be calculated. Update the Payroll plugin to a version with this year's rules.`,
             steps: ["Ask your Paperclip admin to update the Payroll plugin to the latest version."],
           };
     }),
   );
 
   items.push(
-    await probe(e, { key: "rules_review", title: "Have an accountant check the unconfirmed rules", required: false, href: "/payroll?tab=statutory", hrefLabel: "Open rules" }, async () => {
+    // No "Do it for me" action: the check records the accountant's name, entered on the Statutory tab.
+    await probe(e, { key: "rules_review", title: "Have your accountant check the tax rules", required: false, href: RULES_HREF, hrefLabel: "Review rules" }, async () => {
       const v = version ?? ruleVersionFor(await db.listRuleVersions(ctx), date);
-      if (!v) return { status: "blocked", detail: "No payroll rules are loaded for this tax year.", blockedBy: ["tax_rules"] };
-      if (!v.unverified.length) return { status: "done", detail: `Every ${v.taxYear} rule is confirmed.` };
-      const names = v.unverified.map((u) => u.path).join(", ");
-      const reviewed = reviewCovers(await readRulesReview(ctx, companyId), v);
+      if (!v) return { status: "blocked", detail: "No tax rules are loaded for this tax year.", blockedBy: ["tax_rules"] };
+      if (!v.unverified.length) return { status: "done", detail: `Every ${v.taxYear} tax rule is confirmed.` };
+      const names = v.unverified.map((u) => ruleLabel(u.path)).join(", ");
+      const stored = await readRulesReview(ctx, companyId);
+      const review = reviewCovers(stored, v) ? rulesReviewView(stored) : null;
+      if (review) {
+        return {
+          status: "done",
+          detail: review.accountantName
+            ? `Your accountant checked the ${v.taxYear} tax rules on ${readableDate(review.checkedOn)}.`
+            : `The ${v.taxYear} tax rules were marked as checked on ${readableDate(review.checkedOn)}.`,
+        };
+      }
       return {
-        status: reviewed ? "done" : "optional",
-        detail: reviewed
-          ? `Marked as checked for ${v.taxYear}: ${names}.`
-          : `${v.unverified.length} ${v.taxYear} treatment${v.unverified.length === 1 ? " is" : "s are"} not confirmed by SARS yet: ${names}. The figures use them until an accountant says otherwise.`,
-        steps: reviewed
-          ? undefined
-          : [
-              "Open Payroll → Statutory and read the notes on the unconfirmed rules.",
-              "Ask your accountant to check each one against how your company pays staff.",
-              "Once they agree, mark them as checked here.",
-            ],
-        action: reviewed ? null : { plugin: PLUGIN_ID, key: "payroll.review-rules", label: "Mark as checked" },
+        status: "optional",
+        detail: `${rulesCheckText(v.unverified.length)} for ${v.taxYear}: ${names}. Pay runs use them as they are until then.`,
+        steps: [
+          "Open Payroll → Statutory. The tax rules are at the top.",
+          "Ask your accountant to check each rule against how your company pays its staff.",
+          "Enter their name and the date they checked, then click Record the check.",
+        ],
+        agentNext: "Pay runs and approvals stop warning about these rules.",
       };
     }),
   );
@@ -331,15 +299,39 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
             : "Payslips are emailed through the Mailbox's Gmail account. Without it you can still download them.",
         steps: [
           "Open the Mailbox and connect the Gmail account payslips should come from.",
-          "Optionally set Payslip email → Send from in the Payroll settings, and turn on emailing when a run is locked.",
+          "Optionally set Payslip email → Send from in the Payroll settings.",
         ],
-        agentNext: "Payslips are emailed to employees once a run is locked (or when you click Email payslips).",
+        agentNext: "Payslips can be emailed to employees through the Mailbox.",
       };
     }),
   );
 
   items.push(
-    await probe(e, { key: "clerk", title: "Hire the Payroll Clerk (optional agent)", required: false, href: "/payroll", hrefLabel: "Open Payroll" }, async () => {
+    await probe(e, { key: "payslip_email", title: "Email payslips when a run is locked", required: false, ...inSettings }, async () => {
+      if (!config) throw new Error("settings unavailable");
+      const mailboxOn = await isModuleEnabled(ctx, companyId, PIB_PLUGINS.mailbox);
+      if (config.payslipEmail.sendOnLock) {
+        return mailboxOn
+          ? { status: "done", detail: "Each employee with an email address gets their payslip through the Mailbox as soon as the run is locked, and when a payslip is made later." }
+          : { status: "blocked", detail: "Turned on, but the Mailbox module is switched off, so payslips are not emailed. Turn the Mailbox on in Setup.", blockedBy: ["mailbox"] };
+      }
+      return {
+        status: mailboxOn ? "optional" : "blocked",
+        detail: "Off: payslips are made when a run is locked, but only emailed when a board member clicks Email payslips on the run.",
+        steps: [
+          "Open the Payroll settings.",
+          "Under Payslip email, tick Email payslips when a run is locked (set Send from if they should come from a specific Mailbox address).",
+          "Click Save Configuration.",
+        ],
+        ...(mailboxOn ? {} : { blockedBy: ["mailbox"] }),
+        agentNext: "Every locked run's payslips go out by email on their own, including payslips made later by the follow-up job.",
+      };
+    }),
+  );
+
+  items.push(
+    // Staffed in Setup → Team (hire, pick, change, remove).
+    await probe(e, { key: "clerk", title: "Hire the Payroll Clerk (optional agent)", required: false, href: teamSetupPath("payroll-clerk"), hrefLabel: "Open Team in Setup" }, async () => {
       const status = await hireStatus(ctx, companyId, CLERK_ROLE);
       if (status.agent) return { status: "done", detail: "The Payroll Clerk prepares pay runs and checks variances. A board member still approves and locks." };
       const open = status.hire?.status === "open";
@@ -348,6 +340,7 @@ export async function setupStatus(e: Env, companyId: string): Promise<SetupStatu
         detail: open
           ? "A hire request is open. The plugin links the agent when it appears."
           : "An agent can prepare each month's run, enter hours and bonuses, and explain changes against last month. It never approves runs or sees personal details.",
+        steps: open ? undefined : ["Open Setup → Team → Payroll Clerk.", "Hire one (a hire request for your hiring agent or a person), or pick an agent you already have."],
         action: open ? null : { plugin: PLUGIN_ID, key: "payroll.start-hire", label: "Open a hire request" },
         agentNext: "The Payroll Clerk prepares each run and sends it to the approver.",
       };

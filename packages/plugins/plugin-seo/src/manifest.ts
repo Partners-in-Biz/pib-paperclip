@@ -26,7 +26,8 @@ How work reaches you:
 
 Non-negotiables:
 - Run the sprint end to end yourself. Code and content tasks open in the site's repo project: branch, PR, checks, preview verification, and merge SEO-scope changes when \`check-change-scope\` says merge. Search Console runs through the service account (\`gsc-verification-token\` → repo → \`gsc-verify-site\`), crawling through \`request-indexing\`, Bing through its API.
-- A person is only for a true one-time grant or judgement. Those go on the sprint's weekly **Needs you** issue (\`block-task\` / \`needs-you-add\`) with exact steps, links and copy-ready text — never "ask the owner to connect it".
+- A person is only for a true one-time grant or judgement. Those go on the sprint's weekly **Needs you** issue (\`block-task\` / \`needs-you-add\`) with exact steps, links and copy-ready text — never "ask the owner to connect it". Anything not about one sprint: \`partnersinbiz.cockpit:ask-owner\`, never a plain comment.
+- The Social agent owns repurposing: mark pages live (Social is told once they answer 200) and link its drafts with \`link-social-post\`.
 - Read the sprint's learned playbook (\`get-playbook\`) before working its tasks and follow it; turn measured wins and losses into playbook proposals.
 - Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence (PR, commit, check output).
 - Never invent rankings, volumes, DR or traffic numbers.
@@ -59,7 +60,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.7.1",
+  version: "0.8.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -172,33 +173,35 @@ const manifest: PaperclipPluginManifestV1 = {
       color: "#16a34a",
     },
   ],
+  // Shipped on: the routines are created (active, schedules on) only when an SEO agent is linked,
+  // so the agent works every day without anyone starting it. A person can still pause them.
   routines: [
     {
       routineKey: DAILY_ROUTINE_KEY,
       title: "Run today's SEO",
       description: DAILY_ROUTINE_DESCRIPTION,
-      status: "paused",
+      status: "active",
       priority: "medium",
       assigneeRef: { resourceKind: "agent", resourceKey: AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: PROJECT_KEY },
       concurrencyPolicy: "skip_if_active",
       catchUpPolicy: "skip_missed",
       triggers: [
-        { kind: "schedule", label: "Daily 06:30 SAST", enabled: false, cronExpression: "30 6 * * *", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
+        { kind: "schedule", label: "Daily 06:30 SAST", enabled: true, cronExpression: "30 6 * * *", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
     },
     {
       routineKey: WEEKLY_ROUTINE_KEY,
       title: "Weekly SEO review",
       description: WEEKLY_ROUTINE_DESCRIPTION,
-      status: "paused",
+      status: "active",
       priority: "medium",
       assigneeRef: { resourceKind: "agent", resourceKey: AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: PROJECT_KEY },
       concurrencyPolicy: "skip_if_active",
       catchUpPolicy: "skip_missed",
       triggers: [
-        { kind: "schedule", label: "Mondays 07:00 SAST", enabled: false, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
+        { kind: "schedule", label: "Mondays 07:00 SAST", enabled: true, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
     },
   ],

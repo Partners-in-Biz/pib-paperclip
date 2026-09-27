@@ -2,7 +2,8 @@
  * Publishes CRM companies and contacts to the other PiB plugins.
  *
  * Other plugins may not read this schema, so they keep a projection fed by
- * `plugin.partnersinbiz.crm.{company,contact}.{upserted,deleted}` events.
+ * `plugin.partnersinbiz.crm.{company,contact}.{upserted,deleted}` events
+ * (deletes are hand-offs, re-sent hourly for a day: see handoffs.ts).
  * Event delivery is at-most-once, so changes are emitted right after a
  * mutation, again by a 15-minute job for the last 30 minutes, nightly in
  * full, and on demand through the `crm.resync` action. Consumers upsert
@@ -11,6 +12,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { CrmCompanyEvent, CrmContactEvent } from "@partnersinbiz/pib-plugin-kit";
 import { asStringList, table } from "./db.js";
+import { sendHandoff } from "./handoffs.js";
 
 interface CompanyEventRow {
   id: string;
@@ -86,8 +88,9 @@ export async function emitChanges(
   return { companies: companies.length, contacts: contacts.length };
 }
 
+/** A merged-away contact. Recorded as a hand-off so it is re-sent for a day (delivery is at most once). */
 export async function emitContactDeleted(ctx: PluginContext, companyId: string, contactId: string): Promise<void> {
-  await ctx.events.emit("contact.deleted", companyId, { id: contactId });
+  await sendHandoff(ctx, companyId, "contact.deleted", { key: `contact:${contactId}:deleted`, id: contactId });
 }
 
 /** Every Paperclip company that has CRM rows. Jobs use this instead of companies.list. */
@@ -121,4 +124,10 @@ export const CRM_MUTATIONS = new Set([
   "crm.update-contact",
   "crm.link-contact",
   "crm.set-human-owned",
+  "crm.delete-company",
+  // A won deal makes its client a customer: share the new lifecycle now.
+  "move-deal",
+  "crm.move-deal",
+  "update-deal",
+  "crm.update-deal",
 ]);

@@ -93,7 +93,7 @@ describe("task tools", () => {
   it("refuses status-only directory completion and accepts real work", async () => {
     const dirTask = taskRow({ task_type: "directory-submission", autopilot_eligible: true, template_key: "w9-directories" });
     const blocked = fakeHost(routes(dirTask, { dirs: 6 }));
-    await expect(completeTask(blocked.env, "co-1", agent, { taskId: "t-1", summary: "done" })).rejects.toThrow(/6 directory/);
+    await expect(completeTask(blocked.env, "co-1", agent, { taskId: "t-1", summary: "done" })).rejects.toThrow(/6 directories or citations/);
     const ok = fakeHost(routes(dirTask, { dirs: 0 }));
     const result = await completeTask(ok.env, "co-1", agent, { taskId: "t-1", summary: "All 15 handled", links: ["https://g2.com/x"] });
     expect(result).toMatchObject({ status: "done", issueClosed: true });

@@ -188,10 +188,10 @@ describe("resolveAgent", () => {
   it("prefers the linked agent and falls back to the legacy managed agent", async () => {
     const legacyMeta = { paperclipManagedResource: { pluginKey: "partnersinbiz.seo", resourceKind: "agent", resourceKey: "seo-specialist" } };
     const { env, ctx } = await boot({ agents: [{ id: "legacy", name: "SEO Specialist", status: "paused", metadata: legacyMeta }, { id: "sam", name: "Sam" }] });
-    expect(await resolveAgent(env, "co-1")).toEqual({ id: "legacy", status: "paused" });
+    expect(await resolveAgent(env, "co-1")).toEqual({ id: "legacy", status: "paused", name: "SEO Specialist" });
 
     await linkAgent(ctx, "co-1", SEO_ROLE, "sam", { by: "manual", userId: null, onLinked: seoOnLinked(env) });
-    expect(await resolveAgent(env, "co-1")).toEqual({ id: "sam", status: "idle" });
+    expect(await resolveAgent(env, "co-1")).toEqual({ id: "sam", status: "idle", name: "Sam" });
   });
 
   it("returns null when there is neither", async () => {

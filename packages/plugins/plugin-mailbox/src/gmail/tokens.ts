@@ -3,7 +3,7 @@
  * on a dead grant move the account to needs_reconnect with one reconnect
  * issue for the person who connected it.
  */
-import { buildKeyring, createWorkIssue, openJson, sealJson, sealedVersion, TokenKeyError, type TokenKeyring } from "@partnersinbiz/pib-plugin-kit";
+import { buildKeyring, companyRoles, createWorkIssue, openJson, sealJson, sealedVersion, TokenKeyError, type TokenKeyring } from "@partnersinbiz/pib-plugin-kit";
 import type { LoadedConfig } from "../config.js";
 import { GmailUnavailable, MailboxError } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -149,7 +149,8 @@ export async function markNeedsReconnect(env: Env, loaded: LoadedConfig, account
       companyId: loaded.companyId,
       title: `Reconnect Gmail: ${account.address}`,
       description: reconnectIssueDescription(account.address, error),
-      assigneeUserId: account.connected_by_user_id ?? account.owner_user_id ?? undefined,
+      // Only the Google account's owner can reconnect it; else the company owner finds out who.
+      assigneeUserId: account.connected_by_user_id ?? account.owner_user_id ?? (await companyRoles(env.ctx, loaded.companyId).catch(() => null))?.ownerUserId ?? undefined,
       originKind: `plugin:${PLUGIN_ID}`,
       originId: `reconnect:${account.id}`,
       priority: "high",

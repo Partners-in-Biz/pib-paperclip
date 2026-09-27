@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatMoneyMinor } from "@partnersinbiz/pib-plugin-kit";
 
 export class BillingError extends Error {
   constructor(message: string) {
@@ -183,17 +184,35 @@ export interface InvoiceHtmlInput {
   totals?: { subtotalMinor: number; vatMinor: number; totalMinor: number };
 }
 
-/** Minor units as money in the document's currency, e.g. `ZAR 12,400.00`. Used on printed invoices and summaries. */
+/**
+ * Minor units as money, the way every PiB page shows it: `R 12,400.00` for
+ * rand, `$1,200.00`, `€`, `£`, else the currency code (`CHF 1,200.00`). Used
+ * on printed invoices, emails, issues and the CRM summary.
+ */
 export function formatMoney(amountMinor: number, currency: string): string {
-  return money(amountMinor, currency);
+  return formatMoneyMinor(amountMinor, String(currency || "ZAR").toUpperCase());
 }
 
 function money(amountMinor: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amountMinor / 100);
-  } catch {
-    return `${currency} ${(amountMinor / 100).toFixed(2)}`;
-  }
+  return formatMoney(amountMinor, currency);
+}
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** `2026-09-14` or an ISO time → `14 Sep 2026` (the calendar day in UTC); `–` when empty. The worker's `formatDate`. */
+export function dayText(value: string | Date | null | undefined): string {
+  if (value == null || value === "") return "–";
+  const text = value instanceof Date ? value.toISOString() : String(value);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(text) ?? /^(\d{4})-(\d{2})-(\d{2})/.exec(new Date(text).toISOString());
+  if (!m) return "–";
+  return `${Number(m[3])} ${MONTH_NAMES[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+/** `14 Sep` (with the year only when it is not `now`'s year). */
+export function shortDayText(value: string | Date | null | undefined, now: Date = new Date()): string {
+  const full = dayText(value);
+  const year = String(now.getUTCFullYear());
+  return full.endsWith(` ${year}`) ? full.slice(0, -(year.length + 1)) : full;
 }
 
 function esc(value: unknown): string {
@@ -463,14 +482,18 @@ export function isOverdueInvoice(invoice: SummaryInvoice, now: Date): boolean {
 }
 
 /**
- * One client's billing at a glance: outstanding per currency, overdue
- * invoices, open quotes (draft or sent) and the last payment date.
+ * One client's billing at a glance, "as at today": outstanding per currency,
+ * overdue invoices, open quotes (draft or sent) and the last payment date.
+ * Feed it balances as at today (a payment dated later is not in `paidMinor`)
+ * so it shows the same figure as the Billing page and the Cockpit.
  */
 export function clientBillingSummary(input: {
   invoices: SummaryInvoice[];
   quotes: Array<{ status: string }>;
   now: Date;
   defaultCurrency?: string;
+  /** The day the figures are for (`YYYY-MM-DD`); the headline says "as at 27 Sep". */
+  asOf?: string;
 }): ClientSummary {
   const owed = new Map<string, number>();
   for (const invoice of input.invoices) {
@@ -485,10 +508,11 @@ export function clientBillingSummary(input: {
     .filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value!)))
     .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
   const currency = input.invoices[0]?.currency ?? input.defaultCurrency ?? "ZAR";
+  const asAt = input.asOf ? ` as at ${shortDayText(input.asOf, input.now)}` : "";
   const headline = outstanding
-    ? `${outstanding} outstanding`
+    ? `${outstanding} outstanding${asAt}`
     : input.invoices.length > 0
-      ? "Nothing outstanding"
+      ? `Nothing outstanding${asAt}`
       : "No invoices";
   return {
     headline,
@@ -496,7 +520,7 @@ export function clientBillingSummary(input: {
       { label: "Outstanding", value: outstanding || formatMoney(0, currency), ...(outstanding ? {} : input.invoices.length > 0 ? { tone: "ok" as const } : {}) },
       { label: "Overdue invoices", value: overdue, tone: overdue > 0 ? "bad" : "ok" },
       { label: "Open quotes", value: openQuotes },
-      { label: "Last paid", value: lastPaid ? new Date(Date.parse(lastPaid)).toISOString().slice(0, 10) : "Never" },
+      { label: "Last paid", value: lastPaid ? shortDayText(lastPaid, input.now) : "Never" },
     ],
   };
 }

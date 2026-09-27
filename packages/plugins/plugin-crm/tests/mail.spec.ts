@@ -123,7 +123,11 @@ async function boot(options: { jev?: boolean; store?: Store } = {}) {
     manifest,
     config: { timezone: "Africa/Johannesburg", ...(options.jev === false ? {} : { jev: { apiKey: "test-key" } }) },
   });
-  harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never] });
+  harness.seed({
+    companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never],
+    // Ada's own agent is running, so her work stays with it.
+    agents: [{ id: "agent-ada", companyId: CO, name: "Ada's agent", status: "idle" } as never],
+  });
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
     coreReadTables: ["heartbeat_runs", "issues"],
@@ -255,14 +259,18 @@ describe("replies from the Mailbox", () => {
     expect(issue).toMatchObject({ title: "Reply from Bob Builder: Price?", assigneeUserId: "user-bob" });
   });
 
-  it("unsubscribe stops every sequence, marks the email and tags the contact", async () => {
-    const { harness, store } = await bootWithEnrollments({ choice: "unsubscribe", confidence: 0.95 });
+  it("unsubscribe stops every sequence, marks the email, tags the contact and tells Campaigns and the Mailbox", async () => {
+    const { harness, store, emit } = await bootWithEnrollments({ choice: "unsubscribe", confidence: 0.95 });
     await receive(harness, mail({ snippet: "Please remove me from your list" }));
     expect(store.enrollments!.filter((row) => row.contact_id === "ada").every((row) => row.status === "stopped")).toBe(true);
     const ada = store.contacts!.find((row) => row.id === "ada")!;
     expect(ada.email_status).toBe("unsubscribed");
     expect(ada.tags).toEqual(["hot", "unsubscribed"]);
     expect(await issues(harness)).toHaveLength(0);
+    expect(emit).toHaveBeenCalledWith("contact.suppressed", CO, expect.objectContaining({
+      key: "suppress:ada@acme.test:unsubscribed", email: "ada@acme.test", reason: "unsubscribed", scope: "marketing", source: "partnersinbiz.crm", clientKind: "contact", clientRef: "ada",
+    }));
+    expect(store.handoffs).toHaveLength(1);
   });
 
   it("out of office pushes the next step by five days and keeps the sequence running", async () => {
@@ -300,6 +308,19 @@ describe("replies from the Mailbox", () => {
     expect(store.enrollments!.find((row) => row.id === "e-mail")!.status).toBe("stopped");
   });
 
+  it("a bounce names the failed address: that one is suppressed for all email", async () => {
+    const { harness, emit } = await bootWithEnrollments({ choice: "bounce", confidence: 0.97 });
+    await receive(harness, mail({
+      from: { email: "mailer-daemon@googlemail.com" },
+      subject: "Delivery Status Notification (Failure)",
+      snippet: "Address not found",
+      bounce: { recipients: ["Ada@Acme.test"], rfcIds: [] },
+      replyTo: { plugin: "partnersinbiz.crm", kind: "sequence_step", id: "e-mail", clientKind: "contact", clientRef: "ada" },
+    }));
+    const suppressed = emit.mock.calls.filter(([name]) => name === "contact.suppressed").map(([, , payload]) => payload);
+    expect(suppressed).toEqual([expect.objectContaining({ email: "ada@acme.test", reason: "bounced", scope: "all" })]);
+  });
+
   it("other replies go to the owner to decide", async () => {
     const { harness, store } = await bootWithEnrollments({ choice: "other", confidence: 0.9 });
     await receive(harness, mail({ snippet: "Please talk to my colleague Joe" }));
@@ -325,7 +346,7 @@ describe("replies from the Mailbox", () => {
     expect(store.activities!.some((row) => row.kind === "email_received")).toBe(true);
     expect(store.enrollments!.every((row) => row.status === "running")).toBe(true);
     const [issue] = await issues(harness);
-    expect(issue!.description).toMatch(/Jev is not set up/);
+    expect(issue!.description).toMatch(/Smart sorting is not set up/);
     expect(issue!.assigneeAgentId).toBe("agent-ada");
   });
 
@@ -376,7 +397,7 @@ describe("lead scoring", () => {
     expect(leadLevelLabel("urgency", 0.9)).toBe("Later");
   });
 
-  it("keeps the rule score when Jev is not set up", async () => {
+  it("keeps the rule score when Smart sorting is not set up", async () => {
     const jev = stubJev({});
     const { harness } = await boot({ jev: false });
     const result = await harness.performAction<Record<string, any>>("crm.score-contact", { contactId: "ada" }, { companyId: CO, actor: BOARD });
@@ -429,11 +450,13 @@ describe("sequence email", () => {
     expect(emit).not.toHaveBeenCalledWith("mail.send.requested", expect.anything(), expect.anything());
     expect((await issues(harness)).length).toBe(1);
 
-    // An agent closing the approval issue does not count.
+    // An agent closing the approval issue does not count: it is reopened for a person.
     harness.seed({ issues: [{ ...approval, status: "done" }] });
     await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "agent", actorId: "agent-x" });
     expect(store.sequences!.find((row) => row.id === "seq-intro")!.email_approved_at).toBeNull();
+    expect((await harness.ctx.issues.get(approval.id, CO))!.status).toBe("todo");
 
+    harness.seed({ issues: [{ ...approval, status: "done" }] });
     await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "user", actorId: "user-peet" });
     expect(store.sequences!.find((row) => row.id === "seq-intro")).toMatchObject({ email_approved_by: "user:user-peet" });
     expect(store.sequences!.find((row) => row.id === "seq-intro")!.email_approved_at).toBeTruthy();
@@ -459,6 +482,8 @@ describe("sequence email", () => {
       context: { plugin: "partnersinbiz.crm", kind: "sequence_step", id: "e1", clientKind: "contact", clientRef: "ada" },
     });
     expect(row.payload.html).toBe("<p>Hello Ada,</p>\n<p>We build websites for Acme Plumbing.</p>");
+    // Sequence email is marketing: the Mailbox skips suppressed addresses and adds List-Unsubscribe.
+    expect(row.payload.marketing).toBe(true);
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith("mail.send.requested", CO, expect.objectContaining({ key: "crm:seq:e1:1" }));
     expect(store.enrollments![0]!.sending_key).toBe("crm:seq:e1:1");

@@ -12,6 +12,7 @@ import {
   COCKPIT_ROUTE,
   linkAgent,
   publishSetupStatus,
+  redeliver,
   registerRoleWatch,
   trackJob,
   registerCrmProjection,
@@ -30,7 +31,7 @@ import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
 import { cockpitSnapshot, publishCockpitSnapshots } from "./cockpit.js";
 import { registerHandoffs } from "./handoff.js";
-import { SOCIAL_HIRE_ROLE } from "./hire.js";
+import { SOCIAL_HIRE_ROLE, SOCIAL_MATCH_ROLE } from "./hire.js";
 import { pollInboxJob } from "./inbox.js";
 import {
   abandonExperiment,
@@ -55,12 +56,14 @@ import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
+import { PLAN_ROUTINE_KEY } from "./platforms.js";
+import { saveRoutineReport } from "./routine-state.js";
 import { pollRssJob } from "./rss.js";
 import {
   accountAnalyticsRecord,
   attachDestination,
   bulkSchedule,
-  connectInstructions,
+  connectAccountRecord,
   createPostRecord,
   createRssFeedRecord,
   createTemplateRecord,
@@ -156,7 +159,7 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       } catch {
         redirectUri = null;
       }
-      return connectInstructions(requiredString(p, "platform"), redirectUri);
+      return connectAccountRecord(ctx, viewer, p, redirectUri);
     }
     case "refresh-account":
       return refreshAccountRecord(ctx, viewer, requiredString(p, "accountId"));
@@ -381,6 +384,11 @@ const ACTIONS: Record<string, ActionHandler> = {
     requireUser(v, "sync skills");
     return { results: await bootstrap!.skills.force(v.companyId) };
   },
+  // The page (a board user) read the weekly routine's triggers from the host; the worker cannot.
+  "social.routine-report": (ctx, v, p) => {
+    requireUser(v, "report the routine's schedule");
+    return saveRoutineReport(ctx, v.companyId, PLAN_ROUTINE_KEY, p);
+  },
 };
 
 // ── API routes ──────────────────────────────────────────────────────────────
@@ -498,10 +506,13 @@ const plugin = definePlugin({
     registerJob(ctx, "poll-rss", () => pollRssJob(ctx));
     registerJob(ctx, "score-posts", () => scorePostsJob(ctx, ensure));
     registerJob(ctx, "measure-experiments", () => measureExperimentsJob(ctx, ensure));
+    // Leads the CRM has not answered yet are re-sent with backoff (kit outbox).
+    registerJob(ctx, "redeliver", () => redeliver(ctx));
 
-    registerHireWatch(ctx, [{ role: SOCIAL_HIRE_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
+    // Matching leaves out the operating manual every PiB agent carries (see SOCIAL_MATCH_ROLE).
+    registerHireWatch(ctx, [{ role: SOCIAL_MATCH_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
     registerModuleWatch(ctx);
-    // Cockpit roles (Operator, Reviewer) and hand-offs (SEO content → repurpose task).
+    // Cockpit roles (Operator, Reviewer) and hand-offs (SEO content → repurpose task; the CRM's answers to leads).
     registerRoleWatch(ctx);
     registerHandoffs(ctx);
     ctx.events.on("company.created", async (event) => {

@@ -14,8 +14,10 @@ import {
   parseSnapshot,
   pluginEnabled,
   setupMissingCount,
+  shownIssueIds,
   staleChecks,
   todayLine,
+  unassignedWaiting,
   type AgentLite,
 } from "../src/merge.js";
 import { backupInfo, buildView, pickSnapshots, type LoadResult } from "../src/view.js";
@@ -70,11 +72,30 @@ describe("waiting on you", () => {
       ],
       myIssues: [{ id: "i1", title: "Pay the VAT", status: "blocked" }, { id: "i2", title: "Done thing", status: "done" }],
       setupMissing: 3,
+      setupIssueId: "finish-1",
     });
-    expect(items.map((i) => [i.key, i.kind])).toEqual([["host-approval:a1", "money"], ["host-approval:a2", "grant"], ["issue:i1", "money"], ["setup:missing", "grant"]]);
-    expect(items[0]!.title).toBe("Budget override needed: SEO");
-    expect(items[0]!.href).toBe("/approvals/a1");
-    expect(items[3]).toMatchObject({ title: "Finish setup: 3 required items", href: "/setup" });
+    // Setup first, carrying the Finish setup issue, so that issue is not listed a second time.
+    expect(items.map((i) => [i.key, i.kind])).toEqual([["setup:missing", "grant"], ["host-approval:a1", "money"], ["host-approval:a2", "grant"], ["issue:i1", "money"]]);
+    expect(items[1]!.title).toBe("Budget override needed: SEO");
+    expect(items[1]!.href).toBe("/approvals/a1");
+    // Kit wording: the same number and words as the Setup page and its sidebar badge.
+    expect(items[0]).toMatchObject({ title: "Finish setup: 3 steps left", href: "/setup", issueId: "finish-1" });
+    expect(hostWaiting({ setupMissing: 1 })[0]!.title).toBe("Finish setup: 1 step left");
+  });
+
+  it("lists the Finish setup issue once, and never an issue twice (its own row and again among the unassigned)", () => {
+    const merged = mergeWaiting([
+      { source: "partnersinbiz.billing", items: [{ key: "approval:1", title: "Approve sending invoice", why: "w", kind: "review", issueId: "iss-approve", href: "/issues/PIB-1" }] },
+      { source: "unassigned", items: unassignedWaiting({ count: 3, items: [{ id: "iss-approve", identifier: "PIB-1", title: "Approve sending invoice" }, { id: "iss-2", identifier: "PIB-2", title: "Fix the title tag" }, { id: "iss-3", identifier: "PIB-4", title: "Reach out" }] }, new Set(["iss-approve"])) },
+      { source: "host", items: hostWaiting({ setupMissing: 16, setupIssueId: "iss-finish", myIssues: [{ id: "iss-finish", identifier: "PIB-25", title: "Finish setup: 16 steps left", status: "todo" }] }) },
+    ]);
+    expect(merged.map((m) => m.key).sort()).toEqual(["approval:1", "setup:missing", "unassigned-issues"]);
+    const unassigned = merged.find((m) => m.key === "unassigned-issues")!;
+    expect(unassigned.title).toBe("2 open issues have nobody assigned");
+    expect(unassigned.examples!.map((e) => e.title)).toEqual(["PIB-2 Fix the title tag", "PIB-4 Reach out"]);
+    // Only the approval was unassigned: nothing left to count.
+    expect(unassignedWaiting({ count: 1, items: [{ id: "iss-approve", title: "x" }] }, new Set(["iss-approve"]))).toEqual([]);
+    expect(shownIssueIds([{ items: [{ key: "k", title: "t", why: "w", kind: "other", issueId: "a" }, { key: "k2", title: "t", why: "w", kind: "other" }] }])).toEqual(new Set(["a"]));
   });
 
   it("counts missing required setup items of switched-on modules only", () => {
@@ -124,8 +145,10 @@ describe("stale plugins", () => {
 describe("agents and budgets", () => {
   it("alerts at 80% of the monthly budget and on error", () => {
     expect(agentAlert(agent("a", { budgetMonthlyCents: 3000, spentMonthlyCents: 2399 })).alert).toBeNull();
-    expect(agentAlert(agent("a", { budgetMonthlyCents: 3000, spentMonthlyCents: 2400 }))).toEqual({ alert: "budget", text: "Used 80% of its $30.00 monthly budget ($24.00)." });
-    expect(agentAlert(agent("a", { status: "error", errorReason: "model key invalid" }))).toEqual({ alert: "error", text: "In error: model key invalid" });
+    expect(agentAlert(agent("a", { budgetMonthlyCents: 3000, spentMonthlyCents: 2400 }))).toEqual({ alert: "budget", text: "Used 80% of its $30.00 monthly budget ($24.00).", raw: null });
+    // The adapter's own text never leads: plain words, the raw text kept for Details.
+    expect(agentAlert(agent("a", { status: "error", errorReason: "Hermes exited with code 1" }))).toEqual({ alert: "error", text: "Stopped with an error.", raw: "Hermes exited with code 1" });
+    expect(agentAlert(agent("a", { status: "error" }))).toEqual({ alert: "error", text: "Stopped with an error.", raw: null });
     expect(agentAlert(agent("a", { budgetMonthlyCents: 0, spentMonthlyCents: 9999 })).alert).toBeNull();
     const health = agentHealth([agent("over", { budgetMonthlyCents: 1000, spentMonthlyCents: 1200 }), agent("near", { budgetMonthlyCents: 1000, spentMonthlyCents: 850 }), agent("gone", { status: "terminated", budgetMonthlyCents: 10, spentMonthlyCents: 100 })]);
     expect(health.map((h) => [h.key, h.status])).toEqual([["agent:budget:over", "bad"], ["agent:budget:near", "warn"]]);

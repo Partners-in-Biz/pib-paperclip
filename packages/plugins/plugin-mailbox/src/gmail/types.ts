@@ -103,6 +103,8 @@ export interface DraftExtras {
   html?: string | null;
   replyToMessageId?: string | null;
   threadId?: string | null;
+  /** Who saved the draft: an agent (tool or action) or a person on the Mailbox page. */
+  by?: { kind: "agent" | "user"; id: string } | null;
 }
 
 export interface NewGmailMessage {
@@ -136,6 +138,38 @@ export interface NewGmailMessage {
 
 export type SendStatus = "sending" | "sent" | "failed" | "retrying";
 
+export type SuppressionScope = "marketing" | "all";
+export type SuppressionReasonKey = "unsubscribed" | "bounced" | "complained" | "manual";
+
+/** An address the Mailbox will not email: marketing only, or (after a hard bounce) at all. */
+export interface SuppressionRow {
+  company_id: string;
+  email: string;
+  scope: SuppressionScope;
+  reason: SuppressionReasonKey;
+  /** The plugin that saw it (`partnersinbiz.mailbox`, `.crm`, `.campaigns`). */
+  source: string;
+  detail: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SuppressionInput {
+  companyId: string;
+  email: string;
+  scope: SuppressionScope;
+  reason: SuppressionReasonKey;
+  source: string;
+  detail?: string | null;
+}
+
+/** A recipient a send left out because it is on the list. */
+export interface SkippedRecipient {
+  email: string;
+  scope: SuppressionScope;
+  reason: SuppressionReasonKey;
+}
+
 export interface SendRow {
   key: string;
   company_id: string;
@@ -157,6 +191,8 @@ export interface SendRow {
   sent_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Recipients left out because they are on the do-not-email list. */
+  skipped?: SkippedRecipient[] | null;
 }
 
 export interface SendRecordInput {

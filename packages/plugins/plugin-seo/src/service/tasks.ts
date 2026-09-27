@@ -41,7 +41,7 @@ import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { resolveAgent } from "./agent.js";
 import { addNeedsYou } from "./needs-you.js";
-import { publishTaskDone } from "./handoff.js";
+import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
 
@@ -225,8 +225,10 @@ export async function onIssueUpdated(env: Env, companyId: string, issueId: strin
   if (!issue) return;
   const result = await syncTaskFromIssue(env, task, { id: issue.id, status: String(issue.status), identifier: issue.identifier ?? null });
   if (result.changed && result.status === "done" && task.status !== "done") {
-    await followUpApprovedPr(env, task);
-    await publishTaskDone(env, companyId, task.id);
+    // A sign-off approved with a PR is not live yet: Social is told once the merge task is done and the page answers 200.
+    const mergeTaskId = await followUpApprovedPr(env, task);
+    await publishTaskDone(env, companyId, task.id, mergeTaskId);
+    await releaseAnnouncements(env, companyId, task.id);
   }
 }
 
@@ -240,22 +242,24 @@ export function approvedPrLinks(task: Pick<db.SprintTask, "evidence">): string[]
 /**
  * A person approved a sign-off task by closing its issue. When the hand-off
  * carried a PR, the agent gets a follow-up task to merge it and re-check
- * production (the person never has to merge).
+ * production (the person never has to merge). Returns the merge task's id.
  */
-async function followUpApprovedPr(env: Env, task: db.SprintTask): Promise<void> {
+async function followUpApprovedPr(env: Env, task: db.SprintTask): Promise<string | null> {
   const prs = approvedPrLinks(task);
-  if (prs.length === 0) return;
+  if (prs.length === 0) return null;
   try {
-    await addTask(env, task.companyId, { kind: "system" }, {
+    const created = await addTask(env, task.companyId, { kind: "system" }, {
       sprintId: task.sprintId,
       title: `Merge the approved PR: ${task.title}`.slice(0, 240),
-      description: `The owner approved "${task.title}" (issue closed). Merge ${prs.join(", ")} once its checks are green (the approval covers the content), wait for the deploy, re-check production and complete this task with the evidence.`,
+      description: `The owner approved "${task.title}" (issue closed). Merge ${prs.join(", ")} once its checks are green (the approval covers the content), wait for the deploy, re-check production and complete this task with the evidence, including the live page URL. Social is told about the page once this task is done and the page answers 200.`,
       taskType: "code-fix",
       owner: "agent",
       autopilotEligible: true,
     });
+    return created.taskId;
   } catch (error) {
     env.ctx.logger.info("SEO approved-PR follow-up not created", { taskId: task.id, error: errorMessage(error) });
+    return null;
   }
 }
 
@@ -367,7 +371,7 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
         "This task needs the owner's sign-off in safe mode. Call block-task with review: true, a clear humanAsk and your links; the owner completes it by marking the issue done.",
       );
     }
-    const blocker = completionBlocker(task.taskType, await db.completionFacts(env.ctx.db, sprint.id));
+    const blocker = completionBlocker(task.taskType, await db.completionFacts(env.ctx.db, sprint.id), task.templateKey);
     if (blocker) throw new SeoError(blocker);
   }
   const now = new Date().toISOString();
@@ -388,8 +392,14 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
       await db.updateTask(env.ctx.db, companyId, task.id, { issue_status: "done" });
     }
   }
-  await publishTaskDone(env, companyId, task.id);
-  return { ...taskView({ ...task, status: "done", completedAt: now }), issueClosed };
+  // Social hears about a published page only once it answers 200; a merge task releases what waited for it.
+  const announcement = await publishTaskDone(env, companyId, task.id);
+  await releaseAnnouncements(env, companyId, task.id);
+  return {
+    ...taskView({ ...task, status: "done", completedAt: now }),
+    issueClosed,
+    ...(announcement ? { socialHandOff: { status: announcement.status, reason: announcement.reason } } : {}),
+  };
 }
 
 export async function blockTask(env: Env, companyId: string, actor: Actor, params: Params) {

@@ -131,16 +131,28 @@ describe("overrides", () => {
   });
 });
 
-describe("agent tool grant", () => {
+describe("agent tool grant (kit mergePluginToolsGrant)", () => {
   it("adds the plugin tools grant once and keeps existing grants", () => {
     const existing = [{ permissionKey: "tasks:assign", scope: null }];
     const first = mergeToolsGrant(existing);
-    expect(first.added).toBe(true);
+    expect(first.changed).toBe(true);
     expect(first.grants).toEqual([{ permissionKey: "tasks:assign", scope: null }, TOOLS_GRANT]);
     const again = mergeToolsGrant(first.grants);
-    expect(again.added).toBe(false);
+    expect(again.changed).toBe(false);
     expect(again.grants).toHaveLength(2);
-    expect(mergeToolsGrant([{ permissionKey: "tools:use", scope: null }]).added).toBe(false);
+    expect(mergeToolsGrant([{ permissionKey: "tools:use", scope: null }]).changed).toBe(false);
+  });
+
+  it("widens an existing tools grant instead of adding a second one (the host keeps one per agent)", () => {
+    const merged = mergeToolsGrant([{ permissionKey: "tools:use", scope: { providerType: "paperclip_self" } }]);
+    expect(merged.grants.filter((g) => g.permissionKey === "tools:use")).toEqual([{ permissionKey: "tools:use", scope: { providerTypes: ["paperclip_self", "paperclip_plugin"] } }]);
+    expect(merged).toMatchObject({ changed: true, conflict: null });
+  });
+
+  it("never widens a grant limited to named tools: a person decides", () => {
+    const merged = mergeToolsGrant([{ permissionKey: "tools:use", scope: { tools: ["paperclip:create-issue"] } }]);
+    expect(merged.changed).toBe(false);
+    expect(merged.conflict).toContain("limited to");
   });
 });
 

@@ -12,11 +12,13 @@
     "./setup-client": "./src/setup-client.ts",
     "./setup": "./src/setup.ts",
     "./cockpit": "./src/cockpit.ts",
-    "./agent-client": "./src/agent-client.ts"
+    "./agent-client": "./src/agent-client.ts",
+    "./team": "./src/team.ts"
   },
   "scripts": {
-    "test": "vitest run --config ./vitest.config.ts",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test:contract": "vitest run --config ./vitest.contract.config.ts"
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",

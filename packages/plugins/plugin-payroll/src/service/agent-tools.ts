@@ -7,13 +7,15 @@ import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import type { Actor } from "../domain.js";
 import { PayrollError } from "../money.js";
+import { withRuleLabels } from "../rule-labels.js";
 import { ruleVersionFor, taxYearOf } from "../rules.js";
 import { assertMaskedOutput } from "../tools.js";
 import { employeeSummary } from "./employees.js";
 import { errorMessage, optStr, reqStr, today, type Env } from "./env.js";
 import { balancesFor, leaveView, loadLeaveData, requestLeave } from "./leave.js";
+import { rulesReviewState } from "./rules-review.js";
 import { adjustItem, calculateRun, createRun, requestApproval, runDetail, runSummary, runVariances } from "./runs.js";
-import { emp201 } from "./statutory.js";
+import { emp201, emp501 } from "./statutory.js";
 
 // ---------------------------------------------------------------------------
 // Agent tools
@@ -79,6 +81,20 @@ export async function dispatchTool(e: Env, name: string, companyId: string, acto
     case "emp201-summary":
       // Figures only: the employer's SARS reference numbers stay on the board page.
       return { emp201: (await emp201(e, companyId, params)).emp201 };
+    case "emp501-summary": {
+      // Company totals only (no certificate rows or personal details).
+      const period = params.period === "annual" ? "annual" : "interim";
+      const result = await emp501(e, companyId, { taxYear: optStr(params, "taxYear", 7) ?? taxYearOf(today(e)), period });
+      return {
+        taxYear: result.taxYear,
+        period: result.period,
+        months: result.months.map((m) => ({ month: m.month, totalPayableMinor: m.totalPayableMinor, runs: m.runs })),
+        declared: result.declared,
+        certificates: result.certificates,
+        difference: result.difference,
+        reconciled: result.reconciled,
+      };
+    }
     default:
       throw new PayrollError(`Unknown payroll tool ${name}`);
   }
@@ -99,7 +115,7 @@ export async function rulesView(e: Env, taxYear: string) {
   return {
     taxYear,
     available: versions.map((v) => ({ id: v.id, taxYear: v.taxYear, version: v.version, unverified: v.unverified.length })),
-    version: version ? { id: version.id, taxYear: version.taxYear, effectiveFrom: version.effectiveFrom, effectiveTo: version.effectiveTo, rules: version.rules, sources: version.sources, unverified: version.unverified, notes: version.notes, contentHash: version.contentHash } : null,
+    version: version ? { id: version.id, taxYear: version.taxYear, effectiveFrom: version.effectiveFrom, effectiveTo: version.effectiveTo, rules: version.rules, sources: version.sources, unverified: withRuleLabels(version.unverified), notes: version.notes, contentHash: version.contentHash } : null,
   };
 }
 
@@ -120,11 +136,12 @@ export async function overview(e: Env, companyId: string, board: boolean, meUser
   const date = today(e);
   const versions = await db.listRuleVersions(ctx);
   const version = ruleVersionFor(versions, date);
-  const [runs, employees, pendingLeave, terms] = await Promise.all([
+  const [runs, employees, pendingLeave, terms, rulesCheck] = await Promise.all([
     db.listRuns(ctx, companyId, 24),
     db.listEmployees(ctx, companyId, { status: "active" }),
     db.listLeave(ctx, companyId, { status: "pending" }),
     db.termsOn(ctx, companyId, date),
+    rulesReviewState(e, companyId),
   ]);
   const open = runs.filter((r) => ["draft", "calculated", "pending_approval", "approved"].includes(r.status));
   const lastLocked = runs.find((r) => r.status === "locked" && r.kind !== "reversal") ?? null;
@@ -144,14 +161,22 @@ export async function overview(e: Env, companyId: string, board: boolean, meUser
       encryptionKey: config.encryptionKeyConfigured,
       privateStorage: config.r2Configured,
       defaultApproverSet: Boolean(config.defaultApproverUserId),
+      lockOnApproval: config.lockOnApproval,
+      emailPayslipsOnLock: config.payslipEmail.sendOnLock,
       sdlMode: config.sdlMode,
       etiRegistered: config.etiRegistered,
       defaultPayDay: config.defaultPayDay,
+      prepareDaysBefore: config.prepareDaysBefore,
       ...(board ? { employer: config.employer, defaultApproverUserId: config.defaultApproverUserId } : {}),
     },
+    // Each unconfirmed rule with its plain name (`label`); never show the raw `path` to people.
     rules: version
-      ? { id: version.id, taxYear: version.taxYear, unverified: version.unverified, notes: version.notes }
+      ? { id: version.id, taxYear: version.taxYear, unverified: withRuleLabels(version.unverified), notes: version.notes }
       : { id: null, taxYear: taxYearOf(date), unverified: [], notes: [`No payroll rules are loaded for ${taxYearOf(date)}.`] },
+    /** True when nothing is left for the accountant to check. */
+    rulesReviewed: rulesCheck.reviewed,
+    /** The accountant's check that covers today's rules: `{ accountantName, checkedOn, at }`, else null. */
+    rulesReview: rulesCheck.review,
     counts: {
       employees: employees.length,
       withoutTerms: employees.filter((x) => !terms.has(x.id)).length,

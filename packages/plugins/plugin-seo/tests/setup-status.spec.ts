@@ -31,12 +31,18 @@ const SA_JSON = JSON.stringify({
   private_key_id: "k1",
 });
 
-function host(input: { configured?: boolean; modules?: Record<string, boolean>; apis?: "on" | "off" } = {}) {
+function host(input: { configured?: boolean; modules?: Record<string, boolean>; apis?: "on" | "off"; routinesOn?: boolean | null; routineStatus?: string } = {}) {
   const configured = input.configured ?? false;
+  const routinesOn = input.routinesOn === undefined ? true : input.routinesOn;
   const emitted: Array<{ name: string; companyId: string; payload: unknown }> = [];
   const issuesCreate = vi.fn(async () => ({ id: "new-issue" }));
   const state = new Map<string, unknown>([["plugin-ui-base", UI_BASE]]);
   if (input.modules) state.set("modules", { companyId: "co-1", modules: input.modules, updatedAt: "2026-09-01T00:00:00Z" });
+  // What the SEO page last read about each routine's schedule (the worker cannot read triggers).
+  if (configured && routinesOn !== null) {
+    state.set("report:seo-run-today", { routineId: "r-daily", status: "active", triggersOn: routinesOn, checkedAt: "2026-09-26T07:00:00Z" });
+    state.set("report:seo-weekly-review", { routineId: "r-weekly", status: "active", triggersOn: routinesOn, checkedAt: "2026-09-26T07:00:00Z" });
+  }
   const ctx = {
     db: {
       namespace: NAMESPACE,
@@ -71,6 +77,16 @@ function host(input: { configured?: boolean; modules?: Record<string, boolean>; 
     },
     issues: { create: issuesCreate, get: vi.fn(async () => null), update: vi.fn(), createComment: vi.fn(), requestWakeup: vi.fn() },
     projects: { managed: { reconcile: vi.fn(async () => ({ projectId: "proj-1" })) } },
+    routines: {
+      managed: {
+        get: vi.fn(async (key: string) => {
+          if (!configured) return { routineId: null, routine: null, status: "missing" };
+          const id = key === "seo-run-today" ? "r-daily" : "r-weekly";
+          return { routineId: id, status: "resolved", routine: { id, status: input.routineStatus ?? "active", assigneeAgentId: "agent-1", updatedByUserId: null, updatedByAgentId: null } };
+        }),
+        update: vi.fn(async () => ({})),
+      },
+    },
     skills: { managed: { get: vi.fn(async () => { throw new Error("no skills"); }), reconcile: vi.fn(async () => { throw new Error("no skills"); }) } },
     events: { emit: vi.fn(async (name: string, companyId: string, payload: unknown) => void emitted.push({ name, companyId, payload })), on: () => undefined },
     logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -98,7 +114,7 @@ describe("SEO setup status", () => {
   it("maps the checklist for a new company, with exact next steps", async () => {
     const { env } = host();
     const status = await seoSetupStatus(env, "co-1");
-    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.7.1", checkedAt: "2026-09-26T08:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.8.0", checkedAt: "2026-09-26T08:00:00.000Z" });
     expect(status.items[0]!.key).toBe("settings");
     const items = byKey(status.items);
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins/051bbf0b-aeb5-42d7-b0b6-c4cabd271cdc" });
@@ -111,8 +127,10 @@ describe("SEO setup status", () => {
     expect(items.github_token!.steps!.join(" ")).toContain("/company/settings/secrets");
     expect(items.bing_key).toMatchObject({ status: "missing", required: true });
     expect(items.pagespeed_key).toMatchObject({ status: "optional", required: false });
-    expect(items.agent).toMatchObject({ status: "missing", required: true, action: { plugin: "partnersinbiz.seo", key: "seo.start-hire" } });
+    expect(items.agent).toMatchObject({ status: "missing", required: true, href: "/setup?section=team#team-seo-specialist", hrefLabel: "Open Team in Setup", action: { plugin: "partnersinbiz.seo", key: "seo.start-hire" } });
+    expect(items.agent!.steps).toEqual(["Open **Setup → Team → SEO Specialist** and hire one (it opens a hire task) or pick an agent you already have."]);
     expect(items.autopilot).toMatchObject({ status: "blocked", required: true });
+    expect(items.routines).toMatchObject({ status: "blocked", required: true, blockedBy: ["agent"] });
     // No company prefix in any Paperclip path.
     for (const item of status.items) if (item.href?.startsWith("/")) expect(item.href.startsWith("/PIB")).toBe(false);
     expect(setupProgress(status.items).done).toBe(0);
@@ -130,10 +148,21 @@ describe("SEO setup status", () => {
     expect(items.site_project).toMatchObject({ status: "done", href: "/seo?sprint=sp-1&tab=integrations" });
     expect(items.autopilot!.status).toBe("done");
     expect(items.gsc_property).toMatchObject({ status: "done", required: false });
-    expect(items.agent).toMatchObject({ status: "done", href: "/agents/agent-1", action: null });
+    expect(items.agent).toMatchObject({ status: "done", href: "/setup?section=team#team-seo-specialist", hrefLabel: "Open Team in Setup", action: null });
+    expect(items.routines).toMatchObject({ status: "done", required: true });
     expect(items.github_token!.steps!.join(" ")).toContain("https://github.com/pib/acme");
     await seoSetupStatus(env, "co-1");
     expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("siteVerification"))).toHaveLength(1);
+  });
+
+  it("the routines count as done only when both are active with their schedules on", async () => {
+    const off = byKey((await seoSetupStatus(host({ configured: true, routinesOn: false }).env, "co-1")).items);
+    expect(off.routines).toMatchObject({ status: "missing", href: "/seo?routines=on", hrefLabel: "Switch them on" });
+    expect(off.routines!.detail).toContain("schedule off");
+    const unchecked = byKey((await seoSetupStatus(host({ configured: true, routinesOn: null }).env, "co-1")).items);
+    expect(unchecked.routines).toMatchObject({ status: "unknown", href: "/seo" });
+    const paused = byKey((await seoSetupStatus(host({ configured: true, routineStatus: "paused" }).env, "co-1")).items);
+    expect(paused.routines).toMatchObject({ status: "missing", href: "/seo?routines=on" });
   });
 
   it("reports a disabled Site Verification API", async () => {

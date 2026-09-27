@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { MarkdownBlock, usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Activity, BookOpen, Button, Gavel, Modal, Pill, SectionCard, breakAnywhere, errorText, tokens, tone, type ToneName } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, BookOpen, Button, Gavel, Modal, Pill, SectionCard, breakAnywhere, errorText, formatShortDate, tokens, tone, type ToneName } from "@partnersinbiz/pib-plugin-ui";
 
 type Change = {
   changeId: string;
@@ -44,19 +44,19 @@ const muted: CSSProperties = { fontSize: 12, color: tokens.muted, ...breakAnywhe
 
 const SOURCE: Record<Change["source"], string> = {
   measured: "Drafted from a measured optimization",
-  agent: "Proposed by the SEO Specialist",
+  agent: "Proposed by the SEO agent",
   person: "Proposed by a person",
 };
 
 const STATUS_TONE: Record<Change["status"], ToneName> = { pending: "warn", kept: "ok", discarded: "neutral" };
 
 function day(iso: string | null): string {
-  return iso ? iso.slice(0, 10) : "—";
+  return iso ? formatShortDate(iso) : "—";
 }
 
 function whoDecides(mode: string | null): string {
-  if (mode === "full") return "Full autopilot: the SEO Specialist keeps or discards changes itself, and measured wins are kept automatically.";
-  if (mode === "off") return "Autopilot off: the SEO Specialist only reads the playbook. Measured results still draft changes for you to decide.";
+  if (mode === "full") return "Full autopilot: the SEO agent keeps or discards changes itself, and measured wins are kept automatically.";
+  if (mode === "off") return "Autopilot off: the SEO agent only reads the playbook. Measured results still draft changes for you to decide.";
   return "Safe autopilot: you keep or discard each change here (they are also listed once on the sprint's weekly Needs you issue).";
 }
 
@@ -131,7 +131,7 @@ export function PlaybookTab({ sprintId, onChanged, onMessage }: { sprintId: stri
         )}
       </SectionCard>
 
-      <SectionCard title={`Playbook v${data.version}`} subtitle={`Shared by every sprint of ${scope}. The SEO Specialist reads it before working tasks.`} icon={BookOpen}>
+      <SectionCard title={`Playbook v${data.version}`} subtitle={`Shared by every sprint of ${scope}. The SEO agent reads it before working tasks.`} icon={BookOpen}>
         <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
           <MarkdownBlock content={data.playbook} />
         </div>

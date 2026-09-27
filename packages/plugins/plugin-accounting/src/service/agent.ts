@@ -5,21 +5,28 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
-  createWorkIssue,
+  ASK_OWNER_TOOL,
+  COMPANY_OS_HIRE_SKILL,
   hireStatus,
   hireTaskDraft,
   linkedAgentId,
   listCompanyAgents,
+  mergePluginToolsGrant,
+  roleAgentUsable,
+  routeWork,
   tryLinkPendingHire,
   type HireAgentSummary,
   type HireRole,
   type OnAgentLinked,
+  type WorkRoute,
 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
-import { addMonths, monthOf, todayIso } from "../domain/util.js";
+import { monthYearLabel } from "../domain/dates.js";
+import { addMonths, lastDayOfMonth, monthOf, todayIso } from "../domain/util.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { AGENT_KEY, SKILL_CANONICAL_KEY, SKILL_SLUG } from "../skills.js";
-import { errorMessage, ORIGIN } from "./common.js";
+import { booksStartFor } from "./books.js";
+import { errorMessage, openIssue, ORIGIN } from "./common.js";
 
 export const TOOLS_GRANT = { permissionKey: "tools:use" as const, scope: { providerType: "paperclip_plugin" } };
 
@@ -27,9 +34,10 @@ export const BOOKKEEPER_INSTRUCTIONS = `# Bookkeeper, Partners in Biz
 
 You keep Partners in Biz's own books in the Accounting plugin (\`partnersinbiz.accounting\` tools).
 
-- Follow the **${SKILL_SLUG}** skill. It holds the procedure for reconciling the bank, categorising lines, month-end close and the tool reference. Read it before your first task.
-- Your work arrives as Accounting issues assigned to you ("Reconcile N new bank lines", "Month-end close").
-- Never post, lock or approve anything that needs a person: manual journals go in as drafts for approval; reconciliations and VAT returns are approved by a board user. Never invent numbers or guess an account when unsure; leave a comment instead.
+- Follow the **${SKILL_SLUG}** skill. It holds the monthly cycle (bank statement in, match, reconcile, VAT201, month-end close) and the tool reference. Read it before your first task.
+- Your work arrives as Accounting issues assigned to you: "Bank statement received", "Reconcile N new bank lines", "Month-end close" and "Accounting: postings were rejected".
+- Never post, lock or approve anything that needs a person: manual journals go in as drafts, and reconciliations and VAT201 returns go to a person through their approval issues. Never invent numbers or guess an account.
+- When only a person can help (a PDF-only statement, an unclear line, a setting), ask once per issue with \`${ASK_OWNER_TOOL}\`, never in a plain comment.
 `;
 
 export const BOOKKEEPER_ROLE: HireRole = {
@@ -41,36 +49,36 @@ export const BOOKKEEPER_ROLE: HireRole = {
   role: "general",
   icon: "calculator",
   capabilities:
-    "Reconciles the bank, categorises statement lines, prepares manual journals as drafts, runs the month-end close checklist and prepares VAT returns in the Accounting plugin. A person approves anything that posts or locks. Monthly budget $20; the Cockpit alerts at 80% of it.",
+    "Imports bank statements from the Mailbox, matches and categorises statement lines, prepares the bank reconciliations and the VAT201, and runs the month-end close in the Accounting plugin. A person approves anything that posts or locks. Monthly budget $20; the Cockpit alerts at 80% of it.",
   adapterPreference: ["hermes_local", "claude_local"],
   skills: [
     {
       key: SKILL_CANONICAL_KEY,
       slug: SKILL_SLUG,
-      purpose: "reconciling, categorising, month-end close checklist and the Accounting tool reference",
+      purpose: "the monthly bookkeeping cycle (statement in, match, reconcile, VAT201, month-end close) and the Accounting tool reference",
     },
+    COMPANY_OS_HIRE_SKILL,
   ],
   budgetMonthlyCents: 2000,
   suggestedManager: "the finance lead (or the CEO)",
   instructions: BOOKKEEPER_INSTRUCTIONS,
   pluginSetup: [
-    "Grants the agent `tools:use` for plugin tools, so it can call the Accounting tools.",
-    "Assigns it a \"Reconcile N new bank lines\" issue after each statement import, and a \"Month-end close\" issue at the start of each month.",
+    "Grants the agent `tools:use` for plugin tools, so it can call the Accounting tools (and the Mailbox's `get-attachment` for statements).",
+    "Assigns it a \"Bank statement received\" issue for each statement email, a \"Reconcile N new bank lines\" issue after each import, and a \"Month-end close\" issue at the start of each month.",
     `Keeps the \`${SKILL_SLUG}\` skill up to date.`,
   ],
-  toolPlugins: [],
+  toolPlugins: ["partnersinbiz.mailbox"],
 };
 
-function sameScope(a: Record<string, unknown> | null | undefined, b: Record<string, unknown>): boolean {
-  const norm = (v: Record<string, unknown> | null | undefined) => JSON.stringify(Object.keys(v ?? {}).sort().map((k) => [k, (v ?? {})[k]]));
-  return norm(a) === norm(b);
-}
-
-/** Existing grants plus the plugin-tools grant (grants.set replaces the whole set). */
+/**
+ * Existing grants with plugin tool access merged in (kit
+ * `mergePluginToolsGrant`: the host keeps one `tools:use` grant per agent, so
+ * it is widened, never duplicated). `conflict` is set when the existing grant
+ * is limited in a way the plugin must not widen.
+ */
 export function mergeToolsGrant(existing: Array<{ permissionKey: string; scope: Record<string, unknown> | null }>) {
-  const grants = existing.map((g) => ({ permissionKey: g.permissionKey, scope: g.scope ?? null }));
-  const covered = grants.some((g) => g.permissionKey === "tools:use" && (!g.scope || Object.keys(g.scope).length === 0 || sameScope(g.scope, TOOLS_GRANT.scope)));
-  return { grants: covered ? grants : [...grants, { ...TOOLS_GRANT }], added: !covered };
+  const merged = mergePluginToolsGrant(existing);
+  return { grants: merged.grants, added: merged.changed, conflict: merged.conflict };
 }
 
 function desiredSkills(agent: unknown): string[] {
@@ -115,7 +123,10 @@ export async function wireAgent(ctx: PluginContext, companyId: string, agentId: 
   try {
     const existing = await ctx.authorization.grants.list({ companyId, principalType: "agent", principalId: agentId });
     const merged = mergeToolsGrant(existing as unknown as Array<{ permissionKey: string; scope: Record<string, unknown> | null }>);
-    if (merged.added) {
+    if (merged.conflict) {
+      steps.push(merged.conflict);
+      instructions.push(merged.conflict);
+    } else if (merged.added) {
       await ctx.authorization.grants.set({
         companyId,
         principalType: "agent",
@@ -191,33 +202,53 @@ export async function hireOptions(ctx: PluginContext, companyId: string) {
   return { draft: hireTaskDraft(BOOKKEEPER_ROLE), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null, status };
 }
 
-/** Start of each month: a "Month-end close" issue for the Bookkeeper (once per month). */
+/**
+ * Who gets Accounting's work (a statement to import, lines to reconcile, the
+ * month-end close, rejected postings): the linked Bookkeeper while it is
+ * running, else the kit `routeWork` (the Bookkeeper the Cockpit knows, the
+ * Operator, then the owner).
+ */
+export async function routeBookkeeping(ctx: PluginContext, companyId: string): Promise<WorkRoute> {
+  const own = await bookkeeper(ctx, companyId);
+  if (own && roleAgentUsable(own.status)) return { assigneeAgentId: own.id, assigneeUserId: null, via: "bookkeeper" };
+  return routeWork(ctx, companyId, ["bookkeeper"]);
+}
+
+/** The month-end close steps, with the exact tools (the issue body). */
+export function monthEndCloseText(month: string): string {
+  const end = lastDayOfMonth(month);
+  return [
+    `Close the books for ${month}. Follow the month-end section of the \`${SKILL_SLUG}\` skill.`,
+    "",
+    `1. \`period-close-checklist\` with \`month: "${month}"\`. Work down every item that is not ok.`,
+    `2. **Bank lines:** \`list-bank-lines\` with \`status: "unreconciled"\` and \`to: "${end}"\`; match or categorise them (the reconcile issues say how).`,
+    `3. **Reconciliations:** for each bank account from \`list-bank-accounts\`, \`prepare-reconciliation\` with \`month: "${month}"\`. It opens the approval issue for a person once the difference is zero and no line is open. If it needs the statement's opening or closing balance and you cannot read it from the statement, ask with \`${ASK_OWNER_TOOL}\`.`,
+    `4. **VAT:** if the checklist has a VAT201 item (a VAT period ended on ${end}), check \`vat-summary\` for that period, then \`prepare-vat201\` for it. It opens the approval issue for a person.`,
+    `5. **Rejected postings, depreciation, FX:** these post or unlock the books, so a person does them. List what is missing and ask once with \`${ASK_OWNER_TOOL}\`, with the Accounting links.`,
+    "6. **Trial balance or audit chain not ok:** stop and ask at once; post nothing.",
+    `7. Comment the checklist result here with the approval issues you opened, then mark this issue done. The approvals wait for a person in the Cockpit; a person closes ${month} under Accounting → Journals once they are approved.`,
+  ].join("\n");
+}
+
+/** Start of each month: one "Month-end close" issue (the Bookkeeper, else the Operator or the owner). */
 export async function monthEndCloseIssue(ctx: PluginContext, companyId: string, now = new Date()): Promise<string | null> {
   const day = now.getUTCDate();
   if (day > 7) return null;
   const month = addMonths(monthOf(todayIso(now)), -1);
-  const agent = await bookkeeper(ctx, companyId);
-  if (!agent) return null;
+  // Nothing to close for a month that ended before these books start.
+  const start = await booksStartFor(ctx, companyId).catch(() => null);
+  if (start && lastDayOfMonth(month) < start.date) return null;
   if (!(await db.setMark(ctx.db, companyId, `close-issue:${month}`))) return null;
   try {
-    const issue = await createWorkIssue(ctx, {
+    const route = await routeBookkeeping(ctx, companyId);
+    const issue = await openIssue(ctx, {
       companyId,
-      title: `Month-end close: ${month}`,
-      description: [
-        `Close the books for ${month}. Follow the month-end section of the \`${SKILL_SLUG}\` skill:`,
-        "",
-        `1. \`period-close-checklist\` with month ${month}.`,
-        "2. Reconcile every bank line in the month; prepare the bank reconciliations and ask for approval.",
-        "3. Check depreciation, FX revaluation and rejected postings.",
-        "4. If a VAT period ended, prepare the VAT201 and ask for approval.",
-        "5. Comment the checklist result here. A board user closes the period.",
-      ].join("\n"),
-      assigneeAgentId: agent.id,
+      title: `Month-end close: ${monthYearLabel(month) || month}`,
+      description: monthEndCloseText(month),
       originKind: ORIGIN,
       originId: `close:${month}`,
-      wake: !["paused", "pending_approval", "terminated"].includes(agent.status),
       wakeReason: "Month-end close",
-    });
+    }, route);
     return issue.id;
   } catch (error) {
     await db.clearMark(ctx.db, companyId, `close-issue:${month}`).catch(() => undefined);

@@ -19,20 +19,25 @@ function clientKey(kind: string | null, ref: string | null): string {
   return ref ? `${kind ?? "company"}:${ref}` : "none";
 }
 
-export async function buildReports(ctx: PluginContext, companyId: string, settings: BillingSettings, range: { from: string; to: string }, now = new Date()) {
+/**
+ * All of Billing's reports, "as at" `range.to` (today by default). With
+ * `client` it is one customer's invoices, payments, retainers and repeating
+ * invoices only (the client workspace), with no bills or expenses.
+ */
+export async function buildReports(ctx: PluginContext, companyId: string, settings: BillingSettings, range: { from: string; to: string }, now = new Date(), client: { kind: string; id: string } | null = null) {
   const book = reportingCurrency(settings);
-  const balances = await invoiceBalances(ctx, companyId);
-  const payments = await ctx.db.query<{ invoice_id: string; allocated_minor: string | number | null; amount_minor: string | number; paid_at: unknown; currency: string | null; fx_rate: string | number | null; customer_kind: string | null; customer_ref: string | null }>(
+  const balances = await invoiceBalances(ctx, companyId, client ? { customerKind: client.kind, customerRef: client.id } : {});
+  const payments = (await ctx.db.query<{ invoice_id: string; allocated_minor: string | number | null; amount_minor: string | number; paid_at: unknown; currency: string | null; fx_rate: string | number | null; customer_kind: string | null; customer_ref: string | null }>(
     `SELECT invoice_id, allocated_minor, amount_minor, paid_at, currency, fx_rate, customer_kind, customer_ref FROM ${table(ctx, "payments")} WHERE company_id = $1`,
     [companyId],
-  );
-  const bills = await ctx.db.query<BillBalanceRow>(`${billBalanceSelect(ctx)} WHERE b.company_id = $1`, [companyId]);
-  const expenses = await ctx.db.query<{ category: string; currency: string; amount_minor: string | number; vat_minor: string | number | null; vat_claimable: boolean | null; incurred_on: unknown; fx_rate: string | number | null; status: string | null }>(
+  )).filter((p) => !client || (p.customer_kind === client.kind && p.customer_ref === client.id));
+  const bills = client ? [] : await ctx.db.query<BillBalanceRow>(`${billBalanceSelect(ctx)} WHERE b.company_id = $1`, [companyId]);
+  const expenses = client ? [] : await ctx.db.query<{ category: string; currency: string; amount_minor: string | number; vat_minor: string | number | null; vat_claimable: boolean | null; incurred_on: unknown; fx_rate: string | number | null; status: string | null }>(
     `SELECT category, currency, amount_minor, vat_minor, vat_claimable, incurred_on, fx_rate, status FROM ${table(ctx, "expenses")} WHERE company_id = $1`,
     [companyId],
   );
-  const subs = await allSubscriptions(ctx, companyId);
-  const recurring = await listRecurring(ctx, companyId);
+  const subs = (await allSubscriptions(ctx, companyId)).filter((s) => !client || (s.customer_kind === client.kind && s.customer_ref === client.id));
+  const recurring = await listRecurring(ctx, companyId, client ? { kind: client.kind as "company" | "contact", id: client.id } : null);
   const currencies = [
     ...balances.map((b) => b.invoice.currency),
     ...bills.map((b) => b.currency),
@@ -52,6 +57,7 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
       currency: p.currency ?? byInvoice.get(p.invoice_id)!.invoice.currency,
       paidAt: iso(p.paid_at) ?? new Date().toISOString(),
       allocatedMinor: Number(p.allocated_minor ?? p.amount_minor),
+      amountMinor: Number(p.amount_minor),
       fxRate: p.fx_rate == null ? null : Number(p.fx_rate),
       clientKey: clientKey(p.customer_kind, p.customer_ref),
       clientName: nameOf(p.invoice_id),
@@ -112,7 +118,8 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
       .map((r) => ({ r, template: byInvoice.get(r.template_invoice_id) }))
       .filter((x) => x.template)
       .map(({ r, template }) => ({
-        status: (r.is_active ? "active" : "paused") as RecurringRevenue["status"],
+        // A schedule past its end date is not recurring revenue any more (the Cockpit counts the same).
+        status: (r.is_active && !(r.ends_at && Date.parse(String(iso(r.ends_at))) <= now.getTime()) ? "active" : "paused") as RecurringRevenue["status"],
         priceMinor: Number(template!.invoice.subtotal_minor ?? template!.invoice.total_minor),
         currency: template!.invoice.currency,
         period: r.frequency,
@@ -145,6 +152,6 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
     agedCreditors: creditors,
     expenses: expenseSummary({ items: expenseItems, from: range.from, to: range.to, book, convert }),
     mrr: mrrMetrics({ items: recurringItems, now, book, convert }),
-    mrrTrend: mrrTrend({ items: recurringItems, months: monthsBetween(range.from, range.to), book, convert }),
+    mrrTrend: mrrTrend({ items: recurringItems, months: monthsBetween(range.from, range.to), book, convert, now }),
   };
 }

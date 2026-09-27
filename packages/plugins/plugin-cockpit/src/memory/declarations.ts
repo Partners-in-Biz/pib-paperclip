@@ -11,9 +11,9 @@ function schema(required: string[], properties: Record<string, JsonSchema>): Jso
 
 const client: JsonSchema = {
   type: "string",
-  description: 'The client the work is for: "company:<crm id>" or "contact:<crm id>" (or a client name memory already knows). "own" = the company\'s own work. Omit to let memory detect it from the issue.',
+  description: 'The client the work is for: "company:<crm id>" or "contact:<crm id>" (a CRM client name or website domain also works). "own" = the company\'s own work. Omit to let memory detect it from the issue.',
 };
-const clientName: JsonSchema = { type: "string", description: "The client's name, needed the first time a client is used (e.g. \"Northwind Traders\")." };
+const clientName: JsonSchema = { type: "string", description: "The client's name, only for a client the CRM does not have (e.g. \"Northwind Traders\")." };
 const area: JsonSchema = { type: "string", enum: [...MEMORY_AREAS], description: "Area of work. Omit to take it from the issue." };
 const issueId: JsonSchema = { type: "string", description: "The issue you are working on (id or identifier, e.g. PIB-23)." };
 const ids: JsonSchema = { type: "array", items: { type: "string" }, maxItems: 20 };
@@ -53,13 +53,13 @@ export const MEMORY_TOOL_DECLARATIONS: PluginToolDeclaration[] = [
     displayName: "Update a memory fact",
     description: "Fix a fact (text, kind, area), pin or unpin a rule, set or clear an expiry, archive it (keeps it but stops using it), restore it, or mark it superseded by a newer fact.",
     parametersSchema: schema(["id"], {
-      id: { type: "string" },
-      text: { type: "string" },
-      kind: { type: "string", enum: [...MEMORY_KINDS] },
+      id: { type: "string", description: "The fact's id (from the brief, memory-search or the review)." },
+      text: { type: "string", description: `The corrected fact, one sentence, at most ${MEMORY_LIMITS.factMaxChars} characters.` },
+      kind: { type: "string", enum: [...MEMORY_KINDS], description: "What sort of fact it is; only rules and warnings can be pinned." },
       area,
-      pinned: { type: "boolean" },
+      pinned: { type: "boolean", description: "Rules and warnings only: true to always include it in its client's and area's briefs, false to unpin." },
       expiresAt: { type: ["string", "null"], description: "ISO date, or null to clear." },
-      status: { type: "string", enum: ["active", "archived", "superseded"] },
+      status: { type: "string", enum: ["active", "archived", "superseded"], description: "archived: keep but stop using it; active: restore it; superseded: replaced by supersededBy." },
       supersededBy: { type: "string", description: "With status superseded: the id of the newer fact." },
     }),
   },
@@ -71,7 +71,8 @@ export const MEMORY_TOOL_DECLARATIONS: PluginToolDeclaration[] = [
       query: { type: "string", description: "What you need to know, e.g. \"Northwind hosting and deploy\"." },
       client,
       area,
-      limit: { type: "integer", minimum: 1, maximum: MEMORY_LIMITS.searchMaxResults },
+      limit: { type: "integer", minimum: 1, maximum: MEMORY_LIMITS.searchMaxResults, description: `How many facts to return (default and most ${MEMORY_LIMITS.searchMaxResults}).` },
+      includeArchived: { type: "boolean", description: "Also look at archived facts (retired from briefs but kept). Results say \"archived\"." },
     }),
   },
   {

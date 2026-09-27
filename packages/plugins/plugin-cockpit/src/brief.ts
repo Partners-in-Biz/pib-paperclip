@@ -4,7 +4,9 @@
  * agent tools.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { askWaitingItem, type AskView } from "./ask-model.js";
+import { openAskViews } from "./asks.js";
 import { assignableUser, ORIGIN } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
 import { message, type Env } from "./env.js";
@@ -17,8 +19,10 @@ import {
   hostWaiting,
   mergeWaiting,
   setupMissingCount,
+  shownIssueIds,
   staleChecks,
   todayLine,
+  unassignedWaiting,
   worstOf,
   type AgentLite,
   type ApprovalLite,
@@ -28,9 +32,16 @@ import {
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
 
-const iso = (value: unknown): string | null => (value instanceof Date ? value.toISOString() : typeof value === "string" ? value : null);
+/** ISO time from a Date or a core-read text timestamp (`2026-09-25 17:09:53.8+02`: Safari cannot parse that form). */
+const iso = (value: unknown): string | null => {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "string" || !value) return null;
+  const t = Date.parse(value.includes("T") ? value : value.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
+  return Number.isFinite(t) ? new Date(t).toISOString() : value;
+};
 
 export async function listApprovals(ctx: PluginContext, companyId: string): Promise<ApprovalLite[]> {
   try {
@@ -73,16 +84,60 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
   }
 }
 
+export interface UnassignedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * Open issues with no agent and no person assigned, created more than a day
+ * ago: the count and the first 50 (most urgent, then oldest). The page and the
+ * brief leave out the ones listed on their own row and show five.
+ */
+export async function listUnassigned(ctx: PluginContext, companyId: string): Promise<{ count: number; items: UnassignedIssue[] }> {
+  const where = `company_id = $1 AND assignee_agent_id IS NULL AND assignee_user_id IS NULL AND hidden_at IS NULL
+        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'`;
+  try {
+    const [count, rows] = await Promise.all([
+      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId]),
+      ctx.db.query<Record<string, unknown>>(
+        `SELECT id, identifier, title, status, priority, created_at FROM public.issues WHERE ${where}
+          ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at LIMIT 50`,
+        [companyId],
+      ),
+    ]);
+    return {
+      count: Number(count[0]?.n ?? rows.length) || 0,
+      items: rows.map((row) => ({
+        id: String(row.id),
+        identifier: row.identifier == null ? null : String(row.identifier),
+        title: String(row.title ?? ""),
+        status: String(row.status ?? ""),
+        priority: row.priority == null ? null : String(row.priority),
+        createdAt: iso(row.created_at),
+      })),
+    };
+  } catch (error) {
+    ctx.logger.info("Cockpit unassigned read failed", { companyId, error: message(error) });
+    return { count: 0, items: [] };
+  }
+}
+
 /** Heartbeat runs of the last `days` days (core read of public.heartbeat_runs). */
 export async function listRuns(ctx: PluginContext, companyId: string, days: number): Promise<RunLite[]> {
   try {
     const rows = await ctx.db.query<Record<string, unknown>>(
-      `SELECT agent_id, status, started_at, finished_at, error FROM public.heartbeat_runs
+      `SELECT id, agent_id, status, started_at, finished_at, error FROM public.heartbeat_runs
         WHERE company_id = $1 AND started_at >= now() - ($2 || ' days')::interval
         ORDER BY started_at DESC LIMIT 1000`,
       [companyId, String(days)],
     );
     return rows.map((row) => ({
+      id: row.id == null ? null : String(row.id),
       agentId: String(row.agent_id),
       status: String(row.status ?? ""),
       startedAt: iso(row.started_at),
@@ -118,23 +173,36 @@ export interface CompanyData {
   approvals: ApprovalLite[];
   ownerIssues: IssueLite[];
   setupMissing: number;
+  /** The open Finish setup issue (from the Setup plugin's count), listed once as the setup item. */
+  setupIssueId?: string | null;
   ownerUserId: string | null;
   listeningSince: string | null;
+  /** Questions agents asked the owner that wait for a reply. */
+  asks: AskView[];
+  /** Open issues nobody is assigned to (older than a day). */
+  unassigned: { count: number; items: UnassignedIssue[] };
 }
 
 export async function loadCompanyData(env: Env, companyId: string, days = 7): Promise<CompanyData> {
   const roles = await getRoles(env.ctx, companyId);
   const stored = await storedSnapshots(env, companyId);
   const own = await ownSnapshot(env, companyId);
-  const [agents, runs, approvals, ownerIssues, statuses] = await Promise.all([
+  const [agents, runs, approvals, ownerIssues, statuses, asks, unassigned] = await Promise.all([
     listAgents(env, companyId),
     listRuns(env.ctx, companyId, Math.max(days, 7)),
     listApprovals(env.ctx, companyId),
     listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null),
     setupStatuses(env, companyId),
+    openAskViews(env, companyId).catch((error) => {
+      env.ctx.logger.info("Cockpit asks read failed", { companyId, error: message(error) });
+      return [] as AskView[];
+    }),
+    listUnassigned(env.ctx, companyId),
   ]);
   const enabled = await enabledModules(env, companyId, Object.keys(statuses));
-  const missing = setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
+  // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
+  const setup = await readSetupSummary(env, companyId);
+  const missing = setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
     snapshots: [...stored.map((s) => s.snapshot), own],
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
@@ -143,16 +211,70 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7): Pr
     approvals,
     ownerIssues,
     setupMissing: missing,
+    setupIssueId: setup?.finishIssueId ?? null,
     ownerUserId: roles?.ownerUserId ?? null,
     listeningSince: roles?.createdAt ?? null,
+    asks,
+    unassigned,
   };
 }
 
-export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing">): WaitingEntry[] {
-  return mergeWaiting([
+/** Everything waiting: questions for the owner first, then each plugin's items, unassigned work and the host's approvals and issues; each issue once. */
+export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId">>): WaitingEntry[] {
+  const own = [
+    { source: "asks", sourceTitle: "Asked by agents", items: (data.asks ?? []).map(askWaitingItem) },
     ...data.snapshots.map((snapshot) => ({ source: snapshot.plugin, sourceTitle: snapshot.title, items: snapshot.waiting })),
-    { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing }) },
-  ]);
+  ];
+  const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
+  return mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
+}
+
+// ---------------------------------------------------------------------------
+// The Setup plugin's count (event `plugin.partnersinbiz.setup.setup.summary`)
+// ---------------------------------------------------------------------------
+
+/** What the Setup plugin sends: its one setup count and the open Finish setup issue. */
+export interface SetupSummaryCopy {
+  requiredLeft: number;
+  requiredDone: number;
+  requiredTotal: number;
+  optionalLeft: number;
+  finishIssueId: string | null;
+  updatedAt: string;
+}
+
+const SETUP_SUMMARY_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "cockpit", stateKey: "setup-summary" });
+
+export function parseSetupSummary(payload: unknown): SetupSummaryCopy | null {
+  const row = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
+  const n = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
+  if (!row || n(row.requiredLeft) === null) return null;
+  return {
+    requiredLeft: n(row.requiredLeft)!,
+    requiredDone: n(row.requiredDone) ?? 0,
+    requiredTotal: n(row.requiredTotal) ?? n(row.requiredLeft)!,
+    optionalLeft: n(row.optionalLeft) ?? 0,
+    finishIssueId: typeof row.finishIssueId === "string" && row.finishIssueId ? row.finishIssueId : null,
+    updatedAt: typeof row.updatedAt === "string" && !Number.isNaN(Date.parse(row.updatedAt)) ? row.updatedAt : new Date(0).toISOString(),
+  };
+}
+
+/** Keep the newest count the Setup plugin sent for a company. */
+export async function onSetupSummary(env: Env, companyId: string | null | undefined, payload: unknown): Promise<boolean> {
+  const summary = parseSetupSummary(payload);
+  if (!companyId || !summary) return false;
+  const current = await readSetupSummary(env, companyId);
+  if (current && current.updatedAt > summary.updatedAt) return false;
+  await env.ctx.state.set(SETUP_SUMMARY_STATE(companyId), summary);
+  return true;
+}
+
+export async function readSetupSummary(env: Env, companyId: string): Promise<SetupSummaryCopy | null> {
+  try {
+    return parseSetupSummary(await env.ctx.state.get(SETUP_SUMMARY_STATE(companyId)));
+  } catch {
+    return null;
+  }
 }
 
 function pct(ratio: number | null): number | null {
@@ -178,6 +300,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;
+  const roles = await currentRoles(env, companyId).catch(() => null);
+  const names = new Map(data.agents.map((a) => [a.id, a.name]));
 
   return {
     company: { id: companyId, name: company?.name ?? null, prefix },
@@ -189,11 +313,51 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       agentAlerts: agents.filter((a) => a.alert).length,
       activeAgents: agents.filter((a) => ["active", "running", "idle"].includes(a.status)).length,
     }),
-    waiting: waiting.map((w) => ({ title: w.title, why: w.why, kind: w.kind, href: link(w.href), issueId: w.issueId ?? null, since: w.since ?? null, from: w.sourceTitle })),
+    waiting: waiting.map((w) => ({
+      title: w.title,
+      why: w.why,
+      kind: w.kind,
+      href: link(w.href),
+      issueId: w.issueId ?? null,
+      since: w.since ?? null,
+      from: w.sourceTitle,
+      ...(w.ask ? { question: { askKind: w.ask.kind, options: w.ask.options, askedBy: w.ask.askedBy, dueBy: w.ask.dueBy } } : {}),
+      ...(w.examples ? { examples: w.examples.map((e) => ({ title: e.title, href: link(e.href), since: e.since ?? null })) } : {}),
+    })),
+    /** Questions agents asked the owner, oldest first: answered on the issue, they go back to the agent. */
+    asks: data.asks.map((a) => ({
+      askId: a.id,
+      issue: a.identifier ?? a.issueId,
+      href: link(`/issues/${a.identifier ?? a.issueId}`),
+      kind: a.kind,
+      question: a.question,
+      options: a.options,
+      askedBy: a.askedBy,
+      askedAt: a.askedAt,
+      ageDays: Math.floor((now.getTime() - Date.parse(a.askedAt)) / 86_400_000),
+      dueBy: a.dueBy,
+      client: a.clientRef,
+    })),
+    /** Open issues with nobody assigned (older than a day): route each to the agent that owns the work. */
+    unassigned: {
+      count: data.unassigned.count,
+      items: data.unassigned.items.slice(0, 5).map((i) => ({ issue: i.identifier ?? i.id, title: i.title, status: i.status, priority: i.priority, createdAt: i.createdAt, href: link(`/issues/${i.identifier ?? i.id}`) })),
+    },
+    /** Who holds each team role (for hand-offs); a role missing here is not staffed. */
+    team: Object.fromEntries(
+      TEAM_ROLES.map((role) => {
+        const member = role.key === "operator"
+          ? { agentId: roles?.operatorAgentId ?? null, status: roles?.operatorStatus ?? null }
+          : role.key === "reviewer"
+            ? { agentId: roles?.reviewerAgentId ?? null, status: roles?.reviewerStatus ?? null }
+            : roles?.team?.[role.key] ?? { agentId: null, status: null };
+        return [role.key, { title: role.title, agentId: member.agentId, agent: member.agentId ? names.get(member.agentId) ?? null : null, status: member.status ?? null }];
+      }),
+    ),
     health: {
       status: health,
       problems: groups.flatMap((g) => g.checks.filter((c) => c.status !== "ok").map((c) => ({ plugin: g.title, status: c.status, title: c.title, detail: c.detail ?? null, fix: c.fix ?? null, href: link(c.href), since: c.since ?? null }))),
-      agentAlerts: problems.entries.filter((e) => e.plugin === "agents").map((e) => ({ title: e.title, detail: e.detail ?? null, href: link(e.href) })),
+      agentAlerts: problems.entries.filter((e) => e.plugin === "agents").map((e) => ({ title: e.title, detail: e.detail ?? null, error: e.raw ?? null, href: link(e.href) })),
     },
     kpis: Object.fromEntries(
       Object.entries(kpis)
@@ -211,6 +375,9 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       budgetCents: a.budgetMonthlyCents,
       budgetUsedPct: pct(a.budgetRatio),
       alert: a.alertText,
+      // The adapter's own words, for fixing it.
+      error: a.alertRaw,
+      lastFailedRun: a.lastFailedRunId ? link(`/agents/${a.urlKey || a.id}/runs/${a.lastFailedRunId}`) : null,
       runs7d: a.runs,
       quality: a.quality.map((q) => ({ label: q.label, value: q.value, tone: q.tone ?? "neutral" })),
     })),

@@ -16,7 +16,9 @@ The Mailbox is the company's Gmail. Every PiB plugin sends and receives mail thr
 | `jev` | TypeSafe (Jev) key for triage; empty = built-in rules |
 | `labelPrefix` | default `PiB` → labels `PiB/Lead`, `PiB/POP`, `PiB/Needs reply`, … |
 | `fromName` | optional display name on sent mail |
-| `triageIssueAssignee` | optional agent id (or `user:<id>`): one "Reply needed" issue per thread for leads, clients and support that need a reply |
+| `replyIssues` | default on: one "Reply needed" issue per thread for a known lead, client or support mail that needs a reply |
+| `triageIssueAssignee` | optional agent id (or `user:<id>`) for reply issues; empty = the Account Manager, else the Operator, else the owner |
+| `r2` | optional private R2 bucket for `get-attachment` links (15 minutes) |
 | `sendRatePerMinute` | default 20 per Gmail account |
 
 ### Connect Gmail
@@ -49,6 +51,14 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 Existing: `create-draft` (now takes `to`, `cc`, `bcc`, `html`, `replyToMessageId`), `send-draft` (sends through Gmail when the delegation allows it; queued for a person without a connected account), `list-inbox` (with triage), `mark-read` (also in Gmail), `list-threads`, `create-email-template`, `list-email-templates`.
 New: `search-mail`, `get-message`, `correct-triage`, `mail-status`.
 
-### Tables (migrations 003–006)
+### Do-not-email list, leads and attachments (0.3.0)
 
-`accounts` + Gmail columns (status, sealed token, `history_id`, label cache), `messages` + Gmail ids, headers, triage and send context, `send_requests`, `oauth_sessions`, `thread_issues`, the kit CRM projection, `decisions` and `inbox`; 006 adds `messages.bounce`.
+- **Suppression.** `suppressions` (per company and address, scope `marketing` or `all`). Marketing sends (`marketing: true`) leave out every listed address and carry `List-Unsubscribe: <mailto:{from}?subject=unsubscribe>`; every send leaves out hard bounces. With nobody left the result is `failed`, `permanent: true`, with the reason and `suppressed: [{email, scope, reason}]`; recipients left out of a sent mail are kept in `send_requests.skipped`. An inbound message whose subject or first line is "unsubscribe" or "stop" suppresses the sender for marketing; a hard bounce for an address we emailed in the last 30 days suppresses it for all mail (delay and full-inbox notices do not). Both emit `contact.suppressed`; `contact.suppressed` from the CRM and Campaigns joins the list. The hourly job announces the Mailbox's own finds from the last 3 days again.
+- **Leads.** A lead from a sender who is not a CRM contact goes out as `lead.captured` through the kit outbox (re-sent with backoff until the CRM answers `lead.captured.result`), with `messageId`, `accountId`, `threadId`, a Gmail `url`, and the client triage matched as `mentionsClient*` (the lead's own `clientKind`/`clientRef` stay empty: our mailboxes are our own). No reply issue opens for it; with the CRM switched off the reply issue covers it.
+- **Reply issues** default to the Account Manager (kit `routeWork`). Without Jev, known leads, clients and support mail score 0.75 needs-reply, so reply issues open on the rules too.
+- **Tools:** `list-mailboxes` (accounts, default sender, your delegation) and `get-attachment` (`messageId`, `attachmentId`, optional `account`): `filename`, `mime`, `bytes`, an https `url` (private R2, 15 minutes) and `text` for CSV, OFX, QIF, TXT and MT940 up to 200 KB, ready for `partnersinbiz.accounting:import-statement`. Attachment ids now show in `get-message` and `list-inbox`.
+- **Setup:** one-click grants for the Account Manager (read and draft) and the Bookkeeper (read) on the default mailbox, and optional private R2.
+
+### Tables (migrations 003–007)
+
+`accounts` + Gmail columns (status, sealed token, `history_id`, label cache), `messages` + Gmail ids, headers, triage and send context, `send_requests`, `oauth_sessions`, `thread_issues`, the kit CRM projection, `decisions` and `inbox`; 006 adds `messages.bounce`; 007 adds `suppressions`, `send_requests.skipped` and the kit `outbox`.

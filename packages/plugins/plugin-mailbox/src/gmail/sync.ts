@@ -1,12 +1,31 @@
 /**
  * `sync-mailbox` job: Gmail history since the stored cursor (a 7-day resync
  * when the cursor is missing or expired), metadata only, upsert, triage,
- * labels, optional reply issues, and `mail.received` events. Every run
- * re-emits the last 30 minutes of messages because events are at-most-once;
- * consumers dedupe by key. Mail triaged as a lead from a sender who is not a
- * CRM contact also goes out as `lead.captured` (same window; the CRM dedupes).
+ * labels, the do-not-email list (opt-outs and hard bounces), reply issues,
+ * and `mail.received` events. Every run re-emits the last 30 minutes of
+ * messages because events are at-most-once; consumers dedupe by key.
+ *
+ * Mail triaged as a lead from a sender who is not a CRM contact goes to the
+ * CRM as `lead.captured` through the kit outbox: it is re-sent with backoff
+ * until the CRM answers `lead.captured.result` (stored, held or ignored), so
+ * a lead is never lost. The CRM opens the follow-up, so the Mailbox opens no
+ * reply issue for it.
  */
-import { configSaved, createWorkIssue, decisionConfig, HANDOFF_EVENTS, isModuleEnabled, MAIL_EVENTS, RISK_THRESHOLDS, type LeadCaptured, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
+import {
+  configSaved,
+  createWorkIssue,
+  decisionConfig,
+  enqueue,
+  HANDOFF_EVENTS,
+  isModuleEnabled,
+  MAIL_EVENTS,
+  PIB_PLUGINS,
+  redeliver,
+  RISK_THRESHOLDS,
+  routeWork,
+  type LeadCaptured,
+  type MailReceived,
+} from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
 import { GmailUnavailable } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -28,6 +47,7 @@ import { ensureLabelIds } from "./labels.js";
 import { withGmail } from "./tokens.js";
 import { REPLY_ISSUE_CATEGORIES, triageMessage, type TriageRunContext } from "./triage.js";
 import type { AccountRow, AttachmentMeta, BounceInfo, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
+import { suppressFromInbound } from "../suppression.js";
 
 export { SYNC_JOB_KEY } from "../constants.js";
 export const RESYNC_QUERY = "newer_than:7d -in:chats -in:drafts -in:spam -in:trash";
@@ -176,12 +196,40 @@ export function isLeadCandidate(row: MessageRow): boolean {
   return Boolean(row.from_addr?.email);
 }
 
-/** `lead.captured` for the CRM (`HANDOFF_EVENTS.leadCaptured`). */
-export function leadCapturedFrom(row: MessageRow): LeadCaptured {
+/** The message in Gmail on the web, signed in as the mailbox that received it. */
+export function gmailWebLink(accountAddress: string, gmailMessageId: string): string {
+  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(accountAddress)}#all/${encodeURIComponent(gmailMessageId)}`;
+}
+
+/**
+ * `lead.captured` for the CRM, plus where the mail is: `messageId` (for
+ * `get-message`), `accountId`, `threadId` and a Gmail link. `mentionsClient*`
+ * is the client triage linked the mail to; it is not the lead's owner.
+ */
+export type MailLeadCaptured = LeadCaptured & {
+  messageId: string;
+  gmailMessageId: string | null;
+  threadId: string | null;
+  accountId: string;
+  accountAddress: string | null;
+  mentionsClientKind: "company" | "contact" | null;
+  mentionsClientRef: string | null;
+  mentionsClientName: string | null;
+};
+
+/**
+ * `lead.captured` for the CRM (`HANDOFF_EVENTS.leadCaptured`). The Mailbox's
+ * accounts are the company's own, so the lead is our own lead: `clientKind`
+ * and `clientRef` stay empty (a client scope would file it as that client's
+ * lead, with no follow-up). The client triage matched goes in `mentionsClient*`.
+ */
+export function leadCapturedFrom(row: MessageRow, accountAddress: string | null = null): MailLeadCaptured {
   const triage = row.triage;
   const subject = (row.subject ?? "").trim();
   const snippet = (row.snippet ?? "").trim();
   const text = subject && snippet ? `${subject}: ${snippet}` : subject || snippet;
+  const mentionsKind = triage?.clientKind ?? (row.client_kind === "company" || row.client_kind === "contact" ? row.client_kind : null);
+  const mentionsRef = triage?.clientRef ?? row.client_ref ?? null;
   return {
     key: `mail:${row.gmail_message_id}`,
     source: "email",
@@ -190,11 +238,19 @@ export function leadCapturedFrom(row: MessageRow): LeadCaptured {
     handle: null,
     platform: null,
     text: text.slice(0, 300),
-    url: null,
-    clientKind: triage?.clientKind ?? (row.client_kind === "company" || row.client_kind === "contact" ? row.client_kind : null),
-    clientRef: triage?.clientRef ?? row.client_ref ?? null,
+    url: accountAddress && row.gmail_message_id ? gmailWebLink(accountAddress, row.gmail_message_id) : null,
+    clientKind: null,
+    clientRef: null,
     confidence: triage?.confidence ?? null,
     capturedAt: row.received_at ?? row.created_at,
+    messageId: row.id,
+    gmailMessageId: row.gmail_message_id,
+    threadId: row.gmail_thread_id,
+    accountId: row.account_id,
+    accountAddress,
+    mentionsClientKind: mentionsRef ? mentionsKind ?? "company" : null,
+    mentionsClientRef: mentionsRef,
+    mentionsClientName: mentionsRef ? triage?.clientName ?? null : null,
   };
 }
 
@@ -207,8 +263,10 @@ export interface SyncStats {
   labelled: number;
   issues: number;
   emitted: number;
-  /** `lead.captured` events sent this run (new leads plus the re-emit window). */
+  /** New leads handed to the CRM this run (queued in the outbox until it answers). */
   leads: number;
+  /** Addresses added to the do-not-email list this run (opt-outs and hard bounces). */
+  suppressed: number;
   historyId: string | null;
   at: string;
 }
@@ -317,14 +375,35 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
   });
 
   const labelled = await applyTriageLabels(env, loaded, account, triaged);
-  const issues = await openReplyIssues(env, loaded, account, triaged);
+
+  // Opt-outs and hard bounces join the do-not-email list before anything else acts on them.
+  let suppressed = 0;
+  if (triaged.length > 0) {
+    const own = new Set((await env.store.listAccounts(account.company_id)).map((row) => row.address.toLowerCase()));
+    for (const row of triaged) {
+      try {
+        suppressed += (await suppressFromInbound(env, account, row, own)).length;
+      } catch (error) {
+        env.ctx.logger.info("Suppression from inbound mail failed", { messageId: row.id, error: errorMessage(error) });
+      }
+    }
+  }
+
+  // New leads go to the CRM through the outbox (it opens the follow-up, so no reply issue here).
+  const handedToCrm = new Set<string>();
+  let leads = 0;
+  for (const row of triaged) {
+    const handed = await handOffLead(env, account, row);
+    if (handed.handed) handedToCrm.add(row.id);
+    if (handed.created) leads += 1;
+  }
+  const issues = await openReplyIssues(env, loaded, account, triaged.filter((row) => !handedToCrm.has(row.id)));
 
   // Emit what was triaged now, plus the last 30 minutes again (consumers dedupe by key).
   const toEmit = new Map<string, MessageRow>();
   for (const row of triaged) toEmit.set(row.id, row);
   for (const row of await env.store.recentInbound(account.id, REEMIT_MINUTES, 200)) if (!toEmit.has(row.id)) toEmit.set(row.id, row);
   let emitted = 0;
-  let leads = 0;
   for (const row of toEmit.values()) {
     if (!row.gmail_message_id) continue;
     try {
@@ -333,7 +412,6 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
     } catch (error) {
       env.ctx.logger.info("mail.received emit failed", { messageId: row.id, error: errorMessage(error) });
     }
-    if (await emitLead(env, account, row)) leads += 1;
   }
 
   const stats: SyncStats = {
@@ -346,6 +424,7 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
     issues,
     emitted,
     leads,
+    suppressed,
     historyId: cursor ?? null,
     at: new Date(env.now()).toISOString(),
   };
@@ -359,17 +438,34 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
   return stats;
 }
 
-/** Emit `lead.captured` when the sender is not a CRM contact yet. Never throws. */
-async function emitLead(env: Env, account: AccountRow, row: MessageRow): Promise<boolean> {
-  if (!isLeadCandidate(row)) return false;
+/**
+ * A lead from a sender who is not a CRM contact yet goes to the CRM through
+ * the outbox (re-sent until the CRM answers `lead.captured.result`). Skipped
+ * while the CRM module is switched off: the reply issue covers it then.
+ * `handed` is true when the CRM owns the follow-up. Never throws.
+ */
+export async function handOffLead(env: Env, account: AccountRow, row: MessageRow): Promise<{ handed: boolean; created: boolean }> {
+  if (!isLeadCandidate(row)) return { handed: false, created: false };
   try {
+    if (!(await isModuleEnabled(env.ctx, account.company_id, PIB_PLUGINS.crm))) return { handed: false, created: false };
     const contacts = await env.store.crmContactsByEmail(account.company_id, row.from_addr!.email);
-    if (contacts.length > 0) return false;
-    await env.ctx.events.emit(HANDOFF_EVENTS.leadCaptured, account.company_id, leadCapturedFrom(row) as unknown as Record<string, unknown>);
-    return true;
+    if (contacts.length > 0) return { handed: false, created: false };
+    const lead = leadCapturedFrom(row, account.address);
+    const { created } = await enqueue(env.ctx, account.company_id, HANDOFF_EVENTS.leadCaptured, lead as unknown as { key: string } & Record<string, unknown>);
+    return { handed: true, created };
   } catch (error) {
-    env.ctx.logger.info("lead.captured emit failed", { messageId: row.id, error: errorMessage(error) });
-    return false;
+    env.ctx.logger.info("lead.captured hand-off failed", { messageId: row.id, error: errorMessage(error) });
+    return { handed: false, created: false };
+  }
+}
+
+/** Job: re-send leads the CRM has not answered yet (backoff; gives up after about 3 days). */
+export async function redeliverLeads(env: Env): Promise<{ emitted: number; failed: number }> {
+  try {
+    return await redeliver(env.ctx);
+  } catch (error) {
+    env.ctx.logger.info("Lead redelivery failed", { error: errorMessage(error) });
+    return { emitted: 0, failed: 0 };
   }
 }
 
@@ -401,9 +497,23 @@ async function applyTriageLabels(env: Env, loaded: LoadedConfig, account: Accoun
   return labelled;
 }
 
+/**
+ * Who answers mail: the configured triage assignee, else the Account
+ * Manager, else the Operator, else the owner (kit `routeWork`).
+ */
+export async function replyAssignee(env: Env, loaded: LoadedConfig): Promise<{ assigneeAgentId?: string; assigneeUserId?: string }> {
+  const configured = loaded.config.triageAssignee;
+  if (configured?.agentId) return { assigneeAgentId: configured.agentId };
+  if (configured?.userId) return { assigneeUserId: configured.userId };
+  const route = await routeWork(env.ctx, loaded.companyId, ["account-manager"]);
+  if (route.assigneeAgentId) return { assigneeAgentId: route.assigneeAgentId };
+  if (route.assigneeUserId) return { assigneeUserId: route.assigneeUserId };
+  return {};
+}
+
 async function openReplyIssues(env: Env, loaded: LoadedConfig, account: AccountRow, rows: MessageRow[]): Promise<number> {
-  const assignee = loaded.config.triageAssignee;
-  if (!assignee) return 0;
+  if (!loaded.config.replyIssues) return 0;
+  let assignee: { assigneeAgentId?: string; assigneeUserId?: string } | null = null;
   let opened = 0;
   for (const row of rows) {
     const triage = row.triage;
@@ -411,12 +521,13 @@ async function openReplyIssues(env: Env, loaded: LoadedConfig, account: AccountR
     if ((triage.needsReply ?? 0) < RISK_THRESHOLDS.update || (triage.phishing ?? 0) >= 0.9 || row.bulk) continue;
     const threadId = row.gmail_thread_id ?? row.gmail_message_id!;
     if (!(await env.store.claimThreadIssue(account.company_id, account.id, threadId))) continue;
+    assignee ??= await replyAssignee(env, loaded);
     try {
       const created = await createWorkIssue(env.ctx, {
         companyId: loaded.companyId,
         title: `Reply needed: ${row.subject}`.slice(0, 200),
         description: replyIssueDescription(row, account.address),
-        ...(assignee.agentId ? { assigneeAgentId: assignee.agentId } : { assigneeUserId: assignee.userId }),
+        ...assignee,
         originKind: `plugin:${PLUGIN_ID}`,
         originId: `thread:${account.id}:${threadId}`,
         priority: (triage.urgency ?? 0) >= 2.5 ? "high" : "medium",
@@ -444,12 +555,16 @@ export function replyIssueDescription(row: MessageRow, accountAddress: string): 
     "",
     `> ${(row.snippet ?? "").slice(0, 400)}`,
     "",
-    `Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${row.id}\`). Draft the answer with \`create-draft\` (accountId \`${row.account_id}\`, replyToMessageId \`${row.id}\`) and send it with \`send-draft\` when your delegation allows sending.`,
+    `1. Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${row.id}\`)${(row.attachments ?? []).length ? `; open an attachment with \`get-attachment\`` : ""}.`,
+    `2. Draft the answer with \`create-draft\` (accountId \`${row.account_id}\`, replyToMessageId \`${row.id}\`) and send it with \`send-draft\` when your delegation allows sending. Log it on the client in the CRM${row.client_ref ? ` (\`${row.client_kind ?? "company"}:${row.client_ref}\`)` : ""}.`,
+    "3. Mark this issue done with what you sent. Never answer phishing or legal threats: ask the owner instead.",
+    "",
+    `No access to this mailbox? \`list-mailboxes\` shows your delegation. Ask the owner once (\`partnersinbiz.cockpit:ask-owner\`) to give you access in Mailbox → Mailboxes → Give an agent access.`,
   ].join("\n");
 }
 
 /** Job body: every connected account of every company whose settings were saved. */
-export async function runSyncJob(env: Env): Promise<{ accounts: number; synced: number; failed: number }> {
+export async function runSyncJob(env: Env): Promise<{ accounts: number; synced: number; failed: number; leadsResent: number; leadsFailed: number }> {
   const accounts = await env.store.listSyncAccounts();
   const byCompany = new Map<string, AccountRow[]>();
   for (const account of accounts) {
@@ -471,7 +586,9 @@ export async function runSyncJob(env: Env): Promise<{ accounts: number; synced: 
       else failed += 1;
     }
   }
-  return { accounts: accounts.length, synced, failed };
+  // Leads the CRM has not answered yet go out again (with backoff).
+  const leads = await redeliverLeads(env);
+  return { accounts: accounts.length, synced, failed, leadsResent: leads.emitted, leadsFailed: leads.failed };
 }
 
 export async function triageRunFor(env: Env, loaded: LoadedConfig, limits: { maxNew?: number; triageLimit?: number } = {}): Promise<SyncRun> {

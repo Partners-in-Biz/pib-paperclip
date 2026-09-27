@@ -101,6 +101,9 @@ export function isMemoryKind(value: unknown): value is MemoryKind {
   return typeof value === "string" && (MEMORY_KINDS as readonly string[]).includes(value);
 }
 
+/** Learned bullets saved from one comment (the Cockpit harvester stops after this many). */
+export const LEARNED_MAX_PER_COMMENT = 5;
+
 export const COMPANY_MEMORY_HEADING = "## Company memory";
 
 const recall = `\`${memoryTool(MEMORY_TOOLS.recall)}\``;
@@ -112,10 +115,10 @@ export const COMPANY_MEMORY_SECTION = `${COMPANY_MEMORY_HEADING}
 
 The company remembers what its agents learn. You get only what the task needs, never all of it.
 
-- **Start** every task with ${recall} (\`issueId\`, plus \`client\` when the work is for a client). It returns a short brief of at most ${MEMORY_LIMITS.briefMaxFacts} facts picked for this task. Follow them unless the task or a person says otherwise. If you need more, use ${search} with a specific query; never try to read all of memory.
-- **Close**: end your closing comment with **Learned:** and one bullet per thing that will matter next time (at most ${MEMORY_LIMITS.factMaxChars} characters each; start a bullet with \`Rule:\`, \`Warning:\` or \`Preference:\` when it is one). They are saved to company memory automatically for this issue's client and area, skipping duplicates and anything that looks like a secret. Write \`**Learned:** none\` when nothing will. Good: a client preference, a fact about their site, accounts or systems, what worked or failed and why, a workaround. Not: routine progress (the issue has it), secrets, tokens, passwords or personal data beyond business contact details.
-- Use ${add} instead to pin a must-follow rule, set an expiry date, file a fact under a different client, or replace an older fact (\`supersedes\` with its id).
-- **Tune it**: if the brief missed something you needed, or gave you something useless, call ${feedback} once with the ids.
+- **Start** every task with ${recall} (\`issueId\`; add \`client\` as \`company:<id>\` when you know it, else it is found from the issue). It returns at most ${MEMORY_LIMITS.briefMaxFacts} facts picked for this task: follow them unless the task or a person says otherwise. Need more? ${search} with a specific query; never try to read all of memory.
+- **Close**: end your closing comment with **Learned:** and up to ${LEARNED_MAX_PER_COMMENT} bullets that will matter next time (under ${MEMORY_LIMITS.factMaxChars} characters each; start one with \`Rule:\`, \`Warning:\`, \`Preference:\` or \`Fact:\` when it is one, else it is a lesson). They are saved automatically for the issue's client and area, without duplicates or anything that looks like a secret. Write \`**Learned:** none\` when nothing will. Good: a client preference, a fact about their site, accounts or systems, what worked or failed and why, a workaround. Not: routine progress, secrets, personal data beyond business contacts, or rules for how a module works (propose those as a playbook change).
+- Use ${add} instead to pin a must-follow rule, set an expiry date, file a fact under another client, or replace an older fact (\`supersedes\` with its id).
+- **Tune it**: if the brief missed something you needed or gave you noise, call ${feedback} once with the ids.
 `;
 
 /** Appends the company memory section once. */

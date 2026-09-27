@@ -10,6 +10,7 @@ import {
   emptySnapshot,
   jobHealth,
   linkedAgentId,
+  outboxHealth,
   publishCockpitSnapshot,
   withClientParam,
   type ActivityItem,
@@ -17,6 +18,7 @@ import {
   type CockpitSnapshot,
   type HealthCheck,
   type QualityMetric,
+  type TeamMemberReport,
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
@@ -24,8 +26,8 @@ import { clientPrefix, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { table } from "./db.js";
 import { clip } from "./domain.js";
-import { reemitRecentLeads } from "./handoff.js";
-import { SOCIAL_HIRE_ROLE } from "./hire.js";
+import { enqueueRecentLeads } from "./handoff.js";
+import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
 import { TRIAGE_PURPOSE } from "./triage.js";
@@ -39,6 +41,7 @@ export const SOCIAL_JOBS: Array<{ key: string; title: string; everyMinutes: numb
   { key: "poll-rss", title: "Poll RSS feeds", everyMinutes: 15 },
   { key: "score-posts", title: "Score posts (Growth Lab)", everyMinutes: 24 * 60 },
   { key: "measure-experiments", title: "Measure experiments (Growth Lab)", everyMinutes: 24 * 60 },
+  { key: "redeliver", title: "Re-send leads to the CRM", everyMinutes: 10 },
 ];
 
 type Scoped = { client_kind: string | null; client_ref: string | null; client_name: string | null };
@@ -197,6 +200,8 @@ async function healthChecks(ctx: PluginContext, companyId: string): Promise<Heal
       [] as HealthCheck[],
     )),
   );
+  // Leads handed to the CRM that it has not answered (kit outbox).
+  checks.push(await part(ctx, "outbox", () => outboxHealth(ctx, companyId), { key: "outbox", title: "Cross-plugin deliveries", status: "ok" as const }));
   const failed = await part(
     ctx,
     "failed",
@@ -248,6 +253,42 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       issueId: post.review_issue_id,
       kind: "review",
       since: post.updated_at,
+    });
+  }
+  // Approved, but no time: the Social agent has a task to pick one (or a person does, when there is no agent).
+  const unscheduled = await ctx.db.query<Scoped & { id: string; body: string; schedule_issue_id: string | null; updated_at: string | null }>(
+    `SELECT id, body, client_kind, client_ref, client_name, schedule_issue_id, updated_at::text AS updated_at
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'approved' ORDER BY updated_at LIMIT 20`,
+    [companyId],
+  );
+  for (const post of unscheduled) {
+    items.push({
+      key: `social:schedule:${post.id}`,
+      title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,
+      why: post.schedule_issue_id
+        ? "Approved, but it has no publish time. The Social agent has a task to pick one."
+        : "Approved, but it has no publish time. Pick one on the post, or send it back to draft.",
+      href: path(POSTS, post),
+      issueId: post.schedule_issue_id,
+      kind: "other",
+      since: post.updated_at,
+    });
+  }
+  // Signing in again is a person's one-time grant.
+  const reconnect = await ctx.db.query<Scoped & { id: string; platform: string; display_name: string; reconnect_issue_id: string | null; updated_at: string | null }>(
+    `SELECT id, platform, display_name, client_kind, client_ref, client_name, reconnect_issue_id, updated_at::text AS updated_at
+       FROM ${table(ctx, "accounts")} WHERE company_id = $1 AND status = 'needs_reconnect' AND token_enc IS NOT NULL ORDER BY updated_at LIMIT 20`,
+    [companyId],
+  );
+  for (const account of reconnect) {
+    items.push({
+      key: `social:reconnect:${account.id}`,
+      title: `${clientPrefix(account)}Reconnect ${platformName(account.platform)} · ${account.display_name}`,
+      why: "The account's sign-in stopped working. A person signs in again on Social → Accounts; posts to it fail until then.",
+      href: path("/social?tab=accounts", account),
+      issueId: account.reconnect_issue_id,
+      kind: "grant",
+      since: account.updated_at,
     });
   }
   const escalated = await ctx.db.query<Scoped & { id: string; platform: string | null; kind: string; body: string; triage_issue_id: string | null; created_at: string | null }>(
@@ -423,21 +464,35 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
 
 // ── snapshot ────────────────────────────────────────────────────────────────
 
+/** The Social agent role for the Cockpit's team (the Cockpit shares it in `roles.updated`). */
+export async function teamReport(ctx: PluginContext, companyId: string, agentId: string | null): Promise<TeamMemberReport[]> {
+  let status: string | null = null;
+  if (agentId) {
+    try {
+      status = (await ctx.agents.get(agentId, companyId))?.status ?? null;
+    } catch {
+      status = null;
+    }
+  }
+  return [{ role: "social", agentId, status }];
+}
+
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
   const snap = emptySnapshot(PLUGIN_ID, "Social");
-  const agentId = await part(ctx, "agent", () => linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE), null);
+  const agentId = await part(ctx, "agent", () => linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx)), null);
   snap.kpis = await part(ctx, "kpis", () => kpis(ctx, companyId), [] as CockpitKpi[]);
   snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId), [] as HealthCheck[]);
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, agentId), [] as QualityMetric[]);
+  snap.team = await part(ctx, "team", () => teamReport(ctx, companyId, agentId), [{ role: "social" as const, agentId, status: null }]);
   return snap;
 }
 
 /**
  * Hourly (refresh-tokens job, next to the setup status): push each company's
- * snapshot and re-emit recent leads. Skips companies whose Social module is
- * off or whose settings were never saved.
+ * snapshot and queue any recent lead that missed the outbox. Skips companies
+ * whose Social module is off or whose settings were never saved.
  */
 export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ published: number; skipped: number; leads: number }> {
   const result = { published: 0, skipped: 0, leads: 0 };
@@ -449,7 +504,7 @@ export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ pub
       }
       await publishCockpitSnapshot(ctx, companyId, await cockpitSnapshot(ctx, companyId));
       result.published += 1;
-      result.leads += await part(ctx, "leads", () => reemitRecentLeads(ctx, companyId), 0);
+      result.leads += await part(ctx, "leads", () => enqueueRecentLeads(ctx, companyId), 0);
     } catch (error) {
       result.skipped += 1;
       ctx.logger.info("Social cockpit snapshot skipped", { companyId, error: error instanceof Error ? error.message : String(error) });

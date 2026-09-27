@@ -1,7 +1,7 @@
 /**
  * Social inbox: `poll-inbox` (every 15 minutes) pulls comments on recent
  * posts and mentions into inbox_items (deduped per account + external id),
- * then Jev triages new items (triage.ts) when a key is set;
+ * then triages new items (triage.ts: built-in rules, or Jev when a key is set);
  * `reply` publishes a real reply through the platform when it supports it.
  */
 import { randomUUID } from "node:crypto";
@@ -87,7 +87,7 @@ export async function pollInboxJob(ctx: PluginContext, ensureCompany: (companyId
         ctx.logger.info("Social inbox poll failed", { accountId: row.id, platform: row.platform, error: error instanceof Error ? error.message : String(error) });
       }
     }
-    // Jev triage of new items (polled or recorded by hand). No key: nothing changes.
+    // Triage of new items (polled or recorded by hand): Jev with a key, the built-in rules without one.
     try {
       const triage = await triageInbox(ctx, config);
       summary.triaged += triage.triaged;

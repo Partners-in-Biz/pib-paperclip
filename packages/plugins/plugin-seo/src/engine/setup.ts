@@ -3,7 +3,11 @@
  * a deep link, and what the agent does once it is in place. Pure, so the SEO
  * page, the sprint's Integrations tab and the `setup-checklist` tool agree.
  */
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import type { NeedsYouLink } from "./needs-you.js";
+
+/** Setup → Team, at the SEO Specialist: where the agent is hired, picked or changed. */
+export const SEO_TEAM_PATH = teamSetupPath("seo-specialist");
 
 export const GCP_PROJECT = "partners-in-biz-85059";
 export const SA_CONSOLE_URL = `https://console.cloud.google.com/iam-admin/serviceaccounts?project=${GCP_PROJECT}`;
@@ -131,11 +135,11 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
     status: !f.agent ? "todo" : agentDown ? "warn" : "done",
     detail: !f.agent ? "No SEO agent linked: agent tasks wait unassigned." : agentDown ? `Linked but ${f.agent.status.replace(/_/g, " ")}: it is not woken for tasks.` : `Linked (${f.agent.status}).`,
     steps: !f.agent
-      ? ["SEO page → **Activate SEO agent** (opens a hire task), or **Link agent** to pick an existing one."]
+      ? ["Open **Setup → Team → SEO Specialist** and hire one (it opens a hire task) or pick an agent you already have."]
       : agentDown
         ? ["Open the agent, check its adapter has a working model key, then **Resume**. Enable the \"Run today's SEO\" and \"Weekly SEO review\" routine triggers."]
         : [],
-    links: f.agent ? [{ label: "Agent", url: p(f.prefix, `/agents/${f.agent.id}`) }, { label: "Routines", url: p(f.prefix, "/routines") }] : [{ label: "SEO page", url: p(f.prefix, "/seo") }],
+    links: f.agent ? [{ label: "Agent", url: p(f.prefix, `/agents/${f.agent.id}`) }, { label: "Routines", url: p(f.prefix, "/routines") }] : [{ label: "Team in Setup", url: p(f.prefix, SEO_TEAM_PATH) }],
     next: "Works every due task, closes each with evidence, and posts a digest per sprint.",
   });
 
@@ -197,7 +201,7 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
       detail: s.bingVerified ? "Verified." : f.bingKey ? "The agent adds and verifies it (bing-add-site → repo → bing-verify-site)." : "Needs the Bing API key first.",
       steps: [],
       links: [],
-      next: "Submits the sitemap and URL batches to Bing; IndexNow pings cover Bing too.",
+      next: "Submits the sitemap and URL batches to Bing; IndexNow pings (which tell Bing and others a page changed) cover Bing too.",
     });
     items.push({
       key: "autopilot",

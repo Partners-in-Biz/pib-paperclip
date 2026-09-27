@@ -17,7 +17,10 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import * as db from "../db.js";
+import { ROLE_LABELS } from "../domain/chart.js";
+import { dayLabel } from "../domain/dates.js";
 import manifest from "../manifest.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { bookkeeper } from "./agent.js";
@@ -133,7 +136,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         detail: "The South African chart, the posting roles and the VAT codes are added the first time Accounting is used for the company.",
         href: "/accounting?tab=chart",
         hrefLabel: "Open Chart & roles",
-        steps: ["Click Set up the chart (or open Accounting once).", "Check the accounts under Chart & roles and add any the business needs."],
+        steps: ["Click **Set up the chart** (or open Accounting once).", "Check the accounts under **Accounting → Books setup → Chart & roles** and add any the business needs."],
         agentNext: "Billing and Payroll can post journals to the books.",
         action: { plugin: PLUGIN_ID, key: "accounting.chart", label: "Set up the chart" },
       },
@@ -156,7 +159,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         detail: "Postings from Billing and Payroll that use an unmapped role are rejected.",
         href: "/accounting?tab=chart",
         hrefLabel: "Open Chart & roles",
-        steps: ["Open Accounting → Chart & roles.", "Pick an active account for each role listed as missing."],
+        steps: ["Open **Accounting → Books setup → Chart & roles**.", "Pick an active account for each role marked as missing."],
         agentNext: "Postings from Billing and Payroll land on the right accounts.",
         blockedBy: ["chart"],
       },
@@ -164,7 +167,8 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         const book = await db.getBook(ctx.db, companyId);
         if (!book) return { done: false, detail: "Set up the chart first." };
         const gaps = roleGaps(await loadChart(ctx, companyId));
-        return { done: gaps.length === 0, detail: `Not mapped: ${gaps.join(", ")}.` };
+        const names = gaps.map((role) => ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role);
+        return { done: gaps.length === 0, detail: `No account yet for: ${names.join(", ")}.` };
       },
     ),
   );
@@ -181,7 +185,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         detail: "Statements are imported and reconciled per bank account.",
         href: "/accounting?tab=bank",
         hrefLabel: "Open Bank",
-        steps: ["Open Accounting → Bank.", "Click + Add bank account.", "Give it a name and link it to a Bank account in the chart."],
+        steps: ["Open **Accounting → Bank**.", "Click **+ Add bank account**.", "Give it a name and pick the bank account in the chart it belongs to."],
         agentNext: "The Bookkeeper can import statements and reconcile them.",
         blockedBy: ["chart"],
       },
@@ -192,30 +196,32 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     ),
   );
 
-  // 5. Opening balances at cut-over.
+  // 5. Opening balances at cut-over, or "We started on these books".
   items.push(
     await probe(
       ctx,
       companyId,
       {
         key: "opening_balances",
-        title: "Import opening balances at cut-over",
+        title: "Bring over the balances from your previous books",
         required: true,
-        detail: "Until the opening trial balance is posted, the balance sheet only shows what was posted here.",
+        detail: "Until the closing balances from your previous books are posted, the balance sheet only shows what was posted here. If the business started on these books, there is nothing to bring over: say so on the Cut-over page.",
         href: "/accounting?tab=cutover",
         hrefLabel: "Open Cut-over",
         steps: [
-          "Export the trial balance from the old books at the cut-over date (usually the day before the first month kept here) as a CSV: code, name, debit, credit.",
-          "Open Accounting → Cut-over, choose the file and the cut-over date.",
-          "Click Check: it must balance, every code must be in the chart, and receivables and payables should match Billing.",
-          "Click Post opening balances.",
+          "Started trading on these books? Open **Accounting → Books setup → Cut-over** and click **We started on these books**. That is all.",
+          "Otherwise, export the trial balance from your previous books as a CSV (code, name, debit, credit) at the cut-over date: usually the last day before the first month kept here.",
+          "On the same page, choose the file and the cut-over date, then click **Check**. It must balance, every account code must be in the chart, and money owed to and by you should match Billing.",
+          "Click **Post opening balances**.",
         ],
         agentNext: "The balance sheet, cash flow and accountant pack start from the right figures.",
         blockedBy: ["chart", "roles"],
       },
       async () => {
         const book = await db.getBook(ctx.db, companyId);
-        return { done: Boolean(book?.openingJournalId) };
+        if (book?.openingJournalId) return { done: true, patch: { detail: book.cutoverDate ? `Posted at ${dayLabel(book.cutoverDate)}.` : undefined } };
+        if (book?.cutoverSkippedAt) return { done: true, patch: { detail: `Not needed: the business started on these books (confirmed ${dayLabel(book.cutoverSkippedAt)}).` } };
+        return { done: false };
       },
     ),
   );
@@ -229,10 +235,10 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         key: "first_statement",
         title: "Import the first bank statement",
         required: false,
-        detail: "CSV, OFX or MT940 from the bank. Statement emails in the mailbox open an issue to import them.",
+        detail: "CSV, OFX or MT940 from the bank. A statement email in the Mailbox opens an issue for the Bookkeeper, who imports it.",
         href: "/accounting?tab=bank",
         hrefLabel: "Open Bank",
-        steps: ["Download a CSV, OFX or MT940 statement from the bank.", "Open Accounting → Bank → Import statement, pick the bank account and the file, and click Import."],
+        steps: ["Download a CSV, OFX or MT940 statement from online banking.", "Open **Accounting → Bank → Import statement**, pick the bank account and the file, and click **Import**."],
         agentNext: "Suggests a category or an invoice match for each line; the Bookkeeper works through them.",
         blockedBy: ["bank_account"],
       },
@@ -240,7 +246,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     ),
   );
 
-  // 7. Bookkeeper agent (optional).
+  // 7. Bookkeeper agent (required, like the kit TEAM_ROLES entry).
   items.push(
     await probe(
       ctx,
@@ -248,16 +254,17 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
       {
         key: "bookkeeper",
         title: "Hire or link the Bookkeeper",
-        required: false,
-        detail: "An agent that reconciles the bank and runs the month-end close. A person still approves anything that posts or locks.",
-        href: "/accounting",
-        hrefLabel: "Open Accounting",
+        required: true,
+        detail: "The agent that imports bank statements, matches and reconciles the bank, prepares the VAT201 and runs the month-end close. Without it this work goes to the Operator or to you. A person still approves anything that posts or locks.",
+        // Staffed in Setup → Team (hire, pick, change, remove).
+        href: teamSetupPath("bookkeeper"),
+        hrefLabel: "Open Team in Setup",
         steps: [
-          "Open Accounting → Overview.",
-          "Click Open a new hire task (or Link an existing agent).",
-          "Approve the hire, then attach the pib-bookkeeping skill if Accounting asks you to.",
+          "Open Setup → Team → Bookkeeper.",
+          "Hire one (a hire task for your hiring agent or a person), or pick an agent you already have.",
+          "Approve the hire and resume the agent once its model key works.",
         ],
-        agentNext: "Gets a \"Reconcile N new bank lines\" issue after each import and a \"Month-end close\" issue each month.",
+        agentNext: "Gets a \"Bank statement received\" issue for each statement email, a \"Reconcile N new bank lines\" issue after each import and a \"Month-end close\" issue each month.",
       },
       async () => {
         const agent = await bookkeeper(ctx, companyId);
@@ -273,13 +280,13 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
       companyId,
       {
         key: "private_storage",
-        title: "Connect private file storage (Cloudflare R2)",
+        title: "Optional: private storage for large files",
         required: false,
-        detail: "Needed for statement files over 1 MB and large accountant packs. Use a private bucket: these are financial documents.",
+        detail: "Only needed for bank statements over 1 MB and large accountant packs; smaller files work without it. Whoever looks after your Paperclip sets it up once (a private Cloudflare R2 bucket, because these are financial documents).",
         href: settingsLink,
         hrefLabel: "Open settings",
         steps: [
-          "In Cloudflare R2, create a new bucket. Leave public access off (no public URL, no custom domain).",
+          "In Cloudflare R2, create a new bucket. Leave public access off (no public web address, no custom domain).",
           "In the bucket's CORS settings, allow PUT and GET from the Paperclip address.",
           "Create an R2 API token with Object Read & Write on that bucket only.",
           "Open Settings → Plugins → Accounting → Private file storage: fill in the account ID, bucket name, access key ID and the secret access key (as a secret), then Save Configuration.",
@@ -304,7 +311,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     detail: "Worth doing once before the first VAT201: the accountant checks the accounts, the role mapping and which VAT code each kind of income and expense uses.",
     href: "/accounting?tab=chart",
     hrefLabel: "Open Chart & roles",
-    steps: ["Share Chart & roles and the VAT tab with the accountant.", "Make any changes they ask for under Chart & roles."],
+    steps: ["Show the accountant **Books setup → Chart & roles** and **Reports & VAT → VAT**.", "Make any changes they ask for under **Chart & roles**."],
     agentNext: null,
   });
 

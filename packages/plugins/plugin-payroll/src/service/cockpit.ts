@@ -1,8 +1,9 @@
 /**
  * Company Cockpit snapshot for Payroll (`GET /cockpit`, pushed hourly as
  * `cockpit.snapshot`): next pay date, last run cost, headcount, the EMP201
- * due, job and posting health, approvals waiting on a board member, recent
- * activity and run quality.
+ * due, job and posting health, approvals and approved-but-unlocked runs
+ * waiting on a board member, recent activity, run quality and the Payroll
+ * Clerk it staffs (`team`).
  *
  * NEVER carries personal data: no employee names, emails, ID, tax or bank
  * details, leave types or reasons, and no per-employee amounts. Only counts,
@@ -13,6 +14,7 @@ import {
   configSaved,
   emptySnapshot,
   formatMoneyMinor,
+  hireStatus,
   isModuleEnabled,
   jobHealth,
   outboxHealth,
@@ -21,12 +23,15 @@ import {
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
+import { readableDate, readableMonth } from "../dates.js";
 import { variances } from "../domain.js";
+import { CLERK_ROLE } from "../hire.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { rulesCheckText } from "../rule-labels.js";
 import { ruleVersionFor } from "../rules.js";
 import { emp201DueDate } from "../statutory.js";
 import { errorMessage, today, type Env } from "./env.js";
-import { rulesReviewed } from "./setup.js";
+import { rulesReviewState } from "./rules-review.js";
 import { emp201Series } from "./statutory.js";
 
 /** Scheduled jobs and their interval in minutes (from the manifest schedules). */
@@ -38,6 +43,8 @@ export const PAYROLL_JOBS: Array<{ key: string; title: string; everyMinutes: num
 const PAGE = "/payroll";
 const OPEN = new Set(["draft", "calculated", "pending_approval", "approved"]);
 const issueHref = (issueId: string) => `/issues/${issueId}`;
+/** Opens the run on the Payroll page (where Lock and post is). */
+const runHref = (runId: string) => `${PAGE}?tab=runs&run=${encodeURIComponent(runId)}`;
 const money = (minor: number) => formatMoneyMinor(minor, "ZAR");
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
@@ -99,7 +106,7 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
     } else {
       payDate = nextPayDay(date, (await e.config(companyId)).defaultPayDay);
     }
-    snap.kpis.push({ key: "next_pay_date", label: next ? `Next pay date (${next.number})` : "Next pay date", value: payDate, raw: daysBetween(date, payDate), tone, href: `${PAGE}?tab=runs`, group: "people" });
+    snap.kpis.push({ key: "next_pay_date", label: next ? `Next pay date (${next.number})` : "Next pay date", value: readableDate(payDate), raw: daysBetween(date, payDate), tone, href: `${PAGE}?tab=runs`, group: "people" });
   });
 
   if (lastLocked) {
@@ -121,7 +128,8 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
     const last = series[series.length - 1];
     if (!last) return;
     const days = daysBetween(date, due);
-    snap.kpis.push({ key: "emp201", label: `EMP201 for ${month}`, value: `${money(last.totalPayableMinor)} by ${due}`, raw: last.totalPayableMinor, tone: days <= 3 ? "warn" : "neutral", href: `${PAGE}?tab=statutory`, group: "money" });
+    // EMP201: the monthly PAYE, UIF and SDL declaration to SARS. The amount is the value; the due date sits in the label.
+    snap.kpis.push({ key: "emp201", label: `SARS EMP201 for ${readableMonth(month)}, due ${readableDate(due)}`, value: money(last.totalPayableMinor), raw: last.totalPayableMinor, tone: days <= 3 ? "warn" : "neutral", href: `${PAGE}?tab=statutory`, group: "money" });
   });
 
   // ── Health ──────────────────────────────────────────────────────────────
@@ -153,18 +161,40 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
       return;
     }
     snap.health.push({ key: "rules", title: "Tax rules", status: "ok", detail: `Tax year ${version.taxYear}.` });
-    const reviewed = await rulesReviewed(e, companyId);
-    snap.health.push(reviewed
-      ? { key: "rules_review", title: "Unverified tax rules", status: "ok" }
-      : { key: "rules_review", title: "Unverified tax rules", status: "warn", detail: `${plural(version.unverified.length, "rule")} in this tax year are not confirmed against SARS yet and nobody has reviewed them.`, href: `${PAGE}?tab=statutory`, fix: "A board member reads the flagged rules under Payroll → Statutory and marks them reviewed." });
+    // The same words as the Payroll page banner: "4 tax rules need your accountant's check".
+    const check = await rulesReviewState(e, companyId);
+    const title = "Accountant's check of the tax rules";
+    snap.health.push(check.reviewed
+      ? { key: "rules_review", title, status: "ok", ...(check.review ? { detail: `Checked on ${readableDate(check.review.checkedOn)}.` } : {}) }
+      : {
+          key: "rules_review",
+          title,
+          status: "warn",
+          detail: `${rulesCheckText(version.unverified.length)} (${version.taxYear}). Pay runs use them as they are until then.`,
+          href: `${PAGE}?tab=statutory`,
+          fix: "Open Payroll → Statutory, have your accountant check the rules at the top, and record their name and the date.",
+        });
   });
 
   // ── Waiting on a person ─────────────────────────────────────────────────
+  // Approved but not locked (lock on approval off, or its lock failed): not in the books, no payslips.
+  for (const run of runs.filter((r) => r.status === "approved")) {
+    const days = daysBetween(date, run.payDate);
+    snap.waiting.push({
+      key: `lock:${run.id}`,
+      title: `Lock pay run ${run.number}`,
+      why: `Approved${run.approvedAt ? ` on ${readableDate(run.approvedAt)}` : ""} but not locked, so it is not in the books and no payslips are made. ${days < 0 ? `Pay day was ${readableDate(run.payDate)}.` : `Pay day is ${readableDate(run.payDate)}.`} Only a board member locks it.`,
+      href: runHref(run.id),
+      issueId: null,
+      kind: "money",
+      since: run.approvedAt,
+    });
+  }
   for (const run of runs.filter((r) => r.status === "pending_approval" && r.approvalIssueId)) {
     snap.waiting.push({
       key: `approval:${run.approvalIssueId}`,
       title: `Approve pay run ${run.number}`,
-      why: `Paying ${plural(run.totals.employeeCount, "employee")} ${money(run.totals.netPayMinor)} on ${run.payDate} needs a board member who did not prepare it.`,
+      why: `Paying ${plural(run.totals.employeeCount, "employee")} ${money(run.totals.netPayMinor)} on ${readableDate(run.payDate)} needs a board member who did not prepare it.`,
       href: issueHref(run.approvalIssueId!),
       issueId: run.approvalIssueId,
       kind: "money",
@@ -210,6 +240,12 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
     const v = variances(now.filter((i) => i.status === "ok").map(row), before.filter((i) => i.status === "ok").map(row));
     const flagged = new Set(v.changes.map((c) => c.employeeId)).size + v.added.length + v.missing.length;
     snap.quality.push({ key: "variance_flags", label: `Variance flags on ${latest.number} (vs ${previous.number})`, value: String(flagged), raw: flagged, tone: flagged > 0 ? "warn" : "ok" });
+  });
+
+  // ── Team: the Payroll Clerk this plugin staffs (the Cockpit shares it in roles.updated for routeWork) ──
+  await part("team", async () => {
+    const agent = (await hireStatus(ctx, companyId, CLERK_ROLE)).agent;
+    snap.team = [{ role: "payroll-clerk", agentId: agent?.id ?? null, status: agent?.status ?? null }];
   });
 
   if (failed.length) {

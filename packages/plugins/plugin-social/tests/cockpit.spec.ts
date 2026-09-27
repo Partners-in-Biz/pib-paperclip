@@ -65,6 +65,10 @@ describe("cockpit snapshot (configured)", () => {
   };
   const rows = (sql: string) => {
     if (sql.includes("percentile_cont")) return [{ published: "4", scheduled: "3", inbox: "7", experiments: "1", lift: "0.18", scored: "9" }];
+    if (sql.includes("reconnect_issue_id")) return [{ id: "a1", platform: "linkedin", display_name: "PiB", reconnect_issue_id: "iss-c1", client_kind: null, client_ref: null, client_name: null, updated_at: "2026-09-25T10:00:00Z" }];
+    if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'approved'`)) {
+      return [{ id: "p3", body: "Approved without a time", client_kind: null, client_ref: null, client_name: null, schedule_issue_id: "iss-s1", updated_at: "2026-09-26T10:00:00Z" }];
+    }
     if (sql.includes(`FROM ${T("accounts")}`)) {
       return [
         { id: "a1", platform: "linkedin", display_name: "PiB", status: "needs_reconnect", client_kind: null, client_ref: null, client_name: null, token_expires_at: null, last_error: "invalid_grant", updated_at: "2026-09-25T10:00:00Z" },
@@ -108,12 +112,21 @@ describe("cockpit snapshot (configured)", () => {
     expect(snap.waiting.map((w) => [w.key, w.kind, w.issueId])).toEqual([
       ["social:review:p1", "review", "iss-r1"],
       ["social:review:p2", "review", null],
+      ["social:schedule:p3", "other", "iss-s1"],
+      ["social:reconnect:a1", "grant", "iss-c1"],
       ["social:escalated:i1", "judgement", "iss-e1"],
       ["social:playbook-change:ch1", "judgement", "iss-g1"],
       ["social:experiment:e1", "judgement", "iss-g1"],
     ]);
     expect(snap.waiting[0]!.why).toContain("Reviewer");
     expect(snap.waiting[1]).toMatchObject({ title: "[Acme] Approve post: Acme spring sale", href: "/social?tab=posts&client=company%3Ac1" });
+    // Approved but not scheduled: visible, with the Social agent's task.
+    expect(snap.waiting[2]).toMatchObject({ title: "Schedule approved post: Approved without a time", why: expect.stringContaining("The Social agent has a task") });
+    expect(snap.waiting[3]).toMatchObject({ title: "Reconnect LinkedIn · PiB", href: "/social?tab=accounts" });
+    // The Social agent's role for the Cockpit's team (none linked here).
+    expect(snap.team).toEqual([{ role: "social", agentId: null, status: null }]);
+    // Leads the CRM has not answered yet (kit outbox).
+    expect(health.outbox).toMatchObject({ status: "ok" });
 
     expect(snap.activity.map((a) => a.text)).toEqual([
       'Published "Case study: Acme" to 3 accounts',
@@ -139,7 +152,7 @@ describe("cockpit snapshot (configured)", () => {
 });
 
 describe("hourly cockpit push", () => {
-  it("skips companies with unsaved settings or the module off, publishes the rest and re-emits leads", async () => {
+  it("skips companies with unsaved settings or the module off, publishes the rest and queues leads that missed the outbox", async () => {
     const emit = vi.fn(async (_name: string, _companyId: string, _payload: unknown) => undefined);
     const config = vi.fn(async (companyId: string) => (companyId === "co-new" ? {} : { publicBaseUrl: "https://paperclip.partnersinbiz.online" }));
     const state: State = { "social-setup:companies": ["co-1", "co-new", "co-off"], "pib-setup:modules:co-off": null };

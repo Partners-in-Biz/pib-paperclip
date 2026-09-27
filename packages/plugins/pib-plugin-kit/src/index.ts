@@ -1,5 +1,7 @@
 export * from "./skills.js";
 export * from "./memory.js";
+export * from "./asking.js";
+export * from "./team.js";
 export * from "./crypto.js";
 export * from "./config.js";
 export * from "./r2.js";
@@ -8,6 +10,7 @@ export * from "./issues.js";
 export * from "./crm-projection.js";
 export * from "./client-ref.js";
 export * from "./agent-hire.js";
+export * from "./grants.js";
 export * from "./contracts.js";
 export * from "./outbox.js";
 export * from "./decisions.js";

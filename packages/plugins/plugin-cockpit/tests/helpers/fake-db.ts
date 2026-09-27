@@ -108,6 +108,13 @@ function matches(row: Row, where: string | undefined, params: unknown[]): boolea
       if (!list.includes(row[m[1]!])) return false;
       continue;
     }
+    if ((m = /^(?:\w+\.)?(\w+)\s+(NOT\s+)?I?LIKE\s+(.+)$/i.exec(cond))) {
+      const pattern = String(evalExpr(m[3]!, params));
+      const re = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".")}$`, /ILIKE/i.test(cond) ? "is" : "s");
+      const hit = re.test(String(row[m[1]!] ?? ""));
+      if (m[2] ? hit : !hit) return false;
+      continue;
+    }
     if ((m = /^\$(\d+)\s*=\s*ANY\((\w+)\)$/i.exec(cond))) {
       const list = row[m[2]!];
       if (!Array.isArray(list) || !list.includes(params[Number(m[1]) - 1])) return false;

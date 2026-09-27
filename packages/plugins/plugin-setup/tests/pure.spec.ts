@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SetupItem, SetupStatus } from "../src/kit-setup.js";
-import { MODULE_KEYS } from "../src/kit-setup.js";
+import { MODULE_KEYS, setupLeftLabel, setupSummary } from "../src/kit-setup.js";
 import { isEmptyValue, mergeMissing, planCopy, secretFields, stripSecrets } from "../src/copy.js";
-import { finishSetupContent, finishSetupMissing } from "../src/finish-issue.js";
+import { countedStatuses, finishSetupContent, finishSetupMissing, finishSetupSummary } from "../src/finish-issue.js";
 import { guidedOrder, itemPhase, overallProgress } from "../src/guide.js";
 import { allModulesOn, crmHint, effectiveModules, normalizeModules, ORDERED_MODULES } from "../src/modules.js";
 import { linkFor, parseSetupStatus, standInStatus } from "../src/status.js";
@@ -208,7 +208,10 @@ describe("finish setup content", () => {
       installed,
       prefix: "PIB",
     });
-    expect(content?.title).toBe("Finish setup: 2 items left");
+    // 1 (CRM) + 1 (Mailbox, never reported) + 8 switched-on modules whose plugin is not installed.
+    expect(content?.title).toBe("Finish setup: 10 steps left");
+    expect(content?.summary).toEqual({ requiredDone: 1, requiredTotal: 11, requiredLeft: 10, optionalLeft: 1 });
+    expect(content?.description).toContain("10 steps left (1 of 11 required steps done)");
     expect(content?.description).toContain("## CRM (1 of 2 done)");
     expect(content?.description).toContain("- [ ] **Connect Gmail** — Sequences send through it. [Open Mailbox](/PIB/mailbox)");
     expect(content?.description).toContain("Once done: Sends due sequence steps.");
@@ -216,11 +219,26 @@ describe("finish setup content", () => {
     // Installed, enabled, never reported → settings not saved yet.
     expect(content?.description).toContain("## Mailbox (Gmail) (0 of 1 done)");
     expect(content?.description).toContain("[Open settings](/PIB/company/settings/instance/plugins/mb-id)");
-    // SEO is off: not listed. Uninstalled enabled modules are mentioned but not counted.
+    // SEO is off: not listed. A switched-on module whose plugin is not installed is a step, like on the page.
     expect(content?.description).not.toContain("## SEO");
-    expect(content?.description).toContain("Switched on but not installed: Cockpit & team, Company wiki, Social media, Email campaigns, Billing, Accounting, Payroll, Partners.");
+    expect(content?.description).toContain("## Social media (0 of 1 done)");
+    expect(content?.description).toContain("**Install the Social media plugin**");
     expect(content?.description).toContain("[Open the Setup page](/PIB/setup)");
-    expect(content?.missing.map((m) => `${m.module}:${m.item.key}`)).toEqual(["crm:gmail", "mailbox:settings"]);
+    expect(content?.missing.map((m) => `${m.module}:${m.item.key}`)).toEqual(["crm:gmail", "mailbox:settings", "cockpit:install", "memory:install", "social:install", "campaigns:install", "billing:install", "accounting:install", "payroll:install", "partners:install"]);
+  });
+
+  it("counts the same steps as the page: kit setupSummary over the counted statuses, switched-off modules skipped", () => {
+    const statuses = {
+      "partnersinbiz.crm": status("partnersinbiz.crm", [item("settings", "done"), item("gmail", "missing"), item("nice", "missing", { required: false })]),
+      "partnersinbiz.seo": status("partnersinbiz.seo", [item("settings", "missing"), item("key", "missing")]),
+    };
+    const onlyCrmSeo = Object.fromEntries(MODULE_KEYS.map((key) => [key, key === "crm" || key === "seo"]));
+    expect(finishSetupSummary({ modules: onlyCrmSeo, statuses, installed })).toEqual({ requiredDone: 1, requiredTotal: 4, requiredLeft: 3, optionalLeft: 1 });
+    // SEO switched off: its steps drop out of the count.
+    expect(finishSetupSummary({ modules: { ...onlyCrmSeo, seo: false }, statuses, installed })).toEqual({ requiredDone: 1, requiredTotal: 2, requiredLeft: 1, optionalLeft: 1 });
+    // The same statuses through the kit give the same number (what the page and the Cockpit use).
+    expect(setupSummary(countedStatuses({ modules: onlyCrmSeo, statuses, installed }).map((c) => ({ module: c.module, items: c.status.items })), onlyCrmSeo).requiredLeft).toBe(3);
+    expect(setupLeftLabel(3)).toBe("3 steps left");
   });
 
   it("is null when nothing required is missing", () => {

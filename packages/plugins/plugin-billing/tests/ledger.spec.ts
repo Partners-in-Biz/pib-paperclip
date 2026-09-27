@@ -56,11 +56,12 @@ describe("ledger payloads", () => {
     expect(v.lines[0]).toMatchObject({ role: "ar", creditMinor: 135_000, debitMinor: 0 });
   });
 
-  it("records a payment on the matched bank account with the bank line in memo and dimensions", () => {
+  it("records a payment on the matched bank account with the bank line in dimensions (not in the memo people read)", () => {
     const p = paymentJournal({ id: "pay-1", invoiceNumber: "LUM-001", date: "2026-09-28", currency: "ZAR", amountMinor: 50_000, customerKind: "contact", customerRef: "ct-1", bankTxId: "tx-9", bankAccountCode: "1010", method: "eft", reference: "LUM-001" });
     expect(isBalanced(p.lines)).toBe(true);
     expect(p.lines[0]).toMatchObject({ role: "bank", accountCode: "1010", debitMinor: 50_000, dimensions: { bankTxId: "tx-9", invoice: "LUM-001", method: "eft" } });
-    expect(p.memo).toContain("bank tx tx-9");
+    expect(p.memo).toBe("Payment for LUM-001 (LUM-001)");
+    expect(p.memo).not.toContain("tx-9");
     const manual = paymentJournal({ id: "pay-2", invoiceNumber: "LUM-001", date: "2026-09-28", currency: "ZAR", amountMinor: 1, customerKind: "contact", customerRef: "ct-1", method: "eft" });
     expect(manual.lines[0]!.accountCode).toBeUndefined();
     expect(paymentJournal({ id: "pay-3", invoiceNumber: "X", date: "2026-09-28", currency: "ZAR", amountMinor: 1, customerKind: "contact", customerRef: "c", method: "eft", keySuffix: "bank:tx-1" }).key).toBe("billing:payment:pay-3:bank:tx-1");

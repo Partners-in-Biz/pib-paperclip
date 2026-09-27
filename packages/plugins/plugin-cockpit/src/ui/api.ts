@@ -4,7 +4,7 @@
  * breaks the page.
  */
 import type { CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit/cockpit";
-import { MODULES, SETUP_PLUGIN } from "@partnersinbiz/pib-plugin-kit/setup";
+import { MODULES, SETUP_PLUGIN, moduleOfPlugin, type SetupSummary } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { OPEN_ISSUE_STATUSES, parseSnapshot, type AgentLite, type ApprovalLite, type HostActivityLite, type IssueLite, type RunLite } from "../merge.js";
 import type { InstalledLite } from "../view.js";
@@ -12,6 +12,14 @@ import type { InstalledLite } from "../view.js";
 /** Plugins behind the modules, plus Setup and the Cockpit. */
 export const MODULE_PLUGIN_KEYS: string[] = Object.values(MODULES).flatMap((module) => [...module.plugins] as string[]);
 const PIB_KEYS = new Set<string>([...MODULE_PLUGIN_KEYS, SETUP_PLUGIN, PLUGIN_KEY]);
+
+/**
+ * Plugins that serve a live Cockpit snapshot (`GET /cockpit`): the PiB module
+ * plugins. Not the Cockpit itself (its own snapshot comes with `cockpit.load`)
+ * and not the upstream LLM Wiki, which has no such route (it would answer
+ * "not found" on every page load).
+ */
+export const LIVE_SNAPSHOT_KEYS: string[] = MODULE_PLUGIN_KEYS.filter((key) => key !== PLUGIN_KEY && key.startsWith("partnersinbiz.") && moduleOfPlugin(key) !== null);
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url, { credentials: "include", headers: { accept: "application/json" } });
@@ -160,6 +168,7 @@ export async function fetchActivity(companyId: string): Promise<HostActivityLite
 export async function fetchRuns(companyId: string): Promise<RunLite[]> {
   try {
     return list(await getJson(`/api/companies/${enc(companyId)}/heartbeat-runs?limit=500&summary=true`)).map((row) => ({
+      id: typeof row.id === "string" ? row.id : null,
       agentId: String(row.agentId ?? ""),
       status: String(row.status ?? ""),
       startedAt: iso(row.startedAt) ?? iso(row.createdAt),
@@ -187,24 +196,17 @@ export async function fetchBackup(): Promise<{ mtime: string | null; ageHours: n
   }
 }
 
-export interface UserLite {
-  id: string;
-  name: string;
+export interface SetupLoadLite {
+  modules: Record<string, boolean> | null;
+  statuses: Record<string, { status: unknown }>;
+  /** Setup's one count (kit `setupSummary`): the number its page, sidebar and weekly issue show. Older Setup versions do not send it. */
+  summary: SetupSummary | null;
+  /** The open Finish setup issue, listed once (as the setup item). */
+  finishIssueId: string | null;
 }
 
-export async function fetchUsers(companyId: string): Promise<UserLite[]> {
-  try {
-    return list(await getJson(`/api/companies/${enc(companyId)}/user-directory`), "users")
-      .map((row) => row.user as Record<string, unknown> | null)
-      .filter((user): user is Record<string, unknown> => !!user && typeof user.id === "string")
-      .map((user) => ({ id: String(user.id), name: String(user.name ?? user.email ?? user.id) }));
-  } catch {
-    return [];
-  }
-}
-
-/** Setup's own page data (module switches and stored statuses), or null. */
-export async function fetchSetupLoad(companyId: string): Promise<{ modules: Record<string, boolean> | null; statuses: Record<string, { status: unknown }> } | null> {
+/** Setup's own page data (module switches, stored statuses and its setup count), or null. */
+export async function fetchSetupLoad(companyId: string): Promise<SetupLoadLite | null> {
   try {
     const res = await fetch(`/api/plugins/${enc(SETUP_PLUGIN)}/actions/setup.load`, {
       method: "POST",
@@ -216,22 +218,14 @@ export async function fetchSetupLoad(companyId: string): Promise<{ modules: Reco
     const body = (await res.json()) as Record<string, unknown>;
     const data = (body && typeof body === "object" && "data" in body ? body.data : body) as Record<string, unknown> | null;
     if (!data) return null;
-    return { modules: (data.modules as Record<string, boolean> | null) ?? null, statuses: (data.statuses as Record<string, { status: unknown }>) ?? {} };
+    const summary = data.summary && typeof data.summary === "object" && typeof (data.summary as SetupSummary).requiredLeft === "number" ? (data.summary as SetupSummary) : null;
+    return {
+      modules: (data.modules as Record<string, boolean> | null) ?? null,
+      statuses: (data.statuses as Record<string, { status: unknown }>) ?? {},
+      summary,
+      finishIssueId: typeof data.finishIssueId === "string" ? data.finishIssueId : null,
+    };
   } catch {
     return null;
-  }
-}
-
-export async function savePluginConfig(companyId: string, configJson: Record<string, unknown>): Promise<void> {
-  const res = await fetch(`/api/plugins/${enc(PLUGIN_KEY)}/config`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ companyId, configJson }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const text = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
-    throw new Error(typeof text === "string" && text ? text : `Could not save settings (${res.status})`);
   }
 }

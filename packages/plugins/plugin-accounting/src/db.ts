@@ -34,11 +34,13 @@ export interface BookRow {
   rejectionIssueId: string | null;
   cutoverDate: string | null;
   openingJournalId: string | null;
+  /** When a board user said the business started on these books (no opening balances to bring over). */
+  cutoverSkippedAt: string | null;
 }
 
 export async function getBook(db: Db, companyId: string): Promise<BookRow | null> {
   const rows = await db.query<Record<string, unknown>>(
-    `SELECT company_id, currency, chart_template, seeded_at, rejection_issue_id, cutover_date::text AS cutover_date, opening_journal_id
+    `SELECT company_id, currency, chart_template, seeded_at, rejection_issue_id, cutover_date::text AS cutover_date, opening_journal_id, cutover_skipped_at
        FROM ${N}.books WHERE company_id = $1`,
     [companyId],
   );
@@ -52,7 +54,28 @@ export async function getBook(db: Db, companyId: string): Promise<BookRow | null
     rejectionIssueId: str(r.rejection_issue_id),
     cutoverDate: str(r.cutover_date),
     openingJournalId: str(r.opening_journal_id),
+    cutoverSkippedAt: iso(r.cutover_skipped_at),
   };
+}
+
+/** "We started on these books": no opening balances to bring over. Returns false when there is no book. */
+export async function setCutoverSkipped(db: Db, companyId: string, by: unknown): Promise<boolean> {
+  const res = await db.execute(
+    `UPDATE ${N}.books SET cutover_skipped_at = now(), cutover_skipped_by = $2::jsonb, updated_at = now() WHERE company_id = $1`,
+    [companyId, json(by)],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/** Undo the skip (a person changed their mind, or opening balances were posted after all). */
+export async function clearCutoverSkipped(db: Db, companyId: string): Promise<void> {
+  await db.execute(`UPDATE ${N}.books SET cutover_skipped_at = NULL, cutover_skipped_by = NULL, updated_at = now() WHERE company_id = $1 AND cutover_skipped_at IS NOT NULL`, [companyId]);
+}
+
+/** The date of the earliest journal in the book, or null when nothing is posted yet. */
+export async function firstJournalDate(db: Db, companyId: string): Promise<string | null> {
+  const rows = await db.query<{ first: string | null }>(`SELECT min(date)::text AS first FROM ${N}.journals WHERE company_id = $1`, [companyId]);
+  return str(rows[0]?.first ?? null);
 }
 
 export async function insertBook(db: Db, companyId: string, currency: string, template: string): Promise<boolean> {
@@ -1132,6 +1155,47 @@ export async function lineCounts(db: Db, companyId: string): Promise<Record<stri
   return Object.fromEntries(rows.map((r) => [String(r.status), num(r.n)]));
 }
 
+export interface DatedAfterItem {
+  kind: "bank_line" | "journal";
+  id: string;
+  date: string;
+  label: string;
+  amountMinor: number;
+}
+
+/**
+ * Journals and bank lines dated after `today`. They count in no "as at
+ * today" figure (cash, receivables, this month, charts) and are flagged for a
+ * person to check the date. Also how many journals the book has.
+ */
+export async function datedAfter(db: Db, companyId: string, today: string, limit = 20): Promise<{ journalCount: number; items: DatedAfterItem[]; journals: number; bankLines: number }> {
+  const counts = await db.query<{ journals_all: string; journals_future: string; lines_future: string }>(
+    `SELECT (SELECT count(*) FROM ${N}.journals WHERE company_id = $1)::text AS journals_all,
+            (SELECT count(*) FROM ${N}.journals WHERE company_id = $1 AND date > $2::date)::text AS journals_future,
+            (SELECT count(*) FROM ${N}.bank_lines WHERE company_id = $1 AND date > $2::date)::text AS lines_future`,
+    [companyId, today],
+  );
+  const journals = num(counts[0]?.journals_future);
+  const bankLines = num(counts[0]?.lines_future);
+  if (!journals && !bankLines) return { journalCount: num(counts[0]?.journals_all), items: [], journals, bankLines };
+  const rows = await db.query<{ kind: string; id: string; date: string; label: string | null; amount: string | null }>(
+    `SELECT kind, id, date, label, amount FROM (
+       SELECT 'bank_line' AS kind, b.id, b.date::text AS date, b.description AS label, b.amount_minor::text AS amount
+         FROM ${N}.bank_lines b WHERE b.company_id = $1 AND b.date > $2::date
+       UNION ALL
+       SELECT 'journal' AS kind, j.id, j.date::text AS date, j.number AS label, j.total_minor::text AS amount
+         FROM ${N}.journals j WHERE j.company_id = $1 AND j.date > $2::date
+     ) f ORDER BY date, kind LIMIT ${Math.max(1, Math.min(limit, 100))}`,
+    [companyId, today],
+  );
+  return {
+    journalCount: num(counts[0]?.journals_all),
+    journals,
+    bankLines,
+    items: rows.map((r) => ({ kind: r.kind === "journal" ? "journal" : "bank_line", id: String(r.id), date: String(r.date), label: String(r.label ?? ""), amountMinor: num(r.amount) })),
+  };
+}
+
 /** Bank lines per bank account and status (for the reconciliation bars). */
 export async function lineCountsByAccount(db: Db, companyId: string): Promise<Array<{ bankAccountId: string; status: string; count: number }>> {
   const rows = await db.query<{ bank_account_id: string; status: string; n: string }>(
@@ -1570,6 +1634,42 @@ export async function latestRates(db: Db, base: string): Promise<Array<{ currenc
     [base],
   );
   return rows.map((r) => ({ currency: String(r.currency), rate: Number(r.rate), date: String(r.date) }));
+}
+
+// ---------------------------------------------------------------------------
+// Bank matches sent to Billing (kit outbox rows with `bank:` keys)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keep Billing's later answer on a match row that its first answer already
+ * settled (for example `needs_review`, then a person's `rejected`).
+ */
+export async function recordOutboxAnswer(db: Db, key: string, result: unknown): Promise<boolean> {
+  const res = await db.execute(`UPDATE ${N}.outbox SET result = $2::jsonb, settled_at = now() WHERE key = $1 AND status <> 'pending'`, [key, json(result)]);
+  return (res.rowCount ?? 0) > 0;
+}
+
+/** Invoices and bills Billing refused for each bank line: line id → open item keys. */
+export async function refusedMatches(db: Db, companyId: string): Promise<Map<string, Set<string>>> {
+  const rows = await db.query<{ line_id: string | null; item_key: string | null }>(
+    `SELECT payload->>'bankTxId' AS line_id, payload->>'openItemKey' AS item_key FROM ${N}.outbox
+      WHERE company_id = $1 AND key LIKE 'bank:%' AND result->>'status' = 'rejected'`,
+    [companyId],
+  );
+  const out = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!r.line_id || !r.item_key) continue;
+    const set = out.get(r.line_id) ?? new Set<string>();
+    set.add(r.item_key);
+    out.set(r.line_id, set);
+  }
+  return out;
+}
+
+/** Keys of earlier match requests for one bank line and open item (so a new attempt gets a fresh key). */
+export async function matchKeysFor(db: Db, base: string): Promise<string[]> {
+  const rows = await db.query<{ key: string }>(`SELECT key FROM ${N}.outbox WHERE key = $1 OR key LIKE $2`, [base, `${base}:%`]);
+  return rows.map((r) => String(r.key));
 }
 
 /** True the first time a mark is set (used to run a monthly step once). */

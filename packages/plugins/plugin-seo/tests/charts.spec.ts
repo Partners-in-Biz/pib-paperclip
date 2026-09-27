@@ -5,7 +5,6 @@ import {
   backlinkSegments,
   changeText,
   chipState,
-  dueOpen,
   healthTone,
   optimizationSegments,
   positionBuckets,
@@ -60,13 +59,15 @@ describe("SEO chart series (page)", () => {
     expect(statusTone(null)).toBe("neutral");
   });
 
-  it("puts tasks in plan states and counts them", () => {
+  it("puts tasks in plan states (engine/due.ts) and counts them", () => {
     expect(chipState({ status: "not_started", dueDay: 10 }, 12)).toBe("due");
-    expect(chipState({ status: "not_started", dueDay: 20 }, 12)).toBe("future");
+    expect(chipState({ status: "not_started", dueDay: 2 }, 12)).toBe("overdue");
+    expect(chipState({ status: "not_started", dueDay: 20 }, 12)).toBe("upcoming");
     expect(chipState({ status: "na", dueDay: 1 }, 12)).toBe("skipped");
+    expect(chipState({ status: "in_progress", dueDay: 10, assigneeKind: "agent", issueId: "i" }, 12, false)).toBe("stuck");
     const segs = taskSegments([{ status: "done", dueDay: 1 }, { status: "done", dueDay: 2 }, { status: "blocked", dueDay: 3 }, { status: "not_started", dueDay: 50 }], 12);
-    expect(Object.fromEntries(segs.map((s) => [s.key, s.value]))).toEqual({ done: 2, in_progress: 0, due: 0, blocked: 1, future: 1, skipped: 0 });
-    expect(segs.find((s) => s.key === "blocked")!.tone).toBe("bad");
+    expect(Object.fromEntries(segs.map((s) => [s.key, s.value]))).toEqual({ done: 2, in_progress: 0, due: 0, overdue: 0, waiting: 1, stuck: 0, upcoming: 1, skipped: 0 });
+    expect(segs.find((s) => s.key === "waiting")).toMatchObject({ label: "Waiting on you", tone: "warn" });
   });
 
   it("bands keyword positions and ignores retired keywords", () => {
@@ -108,7 +109,6 @@ describe("SEO chart series (page)", () => {
     const lag = trafficSeries([{ on: "2026-09-23", impressions: 10, clicks: 1 }], "2026-09-26", 28);
     expect(lag.end).toBe("23 Sep");
     expect(lag.impressions.at(-1)).toBe(10);
-    expect(dueOpen([{ status: "blocked", dueDay: 3 }, { status: "done", dueDay: 3 }, { status: "not_started", dueDay: 40 }, { status: "in_progress", dueDay: null }], 12)).toBe(2);
     expect(changeText(150, 100, "last month")).toBe("+50% vs last month");
     expect(changeText(0, 0, "last month")).toBeNull();
   });

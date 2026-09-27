@@ -155,8 +155,8 @@ export function indexingFollowUpItem(property: string, urls: string[]): NewNeeds
   return {
     key: "indexing_followup",
     kind: "indexing",
-    title: `Request indexing for ${urls.length} page(s) still not indexed after 14 days`,
-    why: "Google offers no public API to request indexing for normal pages. The sitemap and IndexNow are already submitted; a manual request can speed up the last few.",
+    title: `Request indexing for ${urls.length === 1 ? "1 page" : `${urls.length} pages`} still not indexed after 14 days`,
+    why: "Google offers no public API to request indexing for normal pages. The sitemap and an IndexNow ping (which tells Bing and others a page changed) are already sent; a manual request can speed up the last few.",
     steps: ["Open each link, wait for the inspection, click **Request indexing**."],
     links: urls.slice(0, 10).map((url) => ({ label: url.replace(/^https?:\/\//, ""), url: gscInspectLink(property, url) })),
     after: "Re-inspects the pages next week and records the result.",

@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { ASK_OWNER_TOOL, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
 import {
@@ -96,6 +97,7 @@ import {
   CONNECT_MODE,
   isSocialPlatform,
   OVERRIDE_FIELDS,
+  PLAN_ROUTINE_KEY,
   PLATFORM_LABELS,
   type PlatformOverride,
   type PostStatus,
@@ -103,6 +105,9 @@ import {
 } from "./platforms.js";
 import { buildPublishRequest, retryPost, validateDestination } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
+import { routineReport } from "./routine-state.js";
+import { scheduleApproved } from "./schedule.js";
+import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
 import { scopeStats } from "./stats.js";
 
@@ -153,6 +158,35 @@ function isoTime(value: string, key: string): string {
   const time = Date.parse(value);
   if (Number.isNaN(time)) throw new SocialError(`${key} must be an ISO date-time, e.g. 2026-10-05T07:30:00+02:00`);
   return new Date(time).toISOString();
+}
+
+/** A draft's proposed publish time: undefined = not given, null = clear it. */
+export function proposedTime(params: Record<string, unknown>): string | null | undefined {
+  const value = params.scheduledAt;
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new SocialError("scheduledAt must be an ISO date-time, e.g. 2026-10-05T07:30:00+02:00");
+  return isoTime(value, "scheduledAt");
+}
+
+/**
+ * Post params with the old `scope` name folded in. `scope` used to be the
+ * org/personal choice (now `visibility`); agents also sent the client in it
+ * ("company:<id>", "contact:<id>", "own"), so a client value becomes `client`.
+ */
+export function postParams(params: Record<string, unknown>): Record<string, unknown> {
+  const legacy = params.scope;
+  if (typeof legacy !== "string" || !legacy.trim()) return params;
+  const value = legacy.trim();
+  if (value === "org" || value === "personal") return params.visibility === undefined ? { ...params, visibility: value } : params;
+  if (params.client !== undefined || params.clientRef !== undefined) return params;
+  return { ...params, client: value };
+}
+
+function postVisibility(params: Record<string, unknown>): AccountScope {
+  const value = optionalString(params, "visibility") ?? "org";
+  if (value !== "org" && value !== "personal") throw new SocialError("visibility must be org or personal");
+  return value;
 }
 
 /** Validate and normalise the platform-keyed overrides object. */
@@ -255,6 +289,8 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     source: row.source ?? "manual",
     experimentId: row.experiment_id ?? null,
     experimentArm: row.experiment_arm ?? null,
+    /** The Social agent task that picks a time for this approved post, if one was opened. */
+    scheduleIssueId: row.schedule_issue_id ?? null,
     error: row.error,
     failureIssueId: row.failure_issue_id,
     createdAt: iso(row.created_at),
@@ -288,12 +324,12 @@ async function attachAccounts(ctx: PluginContext, viewer: Viewer, post: PostRow,
   for (const account of accounts) await insertDestination(ctx, { companyId: viewer.companyId, postId: post.id, accountId: account.id });
 }
 
-export async function createPostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
+  const params = postParams(input);
   const body = requiredString(params, "body");
-  const visibility = optionalString(params, "scope") ?? "org";
-  if (visibility !== "org" && visibility !== "personal") throw new SocialError("scope must be org or personal");
-  const scope = visibility as AccountScope;
+  const scope = postVisibility(params);
   if (scope === "personal" && !viewer.userId) throw new SocialError("A personal post needs its owner");
+  const scheduledAt = proposedTime(params) ?? null;
   // Omitting the client means own work.
   const target = await scopeFromParams(ctx, viewer.companyId, params);
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
@@ -309,6 +345,7 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, param
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
+    scheduled_at: scheduledAt,
     ...scopeColumns(target),
     source: viewer.isAgent ? "agent" : "manual",
     source_ref: null,
@@ -325,7 +362,8 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, param
   return getPostDetail(ctx, viewer, row.id);
 }
 
-export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
+  const params = postParams(input);
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   assertEditable(post.status);
   const current = rowScope(post);
@@ -361,6 +399,7 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, param
     overrides: normalizeOverrides(params.overrides),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
+    scheduledAt: proposedTime(params),
   });
   if (moving) {
     for (const d of await destinationsForPost(ctx, post.id)) {
@@ -457,13 +496,23 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
-  const clearSchedule = to === "draft" || to === "approved" ? null : undefined;
+  // Unscheduling clears the time. Every other move keeps it: a draft's time is its proposed time.
+  const clearSchedule = post.status === "scheduled" && to === "approved" ? null : undefined;
   if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], to, clearSchedule))) {
     throw new SocialError("The post changed while you were editing it. Reload and try again.");
   }
   // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
-  if (to === "review") await routePostReview(ctx, viewer, post);
-  else await closePostReview(ctx, viewer, post, to);
+  if (to === "review") {
+    await routePostReview(ctx, viewer, post);
+    return getPostDetail(ctx, viewer, post.id);
+  }
+  if (to === "approved" && post.status === "review") {
+    // Approval keeps the proposed time: scheduled at once, or the Social agent gets a task to pick one.
+    const approval = await scheduleApproved(ctx, viewer.companyId, post.id, (id) => validatePostRecord(ctx, viewer, id));
+    await closePostReview(ctx, viewer, post, to, approval.note);
+    return { ...(await getPostDetail(ctx, viewer, post.id)), approval };
+  }
+  await closePostReview(ctx, viewer, post, to);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -577,21 +626,34 @@ export async function refreshAccountRecord(ctx: PluginContext, viewer: Viewer, a
   }
 }
 
-export function connectInstructions(platformInput: string, redirectUri: string | null) {
+/**
+ * How an account gets connected: a person signs in (a one-time grant), so the
+ * agent asks once with the Cockpit's ask-owner tool and this deep link.
+ */
+export function connectInstructions(platformInput: string, redirectUri: string | null, accountsPath = "/social?tab=accounts") {
   if (!isSocialPlatform(platformInput)) throw new SocialError(`Unknown platform ${platformInput}`);
   const label = PLATFORM_LABELS[platformInput];
   const mode = CONNECT_MODE[platformInput];
+  const steps =
+    mode === "credentials"
+      ? [`Open ${accountsPath}.`, `Click Connect ${label} and enter the handle and an app password (Bluesky: Settings → App passwords).`]
+      : mode === "instance"
+        ? [`Open ${accountsPath}.`, `Enter the Mastodon instance URL and click Connect ${label}.`]
+        : [`Open ${accountsPath}.`, `Click Connect ${label} and sign in with the account that manages the page.`, "When asked, choose which pages, boards or channels to add."];
   return {
     platform: platformInput,
     label,
-    instructions:
-      mode === "credentials"
-        ? `Ask a person to open Social → Accounts, click Connect ${label} and enter the handle and an app password (Settings → App passwords on Bluesky).`
-        : mode === "instance"
-          ? `Ask a person to open Social → Accounts, enter the Mastodon instance URL and click Connect ${label}.`
-          : `Ask a person to open Social → Accounts and click Connect ${label}. They sign in with ${label} and, when asked, choose which pages/boards/channels to add.`,
+    link: accountsPath,
+    steps,
+    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected.`,
     redirectUri,
   };
+}
+
+/** `connect-account`: the steps and deep link for the scope's Accounts tab. */
+export async function connectAccountRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, redirectUri: string | null) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return connectInstructions(requiredString(params, "platform"), redirectUri, withClientParam("/social?tab=accounts", scope));
 }
 
 // ── templates, feeds, inbox, analytics ──────────────────────────────────────
@@ -851,6 +913,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
+  // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
+  const routine = scope ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
   try {
     redirectUri = config.redirectUri();
@@ -890,8 +954,23 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     pendingPickers: pickers
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))
       .map((p) => ({ pickerId: p.picker_id, platform: p.platform })),
+    routine,
     viewer: { userId: viewer.userId },
   };
+}
+
+/** The weekly plan routine (id, status, title) and the page's last trigger report; null when it does not exist yet. */
+async function weeklyRoutine(ctx: PluginContext, companyId: string) {
+  try {
+    const managed = await ctx.routines.managed.get(PLAN_ROUTINE_KEY, companyId);
+    const r = managed.routine;
+    if (!r) return null;
+    const report = await routineReport(ctx, companyId, PLAN_ROUTINE_KEY, r.id);
+    return { id: r.id, key: PLAN_ROUTINE_KEY, title: PLAN_ROUTINE_TITLE, status: String(r.status), triggersOn: report ? report.triggersOn : null };
+  } catch (error) {
+    ctx.logger.info("Social routine lookup skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 function jsonObject(value: unknown): Record<string, unknown> {

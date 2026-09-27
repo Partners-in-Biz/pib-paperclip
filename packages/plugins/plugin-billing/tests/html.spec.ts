@@ -24,9 +24,10 @@ describe("printable invoice", () => {
     expect(html).toContain("SEO sprint — month 1");
     expect(html).toContain("Social management");
     expect(html).toContain("VAT 15%");
-    expect(html).toMatch(/ZAR\s15,001\.00/);
-    expect(html).toMatch(/ZAR\s2,250\.15/);
-    expect(html).toMatch(/ZAR\s17,251\.15/);
+    expect(html).toContain("R 15,001.00");
+    expect(html).toContain("R 2,250.15");
+    expect(html).toContain("R 17,251.15");
+    expect(html).not.toContain("ZAR");
     expect(html).toContain("Payment details (EFT)");
     expect(html).toContain("62000000000");
     expect(html).toContain("<th>Reference</th><td>INV-0007</td>");

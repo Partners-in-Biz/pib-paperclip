@@ -77,3 +77,11 @@ describe("mailbox chart series (page)", () => {
     expect(isSyncing(null, now)).toBe(false);
   });
 });
+
+describe("chart day labels", () => {
+  it("reads 14 Sep, never 9/14", async () => {
+    const { dayLabels } = await import("../src/ui/series.js");
+    expect(dayLabels("2026-09-14")).toEqual({ label: "14 Sep", title: "Mon 14 Sep" });
+    expect(receivedColumns(null, new Date("2026-09-27T10:00:00Z"), 3).data.map((d) => d.label)).toEqual(["25 Sep", "26 Sep", "27 Sep"]);
+  });
+});

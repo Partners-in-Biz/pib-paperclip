@@ -4,9 +4,10 @@
  * linked, `wireAgent` sets it up.
  *
  * `permissions.pluginTools` is not enforced by the host and the tool gateway
- * denies by default, so wiring merges a `tools:use` grant scoped to Paperclip
- * plugin tools into the agent's existing grants (grants.set replaces the
- * whole set, so existing grants are kept).
+ * denies by default, so wiring gives the agent plugin tool access with the
+ * kit's `mergePluginToolsGrant`: the host keeps ONE `tools:use` grant per
+ * agent and `grants.set` replaces the whole set, so the existing tools grant
+ * is widened (never a second one added) and every other grant is kept.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
@@ -14,32 +15,29 @@ import {
   hireTaskDraft,
   linkedAgentId,
   listCompanyAgents,
+  mergePluginToolsGrant,
+  PLUGIN_TOOLS_GRANT,
   tryLinkPendingHire,
+  type GrantLike,
+  type MergedGrants,
   type HireAgentSummary,
   type HireRecord,
   type HireState,
   type OnAgentLinked,
 } from "@partnersinbiz/pib-plugin-kit";
 import { SocialError } from "./domain.js";
-import { legacySocialAgent, missingSocialSkills, skillsHint, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE, SOCIAL_SKILLS } from "./hire.js";
+import { legacySocialAgent, missingSocialSkills, skillsHint, SOCIAL_AGENT_NAME, SOCIAL_HIRE_ROLE, SOCIAL_MATCH_ROLE, SOCIAL_ROLE_SKILLS } from "./hire.js";
 import { agentStatusActive } from "./issues.js";
 import { PLAN_ROUTINE_KEY, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 
 export { PLAN_ROUTINE_KEY };
-export const TOOLS_GRANT = { permissionKey: "tools:use" as const, scope: { providerType: "paperclip_plugin" } };
+export const TOOLS_GRANT = PLUGIN_TOOLS_GRANT;
 const ROUTINE_TITLE = `"${PLAN_ROUTINE_TITLE}"`;
 
-function sameScope(a: Record<string, unknown> | null | undefined, b: Record<string, unknown>): boolean {
-  const norm = (v: Record<string, unknown> | null | undefined) => JSON.stringify(Object.keys(v ?? {}).sort().map((k) => [k, (v ?? {})[k]]));
-  return norm(a) === norm(b);
-}
-
-/** Merge the tools grant into existing grants without duplicating it. */
-export function mergeToolsGrant(existing: Array<{ permissionKey: string; scope: Record<string, unknown> | null }>) {
-  const grants = existing.map((g) => ({ permissionKey: g.permissionKey, scope: g.scope ?? null }));
-  const covered = grants.some((g) => g.permissionKey === "tools:use" && (!g.scope || Object.keys(g.scope).length === 0 || sameScope(g.scope, TOOLS_GRANT.scope)));
-  return { grants: covered ? grants : [...grants, { ...TOOLS_GRANT }], added: !covered };
+/** The agent's grants with plugin tool access merged in (kit `mergePluginToolsGrant`: one `tools:use` grant, widened, never duplicated). */
+export function mergeToolsGrant(existing: GrantLike[]): MergedGrants {
+  return mergePluginToolsGrant(existing);
 }
 
 function errorMessage(error: unknown): string {
@@ -48,20 +46,20 @@ function errorMessage(error: unknown): string {
 
 /** Project, then the weekly routine assigned to the agent (reassigned when it belongs to another agent). */
 async function wireRoutine(ctx: PluginContext, companyId: string, agentId: string, name: string): Promise<{ status: string | null; step: string }> {
-  const retry = "Click Re-sync on the Social page to try again.";
+  const retry = "Re-sync the Social agent in Setup → Team to try again.";
   try {
     await ctx.projects.managed.reconcile(SOCIAL_PROJECT_KEY, companyId);
     const current = await ctx.routines.managed.get(PLAN_ROUTINE_KEY, companyId);
     if (!current.routine) {
       const created = await ctx.routines.managed.reconcile(PLAN_ROUTINE_KEY, companyId, { assigneeAgentId: agentId });
       if (!created.routine) return { status: created.status, step: `The weekly ${ROUTINE_TITLE} routine could not be created (${created.status}). ${retry}` };
-      return { status: created.status, step: `Created the weekly ${ROUTINE_TITLE} routine for ${name}. Its Monday trigger stays off until you enable it under Routines.` };
+      return { status: created.status, step: `Created the weekly ${ROUTINE_TITLE} routine for ${name}. It runs Mondays 07:00; its drafts still need a person's approval.` };
     }
     if (current.routine.assigneeAgentId === agentId) {
       await ctx.routines.managed.reconcile(PLAN_ROUTINE_KEY, companyId, { assigneeAgentId: agentId });
       return { status: "resolved", step: `The weekly ${ROUTINE_TITLE} routine is assigned to ${name}.` };
     }
-    // reconcile never changes an existing routine; reset does, and puts it back to the declared (paused) status.
+    // reconcile never changes an existing routine; reset does, and puts it back to the declared (active) status, so a person's earlier pause is restored below.
     const previous = current.routine.status;
     const reset = await ctx.routines.managed.reset(PLAN_ROUTINE_KEY, companyId, { assigneeAgentId: agentId });
     if (!reset.routine) return { status: reset.status, step: `The weekly ${ROUTINE_TITLE} routine could not be reassigned (${reset.status}). ${retry}` };
@@ -89,6 +87,8 @@ export interface WireResult {
   name: string;
   status: string | null;
   toolsGrantAdded: boolean;
+  /** The agent's tools grant is limited in a way the plugin must not widen: what a person has to do. */
+  toolsGrantConflict: string | null;
   routine: string | null;
   /** Social skill slugs the agent does not have. */
   missingSkills: string[];
@@ -106,8 +106,8 @@ export async function wireAgent(ctx: PluginContext, companyId: string, agentId: 
   if (!agent) throw new SocialError("That agent was not found in this company.");
   const name = agent.name || SOCIAL_AGENT_NAME;
   const existing = await ctx.authorization.grants.list({ companyId, principalType: "agent", principalId: agentId });
-  const merged = mergeToolsGrant(existing as Array<{ permissionKey: string; scope: Record<string, unknown> | null }>);
-  if (merged.added) {
+  const merged = mergeToolsGrant(existing.map((g) => ({ permissionKey: String(g.permissionKey), scope: (g.scope as Record<string, unknown> | null) ?? null })));
+  if (merged.changed) {
     await ctx.authorization.grants.set({
       companyId,
       principalType: "agent",
@@ -116,12 +116,19 @@ export async function wireAgent(ctx: PluginContext, companyId: string, agentId: 
       grantedByUserId: userId,
     });
   }
-  const steps = [merged.added ? `Granted ${name} access to plugin tools (Social and CRM).` : `${name} already has plugin tool access.`];
+  const steps = [
+    merged.conflict
+      ? `${name} cannot use the Social tools yet. ${merged.conflict}`
+      : merged.changed
+        ? `Granted ${name} access to plugin tools (Social and CRM).`
+        : `${name} already has plugin tool access.`,
+  ];
   const routine = await wireRoutine(ctx, companyId, agentId, name);
   steps.push(routine.step);
   const missingSkills = missingSocialSkills(agent);
-  steps.push(skillsHint(name, missingSkills) ?? `${name} has the ${SOCIAL_SKILLS.map((s) => `\`${s.slug}\``).join(" and ")} skills.`);
-  return { agentId, name, status: agent.status ?? null, toolsGrantAdded: merged.added, routine: routine.status, missingSkills, steps };
+  const all = SOCIAL_ROLE_SKILLS.map((s) => `\`${s.slug}\``);
+  steps.push(skillsHint(name, missingSkills) ?? `${name} has the ${all.slice(0, -1).join(", ")} and ${all[all.length - 1]} skills.`);
+  return { agentId, name, status: agent.status ?? null, toolsGrantAdded: merged.changed && !merged.conflict, toolsGrantConflict: merged.conflict, routine: routine.status, missingSkills, steps };
 }
 
 /** What a person must still do before the agent works, or null. */
@@ -139,7 +146,7 @@ export function onSocialAgentLinked(ctx: PluginContext): OnAgentLinked {
 /** Links an open hire when its agent has appeared. Never throws (page load and jobs call it). */
 export async function tryLinkSocialHire(ctx: PluginContext, companyId: string): Promise<void> {
   try {
-    await tryLinkPendingHire(ctx, companyId, SOCIAL_HIRE_ROLE, onSocialAgentLinked(ctx));
+    await tryLinkPendingHire(ctx, companyId, SOCIAL_MATCH_ROLE, onSocialAgentLinked(ctx));
   } catch (error) {
     ctx.logger.info("Social hire link check failed", { companyId, error: errorMessage(error) });
   }
@@ -149,7 +156,7 @@ export async function tryLinkSocialHire(ctx: PluginContext, companyId: string): 
 export async function resyncAgent(ctx: PluginContext, companyId: string, userId: string | null) {
   const agentId = await linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx));
   if (!agentId) {
-    throw new SocialError("No Social agent is linked yet. Use \"Hire Social agent\" to open a hire task, or \"Use an existing agent\" to link one you already have.");
+    throw new SocialError("No Social agent is linked yet. Hire one or pick an agent you already have in Setup → Team.");
   }
   const result = await wireAgent(ctx, companyId, agentId, userId);
   return { ok: true, ...result, message: [...result.steps, resumeHint(result.name, result.status)].filter(Boolean).join(" ") };
@@ -169,7 +176,7 @@ export interface SocialAgentSummary {
   missingSkills: string[];
 }
 
-/** The agent card on the Social page. `hire: false` (client workspaces) skips the hire lookup. */
+/** The agent box on the Social page (shown when something is wrong). `hire: false` (client workspaces) skips the hire lookup. */
 export async function agentSummary(ctx: PluginContext, companyId: string, options: { hire?: boolean } = {}): Promise<SocialAgentSummary> {
   const summary: SocialAgentSummary = {
     agentKey: SOCIAL_AGENT_KEY,
@@ -187,7 +194,7 @@ export async function agentSummary(ctx: PluginContext, companyId: string, option
     if (options.hire === false) {
       agentId = await linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx));
     } else {
-      const status = await hireStatus(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx));
+      const status = await hireStatus(ctx, companyId, SOCIAL_MATCH_ROLE, legacySocialAgent(ctx));
       agentId = status.agent?.id ?? null;
       summary.linkedBy = status.linkedBy;
       summary.hire = status.hire;
@@ -212,10 +219,10 @@ export async function hireOptions(ctx: PluginContext, companyId: string) {
   const [agents, raw, status] = await Promise.all([
     listCompanyAgents(ctx, companyId),
     ctx.agents.list({ companyId, limit: 200 }),
-    hireStatus(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx)),
+    hireStatus(ctx, companyId, SOCIAL_MATCH_ROLE, legacySocialAgent(ctx)),
   ]);
   const missing = new Map(raw.map((agent) => [agent.id, missingSocialSkills(agent)]));
-  const allSlugs = SOCIAL_SKILLS.map((s) => s.slug);
+  const allSlugs = SOCIAL_ROLE_SKILLS.map((s) => s.slug);
   return {
     draft: hireTaskDraft(SOCIAL_HIRE_ROLE),
     agents: agents.map((agent) => ({ ...agent, missingSkills: missing.get(agent.id) ?? allSlugs })),

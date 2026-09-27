@@ -4,6 +4,7 @@
 import type { AnchorHTMLAttributes, CSSProperties, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { usePibBaseStyles, useIsNarrow, oneColumn } from "./base.js";
+import { formatShortDate } from "./format.js";
 import { Sparkline } from "./charts.js";
 import { Icon, IconBadge } from "./icons.js";
 import { useResolvedAccent, type AccentInput } from "./theme.js";
@@ -24,7 +25,8 @@ export function relativeTime(at: string | number | Date | null | undefined, now:
   if (s < 3600) return say(`${Math.max(1, Math.round(s / 60))}m`);
   if (s < 86_400) return say(`${Math.round(s / 3600)}h`);
   if (s < 86_400 * 14) return say(`${Math.round(s / 86_400)}d`);
-  return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: new Date(t).getFullYear() === now.getFullYear() ? undefined : "numeric" });
+  // Same date style as every PiB page ("28 Sep", "28 Sep 2025"), not the browser's own format.
+  return formatShortDate(new Date(t), now);
 }
 
 // ── Dots and pills ──────────────────────────────────────────────────────────
@@ -167,6 +169,11 @@ export interface KpiCardProps {
 }
 
 /** A metric tile: label, big value, delta with ▲/▼, optional icon, sparkline and link. */
+/** Values up to 18 characters (e.g. `R 1,234,567.89`) never wrap in a tile. */
+function shortValue(value: unknown): boolean {
+  return (typeof value === "string" || typeof value === "number") && String(value).length <= 18;
+}
+
 export function KpiCard({ label, value, tone: t, delta, deltaTone, invert = false, hint, icon, iconAccent, sparkline, link, href, size = "md", style }: KpiCardProps) {
   usePibBaseStyles();
   const accent = useResolvedAccent(iconAccent);
@@ -185,7 +192,19 @@ export function KpiCard({ label, value, tone: t, delta, deltaTone, invert = fals
         <span style={{ fontSize: small ? 11.5 : 12.5, fontWeight: 500, color: tokens.muted, overflowWrap: "anywhere", lineHeight: 1.35 }}>{label}</span>
         {icon ? <IconBadge icon={icon} accent={badgeColors ?? undefined} size={small ? "xs" : "sm"} /> : alert ? <StatusDot tone={name} size={7} style={{ marginTop: 4 }} /> : null}
       </div>
-      <span style={{ fontSize: small ? 18 : 24, fontWeight: 650, letterSpacing: "-0.025em", lineHeight: 1.15, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere", color: name === "bad" ? colors.fg : tokens.fg }}>{value}</span>
+      <span
+        title={typeof value === "string" || typeof value === "number" ? String(value) : undefined}
+        style={{
+          fontSize: small ? 18 : 24,
+          fontWeight: 650,
+          letterSpacing: "-0.025em",
+          lineHeight: 1.15,
+          fontVariantNumeric: "tabular-nums",
+          color: name === "bad" ? colors.fg : tokens.fg,
+          // A short value (a number, an amount) stays on one line; a long one may wrap.
+          ...(shortValue(value) ? { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } : { overflowWrap: "anywhere" }),
+        }}
+      >{value}</span>
       {delta !== null && delta !== undefined && delta !== "" || hint ? (
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11.5, color: tokens.muted, minWidth: 0 }}>
           {delta !== null && delta !== undefined && delta !== "" ? (

@@ -1,44 +1,109 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
-export const INVOICE_DRAFT_SKILL = `# Invoice draft
+export const INVOICE_DRAFT_SKILL = `# Billing: quotes, invoices and getting paid
 
-Use \`partnersinbiz.billing:create-invoice\` and \`partnersinbiz.billing:add-line\` to draft a commercial invoice.
+You run PiB's billing with the \`partnersinbiz.billing:*\` tools: quotes, invoices, retainers, getting paid, overdue follow-up, supplier bills and time. **You draft and ask; a person approves every email and every change to money.** Money is an integer in cents (R 1,500.00 = \`150000\`) plus a currency (ZAR unless the client pays in another).
 
-- Amounts are integers in minor units (cents). Quantity is a positive integer.
-- The customer is a CRM company id (a PiB client) or a CRM contact id. This plugin does not own the person. The customer name comes from the CRM when you leave \`customerName\` out.
-- Sender details, VAT, due date and EFT bank details come from the Billing settings. Do not type them into lines.
-- Each line has a VAT code (\`taxCode\`): \`za_std_15\` (15%), \`za_zero\`, \`za_exempt\`, \`za_out_of_scope\`, \`za_export_zero\`, \`za_capital_15\`. Leave it out to use the invoice's code. Prices exclude VAT unless the invoice has \`pricesIncludeVat\`.
-- You may draft, change and remove lines on drafts (\`update-line\`, \`remove-line\`). You may not send, and you may not mark an invoice paid.
-- A person approves sending on a Paperclip issue. The invoice is then emailed with its PDF from the Mailbox (Gmail) and becomes "sent" when the email goes out. Sender and customer details freeze at that point.
-- Invoice numbers are assigned automatically per client (LUM-001, LUM-002 …; quotes Q-LUM-001; credit notes CN-LUM-001). Do not invent a number.
+## Only a person can
 
-## Money in (EFT only)
+- Approve sending an invoice, a quote or a payment reminder. You ask with \`request-invoice-send\`, \`request-quote-send\` or \`request-reminder-send\`; the Reviewer checks first when there is one.
+- Record a payment, issue a credit note, confirm a proof of payment or a bank match. Your \`record-payment\`, \`create-credit-note\` and \`request-payment-check\` open a decision issue for them; nothing changes until they mark it done.
+- Cancel an invoice, write off a debt, mark a document sent by hand, email a credit note or statement, apply customer credit, approve or pay a supplier bill, and switch on automatic sending or automatic reminders.
 
-- Customers pay by EFT with the invoice number as reference and reply with proof of payment. Billing matches the proof to the invoice and opens a verification issue; the invoice shows "payment pending verification".
-- A person confirms the money is in (or Accounting's bank match confirms it). Never tell a customer an invoice is paid until its status is \`paid\`.
-- \`record-payment\` records money received (partial payments leave the invoice \`partially_paid\`; an overpayment becomes the customer's credit). Pass \`paymentKey\` so a retry does not record it twice.
-- \`create-credit-note\` credits a sent invoice; what the invoice no longer owes stays with the customer as credit (\`customer-credit\`).
+Never tell a customer an invoice is paid until \`invoice-detail\` shows status \`paid\`. Never invent prices, dates, numbers or VAT: take them from the CRM deal, the agreement or the owner (\`partnersinbiz.cockpit:ask-owner\`).
 
-## Quotes, expenses, bills and time
+## Your work arrives as issues
 
-- \`create-quote\` and \`add-quote-line\` draft a quote. \`set-quote-status\` records accepted/declined. \`convert-quote\` turns an accepted quote into a draft invoice with the same lines.
-- \`create-expense\` records a paid expense (amount = total paid, \`vatMinor\` = VAT on the receipt). Receipts are uploaded by people on the Billing page.
-- \`create-bill\` + \`add-bill-line\` draft a supplier's bill; \`request-bill-approval\` asks a person to approve it. You may not pay bills.
-- \`start-timer\`/\`stop-timer\`/\`log-time\` record time; \`bill-time\` puts unbilled entries on a draft invoice.
-- \`create-subscription\` puts a client on a retainer; each period a draft invoice is created for a person to send.
-- \`billing-report\` returns revenue, aged debtors/creditors, expenses and MRR.
-- \`invoice-html\` / \`quote-html\` return printable HTML. The Billing page has the real PDF.
+| Issue | What to do |
+|---|---|
+| Deal won: … | Draft the quote, invoice or retainer (sections 2 to 4). |
+| Quote reply: Q-… | The customer answered a quote: accept and convert, decline, or answer with a Mailbox draft (section 2). |
+| Drafts to send (daily) | Drafts nobody asked to send, and accepted quotes not invoiced yet: check each, then ask to send. |
+| Overdue invoices (weekly) | The next step for each overdue invoice (section 6). |
+| Complete the bill from … | Add the supplier invoice's lines, then \`request-bill-approval\` (section 7). |
+
+These issues update themselves, reopen when new work arrives and close when nothing is left. Mark one done only when its list is handled.
+
+## 1. The client
+
+- Every quote and invoice is for a CRM client: \`customerKind\` (\`company\` or \`contact\` for a person or sole trader) plus \`customerRef\`, the CRM id. Look the client up in the CRM first (\`partnersinbiz.crm:find-records\`); create it there (\`create-company\` / \`create-contact\`) only when it truly does not exist. Never use a name as an id.
+- The name and billing email come from the CRM. If Billing says it does not know the client yet (just created in the CRM), pass \`customerName\` (and \`customerEmail\`); the CRM syncs within 15 minutes.
+- Tools that take \`client\` want \`company:<crm id>\` or \`contact:<crm id>\`.
+
+## 2. Quote (price not agreed in writing yet)
+
+1. \`create-quote\` (currency, customerKind, customerRef, validUntil, and \`dealId\` when it is for a CRM deal).
+2. \`add-quote-line\` per item: description, quantity, \`unitAmountMinor\` (cents, excl. VAT unless \`pricesIncludeVat\`), \`taxCode\`. Fix it with \`remove-quote-line\` and \`update-quote\`.
+3. \`quote-detail\` to check it, then \`request-quote-send\`. A person approves; the Mailbox emails it with the PDF and it becomes \`sent\`.
+4. The customer replies and you get a "Quote reply" issue with the reply. Accepted: \`set-quote-status\` \`accepted\` (this tells the CRM, which marks the deal won). Declined: \`set-quote-status\` \`declined\`. A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with \`replyToMessageId\`); for a new price, draft a new quote with the same \`dealId\`.
+5. \`convert-quote\` makes a draft invoice with the same client, lines, VAT codes and deal. Then section 3, step 2.
+
+## 3. Invoice
+
+1. Draft it: \`convert-quote\`; or \`create-invoice\` (pass \`dealId\` for a won deal) and \`add-line\` per item; or \`bill-time\` for billable time. Fix with \`update-line\`, \`remove-line\`, \`update-invoice\`.
+2. \`invoice-detail\`: check the customer, lines, VAT codes, due date and recipients.
+3. \`request-invoice-send\`. When a person marks the approval done, the Mailbox emails it with the PDF, it becomes \`sent\` and its journal goes to Accounting. Asking again returns the open issue.
+
+- Numbers are automatic (LUM-001; quotes Q-LUM-001; credit notes CN-LUM-001). Sender, bank details, VAT number and due days come from Billing settings; never type them into lines.
+- VAT codes per line: \`za_std_15\` (15%), \`za_zero\`, \`za_exempt\`, \`za_out_of_scope\` (when PiB is not VAT registered), \`za_export_zero\` (exports), \`za_capital_15\`. Leave \`taxCode\` out to use the document's default. \`set-invoice-tax\` is a legacy flat rate that wipes the codes: only when a person asks.
+
+## 4. Retainers and repeating invoices
+
+- A monthly, quarterly or yearly fee: \`create-subscription\` (client, \`planId\` or \`priceMinor\` with \`period\`, \`startAt\`). Standard plans: \`create-retainer-plan\`, \`list-retainers\`.
+- The same invoice every period: \`create-recurring-invoice\` (templateInvoiceId, frequency, nextRunAt); pause and resume with \`pause-recurring-invoice\` / \`resume-recurring-invoice\`.
+- Each period's invoice is drafted for you and appears in "Drafts to send": check it, then \`request-invoice-send\`.
+
+## 5. Getting paid
+
+- Customers pay by EFT with the invoice number as reference and reply with proof of payment. Emailed proofs are matched to the invoice and a person checks them; the invoice shows \`payment_pending_verification\` meanwhile.
+- The customer says they paid somewhere else (a call, WhatsApp, a DM, an email Billing missed): \`request-payment-check\` with \`invoiceId\`, a \`note\` of what they said and where, and \`amountMinor\` / \`paidOn\` / \`reference\` when known. A person checks the bank; their "done" records the payment.
+- Money you see in the bank for an invoice: \`record-payment\` (invoiceId, amountMinor, reference, paidAt, \`paymentKey\` = the bank line id) opens "Record payment of R… on LUM-001?" for a person.
+- When an invoice is paid in full, Billing tells the CRM and the Cockpit itself. Overpayments and credit-note remainders stay with the client as credit (\`customer-credit\`); a person applies it.
+
+## 6. Overdue invoices
+
+Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
+- Reminders off (the default): \`request-reminder-send\` (invoiceId) for each invoice due a reminder; a person approves each email. It refuses when the next stage is not due yet, every stage went out, the client is opted out or a proof of payment is being checked, and says what to do instead.
+- Reminders on (Billing settings): Billing sends each stage by itself every morning; don't ask.
+- They reply with a question or a dispute: answer with a Mailbox draft; a person sends it.
+- Every reminder sent, or over 60 days overdue: \`partnersinbiz.cockpit:ask-owner\` (call them, a payment plan, a credit note or a write-off).
+- A credit (a mistake, a discount the owner agreed): \`create-credit-note\` (invoiceId, amountMinor incl. VAT, reason) opens a decision for a person.
+
+## 7. Supplier bills, expenses and time
+
+- A supplier invoice from a known supplier arrives by email: Billing drafts the bill and gives you "Complete the bill from …". Add each line with \`add-bill-line\` (cents, VAT code, category), then \`request-bill-approval\`. For other bills, \`create-bill\` first. You never approve or pay bills.
+- \`create-expense\` records something PiB already paid (posted at once): the total incl. VAT, \`vatMinor\`, category and \`paidFrom\`.
+- Time: \`start-timer\` / \`stop-timer\` or \`log-time\` (client and hourly rate); \`bill-time\` puts unbilled entries on a draft invoice.
+
+## 8. Which tool answers which question
+
+| Question | Tool |
+|---|---|
+| What does this client owe, and what is overdue? | \`list-open-invoices\` (client) |
+| Is invoice X paid, emailed, reminded? | \`invoice-detail\` (payments only: \`invoice-payments\`) |
+| Where is quote X; which quotes belong to a deal? | \`quote-detail\`, \`list-quotes\` (client, status, dealId) |
+| Revenue per month and per client, aged debtors, aged creditors, spend per category, MRR and churn | \`billing-report\` (from, to) |
+| A client's unused credit; credit notes issued | \`customer-credit\`; \`list-credit-notes\` |
+| Proofs of payment waiting for a person | \`list-proofs-of-payment\` (status \`pending\`) |
+| Retainers and next invoice dates | \`list-retainers\`, \`list-recurring-invoices\` |
+| Supplier bills still owed | \`list-bills\` |
+| Time not invoiced yet | \`list-time-entries\` (unbilled \`true\`) |
+
+\`invoice-html\` and \`quote-html\` return a printable copy (large); read documents with the detail tools instead. Profit and loss, the balance sheet and VAT201 are in Accounting (the Bookkeeper's tools), not Billing.
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: "invoice-draft",
-    displayName: "Invoice draft",
+    displayName: "Billing: lead to cash",
     slug: "pib-invoice-draft",
-    description: "Draft commercial invoices. Do not send them.",
+    description: "Quotes, invoices, retainers, getting paid and overdue follow-up. Agents draft and ask; a person approves every send and money change.",
     markdown: withFrontmatter(
-      { name: "pib-invoice-draft", description: "Draft invoices, quotes, bills, expenses and time for PiB clients with VAT codes. Never send, confirm payments or mark paid." },
+      {
+        name: "pib-invoice-draft",
+        description: "Run lead to cash in Billing: find the client in the CRM, quote, invoice, retainers, payment checks, overdue reminders, credit notes, supplier bills and time, and which report answers what. You draft and ask with the request tools; a person approves every send, payment and credit.",
+      },
       INVOICE_DRAFT_SKILL,
     ),
   },

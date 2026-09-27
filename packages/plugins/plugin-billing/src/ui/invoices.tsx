@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, CircleCheck, CircleX, EmptyState, Field, Input, Mail, Modal, Receipt, ResponsiveGrid, Select, Send, TextArea, Timeline, Toolbar, errorText, fluidColumns, tokens, tone, type TimelineItem } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleCheck, CircleX, CompactRows, EmptyState, Field, Input, Mail, Modal, Pill, Receipt, ResponsiveGrid, Select, Send, TextArea, Timeline, Toolbar, errorText, fluidColumns, formatShortDate, tokens, tone, useIsNarrow, type TimelineItem } from "@partnersinbiz/pib-plugin-ui";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   Card,
@@ -23,6 +23,7 @@ import {
   money,
   openBase64Pdf,
   openUrl,
+  statusLabel,
   taxShort,
   toMinor,
   today,
@@ -56,7 +57,8 @@ export function customerPayload(scope: ReturnType<typeof useBilling>["scope"], c
   return { customerKind: manual.kind, customerRef: manual.ref.trim(), ...(manual.name.trim() ? { customerName: manual.name.trim() } : {}) };
 }
 
-export function NewDocumentModal({ kind, open, onClose, onCreated }: { kind: "invoice" | "quote"; open: boolean; onClose: () => void; onCreated: (id: string) => void }) {
+/** The new invoice or quote form. `dealId` (a CRM deal, from a deep link) is saved on the document. */
+export function NewDocumentModal({ kind, open, onClose, onCreated, dealId = null }: { kind: "invoice" | "quote"; open: boolean; onClose: () => void; onCreated: (id: string) => void; dealId?: string | null }) {
   const { call, snapshot, scope, clientName, run } = useBilling();
   const clients = snapshot.clients ?? [];
   const [picked, setPicked] = useState("");
@@ -69,7 +71,7 @@ export function NewDocumentModal({ kind, open, onClose, onCreated }: { kind: "in
       <>
         <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
         <Button type="button" onClick={() => void run(async () => {
-          const payload = { currency, taxCode, pricesIncludeVat: inclusive, ...customerPayload(scope, clients.length, picked, manual, snapshot.client?.name ?? null, Boolean(snapshot.client?.found)) };
+          const payload = { currency, taxCode, pricesIncludeVat: inclusive, ...(dealId ? { dealId } : {}), ...customerPayload(scope, clients.length, picked, manual, snapshot.client?.name ?? null, Boolean(snapshot.client?.found)) };
           const created = await call<{ id: string }>(kind === "invoice" ? "billing.create-invoice" : "billing.create-quote", payload);
           setPicked("");
           setManual(EMPTY_MANUAL);
@@ -78,6 +80,7 @@ export function NewDocumentModal({ kind, open, onClose, onCreated }: { kind: "in
         }, kind === "invoice" ? "Draft created. Add its lines." : "Quote draft created. Add its lines.")}>Create draft</Button>
       </>
     )}>
+      {dealId ? <Muted>Linked to the CRM deal it was started from.</Muted> : null}
       {scope ? <Field label="Client"><Input value={clientName} readOnly disabled /></Field> : clients.length > 0
         ? <ClientSelect clients={clients} value={picked} onChange={setPicked} />
         : <ManualCustomerFields value={manual} onChange={setManual} />}
@@ -89,16 +92,23 @@ export function NewDocumentModal({ kind, open, onClose, onCreated }: { kind: "in
           <option value="incl">Line prices include VAT</option>
         </Select>
       </Field>
-      <Muted>The number is given automatically ({snapshot.features?.numbering === "sequential" ? "INV-0001" : "per client, e.g. LUM-001"}).</Muted>
+      <Muted>{kind === "invoice" ? "It" : "The quote"} gets its number automatically ({snapshot.features?.numbering === "sequential" ? (kind === "invoice" ? "INV-0001" : "QTE-0001") : (kind === "invoice" ? "per client, e.g. LUM-001" : "per client, e.g. Q-LUM-001")}).</Muted>
     </Modal>
   );
 }
 
-export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setOpenId: (id: string | null) => void }) {
+/** A payment dated after today on this invoice: it counts from that day. */
+function FutureNote({ invoice }: { invoice: Invoice }) {
+  if (!invoice.futurePaidMinor) return null;
+  return <Pill tone="warn" size="sm">{`Payment dated ${formatShortDate(invoice.nextFuturePaidAt ?? null)}`}</Pill>;
+}
+
+/** The invoice list. "+ Draft invoice" is the page header's action; the empty state offers it only when the header does not. */
+export function InvoicesTab({ openId, setOpenId, onCreate }: { openId: string | null; setOpenId: (id: string | null) => void; onCreate: () => void }) {
   const { snapshot, scope, clientName } = useBilling();
+  const narrow = useIsNarrow();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
   const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState(false);
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => snapshot.invoices.filter((invoice) => {
     if (q && !`${invoice.number} ${invoice.status} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)) return false;
@@ -109,7 +119,6 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
     if (filter === "paid") return invoice.status === "paid";
     return true;
   }), [snapshot.invoices, q, filter]);
-  const newButton = <Button type="button" onClick={() => setCreating(true)}>+ Draft invoice</Button>;
   const countOf = (id: (typeof FILTERS)[number]["id"]) => snapshot.invoices.filter((invoice) => {
     if (id === "draft") return invoice.status === "draft";
     if (id === "open") return OPEN.has(invoice.status);
@@ -120,22 +129,36 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
   }).length;
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search invoices…">{newButton}</Toolbar>
-      <Row>
+      {snapshot.invoices.length > 0 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search invoices…" /> : null}
+      {snapshot.invoices.length > 0 ? <Row>
         {FILTERS.map((f) => (
           <SmallButton key={f.id} variant={filter === f.id ? "primary" : "secondary"} onClick={() => setFilter(f.id)}>
             {f.label}
             {f.id !== "all" && countOf(f.id) > 0 ? <span style={{ marginLeft: 6, fontWeight: 650, color: filter === f.id ? undefined : f.id === "overdue" ? tone("bad").fg : f.id === "checking" ? tone("warn").fg : tokens.muted }}>{countOf(f.id)}</span> : null}
           </SmallButton>
         ))}
-      </Row>
+      </Row> : null}
       {snapshot.invoices.length === 0 ? (
-        <EmptyState icon={Receipt} title={scope ? `No invoices for ${clientName} yet` : "No invoices yet"} description="Draft an invoice, add its lines with VAT codes, then ask for send approval. It is emailed with its PDF from the Mailbox." action={newButton} />
+        <EmptyState icon={Receipt} title={scope ? `No invoices for ${clientName} yet` : "No invoices yet"} description="Draft an invoice, add its lines with VAT codes, then ask for send approval. It is emailed with its PDF from the Mailbox." action={<Button type="button" onClick={onCreate}>+ Draft invoice</Button>} />
+      ) : narrow ? (
+        <CompactRows
+          rows={rows}
+          label="Invoices"
+          title={(invoice) => (invoice.status === "draft" ? `Draft · ${invoice.customerName ?? invoice.customerRef}` : `${invoice.number} · ${invoice.customerName ?? invoice.customerRef}`)}
+          meta={(invoice) => [
+            invoice.status === "draft" ? "Not sent yet" : isOverdue(invoice) ? "Overdue" : statusLabel(invoice.status),
+            invoice.futurePaidMinor ? `payment dated ${formatShortDate(invoice.nextFuturePaidAt ?? null)}` : null,
+            invoice.status !== "draft" && invoice.dueAt ? `due ${fmtDate(invoice.dueAt)}` : null,
+          ].filter(Boolean).join(" · ")}
+          trailing={(invoice) => <span style={{ color: isOverdue(invoice) ? tone("bad").fg : undefined }}>{money(OPEN.has(invoice.status) ? invoice.outstandingMinor ?? 0 : invoice.totalMinor, invoice.currency)}</span>}
+          onOpen={(invoice) => setOpenId(invoice.id)}
+          empty="No invoices match."
+        />
       ) : (
         <DataTable
           columns={[
-            { key: "number", header: "Number", render: (value, row) => <button type="button" onClick={() => setOpenId(String(row.id))} style={{ background: "none", border: 0, padding: 0, color: tokens.fg, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{String(value)}</button> },
-            { key: "status", header: "Status", render: (value, row) => <div style={{ display: "grid", gap: 2 }}><Status status={String(value)} />{row.deliveryStatus === "queued" || row.deliveryStatus === "failed" ? <DeliveryNote status={String(row.deliveryStatus)} error={row.deliveryError as string | null} /> : null}</div> },
+            { key: "number", header: "Number", render: (value, row) => <button type="button" onClick={() => setOpenId(String(row.id))} style={{ background: "none", border: 0, padding: 0, color: row.status === "draft" ? tokens.muted : tokens.fg, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{row.status === "draft" ? "Draft" : String(value)}</button> },
+            { key: "status", header: "Status", render: (value, row) => <div style={{ display: "grid", gap: 2, justifyItems: "start" }}><Status status={String(value)} /><FutureNote invoice={row as unknown as Invoice} />{row.deliveryStatus === "queued" || row.deliveryStatus === "failed" ? <DeliveryNote status={String(row.deliveryStatus)} error={row.deliveryError as string | null} /> : null}</div> },
             { key: "customer", header: "Customer" },
             { key: "total", header: "Total" },
             { key: "owed", header: "Owed", render: (_value, row) => {
@@ -155,7 +178,6 @@ export function InvoicesTab({ openId, setOpenId }: { openId: string | null; setO
           emptyMessage="No invoices match."
         />
       )}
-      <NewDocumentModal kind="invoice" open={creating} onClose={() => setCreating(false)} onCreated={(id) => setOpenId(id)} />
       {openId ? <InvoiceDrawer invoiceId={openId} onClose={() => setOpenId(null)} /> : null}
     </div>
   );
@@ -261,12 +283,17 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
   return (
     <Drawer
       open
-      title={`Invoice ${inv.number}`}
+      title={draft ? `Draft invoice for ${inv.customerName ?? inv.customerRef}` : `Invoice ${inv.number}`}
       subtitle={<><Status status={inv.status} /><span>{inv.customerName ?? inv.customerRef}</span><span>· Due {fmtDate(inv.dueAt)}</span>{inv.pendingAction ? <span>· Waiting on the {inv.pendingAction} approval issue</span> : null}<DeliveryNote status={inv.deliveryStatus} error={inv.deliveryError} /></>}
       onClose={onClose}
       actions={actions}
     >
       {detail.readOnly ? <Muted>Shared with you by a partner. Read only.</Muted> : null}
+      {inv.futurePaidMinor ? (
+        <Card title="A payment is dated in the future" tone="warn" strip>
+          <Muted style={{ color: tokens.fg }}>{money(inv.futurePaidMinor, cur)} is dated {formatShortDate(inv.nextFuturePaidAt ?? null)}, after today. It counts from that day, so until then this invoice shows as {inv.outstandingMinor ? `owing ${money(inv.outstandingMinor, cur)}` : "open"}. Check the date against the bank statement.</Muted>
+        </Card>
+      ) : null}
       {inv.ledgerStatus === "rejected" ? (
         <Card title="Books">
           <Muted style={{ color: tokens.destructive }}>Accounting refused this invoice's journal: {inv.ledgerError ?? "no reason given"}.</Muted>
@@ -348,7 +375,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         <Card title="Payments and credit">
           {detail.payments.map((p) => (
             <Row key={p.id} style={{ justifyContent: "space-between", fontSize: 13 }}>
-              <span>{fmtDate(p.paidAt)} · {words(p.source)}{p.reference ? ` · ${p.reference}` : ""}{p.bankTxId ? " · matched to the bank" : ""}</span>
+              <span>{fmtDate(p.paidAt)} · {words(p.source)}{p.reference ? ` · ${p.reference}` : ""}{p.bankTxId ? " · matched to the bank" : ""}{p.paidAt && p.paidAt.slice(0, 10) > (snapshot.asOf ?? today()) ? <span style={{ color: tone("warn").fg, fontWeight: 600 }}> · dated after today</span> : null}</span>
               <span style={{ fontVariantNumeric: "tabular-nums" }}><Money minor={p.amountMinor} currency={cur} kind="in" />{p.creditMinor > 0 ? ` (${money(p.creditMinor, cur)} to credit)` : ""}{p.journalNumber ? ` · ${p.journalNumber}` : ""}</span>
             </Row>
           ))}
@@ -384,7 +411,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
 
       {inv.ledgerStatus && inv.ledgerStatus !== "rejected" ? <Muted>Books: {inv.ledgerStatus === "posted" ? `posted${inv.journalNumber ? ` as ${inv.journalNumber}` : ""}` : "waiting for Accounting"}</Muted> : null}
 
-      <Modal open={dialog === "send"} title={`Send ${inv.number}`} description="A person approves on a Paperclip issue. When it is done, the invoice is emailed with its PDF from the Mailbox." onClose={() => setDialog(null)} footer={<>
+      <Modal open={dialog === "send"} title={draft ? `Send the invoice to ${inv.customerName ?? inv.customerRef}` : `Send ${inv.number}`} description="A person approves on a Paperclip issue. When it is done, the invoice is emailed with its PDF from the Mailbox." onClose={() => setDialog(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
         <Button type="button" disabled={busy} onClick={() => void act(() => call("billing.request-send", { invoiceId: inv.id, sendTo }), "Send approval issue opened")}>Ask for approval</Button>
       </>}>
@@ -393,12 +420,12 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         {!snapshot.features?.r2 ? <Muted>No private storage is set up, so the email carries the invoice details without a PDF.</Muted> : null}
       </Modal>
 
-      <Modal open={dialog === "pay"} title="Record payment" description="Money received by EFT. A part payment leaves the invoice part paid; more than is owed becomes the customer's credit." onClose={() => setDialog(null)} footer={<>
+      <Modal open={dialog === "pay"} title="Record payment" description="Money already in the bank. A part payment leaves the invoice part paid; more than is owed becomes the customer's credit." onClose={() => setDialog(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
         <Button type="button" disabled={busy} onClick={() => void act(() => call("billing.record-payment", { invoiceId: inv.id, amountMinor: toMinor(amount), reference, paidAt, method: "eft" }), "Payment recorded")}>Record</Button>
       </>}>
         <Field label={`Amount (${cur})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-        <Field label="Date paid"><Input type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} /></Field>
+        <Field label="Date paid"><Input type="date" value={paidAt} max={today()} onChange={(e) => setPaidAt(e.target.value)} /></Field>
         <Field label="Reference"><Input value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
       </Modal>
 
@@ -439,7 +466,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         <Field label="Reason"><Input value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       </Modal>
 
-      <Modal open={dialog === "cancel"} title={`Cancel ${inv.number}?`} description={draft ? "The draft is kept as cancelled; its number is not reused." : "The invoice is voided and its journal reversed."} onClose={() => setDialog(null)} footer={<>
+      <Modal open={dialog === "cancel"} title={draft ? "Cancel this draft?" : `Cancel ${inv.number}?`} description={draft ? "The draft is kept as cancelled; its number is not reused." : "The invoice is voided and its journal reversed."} onClose={() => setDialog(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Keep it</Button>
         <Button type="button" disabled={busy} onClick={() => void act(() => call("billing.cancel-invoice", { invoiceId: inv.id, reason }), "Invoice cancelled")}>Cancel invoice</Button>
       </>}>

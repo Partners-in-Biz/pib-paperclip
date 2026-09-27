@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { outboxMigration } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { assertMigrationStatement, fakeCtx, splitStatements } from "./helpers.js";
@@ -13,12 +14,19 @@ describe("migrations", () => {
 
   it("every statement passes the host migration guard", () => {
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-    expect(files.slice(-5)).toEqual(["009_social.sql", "010_social.sql", "011_social.sql", "012_social.sql", "013_social.sql"]);
+    expect(files.slice(-5)).toEqual(["010_social.sql", "011_social.sql", "012_social.sql", "013_social.sql", "014_social.sql"]);
     for (const file of files) {
       for (const statement of splitStatements(readFileSync(new URL(file, MIGRATIONS), "utf8"))) {
         expect(() => assertMigrationStatement(statement), `${file}: ${statement.slice(0, 70)}`).not.toThrow();
       }
     }
+  });
+
+  it("014 adds the kit outbox for leads and the schedule task link", () => {
+    const sql = readFileSync(new URL("014_social.sql", MIGRATIONS), "utf8");
+    const flat = (text: string) => text.replace(/--.*$/gm, "").replace(/\s+/g, " ").trim();
+    expect(flat(sql)).toContain(flat(outboxMigration(NAMESPACE)));
+    expect(sql).toContain(`ALTER TABLE ${NAMESPACE}.posts ADD COLUMN IF NOT EXISTS schedule_issue_id text`);
   });
 
   it("adds the columns the code reads", () => {

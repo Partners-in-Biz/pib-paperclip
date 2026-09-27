@@ -134,16 +134,20 @@ export function isPinnable(kind: string): boolean {
   return kind === "rule" || kind === "warning";
 }
 
-export const STATUS_LABEL: Record<FactStatus, string> = { active: "Active", superseded: "Superseded", archived: "Archived" };
+export const STATUS_LABEL: Record<FactStatus, string> = { active: "Active", superseded: "Replaced", archived: "Archived" };
 
-export const METHOD_LABEL: Record<BriefRow["method"], string> = { jev: "Jev", baseline: "Keyword", empty: "Empty", search: "Search" };
+/** How a brief's facts were picked, in plain words ("Jev" is smart matching: an optional AI service). */
+export const METHOD_LABEL: Record<BriefRow["method"], string> = { jev: "Smart matching", baseline: "Keywords", empty: "Nothing matched", search: "Search" };
 
 export const METHOD_HELP: Record<BriefRow["method"], string> = {
-  jev: "Jev picked the facts this task needs.",
-  baseline: "Picked by keyword and recency (Jev is not set up, or did not answer in time).",
+  jev: "Smart matching picked the facts this task needs.",
+  baseline: "Picked by keywords and how recent the facts are (smart matching is off, or did not answer in time).",
   empty: "No stored fact applied to this task.",
   search: "An agent searched memory for something specific.",
 };
+
+/** The optional AI service that picks each task's facts, by its plain name. */
+export const SMART_MATCHING = "Smart matching (optional)";
 
 export function methodTone(method: string): ToneInput {
   return method === "jev" ? "info" : "neutral";
@@ -211,7 +215,7 @@ export function formatLatency(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
 }
 
-/** Share of this week's briefs picked by Jev (0–100), or null when there were none. */
+/** Share of this week's briefs picked by smart matching (0–100), or null when there were none. */
 export function jevShare(stats: MemoryStats): number | null {
   const total = stats.briefs7d.total;
   return total > 0 ? Math.round((stats.briefs7d.jev / total) * 100) : null;
@@ -221,8 +225,60 @@ export function jevShare(stats: MemoryStats): number | null {
 export const LEARNED_HINT = { before: "Agents save lessons by ending a closing comment with ", marker: "Learned:", after: " bullets; you can do the same on any issue." } as const;
 
 /** The one sentence at the top of the tab. */
-export function memorySentence(limits: Pick<MemoryLimits, "briefMaxFacts" | "briefMaxTokens">): string {
-  return `Memory is what your agents learn as they work (client preferences, facts about their systems, lessons and warnings), and each new task starts with a short brief of only the facts it needs: at most ${limits.briefMaxFacts}, about ${formatCount(limits.briefMaxTokens)} tokens.`;
+export function memorySentence(limits: Pick<MemoryLimits, "briefMaxFacts">): string {
+  return `Memory is what your agents learn as they work (client preferences, facts about their systems, lessons and warnings), and each new task starts with a short brief of only the facts it needs: at most ${limits.briefMaxFacts}.`;
+}
+
+/**
+ * A memory action's message for people: the worker writes it for agents too,
+ * so it names facts by id ("Saved [m1x…]") and tools ("use memory-update").
+ * Ids and tool hints are dropped; null when nothing is left worth saying.
+ */
+export function plainMemoryMessage(message: unknown): string | undefined {
+  if (typeof message !== "string" || !message.trim()) return undefined;
+  const sentences = message
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !/memory-(?:update|add|search|recall|feedback)|\{\s*id:|^Similar:/i.test(sentence))
+    .map((sentence) => sentence
+      .replace(/\bknown as\s*\[[a-z0-9]{6,}\]/gi, "known")
+      .replace(/\breplaces\s*\[[a-z0-9]{6,}\]/gi, "replaces an older fact")
+      .replace(/\s*\[[a-z0-9]{6,}\]/gi, "")
+      .replace(/\s+([.,;:)])/g, "$1")
+      .replace(/\(\s*\)/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim())
+    .filter((sentence) => sentence && !/^Updated(?: \([a-z]+\))?\.?$/i.test(sentence));
+  const text = sentences.join(" ").trim();
+  return text || undefined;
+}
+
+/** One entry per client name for the pickers: the first ref (the CRM's) and every ref with that name. */
+export interface ClientOption {
+  value: string;
+  label: string;
+  refs: string[];
+}
+
+/**
+ * Clients by name, once each. Memory may know one client under two refs
+ * (the CRM company and an older ref from a fact); the picker shows it once
+ * and a filter on it covers both.
+ */
+export function clientOptions(clients: MemoryClient[]): ClientOption[] {
+  const byName = new Map<string, ClientOption>();
+  for (const client of clients) {
+    const key = client.clientName.trim().toLowerCase();
+    const found = byName.get(key);
+    if (found) {
+      if (!found.refs.includes(client.clientRef)) found.refs.push(client.clientRef);
+    } else byName.set(key, { value: client.clientRef, label: client.clientName.trim(), refs: [client.clientRef] });
+  }
+  return [...byName.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Every ref behind a picked client value (itself, plus the refs sharing its name). */
+export function refsFor(value: string, clients: MemoryClient[]): string[] {
+  return clientOptions(clients).find((option) => option.refs.includes(value))?.refs ?? [value];
 }
 
 /** `YYYY-MM-DD` for a date input (UTC, like the stored expiry), or "". */
@@ -287,10 +343,14 @@ export interface FactFilters {
 export const DEFAULT_FILTERS: FactFilters = { status: "active", client: "", area: "", pinned: false, q: "" };
 export const PAGE_SIZE = 25;
 
-/** Params for `memory.list`. Empty filters are left out. */
-export function listParams(filters: FactFilters, page: number, pageSize = PAGE_SIZE): Record<string, unknown> {
+/** Params for `memory.list`. Empty filters are left out; a client known under several refs sends them all. */
+export function listParams(filters: FactFilters, page: number, pageSize = PAGE_SIZE, clients: MemoryClient[] = []): Record<string, unknown> {
   const params: Record<string, unknown> = { status: filters.status, limit: pageSize, offset: Math.max(0, page) * pageSize };
-  if (filters.client) params.client = filters.client;
+  if (filters.client) {
+    const refs = filters.client === "own" ? [] : refsFor(filters.client, clients);
+    if (refs.length > 1) params.clients = refs;
+    else params.client = filters.client;
+  }
   if (filters.area) params.area = filters.area;
   if (filters.pinned) params.pinned = true;
   const q = filters.q.trim();
@@ -426,12 +486,12 @@ export function editParams(fact: MemoryFact, draft: EditDraft): Record<string, u
 // Briefs
 // ---------------------------------------------------------------------------
 
-/** "Brief for PIB-23", "Search: “Northwind hosting”", or the brief id. */
+/** "Brief for PIB-23", "Search: “Northwind hosting”", or "Brief". */
 export function briefTitle(brief: Pick<BriefSummary, "id" | "issueIdentifier" | "query" | "method">): string {
   if (brief.method === "search" && brief.query) return `Search: “${truncate(brief.query, 48)}”`;
   if (brief.issueIdentifier) return `Brief for ${brief.issueIdentifier}`;
   if (brief.query) return `Brief for “${truncate(brief.query, 48)}”`;
-  return `Brief ${brief.id}`;
+  return "Brief";
 }
 
 export interface BriefLine {
@@ -475,7 +535,7 @@ export function clientResolution(client: BriefResult["client"]): string {
     case "named":
       return `${names} (named in the task)`;
     case "jev":
-      return `${names} (Jev's pick)`;
+      return `${names} (picked by smart matching)`;
     default:
       return "No client found: company-wide facts only";
   }
@@ -513,5 +573,5 @@ export function coverageLines(rows: CoverageRow[] | null | undefined, agents: Ag
 /** Items the Needs attention card lists (stale facts are information only). */
 export function attentionCount(review: MemoryReview | null): number {
   if (!review) return 0;
-  return review.duplicates.length + review.noisy.length + review.overCap.length + (review.agentsSkippingMemory?.length ?? 0);
+  return review.duplicates.length + review.noisy.length + review.overCap.length + (review.agentsSkippingMemory?.length ?? 0) + (review.misfiled?.length ?? 0);
 }

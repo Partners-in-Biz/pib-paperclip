@@ -96,9 +96,10 @@ export function lastDays(now: Date, days: number): string[] {
   return Array.from({ length: days }, (_, i) => new Date(end - (days - 1 - i) * 86_400_000).toISOString().slice(0, 10));
 }
 
-function dayLabels(date: string): { label: string; title: string } {
+/** Chart labels in the PiB date style ("14 Sep", like the UI kit's `formatShortDate`), never US month/day. */
+export function dayLabels(date: string): { label: string; title: string } {
   const d = new Date(`${date}T12:00:00Z`);
-  return { label: `${d.getUTCMonth() + 1}/${d.getUTCDate()}`, title: `${WEEKDAY[d.getUTCDay()]} ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}` };
+  return { label: `${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`, title: `${WEEKDAY[d.getUTCDay()]} ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}` };
 }
 
 export interface CategorySeries extends ChartSeries {

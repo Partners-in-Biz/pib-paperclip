@@ -58,6 +58,10 @@ export class FakeGmail {
   tokenResponse: () => Response = () => json({ access_token: "fresh-token", expires_in: 3600, scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send" });
   jevResponse: ((body: Record<string, unknown>) => Response) | null = null;
   files = new Map<string, { status: number; body: Uint8Array; type: string }>();
+  /** Attachment bytes by `messageId:attachmentId`. */
+  attachments = new Map<string, Uint8Array>();
+  /** Objects PUT to R2, by bucket path. */
+  r2 = new Map<string, { body: Uint8Array; type: string | null }>();
   private seq = 0;
   private labelSeq = 0;
 
@@ -139,6 +143,12 @@ export class FakeGmail {
       if (!file) return new Response("missing", { status: 404 });
       return new Response(file.body as unknown as BodyInit, { status: file.status, headers: { "content-type": file.type } });
     }
+    if (url.host.endsWith(".r2.cloudflarestorage.com") && method === "PUT") {
+      const body = init.body as unknown;
+      const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body as BodyInit).arrayBuffer());
+      this.r2.set(decodeURIComponent(url.pathname), { body: bytes, type: new Headers(init.headers as HeadersInit | undefined).get("content-type") });
+      return new Response("", { status: 200 });
+    }
     if (url.host !== "gmail.googleapis.com") return new Response("unknown host", { status: 599 });
     const path = url.pathname.replace(/^\/(upload\/)?gmail\/v1\/users\/me/, "");
     if (method === "GET" && path === "/profile") return json({ emailAddress: this.email, historyId: String(this.historyId) });
@@ -175,6 +185,12 @@ export class FakeGmail {
       if (format === "full" && url.searchParams.get("fields")) return json({ id: message.id, payload: this.partTree(message.payload, false) });
       const meta = this.metadata(message, []);
       return json({ ...meta, payload: { ...(this.partTree(message.payload, true) ?? {}), headers: meta.payload.headers } });
+    }
+    const attachment = /^\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(path);
+    if (method === "GET" && attachment) {
+      const bytes = this.attachments.get(`${decodeURIComponent(attachment[1]!)}:${decodeURIComponent(attachment[2]!)}`);
+      if (!bytes) return json({ error: { code: 404, message: "Requested entity was not found." } }, 404);
+      return json({ size: bytes.byteLength, data: Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") });
     }
     const thread = /^\/threads\/([^/]+)$/.exec(path);
     if (method === "GET" && thread) {

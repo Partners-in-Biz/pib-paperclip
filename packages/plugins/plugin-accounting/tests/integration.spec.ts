@@ -4,7 +4,7 @@
  * (JSON over the wire, then drizzle + postgres-js). Skipped when the
  * repository's embedded-postgres package is not installed.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,9 +101,12 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     client = postgres({ host: "127.0.0.1", port, user: "t", password: "t", database: "acct", onnotice: () => {} });
     orm = drizzle(client);
     await client.unsafe(`CREATE SCHEMA ${NAMESPACE}`);
-    for (const statement of guard.splitSqlStatements(readFileSync(path.join(here, "../migrations/001_accounting.sql"), "utf8"))) {
-      guard.validateMigrationStatement(statement, NAMESPACE);
-      await client.unsafe(statement);
+    // Every migration, in order, as the host applies them.
+    for (const file of readdirSync(path.join(here, "../migrations")).filter((f) => f.endsWith(".sql")).sort()) {
+      for (const statement of guard.splitSqlStatements(readFileSync(path.join(here, "../migrations", file), "utf8"))) {
+        guard.validateMigrationStatement(statement, NAMESPACE);
+        await client.unsafe(statement);
+      }
     }
     ctx = {
       db: shimDb(),
@@ -471,6 +474,112 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     await expect(postCutover(ctx, CO, user, { csv, date: "2025-02-28" })).rejects.toThrow(/already posted/);
   });
 
+  it("VAT periods that ended before the books start are left out of the VAT tab, the VAT tools and the close checklist", async () => {
+    const { vatPeriods, prepareVat201Tool } = await import("../src/service/vat.js");
+    const { booksStartFor } = await import("../src/service/books.js");
+    const { vatPeriodFor } = await import("../src/domain/periods.js");
+    const { addDays, monthOf } = await import("../src/domain/util.js");
+    const today = todayIso();
+    const current = vatPeriodFor(today, "B", 2)!;
+    const last = vatPeriodFor(addDays(current.start, -1), "B", 2)!;
+
+    // A new book with nothing posted starts the day it was set up: only the running period is listed.
+    const A = "co-books";
+    configs.set(A, { legalName: "Books Co", vatNumber: "4777777777", vatCategory: "B", financialYearEndMonth: 2 });
+    await ensureBook(ctx, A);
+    expect(await booksStartFor(ctx, A)).toEqual({ date: today, from: "set_up" });
+    const fresh = await vatPeriods(ctx, A);
+    expect(fresh.booksStart).toEqual({ date: today, from: "set_up" });
+    expect(fresh.periods.map((p) => p.start)).toEqual([current.start]);
+    expect(fresh.hidden).toBe(7);
+    expect(fresh.periods[0]).toMatchObject({ current: true, status: "not_prepared", dueDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
+
+    // The agent's VAT tools: the last period ended before these books start, so there is nothing to prepare or approve.
+    const skipped = await prepareVat201Tool(ctx, A, agent, {});
+    expect(skipped).toMatchObject({ periodStart: last.start, periodEnd: last.end, status: "before_books_start", returnId: null, approvalIssueId: null, booksStart: today });
+    expect(skipped.next).toMatch(/previous books/);
+    expect(await prepareVat201Tool(ctx, A, agent, { periodStart: last.start, periodEnd: last.end })).toMatchObject({ status: "before_books_start" });
+    expect(await db.listVatReturns(ctx.db, A)).toEqual([]);
+    // Nor does the month-end checklist ask for it.
+    expect((await closeChecklist(ctx, A, monthOf(last.end))).items.some((i) => i.key === "vat")).toBe(false);
+
+    // Opening balances at the day before the running period: the books start the next day.
+    await postCutover(ctx, A, user, { csv: "code,name,debit,credit\n1000,Bank,500.00,\n3100,Retained earnings,,500.00\n", date: last.end });
+    expect(await booksStartFor(ctx, A)).toEqual({ date: current.start, from: "cutover" });
+    expect((await vatPeriods(ctx, A)).periods.map((p) => p.start)).toEqual([current.start]);
+
+    // A book whose first journal falls in the last period files that period itself.
+    const B = "co-books-2";
+    configs.set(B, { legalName: "Books Two", vatNumber: "4888888888", vatCategory: "B", financialYearEndMonth: 2 });
+    await ensureBook(ctx, B);
+    await postJournal(ctx, B, { sourceKey: "test:b-first", source: { plugin: "t", kind: "t", id: "b" }, kind: "manual", date: last.start, memo: "First", lines: [{ accountCode: "1000", debitMinor: 1_00, creditMinor: 0 }, { accountCode: "1990", debitMinor: 0, creditMinor: 1_00 }], postedBy: user });
+    expect(await booksStartFor(ctx, B)).toEqual({ date: last.start, from: "first_journal" });
+    const two = await vatPeriods(ctx, B);
+    expect(two.periods.map((p) => p.start)).toEqual([current.start, last.start]);
+    expect(two.hidden).toBe(6);
+    expect(await prepareVat201Tool(ctx, B, agent, { requestApproval: false })).toMatchObject({ periodStart: last.start, status: "draft" });
+    expect((await closeChecklist(ctx, B, monthOf(last.end))).items.some((i) => i.key === "vat")).toBe(true);
+    // A return saved for an older period keeps that period on the list.
+    const older = vatPeriodFor(addDays(last.start, -1), "B", 2)!;
+    await prepareVatReturn(ctx, B, user, { periodStart: older.start, periodEnd: older.end });
+    expect((await vatPeriods(ctx, B)).periods.map((p) => p.start)).toEqual([current.start, last.start, older.start]);
+  });
+
+  it("\"We started on these books\": board users only, clears the opening-balances warning, undone by undo or by posting opening balances", async () => {
+    const { createTestHarness } = await import("@paperclipai/plugin-sdk/testing");
+    const manifest = (await import("../src/manifest.js")).default;
+    const plugin = (await import("../src/worker.js")).default;
+    const S = "co-skip";
+    const harness = createTestHarness({ manifest, config: { legalName: "Skip Co", vatNumber: "4999999998", vatCategory: "B", financialYearEndMonth: 2 } });
+    harness.seed({ companies: [{ id: S, issuePrefix: "SKP", name: "Skip Co" } as never] });
+    (harness.ctx as unknown as { db: unknown }).db = shimDb();
+    await plugin.definition.setup(harness.ctx);
+    const asUser = { companyId: S, actor: { type: "user" as const, userId: "u-1" } };
+    const asAgent = { companyId: S, actor: { type: "agent" as const, agentId: "a-1" } };
+    type Book = { cutoverSkippedAt: string | null; openingJournalId: string | null; cutoverDate: string | null };
+    const load = async () => (await harness.performAction<{ book: Book }>("accounting.load", {}, asUser)).book;
+    const route = async (routeKey: string) => (await plugin.definition.onApiRequest!({ routeKey, method: "GET", path: `/${routeKey}`, params: {}, query: { companyId: S }, body: null, actor: { actorType: "user", actorId: "u-1" }, companyId: S, headers: {} })).body;
+    const openingCheck = async () => ((await route("cockpit")) as CockpitSnapshot).health.find((c) => c.key === "opening_balances")!;
+    const openingItem = async () => ((await route("setup-status")) as { items: SetupItem[] }).items.find((i) => i.key === "opening_balances")!;
+
+    expect(await load()).toMatchObject({ cutoverSkippedAt: null, openingJournalId: null });
+    expect(await openingCheck()).toMatchObject({ status: "warn", href: "/accounting?tab=cutover" });
+    expect((await openingCheck()).fix).toMatch(/We started on these books/);
+    expect(await openingItem()).toMatchObject({ status: "missing", href: "/accounting?tab=cutover" });
+
+    // Only a person decides it.
+    await expect(harness.performAction("accounting.skip-cutover", {}, asAgent)).rejects.toThrow(/board user/);
+    const skipped = await harness.performAction<{ book: Book }>("accounting.skip-cutover", {}, asUser);
+    expect(Date.parse(skipped.book.cutoverSkippedAt!)).not.toBeNaN();
+    expect((await load()).cutoverSkippedAt).toBe(skipped.book.cutoverSkippedAt);
+    expect(await openingCheck()).toMatchObject({ status: "ok", detail: expect.stringMatching(/started on these books/) });
+    expect(await openingItem()).toMatchObject({ status: "done", detail: expect.stringMatching(/^Not needed: the business started on these books/) });
+    // Saying it twice keeps the first date.
+    expect((await harness.performAction<{ book: Book }>("accounting.skip-cutover", {}, asUser)).book.cutoverSkippedAt).toBe(skipped.book.cutoverSkippedAt);
+
+    // Undo brings the warning back.
+    await expect(harness.performAction("accounting.undo-skip-cutover", {}, asAgent)).rejects.toThrow(/board user/);
+    expect((await harness.performAction<{ book: Book }>("accounting.undo-skip-cutover", {}, asUser)).book.cutoverSkippedAt).toBeNull();
+    expect(await openingCheck()).toMatchObject({ status: "warn" });
+
+    // Posting opening balances later clears a skip, and then there is nothing left to skip.
+    await harness.performAction("accounting.skip-cutover", {}, asUser);
+    const posted = await harness.performAction<{ journal: { id: string } }>("accounting.cutover-post", { csv: "code,name,debit,credit\n1000,Bank,800.00,\n3100,Retained earnings,,800.00\n", date: "2026-08-31" }, asUser);
+    expect(await load()).toMatchObject({ cutoverSkippedAt: null, openingJournalId: posted.journal.id, cutoverDate: "2026-08-31" });
+    expect(await openingItem()).toMatchObject({ status: "done", detail: "Posted at 31 Aug 2026." });
+    expect(await openingCheck()).toMatchObject({ status: "ok" });
+    await expect(harness.performAction("accounting.skip-cutover", {}, asUser)).rejects.toThrow(/already posted/);
+
+    // The VAT tab and the month list start where the books start: the day after the cut-over date.
+    const vat = await harness.performAction<{ booksStart: { date: string; from: string }; periods: Array<{ start: string; end: string }> }>("accounting.vat", {}, asUser);
+    expect(vat.booksStart).toEqual({ date: "2026-09-01", from: "cutover" });
+    expect(vat.periods.every((p) => p.end >= "2026-09-01")).toBe(true);
+    const months = await harness.performAction<{ periods: Array<{ period: string }>; booksStart: string }>("accounting.periods", {}, asUser);
+    expect(months.booksStart).toBe("2026-09-01");
+    expect(months.periods.every((m) => m.period >= "2026-09")).toBe(true);
+    expect(harness.logs.filter((l) => l.level === "error")).toEqual([]);
+  });
+
   it("builds the accountant pack and the close checklist", async () => {
     const pack = await buildPack(ctx, CO, user, { from: "2026-03-01", to: "2026-09-30" });
     expect(pack.url).toBeNull();
@@ -594,6 +703,8 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       "accept-categorisation": { lineId: "missing" },
       gl: { accountCode: "1100" },
       "create-manual-journal": { date: "2026-09-21", memo: "Accrual", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] },
+      "import-statement": { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx" },
+      "prepare-reconciliation": { bankAccountId: bank.id, periodStart: "2026-09-01", periodEnd: "2026-09-30", openingMinor: 10_000_00 },
     };
     for (const tool of ACCOUNTING_TOOLS) {
       const result = await harness.executeTool<{ error?: string; data?: unknown }>(tool.name, toolParams[tool.name] ?? {}, run);
@@ -630,15 +741,18 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.1.7" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.2.0" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
-    for (const key of ["company_details", "chart", "roles", "bank_account", "opening_balances"]) expect(items[key], key).toMatchObject({ status: "missing", required: true });
-    for (const key of ["first_statement", "bookkeeper", "private_storage", "accountant_review"]) expect(items[key], key).toMatchObject({ status: "optional", required: false });
+    for (const key of ["company_details", "chart", "roles", "bank_account", "opening_balances", "bookkeeper"]) expect(items[key], key).toMatchObject({ status: "missing", required: true });
+    for (const key of ["first_statement", "private_storage", "accountant_review"]) expect(items[key], key).toMatchObject({ status: "optional", required: false });
     expect(items.chart!.action).toEqual({ plugin: "partnersinbiz.accounting", key: "accounting.chart", label: "Set up the chart" });
     expect(items.bank_account!.href).toBe("/accounting?tab=bank");
+    // The Bookkeeper is staffed in Setup → Team.
+    expect(items.bookkeeper).toMatchObject({ href: "/setup?section=team#team-bookkeeper", hrefLabel: "Open Team in Setup" });
+    expect(items.bookkeeper!.steps).toEqual(["Open Setup → Team → Bookkeeper.", "Hire one (a hire task for your hiring agent or a person), or pick an agent you already have.", "Approve the hire and resume the agent once its model key works."]);
     expect(items.opening_balances).toMatchObject({ href: "/accounting?tab=cutover", blockedBy: ["chart", "roles"] });
     expect(items.opening_balances!.steps!.length).toBeGreaterThan(0);
     // A probe never writes: no book was created for the company.
@@ -663,7 +777,8 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     for (const key of ["settings", "company_details", "chart", "roles", "bank_account", "opening_balances", "first_statement", "private_storage"]) expect(items[key]!.status, key).toBe("done");
     expect(items.settings!.href).toBe("/company/settings/instance/plugins/0f3c1d2e-aaaa-4bbb-8ccc-123456789abc");
     expect(items.company_details!.href).toBe(items.settings!.href);
-    expect(items.bookkeeper!.status).toBe("optional");
+    // The Bookkeeper is required (kit TEAM_ROLES) and none is linked here.
+    expect(items.bookkeeper).toMatchObject({ status: "missing", required: true });
     expect(items.accountant_review!.status).toBe("optional");
   });
 
@@ -744,6 +859,258 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     await harness.emit(`plugin.${BILLING}.ledger.post.requested`, invoiceRequest(key, "2026-09-20"), { companyId: M });
     expect(results.at(-1)).toMatchObject({ key, status: "posted" });
     expect(harness.logs.filter((l) => l.level === "error")).toEqual([]);
+  });
+
+  describe("the monthly cycle for agents", () => {
+    const ROLES = (companyId: string, over: Record<string, unknown> = {}) => ({
+      companyId,
+      operatorAgentId: "agent-op",
+      operatorStatus: "active",
+      reviewerAgentId: null,
+      ownerUserId: "user-owner",
+      reviewOutward: false,
+      updatedAt: new Date().toISOString(),
+      ...over,
+    });
+    const acme = (companyId: string) =>
+      receiveOpenItem(ctx, companyId, BILLING, { key: "invoice:r1", kind: "receivable", id: "r1", number: "INV-1001", counterpartyName: "Acme", currency: "ZAR", totalMinor: 11_500_00, outstandingMinor: 11_500_00, issueDate: "2026-09-01", dueDate: "2026-09-30", references: [], status: "sent", updatedAt: "2026-09-01T00:00:00Z" });
+    const outboxRow = async (key: string) => (await q(`SELECT status, result FROM ${NAMESPACE}.outbox WHERE key = $1`, [key]))[0] as { status: string; result: { status: string } } | undefined;
+
+    afterAll(() => {
+      state.delete("roles");
+      state.delete("role:bookkeeper");
+    });
+
+    it("a match Billing first sends for review and a person then rejects goes back to unreconciled, and is not suggested again", async () => {
+      const R = "co-rej";
+      configs.set(R, { legalName: "Rej Co", vatNumber: "4222222222", vatCategory: "B", financialYearEndMonth: 2 });
+      await ensureBook(ctx, R);
+      await acme(R);
+      const bank = await saveBankAccount(ctx, R, { name: "Rej bank" });
+      await importStatement(ctx, R, user, { bankAccountId: bank.id, content: fixture("fnb.csv"), fileName: "rej.csv" });
+      const line = (await db.listBankLines(ctx.db, R, { bankAccountId: bank.id })).find((l) => l.amountMinor === 11_500_00)!;
+      expect(line.suggestions[0]).toMatchObject({ kind: "open_item", key: "invoice:r1", basis: "exact" });
+
+      await acceptSuggestion(ctx, R, user, { lineId: line.id });
+      const key = `bank:${line.id}:invoice:r1`;
+      expect(emitted.filter((e) => e.name === "bank.matched" && e.payload.key === key)).toHaveLength(1);
+
+      // Billing's first answer settles the row...
+      expect(await receiveMatchResult(ctx, R, { key, status: "needs_review", error: "The bank line is more than what is owed (overpayment)" })).toBe("applied");
+      expect(await db.getBankLine(ctx.db, R, line.id)).toMatchObject({ status: "matching", note: "Billing wants a person to check this payment before it posts: The bank line is more than what is owed (overpayment)." });
+      expect(await outboxRow(key)).toMatchObject({ status: "done", result: { status: "needs_review" } });
+
+      // ...and the person's rejection later still reaches the line (it used to be dropped).
+      expect(await receiveMatchResult(ctx, R, { key, status: "rejected", error: "A person rejected the match in Billing" })).toBe("applied");
+      const back = (await db.getBankLine(ctx.db, R, line.id))!;
+      expect(back).toMatchObject({ status: "unreconciled", match: null, journalId: null });
+      expect(back.note).toBe("Billing refused the match to INV-1001: A person rejected the match in Billing. Match the line to something else or categorise it.");
+      expect(await outboxRow(key)).toMatchObject({ status: "done", result: { status: "rejected" } });
+      // The refused invoice is not suggested again (no accept-refuse loop for the Bookkeeper), even after a refresh.
+      expect(back.suggestions.some((s) => s.kind === "open_item" && s.key === "invoice:r1")).toBe(false);
+      await refreshSuggestions(ctx, R, { lineIds: [line.id], useJev: false });
+      expect((await db.getBankLine(ctx.db, R, line.id))!.suggestions.some((s) => s.kind === "open_item")).toBe(false);
+      // A repeat of the answer changes nothing.
+      expect(await receiveMatchResult(ctx, R, { key, status: "rejected", error: "again" })).toBe("ignored");
+
+      // A person may still match it to the same invoice by hand: a fresh key, so Billing hears it again.
+      const { matchToOpenItem } = await import("../src/service/bank.js");
+      await matchToOpenItem(ctx, R, user, { lineId: line.id, openItemKey: "invoice:r1" });
+      const again = `${key}:2`;
+      expect(emitted.filter((e) => e.name === "bank.matched" && e.payload.key === again)).toHaveLength(1);
+      expect(((await db.getBankLine(ctx.db, R, line.id))!.match as { outboxKey: string }).outboxKey).toBe(again);
+      // An answer for the old key no longer moves the line; a late "settled" for the new one does.
+      expect(await receiveMatchResult(ctx, R, { key, status: "rejected", error: "stale" })).toBe("ignored");
+      expect(await receiveMatchResult(ctx, R, { key: again, status: "needs_review", error: "Check it" })).toBe("applied");
+      expect(await receiveMatchResult(ctx, R, { key: again, status: "settled", paymentId: "pay-r1" })).toBe("applied");
+      expect(await db.getBankLine(ctx.db, R, line.id)).toMatchObject({ status: "matching", note: "Billing recorded the payment; waiting for its journal." });
+      expect(await outboxRow(again)).toMatchObject({ status: "done", result: { status: "settled" } });
+      // Unknown keys and other events are ignored.
+      expect(await receiveMatchResult(ctx, R, { key: "bank:nope", status: "rejected" })).toBe("ignored");
+      expect(await receiveMatchResult(ctx, R, { key: "billing:invoice:x", status: "rejected" })).toBe("ignored");
+    });
+
+    it("a statement email opens an issue with the exact steps for the Bookkeeper route, and the reconcile issue opens without a Bookkeeper", async () => {
+      const M = "co-mail";
+      configs.set(M, { legalName: "Mail Co", vatNumber: "4333333333", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(M));
+      const mail = { key: "gmail:mx1", messageId: "mx1", threadId: "t1", accountAddress: "accounts@pib.test", from: { email: "statements@fnb.co.za", name: "FNB" }, to: [], subject: "Your October statement", snippet: "", receivedAt: "2026-11-01T06:00:00Z", attachments: [{ attachmentId: "att-9", filename: "oct.csv", mime: "text/csv", bytes: 2048 }], triage: { category: "bank_statement", urgency: null, needsReply: null, phishing: null, confidence: 0.9 } };
+      expect(await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", mail)).toBe(true);
+      const statementIssue = [...issues.values()].find((i) => i.originId === "mail:mx1")!;
+      // No Bookkeeper yet: the Operator gets it (never unassigned), and it is woken as an agent.
+      expect(statementIssue).toMatchObject({ assigneeAgentId: "agent-op", assigneeUserId: null, status: "todo", title: "Bank statement received: Your October statement" });
+      for (const text of ["partnersinbiz.mailbox:get-attachment", "`att-9`", "`mx1`", "partnersinbiz.accounting:import-statement", "list-bank-accounts", "Reconcile N new bank lines", "partnersinbiz.cockpit:ask-owner"]) {
+        expect(statementIssue.description, text).toContain(text);
+      }
+
+      await ensureBook(ctx, M);
+      const bank = await saveBankAccount(ctx, M, { name: "Mail bank" });
+      const imported = await importStatement(ctx, M, user, { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "oct.ofx" });
+      expect(imported.issueId).toBeTruthy();
+      const reconcile = issues.get(imported.issueId!)!;
+      expect(reconcile).toMatchObject({ assigneeAgentId: "agent-op", title: "Reconcile 2 new bank lines (Mail bank)" });
+      expect(reconcile.description).toContain(`prepare-reconciliation\` with \`bankAccountId: "${bank.id}"\``);
+      expect(reconcile.description).toContain("partnersinbiz.cockpit:ask-owner");
+      expect(reconcile.description).not.toMatch(/with a comment here/);
+
+      // The Cockpit knows a running Bookkeeper: it gets the next statement.
+      state.set("roles", ROLES(M, { team: { bookkeeper: { agentId: "agent-bk", status: "idle" } } }));
+      await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx2", messageId: "mx2" });
+      expect([...issues.values()].find((i) => i.originId === "mail:mx2")).toMatchObject({ assigneeAgentId: "agent-bk" });
+
+      // The plugin's own linked Bookkeeper wins while it runs; a paused one is skipped.
+      const realGet = ctx.agents.get;
+      let status = "active";
+      ctx.agents.get = async (id: string) => (id === "agent-own" ? { id, name: "Books", status } : null);
+      state.set("role:bookkeeper", { agentId: "agent-own", linkedAt: "2026-09-01T00:00:00Z", linkedBy: "manual", hire: null });
+      try {
+        await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx3", messageId: "mx3" });
+        expect([...issues.values()].find((i) => i.originId === "mail:mx3")).toMatchObject({ assigneeAgentId: "agent-own" });
+        status = "paused";
+        await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx4", messageId: "mx4" });
+        expect([...issues.values()].find((i) => i.originId === "mail:mx4")).toMatchObject({ assigneeAgentId: "agent-bk" });
+      } finally {
+        ctx.agents.get = realGet;
+        state.delete("role:bookkeeper");
+      }
+
+      // Nobody at all but the owner: a person gets it.
+      state.set("roles", ROLES(M, { operatorAgentId: null, team: {} }));
+      await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx5", messageId: "mx5" });
+      expect([...issues.values()].find((i) => i.originId === "mail:mx5")).toMatchObject({ assigneeAgentId: null, assigneeUserId: "user-owner" });
+    });
+
+    it("import-statement takes a get-attachment link, skips duplicates, refuses PDFs and finds the bank account", async () => {
+      const Y = "co-tools";
+      configs.set(Y, { legalName: "Tools Co", vatNumber: "4444444444", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(Y));
+      const fetched: string[] = [];
+      ctx.http = {
+        fetch: async (url: string) => {
+          fetched.push(url);
+          if (url.includes("/redirect")) return new Response("", { status: 302, headers: { location: "https://files.pib.test/sep.ofx" } });
+          if (url.includes("/expired")) return new Response("gone", { status: 403 });
+          return new Response(fixture("statement.ofx"), { status: 200 });
+        },
+      };
+      const { importStatementTool, bankAccountsView } = await import("../src/service/bank.js");
+      await ensureBook(ctx, Y);
+      await expect(importStatementTool(ctx, Y, agent, { content: fixture("statement.ofx") })).rejects.toThrow(/No bank account is set up yet/);
+      const bank = await saveBankAccount(ctx, Y, { name: "Tools bank", bankName: "FNB", numberLast4: "9876" });
+
+      // Only one bank account: no id needed. The link is followed through the host's guarded fetch.
+      const first = await importStatementTool(ctx, Y, agent, { url: "https://mail.pib.test/redirect", fileName: "sep.ofx" });
+      expect(fetched).toEqual(["https://mail.pib.test/redirect", "https://files.pib.test/sep.ofx"]);
+      expect(first).toMatchObject({ bankAccount: { id: bank.id, name: "Tools bank" }, format: "ofx", linesInFile: 2, imported: 2, duplicatesSkipped: 0, duplicateFile: false, periodStart: "2026-09-01", periodEnd: "2026-09-30", openingMinor: 10_000_00, closingMinor: 15_520_00 });
+      expect(first.reconcileIssueId).toBeTruthy();
+      expect(first.next.join(" ")).toContain(`prepare-reconciliation with bankAccountId "${bank.id}", periodStart 2026-09-01 and periodEnd 2026-09-30.`);
+      // The statement carries its balances, so the agent is not asked for them.
+      expect(first.next.join(" ")).not.toContain("openingMinor");
+
+      const repeat = await importStatementTool(ctx, Y, agent, { content: fixture("statement.ofx"), fileName: "sep.ofx" });
+      expect(repeat).toMatchObject({ imported: 0, duplicateFile: true, reconcileIssueId: null });
+
+      await expect(importStatementTool(ctx, Y, agent, { url: "http://mail.pib.test/sep.ofx" })).rejects.toThrow(/https/);
+      await expect(importStatementTool(ctx, Y, agent, { url: "https://mail.pib.test/expired" })).rejects.toThrow(/HTTP 403.*fresh one/);
+      await expect(importStatementTool(ctx, Y, agent, { content: "%PDF-1.4 binary", fileName: "sep.pdf" })).rejects.toThrow(/PDF statements cannot be imported/);
+
+      const second = await saveBankAccount(ctx, Y, { name: "Savings" });
+      await expect(importStatementTool(ctx, Y, agent, { content: fixture("fnb.csv") })).rejects.toThrow(new RegExp(`Give bankAccountId, one of: .*${bank.id} \\(Tools bank ••9876\\)`));
+      const view = await bankAccountsView(ctx, Y);
+      expect(view.bankAccounts.map((b) => b.id).sort()).toEqual([bank.id, second.id].sort());
+      expect(view.bankAccounts.find((b) => b.id === bank.id)).toMatchObject({ openLines: 2, lastStatement: { fileName: "sep.ofx", periodStart: "2026-09-01", periodEnd: "2026-09-30" }, reconciledTo: null });
+    });
+
+    it("month-end tools: prepare-reconciliation and prepare-vat201 open approval issues for a person; an agent cannot close them", async () => {
+      const Y = "co-tools";
+      state.set("roles", ROLES(Y));
+      const { prepareReconciliationTool } = await import("../src/service/reconcile.js");
+      const { onReconciliationIssue } = await import("../src/service/reconcile.js");
+      const { prepareVat201Tool, onVatIssue } = await import("../src/service/vat.js");
+      const { vatPeriodFor } = await import("../src/domain/periods.js");
+      const bank = (await db.listBankAccounts(ctx.db, Y)).find((b) => b.name === "Tools bank")!;
+
+      // Lines still open: blockers and the next step, no approval issue.
+      const early = await prepareReconciliationTool(ctx, Y, agent, { bankAccountId: bank.id, month: "2026-09", openingMinor: 10_000_00 });
+      expect(early).toMatchObject({ status: "draft", ready: false, openLines: 2, approvalIssueId: null });
+      expect(early.next).toMatch(/Reconcile the 2 open line/);
+
+      for (const line of await db.listBankLines(ctx.db, Y, { bankAccountId: bank.id })) await categorise(ctx, Y, user, { lineId: line.id, accountCode: line.amountMinor > 0 ? "4000" : "6150" });
+      const ready = await prepareReconciliationTool(ctx, Y, agent, { bankAccountId: bank.id, month: "2026-09", openingMinor: 10_000_00 });
+      expect(ready).toMatchObject({ status: "pending_approval", ready: true, differenceMinor: 0, openLines: 0 });
+      const approval = issues.get(ready.approvalIssueId!)!;
+      // Assigned to a person (the owner), never left unassigned.
+      expect(approval).toMatchObject({ assigneeUserId: "user-owner", assigneeAgentId: null, status: "todo" });
+      expect(approval.description).toContain("R 10,000.00");
+      expect(approval.description).toContain("R 15,520.00");
+      // Running it again says it is waiting, instead of failing.
+      expect((await prepareReconciliationTool(ctx, Y, agent, { bankAccountId: bank.id, month: "2026-09" })).next).toMatch(/waiting for a person/);
+
+      // The Bookkeeper marks the approval done: it reopens for the person; nothing locks.
+      approval.status = "done";
+      approval.assigneeAgentId = "agent-bk";
+      const rec = (await db.getReconciliation(ctx.db, Y, ready.reconciliationId))!;
+      await onReconciliationIssue(ctx, Y, rec, "done", { type: "agent", id: "agent-bk" });
+      expect(approval).toMatchObject({ status: "todo", assigneeAgentId: null, assigneeUserId: "user-owner" });
+      expect(comments.at(-1)).toMatchObject({ issueId: approval.id });
+      expect(comments.at(-1)!.body).toMatch(/Only a person can decide it/);
+      expect((await db.getReconciliation(ctx.db, Y, rec.id))!.status).toBe("pending_approval");
+      await onReconciliationIssue(ctx, Y, rec, "done", { type: "user", id: "user-owner" });
+      expect((await db.getReconciliation(ctx.db, Y, rec.id))!.status).toBe("locked");
+
+      // VAT201: the last period that ended, approval for a person; the running period stays a draft.
+      const current = vatPeriodFor(todayIso(), "B", 2)!;
+      const { addDays } = await import("../src/domain/util.js");
+      const last = vatPeriodFor(addDays(current.start, -1), "B", 2)!;
+      // A journal in that period makes it these books' to file (one that ended before the books start is not; see the books-start test).
+      await postJournal(ctx, Y, { sourceKey: "test:y-last-period", source: { plugin: "t", kind: "t", id: "y" }, kind: "manual", date: last.start, memo: "Petty cash", lines: [{ accountCode: "1000", debitMinor: 1_00, creditMinor: 0 }, { accountCode: "1990", debitMinor: 0, creditMinor: 1_00 }], postedBy: user });
+      const vat = await prepareVat201Tool(ctx, Y, agent, {});
+      expect(vat).toMatchObject({ periodStart: last.start, periodEnd: last.end, status: "pending_approval", payableMinor: 0 });
+      const vatIssue = issues.get(vat.approvalIssueId!)!;
+      expect(vatIssue).toMatchObject({ assigneeUserId: "user-owner", title: expect.stringMatching(/^Approve VAT201 for .*\(pay R 0\.00\)$/) });
+      const running = await prepareVat201Tool(ctx, Y, agent, { date: todayIso() });
+      expect(running).toMatchObject({ periodStart: current.start, status: "draft", approvalIssueId: null });
+      expect(running.next).toMatch(/Saved as a draft/);
+      const ret = (await db.getVatReturn(ctx.db, Y, vat.returnId!))!;
+      vatIssue.status = "cancelled";
+      await onVatIssue(ctx, Y, ret, "cancelled", { type: "agent", id: "agent-bk" });
+      expect(vatIssue.status).toBe("todo");
+      expect((await db.getVatReturn(ctx.db, Y, ret.id))!.status).toBe("pending_approval");
+
+      // A manual journal from the Bookkeeper also goes to the person.
+      const draft = await saveDraft(ctx, Y, { date: "2026-09-20", memo: "Accrue audit fee", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] }, agent);
+      const pending = await requestDraftApproval(ctx, Y, draft.id, agent);
+      expect(issues.get(pending.approvalIssueId!)).toMatchObject({ assigneeUserId: "user-owner", title: "Approve journal: Accrue audit fee (R 1,000.00)" });
+    });
+
+    it("the month-end close issue opens once a month, even without a Bookkeeper, with the month-end tools", async () => {
+      const Z = "co-close";
+      configs.set(Z, { legalName: "Close Co", vatNumber: "4555555555", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(Z));
+      await ensureBook(ctx, Z);
+      // These books started in August 2026 (the set-up day), so September has a month-end and July has none.
+      await q(`UPDATE ${NAMESPACE}.books SET seeded_at = '2026-08-03T08:00:00Z' WHERE company_id = $1`, [Z]);
+      const { monthEndCloseIssue } = await import("../src/service/agent.js");
+      expect(await monthEndCloseIssue(ctx, Z, new Date("2026-10-15T03:20:00Z"))).toBeNull();
+      expect(await monthEndCloseIssue(ctx, Z, new Date("2026-08-02T03:20:00Z"))).toBeNull();
+      const id = await monthEndCloseIssue(ctx, Z, new Date("2026-10-02T03:20:00Z"));
+      const issue = issues.get(id!)!;
+      expect(issue).toMatchObject({ title: "Month-end close: Sep 2026", assigneeAgentId: "agent-op" });
+      for (const text of ["period-close-checklist", "list-bank-accounts", "prepare-reconciliation` with `month: \"2026-09\"`", "prepare-vat201", "vat-summary", "partnersinbiz.cockpit:ask-owner"]) expect(issue.description, text).toContain(text);
+      expect(await monthEndCloseIssue(ctx, Z, new Date("2026-10-03T03:20:00Z"))).toBeNull();
+    });
+
+    it("the rejected-postings issue goes to the Bookkeeper route with the fix steps", async () => {
+      const J = "co-rej-post";
+      configs.set(J, { legalName: "Post Co", vatNumber: "4666666666", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(J));
+      await ensureBook(ctx, J);
+      const bad = invoiceRequest("billing:invoice:j1:issue", "2026-09-03", { lines: [{ role: "ar", debitMinor: 100, creditMinor: 0 }, { role: "revenue", debitMinor: 0, creditMinor: 99 }] });
+      expect(await receivePostRequest(ctx, J, `plugin.${BILLING}.ledger.post.requested`, bad)).toMatchObject({ status: "rejected" });
+      const book = (await db.getBook(ctx.db, J))!;
+      expect(issues.get(book.rejectionIssueId!)).toMatchObject({ assigneeAgentId: "agent-op", title: "Accounting: postings were rejected" });
+      expect(issues.get(book.rejectionIssueId!)!.description).toContain("partnersinbiz.cockpit:ask-owner");
+    });
   });
 
   describe("cockpit snapshot", () => {

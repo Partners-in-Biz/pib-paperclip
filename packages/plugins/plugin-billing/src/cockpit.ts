@@ -18,9 +18,10 @@ import {
   type CockpitSnapshot,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
-import { invoiceBalances, iso } from "./balances.js";
+import { AS_AT_CUTOFF_SQL, asAtDate, invoiceBalances, iso, statusAsAtToday } from "./balances.js";
 import { billingSettings } from "./config.js";
-import { table } from "./db.js";
+import { asObject, table } from "./db.js";
+import { shortDayText } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { billingOn, knownCompanyIds } from "./setup.js";
 
@@ -33,6 +34,9 @@ export const BILLING_JOBS: Array<{ key: string; title: string; everyMinutes: num
   { key: "emit-open-items", title: "Share receivables and payables", everyMinutes: 15 },
   { key: "emit-open-items-all", title: "Share all open items (nightly)", everyMinutes: 1440 },
   { key: "fx-rates", title: "FX rates", everyMinutes: 1440 },
+  { key: "drafts-to-send", title: "Drafts to send (daily issue)", everyMinutes: 1440 },
+  { key: "overdue-invoices", title: "Overdue invoices (weekly issue)", everyMinutes: 10080 },
+  { key: "post-missing-journals", title: "Journals missed while Accounting was off", everyMinutes: 1440 },
 ];
 
 const PAGE = "/billing";
@@ -52,6 +56,13 @@ export function sumsText(sums: Sums, main: string): string {
 }
 
 const n = (value: unknown) => Number(value ?? 0) || 0;
+
+/** "1–27 Sep" (or "1 Oct" on the first): the part of this month a month-to-date figure covers. */
+export function monthToDate(today: string): string {
+  const day = Number(today.slice(8, 10));
+  const short = shortDayText(today);
+  return day <= 1 ? short : `1–${short}`;
+}
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
@@ -79,28 +90,35 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   }
 
   // ── KPIs ────────────────────────────────────────────────────────────────
+  // Every money figure is "as at today", the same as the Billing page, the CRM card and Accounting:
+  // a payment dated after today counts nowhere yet and is flagged under health instead.
+  const today = asAtDate();
+  const asAt = `as at ${shortDayText(today)}`;
   await part("receivables", async () => {
     const open = await invoiceBalances(ctx, companyId, { openOnly: true });
     const outstanding: Sums = new Map();
     const overdue: Sums = new Map();
     let overdueCount = 0;
+    let openCount = 0;
     const now = Date.now();
     for (const b of open) {
       if (b.outstandingMinor <= 0) continue;
+      openCount += 1;
       addTo(outstanding, b.invoice.currency, b.outstandingMinor);
       const due = iso(b.invoice.due_at);
-      if (b.invoice.status === "overdue" || (due && Date.parse(due) < now)) {
+      if (statusAsAtToday(b) === "overdue" || (due && Date.parse(due) < now)) {
         overdueCount += 1;
         addTo(overdue, b.invoice.currency, b.outstandingMinor);
       }
     }
-    snap.kpis.push({ key: "outstanding", label: "Outstanding", value: sumsText(outstanding, main), raw: outstanding.get(main) ?? 0, tone: "neutral", href: `${PAGE}?tab=invoices`, group: "money" });
+    snap.kpis.push({ key: "outstanding", label: "Outstanding", value: sumsText(outstanding, main), raw: outstanding.get(main) ?? 0, tone: "neutral", delta: openCount ? `${plural(openCount, "invoice")}, ${asAt}` : asAt, href: `${PAGE}?tab=invoices`, group: "money" });
     snap.kpis.push({
       key: "overdue",
       label: "Overdue",
-      value: overdueCount ? `${overdueCount} · ${sumsText(overdue, main)}` : "None",
+      value: overdueCount ? sumsText(overdue, main) : "None",
       raw: overdue.get(main) ?? 0,
       tone: overdueCount > 0 ? "bad" : "ok",
+      delta: overdueCount ? `${plural(overdueCount, "invoice")}, ${asAt}` : asAt,
       href: `${PAGE}?tab=invoices`,
       group: "money",
     });
@@ -109,12 +127,24 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   await part("received", async () => {
     const rows = await ctx.db.query<{ currency: string | null; total: string }>(
       `SELECT p.currency, COALESCE(sum(p.amount_minor), 0)::text AS total FROM ${table(ctx, "payments")} p
-        WHERE p.company_id = $1 AND p.paid_at >= date_trunc('month', now()) GROUP BY p.currency`,
+        WHERE p.company_id = $1 AND p.paid_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND p.paid_at < ${AS_AT_CUTOFF_SQL}
+        GROUP BY p.currency`,
       [companyId],
     );
     const sums: Sums = new Map();
     for (const r of rows) addTo(sums, (r.currency ?? main).toUpperCase(), n(r.total));
-    snap.kpis.push({ key: "received_month", label: "Received this month", value: sumsText(sums, main), raw: sums.get(main) ?? 0, tone: "neutral", href: `${PAGE}?tab=payments`, group: "money" });
+    snap.kpis.push({ key: "received_month", label: "Received this month", value: sumsText(sums, main), raw: sums.get(main) ?? 0, tone: "neutral", delta: monthToDate(today), href: `${PAGE}?tab=payments`, group: "money" });
+  });
+
+  await part("future payments", async () => {
+    const rows = await ctx.db.query<{ n: string; first: unknown }>(
+      `SELECT count(*)::text AS n, min(p.paid_at) AS first FROM ${table(ctx, "payments")} p WHERE p.company_id = $1 AND p.paid_at >= ${AS_AT_CUTOFF_SQL}`,
+      [companyId],
+    );
+    const future = n(rows[0]?.n);
+    snap.health.push(future > 0
+      ? { key: "future_payments", title: "Payments dated in the future", status: "warn", detail: `${plural(future, "payment")} dated after today (first on ${shortDayText(iso(rows[0]?.first))}). ${future === 1 ? "It counts" : "They count"} in no total until then. Check the date.`, href: `${PAGE}?tab=payments`, fix: "Open Billing → Payments and check the date against the bank statement. A wrong date is usually a statement imported with the day and month swapped." }
+      : { key: "future_payments", title: "Payments dated in the future", status: "ok" });
   });
 
   await part("mrr", async () => {
@@ -122,11 +152,11 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     const rows = await ctx.db.query<{ currency: string; total: string }>(
       `SELECT currency, COALESCE(sum(monthly), 0)::text AS total FROM (
          SELECT s.currency,
-                CASE s.period WHEN 'quarterly' THEN s.price_minor / 3 WHEN 'yearly' THEN s.price_minor / 12 ELSE s.price_minor END AS monthly
-           FROM ${table(ctx, "subscriptions")} s WHERE s.company_id = $1 AND s.status = 'active'
+                CASE s.period WHEN 'quarterly' THEN round(s.price_minor / 3.0) WHEN 'yearly' THEN round(s.price_minor / 12.0) ELSE s.price_minor END AS monthly
+           FROM ${table(ctx, "subscriptions")} s WHERE s.company_id = $1 AND s.status = 'active' AND s.started_at < ${AS_AT_CUTOFF_SQL}
          UNION ALL
          SELECT i.currency,
-                CASE r.frequency WHEN 'quarterly' THEN i.total_minor / 3 WHEN 'yearly' THEN i.total_minor / 12 ELSE i.total_minor END AS monthly
+                CASE r.frequency WHEN 'quarterly' THEN round(COALESCE(i.subtotal_minor, i.total_minor) / 3.0) WHEN 'yearly' THEN round(COALESCE(i.subtotal_minor, i.total_minor) / 12.0) ELSE COALESCE(i.subtotal_minor, i.total_minor) END AS monthly
            FROM ${table(ctx, "recurring_invoices")} r JOIN ${table(ctx, "invoices")} i ON i.id = r.template_invoice_id
           WHERE r.company_id = $1 AND r.is_active = true AND (r.ends_at IS NULL OR r.ends_at > now())
        ) m GROUP BY currency`,
@@ -134,7 +164,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     );
     const sums: Sums = new Map();
     for (const r of rows) addTo(sums, r.currency.toUpperCase(), n(r.total));
-    snap.kpis.push({ key: "mrr", label: "Monthly recurring", value: sumsText(sums, main), raw: sums.get(main) ?? 0, tone: "neutral", href: `${PAGE}?tab=retainers`, group: "money" });
+    snap.kpis.push({ key: "mrr", label: "Monthly recurring", value: sumsText(sums, main), raw: sums.get(main) ?? 0, tone: "neutral", delta: `excl. VAT, ${asAt}`, href: `${PAGE}?tab=retainers`, group: "money" });
   });
 
   await part("quotes", async () => {
@@ -149,7 +179,40 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
       count += n(r.count);
       addTo(sums, r.currency.toUpperCase(), n(r.total));
     }
-    snap.kpis.push({ key: "open_quotes", label: "Open quotes", value: count ? `${count} · ${sumsText(sums, main)}` : "None", raw: count, tone: "neutral", href: `${PAGE}?tab=quotes`, group: "pipeline" });
+    snap.kpis.push({ key: "open_quotes", label: "Open quotes", value: count ? sumsText(sums, main) : "None", hint: count ? `${count} ${count === 1 ? "quote" : "quotes"}` : null, raw: count, tone: "neutral", href: `${PAGE}?tab=quotes`, group: "pipeline" });
+  });
+
+  await part("drafts", async () => {
+    // Drafts nobody asked to send yet (the Account Manager's daily "Drafts to send" issue lists the ones over a day old).
+    const rows = await ctx.db.query<{ currency: string; count: string; stale: string; total: string }>(
+      `SELECT currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day')::text AS stale, COALESCE(sum(total_minor), 0)::text AS total FROM (
+         SELECT i.currency, i.created_at, i.total_minor FROM ${table(ctx, "invoices")} i
+          WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
+            AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "recurring_invoices")} r WHERE r.template_invoice_id = i.id AND r.is_active = true)
+         UNION ALL
+         SELECT currency, created_at, total_minor FROM ${table(ctx, "quotes")}
+          WHERE company_id = $1 AND status = 'draft' AND pending_action IS NULL AND COALESCE(delivery_status, '') <> 'queued'
+       ) d GROUP BY currency`,
+      [companyId],
+    );
+    const sums: Sums = new Map();
+    let count = 0;
+    let stale = 0;
+    for (const r of rows) {
+      count += n(r.count);
+      stale += n(r.stale);
+      addTo(sums, r.currency.toUpperCase(), n(r.total));
+    }
+    snap.kpis.push({
+      key: "drafts",
+      label: "Drafts to send",
+      value: count ? sumsText(sums, main) : "None",
+      hint: count ? `${count} ${count === 1 ? "invoice" : "invoices"}${stale ? (stale >= count ? (count === 1 ? ", over a day old" : ", all over a day old") : `, ${stale} over a day old`) : ""}` : null,
+      raw: count,
+      tone: stale > 0 ? "warn" : "neutral",
+      href: `${PAGE}?tab=invoices`,
+      group: "pipeline",
+    });
   });
 
   await part("bills", async () => {
@@ -174,7 +237,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     snap.kpis.push({
       key: "bills_due",
       label: "Bills due in 7 days",
-      value: count ? `${count} · ${sumsText(sums, main)}${late ? ` (${late} late)` : ""}` : "None",
+      value: count ? sumsText(sums, main) : "None",
+      hint: count ? `${count} ${count === 1 ? "bill" : "bills"}${late ? `, ${late} late` : ""}` : null,
       raw: sums.get(main) ?? 0,
       tone,
       href: `${PAGE}?tab=bills`,
@@ -232,30 +296,33 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   // ── Waiting on a person ─────────────────────────────────────────────────
   await part("approvals", async () => {
-    const invoices = await ctx.db.query<{ id: string; number: string; pending_action: string; approval_issue_id: string; currency: string; total_minor: string; updated_at: unknown }>(
-      `SELECT id, number, pending_action, approval_issue_id, currency, total_minor::text AS total_minor, updated_at AS updated_at FROM ${table(ctx, "invoices")}
+    // Titles name the client and the amount; a draft has no number to show yet (it gets one when it is sent).
+    const invoices = await ctx.db.query<{ id: string; number: string; pending_action: string; approval_issue_id: string; currency: string; total_minor: string; name: string | null; customer_ref: string; updated_at: unknown }>(
+      `SELECT id, number, pending_action, approval_issue_id, currency, total_minor::text AS total_minor, COALESCE(customer_snapshot->>'name', customer->>'name') AS name, customer_ref, updated_at AS updated_at FROM ${table(ctx, "invoices")}
         WHERE company_id = $1 AND pending_action IS NOT NULL AND approval_issue_id IS NOT NULL ORDER BY updated_at LIMIT 25`,
       [companyId],
     );
     for (const row of invoices) {
       const pay = row.pending_action === "pay";
+      const amount = formatMoneyMinor(n(row.total_minor), row.currency);
+      const who = row.name || "a client";
       snap.waiting.push({
         key: `approval:${row.approval_issue_id}`,
-        title: pay ? `Approve payment of invoice ${row.number}` : `Approve sending invoice ${row.number}`,
-        why: pay ? "Confirming money received needs a person." : `Emailing ${formatMoneyMinor(n(row.total_minor), row.currency)} to a customer needs a person's approval.`,
+        title: pay ? `Approve payment of ${row.number} (${who}, ${amount})` : `Approve sending invoice to ${who} (${amount})`,
+        why: pay ? "Confirming money received needs a person." : `Emailing an invoice of ${amount} to a client needs a person's approval.`,
         href: issueHref(row.approval_issue_id),
         issueId: row.approval_issue_id,
         kind: pay ? "money" : "review",
         since: iso(row.updated_at),
       });
     }
-    const quotes = await ctx.db.query<{ number: string; approval_issue_id: string; updated_at: unknown }>(
-      `SELECT number, approval_issue_id, updated_at AS updated_at FROM ${table(ctx, "quotes")}
+    const quotes = await ctx.db.query<{ approval_issue_id: string; currency: string; total_minor: string; name: string | null; updated_at: unknown }>(
+      `SELECT approval_issue_id, currency, total_minor::text AS total_minor, customer->>'name' AS name, updated_at AS updated_at FROM ${table(ctx, "quotes")}
         WHERE company_id = $1 AND pending_action = 'send' AND approval_issue_id IS NOT NULL ORDER BY updated_at LIMIT 25`,
       [companyId],
     );
     for (const row of quotes) {
-      snap.waiting.push({ key: `approval:${row.approval_issue_id}`, title: `Approve sending quote ${row.number}`, why: "Sending a quote to a customer needs a person's approval.", href: issueHref(row.approval_issue_id), issueId: row.approval_issue_id, kind: "review", since: iso(row.updated_at) });
+      snap.waiting.push({ key: `approval:${row.approval_issue_id}`, title: `Approve sending quote to ${row.name || "a client"} (${formatMoneyMinor(n(row.total_minor), row.currency)})`, why: "Sending a quote to a client needs a person's approval.", href: issueHref(row.approval_issue_id), issueId: row.approval_issue_id, kind: "review", since: iso(row.updated_at) });
     }
     const bills = await ctx.db.query<{ supplier_name: string; currency: string; total_minor: string; approval_issue_id: string; updated_at: unknown }>(
       `SELECT supplier_name, currency, total_minor::text AS total_minor, approval_issue_id, updated_at AS updated_at FROM ${table(ctx, "bills")}
@@ -265,22 +332,25 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     for (const row of bills) {
       snap.waiting.push({ key: `approval:${row.approval_issue_id}`, title: `Approve bill from ${row.supplier_name}`, why: `A ${formatMoneyMinor(n(row.total_minor), row.currency)} bill goes into the books once a person approves it.`, href: issueHref(row.approval_issue_id), issueId: row.approval_issue_id, kind: "money", since: iso(row.updated_at) });
     }
-    const checks = await ctx.db.query<{ issue_id: string; kind: string; created_at: unknown }>(
-      `SELECT issue_id, kind, created_at AS created_at FROM ${table(ctx, "decision_issues")}
-        WHERE company_id = $1 AND status = 'open' AND kind IN ('pop', 'bank_match') ORDER BY created_at LIMIT 25`,
+    const checks = await ctx.db.query<{ issue_id: string; kind: string; payload: unknown; created_at: unknown }>(
+      `SELECT issue_id, kind, payload, created_at AS created_at FROM ${table(ctx, "decision_issues")}
+        WHERE company_id = $1 AND status = 'open' AND kind IN ('pop', 'bank_match', 'payment', 'credit_note', 'reminder') ORDER BY created_at LIMIT 25`,
       [companyId],
     );
     for (const row of checks) {
-      const pop = row.kind === "pop";
-      snap.waiting.push({
-        key: `${row.kind}:${row.issue_id}`,
-        title: pop ? "Check a proof of payment" : "Check a bank match",
-        why: pop ? "A person confirms the money is in the bank before the invoice is paid." : "Billing was not sure the bank line pays this document; a person confirms it.",
-        href: issueHref(row.issue_id),
-        issueId: row.issue_id,
-        kind: "money",
-        since: iso(row.created_at),
-      });
+      const p = asObject(row.payload);
+      const money = p.amountMinor != null ? formatMoneyMinor(n(p.amountMinor), String(p.currency ?? main)) : "";
+      const number = String(p.number ?? "");
+      const item = row.kind === "pop"
+        ? { title: "Check a proof of payment", why: "A person confirms the money is in the bank before the invoice is paid.", kind: "money" as const }
+        : row.kind === "bank_match"
+          ? { title: "Check a bank match", why: "Billing was not sure the bank line pays this document; a person confirms it.", kind: "money" as const }
+          : row.kind === "payment"
+            ? { title: `Record payment of ${money} on ${number}?`, why: "An agent reported money received; a person checks the bank before it is recorded.", kind: "money" as const }
+            : row.kind === "credit_note"
+              ? { title: `Issue credit note of ${money} on ${number}?`, why: "Crediting a customer changes what they owe; a person decides.", kind: "money" as const }
+              : { title: `Approve payment reminder ${n(p.stage) + 1} for ${number}`, why: "A reminder email goes to the customer; a person approves it.", kind: "review" as const };
+      snap.waiting.push({ key: `${row.kind}:${row.issue_id}`, ...item, href: issueHref(row.issue_id), issueId: row.issue_id, since: iso(row.created_at) });
     }
   });
 
@@ -292,7 +362,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
            FROM ${table(ctx, "invoices")} i WHERE i.company_id = $1 AND i.sent_at IS NOT NULL
          UNION ALL
          SELECT 'paid' AS kind, p.paid_at AS at, i.number, i.customer->>'name' AS name, COALESCE(p.currency, i.currency) AS currency, p.amount_minor::text AS amount, NULL::int AS stage
-           FROM ${table(ctx, "payments")} p JOIN ${table(ctx, "invoices")} i ON i.id = p.invoice_id WHERE p.company_id = $1
+           FROM ${table(ctx, "payments")} p JOIN ${table(ctx, "invoices")} i ON i.id = p.invoice_id WHERE p.company_id = $1 AND p.paid_at < ${AS_AT_CUTOFF_SQL}
          UNION ALL
          SELECT 'reminder' AS kind, r.created_at AS at, i.number, i.customer->>'name' AS name, i.currency, NULL AS amount, r.stage
            FROM ${table(ctx, "reminders")} r JOIN ${table(ctx, "invoices")} i ON i.id = r.invoice_id WHERE r.company_id = $1 AND r.status IN ('queued', 'sent')
@@ -345,7 +415,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     const cRate = total ? corrected / total : 0;
     snap.quality.push({
       key: "decisions_corrected",
-      label: "Receipt and Jev suggestions corrected (30 days)",
+      label: "Receipt and smart suggestions corrected (30 days)",
       value: total ? `${corrected} of ${total}` : "None",
       raw: corrected,
       tone: cRate > 0.25 ? "bad" : cRate > 0.1 ? "warn" : "ok",

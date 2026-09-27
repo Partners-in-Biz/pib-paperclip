@@ -17,8 +17,12 @@ import type {
   SendRecordInput,
   SendRow,
   SendStatus,
+  SkippedRecipient,
+  SuppressionInput,
+  SuppressionRow,
   TriageWrite,
 } from "../../src/gmail/types.js";
+import { createFakeDb, type Store } from "./fake-db.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import type { FetchLike } from "../../src/gmail/api.js";
 
@@ -33,8 +37,47 @@ export class MemoryStore implements GmailStore {
   locks = new Set<string>();
   crm: CrmClientRow[] = [];
   inboxResults = new Map<string, Record<string, unknown>>();
+  /** Delegations by `account:agent`. */
+  delegations = new Map<string, { can_read: boolean; can_draft: boolean; can_send: boolean }>();
+  async delegationFor(accountId: string, agentId: string) {
+    return this.delegations.get(`${accountId}:${agentId}`) ?? null;
+  }
+  delegate(accountId: string, agentId: string, grant: Partial<{ can_read: boolean; can_draft: boolean; can_send: boolean }> = {}): void {
+    this.delegations.set(`${accountId}:${agentId}`, { can_read: true, can_draft: true, can_send: false, ...grant });
+  }
+  /** Do-not-email list by `company:email`. */
+  suppressions = new Map<string, SuppressionRow>();
   /** Claim times per account, for the rate limit. */
   claims: Array<{ accountId: string; at: number }> = [];
+
+  async suppressionsFor(companyId: string, emails: string[]) {
+    const wanted = new Set(emails.map((e) => e.trim().toLowerCase()));
+    return [...this.suppressions.values()].filter((row) => row.company_id === companyId && wanted.has(row.email)).map((row) => ({ ...row }));
+  }
+  async upsertSuppression(input: SuppressionInput) {
+    const email = input.email.trim().toLowerCase();
+    const key = `${input.companyId}:${email}`;
+    const existing = this.suppressions.get(key);
+    const now = nowIso();
+    if (!existing) {
+      this.suppressions.set(key, { company_id: input.companyId, email, scope: input.scope, reason: input.reason, source: input.source, detail: input.detail ?? null, created_at: now, updated_at: now });
+      return { created: true, widened: false, scope: input.scope };
+    }
+    if (input.scope === "all" && existing.scope === "marketing") {
+      Object.assign(existing, { scope: "all", reason: input.reason, source: input.source, detail: input.detail ?? null, updated_at: now });
+      return { created: false, widened: true, scope: "all" as const };
+    }
+    return { created: false, widened: false, scope: existing.scope };
+  }
+  async listSuppressions(companyId: string, limit: number) {
+    return [...this.suppressions.values()].filter((row) => row.company_id === companyId).slice(0, limit);
+  }
+  async ownSuppressionsSince(source: string, sinceIso: string, limit: number) {
+    return [...this.suppressions.values()].filter((row) => row.source === source && row.updated_at >= sinceIso).slice(0, limit);
+  }
+  addSuppression(companyId: string, email: string, scope: "marketing" | "all", reason: SuppressionRow["reason"] = scope === "all" ? "bounced" : "unsubscribed", source = "partnersinbiz.crm"): void {
+    this.suppressions.set(`${companyId}:${email}`, { company_id: companyId, email, scope, reason, source, detail: null, created_at: nowIso(), updated_at: nowIso() });
+  }
 
   addAccount(partial: Partial<AccountRow> & { id: string; company_id: string; address: string }): AccountRow {
     const row: AccountRow = {
@@ -198,8 +241,8 @@ export class MemoryStore implements GmailStore {
     const row = this.messages.get(id);
     return row && row.company_id === companyId ? { ...row } : null;
   }
-  async getMessageByGmailId(companyId: string, gmailMessageId: string) {
-    const row = [...this.messages.values()].find((m) => m.company_id === companyId && m.gmail_message_id === gmailMessageId);
+  async getMessageByGmailId(companyId: string, gmailMessageId: string, accountId: string | null = null) {
+    const row = [...this.messages.values()].find((m) => m.company_id === companyId && m.gmail_message_id === gmailMessageId && (!accountId || m.account_id === accountId));
     return row ? { ...row } : null;
   }
   async getMessageByRfcId(companyId: string, rfcMessageId: string) {
@@ -274,11 +317,11 @@ export class MemoryStore implements GmailStore {
     this.claims.push({ accountId: input.accountId ?? "", at: Date.now() });
     return true;
   }
-  async recordSendFailure(input: SendRecordInput, error: string, permanent: boolean) {
+  async recordSendFailure(input: SendRecordInput, error: string, permanent: boolean, skipped: SkippedRecipient[] = []) {
     const existing = this.sends.get(input.key);
     if (existing?.status === "sent") return;
     const row = existing ?? this.newSend(input, "failed");
-    Object.assign(row, { status: "failed", permanent, error, attempts: existing ? row.attempts : 1 });
+    Object.assign(row, { status: "failed", permanent, error, skipped, attempts: existing ? row.attempts : 1 });
     this.sends.set(input.key, row);
   }
   async markRetrying(input: SendRecordInput, error: string) {
@@ -288,13 +331,14 @@ export class MemoryStore implements GmailStore {
     Object.assign(row, { status: "retrying", error });
     this.sends.set(input.key, row);
   }
-  async markSendSent(key: string, fields: SentFields) {
+  async markSendSent(key: string, fields: SentFields & { skipped?: SkippedRecipient[] }) {
     const row = this.sends.get(key);
     if (!row) return;
     Object.assign(row, {
       status: "sent",
       permanent: false,
       error: null,
+      skipped: fields.skipped ?? [],
       gmail_message_id: fields.gmailMessageId,
       gmail_thread_id: fields.gmailThreadId,
       rfc_message_id: fields.rfcMessageId,
@@ -368,6 +412,8 @@ export const ENCRYPTION_KEY = "test-encryption-key-1234567890";
 
 export interface FakeHost {
   ctx: PluginContext;
+  /** Tables the kit writes through ctx.db (the lead outbox), run by the guarded generic fake db. */
+  tables: Store;
   emitted: Array<{ name: string; companyId: string; payload: Record<string, unknown> }>;
   issues: Map<string, Record<string, unknown>>;
   wakeups: string[];
@@ -391,6 +437,11 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
     ...config,
   };
   let issueSeq = 0;
+  const tables: Store = { outbox: [] };
+  const generic = createFakeDb(tables, {
+    namespace: NAMESPACE,
+    defaults: { outbox: { status: "pending", attempts: 0, last_error: null, result: null, settled_at: null } },
+  });
   const ctx = {
     db: {
       namespace: NAMESPACE,
@@ -399,9 +450,14 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
           const result = inbox.get(String(params[0]));
           return result ? [{ result }] : [];
         }
+        if (sql.includes(`${NAMESPACE}.outbox`)) {
+          if (/AS stuck/.test(sql)) return [{ stuck: "0", failed: String(tables.outbox!.filter((row) => row.status === "failed").length), oldest: null }];
+          return generic.query(sql, params);
+        }
         return [];
       },
       execute: async (sql: string, params: unknown[] = []) => {
+        if (sql.includes(`${NAMESPACE}.outbox`)) return generic.execute(sql, params);
         if (sql.includes(`INSERT INTO ${NAMESPACE}.inbox`)) {
           inbox.set(String(params[0]), JSON.parse(String(params[3])));
           return { rowCount: 1 };
@@ -444,7 +500,7 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
     state: { get: async () => "/_plugins/11111111-2222-3333-4444-555555555555/ui/", set: async () => undefined },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   } as unknown as PluginContext;
-  return { ctx, emitted, issues, wakeups, inbox, decisions, config: fullConfig };
+  return { ctx, tables, emitted, issues, wakeups, inbox, decisions, config: fullConfig };
 }
 
 export function testEnv(host: FakeHost, store: MemoryStore, fetchImpl: FetchLike, jevFetch?: typeof fetch): Env {

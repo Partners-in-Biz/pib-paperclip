@@ -1,0 +1,216 @@
+/**
+ * The company's PiB team: every agent role a PiB module recommends, in one
+ * registry (browser-safe, no node imports; import via
+ * `@partnersinbiz/pib-plugin-kit/team`).
+ *
+ * Roles are staffed in one place, Setup → Team: hire (a prefilled hire task),
+ * pick an existing agent, change or remove it. The Cockpit runs the company
+ * (no Team tab) and each plugin page shows its agent box only when something
+ * is wrong, with a link back to Setup → Team.
+ *
+ * The actions are the ones each plugin already registers:
+ * - plugin roles: `<plugin>.hire-options` → `{ draft, agents, defaultAssigneeAgentId, status }`,
+ *   `<plugin>.start-hire` `{ title, description, assigneeAgentId | assigneeUserId }`,
+ *   `<plugin>.link-agent` `{ agentId }`, `<plugin>.unlink-agent`, and an optional re-sync;
+ * - Cockpit roles (Operator, Reviewer): `cockpit.hire-options` / `cockpit.start-hire`
+ *   with `{ role }`, and `cockpit.save-team` with a partial
+ *   `{ operatorAgentId, reviewerAgentId, ownerUserId, reviewOutward }`; their
+ *   current agents come from `cockpit.load` (`team`, `roles`).
+ */
+import { PIB_PLUGINS } from "./contracts.js";
+import type { ModuleKey } from "./setup.js";
+
+export type TeamRoleKey = "operator" | "reviewer" | "account-manager" | "seo-specialist" | "social" | "bookkeeper" | "payroll-clerk";
+
+export interface TeamRoleActions {
+  options: string;
+  start: string;
+  /** Plugin roles only; Cockpit roles save through `cockpit.save-team`. */
+  link?: string;
+  unlink?: string;
+  /** Wires the linked agent again (tools, routines, skills). */
+  resync?: string;
+}
+
+export interface TeamRole {
+  key: TeamRoleKey;
+  pluginKey: string;
+  /** The Setup module that turns this role on or off. */
+  module: ModuleKey;
+  title: string;
+  /** One line: what the agent does for the company. */
+  summary: string;
+  /** Recommended for every company that uses the module (false = optional). */
+  required: boolean;
+  /** The item key for this role in the plugin's setup checklist. */
+  setupItemKey: string;
+  /** Cockpit roles are saved with `cockpit.save-team`. */
+  cockpitRole?: "operator" | "reviewer";
+  /** Canonical keys of the skills the agent must have (always ends with the company operating manual). */
+  skills: string[];
+  /** Other modules' skills the agent also uses when those modules are installed; never counted as missing. */
+  extraSkills?: string[];
+  actions: TeamRoleActions;
+  /** The plugin page (no company prefix). */
+  pagePath: string;
+}
+
+/** Canonical key the host gives a plugin-managed skill: `plugin/<slug(pluginKey)>/<skillKey>`. */
+export function teamSkillKey(pluginKey: string, skillKey: string): string {
+  const slug = pluginKey.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "plugin";
+  return `plugin/${slug}/${skillKey}`;
+}
+
+/** Paperclip's own core skill (how to use issues, comments and the API); the Operator and Reviewer lean on it. */
+export const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/paperclip";
+
+/** The company operating manual (Cockpit managed skill) every PiB role carries. */
+export const COMPANY_OS_SKILL_KEY = teamSkillKey(PIB_PLUGINS.cockpit, "company-os");
+
+const withOs = (...keys: string[]): string[] => [...keys, COMPANY_OS_SKILL_KEY];
+
+const pluginActions = (prefix: string, resync?: string): TeamRoleActions => ({
+  options: `${prefix}.hire-options`,
+  start: `${prefix}.start-hire`,
+  link: `${prefix}.link-agent`,
+  unlink: `${prefix}.unlink-agent`,
+  ...(resync ? { resync } : {}),
+});
+
+export const TEAM_ROLES: TeamRole[] = [
+  {
+    key: "operator",
+    pluginKey: PIB_PLUGINS.cockpit,
+    module: "cockpit",
+    title: "Operator",
+    summary: "Chief of staff: reviews every module each morning, keeps agents unblocked and sends you one daily brief.",
+    required: true,
+    setupItemKey: "operator_agent",
+    cockpitRole: "operator",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.cockpit, "operator")),
+    extraSkills: [PAPERCLIP_CORE_SKILL_KEY],
+    actions: { options: "cockpit.hire-options", start: "cockpit.start-hire" },
+    pagePath: "/cockpit",
+  },
+  {
+    key: "reviewer",
+    pluginKey: PIB_PLUGINS.cockpit,
+    module: "cockpit",
+    title: "Reviewer",
+    summary: "Checks posts, campaign emails, invoice and quote emails and SEO pull requests before you approve them.",
+    required: false,
+    setupItemKey: "reviewer_agent",
+    cockpitRole: "reviewer",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.cockpit, "reviewer")),
+    extraSkills: [PAPERCLIP_CORE_SKILL_KEY],
+    actions: { options: "cockpit.hire-options", start: "cockpit.start-hire" },
+    pagePath: "/cockpit",
+  },
+  {
+    key: "account-manager",
+    pluginKey: PIB_PLUGINS.crm,
+    module: "crm",
+    title: "Account Manager",
+    summary: "Looks after leads and clients: follows up leads, keeps the CRM current, drafts quotes, invoices and client emails, and prepares campaigns and sequences for approval.",
+    required: true,
+    setupItemKey: "agent",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.crm, "crm-records"), teamSkillKey(PIB_PLUGINS.crm, "crm-outbound")),
+    extraSkills: [
+      teamSkillKey(PIB_PLUGINS.billing, "invoice-draft"),
+      teamSkillKey(PIB_PLUGINS.campaigns, "campaigns"),
+      teamSkillKey(PIB_PLUGINS.mailbox, "mailbox-draft"),
+      teamSkillKey(PIB_PLUGINS.partners, "partner-share"),
+    ],
+    actions: pluginActions("crm", "crm.resync-agent"),
+    pagePath: "/crm",
+  },
+  {
+    key: "seo-specialist",
+    pluginKey: PIB_PLUGINS.seo,
+    module: "seo",
+    title: "SEO Specialist",
+    summary: "Works the 90-day SEO sprints: site checks, content, backlinks and changes through the site repo.",
+    required: true,
+    setupItemKey: "agent",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.seo, "seo-sprint")),
+    actions: pluginActions("seo", "seo.activate-agent"),
+    pagePath: "/seo",
+  },
+  {
+    key: "social",
+    pluginKey: PIB_PLUGINS.social,
+    module: "social",
+    title: "Social agent",
+    summary: "Plans, drafts, schedules and publishes posts, answers the social inbox and runs the Growth Lab.",
+    required: true,
+    setupItemKey: "agent",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-publish"), teamSkillKey(PIB_PLUGINS.social, "social-content")),
+    actions: pluginActions("social", "social.activate-agent"),
+    pagePath: "/social",
+  },
+  {
+    key: "bookkeeper",
+    pluginKey: PIB_PLUGINS.accounting,
+    module: "accounting",
+    title: "Bookkeeper",
+    summary: "Keeps the books: bank matching, journals, VAT and month-end checks.",
+    required: true,
+    setupItemKey: "bookkeeper",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.accounting, "bookkeeping")),
+    actions: pluginActions("accounting", "accounting.resync-agent"),
+    pagePath: "/accounting",
+  },
+  {
+    key: "payroll-clerk",
+    pluginKey: PIB_PLUGINS.payroll,
+    module: "payroll",
+    title: "Payroll Clerk",
+    summary: "Prepares pay runs, checks variances and leave, and readies the SARS evidence packs.",
+    required: false,
+    setupItemKey: "clerk",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.payroll, "payroll")),
+    actions: pluginActions("payroll", "payroll.sync-skills"),
+    pagePath: "/payroll",
+  },
+];
+
+export function teamRole(key: TeamRoleKey): TeamRole {
+  const role = TEAM_ROLES.find((r) => r.key === key);
+  if (!role) throw new Error(`Unknown team role ${key}`);
+  return role;
+}
+
+/** The team role behind a plugin's setup checklist item, if any. */
+export function teamRoleForSetupItem(pluginKey: string, itemKey: string): TeamRole | null {
+  return TEAM_ROLES.find((r) => r.pluginKey === pluginKey && r.setupItemKey === itemKey) ?? null;
+}
+
+/** Roles for the company's switched-on modules (a module missing from `modules` counts as on). */
+export function activeTeamRoles(modules: Partial<Record<ModuleKey, boolean>> | null | undefined): TeamRole[] {
+  return TEAM_ROLES.filter((r) => modules?.[r.module] !== false);
+}
+
+/** Where to staff a role: the Setup page's Team section, scrolled to the role. */
+export const TEAM_SETUP_PATH = "/setup?section=team";
+
+export function teamSetupPath(role?: TeamRoleKey | null): string {
+  return role ? `${TEAM_SETUP_PATH}#team-${role}` : TEAM_SETUP_PATH;
+}
+
+/** Agent statuses that mean the role is not really covered. */
+export const TEAM_INACTIVE_STATUSES = ["terminated", "archived", "deleted"] as const;
+export const TEAM_ATTENTION_STATUSES = ["paused", "error", "pending_approval"] as const;
+
+export type TeamRoleHealth = "missing" | "hiring" | "attention" | "ok";
+
+/**
+ * How a role stands: `missing` (no agent, no open hire), `hiring` (a hire
+ * task is open), `attention` (agent paused, in error, awaiting approval, or
+ * missing a skill), `ok`.
+ */
+export function teamRoleHealth(input: { agentStatus: string | null | undefined; hireOpen: boolean; missingSkills?: number }): TeamRoleHealth {
+  const status = input.agentStatus ?? null;
+  if (!status || (TEAM_INACTIVE_STATUSES as readonly string[]).includes(status)) return input.hireOpen ? "hiring" : "missing";
+  if ((TEAM_ATTENTION_STATUSES as readonly string[]).includes(status) || (input.missingSkills ?? 0) > 0) return "attention";
+  return "ok";
+}

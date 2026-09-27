@@ -135,6 +135,11 @@ export const CODE_TASK_TYPES = new Set([
   "code-fix",
   "site-fix",
   "schema-fix",
+  // Local service, professional services and online shop plans (templates/plans.ts).
+  "nap-fix",
+  "reviews-display",
+  "area-pages",
+  "collection-pages",
 ]);
 
 const CODE_WORDS = /\b(schema|json-?ld|searchaction|meta ?tags?|title tag|canonical|noindex|robots\.txt|sitemap|alt text|redirect|structured data|og:image|open graph|fix)\b/i;

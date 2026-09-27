@@ -1693,14 +1693,16 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
   priorityKeywords: number;
   directoriesNotStarted: number;
   latestSnapshotDay: number | null;
+  liveContentWithSocial: number;
 }> {
   const rows = await db.query(
     `SELECT
        (SELECT count(*)::int FROM ${t("keywords")} k WHERE k.sprint_id = $1 AND k.retired_at IS NULL) AS active_keywords,
        (SELECT count(*)::int FROM ${t("keywords")} k WHERE k.sprint_id = $1 AND k.retired_at IS NULL AND (k.intent IS NULL OR k.intent = '')) AS no_intent,
        (SELECT count(*)::int FROM ${t("keywords")} k WHERE k.sprint_id = $1 AND k.retired_at IS NULL AND k.is_priority) AS priority,
-       (SELECT count(*)::int FROM ${t("backlinks")} b WHERE b.sprint_id = $1 AND b.type = 'directory' AND b.status = 'not_started') AS dirs,
-       (SELECT max(a.day) FROM ${t("audit_snapshots")} a WHERE a.sprint_id = $1) AS latest_day`,
+       (SELECT count(*)::int FROM ${t("backlinks")} b WHERE b.sprint_id = $1 AND b.type IN ('directory', 'citation') AND b.status = 'not_started') AS dirs,
+       (SELECT max(a.day) FROM ${t("audit_snapshots")} a WHERE a.sprint_id = $1) AS latest_day,
+       (SELECT count(*)::int FROM ${t("content")} c WHERE c.sprint_id = $1 AND c.status = 'live' AND jsonb_array_length(COALESCE(c.social_post_ids, '[]'::jsonb)) > 0) AS live_social`,
     [sprintId],
   );
   const row = rows[0] ?? {};
@@ -1710,34 +1712,70 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
     priorityKeywords: Number(row.priority ?? 0),
     directoriesNotStarted: Number(row.dirs ?? 0),
     latestSnapshotDay: n(row.latest_day),
+    liveContentWithSocial: Number(row.live_social ?? 0),
   };
 }
 
-export async function sprintCounts(db: SeoDb, companyId: string): Promise<Record<string, { open: number; due: number; done: number; total: number; blocked: number; proposals: number }>> {
+export interface SprintTotals {
+  total: number;
+  done: number;
+  /** Skipped or not needed (`skipped`, `na`). */
+  skipped: number;
+  /** Open tasks that have an issue. */
+  openIssues: number;
+  /** Optimization proposals waiting for a decision. */
+  proposals: number;
+}
+
+/**
+ * Per sprint: task totals, open issues and proposals. Due, overdue, stuck and
+ * waiting come from the open tasks through engine/due.ts (service/overview.ts),
+ * so every page and tool counts them the same way.
+ */
+export async function sprintTotals(db: SeoDb, companyId: string): Promise<Record<string, SprintTotals>> {
   const rows = await db.query(
     `SELECT s.id,
         (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id) AS total,
         (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id AND x.status = 'done') AS done,
-        (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id AND x.status = 'blocked') AS blocked,
+        (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id AND x.status IN ('skipped', 'na')) AS skipped,
         (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id AND x.issue_id IS NOT NULL AND x.status IN ('not_started', 'in_progress', 'blocked')) AS open_issues,
-        (SELECT count(*)::int FROM ${t("sprint_tasks")} x WHERE x.sprint_id = s.id AND x.status IN ('not_started', 'in_progress', 'blocked')
-            AND (x.due_day IS NULL OR x.due_day <= coalesce(s.current_day, 0))) AS due,
         (SELECT count(*)::int FROM ${t("optimizations")} o WHERE o.sprint_id = s.id AND o.status = 'proposed') AS proposals
        FROM ${t("sprints")} s WHERE s.company_id = $1`,
     [companyId],
   );
-  const out: Record<string, { open: number; due: number; done: number; total: number; blocked: number; proposals: number }> = {};
+  const out: Record<string, SprintTotals> = {};
   for (const row of rows) {
     out[String(row.id)] = {
-      open: Number(row.open_issues ?? 0),
-      due: Number(row.due ?? 0),
-      done: Number(row.done ?? 0),
       total: Number(row.total ?? 0),
-      blocked: Number(row.blocked ?? 0),
+      done: Number(row.done ?? 0),
+      skipped: Number(row.skipped ?? 0),
+      openIssues: Number(row.open_issues ?? 0),
       proposals: Number(row.proposals ?? 0),
     };
   }
   return out;
+}
+
+/** Every open task (not started, in progress, blocked) of the company's sprints, in plan order. */
+export async function listOpenTasksForCompany(db: SeoDb, companyId: string): Promise<SprintTask[]> {
+  const rows = await db.query(
+    `SELECT ${TASK_SELECT} FROM ${t("sprint_tasks")}
+      WHERE company_id = $1 AND status IN ('not_started', 'in_progress', 'blocked')
+      ORDER BY sprint_id, week, created_at, title LIMIT 5000`,
+    [companyId],
+  );
+  return rows.map(taskFrom);
+}
+
+/** Open Needs you digests of the company's sprints that are not archived, newest week first. */
+export async function openNeedsYouDigests(db: SeoDb, companyId: string): Promise<Array<{ sprintId: string; items: NeedsYouItem[] }>> {
+  const rows = await db.query(
+    `SELECT n.sprint_id, n.items FROM ${t("needs_you")} n JOIN ${t("sprints")} s ON s.id = n.sprint_id
+      WHERE n.company_id = $1 AND n.status = 'open' AND s.status <> 'archived'
+      ORDER BY n.week_start DESC LIMIT 200`,
+    [companyId],
+  );
+  return rows.map((row) => ({ sprintId: String(row.sprint_id), items: json<NeedsYouItem[]>(row.items, []) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2048,4 +2086,135 @@ export async function updatePlaybookChange(db: SeoDb, companyId: string, id: str
     params,
   );
   return result.rowCount > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Announcements: content.published once the change is live (0.8.0)
+// ---------------------------------------------------------------------------
+
+export type AnnouncementStatus = "waiting" | "sent" | "stuck" | "dropped";
+
+export interface Announcement {
+  key: string;
+  companyId: string;
+  sprintId: string;
+  contentId: string | null;
+  taskId: string | null;
+  /** The merge task of an approved PR that must be done first. */
+  waitTaskId: string | null;
+  url: string | null;
+  status: AnnouncementStatus;
+  checks: number;
+  lastHttpStatus: number | null;
+  lastError: string | null;
+  payload: Record<string, unknown> | null;
+  queuedAt: string | null;
+  nextCheckAt: string | null;
+  sentAt: string | null;
+}
+
+const ANNOUNCEMENT_SELECT = `key, company_id, sprint_id, content_id, task_id, wait_task_id, url, status, checks, last_http_status, last_error, payload,
+  queued_at::text AS queued_at, next_check_at::text AS next_check_at, sent_at::text AS sent_at`;
+
+const ANNOUNCEMENT_COLUMNS: Record<string, ColumnKind> = {
+  wait_task_id: "text",
+  url: "text",
+  status: "text",
+  checks: "int",
+  last_http_status: "int",
+  last_error: "text",
+  payload: "jsonb",
+  next_check_at: "ts",
+  sent_at: "ts",
+  updated_at: "ts",
+};
+
+function announcementFrom(row: Row): Announcement {
+  const status = String(row.status ?? "waiting");
+  return {
+    key: String(row.key),
+    companyId: String(row.company_id),
+    sprintId: String(row.sprint_id),
+    contentId: s(row.content_id),
+    taskId: s(row.task_id),
+    waitTaskId: s(row.wait_task_id),
+    url: s(row.url),
+    status: (["waiting", "sent", "stuck", "dropped"].includes(status) ? status : "waiting") as AnnouncementStatus,
+    checks: Number(row.checks ?? 0),
+    lastHttpStatus: n(row.last_http_status),
+    lastError: s(row.last_error),
+    payload: json<Record<string, unknown> | null>(row.payload, null),
+    queuedAt: iso(row.queued_at),
+    nextCheckAt: iso(row.next_check_at),
+    sentAt: iso(row.sent_at),
+  };
+}
+
+/**
+ * Queue (or re-queue) an announcement. A key already sent stays sent; a
+ * stuck or dropped one starts waiting again (the page was marked live again).
+ */
+export async function queueAnnouncement(db: SeoDb, a: { key: string; companyId: string; sprintId: string; contentId: string | null; taskId: string | null; waitTaskId: string | null }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("announcements")} AS a (key, company_id, sprint_id, content_id, task_id, wait_task_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (key) DO UPDATE SET
+       content_id = COALESCE(EXCLUDED.content_id, a.content_id),
+       task_id = COALESCE(EXCLUDED.task_id, a.task_id),
+       wait_task_id = COALESCE(EXCLUDED.wait_task_id, a.wait_task_id),
+       status = CASE WHEN a.status IN ('stuck', 'dropped') THEN 'waiting' ELSE a.status END,
+       checks = CASE WHEN a.status IN ('stuck', 'dropped') THEN 0 ELSE a.checks END,
+       queued_at = CASE WHEN a.status IN ('stuck', 'dropped') THEN now() ELSE a.queued_at END,
+       next_check_at = CASE WHEN a.status = 'sent' THEN a.next_check_at ELSE now() END,
+       updated_at = now()`,
+    [a.key, a.companyId, a.sprintId, a.contentId, a.taskId, a.waitTaskId],
+  );
+}
+
+export async function getAnnouncement(db: SeoDb, companyId: string, key: string): Promise<Announcement | null> {
+  const rows = await db.query(`SELECT ${ANNOUNCEMENT_SELECT} FROM ${t("announcements")} WHERE key = $1 AND company_id = $2`, [key, companyId]);
+  return rows[0] ? announcementFrom(rows[0]) : null;
+}
+
+/** Waiting (and stuck, checked daily) announcements whose next check is due. */
+export async function dueAnnouncements(db: SeoDb, companyId: string, limit = 20): Promise<Announcement[]> {
+  const rows = await db.query(
+    `SELECT ${ANNOUNCEMENT_SELECT} FROM ${t("announcements")}
+      WHERE company_id = $1 AND status IN ('waiting', 'stuck') AND next_check_at <= now() ORDER BY next_check_at LIMIT ${Math.max(1, Math.min(limit, 100))}`,
+    [companyId],
+  );
+  return rows.map(announcementFrom);
+}
+
+/** Waiting and stuck announcements that wait for this (merge) task. */
+export async function announcementsWaitingOn(db: SeoDb, companyId: string, taskId: string): Promise<Announcement[]> {
+  const rows = await db.query(
+    `SELECT ${ANNOUNCEMENT_SELECT} FROM ${t("announcements")} WHERE company_id = $1 AND wait_task_id = $2 AND status IN ('waiting', 'stuck')`,
+    [companyId, taskId],
+  );
+  return rows.map(announcementFrom);
+}
+
+/** Sent in the last 24 hours: re-sent hourly (events arrive at most once; Social dedupes the key). */
+export async function recentlySentAnnouncements(db: SeoDb, companyId: string, limit = 50): Promise<Announcement[]> {
+  const rows = await db.query(
+    `SELECT ${ANNOUNCEMENT_SELECT} FROM ${t("announcements")}
+      WHERE company_id = $1 AND status = 'sent' AND sent_at >= now() - interval '24 hours' ORDER BY sent_at LIMIT ${Math.max(1, Math.min(limit, 100))}`,
+    [companyId],
+  );
+  return rows.map(announcementFrom);
+}
+
+/** Waiting and stuck announcements, for `today` and the Cockpit (one sprint, or the whole company). */
+export async function openAnnouncements(db: SeoDb, companyId: string, sprintId?: string): Promise<Announcement[]> {
+  const rows = await db.query(
+    `SELECT ${ANNOUNCEMENT_SELECT} FROM ${t("announcements")}
+      WHERE company_id = $1 AND status IN ('waiting', 'stuck')${sprintId ? " AND sprint_id = $2" : ""} ORDER BY queued_at LIMIT 50`,
+    sprintId ? [companyId, sprintId] : [companyId],
+  );
+  return rows.map(announcementFrom);
+}
+
+export async function updateAnnouncement(db: SeoDb, companyId: string, key: string, patch: Record<string, unknown>): Promise<number> {
+  return patchRow(db, "announcements", ANNOUNCEMENT_COLUMNS, { companyId, id: key, idColumn: "key" }, patch);
 }

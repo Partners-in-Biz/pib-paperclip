@@ -108,7 +108,7 @@ describe("triage with Jev", () => {
       gmail.addMessage({ id: "f1", headers: { From: "jo@newbiz.co.za", Subject: "Quote for SEO please" }, snippet: "What is your pricing?" });
       gmail.addMessage({ id: "f2", headers: { From: "news@shop.com", Subject: "Big sale", "List-Unsubscribe": "<mailto:u@shop.com>" }, snippet: "Everything 50% off" });
       await syncAccount(env, await loaded(), account, await run());
-      expect(store.messages.get("gm_acc-1_f1")!.triage).toMatchObject({ category: "lead", source: "rules", needsReply: 0.6, urgency: null, phishing: null, labels: ["PiB/Lead"] });
+      expect(store.messages.get("gm_acc-1_f1")!.triage).toMatchObject({ category: "lead", source: "rules", needsReply: 0.75, urgency: null, phishing: null, labels: ["PiB/Lead", "PiB/Needs reply"] });
       expect(store.messages.get("gm_acc-1_f2")!.triage).toMatchObject({ category: "newsletter", needsReply: 0.05 });
       expect(host.decisions).toHaveLength(0);
     }

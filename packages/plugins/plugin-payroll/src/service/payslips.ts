@@ -137,7 +137,7 @@ export async function queuePayslipEmails(env: Env, companyId: string, run: db.Pa
   const skipped: Array<{ payslip: string; reason: string }> = [];
   for (const slip of payslips) {
     if (!slip.r2Key) {
-      skipped.push({ payslip: slip.number, reason: "not rendered yet" });
+      skipped.push({ payslip: slip.number, reason: "not made yet" });
       continue;
     }
     const employee = await db.getEmployee(ctx, companyId, slip.employeeId);

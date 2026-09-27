@@ -1,6 +1,8 @@
 /**
- * Playbooks for every Outrank-90 task and for the task types the optimization
- * loop generates. They feed two places:
+ * Playbooks for every task of the 90-day plans (software, local service,
+ * professional services and online shop; see plans.ts) and for the task types
+ * the optimization loop generates. A task key means the same work in every
+ * plan, so each key has one playbook. They feed two places:
  * - the Paperclip issue description of each materialised task, and
  * - the skill file `references/outrank-90.md`.
  *
@@ -21,6 +23,25 @@ const SITE_CHANGE =
 
 const AFTER_DEPLOY = "After the deploy, re-run the same checks on production and `complete-task` with the PR link, the commit and the check output.";
 
+/**
+ * The Social agent owns repurposing: SEO marks the post live (which hands it
+ * to Social once the page answers 200) and links the drafts Social made.
+ */
+function socialHandOff(post: string, publishKey: string): Playbook {
+  return {
+    goal: `${post[0]!.toUpperCase()}${post.slice(1)} reaches social: it is marked live, the Social agent repurposes it, and its social posts are linked to the content row.`,
+    steps: [
+      `\`list-content\`: find ${post} (the row of the \`${publishKey}\` task). If the page is live but the row is not, \`update-content\` with status \`live\` and the live \`targetUrl\`. That hands it to Social as soon as the page answers 200; the answer's \`socialHandOff\` says sent, or what it is waiting for.`,
+      "Social owns repurposing: the Social agent gets one \"Repurpose for social\" issue in this sprint's client scope, drafts the LinkedIn, X and Instagram posts, and a person approves them there. Do not draft social posts yourself.",
+      "When the drafts exist (their ids are on the closed Repurpose issue, or `partnersinbiz.social:list-posts` with this sprint's client: posts linking to the page with utm_campaign=seo-repurpose), `link-social-post` each one to the content row with its platform.",
+      "No drafts yet on this run: leave the task in progress and look again on the next run. If `today` says Social was never told (the page does not answer 200), fix the URL or the deploy first.",
+    ],
+    tools: ["list-content", "update-content", "link-social-post", "partnersinbiz.social:list-posts"],
+    done: `${post[0]!.toUpperCase()}${post.slice(1)}'s content row is live and lists its linked social posts.`,
+    evidence: "The content row id, the live URL and the linked social post ids.",
+  };
+}
+
 export const PLAYBOOKS: Record<string, Playbook> = {
   "w0-meta-tags": {
     goal: "Every indexable page has a unique title (50–60 chars), meta description (70–160 chars), canonical, og:title and og:image.",
@@ -36,7 +57,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     evidence: "Pages checked, the before/after titles and descriptions, and the PR/commit or the handoff issue.",
   },
   "w0-schema": {
-    goal: "Home page carries valid Organization/WebSite JSON-LD plus the schema type that fits the business (SoftwareApplication for software, LocalBusiness/ProfessionalService for service firms) and an FAQPage block where the page has FAQs.",
+    goal: "Home page carries valid Organization/WebSite JSON-LD plus the schema type that fits the business (SoftwareApplication for software, LocalBusiness or a more specific type for a local business, ProfessionalService/LegalService/AccountingService for a firm, Product and Organization for a shop) and an FAQPage block where the page has FAQs.",
     steps: [
       "Run `validate-schema` on the home page (with sprintId) to see what exists.",
       "Choose the right types for this client (do not add SoftwareApplication to a law firm or guest house).",
@@ -178,7 +199,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     evidence: "Count of images fixed per page and the PR or handoff.",
   },
   "w1-noindex": {
-    goal: "Login, dashboard, onboarding, account and thank-you pages are noindexed and not in the sitemap.",
+    goal: "Private and thin pages are noindexed and not in the sitemap: login, dashboard, onboarding and account pages, cart and checkout, thank-you pages, admin pages, internal search and filter pages.",
     steps: [
       "Find those URLs in the sitemap (`check-sitemap`) and via navigation.",
       "Run `crawler-sim` on each to see the current robots meta / X-Robots-Tag.",
@@ -192,12 +213,12 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w2-keyword-discover": {
     goal: "A long list of 20–30 winnable keywords: real searches, relevant to what the client sells, where the top results are not all DR 50+ giants.",
     steps: [
-      "Collect 3–6 seed terms from the site, the client's services and the CRM notes.",
+      "Collect 3–6 seed terms from the site and the client's services (`partnersinbiz.crm:get-client-profile`). Seeds by plan: local — each service plus the town or suburb, and 'near me'; professional — the service plus the city, and the questions clients ask before they hire; online shop — product types, brands and 'buy' or 'price' words; software — the problem, 'alternative to' and 'vs'.",
       "Run `discover-keywords` with the seeds (Google Autocomplete + seed variants). If GSC is connected, add queries from `gsc-query`.",
       "Judge winnability by looking at the current top results; record your DR estimate in difficultyDr when you have one. Never invent search volume: leave volume empty unless you have a real source.",
       "Save the shortlist with `add-keywords` (phrase, intent, optional difficultyDr, notes).",
     ],
-    tools: ["discover-keywords", "gsc-query", "add-keywords", "list-keywords"],
+    tools: ["discover-keywords", "gsc-query", "add-keywords", "list-keywords", "partnersinbiz.crm:get-client-profile"],
     done: "At least 20 relevant keywords are tracked on the sprint.",
     evidence: "Count of keywords added and the seeds used.",
   },
@@ -233,7 +254,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     evidence: "Keyword count.",
   },
   "w3-homepage": {
-    goal: "The home page targets the primary keyword: in the title, H1 and first paragraph, with a clear offer and internal links to core pages.",
+    goal: "The home page targets the primary keyword (for a local business: the main service and the town): in the title, H1 and first paragraph, with a clear offer and internal links to core pages.",
     steps: [
       "Pick the primary keyword (`list-keywords`, priority first).",
       "Draft title, meta description, H1, intro and section structure; keep the client's voice and real facts.",
@@ -307,18 +328,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     done: "The post is live and its content row is status live with its URL.",
     evidence: "Draft link, live URL, target keyword.",
   },
-  "w5-repurpose-1": {
-    goal: "Turn post 1 into a LinkedIn post and an X thread that link back to it.",
-    steps: [
-      "Read the live post (`list-content`).",
-      "Draft both posts with the Social plugin (`partnersinbiz.social:create-post` then request review) if you hold those tools; the social approval step is the sign-off.",
-      "Link each social post to the content row with `link-social-post`.",
-      "Without social tools, write the copy and hand off with `block-task`.",
-    ],
-    tools: ["list-content", "link-social-post", "partnersinbiz.social:create-post"],
-    done: "Two social drafts (LinkedIn + X) exist and are linked to the content row.",
-    evidence: "Social post ids/links.",
-  },
+  "w5-repurpose-1": socialHandOff("post 1", "w5-post-1"),
   "w6-post-2": {
     goal: "Publish the second post in a use-case format for a priority keyword.",
     steps: [
@@ -329,15 +339,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     done: "The post is live and recorded.",
     evidence: "Live URL and target keyword.",
   },
-  "w6-repurpose-2": {
-    goal: "Turn post 2 into a LinkedIn post and an X thread.",
-    steps: [
-      "Same as repurpose 1, for post 2.",
-    ],
-    tools: ["list-content", "link-social-post", "partnersinbiz.social:create-post"],
-    done: "Two social drafts exist and are linked to the content row.",
-    evidence: "Social post ids/links.",
-  },
+  "w6-repurpose-2": socialHandOff("post 2", "w6-post-2"),
   "w7-pillar": {
     goal: "Publish a 2,000+ word pillar page covering the core topic end to end, linking out to every related post and core page.",
     steps: [
@@ -390,13 +392,13 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w9-directories": {
     goal: "Real directory listings: every seeded directory is submitted (with proof), live, or rejected as irrelevant — no status-only changes.",
     steps: [
-      "`list-backlinks` type directory. The seed list is SaaS-focused: if the client is not a software product, mark irrelevant ones `rejected` with notes 'not relevant' and add relevant ones (Google Business Profile, industry bodies, local directories) with `add-backlink`.",
-      "Prepare one listing kit: name, one-line and long description, category, logo URL, screenshots, pricing, contact, founding year. Put it in a comment on this issue.",
+      "`list-backlinks` (types directory and citation). The seeded sources fit the sprint's plan (software, local service, professional services or online shop), but check each one for this client: mark one that does not fit `rejected` with notes 'not relevant', and add better ones (industry bodies, local or trade directories) with `add-backlink`.",
+      "Prepare one listing kit: the exact business name, address and phone (the same as the sprint notes and the Google Business Profile), one-line and long description, categories, hours or service area, logo URL, photos or screenshots, pricing, contact, founding year. Put it in a comment on this issue.",
       "Directories need accounts, email verification and often CAPTCHAs: hand off with `block-task` listing the directories and the kit, unless the owner has told you in the sprint notes that you may submit.",
       "For each submission record `update-backlink` status submitted with notes (submission URL, date, account used). When a listing appears, status live with its URL.",
     ],
     tools: ["list-backlinks", "update-backlink", "add-backlink"],
-    done: "No directory backlink is still not started (complete-task checks this).",
+    done: "No directory or citation is still not started (complete-task checks this).",
     evidence: "Per directory: submitted/live/rejected and the listing or submission URL.",
   },
   "w9-link-trade-dm": {
@@ -425,7 +427,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     evidence: "Blog, contact, pitch text, date sent.",
   },
   "w10-community": {
-    goal: "Share the site where the audience already is (IndieHackers for founders, relevant subreddits/forums for others) with a useful post, not spam.",
+    goal: "Share the site where the audience already is — local community groups for a local business, LinkedIn and industry forums for a firm, buyer forums and groups for a shop, IndieHackers and relevant subreddits for software — with a useful post, not spam.",
     steps: [
       "Pick 1–3 communities whose rules allow it; read each one's self-promotion rules first.",
       "Draft a genuinely useful post (a lesson, data, a free resource) that links to the site.",
@@ -513,6 +515,215 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     tools: ["audit-summary", "partnersinbiz.social:create-post", "link-social-post"],
     done: "An approved (or awaiting approval) social post with the results exists.",
     evidence: "Social post link.",
+  },
+
+  // --- Local service, professional services and online shop plans -------------
+  "w0-gbp-claim": {
+    goal: "The business has one verified Google Business Profile that the owner controls, with Partners in Biz added as a manager, so it shows in Google Maps and the local results.",
+    steps: [
+      "Search Google Maps and Google for the business name and phone number: is there a profile already (or a duplicate)? Note its link.",
+      "Read the client profile (`partnersinbiz.crm:get-client-profile` with the sprint's client) and the site: the exact business name, address or service area, phone, hours, main category and services. That is the one name, address and phone (NAP) every listing uses; task `w0-nap` puts the same on the site.",
+      "Claiming and verifying needs the owner's Google account (Google sends a code by post, phone or video). Add one Needs you item with `needs-you-add` (kind grant, key `gbp_claim`): the profile link or https://business.google.com/create, the exact details to enter, the categories, and 'add Partners in Biz as a manager'. Then `block-task` with that ask; the task comes back when the item is done.",
+      "When it is done, check the profile is live on Google Maps and record it: `update-backlink` on the seeded Google Business Profile row (status live, url = the Maps link), or `add-backlink` (type citation) if there is no row.",
+    ],
+    tools: ["needs-you-add", "block-task", "list-backlinks", "update-backlink", "add-backlink", "partnersinbiz.crm:get-client-profile"],
+    done: "A verified profile exists, Partners in Biz is a manager, and its Maps link is recorded on the Backlinks tab.",
+    evidence: "The Maps link, the verification date and the name, address and phone used.",
+  },
+  "w0-nap": {
+    goal: "One exact business name, address (or service area) and phone number appears the same way on every page, in the schema and on every listing.",
+    steps: [
+      "Decide the name, address and phone from the client profile (`partnersinbiz.crm:get-client-profile`), the Google Business Profile and the site. Save them in the sprint notes with `update-sprint` so every later task uses the same spelling.",
+      "Run `crawler-sim` on the home and contact pages and find every place the name, address or phone appears (header, footer, contact page, schema).",
+      "Make them match exactly, add click-to-call (`tel:`) links and the address in the footer.",
+      SITE_CHANGE,
+      "Add or fix the LocalBusiness address and telephone in the JSON-LD and run `validate-schema`.",
+    ],
+    tools: ["crawler-sim", "validate-schema", "update-sprint", "check-change-scope", "partnersinbiz.crm:get-client-profile"],
+    done: "The home page, the contact page and the schema show the same name, address and phone as the sprint notes.",
+    evidence: "The name, address and phone, the pages changed, and the PR or change set.",
+  },
+  "w0-merchant-center": {
+    goal: "The shop's products show for free in Google Shopping: a verified Google Merchant Center account with a working product feed.",
+    steps: [
+      "Find out the shop platform (Shopify, WooCommerce and most others have a Google channel or plugin that builds the feed) and what the site already has.",
+      "The account needs the owner's Google account and business details. Add one Needs you item (`needs-you-add`, kind grant, key `merchant_center`) with the exact steps: create the account at https://merchants.google.com, verify and claim the site (the verification tag can go in through the repo: SEO scope), add Partners in Biz as a user, and turn on free listings. Then `block-task`.",
+      "Once the account exists: connect the product feed (the platform's channel, or a feed file the site serves: `add-task` a code task if it needs code) and fix the feed errors Merchant Center lists (missing brand or GTIN, price or stock that differs from the page, image problems).",
+      "Record it with `update-backlink` on the seeded Google Merchant Center row (status live, url = a product on Google Shopping).",
+    ],
+    tools: ["needs-you-add", "block-task", "add-task", "update-backlink", "validate-schema"],
+    done: "Free listings are on and the feed has no account-level errors.",
+    evidence: "Products approved and not approved, and the fixes made.",
+  },
+  "w3-service-pages": {
+    goal: "One strong page per main service or practice area, each built around its own keyword: what it is, who it is for, how pricing works, proof, FAQ and a clear way to book or call.",
+    steps: [
+      "List the services from the client profile (`partnersinbiz.crm:get-client-profile`) and the site, and match each to a tracked keyword (`list-keywords`). Merge small services into one page rather than writing thin pages.",
+      "Write each page with real facts only (no invented prices, results or reviews): the service, who it suits, the process, how pricing works, proof, FAQ and the call to action. A local business names its town or area.",
+      SITE_CHANGE,
+      "Record each page with `add-content` (type page, targetKeywordId, targetUrl, status live when published) and set the keyword's targetUrl with `update-keyword`.",
+    ],
+    tools: ["list-keywords", "add-content", "update-content", "update-keyword", "check-meta", "partnersinbiz.crm:get-client-profile"],
+    done: "Every main service has a live page that passes `check-meta` and is linked from the home page.",
+    evidence: "The service page URLs and their keywords.",
+  },
+  "w3-contact-page": {
+    goal: "The contact page makes it easy to find, call and book: the same name, address and phone, a map, opening hours, the areas served, the booking link and a review link.",
+    steps: [
+      "Check the page with `crawler-sim` and `check-meta`.",
+      "Add what is missing: the name, address and phone from the sprint notes, click-to-call, a Google Map of the business, opening hours, the areas served, the booking link from the client profile, and a 'Leave us a review' link.",
+      SITE_CHANGE,
+      "Make sure the LocalBusiness schema matches (`validate-schema`).",
+    ],
+    tools: ["crawler-sim", "check-meta", "validate-schema", "check-change-scope", "partnersinbiz.crm:get-client-profile"],
+    done: "The live contact page shows the name, address, phone, map, hours and booking link, and the schema validates.",
+    evidence: "The page URL, what was added, and the PR or change set.",
+  },
+  "w3-team-page": {
+    goal: "Real expertise is visible: a team or about page with each expert's name, photo, qualifications, registrations (for example admitted attorney, CA(SA)) and experience, linked from every service page.",
+    steps: [
+      "Collect the facts from the site, LinkedIn and the client profile. Never invent a qualification: what you cannot confirm goes to the owner as one question on Needs you (`needs-you-add`, kind task).",
+      "Write short, plain bios (the credentials clients look for first) and add Person schema for each expert.",
+      SITE_CHANGE,
+      "Link the page from each service page and record it with `add-content` (type page).",
+    ],
+    tools: ["crawler-sim", "validate-schema", "add-content", "needs-you-add", "check-change-scope"],
+    done: "The team page is live with confirmed credentials and is linked from the service pages.",
+    evidence: "The page URL and the people listed.",
+  },
+  "w3-category-pages": {
+    goal: "The top 5 category pages can rank for their category keywords: a short unique intro, buying notes, FAQ and links to the best products and guides, not only a product grid.",
+    steps: [
+      "Pick the 5 categories with the most search demand (tracked keywords, and `gsc-query` once Search Console is connected).",
+      "Write a short unique intro (what is in the range, who it suits), 3–5 FAQs and links to related categories and guides. Keep the products at the top of the page.",
+      SITE_CHANGE,
+      "Record each with `add-content` (type page) and set the keyword's targetUrl with `update-keyword`.",
+    ],
+    tools: ["list-keywords", "gsc-query", "add-content", "update-keyword", "check-meta", "validate-schema"],
+    done: "5 category pages are live with unique copy and FAQ, and pass `check-meta`.",
+    evidence: "The category URLs and their keywords.",
+  },
+  "w3-product-pages": {
+    goal: "The 10 most-searched product pages have unique descriptions (not the supplier's copy), full specs, good photos with alt text, price and stock, and valid Product schema.",
+    steps: [
+      "Pick the 10 products from the tracked keywords and Search Console impressions (`gsc-query` by page when connected).",
+      "Rewrite each description around what buyers ask; add specs, sizes, delivery and returns notes. Never invent reviews or ratings.",
+      SITE_CHANGE,
+      "Run `validate-schema` on each page: Product with offers (price, currency ZAR, availability), and review data only where real reviews exist.",
+    ],
+    tools: ["gsc-query", "validate-schema", "check-meta", "crawler-sim", "check-change-scope"],
+    done: "10 product pages are live with unique copy and valid Product schema.",
+    evidence: "The product URLs and the schema check.",
+  },
+  "w4-gbp-complete": {
+    goal: "The Google Business Profile is complete and matches the site: categories, services with descriptions, hours, service area, photos, booking link and a description with the main service and town.",
+    steps: [
+      "Write the full profile content in one go: primary and extra categories, a description of up to 750 characters with the main service and town, each service with a short description, hours, the areas served, the booking link, and a list of 10 photos to add (real ones from the site, or ones the owner can take).",
+      "There is no API for us to edit the profile. Put the content on Needs you once (`needs-you-add`, kind task, key `gbp_complete`, the text in `copy`) for whoever manages the profile, then `block-task`.",
+      "When it is done, compare the profile with the site's name, address, phone and hours, and fix the site if they differ.",
+      "Record the profile's Maps link on the Backlinks tab (`update-backlink`, status live) if it is not there yet.",
+    ],
+    tools: ["needs-you-add", "block-task", "update-backlink", "crawler-sim"],
+    done: "The profile lists every service, the hours and the booking link, and matches the site.",
+    evidence: "The Maps link and what was added.",
+  },
+  "w4-case-studies": {
+    goal: "Two short case studies or client stories show real results, with the client's permission: the problem, what was done and the outcome, in plain words.",
+    steps: [
+      "Find candidate stories on the site, in the client profile and in past work. Naming a client needs permission: ask the owner once on Needs you (`needs-you-add`, kind task) with the stories and what you need (may we name them? share numbers?).",
+      "Write each story in 300–600 words: the situation, the approach, the result, and a quote only if the client gave one. Leave out names when there is no permission.",
+      "Write it on a `seo/<task>` branch and open the PR. Safe mode: `block-task` with `review: true` and the preview link; merge once approved.",
+      "Record each with `add-content` (type page) and link it from the related service pages.",
+    ],
+    tools: ["needs-you-add", "block-task", "add-content", "update-content", "check-meta"],
+    done: "Two approved case studies are live and linked from the service pages.",
+    evidence: "The URLs and the permission note.",
+  },
+  "w4-product-reviews": {
+    goal: "Real product reviews show on the product pages and in the Product schema, so Google can show stars.",
+    steps: [
+      "Find out how the shop collects reviews (the platform's reviews app, Google Customer Reviews, Hellopeter) and whether reviews show on product pages (`crawler-sim`).",
+      "Reviews exist but do not show: switch on the platform's review display or add them to the product template, and add aggregateRating to the Product schema only from real reviews.",
+      SITE_CHANGE,
+      "No way to collect reviews yet: the setup needs the owner's account, so add it to Needs you (`needs-you-add`, kind grant) with the exact steps.",
+    ],
+    tools: ["crawler-sim", "validate-schema", "needs-you-add", "check-change-scope"],
+    done: "Product pages with reviews show them and `validate-schema` finds a valid aggregateRating.",
+    evidence: "The pages checked and the schema result.",
+  },
+  "w6-reviews": {
+    goal: "A steady flow of genuine Google reviews: happy customers get a short request with the direct review link. Never buy, filter or write reviews.",
+    steps: [
+      "Get the direct review link of the Google Business Profile (Google Business Profile → Ask for reviews). If we do not manage the profile, that step goes on Needs you.",
+      "Write a short, friendly request in the client's voice (`partnersinbiz.crm:get-client-profile`): thanks, the link, and one line on why it helps. Make an email and a WhatsApp version.",
+      "Add a /review page or QR code that sends people to the review link (a small site change through the repo).",
+      "The client's customers are theirs: put the request on Needs you (`needs-you-add`, kind message, the text in `copy`) for the owner to send after each job. For our own sites, draft a campaign to recent customers with `partnersinbiz.campaigns:create-campaign` and `partnersinbiz.campaigns:request-campaign-approval` (the approval is the sign-off).",
+      "Note the review count at the start in the completion summary, so the day-90 report can compare.",
+    ],
+    tools: ["needs-you-add", "block-task", "partnersinbiz.crm:get-client-profile", "partnersinbiz.campaigns:create-campaign", "partnersinbiz.campaigns:request-campaign-approval", "check-change-scope"],
+    done: "The request and the review link are with the owner (or the campaign is approved), and the starting review count is noted.",
+    evidence: "The review link, the request text and the starting count.",
+  },
+  "w8-area-pages": {
+    goal: "One genuinely useful page per main town, suburb or region served: the services offered there, local details, travel or call-out notes and local proof. Never copy-paste pages that only swap the place name.",
+    steps: [
+      "List the areas from the client profile, the Google Business Profile's service area and Search Console queries with place names (`gsc-query` with the town in `query`).",
+      "Pick at most 5–8 areas with real demand. Write unique content for each: what you do there, local context, travel time or call-out fee, and reviews from customers there.",
+      "Build them from one template. Safe mode: `block-task` with `review: true` and the preview before they go live.",
+      "Record each with `add-content` (type page) and track its keyword with `add-keywords` (with targetUrl).",
+    ],
+    tools: ["gsc-query", "discover-keywords", "add-keywords", "add-content", "check-meta", "validate-schema"],
+    done: "The area pages are live, each with unique content and a tracked keyword.",
+    evidence: "The URLs and their keywords.",
+  },
+  "w8-industry-listings": {
+    goal: "The business is listed where its own industry looks: professional bodies, associations and industry booking sites (for example the Legal Practice Council for attorneys, SAICA for accountants, the Biokinetics Association for biokineticists, LekkeSlaap or SafariNow for guest houses).",
+    steps: [
+      "Find the 3–6 bodies and industry sites that matter for this client's trade in South Africa, and whether they list members or businesses.",
+      "Record each target with `add-backlink` (type citation or directory, status not_started, notes with what it needs: a membership number or an account).",
+      "Submit the ones you can yourself. Listings that need the owner's login or membership details go on Needs you in one item (`needs-you-add`, kind task) with the exact details to enter.",
+      "Mark each one submitted, live (with the listing URL) or rejected with the reason (`update-backlink`).",
+    ],
+    tools: ["add-backlink", "update-backlink", "list-backlinks", "needs-you-add"],
+    done: "Every relevant industry listing is live, submitted, or on Needs you with the exact details.",
+    evidence: "Each listing's status and URL.",
+  },
+  "w8-collection-pages": {
+    goal: "Collection pages for real searches (by use, style, brand or price, for example 'hiking boots for women') that list the right products under a short unique intro.",
+    steps: [
+      "Find real searches with `discover-keywords` on the main categories (and `gsc-query` once Search Console is connected).",
+      "Create 5–10 collections that match those searches, each with a unique intro and FAQ. A collection that would copy an existing category points its canonical tag to that category instead.",
+      "Safe mode: `block-task` with `review: true` and the preview before they go live.",
+      "Record each with `add-content` (type page) and track its keyword with `add-keywords`.",
+    ],
+    tools: ["discover-keywords", "gsc-query", "add-keywords", "add-content", "check-canonical", "check-meta"],
+    done: "At least 5 collection pages are live, each with a tracked keyword.",
+    evidence: "The URLs and their keywords.",
+  },
+  "w9-partner-links": {
+    goal: "Three relevant partners link to the site: suppliers, venues, clubs, referral partners or the brands a shop stocks. Never paid links or link farms.",
+    steps: [
+      "Find 3–5 partners the business already works with: the client profile and the site (partners, suppliers, sponsors), and CRM records with sites (`partnersinbiz.crm:find-records`).",
+      "Record each with `add-backlink` (type link_trade or organic, status not_started, notes with the person and where the link would go: a partner page, a 'where to buy' list, a supplier directory).",
+      "Write one short, personal message per partner: where the link would go and why it helps their customers.",
+      "The owner knows these people: put the messages on Needs you (`needs-you-add`, kind message, copy-ready). Safe mode: `block-task` with `review: true` pointing to it.",
+      "Mark links live when they appear (`update-backlink` with the URL).",
+    ],
+    tools: ["add-backlink", "update-backlink", "needs-you-add", "block-task", "partnersinbiz.crm:find-records"],
+    done: "3 partners are recorded with messages ready; agreed links are recorded.",
+    evidence: "The partners, the message text and the outcomes.",
+  },
+  "w10-local-press": {
+    goal: "One local story pitched to a local news site, community blog or radio station (a milestone, an event, local tips) for a genuine mention and link.",
+    steps: [
+      "Find 3–5 local outlets (the town's news site, community blogs, local news pages) and who takes story ideas.",
+      "Draft a short pitch with one real story angle and the facts (no invented numbers), plus a photo idea.",
+      "Safe mode: hand it over with `block-task` and `review: true`. The owner sends it, since it comes from them (or it goes on Needs you as a message).",
+      "Record the outlet with `add-backlink` (type organic, status in_progress, notes with the contact and date) and mark it live when the story is up.",
+    ],
+    tools: ["add-backlink", "update-backlink", "needs-you-add", "block-task"],
+    done: "The pitch is sent and recorded.",
+    evidence: "The outlet, contact, pitch text and date.",
   },
 
   // --- Optimization task types -------------------------------------------------

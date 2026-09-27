@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useHostLocation,
   DataTable,
   useHostNavigation,
   usePluginAction,
@@ -11,17 +11,18 @@ import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import {
   BarChart,
   BarList,
+  Bot,
   Button,
   ChartColumn,
   ChartPie,
   CircleAlert,
+  CompactRows,
   DonutChart,
   EmptyState,
   Field,
   FileText,
   IconBadge,
   Inbox,
-  Info,
   Input,
   KpiCard,
   LayoutDashboard,
@@ -31,30 +32,37 @@ import {
   Modal,
   Page,
   Pill,
+  RefreshCw,
   Select,
   SectionCard,
   Send,
+  Settings as SettingsIcon,
   Sparkles,
   StatusDot,
   Tabs,
   TextArea,
   Toolbar,
-  TriangleAlert,
   breakAnywhere,
   errorText,
   fluidColumns,
+  formatDateTime,
+  formatShortDate,
   seriesColor,
   tokens,
   tone,
+  useIsNarrow,
   type Segment,
 } from "@partnersinbiz/pib-plugin-ui";
-import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
+import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
+import { canSendFrom, connectReadiness, draftRecipients, missingTechnical, recentTime, sendBlock, sentBy } from "./view.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
 
 interface Settings {
+  /** The Mailbox settings page (worker 0.3.0+). */
+  href?: string;
   saved: boolean;
   publicBaseUrl: string | null;
   redirectUri: string | null;
@@ -65,7 +73,10 @@ interface Settings {
   labelPrefix: string;
   sendRatePerMinute: number;
   triageIssues: boolean;
+  /** Private R2 storage for get-attachment links. */
+  r2?: boolean;
 }
+interface Suppression { email: string; scope: "marketing" | "all"; reason: string; source: string; at: string }
 interface Account {
   id: string;
   address: string;
@@ -77,19 +88,36 @@ interface Account {
   last_error: string | null;
   sync_stats: { stored?: number; triaged?: number; mode?: string } | null;
 }
-interface Delegation { id: string; account_id: string; agent_id: string; can_send: boolean }
-interface DraftRow { id: string; account_id: string; subject: string; status: string; direction: string; send_error: string | null; to_addrs: Array<{ email: string }> | null }
+interface Delegation { id: string; account_id: string; agent_id: string; can_read?: boolean; can_draft?: boolean; can_send: boolean }
+interface Draft {
+  id: string;
+  account_id: string;
+  subject: string;
+  body?: string;
+  status: string;
+  direction: string;
+  send_error: string | null;
+  to_addrs: Array<{ email: string; name?: string | null }> | null;
+  cc_addrs?: Array<{ email: string }> | null;
+  bcc_addrs?: Array<{ email: string }> | null;
+  created_at?: string | null;
+  drafted_by?: { kind: "agent" | "user"; id: string } | null;
+  is_reply?: boolean;
+  has_html?: boolean;
+}
 interface Snapshot {
   settings: Settings;
   accounts: Account[];
   delegations: Delegation[];
-  messages: DraftRow[];
+  messages: Draft[];
   unreadCount: number;
   sendCounts: Record<string, number>;
   categoryCounts: Record<string, number>;
   categories: string[];
   /** Per-day counts for the charts (worker 0.2.3+). */
   daily?: DailySeries;
+  /** The do-not-email list, newest first (worker 0.3.0+). */
+  suppressions?: Suppression[];
 }
 interface InboxMessage {
   id: string;
@@ -114,6 +142,10 @@ interface ClientOption { ref: string; name: string; kind: string }
 interface SendRequest {
   key: string;
   status: "sending" | "sent" | "failed" | "retrying";
+  /** Campaign or sequence mail: suppressed addresses are left out and it carries List-Unsubscribe. */
+  marketing?: boolean;
+  /** Recipients left out because they are on the do-not-email list. */
+  skipped?: Array<{ email: string; scope: string; reason: string }>;
   permanent: boolean;
   attempts: number;
   error: string | null;
@@ -130,47 +162,23 @@ interface TriageStats {
   questions: Array<{ question: string; total: number; corrected: number; accuracy: number | null; avgConfidence: number }>;
   categories: Record<string, number>;
 }
+interface NamedAgent { id: string; name: string; status: string }
 
-type TabId = "overview" | "inbox" | "sent" | "drafts" | "mailboxes" | "triage";
+const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
+type TabId = (typeof TAB_IDS)[number];
 type CreateKind = "mailbox" | "delegation" | "draft" | null;
+type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
 
 const URGENCY_NAMES = ["Can wait", "Normal", "Soon", "Urgent"];
+const REASON_NAMES: Record<string, string> = { unsubscribed: "Unsubscribed", bounced: "Hard bounce", complained: "Complained", manual: "Added by a person" };
+const SOURCE_NAMES: Record<string, string> = { "partnersinbiz.mailbox": "Mailbox", "partnersinbiz.crm": "CRM", "partnersinbiz.campaigns": "Campaigns" };
+const QUESTION_NAMES: Record<string, string> = { category: "Category", urgency: "Urgency", needs_reply: "Needs a reply", phishing: "Suspicious mail", client: "Which client" };
+const DRAFT_STATUS: Record<string, string> = { draft: "Draft", queued: "Queued" };
+const TECH_ANCHOR = "technical-setup";
 
-function when(value: string | null | undefined): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  const minutes = Math.round((Date.now() - date.getTime()) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  if (minutes < 60 * 24) return `${Math.round(minutes / 60)} h ago`;
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-}
-
-function Banner({ tone: t, children }: { tone: "warn" | "info" | "bad"; children: ReactNode }) {
-  const colors = tone(t);
-  const Glyph = t === "bad" ? CircleAlert : t === "warn" ? TriangleAlert : Info;
-  return (
-    <div
-      role="status"
-      style={{
-        fontSize: 13,
-        lineHeight: 1.5,
-        padding: "10px 14px",
-        borderRadius: 10,
-        border: `1px solid ${colors.border}`,
-        borderLeft: `3px solid ${colors.solid}`,
-        background: `linear-gradient(90deg, ${colors.soft}, transparent 70%), ${tokens.card}`,
-        display: "grid",
-        gridTemplateColumns: "18px minmax(0, 1fr)",
-        columnGap: 8,
-        minWidth: 0,
-      }}
-    >
-      <Glyph size={15} color={colors.solid} aria-hidden="true" style={{ marginTop: 2 }} />
-      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>{children}</div>
-    </div>
-  );
+/** "5 min ago" for the last day, then "28 Sep" (the year only when it is not this year). */
+function whenText(value: string | null | undefined, now: Date = new Date()): string {
+  return recentTime(value, now) ?? formatShortDate(value ?? null, now);
 }
 
 function Chip({ children, tone: t = "neutral" }: { children: ReactNode; tone?: "neutral" | "warn" | "danger" | "bad" | "ok" | "info" | "accent" }) {
@@ -183,11 +191,11 @@ function categoryFill(category: string): Pick<Segment, "color" | "tone"> {
   return c === "neutral" ? { tone: "neutral" } : { color: seriesColor(c) };
 }
 
-function TriageChips({ row }: { row: InboxMessage }) {
+function SortingChips({ row }: { row: InboxMessage }) {
   const urgency = row.urgency == null ? null : Math.max(0, Math.min(3, Math.round(row.urgency)));
   return (
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-      {row.category ? <Chip tone={categoryTone(row.category)}>{CATEGORY_NAMES[row.category] ?? row.category}</Chip> : <Chip>Not triaged</Chip>}
+      {row.category ? <Chip tone={categoryTone(row.category)}>{CATEGORY_NAMES[row.category] ?? row.category}</Chip> : <Chip>Not sorted yet</Chip>}
       {urgency != null && urgency >= 2 ? <Chip tone={urgency === 3 ? "danger" : "warn"}>{URGENCY_NAMES[urgency]}</Chip> : null}
       {row.needs_reply != null && row.needs_reply >= 0.7 ? <Chip tone="warn">Needs reply</Chip> : null}
       {row.phishing != null && row.phishing >= 0.9 ? <Chip tone="danger">Suspicious</Chip> : null}
@@ -195,6 +203,15 @@ function TriageChips({ row }: { row: InboxMessage }) {
       {row.reply_to ? <Chip>Reply to {row.reply_to.kind}</Chip> : null}
     </div>
   );
+}
+
+/** The one flag a phone row shows for a message. */
+function mailFlag(row: InboxMessage): ReactNode {
+  if (row.phishing != null && row.phishing >= 0.9) return <Chip tone="danger">Suspicious</Chip>;
+  const urgency = row.urgency == null ? 0 : Math.round(row.urgency);
+  if (urgency >= 3) return <Chip tone="danger">Urgent</Chip>;
+  if (row.needs_reply != null && row.needs_reply >= 0.7) return <Chip tone="warn">Needs reply</Chip>;
+  return null;
 }
 
 function accountBadge(account: Account) {
@@ -205,6 +222,153 @@ function accountBadge(account: Account) {
 function sendBadge(status: SendRequest["status"], permanent: boolean) {
   const label = status === "sent" ? "sent" : status === "failed" ? (permanent ? "failed" : "failed, can retry") : status === "retrying" ? "waiting to retry" : "sending";
   return <Pill tone={sendTone(status)} dot>{label}</Pill>;
+}
+
+/** Agent names for the company (host `GET /api/companies/:id/agents`), and people names (`/user-directory`). */
+function useNames(companyId: string | null | undefined): { agents: NamedAgent[]; people: Map<string, string> } {
+  const [agents, setAgents] = useState<NamedAgent[]>([]);
+  const [people, setPeople] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!companyId) return;
+    let live = true;
+    const enc = encodeURIComponent(companyId);
+    const list = (body: unknown, key?: string): Array<Record<string, unknown>> => {
+      const value = Array.isArray(body) ? body : key && body && typeof body === "object" ? (body as Record<string, unknown>)[key] : (body as { data?: unknown } | null)?.data;
+      return Array.isArray(value) ? value.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object") : [];
+    };
+    fetch(`/api/companies/${enc}/agents`, { credentials: "include" })
+      .then(async (res) => (res.ok ? res.json() : []))
+      .then((body: unknown) => {
+        if (!live) return;
+        setAgents(list(body).filter((row) => typeof row.id === "string").map((row) => ({ id: String(row.id), name: typeof row.name === "string" && row.name ? row.name : "An agent", status: typeof row.status === "string" ? row.status : "" })));
+      })
+      .catch(() => undefined);
+    fetch(`/api/companies/${enc}/user-directory`, { credentials: "include" })
+      .then(async (res) => (res.ok ? res.json() : {}))
+      .then((body: unknown) => {
+        if (!live) return;
+        const map = new Map<string, string>();
+        for (const row of list(body, "users")) {
+          const user = (row.user && typeof row.user === "object" ? row.user : row) as Record<string, unknown>;
+          const id = typeof user.id === "string" ? user.id : typeof row.principalId === "string" ? row.principalId : null;
+          const name = typeof user.name === "string" && user.name ? user.name : typeof user.email === "string" ? user.email : null;
+          if (id && name) map.set(id, name);
+        }
+        setPeople(map);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [companyId]);
+  return { agents, people };
+}
+
+/** `search` without `key`. Returns "" or "?…". */
+function withoutParam(search: string, key: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(key);
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+/** A small ⋯ menu for secondary and destructive actions. */
+function MoreMenu({ label, items }: { label: string; items: Array<{ label: string; onSelect: () => void; danger?: boolean; disabled?: boolean }> }) {
+  const shown = items.filter(Boolean);
+  if (shown.length === 0) return null;
+  return (
+    <details style={{ position: "relative" }}>
+      <summary
+        aria-label={label}
+        title={label}
+        style={{ listStyle: "none", cursor: "pointer", height: 36, minWidth: 40, padding: "0 10px", borderRadius: 9, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, display: "inline-grid", placeItems: "center", fontSize: 16, fontWeight: 700, userSelect: "none" }}
+      >
+        ⋯
+      </summary>
+      <div role="menu" style={{ position: "absolute", right: 0, top: 42, zIndex: 30, minWidth: 190, display: "grid", padding: 4, borderRadius: 10, border: `1px solid ${tokens.border}`, background: tokens.card, boxShadow: "0 12px 30px color-mix(in oklab, black 25%, transparent)" }}>
+        {shown.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            role="menuitem"
+            disabled={item.disabled}
+            onClick={(event) => {
+              const details = (event.currentTarget as HTMLElement).closest("details");
+              if (details) details.open = false;
+              item.onSelect();
+            }}
+            style={{ appearance: "none", border: "none", background: "transparent", textAlign: "left", padding: "9px 10px", minHeight: 40, borderRadius: 7, fontSize: 13, fontFamily: "inherit", cursor: item.disabled ? "not-allowed" : "pointer", color: item.danger ? tone("bad").fg : tokens.fg, opacity: item.disabled ? 0.55 : 1 }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** "Connect Gmail", disabled with the reason until the one-time technical setup is done. */
+function ConnectGmail({ ready, reason, onConnect, onDetails, busy, label = "Connect Gmail", center = false }: {
+  ready: boolean;
+  reason: string | null;
+  onConnect: () => void;
+  onDetails: () => void;
+  busy?: boolean;
+  label?: string;
+  center?: boolean;
+}) {
+  if (ready) return <Button type="button" disabled={busy} onClick={onConnect}>{label}</Button>;
+  return (
+    <div style={{ display: "grid", gap: 6, justifyItems: center ? "center" : "start", minWidth: 0 }}>
+      <Button type="button" disabled title={reason ?? undefined}>{label}</Button>
+      <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, textAlign: center ? "center" : "left" }}>
+        {reason}{" "}
+        <button type="button" onClick={onDetails} style={{ appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", color: tokens.primary, fontWeight: 600, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>What is needed</button>
+      </span>
+    </div>
+  );
+}
+
+function Facts({ rows }: { rows: Array<[string, ReactNode] | null | false> }) {
+  return (
+    <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "minmax(84px, auto) minmax(0, 1fr)", gap: "8px 14px", fontSize: 13, lineHeight: 1.45 }}>
+      {rows.filter((row): row is [string, ReactNode] => Boolean(row)).map(([term, value]) => (
+        <div key={term} style={{ display: "contents" }}>
+          <dt style={{ color: tokens.muted }}>{term}</dt>
+          <dd style={{ margin: 0, minWidth: 0, overflowWrap: "anywhere" }}>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function Muted({ children }: { children: ReactNode }) {
+  return <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{children}</p>;
+}
+
+/** A subject cell that opens the row's preview. */
+function OpenButton({ children, onClick, strong = true }: { children: ReactNode; onClick: () => void; strong?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{ appearance: "none", border: "none", background: "transparent", padding: 0, textAlign: "left", font: "inherit", fontWeight: strong ? 600 : 400, color: tokens.fg, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3, textDecorationColor: tokens.border, overflowWrap: "anywhere" }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Refresh; just the icon on a phone so the filters beside it keep their room. */
+function RefreshButton({ narrow, onClick }: { narrow: boolean; onClick: () => void }) {
+  return narrow
+    ? <Button type="button" variant="secondary" aria-label="Refresh" title="Refresh" onClick={onClick} style={{ width: 40, padding: 0, display: "inline-grid", placeItems: "center", flexShrink: 0 }}><RefreshCw size={15} aria-hidden="true" /></Button>
+    : <Button type="button" variant="secondary" onClick={onClick}>Refresh</Button>;
+}
+
+/** Keeps a dropdown, a checkbox and Refresh on one row, even on a phone. */
+function OneRow({ children }: { children: ReactNode }) {
+  return <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", minWidth: 0 }}>{children}</div>;
 }
 
 export function MailboxPage({ context }: PluginPageProps) {
@@ -229,12 +393,20 @@ export function MailboxPage({ context }: PluginPageProps) {
   const [stats, setStats] = useState<TriageStats | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<TabId>("overview");
+  const hostLocation = useHostLocation();
+  const hostNavigation = useHostNavigation();
+  const narrow = useIsNarrow();
+  // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
+  const [tab, setTab] = useUrlTab<TabId>(TAB_IDS, "overview", { path: "/mailbox", search: hostLocation.search, navigate: hostNavigation.navigate });
+  // "Finish setting up Mailbox" on the overview until its required setup is done.
+  const setupStatus = usePluginSetupStatus(PLUGIN_KEY, context.companyId);
+  const { agents, people } = useNames(context.companyId);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const [sentStatus, setSentStatus] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
+  const [preview, setPreview] = useState<Preview>(null);
   const [address, setAddress] = useState("");
   const [provider, setProvider] = useState("gmail");
   const [accountId, setAccountId] = useState("");
@@ -263,7 +435,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId) return;
     if (new URLSearchParams(window.location.search).get("connected") === "gmail") {
-      setMessage("Gmail connected. The first sync runs within two minutes, or click Sync now.");
+      setMessage("Gmail connected. The first sync runs within two minutes, or click Sync.");
     }
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId]);
@@ -284,6 +456,7 @@ export function MailboxPage({ context }: PluginPageProps) {
       if (tab === "sent") await refreshSent();
       setMessage(success);
       setCreate(null);
+      setPreview(null);
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -291,10 +464,26 @@ export function MailboxPage({ context }: PluginPageProps) {
     }
   }
 
+  const settings = snapshot?.settings;
+  const readiness = connectReadiness(settings);
+  const missing = missingTechnical(settings);
+
+  /** Shows the one-time technical setup (Mailboxes tab). */
+  function showTechnical() {
+    setTab("mailboxes");
+    window.setTimeout(() => document.getElementById(TECH_ANCHOR)?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+  }
+
   async function connect(loginHint?: string) {
+    if (!readiness.ready) {
+      setMessage(`Gmail can't be connected yet. ${readiness.reason ?? ""}`.trim());
+      showTechnical();
+      return;
+    }
     setMessage("");
     try {
       const params = new URLSearchParams(window.location.search);
+      params.delete("connect");
       params.set("connected", "gmail");
       const returnTo = `${window.location.pathname}?${params.toString()}`;
       const result = (await connectStart({ returnTo, loginHint })) as { authorizeUrl: string; state: string };
@@ -310,11 +499,44 @@ export function MailboxPage({ context }: PluginPageProps) {
     }
   }
 
-  const settings = snapshot?.settings;
-  const gmailAccounts = (snapshot?.accounts ?? []).filter((a) => a.status !== "manual" || a.has_credential);
-  const missing = settings
-    ? [!settings.publicBaseUrl && "Public base URL", !settings.encryptionKey && "token encryption key", !settings.googleClientSecret && "Google client secret"].filter(Boolean)
-    : [];
+  // `?connect=gmail` (the setup step and other modules link here) starts the Google sign-in once the settings are known.
+  const wantsConnect = new URLSearchParams(hostLocation.search).get("connect") === "gmail";
+  useEffect(() => {
+    if (!wantsConnect || !snapshot) return;
+    // One navigation takes the ask off the address (so a reload or the way back from Google does not
+    // start it again) and, when Gmail cannot be connected yet, opens the tab with the technical setup.
+    const params = new URLSearchParams(withoutParam(hostLocation.search, "connect"));
+    if (!readiness.ready) params.set("tab", "mailboxes");
+    const text = params.toString();
+    hostNavigation.navigate(`/mailbox${text ? `?${text}` : ""}`, { replace: true });
+    if (readiness.ready) {
+      void connect();
+      return;
+    }
+    setMessage(`Gmail can't be connected yet. ${readiness.reason ?? ""}`.trim());
+    window.setTimeout(() => document.getElementById(TECH_ANCHOR)?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsConnect, snapshot]);
+
+  /** Setup links: "Connect Gmail" does the step here instead of reopening this page. */
+  const linkFor = (href: string): Record<string, unknown> => {
+    if (href.startsWith("/mailbox") && href.includes("connect=gmail")) {
+      return {
+        href: hostNavigation.resolveHref(href),
+        onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => {
+          event.preventDefault();
+          void connect();
+        },
+      };
+    }
+    return hostNavigation.linkProps(href) as unknown as Record<string, unknown>;
+  };
+
+  const accounts = snapshot?.accounts ?? [];
+  const gmailAccounts = accounts.filter((a) => a.status !== "manual" || a.has_credential);
+  const otherMailboxes = accounts.filter((a) => a.status === "manual" && !a.has_credential);
+  const connectedCount = gmailAccounts.filter((a) => a.status === "connected").length;
+  const gmailProblem = gmailAccounts.length === 0 || gmailAccounts.some((a) => a.status !== "connected" || Boolean(a.last_error));
   const q = search.trim().toLowerCase();
   const inboxRows = useMemo(
     () =>
@@ -323,147 +545,209 @@ export function MailboxPage({ context }: PluginPageProps) {
       ),
     [inbox, q],
   );
-  const drafts = useMemo(() => (snapshot?.messages ?? []).filter((row) => row.direction === "outbound" && (!q || row.subject.toLowerCase().includes(q))), [snapshot, q]);
-  const accounts = useMemo(() => (snapshot?.accounts ?? []).filter((row) => !q || row.address.toLowerCase().includes(q)), [snapshot, q]);
+  const allDrafts = useMemo(() => (snapshot?.messages ?? []).filter((row) => row.direction === "outbound"), [snapshot]);
+  const drafts = useMemo(() => allDrafts.filter((row) => !q || row.subject.toLowerCase().includes(q) || draftRecipients(row).join(" ").toLowerCase().includes(q)), [allDrafts, q]);
   const failedSends = (snapshot?.sendCounts.failed ?? 0) + (snapshot?.sendCounts.retrying ?? 0);
+  const reconnects = accounts.filter((a) => a.status === "needs_reconnect").length;
+  const hasData = Boolean(snapshot && (accounts.length || allDrafts.length || snapshot.unreadCount || Object.keys(snapshot.sendCounts).length || Object.keys(snapshot.categoryCounts).length));
+  const agentName = (id: string) => agents.find((agent) => agent.id === id)?.name ?? "An agent that was removed";
+  const drafterName = (by: Draft["drafted_by"]) => !by ? "Not recorded" : by.kind === "agent" ? agentName(by.id) : by.id === context.userId ? "You" : people.get(by.id) ?? "A person";
+  const addressOf = (id: string) => accounts.find((account) => account.id === id)?.address ?? "A removed mailbox";
 
   const now = new Date();
   const received = receivedColumns(snapshot?.daily, now, 14);
   const sends = sendColumns(snapshot?.daily, now, 14);
   const categories = categorySegments(snapshot?.categoryCounts).map((c) => ({ ...c, ...(c.key === "rest" ? {} : categoryFill(c.key ?? "")) }));
+
+  const connectButton = (center = false, label?: string) => (
+    <ConnectGmail ready={readiness.ready} reason={readiness.reason} busy={busy} onConnect={() => void connect()} onDetails={showTechnical} center={center} label={label} />
+  );
+
   const gmailSection = (
-      <SectionCard
-        title="Gmail"
-        subtitle={gmailAccounts.length ? `${gmailAccounts.filter((a) => a.status === "connected").length} of ${gmailAccounts.length} connected · synced every 2 minutes` : "Not connected yet"}
-        icon={Mail}
-        tone={gmailAccounts.some((a) => a.status === "needs_reconnect") ? "bad" : undefined}
-        strip={gmailAccounts.some((a) => a.status === "needs_reconnect")}
-        actions={gmailAccounts.some((a) => a.status === "connected") ? (
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => syncNow({}), "Sync finished")}>Sync now</Button>
-        ) : undefined}
-      >
-        {gmailAccounts.length === 0 ? (
-          <EmptyState
-            compact
-            icon={Mail}
-            title="No Gmail account connected"
-            description="Connect the Gmail account that sends invoices and receives client mail. Sign in with that Google account."
-            action={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
-          />
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {gmailAccounts.map((account) => (
+    <SectionCard
+      title="Gmail"
+      subtitle={gmailAccounts.length ? `${connectedCount} of ${gmailAccounts.length} connected · synced every 2 minutes` : "Not connected yet: mail can't sync or send."}
+      icon={Mail}
+      tone={gmailAccounts.some((a) => a.status === "needs_reconnect") ? "bad" : gmailAccounts.length === 0 ? "warn" : undefined}
+      strip={gmailAccounts.length === 0 || gmailAccounts.some((a) => a.status === "needs_reconnect")}
+    >
+      {gmailAccounts.length === 0 ? (
+        <EmptyState
+          compact
+          icon={Mail}
+          title="No Gmail account connected"
+          description="Connect the Gmail account that sends invoices and receives client mail. You sign in with that Google account."
+          action={connectButton(true)}
+        />
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {gmailAccounts.map((account) => {
+            const bad = accountTone(account.status) === "bad";
+            return (
               <div
                 key={account.id}
-                style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${accountTone(account.status) === "bad" ? tone("bad").border : tokens.border}`, background: accountTone(account.status) === "bad" ? tone("bad").soft : "transparent", borderRadius: 10, minWidth: 0 }}
+                style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${bad ? tone("bad").border : tokens.border}`, background: bad ? tone("bad").soft : "transparent", borderRadius: 10, minWidth: 0 }}
               >
-                <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0, flex: "1 1 260px" }}>
-                <IconBadge icon={Mail} accent={tone(account.status === "connected" ? "accent" : accountTone(account.status))} size="sm" />
-                <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-                    <StatusDot tone={accountTone(account.status, account.last_error)} pulse={account.status === "connected" && isSyncing(account.last_sync_at, new Date())} halo label={account.status === "connected" ? (isSyncing(account.last_sync_at, new Date()) ? "Syncing" : "Connected") : account.status.replace(/_/g, " ")} />
-                    <strong style={{ fontSize: 14, overflowWrap: "anywhere", minWidth: 0 }}>{account.address}</strong>
-                    {accountBadge(account)}
-                    {account.is_default ? <Chip tone="info">Default sender</Chip> : null}
+                <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0, flex: "1 1 240px" }}>
+                  <IconBadge icon={Mail} accent={tone(account.status === "connected" ? "accent" : accountTone(account.status))} size="sm" />
+                  <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                      <StatusDot tone={accountTone(account.status, account.last_error)} pulse={account.status === "connected" && isSyncing(account.last_sync_at, now)} halo label={account.status === "connected" ? (isSyncing(account.last_sync_at, now) ? "Syncing" : "Connected") : account.status.replace(/_/g, " ")} />
+                      <strong style={{ fontSize: 14, minWidth: 0, ...breakAnywhere }}>{account.address}</strong>
+                      {accountBadge(account)}
+                      {account.is_default ? <Chip tone="info">Sends for all modules</Chip> : null}
+                    </div>
+                    <span style={{ fontSize: 12, color: tokens.muted }}>
+                      Last sync {whenText(account.last_sync_at, now)}
+                      {account.sync_stats?.stored ? ` · ${account.sync_stats.stored} new` : ""}
+                    </span>
+                    {account.last_error ? <span style={{ fontSize: 12, color: tone("bad").fg, overflowWrap: "anywhere" }}>{account.last_error}</span> : null}
                   </div>
-                  <span style={{ fontSize: 12, color: tokens.muted }}>
-                    Last sync {when(account.last_sync_at)}
-                    {account.sync_stats?.stored ? ` · ${account.sync_stats.stored} new` : ""}
-                  </span>
-                  {account.last_error ? <span style={{ fontSize: 12, color: tone("bad").fg, overflowWrap: "anywhere" }}>{account.last_error}</span> : null}
                 </div>
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {account.status !== "connected" ? <Button type="button" onClick={() => void connect(account.address)}>Reconnect</Button> : null}
-                  {account.status === "connected" && !account.is_default ? (
-                    <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => setDefault({ accountId: account.id }), `${account.address} is now the default sender`)}>Make default</Button>
-                  ) : null}
-                  {account.status === "connected" ? (
-                    <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => syncNow({ accountId: account.id }), "Sync finished")}>Sync</Button>
-                  ) : null}
-                  {account.status !== "disconnected" && account.has_credential ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={busy}
-                      onClick={() => {
-                        if (window.confirm(`Disconnect ${account.address}? Plugins will not be able to send from it until it is connected again.`)) {
-                          void run(() => disconnect({ accountId: account.id }), `${account.address} disconnected`);
-                        }
-                      }}
-                    >
-                      Disconnect
-                    </Button>
-                  ) : null}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {account.status !== "connected"
+                    ? <Button type="button" disabled={busy || !readiness.ready} title={readiness.reason ?? undefined} onClick={() => void connect(account.address)}>Reconnect</Button>
+                    : <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => syncNow({ accountId: account.id }), "Sync finished")}>Sync</Button>}
+                  <MoreMenu
+                    label={`More for ${account.address}`}
+                    items={[
+                      ...(account.status === "connected" && !account.is_default
+                        ? [{ label: "Send all module mail from here", onSelect: () => void run(() => setDefault({ accountId: account.id }), `${account.address} now sends for all modules`) }]
+                        : []),
+                      ...(account.status !== "disconnected" && account.has_credential
+                        ? [{
+                          label: "Disconnect",
+                          danger: true,
+                          onSelect: () => {
+                            if (window.confirm(`Disconnect ${account.address}? Plugins will not be able to send from it until it is connected again.`)) {
+                              void run(() => disconnect({ accountId: account.id }), `${account.address} disconnected`);
+                            }
+                          },
+                        }]
+                        : []),
+                    ]}
+                  />
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-        {settings?.redirectUri ? (
-          <p style={{ margin: 0, fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>
-            Redirect URI to add to the Google Web client (Credentials → Authorized redirect URIs): <code style={breakAnywhere}>{settings.redirectUri}</code>
-          </p>
-        ) : settings?.publicBaseUrl ? (
-          <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Reload this page to see the Google redirect URI.</p>
-        ) : null}
-        {settings && !settings.jev ? (
-          <p style={{ margin: 0, fontSize: 12, color: tokens.muted }}>Triage uses built-in rules. Add a TypeSafe (Jev) key in the settings for better categories, urgency and client matching.</p>
-        ) : null}
-      </SectionCard>
+            );
+          })}
+          {connectedCount > 0 ? (
+            <div>
+              <Button type="button" variant="secondary" disabled={busy || !readiness.ready} onClick={() => void connect()}>Connect another Gmail account</Button>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </SectionCard>
+  );
+
+  const technicalRows: Array<{ name: string; field?: string; done: boolean; optional?: boolean; text: ReactNode }> = [
+    { name: "Settings saved for this company", done: Boolean(settings?.saved), text: "Saving once lets the Gmail sync run for this company." },
+    { name: "Web address of Paperclip", field: "Public base URL", done: Boolean(settings?.publicBaseUrl), text: "The address people use to open Paperclip. Google sends people back there after they sign in." },
+    { name: "Key that locks stored Gmail sign-ins", field: "Token encryption key", done: Boolean(settings?.encryptionKey), text: "A Paperclip secret of 16 or more random characters. Changing it later means connecting Gmail again." },
+    { name: "Google app secret", field: "Google OAuth client → Client secret", done: Boolean(settings?.googleClientSecret), text: "The secret of the Google Cloud web app that asks for Gmail access." },
+    { name: "Smart sorting", done: Boolean(settings?.jev), optional: true, text: "Sorts new mail more accurately and matches it to clients, using an API key from the smart sorting service. Without it, built-in rules sort the mail." },
+    { name: "Private file storage", field: "Private attachment storage (Cloudflare R2)", done: Boolean(settings?.r2), optional: true, text: "Lets agents open PDF and image attachments, such as bank statements. Text files work without it." },
+  ];
+  const technicalSection = (
+    <SectionCard
+      id={TECH_ANCHOR}
+      title="One-time technical setup (admin)"
+      subtitle={missing.length || !settings?.saved
+        ? "Needed once before Gmail can be connected. An admin does this in the Mailbox settings; nobody else needs to."
+        : "Done. An admin only comes back here to change the Google app or the optional extras."}
+      icon={SettingsIcon}
+      tone={missing.length || !settings?.saved ? "warn" : undefined}
+      actions={settings?.href ? <a {...hostNavigation.linkProps(settings.href)} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, whiteSpace: "nowrap" }}>Open settings →</a> : undefined}
+    >
+      <details open={Boolean(missing.length || (settings && !settings.saved))}>
+        <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{missing.length ? `Still needed: ${missing.length} of 3 required settings` : "What was set up"}</summary>
+        <ul style={{ listStyle: "none", margin: "10px 0 0", padding: 0, display: "grid", gap: 10 }}>
+          {technicalRows.map((row) => (
+            <li key={row.name} style={{ display: "grid", gap: 3, paddingBottom: 10, borderBottom: `1px solid ${tokens.border}`, minWidth: 0 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                <strong style={{ fontSize: 13, fontWeight: 600 }}>{row.name}{row.optional ? <span style={{ color: tokens.muted, fontWeight: 500 }}> (optional)</span> : null}</strong>
+                <Pill size="sm" tone={row.done ? "ok" : row.optional ? "neutral" : "warn"} dot>{row.done ? "Set" : row.optional ? "Off" : "Missing"}</Pill>
+              </div>
+              <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{row.text}</span>
+              {row.field ? <span style={{ fontSize: 12, color: tokens.muted }}>In the settings: <code style={{ fontSize: "0.95em" }}>{row.field}</code></span> : null}
+            </li>
+          ))}
+          <li style={{ display: "grid", gap: 4, minWidth: 0 }}>
+            <strong style={{ fontSize: 13, fontWeight: 600 }}>Google redirect address</strong>
+            {settings?.redirectUri ? (
+              <>
+                <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>In Google Cloud → APIs &amp; Services → Credentials → the web app, add this under Authorised redirect URIs:</span>
+                <code style={{ fontSize: 12, padding: "6px 8px", borderRadius: 6, background: tokens.secondary, ...breakAnywhere }}>{settings.redirectUri}</code>
+              </>
+            ) : <span style={{ fontSize: 12.5, color: tokens.muted }}>Shown here once the web address of Paperclip is set.</span>}
+          </li>
+        </ul>
+      </details>
+    </SectionCard>
   );
 
   function openCorrection(row: InboxMessage) {
+    setPreview(null);
     setCorrecting(row);
     setFix({ category: row.category ?? "", urgency: "", needsReply: "", client: "" });
+  }
+
+  const previewDraft = preview?.kind === "draft" ? allDrafts.find((row) => row.id === preview.id) ?? null : null;
+  const previewMail = preview?.kind === "mail" ? (inbox?.messages ?? []).find((row) => row.id === preview.id) ?? null : null;
+  const previewSend = preview?.kind === "send" ? (sent ?? []).find((row) => row.key === preview.key) ?? null : null;
+  const draftBlock = previewDraft ? sendBlock(previewDraft, accounts) : null;
+  const newDraftButton = <Button type="button" onClick={() => setCreate("draft")}>+ New draft</Button>;
+  // Header actions follow the open tab; most tabs keep their one action in their own content.
+  const headerAction = tab === "drafts" && allDrafts.length > 0 ? newDraftButton : undefined;
+
+  function sendCell(draft: Draft): ReactNode {
+    if (draft.status !== "draft") return null;
+    const block = sendBlock(draft, accounts);
+    return (
+      <div style={{ display: "grid", gap: 3, justifyItems: "start" }}>
+        <Button type="button" disabled={busy || Boolean(block)} title={block ?? undefined} style={{ height: 30, fontSize: 12.5 }} onClick={() => void run(() => sendDraft({ messageId: draft.id }), "Draft sent")}>Send</Button>
+        {block ? <span style={{ fontSize: 11.5, color: tokens.muted, lineHeight: 1.35 }}>{block}</span> : null}
+      </div>
+    );
   }
 
   return (
     <Page
       accent="mailbox"
       title="Mailbox"
-      description="The company's Gmail. Plugins send invoices, reminders and payslips through it. New mail is triaged and labelled in Gmail."
+      description="The company's Gmail. Invoices, reminders and payslips go out through it, and new mail is sorted and labelled."
       message={message}
-      actions={settings && missing.length === 0 ? <Button type="button" onClick={() => void connect()}>Connect Gmail</Button> : undefined}
+      actions={headerAction}
     >
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} />
-      {settings && !settings.saved ? (
-        <Banner tone="warn">
-          <strong>Mailbox settings are not saved for this company.</strong>
-          <span>Open Settings → Plugins → Mailbox and click Save once. Until then Gmail does not sync and plugins cannot send for this company.</span>
-        </Banner>
-      ) : null}
-      {settings && settings.saved && missing.length > 0 ? (
-        <Banner tone="info">
-          <strong>Gmail connection is not configured yet.</strong>
-          <span>Needed in the Mailbox settings: {missing.join(", ")}.</span>
-        </Banner>
-      ) : null}
 
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
           { id: "inbox", label: "Inbox", icon: Inbox, count: snapshot?.unreadCount || null, countTone: snapshot?.unreadCount ? "warn" : undefined },
           { id: "sent", label: "Sent", icon: Send, count: failedSends || null, countTone: failedSends ? "bad" : undefined },
-          { id: "drafts", label: "Drafts", icon: FileText, count: drafts.length || null },
-          { id: "mailboxes", label: "Mailboxes", icon: Mail, count: snapshot?.accounts.length ?? null, countTone: (snapshot?.accounts ?? []).some((a) => a.status === "needs_reconnect") ? "bad" : undefined },
-          { id: "triage", label: "Triage", icon: Sparkles },
+          { id: "drafts", label: "Drafts", icon: FileText, count: allDrafts.filter((row) => row.status === "draft").length || null, countTone: "warn" },
+          { id: "mailboxes", label: "Mailboxes", icon: Mail, count: reconnects || null, countTone: reconnects ? "bad" : undefined },
+          { id: "triage", label: "Sorting", icon: Sparkles },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
       />
 
+      {tab === "overview" ? <GetStarted status={setupStatus} hasData={hasData} moduleName="Mailbox" linkFor={linkFor} /> : null}
       {tab === "overview" ? (
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          {snapshot && gmailProblem ? gmailSection : null}
           <div style={{ display: "grid", gap: 10, gridTemplateColumns: fluidColumns(150), minWidth: 0 }}>
-            <KpiCard label="Unread" value={snapshot?.unreadCount ?? 0} icon={Inbox} tone={(snapshot?.unreadCount ?? 0) > 0 ? "warn" : undefined} hint={(snapshot?.unreadCount ?? 0) > 0 ? "Open the inbox" : "All read"} />
+            <KpiCard label="Unread" value={snapshot?.unreadCount ?? 0} icon={Inbox} tone={(snapshot?.unreadCount ?? 0) > 0 ? "warn" : undefined} hint={(snapshot?.unreadCount ?? 0) > 0 ? "Open the inbox" : "All read"} link={(snapshot?.unreadCount ?? 0) > 0 ? (hostNavigation.linkProps("/mailbox?tab=inbox") as never) : null} />
             <KpiCard label="Received (14 days)" value={received.total} icon={Mail} sparkline={received.total ? received.totals : undefined} hint={received.total ? undefined : "No mail yet"} />
-            <KpiCard label="Sent (30 days)" value={snapshot?.sendCounts.sent ?? 0} icon={MailCheck} sparkline={sends.sent ? sends.sentPerDay : undefined} tone={undefined} hint="Invoices, reminders, payslips…" />
-            <KpiCard label="Failed or waiting" value={failedSends} icon={CircleAlert} tone={failedSends ? "bad" : undefined} hint={failedSends ? "Retry them on the Sent tab" : "Nothing stuck"} />
-            <KpiCard label="Leads (30 days)" value={snapshot?.categoryCounts.lead ?? 0} icon={Sparkles} tone={undefined} hint="Triaged as a lead" />
+            <KpiCard label="Sent (30 days)" value={snapshot?.sendCounts.sent ?? 0} icon={MailCheck} sparkline={sends.sent ? sends.sentPerDay : undefined} hint="Invoices, reminders, payslips…" />
+            <KpiCard label="Failed or waiting" value={failedSends} icon={CircleAlert} tone={failedSends ? "bad" : undefined} hint={failedSends ? "Retry them on the Sent tab" : "Nothing stuck"} link={failedSends ? (hostNavigation.linkProps("/mailbox?tab=sent") as never) : null} />
+            <KpiCard label="Leads (30 days)" value={snapshot?.categoryCounts.lead ?? 0} icon={Sparkles} hint="Sorted as a lead" />
           </div>
           <div style={{ display: "grid", gap: 16, gridTemplateColumns: fluidColumns(360), minWidth: 0 }}>
-            <SectionCard style={{ alignContent: "start" }} title="Mail received per day" subtitle="Inbound mail by triage category, last 14 days" icon={ChartColumn}>
+            <SectionCard style={{ alignContent: "start" }} title="Mail received per day" subtitle="New mail by category, last 14 days" icon={ChartColumn}>
               {received.total ? (
                 <BarChart
                   data={received.data}
@@ -472,68 +756,85 @@ export function MailboxPage({ context }: PluginPageProps) {
                   title="Mail received per day"
                   height={120}
                 />
-              ) : <EmptyState compact icon={Inbox} title="No mail in 14 days" description={gmailAccounts.length ? "New mail shows up after the next sync." : "Connect Gmail to start."} />}
+              ) : <EmptyState compact icon={Inbox} title="No mail in 14 days" description={gmailAccounts.length ? "New mail shows up after the next sync." : "Mail shows up here once Gmail is connected."} />}
             </SectionCard>
-            <SectionCard style={{ alignContent: "start" }} title="Categories" subtitle="How triage sorted the last 30 days" icon={ChartPie}>
+            <SectionCard style={{ alignContent: "start" }} title="Categories" subtitle="How new mail was sorted, last 30 days" icon={ChartPie}>
               {categories.length ? (
                 <DonutChart title="Mail by category, 30 days" segments={categories} centerValue={categories.reduce((n, c) => n + c.value, 0)} centerLabel="emails" />
-              ) : <EmptyState compact icon={Sparkles} title="Nothing triaged yet" description="Each new email gets a category, urgency and client." />}
+              ) : <EmptyState compact icon={Sparkles} title="Nothing sorted yet" description="Each new email gets a category, urgency and client." />}
             </SectionCard>
           </div>
-          <SectionCard title="Sent vs failed per day" subtitle={`Mail the plugins sent, last 14 days${sends.failed ? ` · ${sends.failed} failed or waiting` : ""}`} icon={Send} tone={sends.failed ? "bad" : undefined}>
+          <SectionCard title="Sent vs failed per day" subtitle={`Mail the modules sent, last 14 days${sends.failed ? ` · ${sends.failed} failed or waiting` : ""}`} icon={Send} tone={sends.failed ? "bad" : undefined}>
             {sends.totals.some((n) => n > 0) ? (
               <BarChart data={sends.data} series={SEND_SERIES} unit="emails" title="Send requests per day" height={96} />
             ) : <EmptyState compact icon={Send} title="Nothing sent in 14 days" description="Invoices, reminders, payslips and campaigns go out through this mailbox." />}
           </SectionCard>
-          {gmailSection}
+          {snapshot && !gmailProblem ? gmailSection : null}
         </div>
       ) : null}
 
       {tab === "inbox" ? (
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search subject or sender…">
-            <Select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category">
-              <option value="">All categories</option>
-              {(snapshot?.categories ?? Object.keys(CATEGORY_NAMES)).map((c) => <option key={c} value={c}>{CATEGORY_NAMES[c] ?? c}</option>)}
-            </Select>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-              <input type="checkbox" checked={needsReplyOnly} onChange={(event) => setNeedsReplyOnly(event.target.checked)} />
-              Needs reply
-            </label>
-            <Button type="button" variant="secondary" onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))}>Refresh</Button>
+            <OneRow>
+              <Select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category" style={{ maxWidth: narrow ? 160 : undefined }}>
+                <option value="">All categories</option>
+                {(snapshot?.categories ?? Object.keys(CATEGORY_NAMES)).map((c) => <option key={c} value={c}>{CATEGORY_NAMES[c] ?? c}</option>)}
+              </Select>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={needsReplyOnly} onChange={(event) => setNeedsReplyOnly(event.target.checked)} />
+                Needs reply
+              </label>
+              <RefreshButton narrow={narrow} onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))} />
+            </OneRow>
           </Toolbar>
           {inboxRows.length === 0 ? (
-            <EmptyState icon={Inbox} title="No mail here" description={gmailAccounts.length === 0 ? "Connect Gmail to see new mail here." : "New mail shows up after the next sync."} />
+            <EmptyState
+              icon={Inbox}
+              title="No mail here"
+              description={gmailAccounts.length === 0 ? "Connect Gmail to see new mail here." : q || category || needsReplyOnly ? "Nothing matches these filters." : "New mail shows up after the next sync."}
+              action={gmailAccounts.length === 0 ? connectButton(true) : undefined}
+            />
+          ) : narrow ? (
+            <CompactRows
+              label="Inbox"
+              rows={inboxRows}
+              title={(row) => `${row.is_read ? "" : "● "}${row.subject || "(no subject)"}`}
+              meta={(row) => [row.from ? row.from.name || row.from.email : null, row.category ? CATEGORY_NAMES[row.category] ?? row.category : "Not sorted yet", whenText(row.received_at ?? row.created_at, now)].filter(Boolean).join(" · ")}
+              trailing={mailFlag}
+              onOpen={(row) => setPreview({ kind: "mail", id: row.id })}
+              empty="No mail matches."
+            />
           ) : (
             <DataTable
               columns={[
-                { key: "received", header: "Received", width: "90px" },
-                { key: "sender", header: "From", width: "22%" },
+                { key: "received", header: "Received", width: "96px" },
+                { key: "sender", header: "From", width: "20%" },
                 {
                   key: "subject",
                   header: "Subject",
                   render: (_value, row) => {
                     const m = row as unknown as InboxMessage;
                     return (
-                      <div style={{ display: "grid", gap: 2 }}>
-                        <span style={{ fontWeight: m.is_read ? 400 : 600 }}>{m.subject}{m.attachments.length ? ` · ${m.attachments.length} file${m.attachments.length === 1 ? "" : "s"}` : ""}</span>
+                      <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                        <OpenButton strong={!m.is_read} onClick={() => setPreview({ kind: "mail", id: m.id })}>{m.subject || "(no subject)"}{m.attachments.length ? ` · ${m.attachments.length} file${m.attachments.length === 1 ? "" : "s"}` : ""}</OpenButton>
                         <span style={{ fontSize: 12, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "min(420px, 100%)" }}>{m.snippet}</span>
                       </div>
                     );
                   },
                 },
-                { key: "triage", header: "Triage", render: (_value, row) => <TriageChips row={row as unknown as InboxMessage} /> },
+                { key: "sorting", header: "Sorted as", render: (_value, row) => <SortingChips row={row as unknown as InboxMessage} /> },
                 {
                   key: "fix",
                   header: "",
-                  width: "80px",
-                  render: (_value, row) => <Button type="button" variant="secondary" onClick={() => openCorrection(row as unknown as InboxMessage)}>Correct</Button>,
+                  width: "104px",
+                  render: (_value, row) => <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={() => openCorrection(row as unknown as InboxMessage)}>Fix sorting</Button>,
                 },
               ]}
               rows={inboxRows.map((row) => ({
                 ...row,
-                received: when(row.received_at ?? row.created_at),
-                sender: row.from ? row.from.name || row.from.email : "—",
+                received: whenText(row.received_at ?? row.created_at, now),
+                sender: row.from ? row.from.name || row.from.email : "–",
               })) as unknown as Record<string, unknown>[]}
               emptyMessage="No mail matches."
             />
@@ -544,24 +845,42 @@ export function MailboxPage({ context }: PluginPageProps) {
       {tab === "sent" ? (
         <div style={{ display: "grid", gap: 12 }}>
           <Toolbar>
-            <Select value={sentStatus} onChange={(event) => setSentStatus(event.target.value)} aria-label="Status">
-              <option value="">All</option>
-              <option value="sent">Sent</option>
-              <option value="failed">Failed</option>
-              <option value="retrying">Waiting to retry</option>
-              <option value="sending">Sending</option>
-            </Select>
-            <Button type="button" variant="secondary" onClick={() => void refreshSent().catch((error: unknown) => setMessage(errorText(error)))}>Refresh</Button>
+            <OneRow>
+              <Select value={sentStatus} onChange={(event) => setSentStatus(event.target.value)} aria-label="Status">
+                <option value="">All</option>
+                <option value="sent">Sent</option>
+                <option value="failed">Failed</option>
+                <option value="retrying">Waiting to retry</option>
+                <option value="sending">Sending</option>
+              </Select>
+              <RefreshButton narrow={narrow} onClick={() => void refreshSent().catch((error: unknown) => setMessage(errorText(error)))} />
+            </OneRow>
           </Toolbar>
           {(sent ?? []).length === 0 ? (
-            <EmptyState icon={Send} title="Nothing sent yet" description="Mail the plugins send (invoices, reminders, payslips, campaigns) is listed here." />
+            <EmptyState
+              icon={Send}
+              title={sentStatus ? "Nothing with this status" : "Nothing sent yet"}
+              description={gmailAccounts.length === 0 ? "Mail the modules send (invoices, reminders, payslips, campaigns) shows up here once Gmail is connected." : "Mail the modules send (invoices, reminders, payslips, campaigns) is listed here."}
+              action={gmailAccounts.length === 0 && !sentStatus ? connectButton(true) : undefined}
+            />
+          ) : narrow ? (
+            <CompactRows
+              label="Sent mail"
+              rows={sent ?? []}
+              rowKey={(row) => row.key}
+              title={(row) => row.subject || "(no subject)"}
+              meta={(row) => [row.to.join(", ") || "No recipient", sentBy(row), whenText(row.sentAt ?? row.createdAt, now)].join(" · ")}
+              trailing={(row) => sendBadge(row.status, row.permanent)}
+              onOpen={(row) => setPreview({ kind: "send", key: row.key })}
+              empty="Nothing matches."
+            />
           ) : (
             <DataTable
               columns={[
-                { key: "when", header: "When", width: "90px" },
-                { key: "toText", header: "To", width: "20%" },
-                { key: "subject", header: "Subject" },
-                { key: "source", header: "From plugin", width: "150px" },
+                { key: "when", header: "When", width: "96px" },
+                { key: "toText", header: "To", width: "20%", render: (value) => <span style={{ overflowWrap: "anywhere" }}>{String(value)}</span> },
+                { key: "subject", header: "Subject", render: (value, row) => <OpenButton strong={false} onClick={() => setPreview({ kind: "send", key: String(row.id) })}>{String(value) || "(no subject)"}</OpenButton> },
+                { key: "source", header: "Sent by", width: "160px" },
                 {
                   key: "status",
                   header: "Status",
@@ -569,8 +888,14 @@ export function MailboxPage({ context }: PluginPageProps) {
                     const r = row as unknown as SendRequest;
                     return (
                       <div style={{ display: "grid", gap: 3 }}>
-                        {sendBadge(r.status, r.permanent)}
+                        <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                          {sendBadge(r.status, r.permanent)}
+                          {r.marketing ? <Chip tone="info">Marketing</Chip> : null}
+                        </span>
                         {r.error && r.status !== "sent" ? <span style={{ fontSize: 11, color: tokens.muted, overflowWrap: "anywhere" }}>{r.error}</span> : null}
+                        {r.status === "sent" && r.skipped?.length ? (
+                          <span style={{ fontSize: 11, color: tokens.muted, overflowWrap: "anywhere" }}>Left out (do not email): {r.skipped.map((entry) => entry.email).join(", ")}</span>
+                        ) : null}
                       </div>
                     );
                   },
@@ -582,7 +907,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                   render: (_value, row) => {
                     const r = row as unknown as SendRequest;
                     return r.status === "failed" || r.status === "retrying" ? (
-                      <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => retrySend({ key: r.key }), "Sent again")}>Retry</Button>
+                      <Button type="button" variant="secondary" disabled={busy} style={{ height: 30, fontSize: 12.5 }} onClick={() => void run(() => retrySend({ key: r.key }), "Sent again")}>Retry</Button>
                     ) : null;
                   },
                 },
@@ -590,47 +915,96 @@ export function MailboxPage({ context }: PluginPageProps) {
               rows={(sent ?? []).map((row) => ({
                 ...row,
                 id: row.key,
-                when: when(row.sentAt ?? row.createdAt),
-                toText: row.to.join(", "),
-                source: `${(row.context?.plugin ?? row.sourcePlugin).replace(/^partnersinbiz\./, "")} · ${row.context?.kind ?? "mail"}`,
+                when: whenText(row.sentAt ?? row.createdAt, now),
+                toText: row.to.join(", ") || "–",
+                source: sentBy(row),
               })) as unknown as Record<string, unknown>[]}
               emptyMessage="Nothing matches."
             />
           )}
+          <SectionCard
+            title="Do not email"
+            subtitle={(snapshot?.suppressions ?? []).length
+              ? "Unsubscribes skip campaigns and sequences; hard bounces skip every email. Shared with the CRM and Campaigns."
+              : "Nobody yet. A reply of STOP or unsubscribe, or a hard bounce, adds the address here."}
+            icon={CircleAlert}
+          >
+            {(snapshot?.suppressions ?? []).length === 0 ? null : narrow ? (
+              <CompactRows
+                label="Do not email"
+                rows={snapshot?.suppressions ?? []}
+                rowKey={(row) => row.email}
+                title={(row) => row.email}
+                meta={(row) => `${REASON_NAMES[row.reason] ?? row.reason} · stops ${row.scope === "all" ? "all email" : "marketing email"} · ${whenText(row.at, now)}`}
+              />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "email", header: "Address", render: (value) => <span style={{ overflowWrap: "anywhere" }}>{String(value)}</span> },
+                  { key: "reasonText", header: "Why", render: (value, row) => <Chip tone={(row as unknown as Suppression).scope === "all" ? "bad" : "warn"}>{String(value)}</Chip> },
+                  { key: "scopeText", header: "Stops" },
+                  { key: "sourceText", header: "Found by", width: "110px" },
+                  { key: "when", header: "When", width: "96px" },
+                ]}
+                rows={(snapshot?.suppressions ?? []).map((row) => ({
+                  ...row,
+                  id: row.email,
+                  reasonText: REASON_NAMES[row.reason] ?? row.reason,
+                  scopeText: row.scope === "all" ? "All email" : "Marketing email",
+                  sourceText: SOURCE_NAMES[row.source] ?? row.source.replace(/^partnersinbiz\./, ""),
+                  when: whenText(row.at, now),
+                })) as unknown as Record<string, unknown>[]}
+                emptyMessage="Nobody on the list."
+              />
+            )}
+          </SectionCard>
         </div>
       ) : null}
 
       {tab === "drafts" ? (
         <div style={{ display: "grid", gap: 12 }}>
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search drafts…">
-            <Button type="button" onClick={() => setCreate("draft")}>+ Draft</Button>
-          </Toolbar>
-          {drafts.length === 0 ? (
-            <EmptyState icon={FileText} title="No drafts yet" description="Agents save drafts on delegated mailboxes. You can also write one here." action={<Button type="button" onClick={() => setCreate("draft")}>+ Draft</Button>} />
+          {allDrafts.length > 3 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search drafts…" /> : null}
+          {allDrafts.length === 0 ? (
+            <EmptyState icon={FileText} title="No drafts yet" description="Agents save drafts on the mailboxes they may use; a person reviews and sends them here. You can also write one." action={newDraftButton} />
+          ) : narrow ? (
+            <CompactRows
+              label="Drafts"
+              rows={drafts}
+              title={(row) => row.subject || "(no subject)"}
+              meta={(row) => [draftRecipients(row).length ? `To ${draftRecipients(row).join(", ")}` : null, row.drafted_by ? `By ${drafterName(row.drafted_by)}` : null, row.created_at ? `Saved ${whenText(row.created_at, now)}` : null].filter(Boolean).join(" · ")}
+              trailing={(row) => draftRecipients(row).length === 0 ? <Chip tone="warn">No recipient</Chip> : <Pill size="sm" tone={draftTone(row.status)} dot>{DRAFT_STATUS[row.status] ?? row.status}</Pill>}
+              onOpen={(row) => setPreview({ kind: "draft", id: row.id })}
+              empty="No drafts match."
+            />
           ) : (
             <DataTable
               columns={[
-                { key: "subject", header: "Subject" },
-                { key: "toText", header: "To" },
-                { key: "status", header: "Status", render: (value, row) => (
+                { key: "subject", header: "Subject", render: (value, row) => {
+                  const d = row as unknown as Draft;
+                  return (
+                    <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                      <OpenButton onClick={() => setPreview({ kind: "draft", id: d.id })}>{String(value) || "(no subject)"}</OpenButton>
+                      {d.is_reply ? <span style={{ fontSize: 12, color: tokens.muted }}>Reply in a thread</span> : null}
+                    </div>
+                  );
+                } },
+                { key: "toText", header: "To", render: (value) => value ? <span style={{ overflowWrap: "anywhere" }}>{String(value)}</span> : <Chip tone="warn">No recipient</Chip> },
+                { key: "by", header: "Drafted by", width: "150px" },
+                { key: "saved", header: "Saved", width: "90px" },
+                { key: "status", header: "Status", width: "140px", render: (value, row) => (
                   <div style={{ display: "grid", gap: 3 }}>
-                    <Pill tone={draftTone(String(value))} dot>{String(value)}</Pill>
-                    {(row as unknown as DraftRow).send_error ? <span style={{ fontSize: 11, color: tokens.muted }}>{(row as unknown as DraftRow).send_error}</span> : null}
+                    <Pill tone={draftTone(String(value))} dot>{DRAFT_STATUS[String(value)] ?? String(value)}</Pill>
+                    {(row as unknown as Draft).send_error ? <span style={{ fontSize: 11, color: tokens.muted, overflowWrap: "anywhere" }}>{(row as unknown as Draft).send_error}</span> : null}
                   </div>
                 ) },
-                {
-                  key: "send",
-                  header: "",
-                  width: "80px",
-                  render: (_value, row) => {
-                    const d = row as unknown as DraftRow;
-                    return d.status === "draft" ? (
-                      <Button type="button" disabled={busy} onClick={() => void run(() => sendDraft({ messageId: d.id }), "Draft sent")}>Send</Button>
-                    ) : null;
-                  },
-                },
+                { key: "send", header: "", width: "170px", render: (_value, row) => sendCell(row as unknown as Draft) },
               ]}
-              rows={drafts.map((row) => ({ ...row, toText: (row.to_addrs ?? []).map((a) => a.email).join(", ") || "—" })) as unknown as Record<string, unknown>[]}
+              rows={drafts.map((row) => ({
+                ...row,
+                toText: draftRecipients(row).join(", "),
+                by: drafterName(row.drafted_by),
+                saved: row.created_at ? whenText(row.created_at, now) : "–",
+              })) as unknown as Record<string, unknown>[]}
               emptyMessage="No drafts match."
             />
           )}
@@ -638,90 +1012,222 @@ export function MailboxPage({ context }: PluginPageProps) {
       ) : null}
 
       {tab === "mailboxes" ? (
-        <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
           {gmailSection}
-          <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search mailboxes…">
-            <Button type="button" variant="secondary" onClick={() => setCreate("delegation")}>Delegate</Button>
-            <Button type="button" variant="secondary" onClick={() => setCreate("mailbox")}>+ Mailbox</Button>
-          </Toolbar>
-          {accounts.length === 0 ? (
-            <EmptyState icon={Mail} title="No mailboxes yet" description="Connect Gmail, then delegate an agent." />
-          ) : (
-            <>
-              <DataTable
-                columns={[
-                  { key: "address", header: "Address" },
-                  { key: "provider", header: "Provider" },
-                  { key: "status", header: "Gmail", render: (_value, row) => accountBadge(row as unknown as Account) },
-                ]}
-                rows={accounts as unknown as Record<string, unknown>[]}
-                emptyMessage="No mailboxes match."
+          <SectionCard
+            title="Agents with access"
+            subtitle="Agents read and draft mail on the mailboxes you give them. Sending stays with a person unless you allow it."
+            icon={Bot}
+            actions={accounts.length ? <Button type="button" variant={connectedCount && !(snapshot?.delegations ?? []).length ? "primary" : "secondary"} onClick={() => setCreate("delegation")}>Give an agent access</Button> : undefined}
+          >
+            {(snapshot?.delegations ?? []).length === 0 ? (
+              <Muted>{accounts.length ? "No agent has access yet. The Account Manager needs it to answer client mail." : "Connect Gmail first, then give agents access."}</Muted>
+            ) : narrow ? (
+              <CompactRows
+                label="Agents with access"
+                rows={snapshot?.delegations ?? []}
+                title={(row) => agentName(row.agent_id)}
+                meta={(row) => addressOf(row.account_id)}
+                trailing={(row) => <Pill size="sm" tone={row.can_send ? "ok" : "neutral"} dot>{row.can_send ? "Can send" : row.can_draft === false ? "Read only" : "Read and draft"}</Pill>}
               />
+            ) : (
               <DataTable
                 columns={[
-                  { key: "agent_id", header: "Agent" },
-                  { key: "account", header: "Mailbox" },
-                  { key: "send", header: "Send", render: (value) => <Pill tone={value === "can send" ? "ok" : "neutral"} dot>{String(value)}</Pill> },
+                  { key: "agent", header: "Agent" },
+                  { key: "account", header: "Mailbox", render: (value) => <span style={{ overflowWrap: "anywhere" }}>{String(value)}</span> },
+                  { key: "send", header: "May", render: (value, row) => <Pill tone={(row as unknown as Delegation).can_send ? "ok" : "neutral"} dot>{String(value)}</Pill> },
                 ]}
                 rows={(snapshot?.delegations ?? []).map((delegation) => ({
                   ...delegation,
-                  account: snapshot?.accounts.find((account) => account.id === delegation.account_id)?.address ?? delegation.account_id,
-                  send: delegation.can_send ? "can send" : "draft only",
+                  agent: agentName(delegation.agent_id),
+                  account: addressOf(delegation.account_id),
+                  send: delegation.can_send ? "Read, draft and send" : delegation.can_draft === false ? "Read only" : "Read and draft",
                 }))}
-                emptyMessage="No delegations yet."
+                emptyMessage="No agent has access yet."
               />
-            </>
-          )}
+            )}
+          </SectionCard>
+          {otherMailboxes.length ? (
+            <SectionCard title="Mailboxes without Gmail" subtitle="Drafts saved here can't be sent from Paperclip; a person sends them from their own mail." icon={Mail}>
+              {otherMailboxes.map((account) => (
+                <div key={account.id} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", fontSize: 13, minWidth: 0 }}>
+                  <strong style={{ fontWeight: 600, ...breakAnywhere }}>{account.address}</strong>
+                  <Pill size="sm" dot>Not connected to Gmail</Pill>
+                </div>
+              ))}
+            </SectionCard>
+          ) : null}
+          {technicalSection}
+          <Muted>
+            Using a mailbox that isn't Gmail?{" "}
+            <button type="button" onClick={() => setCreate("mailbox")} style={{ appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", color: tokens.primary, fontWeight: 600, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>Add it here</button>
+          </Muted>
         </div>
       ) : null}
 
       {tab === "triage" ? (
         <div style={{ display: "grid", gap: 16 }}>
-          <SectionCard title="Mail by category" subtitle="Last 30 days" icon={ChartColumn}>
-            <BarList
-              bare
-              title="Mail by category (30 days)"
-              items={Object.entries(stats?.categories ?? snapshot?.categoryCounts ?? {})
-                .sort((a, b) => b[1] - a[1])
-                .map(([key, value]) => ({ label: CATEGORY_NAMES[key] ?? key, value, ...categoryFill(key) }))}
-            />
+          <SectionCard title="Mail by category" subtitle="How new mail was sorted, last 30 days" icon={ChartColumn}>
+            {Object.keys(stats?.categories ?? snapshot?.categoryCounts ?? {}).length ? (
+              <BarList
+                bare
+                title="Mail by category (30 days)"
+                items={Object.entries(stats?.categories ?? snapshot?.categoryCounts ?? {})
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([key, value]) => ({ label: CATEGORY_NAMES[key] ?? key, value, ...categoryFill(key) }))}
+              />
+            ) : <Muted>{gmailAccounts.length ? "Nothing sorted yet. New mail gets a category after the next sync." : "Mail is sorted once Gmail is connected."}</Muted>}
           </SectionCard>
-          {(stats?.questions ?? []).length === 0 ? (
-            <EmptyState icon={Sparkles} title="No Jev decisions yet" description={settings?.jev ? "Stats appear after the first triaged mail." : "Triage uses built-in rules until a TypeSafe (Jev) key is added in the settings."} />
+          {!settings?.jev ? (
+            <SectionCard
+              title="Smart sorting (optional)"
+              subtitle="Off. New mail is sorted with built-in rules."
+              icon={Sparkles}
+              actions={settings?.href ? <a {...hostNavigation.linkProps(settings.href)} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, whiteSpace: "nowrap" }}>Open settings →</a> : undefined}
+            >
+              <Muted>Smart sorting picks categories, urgency and the client more accurately, and learns from the fixes you make in the Inbox. An admin turns it on once in the Mailbox settings.</Muted>
+            </SectionCard>
+          ) : (stats?.questions ?? []).length === 0 ? (
+            <SectionCard title="Smart sorting" subtitle="On" icon={Sparkles}>
+              <Muted>Its results show up here after the first sorted mail.</Muted>
+            </SectionCard>
           ) : (
-            <SectionCard title="How well triage does" subtitle="Jev decisions and your corrections, last 30 days" icon={ListChecks}>
-            <DataTable
-              columns={[
-                { key: "questionName", header: "Question" },
-                { key: "total", header: "Decisions" },
-                { key: "corrected", header: "Corrected", render: (value) => (Number(value) > 0 ? <Pill size="sm" tone="warn">{String(value)}</Pill> : "0") },
-                {
-                  key: "accuracyText",
-                  header: "Accuracy",
-                  render: (value, row) => {
-                    const a = (row as { accuracy: number | null }).accuracy;
-                    return a == null ? "—" : <Pill size="sm" tone={a >= 0.9 ? "ok" : a >= 0.75 ? "warn" : "bad"}>{String(value)}</Pill>;
-                  },
-                },
-                { key: "confidenceText", header: "Avg confidence" },
-              ]}
-              rows={(stats?.questions ?? []).map((row) => ({
-                ...row,
-                id: row.question,
-                questionName: { category: "Category", urgency: "Urgency", needs_reply: "Needs reply", phishing: "Phishing", client: "Client" }[row.question] ?? row.question,
-                accuracyText: row.accuracy == null ? "—" : `${Math.round(row.accuracy * 100)}%`,
-                confidenceText: `${Math.round(row.avgConfidence * 100)}%`,
-              })) as unknown as Record<string, unknown>[]}
-              emptyMessage="No decisions yet."
-            />
+            <SectionCard title="How well smart sorting does" subtitle="Its decisions and your fixes, last 30 days" icon={ListChecks}>
+              {narrow ? (
+                <CompactRows
+                  label="Smart sorting results"
+                  rows={stats?.questions ?? []}
+                  rowKey={(row) => row.question}
+                  title={(row) => QUESTION_NAMES[row.question] ?? row.question}
+                  meta={(row) => `${row.total} sorted · ${row.corrected} fixed by you`}
+                  trailing={(row) => (row.accuracy == null ? "–" : `${Math.round(row.accuracy * 100)}% right`)}
+                />
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: "questionName", header: "What it decides" },
+                    { key: "total", header: "Sorted" },
+                    { key: "corrected", header: "Fixed by you", render: (value) => (Number(value) > 0 ? <Pill size="sm" tone="warn">{String(value)}</Pill> : "0") },
+                    {
+                      key: "accuracyText",
+                      header: "Right",
+                      render: (value, row) => {
+                        const a = (row as { accuracy: number | null }).accuracy;
+                        return a == null ? "–" : <Pill size="sm" tone={a >= 0.9 ? "ok" : a >= 0.75 ? "warn" : "bad"}>{String(value)}</Pill>;
+                      },
+                    },
+                    { key: "confidenceText", header: "How sure, on average" },
+                  ]}
+                  rows={(stats?.questions ?? []).map((row) => ({
+                    ...row,
+                    id: row.question,
+                    questionName: QUESTION_NAMES[row.question] ?? row.question,
+                    accuracyText: row.accuracy == null ? "–" : `${Math.round(row.accuracy * 100)}%`,
+                    confidenceText: `${Math.round(row.avgConfidence * 100)}%`,
+                  })) as unknown as Record<string, unknown>[]}
+                  emptyMessage="No decisions yet."
+                />
+              )}
             </SectionCard>
           )}
         </div>
       ) : null}
 
       <Modal
+        open={Boolean(previewDraft)}
+        title={previewDraft ? previewDraft.subject || "(no subject)" : "Draft"}
+        description="A draft. Nothing is sent until someone clicks Send."
+        onClose={() => setPreview(null)}
+        footer={previewDraft ? (
+          <>
+            <Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close</Button>
+            {previewDraft.status === "draft" ? <Button type="button" disabled={busy || Boolean(draftBlock)} title={draftBlock ?? undefined} onClick={() => void run(() => sendDraft({ messageId: previewDraft.id }), "Draft sent")}>Send</Button> : null}
+          </>
+        ) : undefined}
+      >
+        {previewDraft ? (
+          <>
+            {draftBlock ? (
+              <p role="status" style={{ margin: 0, fontSize: 13, lineHeight: 1.45, padding: "8px 12px", borderRadius: 10, border: `1px solid ${tone("warn").border}`, background: tone("warn").soft }}>
+                Can't send yet: {draftBlock}{draftRecipients(previewDraft).length === 0 ? " Ask its agent to draft it again with a recipient." : ""}
+              </p>
+            ) : null}
+            <Facts
+              rows={[
+                ["From", addressOf(previewDraft.account_id)],
+                ["To", draftRecipients({ ...previewDraft, cc_addrs: [], bcc_addrs: [] }).join(", ") || <Chip tone="warn">No recipient</Chip>],
+                (previewDraft.cc_addrs ?? []).length ? ["Cc", (previewDraft.cc_addrs ?? []).map((row) => row.email).join(", ")] : null,
+                (previewDraft.bcc_addrs ?? []).length ? ["Bcc", (previewDraft.bcc_addrs ?? []).map((row) => row.email).join(", ")] : null,
+                ["Drafted by", drafterName(previewDraft.drafted_by)],
+                ["Saved", previewDraft.created_at ? formatDateTime(previewDraft.created_at) : "–"],
+                ["Status", <Pill key="s" size="sm" tone={draftTone(previewDraft.status)} dot>{DRAFT_STATUS[previewDraft.status] ?? previewDraft.status}</Pill>],
+                previewDraft.send_error ? ["Last try", previewDraft.send_error] : null,
+              ]}
+            />
+            <div style={{ borderTop: `1px solid ${tokens.border}`, paddingTop: 12, fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 320, overflowY: "auto" }}>
+              {previewDraft.body?.trim() ? previewDraft.body : <span style={{ color: tokens.muted }}>No text in this draft.</span>}
+            </div>
+            {previewDraft.has_html ? <Muted>It also has a designed (HTML) version; the text above is the plain version.</Muted> : null}
+          </>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(previewMail)}
+        title={previewMail ? previewMail.subject || "(no subject)" : "Mail"}
+        onClose={() => setPreview(null)}
+        footer={previewMail ? (
+          <>
+            <Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close</Button>
+            <Button type="button" variant="secondary" onClick={() => openCorrection(previewMail)}>Fix sorting</Button>
+          </>
+        ) : undefined}
+      >
+        {previewMail ? (
+          <>
+            <Facts
+              rows={[
+                ["From", previewMail.from ? `${previewMail.from.name ? `${previewMail.from.name} · ` : ""}${previewMail.from.email}` : "–"],
+                ["Received", formatDateTime(previewMail.received_at ?? previewMail.created_at)],
+                ["Sorted as", <SortingChips key="c" row={previewMail} />],
+                previewMail.attachments.length ? ["Files", previewMail.attachments.map((a) => a.filename).join(", ")] : null,
+              ]}
+            />
+            {previewMail.snippet ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{previewMail.snippet}…</p> : null}
+            <Muted>Open Gmail to read and answer the whole message.</Muted>
+          </>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(previewSend)}
+        title={previewSend ? previewSend.subject || "(no subject)" : "Sent mail"}
+        onClose={() => setPreview(null)}
+        footer={previewSend ? (
+          <>
+            <Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close</Button>
+            {previewSend.status === "failed" || previewSend.status === "retrying" ? <Button type="button" disabled={busy} onClick={() => void run(() => retrySend({ key: previewSend.key }), "Sent again")}>Retry</Button> : null}
+          </>
+        ) : undefined}
+      >
+        {previewSend ? (
+          <Facts
+            rows={[
+              ["Status", <span key="s" style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>{sendBadge(previewSend.status, previewSend.permanent)}{previewSend.marketing ? <Chip tone="info">Marketing</Chip> : null}</span>],
+              ["To", previewSend.to.join(", ") || "–"],
+              ["From", previewSend.from ?? "–"],
+              ["Sent by", sentBy(previewSend)],
+              ["When", formatDateTime(previewSend.sentAt ?? previewSend.createdAt)],
+              previewSend.error && previewSend.status !== "sent" ? ["Problem", previewSend.error] : null,
+              previewSend.skipped?.length ? ["Left out", `${previewSend.skipped.map((entry) => entry.email).join(", ")} (do not email)`] : null,
+            ]}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
         open={Boolean(correcting)}
-        title="Correct triage"
+        title="Fix sorting"
         description={correcting ? correcting.subject : undefined}
         onClose={() => setCorrecting(null)}
         footer={(
@@ -742,7 +1248,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                     client: fix.client || undefined,
                   });
                   setCorrecting(null);
-                }, "Triage corrected");
+                }, "Sorting fixed. The Gmail label follows.");
               }}
             >
               Save
@@ -777,42 +1283,47 @@ export function MailboxPage({ context }: PluginPageProps) {
         </Field>
       </Modal>
 
-      <Modal open={create === "mailbox"} title="Add mailbox" description="For a mailbox that is not connected to Gmail. Use Connect Gmail for a Gmail account." onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "mailbox"} title="Add a mailbox without Gmail" description="For an address that is not a Gmail account. Paperclip can't sync or send from it; drafts saved there are sent by a person." onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" onClick={() => void run(async () => {
+          <Button type="button" disabled={busy} onClick={() => void run(async () => {
             await createAccount({ provider, address });
             setAddress("");
-          }, "Mailbox saved")}>Save</Button>
+          }, "Mailbox added")}>Add mailbox</Button>
         </>
       )}>
-        <Field label="Provider"><Input value={provider} onChange={(event) => setProvider(event.target.value)} /></Field>
-        <Field label="Address"><Input value={address} onChange={(event) => setAddress(event.target.value)} required /></Field>
+        <Field label="Email address"><Input value={address} onChange={(event) => setAddress(event.target.value)} required placeholder="accounts@example.com" /></Field>
+        <Field label="Mail service"><Input value={provider} onChange={(event) => setProvider(event.target.value)} placeholder="e.g. outlook" /></Field>
       </Modal>
 
-      <Modal open={create === "delegation"} title="Delegate mailbox" onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "delegation"} title="Give an agent access" description="The agent can read and draft on this mailbox. Sending stays with a person unless you allow it below." onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" onClick={() => void run(() => createDelegation({ accountId, agentId, canSend }), "Delegation saved")}>Delegate</Button>
+          <Button type="button" disabled={busy || !accountId || !agentId} onClick={() => void run(() => createDelegation({ accountId, agentId, canSend }), "Access given")}>Give access</Button>
         </>
       )}>
         <Field label="Mailbox">
           <Select value={accountId} onChange={(event) => setAccountId(event.target.value)} required>
-            <option value="">Mailbox</option>
-            {(snapshot?.accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.address}</option>)}
+            <option value="">Choose a mailbox…</option>
+            {accounts.map((account) => <option key={account.id} value={account.id}>{account.address}</option>)}
           </Select>
         </Field>
-        <Field label="Agent id"><Input value={agentId} onChange={(event) => setAgentId(event.target.value)} required /></Field>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-          <input type="checkbox" checked={canSend} onChange={(event) => setCanSend(event.target.checked)} />
-          Allow send
+        <Field label="Agent">
+          <Select value={agentId} onChange={(event) => setAgentId(event.target.value)} required>
+            <option value="">Choose an agent…</option>
+            {agents.filter((agent) => agent.status !== "terminated").map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.status === "paused" ? " (paused)" : ""}</option>)}
+          </Select>
+        </Field>
+        <label style={{ display: "inline-flex", alignItems: "flex-start", gap: 8, fontSize: 13, lineHeight: 1.45 }}>
+          <input type="checkbox" checked={canSend} onChange={(event) => setCanSend(event.target.checked)} style={{ marginTop: 3 }} />
+          <span>Also let it send without a person checking first <span style={{ color: tokens.muted }}>(leave off unless you are sure)</span></span>
         </label>
       </Modal>
 
-      <Modal open={create === "draft"} title="Save draft" onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "draft"} title="New draft" description="Saved as a draft. Nothing is sent until someone clicks Send." onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" onClick={() => void run(async () => {
+          <Button type="button" disabled={busy || !accountId || !subject.trim()} onClick={() => void run(async () => {
             await createDraft({ accountId, subject, to: draftTo, body: draftBody });
             setSubject("");
             setDraftTo("");
@@ -820,13 +1331,14 @@ export function MailboxPage({ context }: PluginPageProps) {
           }, "Draft saved")}>Save draft</Button>
         </>
       )}>
-        <Field label="Mailbox">
+        <Field label="From">
           <Select value={accountId} onChange={(event) => setAccountId(event.target.value)} required>
-            <option value="">Mailbox</option>
-            {(snapshot?.accounts ?? []).map((account) => <option key={account.id} value={account.id}>{account.address}</option>)}
+            <option value="">Choose a mailbox…</option>
+            {accounts.map((account) => <option key={account.id} value={account.id}>{account.address}{canSendFrom(account) ? "" : " (not connected to Gmail)"}</option>)}
           </Select>
         </Field>
         <Field label="To"><Input value={draftTo} onChange={(event) => setDraftTo(event.target.value)} placeholder="name@example.com, other@example.com" /></Field>
+        {!draftTo.trim() ? <Muted>Without a recipient the draft can't be sent.</Muted> : null}
         <Field label="Subject"><Input value={subject} onChange={(event) => setSubject(event.target.value)} required /></Field>
         <Field label="Message"><TextArea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} rows={6} /></Field>
       </Modal>

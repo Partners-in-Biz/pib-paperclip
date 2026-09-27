@@ -1,29 +1,38 @@
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Field, Input, ResponsiveGrid, Toolbar, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
-import { NewDocumentModal } from "./invoices.js";
-import { Card, DeliveryNote, Drawer, Muted, Row, SmallButton, Status, TaxCodeSelect, Totals, dayInput, fmtDate, money, openBase64Pdf, taxShort, toMinor, useBilling } from "./parts.js";
+import { Button, CompactRows, EmptyState, Field, Input, ResponsiveGrid, Toolbar, errorText, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { Card, DeliveryNote, Drawer, Muted, Row, SmallButton, Status, TaxCodeSelect, Totals, dayInput, fmtDate, money, openBase64Pdf, statusLabel, taxShort, toMinor, useBilling } from "./parts.js";
 import type { QuoteDetail } from "./types.js";
 
-export function QuotesTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => void }) {
+/** The quote list. "+ Draft quote" is the page header's action; the empty state offers it only when the header does not. */
+export function QuotesTab({ onOpenInvoice, openId, setOpenId, onCreate }: { onOpenInvoice: (id: string) => void; openId: string | null; setOpenId: (id: string | null) => void; onCreate: () => void }) {
   const { snapshot, scope, clientName } = useBilling();
+  const narrow = useIsNarrow();
   const quotes = snapshot.quotes ?? [];
   const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(null);
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => quotes.filter((quote) => !q || `${quote.number} ${quote.status} ${quote.customerName ?? ""}`.toLowerCase().includes(q)), [quotes, q]);
-  const newButton = <Button type="button" onClick={() => setCreating(true)}>+ Draft quote</Button>;
+  const note = (status: string, pending: boolean, converted: boolean) => (pending ? "Waiting for send approval" : status === "accepted" && !converted ? "Accepted: convert to an invoice" : null);
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search quotes…">{newButton}</Toolbar>
+      {quotes.length > 0 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search quotes…" /> : null}
       {quotes.length === 0 ? (
-        <EmptyState title={scope ? `No quotes for ${clientName} yet` : "No quotes yet"} description="Draft a quote, send it for approval, then convert it to an invoice when the customer accepts." action={newButton} />
+        <EmptyState title={scope ? `No quotes for ${clientName} yet` : "No quotes yet"} description="Draft a quote, ask for send approval, and convert it to an invoice when the customer accepts. A reply to a quote email becomes an issue for the Account Manager." action={<Button type="button" onClick={onCreate}>+ Draft quote</Button>} />
+      ) : narrow ? (
+        <CompactRows
+          rows={rows}
+          label="Quotes"
+          title={(quote) => (quote.status === "draft" ? `Draft · ${quote.customerName ?? quote.customerRef}` : `${quote.number} · ${quote.customerName ?? quote.customerRef}`)}
+          meta={(quote) => [quote.status === "draft" ? "Not sent yet" : statusLabel(quote.status), note(quote.status, Boolean(quote.pendingAction), Boolean(quote.convertedInvoiceId)), quote.validUntil ? `valid until ${fmtDate(quote.validUntil)}` : null].filter(Boolean).join(" · ")}
+          trailing={(quote) => money(quote.totalMinor, quote.currency)}
+          onOpen={(quote) => setOpenId(quote.id)}
+          empty="No quotes match."
+        />
       ) : (
         <DataTable
           columns={[
-            { key: "number", header: "Number" },
-            { key: "status", header: "Status", render: (value) => <Status status={String(value)} /> },
+            { key: "number", header: "Number", render: (value, row) => <button type="button" onClick={() => setOpenId(String(row.id))} style={{ background: "none", border: 0, padding: 0, color: row.status === "draft" ? tokens.muted : tokens.fg, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{row.status === "draft" ? "Draft" : String(value)}</button> },
+            { key: "status", header: "Status", render: (value, row) => <div style={{ display: "grid", gap: 2 }}><Status status={String(value)} />{row.pendingAction ? <span style={{ fontSize: 12, color: tokens.muted }}>Waiting for send approval</span> : String(value) === "accepted" && !row.convertedInvoiceId ? <span style={{ fontSize: 12, color: tokens.muted }}>Convert to an invoice</span> : null}</div> },
             { key: "customer", header: "Customer" },
             { key: "total", header: "Total" },
             { key: "valid", header: "Valid until" },
@@ -33,7 +42,6 @@ export function QuotesTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => vo
           emptyMessage="No quotes match."
         />
       )}
-      <NewDocumentModal kind="quote" open={creating} onClose={() => setCreating(false)} onCreated={(id) => setOpenId(id)} />
       {openId ? <QuoteDrawer quoteId={openId} onClose={() => setOpenId(null)} onOpenInvoice={(id) => { setOpenId(null); onOpenInvoice(id); }} /> : null}
     </div>
   );
@@ -73,8 +81,8 @@ function QuoteDrawer({ quoteId, onClose, onOpenInvoice }: { quoteId: string; onC
   return (
     <Drawer
       open
-      title={`Quote ${qt.number}`}
-      subtitle={<><Status status={qt.status} /><span>{qt.customerName ?? qt.customerRef}</span><span>· Valid until {fmtDate(qt.validUntil)}</span>{qt.pendingAction ? <span>· Waiting on the send approval issue</span> : null}<DeliveryNote status={qt.deliveryStatus} error={qt.deliveryError} /></>}
+      title={draft ? `Draft quote for ${qt.customerName ?? qt.customerRef}` : `Quote ${qt.number}`}
+      subtitle={<><Status status={qt.status} /><span>{qt.customerName ?? qt.customerRef}</span><span>· Valid until {fmtDate(qt.validUntil)}</span>{qt.dealId ? <span>· linked to a CRM deal</span> : null}{qt.pendingAction ? <span>· Waiting on the send approval issue</span> : null}<DeliveryNote status={qt.deliveryStatus} error={qt.deliveryError} /></>}
       onClose={onClose}
       actions={<>
         <SmallButton onClick={() => void call<{ base64: string; filename: string }>("billing.document-pdf", { kind: "quote", id: qt.id }).then((r) => openBase64Pdf(r.base64, r.filename)).catch((e: unknown) => say(errorText(e)))}>Preview PDF</SmallButton>

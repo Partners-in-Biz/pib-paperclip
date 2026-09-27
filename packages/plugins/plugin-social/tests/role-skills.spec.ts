@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { COMPANY_OS_SKILL } from "@partnersinbiz/pib-plugin-kit";
 import { DESIRED_SKILLS, SKILLS } from "../src/skills.js";
 import { SOCIAL_HIRE_ROLE } from "../src/hire.js";
-import { ROLE_SKILLS, ROLE_SKILL_PURPOSE, attachIfMissing, attachOnLink, dropSkillAsks, roleView, skillNames } from "../src/ui/role-skills.js";
+import { ROLE_SKILLS, ROLE_SKILL_PURPOSE, TEAM_SETUP_HREF, agentProblem, attachIfMissing, attachRoleSkills, roleView, skillNames, stillMissing } from "../src/ui/role-skills.js";
 
 const NOW = Date.parse("2026-09-27T10:00:00.000Z");
 const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString();
@@ -31,15 +32,16 @@ function stubHost(have: string[] | "error", syncStatus = 200) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Social role skills", () => {
-  it("uses the skill keys the manifest and the hire role ask for", () => {
-    expect(KEYS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content"]);
-    expect(KEYS).toEqual(DESIRED_SKILLS);
-    expect(ROLE_SKILLS.map((s) => s.slug)).toEqual(SKILLS.map((s) => s.slug));
+  it("uses the skill keys the manifest and the hire role ask for, then the operating manual", () => {
+    expect(KEYS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content", "plugin/partnersinbiz-cockpit/company-os"]);
+    expect(KEYS.slice(0, -1)).toEqual(DESIRED_SKILLS);
+    expect(ROLE_SKILLS.map((s) => s.slug)).toEqual([...SKILLS.map((s) => s.slug), "pib-company-os"]);
     expect(SOCIAL_HIRE_ROLE.skills.map((s) => s.key)).toEqual(KEYS);
+    expect(ROLE_SKILLS.at(-1)).toEqual({ key: COMPANY_OS_SKILL.key, slug: COMPANY_OS_SKILL.slug });
   });
-  it("attaches the skill after a manual link and says so", async () => {
+  it("attaches the skills (Attach skills) and says so", async () => {
     const calls = stubHost(["paperclip"]);
-    const note = await attachOnLink({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE });
+    const note = await attachRoleSkills({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE });
     expect(note).toEqual({ ok: true, line: `Attached ${NAMES} to Sam, so it knows how to use the Social tools.` });
     const sync = calls.find((c) => c.method === "POST")!;
     expect(sync.url).toBe("/api/agents/a1/skills/sync?companyId=c1");
@@ -48,14 +50,14 @@ describe("Social role skills", () => {
 
   it("does not re-add a skill the agent already has", async () => {
     const calls = stubHost(KEYS);
-    const note = await attachOnLink({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: "x" });
+    const note = await attachRoleSkills({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: "x" });
     expect(note).toEqual({ ok: true, line: `Sam already has ${NAMES}.` });
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 
   it("explains where to add it when the attach fails", async () => {
     stubHost([], 403);
-    const note = await attachOnLink({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: "x" });
+    const note = await attachRoleSkills({ agentId: "a1", agentName: "Sam", companyId: "c1", skills: ROLE_SKILLS, purpose: "x" });
     expect(note.ok).toBe(false);
     expect(note.line).toBe(`Could not attach ${NAMES} to Sam (Board access required). Add ${IT} in Agents → Sam → Skills.`);
   });
@@ -76,30 +78,64 @@ describe("Social role skills", () => {
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 
-  it("drops the worker's attach-by-hand lines once the page attached the skills", () => {
-    const slug = ROLE_SKILLS[0]!.slug;
-    const lines = [`Synced the \`${slug}\` skill to its latest version.`, `Attach the \`${slug}\` skill to Sam (Agents → Sam → Skills). The plugin cannot attach it.`, `Sam does not have \`${slug}\` yet.`, "Granted plugin tool access."];
-    expect(dropSkillAsks(lines, ROLE_SKILLS)).toEqual([lines[0], "Granted plugin tool access."]);
-  });
-
   it("names several skills in one line", () => {
     expect(skillNames([{ key: "a", slug: "pib-a" }, { key: "b", slug: "pib-b" }])).toBe("the pib-a and pib-b skills");
   });
 });
 
-describe("Social agent card: Hire Social agent button", () => {
-  it("shows Hire Social agent only with no agent and no open hire task", () => {
+describe("Social agent box: hire state", () => {
+  it("is none with no agent and no open hire task", () => {
     expect(roleView({ agentId: null, hire: null, now: NOW }).mode).toBe("none");
     expect(roleView({ agentId: null, hire: { status: "cancelled", createdAt: daysAgo(1) }, now: NOW }).mode).toBe("none");
   });
 
-  it("hides it once an agent is linked", () => {
+  it("is linked once an agent is linked", () => {
     expect(roleView({ agentId: "a1", hire: { status: "open", createdAt: daysAgo(30) }, now: NOW })).toEqual({ mode: "linked", closed: false, stale: false, canRehire: false });
   });
 
-  it("hides it while a hire task is open, offering a new hire only after 7 days or when the task was closed", () => {
+  it("is hiring while a hire task is open; stuck after 7 days or when the task was closed", () => {
     expect(roleView({ agentId: null, hire: { status: "open", createdAt: daysAgo(2), issueStatus: "todo" }, now: NOW })).toEqual({ mode: "hiring", closed: false, stale: false, canRehire: false });
     expect(roleView({ agentId: null, hire: { status: "open", createdAt: daysAgo(8), issueStatus: "in_progress" }, now: NOW })).toEqual({ mode: "hiring", closed: false, stale: true, canRehire: true });
     expect(roleView({ agentId: null, hire: { status: "open", createdAt: daysAgo(1), issueStatus: "done" }, now: NOW })).toEqual({ mode: "hiring", closed: true, stale: false, canRehire: true });
+  });
+});
+
+describe("Social box: only when something is wrong", () => {
+  const sam = (status: string) => ({ name: "Sam", status });
+
+  it("shows nothing while the agent works and has its skills", () => {
+    for (const status of ["active", "idle", "running"]) expect(agentProblem({ agent: sam(status), hire: null, now: NOW }), status).toBeNull();
+    expect(agentProblem({ agent: sam("idle"), hire: { status: "linked", createdAt: daysAgo(3) }, missingSkills: [], now: NOW })).toBeNull();
+  });
+
+  it("no agent and no open hire: one line, fixed in Setup → Team", () => {
+    expect(agentProblem({ agent: null, hire: null, now: NOW })).toEqual({ health: "missing", tone: "warn", text: "No Social agent yet, so nobody plans posts, fixes failed ones or works the inbox.", skills: false });
+    expect(TEAM_SETUP_HREF).toBe("/setup?section=team#team-social");
+  });
+
+  it("a hire open without an agent", () => {
+    const hire = { status: "open", createdAt: daysAgo(2), issueStatus: "todo", identifier: "PIB-12" };
+    expect(agentProblem({ agent: null, hire, now: NOW })).toEqual({ health: "hiring", tone: "info", text: "The hire task PIB-12 is open: the new Social agent is linked as soon as it appears.", skills: false });
+    expect(agentProblem({ agent: null, hire: { ...hire, createdAt: daysAgo(9) }, now: NOW })).toMatchObject({ tone: "warn", text: "The hire task PIB-12 has been open for more than 7 days and no Social agent is linked yet." });
+  });
+
+  it("an agent that is paused, in error or waiting for approval", () => {
+    expect(agentProblem({ agent: sam("paused"), hire: null, now: NOW })).toEqual({ health: "attention", tone: "warn", text: "Sam is paused, so it does not pick up social work.", skills: false });
+    expect(agentProblem({ agent: sam("error"), hire: null, now: NOW })).toMatchObject({ tone: "bad", text: "Sam is in error, so it does not pick up social work." });
+    expect(agentProblem({ agent: sam("pending_approval"), hire: null, now: NOW })?.text).toBe("Sam is waiting for approval: approve the hire, then resume it.");
+  });
+
+  it("a missing skill: Attach skills and Re-sync fix it on the page", () => {
+    const slugs = ROLE_SKILLS.map((s) => s.slug);
+    expect(agentProblem({ agent: sam("idle"), hire: null, missingSkills: slugs, now: NOW })).toEqual({ health: "attention", tone: "warn", text: `Sam is missing ${NAMES}.`, skills: true });
+  });
+
+  it("counts a skill missing only once the page's own check has run", () => {
+    const slugs = ROLE_SKILLS.map((s) => s.slug);
+    expect(stillMissing({ checked: false, attached: false, attachFailed: false, workerMissing: slugs })).toEqual([]);
+    expect(stillMissing({ checked: true, attached: false, attachFailed: true })).toEqual(slugs);
+    expect(stillMissing({ checked: true, attached: true, attachFailed: false, workerMissing: slugs })).toEqual([]);
+    expect(stillMissing({ checked: true, attached: false, attachFailed: false, workerMissing: [slugs[0]!] })).toEqual([slugs[0]]);
+    expect(stillMissing({ checked: true, attached: false, attachFailed: false })).toEqual([]);
   });
 });

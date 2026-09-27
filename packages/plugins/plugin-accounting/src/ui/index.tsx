@@ -1,9 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useHostLocation, useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
-import { Blocks, BookOpen, Button, CalendarCheck, ChartColumn, Landmark, LayoutDashboard, Package, Page, Stamp, Tabs, Target, errorText, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
-import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
+import { BookOpen, ChartColumn, Landmark, LayoutDashboard, Page, Settings, Tabs, errorText, useIsNarrow, useUrlTab, type TabItem, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
 import { BudgetsTab } from "./budgets.js";
@@ -12,31 +12,16 @@ import { CutoverTab } from "./cutover.js";
 import { JournalsTab } from "./journals.js";
 import { OverviewTab, type LoadResult } from "./overview.js";
 import { ReportsTab } from "./reports.js";
-import { Banner } from "./shared.js";
+import { Banner, NoticeAction, NoticeLine, SectionNav } from "./shared.js";
 import { VatTab } from "./vat.js";
+import { isView, resolveView, TAB_SECTIONS, TOP_TABS, VIEW_IDS, viewForTab, type TopTab, type View } from "./views.js";
 
 // The UI bundle cannot import namespace.ts (node:crypto).
 const PLUGIN_ID = "partnersinbiz.accounting";
+/** Settings → Plugins; the setup checklist's "settings" item has the exact link to this plugin's settings. */
+const PLUGINS_SETTINGS_HREF = "/company/settings/instance/plugins";
 
-type TabId = "overview" | "bank" | "journals" | "chart" | "vat" | "reports" | "assets" | "budgets" | "cutover";
-
-const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "bank", label: "Bank", icon: Landmark },
-  { id: "journals", label: "Journals", icon: BookOpen },
-  { id: "chart", label: "Chart & roles", icon: Blocks },
-  { id: "vat", label: "VAT", icon: Stamp },
-  { id: "reports", label: "Reports", icon: ChartColumn },
-  { id: "assets", label: "Assets & FX", icon: Package },
-  { id: "budgets", label: "Budgets & forecast", icon: Target },
-  { id: "cutover", label: "Cut-over", icon: CalendarCheck },
-];
-
-/** `?tab=bank` etc. (links from the Setup checklist); anything else is the overview. */
-function tabFrom(search: string): TabId {
-  const value = new URLSearchParams(search).get("tab");
-  return TABS.some((t) => t.id === value) ? (value as TabId) : "overview";
-}
+const TAB_ICON: Record<TopTab, TabItem["icon"]> = { overview: LayoutDashboard, bank: Landmark, journals: BookOpen, reports: ChartColumn, setup: Settings };
 
 /** Null while checking; false when the company switched Accounting off in Setup. */
 function useModuleEnabled(companyId: string | null | undefined): boolean | null {
@@ -67,22 +52,37 @@ function ModuleOff() {
   );
 }
 
+/** Real data in the books: the "Finish setting up" card then starts as one line. */
+export function booksHaveData(data: LoadResult | null): boolean {
+  if (!data) return false;
+  return (data.overview.journalCount ?? 0) > 0 || Object.values(data.overview.bankLines ?? {}).some((n) => Number(n) > 0);
+}
+
 export function AccountingPage({ context }: PluginPageProps) {
   const load = usePluginAction("accounting.load");
   const location = useHostLocation();
+  const navigation = useHostNavigation();
+  const narrow = useIsNarrow();
   const enabled = useModuleEnabled(context.companyId);
   const [data, setData] = useState<LoadResult | null>(null);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<TabId>(() => tabFrom(location.search));
+  // `?tab=` is a tab or a section (vat, drafts, cutover…); every value the page had before still opens the same content.
+  const [view, setView] = useUrlTab<View>(VIEW_IDS, "overview", { path: "/accounting", search: location.search, navigate: navigation.navigate });
+  const { tab, section } = resolveView(view);
+  // The module's own setup checklist drives the "Finish setting up" card on the overview.
+  const [setupKey, setSetupKey] = useState(0);
+  const setupStatus = usePluginSetupStatus(PLUGIN_ID, context.companyId, setupKey);
 
   async function refresh() {
     setData((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as LoadResult);
+    setSetupKey((k) => k + 1);
   }
 
-  // A new ?tab= (e.g. a link from Setup while the page is open) switches tab.
-  useEffect(() => {
-    setTab(tabFrom(location.search));
-  }, [location.search]);
+  /** Open a tab or section by id (old tab ids from the Overview and links still work). */
+  function go(id: string) {
+    setView(isView(id) ? id : "overview");
+    setMessage("");
+  }
 
   useEffect(() => {
     if (!context.companyId || enabled !== true) return;
@@ -92,68 +92,75 @@ export function AccountingPage({ context }: PluginPageProps) {
 
   if (enabled === false) return <ModuleOff />;
 
-  const settingsBanner: ReactNode = data && !data.settings.saved ? (
-    <Banner tone="warn">
-      <span>
-        <strong>Accounting settings are not saved for this company yet.</strong> Open Settings → Plugins → Accounting, fill in the legal name, VAT number, VAT
-        category and financial year-end, and click Save once. Until then the scheduled jobs (depreciation, FX rates, month-end) skip this company.
-      </span>
-    </Banner>
-  ) : null;
+  const o = data?.overview;
+  const openLines = o ? (o.bankLines.unreconciled ?? 0) + (o.bankLines.matching ?? 0) : 0;
+  const rejected = o?.rejectedPostings ?? 0;
+  const pending = o?.pendingApprovals ?? 0;
+  const gaps = data?.roleGaps.length ?? 0;
 
-  const gapsBanner: ReactNode = data && data.roleGaps.length ? (
-    <Banner tone="warn">
-      <span>
-        Postings that use these roles will be rejected until they are mapped: <strong>{data.roleGaps.join(", ")}</strong>.
-      </span>
-      <div>
-        <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setTab("chart")}>Map roles</Button>
-      </div>
-    </Banner>
+  // Badges mean "needs you"; each sits on the tab (and section) that holds the work.
+  const tabCounts: Record<TopTab, Pick<TabItem, "count" | "countTone">> = {
+    overview: { count: rejected + openLines + pending || null, countTone: rejected ? "bad" : "warn" },
+    bank: { count: openLines || null, countTone: "warn" },
+    journals: { count: rejected + pending || null, countTone: rejected ? "bad" : "warn" },
+    reports: { count: null },
+    setup: { count: gaps || null, countTone: "bad" },
+  };
+  // No icons on a phone, so more of the five tabs fit on the first screen.
+  const tabs: TabItem[] = TOP_TABS.map((t) => ({ id: t.id, label: t.label, ...(narrow ? {} : { icon: TAB_ICON[t.id] }), ...tabCounts[t.id] }));
+  const sectionCount: Partial<Record<View, { count: number | null; tone: ToneInput }>> = {
+    drafts: { count: pending || null, tone: "warn" },
+    rejected: { count: rejected || null, tone: "bad" },
+    chart: { count: gaps || null, tone: "bad" },
+  };
+  const sections = TAB_SECTIONS[tab].map((s) => ({ id: s.view, label: s.label, count: sectionCount[s.view]?.count ?? null, tone: sectionCount[s.view]?.tone }));
+
+  const settingsHref = setupStatus?.items.find((i) => i.key === "settings")?.href || PLUGINS_SETTINGS_HREF;
+  // One line each, in the same place on every tab.
+  const notices = data ? (
+    <>
+      {!data.settings.saved ? (
+        <NoticeLine tone="warn" action={<NoticeAction link={navigation.linkProps(settingsHref) as unknown as Record<string, unknown>}>Open settings</NoticeAction>}>
+          Settings not saved, so the month-end jobs skip these books.
+        </NoticeLine>
+      ) : null}
+      {gaps ? (
+        <NoticeLine tone="bad" action={section === "chart" ? null : <NoticeAction onClick={() => go("chart")}>Map roles</NoticeAction>}>
+          {gaps === 1 ? "1 posting role has" : `${gaps} posting roles have`} no account, so those postings are rejected.
+        </NoticeLine>
+      ) : null}
+    </>
   ) : null;
 
   const body = !data ? (
     <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>
   ) : (
     <>
-      {tab === "overview" ? <OverviewTab data={data} onMessage={setMessage} onOpen={(id) => setTab(id as TabId)} refresh={refresh} /> : null}
-      {tab === "bank" ? <BankTab data={data} onMessage={setMessage} /> : null}
-      {tab === "journals" ? <JournalsTab data={data} onMessage={setMessage} /> : null}
-      {tab === "chart" ? <ChartTab onMessage={setMessage} onChanged={refresh} /> : null}
-      {tab === "vat" ? <VatTab data={data} onMessage={setMessage} /> : null}
-      {tab === "reports" ? <ReportsTab data={data} onMessage={setMessage} /> : null}
-      {tab === "assets" ? <AssetsTab data={data} onMessage={setMessage} /> : null}
-      {tab === "budgets" ? <BudgetsTab data={data} onMessage={setMessage} /> : null}
-      {tab === "cutover" ? <CutoverTab data={data} onMessage={setMessage} /> : null}
+      {section === "overview" ? <GetStarted status={setupStatus} moduleName="Accounting" hasData={booksHaveData(data)} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
+      {section === "overview" ? <OverviewTab data={data} onMessage={setMessage} onOpen={go} refresh={refresh} /> : null}
+      {section === "bank" ? <BankTab data={data} onMessage={setMessage} /> : null}
+      {section === "journals" || section === "drafts" || section === "rejected" || section === "periods" ? <JournalsTab data={data} section={section} onMessage={setMessage} onOpen={go} /> : null}
+      {section === "reports" ? <ReportsTab data={data} onMessage={setMessage} /> : null}
+      {section === "vat" ? <VatTab data={data} onMessage={setMessage} /> : null}
+      {section === "budgets" ? <BudgetsTab data={data} onMessage={setMessage} /> : null}
+      {section === "chart" ? <ChartTab onMessage={setMessage} onChanged={refresh} /> : null}
+      {section === "cutover" ? <CutoverTab data={data} onMessage={setMessage} onChanged={refresh} onOpen={go} /> : null}
+      {section === "assets" ? <AssetsTab data={data} onMessage={setMessage} /> : null}
     </>
   );
 
   return (
     <Page
       title="Accounting"
-      description="Partners in Biz's books. Billing and Payroll post here; the bank is reconciled here; VAT201 and reports come from the journals."
+      description="PiB's own books. Billing and Payroll post here; you reconcile the bank, file VAT and read the reports."
       message={message || undefined}
       accent="accounting"
     >
-      {settingsBanner}
-      {gapsBanner}
-      <Tabs
-        tabs={TABS.map((t) => {
-          const o = data?.overview;
-          if (!o) return t;
-          const openLines = (o.bankLines.unreconciled ?? 0) + (o.bankLines.matching ?? 0);
-          if (t.id === "bank") return { ...t, count: openLines || null, countTone: "warn" as const };
-          if (t.id === "journals") return { ...t, count: o.rejectedPostings + o.pendingApprovals || null, countTone: o.rejectedPostings ? ("bad" as const) : ("warn" as const) };
-          if (t.id === "chart") return { ...t, count: data.roleGaps.length || null, countTone: "bad" as const };
-          if (t.id === "overview") return { ...t, count: o.rejectedPostings + openLines + o.pendingApprovals || null, countTone: o.rejectedPostings ? ("bad" as const) : ("warn" as const) };
-          return t;
-        })}
-        active={tab}
-        onChange={(id) => {
-          setTab(id as TabId);
-          setMessage("");
-        }}
-      />
+      {notices}
+      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        <Tabs tabs={tabs} active={tab} onChange={(id) => go(viewForTab(id as TopTab))} />
+        <SectionNav items={sections} active={section} onChange={go} />
+      </div>
       {body}
     </Page>
   );

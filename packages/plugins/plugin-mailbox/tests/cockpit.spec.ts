@@ -5,7 +5,7 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { accountHealth, cockpitSnapshot, COCKPIT_SYNC_STALE_MS, pluginLabel } from "../src/cockpit.js";
-import { isLeadCandidate, leadCapturedFrom, syncAccount, type SyncStats } from "../src/gmail/sync.js";
+import { isLeadCandidate, leadCapturedFrom, runSyncJob, syncAccount, type SyncStats } from "../src/gmail/sync.js";
 import { CO } from "./helpers/memory.js";
 import { setup } from "./helpers/setup.js";
 import { validateParams, validateRuntimeQuery } from "./helpers/sql-guard.js";
@@ -87,6 +87,7 @@ describe("Mailbox cockpit snapshot", () => {
     ]);
     expect(snap.health.map((h) => [h.key, h.status])).toEqual([
       ["mailbox:send-queue", "ok"],
+      ["mailbox:lead-handoff", "ok"],
       ["job:sync-mailbox", "ok"],
       ["job:setup-status", "ok"],
     ]);
@@ -115,14 +116,14 @@ describe("Mailbox cockpit snapshot", () => {
     expect(snap.activity.map((a) => a.text)).toEqual(["Triaged 12 new messages in the last day", 'Sent "Invoice INV-7" for Billing', 'Sent "Re: hello"']);
     expect(snap.quality.find((q) => q.key === "triage_corrected_rate")).toMatchObject({ value: "15% (6 of 40)", raw: 0.15, tone: "warn" });
     expect(snap.quality.find((q) => q.key === "send_failures")).toMatchObject({ value: "1 of 10", tone: "bad" });
-    expect(sql.length).toBeLessThanOrEqual(5);
+    expect(sql.length).toBeLessThanOrEqual(6);
   });
 
   it("one failing query does not break the snapshot", async () => {
     const { harness } = await boot({ counts: COUNTS, accounts: [], fail: /AS needs_reply/ });
     const snap = await cockpitSnapshot(harness.ctx, CO, NOW);
     expect(snap.kpis).toEqual([]);
-    expect(snap.health.map((h) => h.key)).toEqual(["job:sync-mailbox", "job:setup-status"]);
+    expect(snap.health.map((h) => h.key)).toEqual(["mailbox:lead-handoff", "job:sync-mailbox", "job:setup-status"]);
   });
 
   it("a connected account with no sync for over 30 minutes is bad; a recent error is a warning", () => {
@@ -168,7 +169,7 @@ describe("Mailbox cockpit snapshot", () => {
 describe("lead.captured hand-off", () => {
   const leads = (emitted: Array<{ name: string; companyId: string; payload: Record<string, unknown> }>) => emitted.filter((e) => e.name === HANDOFF_EVENTS.leadCaptured);
 
-  it("emits a lead from a sender who is not a CRM contact, and re-emits it in the 30-minute window", async () => {
+  it("hands a lead from a sender who is not a CRM contact to the CRM through the outbox, once, with where the mail is", async () => {
     const { gmail, env, account, loaded, run, host } = setup();
     gmail.addMessage({ id: "m1", headers: { From: "Ann Smith <Ann@newco.co.za>", To: "peet@partnersinbiz.online", Subject: "Website quote?" }, snippet: "Can you quote us for a new site? ".repeat(20) });
     gmail.addMessage({ id: "m2", headers: { From: "news@list.co", To: "peet@partnersinbiz.online", Subject: "Weekly digest", "List-Unsubscribe": "<mailto:u@list.co>" }, snippet: "This week" });
@@ -176,12 +177,30 @@ describe("lead.captured hand-off", () => {
     expect(stats.leads).toBe(1);
     const [event] = leads(host.emitted);
     expect(event!.companyId).toBe(CO);
-    expect(event!.payload).toMatchObject({ key: "mail:m1", source: "email", name: "Ann Smith", email: "ann@newco.co.za", clientKind: null, clientRef: null });
+    expect(event!.payload).toMatchObject({
+      key: "mail:m1", source: "email", name: "Ann Smith", email: "ann@newco.co.za", clientKind: null, clientRef: null,
+      messageId: "gm_acc-1_m1", gmailMessageId: "m1", accountId: "acc-1", accountAddress: "peet@partnersinbiz.online",
+      url: "https://mail.google.com/mail/?authuser=peet%40partnersinbiz.online#all/m1",
+    });
     expect(String(event!.payload.text).length).toBeLessThanOrEqual(300);
     expect(String(event!.payload.text)).toMatch(/^Website quote\?: Can you quote us/);
+    expect(host.tables.outbox).toEqual([expect.objectContaining({ key: "mail:m1", event: "lead.captured", status: "pending", company_id: CO })]);
 
+    // The next sync does not send it again; the outbox does, with backoff, until the CRM answers.
     await syncAccount(env, await loaded(), account, await run());
+    expect(leads(host.emitted)).toHaveLength(1);
+    host.tables.outbox![0]!.next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await runSyncJob(env);
     expect(leads(host.emitted).map((e) => e.payload.key)).toEqual(["mail:m1", "mail:m1"]);
+    expect(host.tables.outbox![0]).toMatchObject({ status: "pending", attempts: 2 });
+  });
+
+  it("opens no reply issue for a lead the CRM takes, and keeps the lead while the CRM is switched off", async () => {
+    const { gmail, env, account, loaded, run, host } = setup({ triageIssueAssignee: "agent-42" });
+    gmail.addMessage({ id: "q1", headers: { From: "new@prospect.co.za", Subject: "Quote for a website?" }, snippet: "We are interested in a new site" });
+    await syncAccount(env, await loaded(), account, await run());
+    expect(leads(host.emitted)).toHaveLength(1);
+    expect([...host.issues.values()]).toHaveLength(0);
   });
 
   it("does not emit when the sender is already a CRM contact", async () => {
@@ -201,6 +220,10 @@ describe("lead.captured hand-off", () => {
     expect(isLeadCandidate(row)).toBe(false);
     const safe = { ...row, triage: { ...(row.triage as object), phishing: 0.1 } } as typeof row;
     expect(isLeadCandidate(safe)).toBe(true);
-    expect(leadCapturedFrom(safe)).toMatchObject({ key: "mail:g1", clientKind: "company", clientRef: "co-9", confidence: 0.8, text: "Hi", capturedAt: "2026-09-26T09:00:00Z" });
+    // Our own mailbox: the lead is ours. The client triage matched is only mentioned, never the lead's scope.
+    expect(leadCapturedFrom(safe)).toMatchObject({
+      key: "mail:g1", clientKind: null, clientRef: null, mentionsClientKind: "company", mentionsClientRef: "co-9",
+      confidence: 0.8, text: "Hi", capturedAt: "2026-09-26T09:00:00Z",
+    });
   });
 });

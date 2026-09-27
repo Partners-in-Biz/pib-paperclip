@@ -108,6 +108,27 @@ export function emptyBoxes(): VatBoxes {
 
 const RATE_BPS: Record<string, number> = { za_std_15: 1500, za_capital_15: 1500 };
 
+/** VAT codes in words, for sentences people read ("a zero-rated sale"). */
+export const VAT_CODE_NAMES: Record<string, string> = {
+  za_std_15: "standard-rated (15%)",
+  za_capital_15: "capital goods (15%)",
+  za_zero: "zero-rated",
+  za_export_zero: "zero-rated export",
+  za_exempt: "exempt",
+  za_out_of_scope: "out-of-scope",
+};
+
+/** A VAT code in words; an unknown code reads "untaxed". */
+export function vatCodeName(code: string | null | undefined): string {
+  return VAT_CODE_NAMES[code ?? ""] ?? "untaxed";
+}
+
+/** `R 1,478.26` for warning text (the page and issues show money this way). */
+function rand(minor: number): string {
+  const text = (Math.abs(minor) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${minor < 0 ? "-" : ""}R ${text}`;
+}
+
 export function isCreditNoteKind(kind: string | null | undefined): boolean {
   return /credit[\s_-]?note|creditnote/i.test(kind ?? "");
 }
@@ -189,7 +210,7 @@ export function computeVatReturn(
       if (base == null) {
         const rate = rateBpsFor(g.code);
         base = rate > 0 ? Math.round((g.tax * 10_000) / rate) : 0;
-        if (g.tax !== 0) warnings.push(`${number}: no tax base on the VAT line; estimated from the rate`);
+        if (g.tax !== 0) warnings.push(`${number}: the VAT line has no amount before VAT, so it was estimated from the VAT rate`);
       }
       const tax = g.tax;
       if (g.direction === "output") {
@@ -230,7 +251,7 @@ export function computeVatReturn(
             addDetail("output", g.code, "—", base, tax, journalId);
         }
         if ((g.code === "za_zero" || g.code === "za_export_zero" || g.code === "za_exempt" || g.code === "za_out_of_scope") && tax !== 0) {
-          warnings.push(`${number}: VAT posted on a ${g.code} supply`);
+          warnings.push(`${number}: VAT was charged on a sale coded ${vatCodeName(g.code)}`);
         }
       } else {
         if (creditNote && tax !== 0) {
@@ -249,7 +270,7 @@ export function computeVatReturn(
             break;
           default:
             addDetail("input", g.code, "—", base, tax, journalId);
-            if (tax !== 0) warnings.push(`${number}: input VAT on a ${g.code} purchase is not claimable`);
+            if (tax !== 0) warnings.push(`${number}: VAT paid on a purchase coded ${vatCodeName(g.code)} cannot be claimed`);
         }
       }
     }
@@ -270,7 +291,7 @@ export function computeVatReturn(
   const expected4 = Math.round((boxes.f1 * 15) / 115);
   const tolerance = Math.max(1, byJournal.size);
   if (Math.abs(expected4 - boxes.f4) > tolerance) {
-    warnings.push(`Field 4 (${boxes.f4}) differs from field 1 × 15/115 (${expected4}) by more than rounding; check lines without a tax base.`);
+    warnings.push(`Field 4 (${rand(boxes.f4)}) differs from field 1 × 15/115 (${rand(expected4)}) by more than rounding; check VAT lines without an amount before VAT.`);
   }
 
   return {

@@ -5,7 +5,7 @@ import { parseMailboxConfig, parseTriageAssignee, validateMailboxConfig, DEFAULT
 
 describe("manifest", () => {
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.2.6");
+    expect(manifest.version).toBe("0.3.0");
     for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "ui.page.register"]) {
       expect(manifest.capabilities).toContain(cap);
     }
@@ -19,7 +19,8 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
     const props = (manifest.instanceConfigSchema as { properties: Record<string, Record<string, unknown>> }).properties;
-    for (const key of ["publicBaseUrl", "encryptionKey", "google", "jev", "labelPrefix", "triageIssueAssignee", "sendRatePerMinute"]) expect(props).toHaveProperty(key);
+    for (const key of ["publicBaseUrl", "encryptionKey", "google", "jev", "labelPrefix", "triageIssueAssignee", "sendRatePerMinute", "replyIssues", "r2"]) expect(props).toHaveProperty(key);
+    expect((props.r2!.properties as Record<string, Record<string, unknown>>).secretAccessKey).toMatchObject({ format: "secret-ref" });
     expect(props.encryptionKey).toMatchObject({ format: "secret-ref" });
     expect(props.encryptionKey).not.toHaveProperty("type");
     expect((props.google!.properties as Record<string, Record<string, unknown>>).clientId!.default).toBe(DEFAULT_GOOGLE_CLIENT_ID);
@@ -27,7 +28,7 @@ describe("manifest", () => {
 
   it("keeps every existing tool name and adds the new ones", () => {
     const names = manifest.tools!.map((t) => t.name);
-    for (const name of ["create-draft", "send-draft", "list-inbox", "mark-read", "create-email-template", "list-email-templates", "list-threads", "search-mail", "get-message", "correct-triage", "mail-status"]) {
+    for (const name of ["create-draft", "send-draft", "list-inbox", "mark-read", "create-email-template", "list-email-templates", "list-threads", "search-mail", "get-message", "correct-triage", "mail-status", "list-mailboxes", "get-attachment"]) {
       expect(names).toContain(name);
     }
     const draft = manifest.tools!.find((t) => t.name === "create-draft")!.parametersSchema as { required: string[] };

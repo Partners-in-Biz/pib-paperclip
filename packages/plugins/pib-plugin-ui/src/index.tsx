@@ -18,6 +18,7 @@ import { Icon, IconBadge } from "./icons.js";
 import { Inbox } from "lucide-react";
 import { PluginThemeProvider, accentVars, resolveAccent, useResolvedAccent, type AccentInput } from "./theme.js";
 import { tokens, tone, type ToneInput } from "./tokens.js";
+import { useUiContributions, type UiContribution } from "./nav.js";
 
 export { breakAnywhere, fluidColumns, NARROW_QUERY, oneColumn, useIsNarrow, useMediaQuery, usePibBaseStyles };
 export {
@@ -53,6 +54,11 @@ export {
 } from "./theme.js";
 export * from "./charts.js";
 export * from "./nav.js";
+export * from "./url.js";
+export * from "./getstarted.js";
+export * from "./format.js";
+export * from "./compact.js";
+export * from "./richtext.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {
@@ -265,6 +271,13 @@ export interface TabItem {
   countTone?: ToneInput;
 }
 
+/** CSS mask that fades the tab row's left and/or right edge (where more tabs are hidden). */
+export function tabsEdgeMask(edges: { left: boolean; right: boolean }): string {
+  const start = edges.left ? "transparent 0, #000 32px" : "#000 0";
+  const end = edges.right ? "#000 calc(100% - 32px), transparent 100%" : "#000 100%";
+  return `linear-gradient(to right, ${start}, ${end})`;
+}
+
 /**
  * A row of tabs. It never wraps: on a narrow screen it scrolls sideways (no visible scrollbar) and keeps
  * the selected tab in view. The selected tab is underlined in the page accent when there is one.
@@ -286,6 +299,25 @@ export function Tabs({ tabs, active, onChange, accent }: {
     if (left < row.scrollLeft) row.scrollLeft = Math.max(left - 16, 0);
     else if (left + tab.offsetWidth > row.scrollLeft + row.clientWidth) row.scrollLeft = left + tab.offsetWidth - row.clientWidth + 16;
   }, [active, tabs.length]);
+  // Fade the edge that has more tabs behind it, so a phone user can see the row scrolls.
+  const [edges, setEdges] = useState({ left: false, right: false });
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const update = () => {
+      const next = { left: row.scrollLeft > 4, right: row.scrollLeft + row.clientWidth < row.scrollWidth - 4 };
+      setEdges((prev) => (prev.left === next.left && prev.right === next.right ? prev : next));
+    };
+    update();
+    row.addEventListener("scroll", update, { passive: true });
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    observer?.observe(row);
+    return () => {
+      row.removeEventListener("scroll", update);
+      observer?.disconnect();
+    };
+  }, [tabs.length]);
+  const mask = edges.left || edges.right ? tabsEdgeMask(edges) : undefined;
   const line = resolved?.solid ?? tokens.fg;
   return (
     <div
@@ -304,6 +336,8 @@ export function Tabs({ tabs, active, onChange, accent }: {
         overscrollBehaviorX: "contain",
         minWidth: 0,
         maxWidth: "100%",
+        maskImage: mask,
+        WebkitMaskImage: mask,
       }}
     >
       {tabs.map((tab) => {
@@ -361,12 +395,18 @@ export function Tabs({ tabs, active, onChange, accent }: {
 
 /** The pages that make up a client's workspace, in tab order. */
 export const CLIENT_WORKSPACE_TABS = [
-  { id: "overview", label: "Overview", path: "/crm" },
-  { id: "social", label: "Social", path: "/social" },
-  { id: "seo", label: "SEO", path: "/seo" },
-  { id: "campaigns", label: "Campaigns", path: "/campaigns" },
-  { id: "billing", label: "Billing", path: "/billing" },
+  { id: "overview", label: "Overview", path: "/crm", pluginKey: "partnersinbiz.crm" },
+  { id: "social", label: "Social", path: "/social", pluginKey: "partnersinbiz.social" },
+  { id: "seo", label: "SEO", path: "/seo", pluginKey: "partnersinbiz.seo" },
+  { id: "campaigns", label: "Campaigns", path: "/campaigns", pluginKey: "partnersinbiz.campaigns" },
+  { id: "billing", label: "Billing", path: "/billing", pluginKey: "partnersinbiz.billing" },
 ] as const;
+
+/** Workspace tabs whose plugin page is installed (all of them while that is unknown). */
+export function installedWorkspaceTabs(contributions: UiContribution[] | null | undefined, active?: string) {
+  if (!contributions) return [...CLIENT_WORKSPACE_TABS];
+  return CLIENT_WORKSPACE_TABS.filter((tab) => tab.id === active || contributions.some((c) => c.pluginKey === tab.pluginKey && (c.slots ?? []).some((slot) => slot.type === "page")));
+}
 
 export type ClientWorkspaceTab = (typeof CLIENT_WORKSPACE_TABS)[number]["id"];
 
@@ -378,12 +418,13 @@ type LinkPropsFn = (to: string) => { href?: string; onClick: (event: ReactMouseE
  * plugin's page, so the links carry the client param across plugins.
  * Pass the host's `useHostNavigation().linkProps`.
  */
-export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabel = "Own work", actions }: {
+export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabel, actions }: {
   client: { kind: "company" | "contact"; id: string; name: string; detail?: string | null };
   active: ClientWorkspaceTab;
   linkProps: LinkPropsFn;
-  /** Where "Own work" goes, e.g. `/social`. Defaults to the active tab's page without a client. */
+  /** Where the back link goes, e.g. `/social`. Defaults to the active tab's page without a client. */
   ownPath?: string;
+  /** Back link text; defaults to "All clients" on the CRM and "Our own <module>" elsewhere. */
   ownLabel?: string;
   actions?: ReactNode;
 }) {
@@ -391,12 +432,17 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
   const param = encodeURIComponent(`${client.kind}:${client.id}`);
   const activePath = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.path ?? "/crm";
   const own = linkProps(ownPath ?? (active === "overview" ? "/crm" : activePath));
+  const contributions = useUiContributions();
+  const tabs = installedWorkspaceTabs(contributions, active);
+  const activeLabel = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.label ?? "work";
+  const backLabel = ownLabel ?? (active === "overview" ? "All clients" : `Our own ${activeLabel}`);
+  const narrow = useIsNarrow();
   usePibBaseStyles();
   const initials = client.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]!.toUpperCase()).join("") || "?";
   return (
     <header style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 14, minWidth: 0 }}>
-      <a {...own} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content", minHeight: 24, display: "inline-flex", alignItems: "center" }}>
-        ← {active === "overview" ? "All CRM" : ownLabel}
+      <a {...own} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content", minHeight: narrow ? 40 : 24, display: "inline-flex", alignItems: "center" }}>
+        ← {backLabel}
       </a>
       <div style={{ display: "flex", gap: 14, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", minWidth: 0, flex: "1 1 260px" }}>
@@ -417,7 +463,7 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
         className="pib-tabs"
         style={{ display: "flex", flexWrap: "nowrap", gap: 2, boxShadow: `inset 0 -1px 0 ${tokens.border}`, overflowX: "auto", overflowY: "hidden", WebkitOverflowScrolling: "touch", minWidth: 0, maxWidth: "100%" }}
       >
-        {CLIENT_WORKSPACE_TABS.map((tab) => {
+        {tabs.map((tab) => {
           const selected = tab.id === active;
           const link = linkProps(`${tab.path}?client=${param}`);
           return (
@@ -584,6 +630,39 @@ export function PipelineCard({ title, subtitle, footer, onClick }: {
   );
 }
 
+/** Open overlays (dialogs, sheets), shared by every PiB plugin bundle on the page; the last one is on top. */
+function overlayStack(): string[] {
+  const scope = globalThis as { __pibOverlayStack?: string[] };
+  if (!scope.__pibOverlayStack) scope.__pibOverlayStack = [];
+  return scope.__pibOverlayStack;
+}
+
+/**
+ * Escape closes only the top overlay: a dialog opened over a sheet closes
+ * first, and the sheet stays open until Escape is pressed again.
+ */
+export function useEscapeToClose(open: boolean, onClose: () => void, enabled = true): void {
+  const id = useId();
+  const latest = useRef({ onClose, enabled });
+  latest.current = { onClose, enabled };
+  useEffect(() => {
+    if (!open) return;
+    const stack = overlayStack();
+    stack.push(id);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || stack[stack.length - 1] !== id || !latest.current.enabled) return;
+      event.stopPropagation();
+      latest.current.onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const at = stack.lastIndexOf(id);
+      if (at >= 0) stack.splice(at, 1);
+    };
+  }, [open, id]);
+}
+
 export function Modal({ open, title, description, children, onClose, footer }: {
   open: boolean;
   title: string;
@@ -597,17 +676,13 @@ export function Modal({ open, title, description, children, onClose, footer }: {
   const narrow = useIsNarrow();
   usePibBaseStyles();
 
+  useEscapeToClose(open, onClose);
   useEffect(() => {
     if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
     // On a phone, focusing a field would pop the keyboard over half the sheet: focus the panel instead.
     if (mediaMatches(NARROW_QUERY)) panelRef.current?.focus({ preventScroll: true });
     else panelRef.current?.querySelector<HTMLElement>("input,select,textarea,button")?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -719,15 +794,10 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
     setBusy(false);
   }, [open, initialTitle, initialDescription, defaultAssignee]);
 
+  useEscapeToClose(open, onClose, !busy);
   useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    titleRef.current?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, busy]);
+    if (open) titleRef.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     const el = titleRef.current;
@@ -897,14 +967,7 @@ export function Sheet({ open, title, children, onClose }: {
 }) {
   const narrow = useIsNarrow();
   usePibBaseStyles();
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  useEscapeToClose(open, onClose);
 
   if (!open) return null;
 
@@ -964,7 +1027,7 @@ export function Sheet({ open, title, children, onClose }: {
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 6, fontSize: 12, color: tokens.muted, fontWeight: 500, minWidth: 0 }}>
+    <label className="pib-field" style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 6, fontSize: 12, color: tokens.muted, fontWeight: 500, minWidth: 0 }}>
       <span>{label}</span>
       {children}
     </label>
@@ -1029,6 +1092,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
 }
 
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
+  usePibBaseStyles();
   return (
     <select
       {...props}
@@ -1040,7 +1104,9 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
         event.currentTarget.style.boxShadow = "none";
         props.onBlur?.(event);
       }}
-      style={{ ...fieldBase, width: "100%", minWidth: 0, ...((props.style as CSSProperties) ?? {}) }}
+      className={["pib-select", props.className].filter(Boolean).join(" ")}
+      // Width comes from the base styles: full width inside a Field or label, natural width in a toolbar row.
+      style={{ ...fieldBase, minWidth: 0, ...((props.style as CSSProperties) ?? {}) }}
     />
   );
 }
@@ -1132,10 +1198,22 @@ export function errorText(error: unknown): string {
   return "Request failed";
 }
 
+// A non-breaking space keeps "R" and the amount together when a tile wraps.
+const MONEY_SYMBOLS: Record<string, string> = { ZAR: "R\u00A0", USD: "$", EUR: "€", GBP: "£" };
+
+/**
+ * Money as every PiB page, invoice and payslip shows it: `R 12,345.67`
+ * (symbol, comma thousands, dot decimals), whatever the browser's language.
+ */
+export function formatMoney(minor: number, currency = "ZAR", decimals = 2): string {
+  if (!Number.isFinite(minor)) return "–";
+  const value = Math.abs(minor) / 100;
+  const text = value.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const symbol = MONEY_SYMBOLS[currency.toUpperCase()] ?? `${currency.toUpperCase()} `;
+  return `${minor < 0 ? "-" : ""}${symbol}${text}`;
+}
+
+/** Whole amounts for tiles and charts, e.g. `R 1,500`. */
 export function formatMinor(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 }).format(amount / 100);
-  } catch {
-    return `${currency} ${(amount / 100).toFixed(0)}`;
-  }
+  return formatMoney(amount, currency, 0);
 }

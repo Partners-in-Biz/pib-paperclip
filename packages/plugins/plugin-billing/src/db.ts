@@ -60,13 +60,15 @@ export interface InvoiceRow {
   quote_id?: string | null;
   cancelled_at?: unknown;
   void_reason?: string | null;
+  /** The CRM deal this invoice bills (copied from its quote, or set when it was drafted). */
+  deal_id?: string | null;
 }
 
 export const INVOICE_COLUMNS = `id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
             sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at,
             created_at, updated_at, default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor, paid_at, fx_rate,
             send_to, delivery_key, delivery_status, delivery_error, mail_seq, pdf_key, ledger_status, ledger_error, issue_journal,
-            recurring_id, recurring_key, subscription_id, quote_id, cancelled_at, void_reason`;
+            recurring_id, recurring_key, subscription_id, quote_id, cancelled_at, void_reason, deal_id`;
 
 /**
  * SQL filter for one billing customer (a CRM company or contact). `n` is the
@@ -105,8 +107,8 @@ export async function insertInvoice(ctx: PluginContext, row: InvoiceRow): Promis
   const res = await ctx.db.execute(
     `INSERT INTO ${table(ctx, "invoices")}
       (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, tax_rate, due_at,
-       default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor, send_to, recurring_id, recurring_key, subscription_id, quote_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22)
+       default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor, send_to, recurring_id, recurring_key, subscription_id, quote_id, deal_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23)
      ON CONFLICT DO NOTHING`,
     [
       row.id,
@@ -131,6 +133,7 @@ export async function insertInvoice(ctx: PluginContext, row: InvoiceRow): Promis
       row.recurring_key ?? null,
       row.subscription_id ?? null,
       row.quote_id ?? null,
+      row.deal_id ?? null,
     ],
   );
   return res.rowCount ?? 0;
@@ -182,28 +185,22 @@ export async function saveLineAmounts(
   );
 }
 
-export async function saveTotalsAndStatus(
-  ctx: PluginContext,
-  invoice: InvoiceRow,
-): Promise<void> {
+/**
+ * Store a draft's computed totals and pricing fields only. Approval, status and
+ * snapshot columns are left alone, so a line edit never undoes a send request
+ * (or a send) that happened meanwhile.
+ */
+export async function saveInvoiceTotals(ctx: PluginContext, invoice: InvoiceRow): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")}
-        SET status = $2, total_minor = $3, tax_rate = $4, sender_snapshot = $5::jsonb, customer_snapshot = $6::jsonb,
-            approval_issue_id = $7, pending_action = $8, sent_at = $9, subtotal_minor = $10, vat_minor = $11,
-            default_tax_code = $12, prices_include_vat = $13, updated_at = now()
-      WHERE id = $1`,
+        SET total_minor = $2, subtotal_minor = $3, vat_minor = $4, tax_rate = $5, default_tax_code = $6, prices_include_vat = $7, updated_at = now()
+      WHERE id = $1 AND status = 'draft'`,
     [
       invoice.id,
-      invoice.status,
       Number(invoice.total_minor),
-      Number(invoice.tax_rate ?? 0),
-      invoice.sender_snapshot == null ? null : JSON.stringify(invoice.sender_snapshot),
-      invoice.customer_snapshot == null ? null : JSON.stringify(invoice.customer_snapshot),
-      invoice.approval_issue_id,
-      invoice.pending_action,
-      invoice.sent_at ?? null,
       Number(invoice.subtotal_minor ?? 0),
       Number(invoice.vat_minor ?? 0),
+      Number(invoice.tax_rate ?? 0),
       invoice.default_tax_code ?? null,
       Boolean(invoice.prices_include_vat),
     ],
@@ -306,12 +303,16 @@ export interface QuoteRow {
   delivery_error?: string | null;
   mail_seq?: number | string | null;
   pdf_key?: string | null;
+  /** The CRM deal this quote belongs to. */
+  deal_id?: string | null;
+  accepted_at?: unknown;
+  updated_at?: unknown;
 }
 
 const QUOTE_COLUMNS = `id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
             total_minor, tax_rate, valid_until, converted_invoice_id, created_at, default_tax_code, prices_include_vat, notes,
             subtotal_minor, vat_minor, send_to, approval_issue_id, pending_action, sent_at, delivery_key, delivery_status,
-            delivery_error, mail_seq, pdf_key`;
+            delivery_error, mail_seq, pdf_key, deal_id, accepted_at, updated_at`;
 
 export interface ExpenseRow {
   id: string;
@@ -377,8 +378,8 @@ export async function insertQuote(ctx: PluginContext, row: QuoteRow): Promise<vo
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "quotes")}
       (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, tax_rate, valid_until,
-       default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor, deal_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
     [
       row.id,
       row.company_id,
@@ -397,6 +398,7 @@ export async function insertQuote(ctx: PluginContext, row: QuoteRow): Promise<vo
       row.notes ?? null,
       Number(row.subtotal_minor ?? 0),
       Number(row.vat_minor ?? 0),
+      row.deal_id ?? null,
     ],
   );
 }
@@ -430,7 +432,8 @@ export async function saveQuoteStatus(
   await ctx.db.execute(
     `UPDATE ${table(ctx, "quotes")}
         SET status = $2, total_minor = $3, tax_rate = $4, converted_invoice_id = $5, subtotal_minor = $6, vat_minor = $7,
-            approval_issue_id = $8, pending_action = $9, sent_at = $10, default_tax_code = $11, prices_include_vat = $12, updated_at = now()
+            approval_issue_id = $8, pending_action = $9, sent_at = $10, default_tax_code = $11, prices_include_vat = $12,
+            accepted_at = $13, updated_at = now()
       WHERE id = $1`,
     [
       quote.id,
@@ -445,6 +448,7 @@ export async function saveQuoteStatus(
       quote.sent_at ?? null,
       quote.default_tax_code ?? null,
       Boolean(quote.prices_include_vat),
+      quote.accepted_at ?? null,
     ],
   );
 }
@@ -699,44 +703,35 @@ export async function listCreditNotes(ctx: PluginContext, companyId: string, cus
   );
 }
 
-export interface CustomerInvoiceBalanceRow {
-  id: string;
-  status: string;
-  currency: string;
-  total_minor: number | string;
-  due_at: unknown;
-  paid_minor: number | string | null;
-  credited_minor: number | string | null;
-  last_paid_at: unknown;
-}
+/**
+ * "As at today": the start of tomorrow (UTC). Money dated on or after it is
+ * in the future and counts in no balance, total or chart until its day
+ * comes; it is flagged instead. Accounting uses the same day (UTC), so the
+ * two modules agree.
+ */
+export const AS_AT_CUTOFF_SQL = `((date_trunc('day', now() AT TIME ZONE 'UTC') + interval '1 day') AT TIME ZONE 'UTC')`;
 
 /**
- * One customer's invoices (not cancelled) with what has been paid and
- * credited against each, for the CRM client workspace summary. A paid invoice
- * without a recorded payment counts as paid when it was last updated.
- * Credited = the invoice's own credit notes in full (any remainder is the
- * customer's credit, and outstanding never drops below zero) plus credit
- * applied from elsewhere (another invoice's credit note, an overpayment, a
- * write-off).
+ * When one customer last paid, as at today (a payment dated later does not
+ * count yet). A legacy invoice marked paid without a recorded payment counts
+ * as paid when it was last updated.
  */
-export async function customerInvoiceBalances(ctx: PluginContext, companyId: string, customer: ClientRef): Promise<CustomerInvoiceBalanceRow[]> {
-  const filter = customerWhere(customer, 2, "i");
-  return ctx.db.query<CustomerInvoiceBalanceRow>(
-    `SELECT i.id, i.status, i.currency, i.total_minor, i.due_at,
-            COALESCE((SELECT sum(COALESCE(p.allocated_minor, p.amount_minor)) FROM ${table(ctx, "payments")} p WHERE p.invoice_id = i.id), 0) AS paid_minor,
-            COALESCE((SELECT sum(c.amount_minor) FROM ${table(ctx, "credit_notes")} c WHERE c.invoice_id = i.id), 0)
-              + COALESCE((SELECT sum(a.amount_minor) FROM ${table(ctx, "credit_applications")} a
-                  WHERE a.invoice_id = i.id
-                    AND NOT (a.source_kind = 'credit_note' AND a.source_id IN (SELECT c2.id FROM ${table(ctx, "credit_notes")} c2 WHERE c2.invoice_id = i.id))), 0) AS credited_minor,
-            COALESCE(
-              (SELECT max(p.paid_at) FROM ${table(ctx, "payments")} p WHERE p.invoice_id = i.id),
-              CASE WHEN i.status = 'paid' THEN i.updated_at END
-            ) AS last_paid_at
-       FROM ${table(ctx, "invoices")} i
-      WHERE i.company_id = $1 AND ${filter.sql} AND i.status <> 'cancelled'
-      ORDER BY i.created_at DESC`,
-    [companyId, ...filter.params],
+export async function customerLastPaidAt(ctx: PluginContext, companyId: string, customer: ClientRef): Promise<string | null> {
+  const payments = customerWhere(customer, 2, "p");
+  const invoices = customerWhere(customer, 2, "i");
+  const rows = await ctx.db.query<{ at: unknown }>(
+    `SELECT GREATEST(
+              (SELECT max(p.paid_at) FROM ${table(ctx, "payments")} p WHERE p.company_id = $1 AND ${payments.sql} AND p.paid_at < ${AS_AT_CUTOFF_SQL}),
+              (SELECT max(COALESCE(i.paid_at, i.updated_at)) FROM ${table(ctx, "invoices")} i
+                WHERE i.company_id = $1 AND ${invoices.sql} AND i.status = 'paid'
+                  AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "payments")} x WHERE x.invoice_id = i.id))
+            ) AS at`,
+    [companyId, ...payments.params],
   );
+  const at = rows[0]?.at;
+  if (at == null || at === "") return null;
+  const parsed = at instanceof Date ? at : new Date(String(at));
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 /** Company ids that have billing rows (jobs have no company scope). */

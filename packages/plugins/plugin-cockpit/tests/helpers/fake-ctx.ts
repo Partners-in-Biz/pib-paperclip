@@ -48,11 +48,24 @@ export function fakeCtx(options: {
   runs?: Row[];
 } = {}) {
   const store: Store = { core_issues: options.coreIssues ?? [], core_runs: options.runs ?? [] };
+  const OPEN = ["todo", "in_progress", "in_review", "blocked"];
+  const PRIORITY: Record<string, number> = { critical: 0, high: 1, medium: 2 };
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
     coreReadTables: ["issues", "heartbeat_runs"],
     routes: [
-      [/FROM public\.issues/i, (params, s) => (s.core_issues ?? []).filter((row) => row.company_id === params[0] && row.assignee_user_id === params[1] && ["todo", "in_progress", "in_review", "blocked"].includes(row.status))],
+      [/FROM public\.issues/i, (params, s, sql) => {
+        const rows = (s.core_issues ?? []).filter((row) => row.company_id === params[0] && OPEN.includes(row.status) && !row.hidden_at);
+        if (/assignee_user_id IS NULL/i.test(sql)) {
+          // Open, nobody assigned, created more than a day ago.
+          const dayAgo = Date.now() - 86_400_000;
+          const unassigned = rows
+            .filter((row) => !row.assignee_agent_id && !row.assignee_user_id && Date.parse(row.created_at) < dayAgo)
+            .sort((a, b) => (PRIORITY[a.priority] ?? 3) - (PRIORITY[b.priority] ?? 3) || Date.parse(a.created_at) - Date.parse(b.created_at));
+          return /count\(\*\)/i.test(sql) ? [{ n: String(unassigned.length) }] : unassigned.slice(0, Number(/LIMIT (\d+)/i.exec(sql)?.[1] ?? 5));
+        }
+        return rows.filter((row) => row.assignee_user_id === params[1]);
+      }],
       [/FROM public\.heartbeat_runs/i, (params, s) => (s.core_runs ?? []).filter((row) => row.company_id === params[0])],
     ],
   });
@@ -62,8 +75,10 @@ export function fakeCtx(options: {
   const jobs = new Map<string, () => Promise<void>>();
   const tools = new Map<string, (params: unknown, run: unknown) => Promise<unknown>>();
   const issues = new Map<string, FakeIssue>();
-  const comments: Array<{ issueId: string; body: string; companyId: string; authorAgentId?: string }> = [];
+  const comments: Array<{ id: string; issueId: string; body: string; companyId: string; authorAgentId?: string; authorUserId?: string | null; createdAt: string; deletedAt?: string | null }> = [];
   const wakeups: string[] = [];
+  const wakeReasons: Array<{ issueId: string; reason?: string }> = [];
+  const updates: Array<{ issueId: string; patch: Partial<FakeIssue> }> = [];
   const state = new Map<string, unknown>();
   const configs = options.savedConfigs ?? {};
   const agents = [...(options.agents ?? [])];
@@ -160,21 +175,27 @@ export function fakeCtx(options: {
         return { ...issue };
       },
       get: async (id: string, companyId: string) => {
-        const issue = issues.get(id);
+        // Like the host: an id or an identifier (PIB-12).
+        const issue = issues.get(id) ?? [...issues.values()].find((i) => i.identifier === id);
         return issue && issue.companyId === companyId ? { ...issue } : null;
       },
       update: async (id: string, patch: Partial<FakeIssue>, companyId: string) => {
         const issue = issues.get(id);
         if (!issue || issue.companyId !== companyId) throw new Error("issue not found");
         Object.assign(issue, patch);
+        updates.push({ issueId: id, patch: { ...patch } });
         return { ...issue };
       },
       createComment: async (issueId: string, body: string, companyId: string, opts?: { authorAgentId?: string }) => {
-        comments.push({ issueId, body, companyId, ...(opts?.authorAgentId ? { authorAgentId: opts.authorAgentId } : {}) });
-        return { id: `comment-${comments.length}` };
+        const id = `comment-${comments.length + 1}`;
+        comments.push({ id, issueId, body, companyId, createdAt: new Date().toISOString(), ...(opts?.authorAgentId ? { authorAgentId: opts.authorAgentId } : {}) });
+        return { id };
       },
-      requestWakeup: async (issueId: string) => {
+      listComments: async (issueId: string, companyId: string) =>
+        comments.filter((c) => c.issueId === issueId && c.companyId === companyId).map((c) => ({ authorAgentId: null, authorUserId: null, ...c })),
+      requestWakeup: async (issueId: string, _companyId: string, options?: { reason?: string }) => {
         wakeups.push(issueId);
+        wakeReasons.push({ issueId, reason: options?.reason });
         return { queued: true };
       },
     },
@@ -184,7 +205,15 @@ export function fakeCtx(options: {
     for (const fn of handlers.get(name) ?? []) await fn({ eventId: "e", eventType: name as PluginEvent["eventType"], occurredAt: new Date().toISOString(), companyId: "", payload: null, ...event } as PluginEvent);
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, state, configs, agents, routines, grants, skillCalls, fire };
+  /** A person's comment on an issue (what the host stores when a board user replies). */
+  function userComment(issueId: string, body: string, userId: string, companyId?: string): string {
+    const issue = issues.get(issueId);
+    const id = `comment-${comments.length + 1}`;
+    comments.push({ id, issueId, body, companyId: companyId ?? issue?.companyId ?? "", authorUserId: userId, createdAt: new Date(Date.now() + comments.length).toISOString() });
+    return id;
+  }
+
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, routines, grants, skillCalls, fire, userComment };
 }
 
 export function fixedClock(iso: string) {

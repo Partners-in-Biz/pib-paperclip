@@ -3,7 +3,7 @@ import { socialConfigFrom } from "../src/config.js";
 import type { AccountRow, InboxItemRow } from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { createIssueSafely } from "../src/issues.js";
-import { correctTriage, readTriage, triageInbox, triageOut, triageState, TRIAGE_QUESTIONS } from "../src/triage.js";
+import { correctTriage, escalationWhy, readTriage, ruleTriage, RULES_MODEL, triageInbox, triageOut, triageState, TRIAGE_QUESTIONS } from "../src/triage.js";
 import { fakeCtx, json, jsonOf, mockFetch, TEST_UI_BASE } from "./helpers.js";
 
 const T = (name: string) => `${NAMESPACE}.${name}`;
@@ -117,14 +117,71 @@ describe("triage mapping", () => {
   });
 });
 
+describe("built-in rules (no Jev key)", () => {
+  const rule = (body: string) => ruleTriage({ kind: "comment", body });
+
+  it("reads leads, questions, complaints, praise and spam from keywords", () => {
+    expect(rule("How much is a website for a small guest house?")).toMatchObject({ model: RULES_MODEL, intent: { value: "lead" }, action: "queued", needsReply: { yes: true }, sentiment: { value: "positive" } });
+    expect(rule("Can I book a table for Friday night")).toMatchObject({ intent: { value: "lead" }, action: "queued" });
+    expect(rule("Do you deliver to Ballito?")).toMatchObject({ intent: { value: "lead" }, action: "queued" });
+    expect(rule("What time do you open on Sunday?")).toMatchObject({ intent: { value: "question" }, action: "queued" });
+    expect(rule("Still waiting for my order, nobody answers the phone. Terrible service")).toMatchObject({ intent: { value: "complaint" }, action: "queued", sentiment: { value: "negative" } });
+    expect(rule("Thank you, love this!")).toMatchObject({ intent: { value: "praise" }, action: "none", needsReply: { yes: false } });
+    expect(rule("Earn $500 per day from home, DM me")).toMatchObject({ intent: { value: "spam" }, action: "spam_read", needsReply: { yes: false } });
+    expect(rule("Buy real followers cheap at bit.ly/xyz")).toMatchObject({ intent: { value: "spam" }, action: "spam_read" });
+    expect(rule("Nice pic")).toMatchObject({ intent: { value: "other" }, action: "none" });
+    expect(rule("How much is a website?").reasons).toEqual(["asks about price or a quote"]);
+  });
+
+  it("escalates legal, safety and PR risk to a person, never to the agent", () => {
+    for (const body of ["I got food poisoning and I am calling my lawyer", "I'm going to sue you", "Reporting you to the consumer commission", "A journalist from news24 is asking about this", "Your staff harassed me", "My ID is 8001015009087"]) {
+      const t = rule(body);
+      expect(t.action, body).toBe("escalated");
+      expect(t.escalate.yes, body).toBe(true);
+    }
+    expect(escalationWhy(rule("I will sue you"))).toBe("The built-in rules flagged it (mentions legal action)");
+  });
+
+  it("does not trip on everyday words", () => {
+    expect(rule("Thanks Sue, see you at the food court").action).not.toBe("escalated");
+    expect(rule("Love this book so much").intent.value).toBe("praise");
+    expect(rule("Great quote from the founder").intent.value).not.toBe("lead");
+    expect(rule("Found you on social media, great work").action).not.toBe("escalated");
+  });
+});
+
 describe("triage job", () => {
-  it("does nothing without a Jev key (current behaviour)", async () => {
+  it("without a Jev key the built-in rules triage: spam read, replies queued, risk to a person, leads to the CRM", async () => {
     const fetchMock = mockFetch([]);
-    const w = world([item("i1", "Free followers!!!")], { jev: false });
-    expect(await triageInbox(w.ctx, w.config, { now: NOW })).toMatchObject({ skipped: "no_jev", triaged: 0 });
+    const items = [item("spam", "Earn $500 per day from home, DM me"), item("q1", "What time do you open?"), item("lead", "How much is a website?"), item("risk", "I got food poisoning and I am calling my lawyer"), item("thanks", "Thank you, love this!")];
+    const w = world(items, { jev: false, agent: true });
+    const summary = await triageInbox(w.ctx, w.config, { now: NOW });
+    expect(summary).toEqual({ triaged: 5, spam: 1, queued: 2, escalated: 1, failed: 0, rules: 5, leads: 1 });
     expect(fetchMock.calls).toHaveLength(0);
-    expect(w.ctx.fakeDb.executes).toHaveLength(0);
-    expect(w.ctx.fakeDb.queries).toHaveLength(0);
+    // Spam → read; one digest for the two replies (agent, woken); one escalation for a person.
+    expect(w.ctx.fakeDb.executes.some((x) => x.sql.includes(`UPDATE ${T("inbox_items")} SET status = $3`) && x.params[0] === "spam" && x.params[2] === "read")).toBe(true);
+    const digest = w.created.find((c) => String(c.originId).startsWith("inbox:acc1:"))!;
+    expect(digest).toMatchObject({ assigneeAgentId: "agent-1" });
+    expect(String(digest.description)).toContain("sorted by the built-in rules");
+    expect(String(digest.description)).toContain("`q1`");
+    expect(String(digest.description)).toContain("`lead`");
+    const escalation = w.created.find((c) => String(c.originId).startsWith("inbox-escalate:"))!;
+    expect(escalation).toMatchObject({ assigneeUserId: "post-owner", priority: "high" });
+    expect(String(escalation.description)).toContain("The built-in rules flagged it (mentions legal action)");
+    // The lead goes to the CRM through the kit outbox.
+    const outbox = w.ctx.fakeDb.executes.find((x) => x.sql.startsWith(`INSERT INTO ${T("outbox")}`))!;
+    expect(outbox.params.slice(0, 3)).toEqual(["social:inbox:lead", "co", "lead.captured"]);
+    // Stored triage says where it came from.
+    const saved = w.ctx.fakeDb.executes.filter((x) => x.sql.includes("SET triage = $3::jsonb"));
+    const stored = JSON.parse(String(saved.find((x) => x.params[0] === "q1")!.params[2]));
+    expect(triageOut(stored, NOW)).toMatchObject({ source: "rules", model: "rules", intent: "question", reasons: ["asks a question"] });
+    expect(w.ctx.fakeDb.executes.filter((x) => x.sql.includes(`${T("decisions")}`))).toHaveLength(0);
+  });
+
+  it("an item Jev keeps failing on falls back to the rules on its last try", async () => {
+    mockFetch([["POST https://api.typesafe.ai/v1/systemone", () => json({ error: "bad" }, 400)]]);
+    const w = world([item("i1", "What time do you open?", { triage_attempts: 2 })], { agent: true });
+    expect(await triageInbox(w.ctx, w.config, { now: NOW })).toMatchObject({ triaged: 1, failed: 0, rules: 1, queued: 1 });
   });
 
   it("marks spam read, queues replies in one digest per account per day, and escalates risk to the post owner", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { COMPANY_OS_HIRE_SKILL, COMPANY_OS_SKILL_KEY, hireTaskDraft, matchesRole } from "@partnersinbiz/pib-plugin-kit";
 import { agentSummary, TOOLS_GRANT, wireAgent } from "../src/agent.js";
-import { SOCIAL_HIRE_ROLE, missingSocialSkills } from "../src/hire.js";
+import { SOCIAL_HIRE_ROLE, SOCIAL_MATCH_ROLE, missingSocialSkills } from "../src/hire.js";
 import { socialAgent } from "../src/issues.js";
 import { DESIRED_SKILLS } from "../src/skills.js";
 import plugin from "../src/worker.js";
@@ -115,25 +116,39 @@ function world(input: { agents?: Agent[]; legacyAgentId?: string | null; routine
   };
 }
 
-const withSkills = { paperclipSkillSync: { desiredSkills: DESIRED_SKILLS } };
+/** The two social skills plus the company operating manual (every PiB role carries it). */
+const withSkills = { paperclipSkillSync: { desiredSkills: [...DESIRED_SKILLS, COMPANY_OS_SKILL_KEY] } };
 const outbound = (): Agent => ({ id: "oss", name: "Outbound & Social Specialist", title: "Outbound & Social Specialist", role: "general", status: "idle", createdAt: new Date("2026-01-01"), adapterConfig: {} });
 const ceo = (): Agent => ({ id: "ceo", name: "CEO", role: "ceo", status: "idle", createdAt: new Date("2026-01-01") });
 
 describe("social hire role", () => {
-  it("spells out the agent and both skills", () => {
+  it("spells out the agent, both skills and the operating manual last", () => {
     expect(SOCIAL_HIRE_ROLE).toMatchObject({ pluginKey: "partnersinbiz.social", roleKey: "social-media-manager", displayName: "Social Media Manager", role: "general", budgetMonthlyCents: 4000 });
     expect(SOCIAL_HIRE_ROLE.adapterPreference).toEqual(["hermes_local", "claude_local"]);
     expect(SOCIAL_HIRE_ROLE.skills.map((s) => [s.key, s.slug])).toEqual([
       ["plugin/partnersinbiz-social/social-publish", "pib-social-publish"],
       ["plugin/partnersinbiz-social/social-content", "pib-social-content"],
+      ["plugin/partnersinbiz-cockpit/company-os", "pib-company-os"],
     ]);
+    expect(SOCIAL_HIRE_ROLE.skills.at(-1)).toEqual(COMPANY_OS_HIRE_SKILL);
+    expect(SOCIAL_HIRE_ROLE.instructions).toContain("partnersinbiz.cockpit:ask-owner");
     expect(SOCIAL_HIRE_ROLE.instructions.split("\n").length).toBeLessThan(12);
+  });
+
+  it("hire matching leaves out the operating manual every PiB agent carries", () => {
+    expect(SOCIAL_MATCH_ROLE.skills.map((s) => s.slug)).toEqual(["pib-social-publish", "pib-social-content"]);
+    const seoAgent = { name: "SEO Specialist", adapterConfig: { paperclipSkillSync: { desiredSkills: ["plugin/partnersinbiz-seo/seo-sprint", COMPANY_OS_SKILL_KEY] } } };
+    expect(matchesRole(seoAgent, SOCIAL_MATCH_ROLE)).toBe(false);
+    expect(matchesRole({ name: "Sam", adapterConfig: withSkills }, SOCIAL_MATCH_ROLE)).toBe(true);
+    // The hire task still lists the manual, once.
+    expect(hireTaskDraft(SOCIAL_MATCH_ROLE).description.match(/`pib-company-os` —/g)).toHaveLength(1);
   });
 
   it("detects missing social skills by canonical key or slug", () => {
     expect(missingSocialSkills({ adapterConfig: withSkills })).toEqual([]);
-    expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: ["company-1/pib-social-publish"] } } })).toEqual(["pib-social-content"]);
-    expect(missingSocialSkills({ name: "No config" })).toEqual(["pib-social-publish", "pib-social-content"]);
+    expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: ["company-1/pib-social-publish", "pib-company-os"] } } })).toEqual(["pib-social-content"]);
+    expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: DESIRED_SKILLS } } })).toEqual(["pib-company-os"]);
+    expect(missingSocialSkills({ name: "No config" })).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
   });
 });
 
@@ -146,13 +161,28 @@ describe("wireAgent", () => {
     expect(w.grants).toContainEqual(TOOLS_GRANT);
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "oss" });
     expect(result.toolsGrantAdded).toBe(true);
-    expect(result.missingSkills).toEqual(["pib-social-publish", "pib-social-content"]);
-    expect(result.steps.join("\n")).toContain("does not have `pib-social-publish` and `pib-social-content`");
+    expect(result.missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
+    expect(result.steps.join("\n")).toContain("does not have `pib-social-publish`, `pib-social-content` and `pib-company-os`");
 
     // again: nothing new to grant
     const again = await wireAgent(w.ctx, "co", "oss", "u1");
     expect(again.toolsGrantAdded).toBe(false);
     expect(w.grantsSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("widens the agent's one tools grant, and leaves a grant limited to named tools to a person", async () => {
+    const w = world({ agents: [outbound()] });
+    w.grants.push({ permissionKey: "tools:use", scope: { providerType: "paperclip_self" } });
+    const widened = await wireAgent(w.ctx, "co", "oss", "u1");
+    expect(w.grants.filter((g) => g.permissionKey === "tools:use")).toEqual([{ permissionKey: "tools:use", scope: { providerTypes: ["paperclip_self", "paperclip_plugin"] } }]);
+    expect(widened).toMatchObject({ toolsGrantAdded: true, toolsGrantConflict: null });
+
+    const limited = world({ agents: [outbound()] });
+    limited.grants.push({ permissionKey: "tools:use", scope: { tools: ["paperclip:create-issue"] } });
+    const result = await wireAgent(limited.ctx, "co", "oss", "u1");
+    expect(limited.grantsSet).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ toolsGrantAdded: false, toolsGrantConflict: expect.stringContaining("limited to") });
+    expect(result.steps[0]).toContain("cannot use the Social tools yet");
   });
 
   it("reassigns a routine that belongs to another agent and keeps it running", async () => {
@@ -173,7 +203,7 @@ describe("hire actions", () => {
     const options = await w.act("social.hire-options");
     expect(options.defaultAssigneeAgentId).toBe("ceo");
     expect(options.draft.title).toBe("Hire: Social Media Manager (Social agent)");
-    expect(options.agents.find((a: { id: string }) => a.id === "oss").missingSkills).toEqual(["pib-social-publish", "pib-social-content"]);
+    expect(options.agents.find((a: { id: string }) => a.id === "oss").missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
 
     const hire = await w.act("social.start-hire", { title: options.draft.title, description: options.draft.description, assigneeAgentId: "ceo" });
     expect(hire).toMatchObject({ issueId: "issue-1", identifier: "PIB-7", status: "open", assigneeAgentId: "ceo" });
@@ -187,6 +217,7 @@ describe("hire actions", () => {
     const description = String((w.issuesCreate.mock.calls[0]![0] as { description: string }).description);
     expect(description).toContain("`pib-social-publish`");
     expect(description).toContain("`pib-social-content`");
+    expect(description).toContain("`pib-company-os`");
     await expect(w.act("social.start-hire", {}, AGENT_ACTOR)).rejects.toThrow(/A person must/);
     expect(w.managedReconcile).not.toHaveBeenCalled();
   });
@@ -204,7 +235,7 @@ describe("hire actions", () => {
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "smm" });
     expect(w.comments[0]!.issueId).toBe("issue-1");
     expect(w.comments[0]!.body).toContain("found **Social Media Manager**");
-    expect(w.comments[0]!.body).toContain("has the `pib-social-publish` and `pib-social-content` skills");
+    expect(w.comments[0]!.body).toContain("has the `pib-social-publish`, `pib-social-content` and `pib-company-os` skills");
     expect(await socialAgent(w.ctx, "co")).toEqual({ agentId: "smm", active: false, status: "paused" });
     expect(w.managedReconcile).not.toHaveBeenCalled();
   });
@@ -224,12 +255,12 @@ describe("hire actions", () => {
     await w.setup();
     const res = await w.act("social.link-agent", { agentId: "oss" });
     expect(res.agent.id).toBe("oss");
-    expect(res.steps.join("\n")).toContain("Outbound & Social Specialist does not have `pib-social-publish` and `pib-social-content` yet");
+    expect(res.steps.join("\n")).toContain("Outbound & Social Specialist does not have `pib-social-publish`, `pib-social-content` and `pib-company-os` yet");
     expect(w.grantsSet).toHaveBeenCalledWith(expect.objectContaining({ principalId: "oss" }));
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "oss" });
 
     const snapshot = await w.act("social.load", {});
-    expect(snapshot.agent).toMatchObject({ agentId: "oss", name: "Outbound & Social Specialist", linkedBy: "manual", active: true, missingSkills: ["pib-social-publish", "pib-social-content"] });
+    expect(snapshot.agent).toMatchObject({ agentId: "oss", name: "Outbound & Social Specialist", linkedBy: "manual", active: true, missingSkills: ["pib-social-publish", "pib-social-content", "pib-company-os"] });
     await expect(w.act("social.link-agent", { agentId: "missing" })).rejects.toThrow(/not found/);
     expect(w.managedReconcile).not.toHaveBeenCalled();
   });

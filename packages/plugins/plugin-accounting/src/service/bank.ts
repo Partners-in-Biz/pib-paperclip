@@ -12,9 +12,9 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   amountBucket,
+  ASK_OWNER_TOOL,
   confidenceOf,
   correctDecision,
-  createWorkIssue,
   decide,
   decideMany,
   decisionConfig,
@@ -31,15 +31,18 @@ import {
 import * as db from "../db.js";
 import type { Account } from "../domain/chart.js";
 import { splitVat, suggestFor, validateRule, type BankRule, type Suggestion } from "../domain/matching.js";
-import { fingerprintLines, parseStatement, type StatementFormat } from "../domain/statements.js";
-import { AccountingError, addDays, formatRand } from "../domain/util.js";
+import { fingerprintLines, linesDatedAfter, parseStatement, type StatementFormat } from "../domain/statements.js";
+import { AccountingError, addDays, dayText, todayIso } from "../domain/util.js";
+import { routeBookkeeping } from "./agent.js";
 import { ensureBook, loadChart, type Chart } from "./books.js";
 import {
   actorRecord,
   assertOwnKey,
   BOOK_CURRENCY,
   errorMessage,
+  money,
   newId,
+  openIssue,
   ORIGIN,
   privateR2,
   r2Url,
@@ -51,6 +54,7 @@ import { postJournal, reverseJournal } from "./journals.js";
 
 const MAX_STATEMENT_BYTES = 10 * 1024 * 1024;
 const MAX_JEV_LINES = 150;
+const MAX_REDIRECTS = 3;
 
 // ---------------------------------------------------------------------------
 // Bank accounts
@@ -124,13 +128,54 @@ export async function statementUploadUrl(ctx: PluginContext, companyId: string, 
   return { uploadUrl: r2Url(cfg, "PUT", key, 900), objectKey: key, expiresInSec: 900 };
 }
 
-async function statementText(ctx: PluginContext, companyId: string, input: { content?: unknown; objectKey?: unknown }): Promise<{ text: string; objectKey: string | null }> {
+/**
+ * Download a statement from a link (e.g. the Mailbox `get-attachment` tool's
+ * `url`). Only https, through the host's SSRF-guarded fetch, following a few
+ * redirects (each hop checked again).
+ */
+export async function fetchStatementUrl(ctx: PluginContext, raw: string): Promise<string> {
+  let current: URL;
+  try {
+    current = new URL(raw.trim());
+  } catch {
+    throw new AccountingError("url must be a full https link (the one the Mailbox get-attachment tool returned)");
+  }
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (current.protocol !== "https:") throw new AccountingError("url must be an https link");
+    let res: Response;
+    try {
+      res = await ctx.http.fetch(current.toString(), { method: "GET", headers: { Accept: "text/csv, application/x-ofx, text/plain, */*" } });
+    } catch (error) {
+      throw new AccountingError(`Could not download the statement: ${errorMessage(error)}`);
+    }
+    const location = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && location) {
+      current = new URL(location, current);
+      continue;
+    }
+    if (!res.ok) throw new AccountingError(`Could not download the statement (HTTP ${res.status}). Links from get-attachment expire: get a fresh one and try again.`);
+    const text = await res.text();
+    if (text.length > MAX_STATEMENT_BYTES) throw new AccountingError("Statement files can be at most 10 MB");
+    return text;
+  }
+  throw new AccountingError("Too many redirects downloading the statement");
+}
+
+/** A PDF cannot be imported: say so plainly instead of a parse error. */
+function assertNotPdf(text: string, fileName: unknown): void {
+  if (text.startsWith("%PDF") || (typeof fileName === "string" && /\.pdf$/i.test(fileName.trim()))) {
+    throw new AccountingError("PDF statements cannot be imported. Get the CSV or OFX (or MT940) export of the statement from online banking.");
+  }
+}
+
+async function statementText(ctx: PluginContext, companyId: string, input: { content?: unknown; objectKey?: unknown; url?: unknown }): Promise<{ text: string; objectKey: string | null }> {
   if (typeof input.content === "string" && input.content.trim()) {
-    if (input.content.length > 1_000_000) throw new AccountingError("Files over 1 MB must be uploaded to the private bucket first");
+    if (input.content.length > 1_000_000) throw new AccountingError("Files over 1 MB must be uploaded to the private bucket first (or passed as a link in url)");
     return { text: input.content, objectKey: null };
   }
+  if (typeof input.url === "string" && input.url.trim()) return { text: await fetchStatementUrl(ctx, input.url), objectKey: null };
   const key = typeof input.objectKey === "string" ? input.objectKey : "";
-  if (!key) throw new AccountingError("Give the statement content or the uploaded file's key");
+  if (!key) throw new AccountingError("Give the statement text (content), a download link (url) or the uploaded file's key");
   const cfg = await privateR2(ctx, companyId);
   if (!cfg) throw new AccountingError("The private R2 bucket is not set up", "not_configured");
   assertOwnKey(cfg, companyId, key);
@@ -157,19 +202,40 @@ export interface ImportResult {
   suggested: number;
   jevAsked: number;
   issueId: string | null;
+  /** Lines dated after today: they count nowhere until then and a person checks the date. */
+  futureLines: number;
+  firstFutureDate: string | null;
+}
+
+/**
+ * The bank account a tool call means: the given id, or the only active one.
+ * With several and no id, the error lists them so the agent can choose.
+ */
+export async function resolveBankAccount(ctx: PluginContext, companyId: string, bankAccountId: unknown): Promise<db.BankAccountRow> {
+  const id = typeof bankAccountId === "string" ? bankAccountId.trim() : "";
+  if (id) {
+    const bank = await db.getBankAccount(ctx.db, companyId, id);
+    if (!bank) throw new AccountingError(`Bank account ${id} not found. list-bank-accounts gives the ids.`, "not_found");
+    return bank;
+  }
+  const active = (await db.listBankAccounts(ctx.db, companyId)).filter((b) => b.active);
+  if (active.length === 1) return active[0]!;
+  if (active.length === 0) throw new AccountingError(`No bank account is set up yet. A person adds one under Accounting → Bank (ask with ${ASK_OWNER_TOOL}).`, "not_found");
+  throw new AccountingError(`Give bankAccountId, one of: ${active.map((b) => `${b.id} (${b.name}${b.numberLast4 ? ` ••${b.numberLast4}` : ""})`).join(", ")}`);
 }
 
 export async function importStatement(
   ctx: PluginContext,
   companyId: string,
   actor: Actor,
-  input: { bankAccountId?: unknown; content?: unknown; objectKey?: unknown; fileName?: unknown; format?: unknown },
+  input: { bankAccountId?: unknown; content?: unknown; objectKey?: unknown; url?: unknown; fileName?: unknown; format?: unknown },
 ): Promise<ImportResult> {
   await ensureBook(ctx, companyId);
   const bankAccountId = typeof input.bankAccountId === "string" ? input.bankAccountId : "";
   const bank = bankAccountId ? await db.getBankAccount(ctx.db, companyId, bankAccountId) : null;
   if (!bank) throw new AccountingError("Choose the bank account this statement belongs to", "not_found");
   const { text, objectKey } = await statementText(ctx, companyId, input);
+  assertNotPdf(text, input.fileName);
   const format = ["csv", "ofx", "mt940"].includes(String(input.format)) ? (String(input.format) as StatementFormat) : "auto";
   const parsed = parseStatement(text, format);
   const seen = await db.statementByDigest(ctx.db, bank.id, parsed.digest);
@@ -188,6 +254,8 @@ export async function importStatement(
       suggested: 0,
       jevAsked: 0,
       issueId: null,
+      futureLines: 0,
+      firstFutureDate: null,
     };
   }
   const statementId = newId();
@@ -228,8 +296,9 @@ export async function importStatement(
   const added = await db.insertBankLines(ctx.db, companyId, rows);
   await db.updateStatementCounts(ctx.db, companyId, statementId, added, rows.length - added);
   const refreshed = added > 0 ? await refreshSuggestions(ctx, companyId, { statementId }) : { lines: 0, suggested: 0, jevAsked: 0 };
+  const future = linesDatedAfter(rows, todayIso());
   let issueId: string | null = null;
-  if (added > 0) issueId = await openReconcileIssue(ctx, companyId, bank, added, parsed.periodStart, parsed.periodEnd);
+  if (added > 0) issueId = await openReconcileIssue(ctx, companyId, bank, added, parsed.periodStart, parsed.periodEnd, future);
   return {
     statementId,
     duplicateFile: false,
@@ -244,36 +313,119 @@ export async function importStatement(
     suggested: refreshed.suggested,
     jevAsked: refreshed.jevAsked,
     issueId,
+    futureLines: future.count,
+    firstFutureDate: future.first,
   };
 }
 
-/** When a Bookkeeper is linked, hand it the new lines. Set by the worker (agent.ts). */
-let bookkeeperLookup: ((ctx: PluginContext, companyId: string) => Promise<{ id: string; status: string } | null>) | null = null;
-export function setBookkeeperLookup(fn: typeof bookkeeperLookup): void {
-  bookkeeperLookup = fn;
+/** The `list-bank-accounts` tool: ids, open lines, the last statement and how far each account is reconciled. */
+export async function bankAccountsView(ctx: PluginContext, companyId: string, includeInactive = false) {
+  const [banks, counts, statements, recs] = await Promise.all([
+    db.listBankAccounts(ctx.db, companyId),
+    db.lineCountsByAccount(ctx.db, companyId),
+    db.listStatements(ctx.db, companyId),
+    db.listReconciliations(ctx.db, companyId),
+  ]);
+  return {
+    bankAccounts: banks
+      .filter((b) => includeInactive || b.active)
+      .map((b) => {
+        const open = counts.filter((c) => c.bankAccountId === b.id && (c.status === "unreconciled" || c.status === "matching")).reduce((s, c) => s + c.count, 0);
+        const last = statements.find((s) => s.bankAccountId === b.id) ?? null;
+        const mine = recs.filter((r) => r.bankAccountId === b.id);
+        const locked = mine.filter((r) => r.status === "locked").sort((x, y) => y.periodEnd.localeCompare(x.periodEnd))[0] ?? null;
+        const pending = mine.find((r) => r.status === "pending_approval") ?? null;
+        return {
+          id: b.id,
+          name: b.name,
+          bankName: b.bankName || null,
+          numberLast4: b.numberLast4 || null,
+          accountCode: b.accountCode,
+          active: b.active,
+          openLines: open,
+          lastStatement: last ? { fileName: last.fileName || null, periodStart: last.periodStart, periodEnd: last.periodEnd, importedAt: last.createdAt } : null,
+          reconciledTo: locked?.periodEnd ?? null,
+          awaitingApproval: pending ? { periodStart: pending.periodStart, periodEnd: pending.periodEnd, approvalIssueId: pending.approvalIssueId } : null,
+        };
+      }),
+  };
 }
 
-async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: db.BankAccountRow, added: number, start: string | null, end: string | null): Promise<string | null> {
-  const agent = bookkeeperLookup ? await bookkeeperLookup(ctx, companyId).catch(() => null) : null;
-  if (!agent) return null;
+/** The `import-statement` tool: import, then say exactly what comes next. */
+export async function importStatementTool(
+  ctx: PluginContext,
+  companyId: string,
+  actor: Actor,
+  p: { bankAccountId?: unknown; content?: unknown; url?: unknown; fileName?: unknown; format?: unknown },
+) {
+  const bank = await resolveBankAccount(ctx, companyId, p.bankAccountId);
+  const r = await importStatement(ctx, companyId, actor, { bankAccountId: bank.id, content: p.content, url: p.url, fileName: p.fileName, format: p.format });
+  const next: string[] = [];
+  if (r.futureLines > 0) next.push(`${r.futureLines} line(s) are dated after today (first ${dayText(r.firstFutureDate)}). A bank statement only has money that already moved, so the date is probably wrong: don't reconcile those lines. Ask a person to check them (${ASK_OWNER_TOOL}); they count in no balance until that day.`);
+  if (r.duplicateFile) next.push("This exact file was imported before, so nothing new was added.");
+  else if (r.added === 0) next.push("Every line in the file was already imported (duplicates skipped). Nothing new to reconcile.");
+  else if (r.issueId) next.push(`Reconcile the ${r.added} new line(s) on the reconcile issue ${r.issueId} (list-bank-lines with status "unreconciled" and bankAccountId "${bank.id}").`);
+  else next.push(`Reconcile the ${r.added} new line(s): list-bank-lines with status "unreconciled" and bankAccountId "${bank.id}".`);
+  if (!r.duplicateFile && r.added > 0 && r.periodStart && r.periodEnd) {
+    next.push(
+      r.openingMinor == null || r.closingMinor == null
+        ? `When no line is open, prepare-reconciliation with bankAccountId "${bank.id}", periodStart ${r.periodStart} and periodEnd ${r.periodEnd}. The file has no opening or closing balance, so pass openingMinor and closingMinor from the statement.`
+        : `When no line is open, prepare-reconciliation with bankAccountId "${bank.id}", periodStart ${r.periodStart} and periodEnd ${r.periodEnd}.`,
+    );
+  }
+  next.push("Then mark the statement issue done with this result.");
+  return {
+    statementId: r.statementId,
+    bankAccount: { id: bank.id, name: bank.name },
+    format: r.format,
+    periodStart: r.periodStart,
+    periodEnd: r.periodEnd,
+    openingMinor: r.openingMinor,
+    closingMinor: r.closingMinor,
+    linesInFile: r.lines,
+    imported: r.added,
+    duplicatesSkipped: r.duplicates,
+    duplicateFile: r.duplicateFile,
+    suggested: r.suggested,
+    reconcileIssueId: r.issueId,
+    futureLines: r.futureLines,
+    firstFutureDate: r.firstFutureDate,
+    next,
+  };
+}
+
+/** The "Reconcile N new bank lines" issue body: the exact steps and tools. */
+export function reconcileIssueText(bank: { id: string; name: string }, added: number, start: string | null, end: string | null, future: { count: number; first: string | null } = { count: 0, first: null }): string {
+  const period = start && end ? `from \`${start}\` to \`${end}\`` : "for the statement period";
+  return [
+    `A statement for **${bank.name}** (${dayText(start)} to ${dayText(end)}) added ${added} line${added === 1 ? "" : "s"}. Follow the \`pib-bookkeeping\` skill:`,
+    ...(future.count > 0
+      ? ["", `**${future.count} line${future.count === 1 ? " is" : "s are"} dated after today (first ${dayText(future.first)}).** A statement only holds money that already moved, so the date is probably wrong. Don't reconcile ${future.count === 1 ? "it" : "them"} (agents can't): ask a person to check the date with \`${ASK_OWNER_TOOL}\`. ${future.count === 1 ? "It counts" : "They count"} in no balance until that day.`]
+      : []),
+    "",
+    `1. \`list-bank-lines\` with \`status: "unreconciled"\` and \`bankAccountId: "${bank.id}"\`. Each line lists its suggestions, best first.`,
+    "2. Accept the safe ones with `accept-categorisation`: a journal match, an exact invoice or bill match, a bank-rule category, or an obviously right Jev category. Categorise a clear line to an account (`accountCode`, `taxCode`). `suggest-categorisation` asks again for lines with no suggestion.",
+    `3. Lines you cannot place from the bank line and the books: never guess. Ask once with \`${ASK_OWNER_TOOL}\`, every unclear line in one list (date, amount, description, your best guess). If accepting is switched off for agents, put your proposed categories in the same ask.`,
+    `4. When no line is open for the period, \`prepare-reconciliation\` with \`bankAccountId: "${bank.id}"\` ${period}. It opens the approval issue for a person once the difference is zero.`,
+    "5. Mark this issue done with what you did (lines matched, categorised and asked about, the approval issue).",
+  ].join("\n");
+}
+
+/** A statement added lines: one issue for the Bookkeeper (else the Operator or the owner), so nothing waits silently. */
+async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: db.BankAccountRow, added: number, start: string | null, end: string | null, future: { count: number; first: string | null } = { count: 0, first: null }): Promise<string | null> {
   try {
-    const issue = await createWorkIssue(ctx, {
+    const route = await routeBookkeeping(ctx, companyId);
+    const issue = await openIssue(ctx, {
       companyId,
       title: `Reconcile ${added} new bank line${added === 1 ? "" : "s"} (${bank.name})`,
-      description: [
-        `A statement for **${bank.name}** (${start ?? "?"} to ${end ?? "?"}) added ${added} line${added === 1 ? "" : "s"}.`,
-        "",
-        "Follow the `pib-bookkeeping` skill: review the suggestions with `list-bank-lines`, accept the safe ones, categorise the rest, and leave anything you are unsure about for a person with a comment here.",
-      ].join("\n"),
-      assigneeAgentId: agent.id,
+      description: reconcileIssueText(bank, added, start, end, future),
       originKind: ORIGIN,
       originId: `reconcile:${bank.id}:${end ?? "?"}`,
-      wake: !["paused", "pending_approval", "terminated"].includes(agent.status),
       wakeReason: "New bank lines to reconcile",
-    });
+    }, route);
     return issue.id;
   } catch (error) {
-    ctx.logger.info("Reconcile issue skipped", { companyId, error: errorMessage(error) });
+    ctx.logger.warn("Reconcile issue could not be opened", { companyId, error: errorMessage(error) });
     return null;
   }
 }
@@ -329,10 +481,11 @@ export async function refreshSuggestions(
   });
   if (lines.length === 0) return { lines: 0, suggested: 0, jevAsked: 0 };
   const chart = await loadChart(ctx, companyId);
-  const [items, rules, banks] = await Promise.all([
+  const [items, rules, banks, refused] = await Promise.all([
     db.listOpenItems(ctx.db, companyId, { currency: BOOK_CURRENCY }),
     db.listRules(ctx.db, companyId),
     db.listBankAccounts(ctx.db, companyId),
+    db.refusedMatches(ctx.db, companyId),
   ]);
   const bankCode = new Map(banks.map((b) => [b.id, b.accountCode]));
   const journalsByBank = new Map<string, Awaited<ReturnType<typeof db.unlinkedBankJournals>>>();
@@ -350,7 +503,11 @@ export async function refreshSuggestions(
   let suggested = 0;
   const computed = new Map<string, Suggestion[]>();
   for (const line of lines) {
-    const suggestions = suggestFor(line, { items: openItems, journals: journalsByBank.get(line.bankAccountId) ?? [], rules, bookCurrency: BOOK_CURRENCY });
+    // An invoice or bill Billing refused for this line is not suggested again (no accept-refuse loop).
+    const refusedHere = refused.get(line.id);
+    const suggestions = suggestFor(line, { items: openItems, journals: journalsByBank.get(line.bankAccountId) ?? [], rules, bookCurrency: BOOK_CURRENCY }).filter(
+      (s) => !(s.kind === "open_item" && refusedHere?.has(s.key)),
+    );
     computed.set(line.id, suggestions);
     if (suggestions.length) suggested += 1;
     const strong = suggestions.some((s) => (s.kind === "open_item" && s.basis === "exact") || s.kind === "journal" || (s.kind === "category" && s.source === "rule"));
@@ -424,6 +581,13 @@ async function requireLine(ctx: PluginContext, companyId: string, lineId: unknow
   return { line, bank };
 }
 
+/** A bank line dated after today waits for a person to check its date: agents may not reconcile it. */
+export function assertAgentMayTouchDate(actor: Actor, line: { date: string }, today = todayIso()): void {
+  if (actor.kind === "agent" && line.date > today) {
+    throw new AccountingError(`This bank line is dated ${dayText(line.date)}, after today, so its date is probably wrong. A person checks it first (ask with ${ASK_OWNER_TOOL}).`, "forbidden");
+  }
+}
+
 /** Who may accept: a board user always; an agent only when the setting allows (and only exact open-item matches). */
 async function assertMayAccept(ctx: PluginContext, companyId: string, actor: Actor, suggestion: Suggestion | null): Promise<void> {
   if (actor.kind === "user") return;
@@ -444,6 +608,7 @@ export async function acceptSuggestion(ctx: PluginContext, companyId: string, ac
   const suggestion = line.suggestions[index];
   if (!suggestion) throw new AccountingError("That suggestion no longer exists; refresh the suggestions", "not_found");
   await assertMayAccept(ctx, companyId, actor, suggestion);
+  assertAgentMayTouchDate(actor, line);
   if (suggestion.kind === "open_item") return acceptOpenItem(ctx, companyId, actor, line, bank, suggestion.key, suggestion.basis === "reference" ? "manual" : suggestion.basis);
   if (suggestion.kind === "journal") return linkJournal(ctx, companyId, line, bank, suggestion.journalId);
   return categorise(ctx, companyId, actor, { lineId: line.id, accountCode: suggestion.accountCode, taxCode: suggestion.taxCode, counterparty: suggestion.counterparty }, true);
@@ -462,9 +627,14 @@ export async function acceptOpenItem(
   if (!item) throw new AccountingError("That invoice or bill is no longer open", "not_found");
   const kind = line.amountMinor > 0 ? "receivable" : "payable";
   if (item.kind !== kind) throw new AccountingError(`Money ${line.amountMinor > 0 ? "in" : "out"} can only settle a ${kind}`);
-  if (Math.abs(line.amountMinor) > item.outstandingMinor) throw new AccountingError(`The bank amount is more than the ${formatRand(item.outstandingMinor)} still open on ${item.number}`);
+  if (Math.abs(line.amountMinor) > item.outstandingMinor) throw new AccountingError(`The bank amount is more than the ${money(item.outstandingMinor)} still open on ${item.number}`);
+  // Billing answers each key once, so matching the same line and item again (after a refusal or an undo) needs a new key.
+  const base = `bank:${line.id}:${item.key}`;
+  const used = new Set(await db.matchKeysFor(ctx.db, base));
+  let key = base;
+  for (let n = 2; used.has(key); n += 1) key = `${base}:${n}`;
   const payload: BankMatched = {
-    key: `bank:${line.id}:${item.key}`,
+    key,
     bankTxId: line.id,
     bankAccountRole: "bank",
     bankAccountCode: bank.accountCode,
@@ -492,7 +662,7 @@ async function linkJournal(ctx: PluginContext, companyId: string, line: db.BankL
   const journal = await db.journalById(ctx.db, companyId, journalId);
   if (!journal) throw new AccountingError("Journal not found", "not_found");
   const effect = journal.lines.filter((l) => l.accountCode === bank.accountCode).reduce((s, l) => s + l.debitMinor - l.creditMinor, 0);
-  if (effect !== line.amountMinor) throw new AccountingError(`${journal.number} moves ${formatRand(effect)} on this bank, the line is ${formatRand(line.amountMinor)}`);
+  if (effect !== line.amountMinor) throw new AccountingError(`${journal.number} moves ${money(effect)} on this bank, the line is ${money(line.amountMinor)}`);
   const ok = await db.setLineState(ctx.db, companyId, line.id, ["unreconciled", "matching"], {
     status: "reconciled",
     match: { kind: "journal", journalId: journal.id, journalNumber: journal.number },
@@ -506,6 +676,7 @@ async function linkJournal(ctx: PluginContext, companyId: string, line: db.BankL
 export async function matchToJournal(ctx: PluginContext, companyId: string, actor: Actor, input: { lineId?: unknown; journalId?: unknown }): Promise<db.BankLineRow> {
   await assertMayAccept(ctx, companyId, actor, null);
   const { line, bank } = await requireLine(ctx, companyId, input.lineId);
+  assertAgentMayTouchDate(actor, line);
   if (typeof input.journalId !== "string") throw new AccountingError("journalId is required");
   return linkJournal(ctx, companyId, line, bank, input.journalId);
 }
@@ -570,6 +741,7 @@ export async function categorise(
 ): Promise<db.BankLineRow> {
   if (!alreadyChecked) await assertMayAccept(ctx, companyId, actor, null);
   const { line, bank } = await requireLine(ctx, companyId, input.lineId);
+  assertAgentMayTouchDate(actor, line);
   if (line.status !== "unreconciled") throw new AccountingError(`This line is already ${line.status}`, "conflict");
   const chart: Chart = await loadChart(ctx, companyId);
   const accountCode = typeof input.accountCode === "string" ? input.accountCode.trim() : "";

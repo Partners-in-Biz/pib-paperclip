@@ -48,11 +48,30 @@ export const instanceConfigSchema: JsonSchema = {
       title: "Sender name",
       description: "Optional name shown next to the Gmail address on mail the plugins send, e.g. Partners in Biz.",
     },
+    replyIssues: {
+      type: "boolean",
+      title: "Open reply issues",
+      description: "Mail from a client, a known lead or support that needs a reply opens one issue per thread for the agent who answers it. New leads go to the CRM instead.",
+      default: true,
+    },
     triageIssueAssignee: {
       type: "string",
       title: "Assign reply issues to",
       description:
-        "Optional. An agent id, or user:<id> for a person. When set, mail from a lead, client or support that needs a reply opens one issue per thread.",
+        "Optional. An agent id, or user:<id> for a person. Empty: the Account Manager, else the Operator, else the owner.",
+    },
+    r2: {
+      type: "object",
+      title: "Private attachment storage (Cloudflare R2)",
+      description:
+        "A PRIVATE bucket (no public URL) where get-attachment stores a file and hands agents a link that expires in 15 minutes. Text files (CSV, OFX, QIF, TXT) work without it. Do not use the public social media bucket.",
+      properties: {
+        accountId: { type: "string", title: "Account ID" },
+        bucket: { type: "string", title: "Bucket" },
+        accessKeyId: { type: "string", title: "Access key ID" },
+        secretAccessKey: secretField("Secret access key"),
+        prefix: { type: "string", title: "Key prefix", default: "mailbox" },
+      },
     },
     sendRatePerMinute: {
       type: "integer",
@@ -83,6 +102,8 @@ export interface MailboxConfig {
   labelPrefix: string;
   fromName: string | null;
   triageAssignee: TriageAssignee | null;
+  /** Open reply issues for mail that needs an answer (default on). */
+  replyIssues: boolean;
   sendRatePerMinute: number;
 }
 
@@ -116,8 +137,37 @@ export function parseMailboxConfig(raw: Record<string, unknown>): MailboxConfig 
     labelPrefix: parseLabelPrefix(raw.labelPrefix),
     fromName,
     triageAssignee: parseTriageAssignee(raw.triageIssueAssignee),
+    replyIssues: raw.replyIssues !== false,
     sendRatePerMinute: Number.isInteger(rate) && rate >= 1 && rate <= 250 ? rate : DEFAULT_SEND_RATE,
   };
+}
+
+/** Private R2 for attachments. Null until account id, bucket, key id and secret are set. */
+export interface PrivateR2 {
+  accountId: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  prefix: string;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** True when the R2 settings are filled in (the secret may still fail to resolve). */
+export function r2Configured(raw: Record<string, unknown>): boolean {
+  const r2 = (raw.r2 && typeof raw.r2 === "object" ? raw.r2 : {}) as Record<string, unknown>;
+  return Boolean(text(r2.accountId) && text(r2.bucket) && text(r2.accessKeyId) && r2.secretAccessKey);
+}
+
+export async function privateR2(loaded: LoadedConfig): Promise<PrivateR2 | null> {
+  if (!r2Configured(loaded.raw)) return null;
+  const r2 = loaded.raw.r2 as Record<string, unknown>;
+  const secretAccessKey = await loaded.secrets.get("r2.secretAccessKey");
+  if (!secretAccessKey) return null;
+  const prefix = (text(r2.prefix) ?? "mailbox").replace(/^\/+|\/+$/g, "").replace(/[^A-Za-z0-9/_-]/g, "-") || "mailbox";
+  return { accountId: text(r2.accountId)!, bucket: text(r2.bucket)!, accessKeyId: text(r2.accessKeyId)!, secretAccessKey, prefix };
 }
 
 export interface LoadedConfig {

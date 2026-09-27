@@ -110,7 +110,7 @@ beforeEach(() => {
 
 describe("manifest and hire", () => {
   it("declares the cockpit route at the bumped version", () => {
-    expect(manifest.version).toBe("0.1.7");
+    expect(manifest.version).toBe("0.2.0");
     expect(manifest.apiRoutes).toContainEqual(COCKPIT_ROUTE);
   });
 
@@ -135,13 +135,15 @@ describe("cockpit snapshot", () => {
     const s = await cockpitSnapshot(host.env, C);
     expect(s).toMatchObject({ plugin: "partnersinbiz.payroll", title: "Payroll", checkedAt: "2026-09-20T08:00:00.000Z" });
     expect(check(s, "settings")).toMatchObject({ status: "warn", href: "/setup" });
-    expect(kpi(s, "next_pay_date")).toMatchObject({ value: "2026-09-25", raw: 5, group: "people" });
+    // Dates read "25 Sep 2026" on screen, never 2026-09-25.
+    expect(kpi(s, "next_pay_date")).toMatchObject({ value: "25 Sep 2026", raw: 5, group: "people" });
     expect(kpi(s, "employees_active")).toMatchObject({ raw: 0 });
     expect(kpi(s, "last_run_cost")).toBeUndefined();
     expect(kpi(s, "emp201")).toBeUndefined();
     expect(check(s, "job:follow-up")).toMatchObject({ status: "ok", detail: "Has not run yet." });
     expect(check(s, "rules")).toMatchObject({ status: "ok" });
-    expect(check(s, "rules_review")).toMatchObject({ status: "warn", href: "/payroll?tab=statutory" });
+    expect(check(s, "rules_review")).toMatchObject({ status: "warn", href: "/payroll?tab=statutory", detail: "4 tax rules need your accountant's check (2026/27). Pay runs use them as they are until then." });
+    expect(JSON.stringify(check(s, "rules_review"))).not.toMatch(/treatment\.|statutory\.it3a|leave\.annual/);
     expect(check(s, "ledger").status).toBe("ok");
     expect(s.waiting).toEqual([]);
     expect(s.health.find((c) => c.key === "snapshot")).toBeUndefined();
@@ -149,7 +151,7 @@ describe("cockpit snapshot", () => {
 
   it("shows pay dates, costs, the EMP201, problems and approvals without personal data", async () => {
     const host = makeHost();
-    await markRulesReviewed(host.env, C, approver);
+    await markRulesReviewed(host.env, C, approver, { accountantName: "Jane Accountant", checkedOn: "2026-09-18" });
     await addEmployee(host);
     await addEmployee(host, "Sipho", "Dlamini", "8501015009086");
     const { run } = await runs.createRun(host.env, C, preparer, { frequency: "monthly" });
@@ -175,12 +177,13 @@ describe("cockpit snapshot", () => {
     expect(kpi(s, "employees_active")).toMatchObject({ raw: 2 });
     expect(kpi(s, "last_run_cost")).toMatchObject({ raw: locked.totals.employerCostMinor, group: "money" });
     expect(locked.totals.employerCostMinor).toBeGreaterThan(0);
-    expect(kpi(s, "emp201")!.value).toMatch(/ by 2026-10-07$/);
+    // EMP201: the amount is the value, the month and due date read as words in the label.
+    expect(kpi(s, "emp201")).toMatchObject({ label: "SARS EMP201 for Sep 2026, due 7 Oct 2026", value: expect.stringMatching(/^R [\d,]+\.\d{2}$/) });
     expect(kpi(s, "emp201")!.raw).toBeGreaterThan(0);
     expect(kpi(s, "next_pay_date")!.label).toContain(second.run.number);
     expect(check(s, "ledger")).toMatchObject({ status: "bad" });
     expect(check(s, "payslips")).toMatchObject({ status: "warn" });
-    expect(check(s, "rules_review").status).toBe("ok");
+    expect(check(s, "rules_review")).toMatchObject({ status: "ok", detail: "Checked on 18 Sep 2026." });
 
     const issueId = (pending as { approvalIssueId?: string }).approvalIssueId ?? (await fake.getRun(null, C, second.run.id))!.approvalIssueId;
     expect(s.waiting).toEqual(expect.arrayContaining([
@@ -191,7 +194,8 @@ describe("cockpit snapshot", () => {
     expect(s.quality.map((q) => q.key)).toContain("adjustments");
 
     const text = JSON.stringify(s);
-    for (const value of [...PII, "sick", "Doctor visit", "user-approver", "user-preparer", "7123456789", "a-long-enough-test-encryption-key"]) expect(text, value).not.toContain(value);
+    for (const value of [...PII, "sick", "Doctor visit", "user-approver", "user-preparer", "7123456789", "a-long-enough-test-encryption-key", "Jane Accountant"]) expect(text, value).not.toContain(value);
+    expect(text).not.toMatch(/\b\d{4}-\d{2}-\d{2}\b(?!T)/);
   });
 
   it("reports a missing rule version and failing jobs", async () => {

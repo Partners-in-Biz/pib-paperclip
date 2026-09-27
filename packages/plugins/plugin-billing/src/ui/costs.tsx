@@ -25,7 +25,7 @@ export function BillsTab() {
   const owed = bills.reduce((sum, b) => sum + (b.currency === (snapshot.defaults?.currency ?? "ZAR") ? b.outstandingMinor : 0), 0);
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search bills…">{newButton}</Toolbar>
+      {bills.length > 0 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search bills…">{newButton}</Toolbar> : null}
       {bills.length > 0 ? <Muted>{money(owed, snapshot.defaults?.currency ?? "ZAR")} owed to suppliers. Supplier invoices that arrive by email from a known supplier are drafted here automatically.</Muted> : null}
       {bills.length === 0 ? (
         <EmptyState title="No bills yet" description="Add a supplier's invoice with its lines and VAT, approve it (it is posted to the books), then pay it." action={newButton} />
@@ -223,10 +223,12 @@ export function ExpensesTab() {
   ) : null;
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search expenses…">
-        {upload}
-        <Button type="button" onClick={() => setAdding(true)}>+ Add expense</Button>
-      </Toolbar>
+      {expenses.length > 0 ? (
+        <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search expenses…">
+          {upload}
+          <Button type="button" onClick={() => setAdding(true)}>+ Add expense</Button>
+        </Toolbar>
+      ) : upload ? <Row>{upload}</Row> : null}
       {review > 0 ? <Muted>{review} expense{review === 1 ? "" : "s"} to check (drafts from receipts, or an unsure category).</Muted> : null}
       {!snapshot.features?.r2 ? <Muted>Set up the private R2 bucket in Billing settings to upload receipts.</Muted> : null}
       {expenses.length === 0 ? (

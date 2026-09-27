@@ -86,6 +86,41 @@ export function setupProgress(items: SetupItem[]): { done: number; total: number
   return { done: required.filter((i) => i.status === "done").length, total: required.length, missing: required.filter((i) => i.status !== "done") };
 }
 
+export interface SetupSummary {
+  requiredDone: number;
+  requiredTotal: number;
+  /** Required steps not done: the one "steps left" number every page shows. */
+  requiredLeft: number;
+  optionalLeft: number;
+}
+
+/**
+ * The one way to count setup, used by the Setup page, its sidebar badge, the
+ * weekly Finish setup issue and the Cockpit, so they always show the same
+ * number. Plugins whose module is switched off are left out.
+ */
+export function setupSummary(statuses: Array<Pick<SetupStatus, "module" | "items">>, modules?: Partial<Record<ModuleKey, boolean>> | null): SetupSummary {
+  let requiredDone = 0;
+  let requiredTotal = 0;
+  let optionalLeft = 0;
+  for (const status of statuses) {
+    if (status.module && modules?.[status.module] === false) continue;
+    for (const item of status.items) {
+      if (item.required) {
+        requiredTotal += 1;
+        if (item.status === "done") requiredDone += 1;
+      } else if (item.status !== "done") optionalLeft += 1;
+    }
+  }
+  return { requiredDone, requiredTotal, requiredLeft: requiredTotal - requiredDone, optionalLeft };
+}
+
+/** `3 steps left` / `1 step left` / `Setup done`, worded the same everywhere. */
+export function setupLeftLabel(left: number): string {
+  if (left <= 0) return "Setup done";
+  return `${left} ${left === 1 ? "step" : "steps"} left`;
+}
+
 /** Manifest apiRoutes entry every PiB plugin adds. */
 export const SETUP_STATUS_ROUTE = {
   routeKey: "setup-status",

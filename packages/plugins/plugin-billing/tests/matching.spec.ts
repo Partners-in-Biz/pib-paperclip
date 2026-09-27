@@ -83,6 +83,9 @@ describe("dunning schedule", () => {
       invoice: { id, status, customer_kind: "company", customer_ref: customerRef, due_at: new Date(now.getTime() - dueDaysAgo * 86_400_000).toISOString() } as never,
       state: {} as never,
       outstandingMinor: outstanding,
+      futurePaidMinor: 0,
+      futurePayments: 0,
+      nextFuturePaidAt: null,
     });
     const plans = planReminders({
       balances: [

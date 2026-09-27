@@ -37,7 +37,9 @@ describe("partner overview numbers", () => {
       pendingLinks: 2,
       linksToAccept: 1,
       activeGrants: 3,
+      // g5: our deal waiting for a yes here. g4 (their invoice) waits for them, not us.
       grantsToAccept: 1,
+      grantsIncoming: 1,
       revokedGrants: 1,
       byType: [{ type: "company", count: 2 }, { type: "contact", count: 1 }],
       byPartner: [{ companyId: "p1", count: 2 }, { companyId: "p2", count: 1 }],

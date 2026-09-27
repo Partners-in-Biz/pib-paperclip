@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { applyCredit, applyOwnCreditNotes, invoiceBalance, refreshInvoiceStatus, syncCreditNoteStatus } from "./balances.js";
+import { applyCredit, applyOwnCreditNotes, datedAfterToday, invoiceBalance, refreshInvoiceStatus, syncCreditNoteStatus } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { getInvoice, PAYMENT_COLUMNS, table, type InvoiceRow, type PaymentRow } from "./db.js";
 import { assertPaymentAmount, BillingError, isOpenStatus } from "./domain.js";
@@ -93,6 +93,10 @@ export async function settle(ctx: PluginContext, input: SettleInput, settings: B
   const amount = assertPaymentAmount(input.amountMinor);
   const sourceKey = String(input.sourceKey ?? "").trim();
   if (!sourceKey || sourceKey.length > 200) throw new BillingError("A payment source key is required");
+  // Money a person records or confirms is money already in the bank. (A bank line dated later is recorded, counts from its date and is flagged.)
+  if ((input.source === "manual" || input.source === "pop") && datedAfterToday(input.paidAt ?? null, now)) {
+    throw new BillingError(`The payment date ${String(input.paidAt).slice(0, 10)} is after today. Record a payment once the money is in the bank.`);
+  }
   const invoice = await getInvoice(ctx, input.invoiceId);
   if (!invoice || invoice.company_id !== input.companyId) throw new BillingError("Invoice was not found");
 

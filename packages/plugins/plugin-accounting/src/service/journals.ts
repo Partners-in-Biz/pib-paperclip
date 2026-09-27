@@ -30,10 +30,10 @@ import {
   type JournalLine,
   type JournalSource,
 } from "../domain/journal.js";
-import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
-import { AccountingError, formatRand, isIsoDate, monthOf, todayIso } from "../domain/util.js";
+import { dayLabel } from "../domain/dates.js";
+import { AccountingError, isIsoDate, monthOf, todayIso } from "../domain/util.js";
 import { ensureBook, loadChart, roleAccount } from "./books.js";
-import { actorRecord, BOOK_CURRENCY, closeIssue, commentOn, errorMessage, newId, ORIGIN, requireUser, withLock, type Actor } from "./common.js";
+import { actorRecord, approverFor, BOOK_CURRENCY, closeIssue, commentOn, errorMessage, money, newId, openIssue, ORIGIN, reopenForPerson, requireUser, withLock, type Actor } from "./common.js";
 
 export interface PostInput {
   sourceKey: string;
@@ -333,7 +333,7 @@ export async function saveDraft(ctx: PluginContext, companyId: string, input: Dr
 
 function draftSummary(d: db.DraftRow): string {
   const rows = d.lines
-    .map((l) => `| ${String(l.accountCode ?? l.role ?? "")} | ${l.memo ?? ""} | ${Number(l.debitMinor) ? formatRand(Number(l.debitMinor)) : ""} | ${Number(l.creditMinor) ? formatRand(Number(l.creditMinor)) : ""} |`)
+    .map((l) => `| ${String(l.accountCode ?? l.role ?? "")} | ${l.memo ?? ""} | ${Number(l.debitMinor) ? money(Number(l.debitMinor)) : ""} | ${Number(l.creditMinor) ? money(Number(l.creditMinor)) : ""} |`)
     .join("\n");
   return `| Account | Memo | Debit | Credit |\n|---|---|---:|---:|\n${rows}`;
 }
@@ -344,21 +344,21 @@ export async function requestDraftApproval(ctx: PluginContext, companyId: string
   if (draft.status !== "draft") throw new AccountingError("Approval was already requested for this journal", "conflict");
   await checkDraft(ctx, companyId, draft);
   const total = draft.lines.reduce((s, l) => s + Number(l.debitMinor ?? 0), 0);
-  const issue = await createWorkIssue(ctx, {
+  const approver = await approverFor(ctx, companyId, actor);
+  const issue = await openIssue(ctx, {
     companyId,
-    title: `Approve journal: ${draft.memo || "manual journal"} (${formatRand(total)})`,
+    title: `Approve journal: ${draft.memo || "manual journal"} (${money(total)})`,
     description: [
-      `A manual journal dated ${draft.date} is waiting for approval. It was prepared by ${actor.kind === "agent" ? "an agent" : "a board user"}.`,
+      `A manual journal dated ${dayLabel(draft.date)} is waiting for approval. It was prepared by ${actor.kind === "agent" ? "the Bookkeeper" : "a board user"}.`,
       "",
       draftSummary(draft),
       "",
-      "To approve, open **Accounting → Journals → Drafts** and click **Approve and post**, or mark this issue done yourself (a person must do it; an agent marking it done does not count).",
+      "To approve, mark this issue done yourself, or open **Accounting → Journals → Drafts** and click **Approve and post**. Only a person can approve: if an agent closes it, it opens again for you.",
       "To refuse it, cancel this issue.",
     ].join("\n"),
     originKind: ORIGIN,
     originId: `draft:${draft.id}`,
-    wake: false,
-  });
+  }, { assigneeUserId: approver });
   await db.setDraftStatus(ctx.db, companyId, draft.id, ["draft"], { status: "pending_approval", approvalIssueId: issue.id, error: null });
   return (await db.getDraft(ctx.db, companyId, draft.id))!;
 }
@@ -407,11 +407,15 @@ export async function cancelDraft(ctx: PluginContext, companyId: string, draftId
 
 /**
  * Approval by issue: a person marking the approval issue done posts the
- * journal; cancelling it cancels the draft. Agents marking it done do not
- * count (the plugin comments instead).
+ * journal; cancelling it cancels the draft. An agent closing or cancelling
+ * it does not count: the issue is reopened and handed back to the person.
  */
 export async function onDraftIssue(ctx: PluginContext, companyId: string, draft: db.DraftRow, issueStatusValue: string, actor: { type?: string; id?: string }): Promise<void> {
   if (draft.status !== "pending_approval") return;
+  if (actor.type === "agent" && (issueStatusValue === "done" || issueStatusValue === "cancelled")) {
+    await reopenForPerson(ctx, companyId, draft.approvalIssueId, `manual journal ${draft.memo || dayLabel(draft.date)}`.slice(0, 120));
+    return;
+  }
   if (issueStatusValue === "cancelled") {
     await db.setDraftStatus(ctx.db, companyId, draft.id, ["pending_approval"], { status: "cancelled", error: "Approval issue cancelled" });
     return;

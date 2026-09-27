@@ -2,7 +2,8 @@
  * Setup checklist, Needs you items and the site repo link (0.6.0).
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { Button, Field, Input, ListChecks, Pill, UserRound, ProgressBar, Section, SectionCard, Select, breakAnywhere, fluidColumns, tokens, type ToneName } from "@partnersinbiz/pib-plugin-ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { Button, Field, InlineText, Input, ListChecks, Pill, UserRound, ProgressBar, Section, SectionCard, Select, breakAnywhere, fluidColumns, tokens, type ToneName } from "@partnersinbiz/pib-plugin-ui";
 
 export type UiLink = { label: string; url: string };
 
@@ -69,24 +70,31 @@ function LinkList({ links }: { links: UiLink[] }) {
   );
 }
 
+/** Steps with their **bold**, `code` and [links](/path) rendered (never the raw markdown). */
 function Steps({ steps }: { steps: string[] }) {
+  const nav = useHostNavigation();
   if (steps.length === 0) return null;
   return (
-    <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.55, display: "grid", gap: 2 }}>
+    <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12.5, lineHeight: 1.55, display: "grid", gap: 3, listStyle: "decimal" }}>
       {steps.map((s, i) => (
-        <li key={i}>{s.replace(/\*\*/g, "")}</li>
+        <li key={i}><InlineText text={s} linkFor={(href) => ({ ...nav.linkProps(href) })} /></li>
       ))}
     </ol>
   );
 }
 
-export function SetupChecklist({ title, items }: { title: string; items: SetupItem[] }) {
+function Rich({ text }: { text: string }) {
+  const nav = useHostNavigation();
+  return <InlineText text={text} linkFor={(href) => ({ ...nav.linkProps(href) })} />;
+}
+
+export function SetupChecklist({ title, items, note }: { title: string; items: SetupItem[]; note?: ReactNode }) {
   const [open, setOpen] = useState<string | null>(null);
   if (items.length === 0) return null;
   const done = items.filter((i) => i.status === "done").length;
   const countable = items.filter((i) => i.status !== "unknown").length;
   return (
-    <SectionCard title={title} icon={ListChecks} subtitle={done === countable ? "Everything is set up" : `${countable - done} left to do`} tone={done === countable ? "ok" : undefined} actions={<Pill tone={done === countable ? "ok" : "warn"}>{done}/{countable} done</Pill>}>
+    <SectionCard title={title} icon={ListChecks} subtitle={done === countable ? "Everything is set up" : `${countable - done} ${countable - done === 1 ? "step" : "steps"} left`} tone={done === countable ? "ok" : undefined} actions={<Pill tone={done === countable ? "ok" : "warn"}>{done} of {countable} done</Pill>}>
       <ProgressBar done={done} total={countable} size="sm" ariaLabel={`${done} of ${countable} setup steps done`} />
       <div style={{ display: "grid", gap: 8 }}>
         {items.map((item) => (
@@ -102,16 +110,17 @@ export function SetupChecklist({ title, items }: { title: string; items: SetupIt
                 </Button>
               ) : null}
             </div>
-            <span style={{ fontSize: 12, color: tokens.muted }}>{item.detail}</span>
+            <span style={{ fontSize: 12.5, color: tokens.muted }}><Rich text={item.detail} /></span>
             {open === item.key ? <Steps steps={item.steps} /> : null}
             <LinkList links={item.links} />
-            <span style={{ fontSize: 12 }}>
+            <span style={{ fontSize: 12.5 }}>
               <span style={{ color: tokens.muted }}>Then the agent: </span>
-              {item.next}
+              <Rich text={item.next} />
             </span>
           </div>
         ))}
       </div>
+      {note ? <span style={{ fontSize: 12.5, color: tokens.muted }}>{note}</span> : null}
     </SectionCard>
   );
 }
@@ -130,14 +139,14 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
   return (
     <SectionCard
       title={`Needs you${view.open.length ? ` (${view.open.length})` : ""}`}
-      subtitle="What only a person can do this week, batched in one issue"
+      subtitle="What only a person can do for this sprint, batched in one issue a week"
       icon={UserRound}
       tone={view.open.length ? "warn" : "ok"}
       strip={view.open.length > 0}
       actions={issueLink ?? null}
     >
       {view.open.length === 0 ? (
-        <span style={{ fontSize: 13, color: tokens.muted }}>Nothing needs you. The SEO Specialist runs this sprint on its own.</span>
+        <span style={{ fontSize: 13, color: tokens.muted }}>Nothing needs you. The SEO agent runs this sprint on its own.</span>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           {view.open.map((item, index) => (
@@ -151,7 +160,7 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
                   {busy === item.key ? "Checking…" : "Done"}
                 </Button>
               </div>
-              <span style={{ fontSize: 12, color: tokens.muted }}>{item.why}</span>
+              <span style={{ fontSize: 12.5, color: tokens.muted }}><Rich text={item.why} /></span>
               <Steps steps={item.steps} />
               <LinkList links={item.links} />
               {item.copy ? (
@@ -162,9 +171,9 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
                   </span>
                 </div>
               ) : null}
-              <span style={{ fontSize: 12 }}>
+              <span style={{ fontSize: 12.5 }}>
                 <span style={{ color: tokens.muted }}>Then the agent: </span>
-                {item.after}
+                <Rich text={item.after} />
               </span>
             </div>
           ))}

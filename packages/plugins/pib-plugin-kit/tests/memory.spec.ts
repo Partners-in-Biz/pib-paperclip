@@ -13,6 +13,7 @@ import {
 } from "../src/memory.js";
 import { withFrontmatter } from "../src/skills.js";
 import { hireTaskDraft, withMemoryInstruction, type HireRole } from "../src/agent-hire.js";
+import { ASK_OWNER_TOOL, ASKING_HEADING, ASKING_SECTION, COMPANY_OS_INSTRUCTION } from "../src/asking.js";
 
 describe("company memory contract", () => {
   it("names the Cockpit tools", () => {
@@ -73,6 +74,18 @@ describe("company memory contract", () => {
       toolPlugins: [],
     };
     expect(hireTaskDraft(role).description).toContain(COMPANY_MEMORY_INSTRUCTION);
-    expect(withMemoryInstruction(withMemoryInstruction("A"))).toBe(`A\n\n${COMPANY_MEMORY_INSTRUCTION}`);
+    expect(hireTaskDraft(role).description).toContain(COMPANY_OS_INSTRUCTION);
+    expect(withMemoryInstruction(withMemoryInstruction("A"))).toBe(`A\n\n${COMPANY_MEMORY_INSTRUCTION}\n\n${COMPANY_OS_INSTRUCTION}`);
+  });
+
+  it("appends the asking section after memory, once, unless switched off", () => {
+    const skill = withFrontmatter({ name: "pib-x", description: "X" }, "# X\n\nBody");
+    expect(skill.indexOf(COMPANY_MEMORY_HEADING)).toBeLessThan(skill.indexOf(ASKING_HEADING));
+    expect(skill).toContain(ASK_OWNER_TOOL);
+    expect(skill.split(ASKING_HEADING)).toHaveLength(2);
+    expect(withFrontmatter({ name: "pib-x", description: "X", asking: false }, "# X")).not.toContain(ASKING_HEADING);
+    expect(withFrontmatter({ name: "pib-x", description: "X", memory: false }, "# X")).not.toContain(ASKING_HEADING);
+    expect(ASKING_SECTION.length).toBeLessThan(1000);
+    expect(COMPANY_MEMORY_SECTION).toContain("up to 5 bullets");
   });
 });

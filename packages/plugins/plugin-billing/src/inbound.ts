@@ -1,16 +1,17 @@
 /**
  * Events from other plugins and from Paperclip issues:
  * - Mailbox `mail.send.result` → delivery recorded, invoice marked sent.
- * - Mailbox `mail.received` → proof of payment or a supplier's bill.
+ * - Mailbox `mail.received` → a reply to a quote, a proof of payment or a supplier's bill.
  * - Accounting `ledger.post.result` → journal number on the document.
  * - Accounting `bank.matched` → settle or ask a person.
- * - `issue.updated` → approvals and verification issues a person finished.
+ * - `issue.updated` → approvals and decisions a person finished (an agent's "done" is undone).
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   MAIL_EVENTS,
   PIB_PLUGINS,
   receiveOnce,
+  reopenApprovalForPerson,
   type BankMatched,
   type LedgerPostResult,
   type MailReceived,
@@ -21,10 +22,12 @@ import { emitBankMatchResult, onBankMatched, settleBankMatch } from "./bank.js";
 import { billingSettings, type BillingSettings } from "./config.js";
 import { approveBill, billByApproval, draftBillFromEmail } from "./costs.js";
 import { asObject, getQuote, invoiceByApproval, quoteByApproval, saveQuoteStatus, table } from "./db.js";
+import { openQuoteReplyIssue, quoteForReply } from "./followups.js";
 import { markInvoiceSent, startInvoiceSend, startQuoteSend } from "./invoices.js";
 import { parseMailKey, settleMailResult } from "./mail.js";
 import { onLedgerResult } from "./posting.js";
-import { choosePopInvoice, confirmPop, getPop, lookupSender, looksLikePop, mailText, openInvoiceCandidates, recordPop, rejectPop, threadInvoiceId } from "./pop.js";
+import { choosePopInvoice, closePopIssues, confirmPop, getPop, lookupSender, looksLikePop, mailText, openInvoiceCandidates, recordPop, rejectPop, threadInvoiceId } from "./pop.js";
+import { applyDecision, REQUEST_KINDS, type DecisionRow } from "./requests.js";
 import { settle } from "./settle.js";
 import { errorMessage } from "./util.js";
 
@@ -109,6 +112,14 @@ export async function onMailReceived(ctx: PluginContext, event: PluginEvent): Pr
   const fromEmail = String(mail.from?.email ?? "").toLowerCase();
   if (fromEmail && fromEmail === String(mail.accountAddress ?? "").toLowerCase()) return;
   const category = mail.triage?.category ?? null;
+  // A customer answering a quote email (accept, decline, a question): an issue for the Account Manager.
+  if (!mail.bounce && category !== "spam" && category !== "proof_of_payment") {
+    const quoteId = await quoteForReply(ctx, companyId, mail);
+    if (quoteId) {
+      await receiveOnce(ctx, companyId, MAIL_RECEIVED_EVENT, `quote-reply:${mail.key}`, () => openQuoteReplyIssue(ctx, companyId, mail, quoteId));
+      return;
+    }
+  }
   const threadInvoice = threadInvoiceId(mail);
   // Cheap exit for mail that is never a payment or a bill.
   if (!threadInvoice && category && ["spam", "newsletter", "notification", "lead", "personal", "bank_statement"].includes(category)) return;
@@ -170,30 +181,18 @@ export async function onLedgerPostResult(ctx: PluginContext, event: PluginEvent)
   await onLedgerResult(ctx, event.payload as LedgerPostResult);
 }
 
-async function closeIssue(ctx: PluginContext, companyId: string, issueId: string): Promise<void> {
-  await ctx.db.execute(`UPDATE ${table(ctx, "decision_issues")} SET status = 'resolved', resolved_at = now() WHERE issue_id = $1 AND status = 'open'`, [issueId]);
-  try {
-    await ctx.issues.update(issueId, { status: "done" }, companyId);
-  } catch (error) {
-    ctx.logger.info("Could not close the verification issue", { issueId, error: errorMessage(error) });
-  }
-}
-
 export async function onBankMatchedEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
   const companyId = event.companyId;
   if (!companyId) return;
   const settings = await billingSettings(ctx, companyId);
   const { closePops } = await onBankMatched(ctx, companyId, event.payload as BankMatched, settings);
-  for (const popId of closePops) {
-    const pop = await getPop(ctx, popId);
-    if (pop?.issue_id) await closeIssue(ctx, companyId, pop.issue_id);
-  }
+  await closePopIssues(ctx, companyId, closePops);
 }
 
 // ── Issues a person finished ───────────────────────────────────────────────
 
-async function claimDecisionIssue(ctx: PluginContext, issueId: string, status: "resolved" | "dismissed") {
-  const rows = await ctx.db.query<{ issue_id: string; company_id: string; kind: string; subject_kind: string; subject_id: string; payload: unknown; status: string }>(
+async function claimDecisionIssue(ctx: PluginContext, issueId: string, status: "resolved" | "dismissed"): Promise<DecisionRow | null> {
+  const rows = await ctx.db.query<DecisionRow>(
     `SELECT issue_id, company_id, kind, subject_kind, subject_id, payload, status FROM ${table(ctx, "decision_issues")} WHERE issue_id = $1`,
     [issueId],
   );
@@ -203,17 +202,23 @@ async function claimDecisionIssue(ctx: PluginContext, issueId: string, status: "
   return (res.rowCount ?? 0) > 0 ? row : null;
 }
 
-export async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, companyId: string, actorType?: string): Promise<void> {
+export async function onIssueUpdated(ctx: PluginContext, issueId: string | undefined, companyId: string, actorType?: string, actorId?: string): Promise<void> {
   if (!issueId || !companyId) return;
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue || (issue.status !== "done" && issue.status !== "cancelled")) return;
   // Only a person decides an approval. An agent (e.g. the Reviewer) closing it is undone and handed to the person.
-  if (actorType === "agent" && (await isOpenApproval(ctx, issue.id))) {
-    await reopenForPerson(ctx, issue.id, companyId);
-    return;
+  if (actorType === "agent") {
+    const what = await openApprovalWhat(ctx, issue.id);
+    if (what) {
+      const settings = await billingSettings(ctx, companyId);
+      const reopened = await reopenApprovalForPerson(ctx, { issueId: issue.id, companyId, userId: settings.reviewerUserId?.trim() || null, what });
+      if (!reopened) ctx.logger.info("Could not hand the approval back to a person", { issueId: issue.id });
+      return;
+    }
   }
   const done = issue.status === "done";
-  const actor = issue.assigneeUserId ? `user:${issue.assigneeUserId}` : "approval";
+  // The person who closed it (else its assignee): recorded on payments, credit notes and sends.
+  const actor = actorType === "user" && actorId ? `user:${actorId}` : issue.assigneeUserId ? `user:${issue.assigneeUserId}` : "approval";
 
   const invoice = await invoiceByApproval(ctx, issue.id);
   if (invoice && invoice.pending_action) {
@@ -240,10 +245,7 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
           reference: `Approved on issue ${issue.identifier ?? issue.id}`,
           createdBy: actor,
         }, await billingSettings(ctx, invoice.company_id));
-        for (const popId of settled.confirmedPopIds) {
-          const pop = await getPop(ctx, popId);
-          if (pop?.issue_id) await closeIssue(ctx, invoice.company_id, pop.issue_id);
-        }
+        await closePopIssues(ctx, invoice.company_id, settled.confirmedPopIds);
       }
     }
     return;
@@ -272,6 +274,16 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
   const decision = await claimDecisionIssue(ctx, issue.id, done ? "resolved" : "dismissed");
   if (!decision) return;
   const settings: BillingSettings = await billingSettings(ctx, decision.company_id);
+  if ((REQUEST_KINDS as readonly string[]).includes(decision.kind)) {
+    try {
+      const line = await applyDecision(ctx, decision, done, actor, issue);
+      if (line) await comment(ctx, issue.id, decision.company_id, line);
+    } catch (error) {
+      ctx.logger.info("Billing decision not applied", { issueId: issue.id, kind: decision.kind, error: errorMessage(error) });
+      await reopenDecision(ctx, decision, `This could not be applied: ${errorMessage(error)}. Fix it on the Billing page, then mark this issue done again, or cancel it.`);
+    }
+    return;
+  }
   if (decision.kind === "pop") {
     const pop = await getPop(ctx, decision.subject_id);
     if (!pop || pop.status !== "pending") return;
@@ -280,7 +292,7 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
         await confirmPop(ctx, { companyId: decision.company_id, popId: pop.id, createdBy: actor }, settings);
       } catch (error) {
         ctx.logger.info("POP not confirmed from its issue", { popId: pop.id, error: errorMessage(error) });
-        await ctx.db.execute(`UPDATE ${table(ctx, "decision_issues")} SET status = 'open', resolved_at = NULL WHERE issue_id = $1`, [issue.id]);
+        await reopenDecision(ctx, decision, `The payment could not be recorded: ${errorMessage(error)}. Use Money is in on the Billing page (Invoices → Payments) to pick the invoice or the amount, or cancel this issue.`);
       }
     } else {
       await rejectPop(ctx, { companyId: decision.company_id, popId: pop.id, reason: "Rejected on its verification issue", reviewedBy: actor });
@@ -294,10 +306,7 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
       const result = { key: match.key, status: "settled" as const, paymentId: settled.paymentId };
       await ctx.db.execute(`UPDATE ${table(ctx, "inbox")} SET result = $2::jsonb WHERE key = $1`, [match.key, JSON.stringify(result)]);
       await emitBankMatchResult(ctx, decision.company_id, result);
-      for (const popId of settled.confirmedPopIds) {
-        const pop = await getPop(ctx, popId);
-        if (pop?.issue_id) await closeIssue(ctx, decision.company_id, pop.issue_id);
-      }
+      await closePopIssues(ctx, decision.company_id, settled.confirmedPopIds);
     } else {
       const result = { key: match.key, status: "rejected" as const, error: "A person rejected the match in Billing" };
       await ctx.db.execute(`UPDATE ${table(ctx, "inbox")} SET result = $2::jsonb WHERE key = $1`, [match.key, JSON.stringify(result)]);
@@ -306,23 +315,51 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
   }
 }
 
-/** The issue still gates a Billing action (send, pay, bill approval, POP or bank-match check). */
-async function isOpenApproval(ctx: PluginContext, issueId: string): Promise<boolean> {
-  const rows = await ctx.db.query<{ x: number }>(
-    `SELECT 1 AS x FROM ${table(ctx, "invoices")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
-      UNION ALL SELECT 1 AS x FROM ${table(ctx, "quotes")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
-      UNION ALL SELECT 1 AS x FROM ${table(ctx, "bills")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
-      UNION ALL SELECT 1 AS x FROM ${table(ctx, "decision_issues")} WHERE issue_id = $1 AND status = 'open'`,
+/**
+ * What the issue still gates (send, pay, bill approval, POP, bank match,
+ * payment, credit note or reminder), in words for the reopen comment; null
+ * when it gates nothing any more.
+ */
+async function openApprovalWhat(ctx: PluginContext, issueId: string): Promise<string | null> {
+  const rows = await ctx.db.query<{ what: string; label: string | null; payload: unknown }>(
+    `SELECT 'invoice_' || pending_action AS what, number AS label, NULL::jsonb AS payload FROM ${table(ctx, "invoices")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 'quote_send' AS what, number AS label, NULL::jsonb AS payload FROM ${table(ctx, "quotes")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 'bill_approve' AS what, supplier_name AS label, NULL::jsonb AS payload FROM ${table(ctx, "bills")} WHERE approval_issue_id = $1 AND pending_action IS NOT NULL
+      UNION ALL SELECT 'decision_' || kind AS what, NULL AS label, payload FROM ${table(ctx, "decision_issues")} WHERE issue_id = $1 AND status = 'open'`,
     [issueId],
   );
-  return rows.length > 0;
+  const row = rows[0];
+  if (!row) return null;
+  const number = String(asObject(row.payload).number ?? row.label ?? "");
+  switch (row.what) {
+    case "invoice_send": return `sending invoice ${number}`;
+    case "invoice_pay": return `payment of invoice ${number}`;
+    case "quote_send": return `sending quote ${number}`;
+    case "bill_approve": return `the bill from ${number}`;
+    case "decision_pop": return "a proof-of-payment check";
+    case "decision_bank_match": return "a bank match";
+    case "decision_payment": return `recording a payment on ${number}`;
+    case "decision_credit_note": return `a credit note on ${number}`;
+    case "decision_reminder": return `payment reminder ${Number(asObject(row.payload).stage ?? 0) + 1} for ${number}`;
+    default: return "a Billing approval";
+  }
 }
 
-async function reopenForPerson(ctx: PluginContext, issueId: string, companyId: string): Promise<void> {
-  const settings = await billingSettings(ctx, companyId);
+async function comment(ctx: PluginContext, issueId: string, companyId: string, body: string): Promise<void> {
   try {
-    await ctx.issues.update(issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: settings.reviewerUserId ?? null }, companyId);
+    await ctx.issues.createComment(issueId, body, companyId);
   } catch (error) {
-    ctx.logger.info("Could not hand the approval back to a person", { issueId, error: errorMessage(error) });
+    ctx.logger.info("Billing comment skipped", { issueId, error: errorMessage(error) });
   }
+}
+
+/** A person's decision could not be applied: keep it open, reopen the issue and say why. */
+async function reopenDecision(ctx: PluginContext, decision: DecisionRow, why: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "decision_issues")} SET status = 'open', resolved_at = NULL WHERE issue_id = $1`, [decision.issue_id]);
+  try {
+    await ctx.issues.update(decision.issue_id, { status: "todo" }, decision.company_id);
+  } catch (error) {
+    ctx.logger.info("Could not reopen the Billing decision", { issueId: decision.issue_id, error: errorMessage(error) });
+  }
+  await comment(ctx, decision.issue_id, decision.company_id, why);
 }

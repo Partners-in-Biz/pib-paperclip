@@ -6,6 +6,7 @@
  * `requestWakeup` (capability `issues.wakeup`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { companyRoles } from "./cockpit.js";
 
 type CreateInput = Parameters<PluginContext["issues"]["create"]>[0];
 
@@ -41,4 +42,35 @@ export async function wakeIssue(ctx: PluginContext, issueId: string, companyId: 
     ctx.logger.info("Issue wakeup skipped", { issueId, error: error instanceof Error ? error.message : String(error) });
     return false;
   }
+}
+
+/**
+ * Only a person decides an approval. When an agent (a Reviewer, or the agent
+ * that asked) marks one done or cancelled, call this: the issue is reopened,
+ * taken off the agent and handed to the person (`userId`, else the company
+ * owner from the Cockpit roles), with a comment saying why. Returns false when
+ * the host refused, so the caller can log it.
+ */
+export async function reopenApprovalForPerson(
+  ctx: PluginContext,
+  input: { issueId: string; companyId: string; userId?: string | null; what?: string | null },
+): Promise<boolean> {
+  const userId = input.userId ?? (await companyRoles(ctx, input.companyId))?.ownerUserId ?? null;
+  try {
+    await ctx.issues.update(input.issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, input.companyId);
+  } catch (error) {
+    ctx.logger.info("Could not hand the approval back to a person", { issueId: input.issueId, error: error instanceof Error ? error.message : String(error) });
+    return false;
+  }
+  try {
+    const what = input.what ? ` (${input.what})` : "";
+    await ctx.issues.createComment(
+      input.issueId,
+      `An agent closed this approval${what}, so it is open again${userId ? " and assigned to its approver" : ""}. Only a person can decide it: mark it **done** to approve or **cancelled** to refuse.`,
+      input.companyId,
+    );
+  } catch (error) {
+    ctx.logger.info("Could not comment on the reopened approval", { issueId: input.issueId, error: error instanceof Error ? error.message : String(error) });
+  }
+  return true;
 }

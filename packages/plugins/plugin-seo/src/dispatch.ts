@@ -11,6 +11,7 @@ import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
 import * as playbook from "./service/playbook.js";
+import * as plans from "./service/plans.js";
 import * as snapshots from "./service/snapshots.js";
 import * as sprints from "./service/sprints.js";
 import * as tasks from "./service/tasks.js";
@@ -25,6 +26,7 @@ export const HANDLERS: Record<string, Handler> = {
   today: (env, c, _a, p) => sprints.todayTool(env, c, p),
   "set-autopilot": (env, c, a, p) => sprints.setAutopilot(env, c, a, p),
   "update-sprint": (env, c, a, p) => sprints.updateSprintTool(env, c, a, p),
+  "change-plan": (env, c, a, p) => plans.changePlan(env, c, a, p),
   "pause-sprint": (env, c, a, p) => sprints.setSprintStatus(env, c, a, p, "paused"),
   "resume-sprint": (env, c, a, p) => sprints.setSprintStatus(env, c, a, p, "resume"),
   "archive-sprint": (env, c, a, p) => sprints.setSprintStatus(env, c, a, p, "archived"),
@@ -36,18 +38,13 @@ export const HANDLERS: Record<string, Handler> = {
   "block-task": (env, c, a, p) => tasks.blockTask(env, c, a, p),
   "skip-task": (env, c, a, p) => tasks.skipTask(env, c, a, p),
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
-  // Legacy: open-task opened an issue for work a person must do.
-  "open-task": (env, c, a, p) => tasks.addTask(env, c, a, { owner: "human", ...p }),
   // Keywords
   "list-keywords": (env, c, _a, p) => data.listKeywordsTool(env, c, p),
   "add-keywords": (env, c, a, p) => data.addKeywords(env, c, a, p),
-  "add-keyword": (env, c, a, p) => data.addKeywords(env, c, a, { sprintId: p.sprintId, keywords: [{ ...p, sprintId: undefined }] }),
   "update-keyword": (env, c, _a, p) => data.updateKeywordTool(env, c, p),
   "retire-keyword": (env, c, _a, p) => data.retireKeyword(env, c, p),
   "record-position": (env, c, a, p) => data.recordPosition(env, c, a, p),
-  "record-rank": (env, c, a, p) => data.recordPosition(env, c, a, p),
   "keyword-history": (env, c, _a, p) => data.keywordHistoryTool(env, c, p),
-  "rank-history": (env, c, _a, p) => data.keywordHistoryTool(env, c, p),
   "discover-keywords": (env, c, _a, p) => data.discoverKeywordsTool(env, c, p),
   // Backlinks
   "list-backlinks": (env, c, _a, p) => data.listBacklinksTool(env, c, p),
@@ -58,7 +55,6 @@ export const HANDLERS: Record<string, Handler> = {
   "add-content": (env, c, _a, p) => data.addContent(env, c, p),
   "update-content": (env, c, _a, p) => data.updateContentTool(env, c, p),
   "link-social-post": (env, c, _a, p) => data.linkSocialPost(env, c, p),
-  "add-page": (env, c, _a, p) => data.addPage(env, c, p),
   // Site checks
   "check-robots": (env, c, _a, p) => checks.checkRobotsTool(env, c, p),
   "check-sitemap": (env, c, _a, p) => checks.checkSitemapTool(env, c, p),
@@ -98,7 +94,6 @@ export const HANDLERS: Record<string, Handler> = {
   // Audits
   "run-audit-snapshot": (env, c, _a, p) => snapshots.runAuditSnapshotTool(env, c, p),
   "record-finding": (env, c, a, p) => data.recordFinding(env, c, a, p),
-  "record-audit": (env, c, a, p) => data.recordFinding(env, c, a, p),
   "resolve-finding": (env, c, _a, p) => data.resolveFindingTool(env, c, p),
   "audit-summary": (env, c, _a, p) => snapshots.auditSummaryTool(env, c, p),
   // Optimization

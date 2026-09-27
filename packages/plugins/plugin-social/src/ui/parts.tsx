@@ -2,6 +2,8 @@ import type { CSSProperties, ReactNode } from "react";
 import { Button, CircleAlert, Icon, Info, Pill, Select, TriangleAlert, breakAnywhere, seriesColor, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
 import { ACCOUNT_TONE, DEST_TONE, PLATFORM_MONOGRAM, POST_TONE, platformIndex, toneOf } from "./series.js";
+export { fmtDate, timeLabel, toLocalInput } from "./time.js";
+import { fmtDate } from "./time.js";
 import type { ClientOption, Snapshot } from "./types.js";
 
 /** Swallow an error that run() already showed. */
@@ -13,22 +15,6 @@ export function platformLabel(platform: string | null | undefined): string {
   return platform && isSocialPlatform(platform) ? PLATFORM_LABELS[platform] : platform ?? "—";
 }
 
-export function fmtDate(value: string | null | undefined, timeZone?: string, withTime = true): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  try {
-    return date.toLocaleString(undefined, {
-      timeZone,
-      day: "numeric",
-      month: "short",
-      year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
-      ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}),
-    });
-  } catch {
-    return date.toLocaleString();
-  }
-}
 
 export function PostStatus({ status }: { status: string }) {
   return <Pill tone={toneOf(POST_TONE, status)} dot>{status === "review" ? "in review" : status.replace(/_/g, " ")}</Pill>;

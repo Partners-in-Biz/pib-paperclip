@@ -143,7 +143,9 @@ describe("runtime SQL passes the host guard", () => {
     await db.deleteOAuthSession(fake, "st");
     await db.deleteExpiredOAuthSessions(fake);
     await db.completionFacts(fake, s);
-    await db.sprintCounts(fake, c);
+    await db.sprintTotals(fake, c);
+    await db.listOpenTasksForCompany(fake, c);
+    await db.openNeedsYouDigests(fake, c);
     expect(calls.length).toBeGreaterThan(60);
     expect(calls.every((call) => !/\bundefined\b/.test(call.sql))).toBe(true);
   });

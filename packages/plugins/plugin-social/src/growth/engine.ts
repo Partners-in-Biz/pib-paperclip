@@ -489,7 +489,7 @@ export function normalizeProposal(input: Record<string, unknown>): ProposalInput
 /** Why a new proposal is refused, or null. */
 export function proposalBlocker(input: { autopilot: Autopilot; running: number; proposed: number; openTypes: string[]; hypothesisType: string }): string | null {
   if (input.autopilot === "off") return "Growth autopilot is off for this program, so agents do not propose experiments. A person can switch it to safe on the Growth tab.";
-  if (input.running >= MAX_RUNNING) return `This program already runs ${MAX_RUNNING} experiments. Wait for one to be measured (or ask a person to abandon one).`;
+  if (input.running >= MAX_RUNNING) return `This program already runs ${MAX_RUNNING} experiments. Wait for one to be measured; a person can abandon one on the Growth tab.`;
   if (input.proposed >= MAX_PROPOSED) return `${MAX_PROPOSED} proposals are already waiting for approval. Wait until a person decides them.`;
   if (input.openTypes.includes(input.hypothesisType)) return `An experiment for ${input.hypothesisType} is already proposed or running.`;
   return null;

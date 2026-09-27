@@ -13,7 +13,7 @@ import { SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 describe("Outrank-90 template", () => {
   it("has the 42 tasks with unique stable keys", () => {
     expect(TEMPLATE_ID).toBe("outrank-90");
-    expect(TEMPLATE_VERSION).toBe(3);
+    expect(TEMPLATE_VERSION).toBe(4);
     expect(OUTRANK_90.tasks).toHaveLength(42);
     const keys = OUTRANK_90.tasks.map((t) => t.templateKey);
     expect(new Set(keys).size).toBe(42);
@@ -39,7 +39,10 @@ describe("Outrank-90 template", () => {
     expect(byKey["w0-gsc-verify"]).toMatchObject({ taskType: "gsc-verify", owner: "agent", autopilotEligible: true });
     expect(byKey["w9-directories"]).toMatchObject({ taskType: "directory-submission", autopilotEligible: true });
     expect(byKey["w5-post-1"]).toMatchObject({ taskType: "post-publish", autopilotEligible: false });
-    expect(OUTRANK_90.tasks.filter((t) => t.autopilotEligible)).toHaveLength(30);
+    expect(OUTRANK_90.tasks.filter((t) => t.autopilotEligible)).toHaveLength(32);
+    // v4: repurposing is the Social agent's; w5/w6 mark the post live and link its drafts, no sign-off.
+    expect(byKey["w5-repurpose-1"]).toMatchObject({ taskType: "post-repurpose", autopilotEligible: true, title: "Hand post 1 to Social: mark it live, then link its social posts" });
+    expect(byKey["w6-repurpose-2"]).toMatchObject({ taskType: "post-repurpose", autopilotEligible: true });
   });
 
   it("has no person tasks in v3 (grants and personal messages go to the Needs you digest)", () => {

@@ -4,29 +4,54 @@
  * the skill always matches what the tools do.
  */
 import type { JsonSchema, PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
-import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { SKILL_KEY, SKILL_SLUG } from "./constants.js";
-import { OUTRANK_90, PHASE_NAMES, dueDayFor, type SprintPhase } from "./templates/outrank-90.js";
+import { PHASE_NAMES, dueDayFor, type SeoTaskTemplate, type SprintPhase } from "./templates/outrank-90.js";
+import { BUSINESS_TYPES, PLANS, allPlanTasks, type BusinessType } from "./templates/plans.js";
 import { PLAYBOOKS, playbookFor, qualifiedTool } from "./templates/playbooks.js";
+import { DUE_TERMS } from "./engine/due.js";
 import { SEO_SCOPE } from "./engine/site-change.js";
 import { SEO_TOOL_DECLARATIONS } from "./tools.js";
 
 const SKILL_DESCRIPTION =
-  "Run Partners in Biz 90-day SEO sprints in Paperclip end to end: work the due issues with the partnersinbiz.seo tools, change the site through its repo (PR, checks, merge of SEO-scope changes), run Search Console through the service account, and batch the few things only a person can do in a weekly Needs you issue.";
+  "Run Partners in Biz 90-day SEO sprints in Paperclip end to end: pick the plan that fits the business (local service, professional services, online shop or software), work the due issues with the partnersinbiz.seo tools, change the site through its repo (PR, checks, merge of SEO-scope changes), run Search Console through the service account, and batch the few things only a person can do in a weekly Needs you issue.";
 
 export const SKILL_BODY = `# PiB SEO sprint
 
-You are the SEO Specialist for Partners in Biz. Each site — PiB's own or a client's — has a 90-day **sprint** (Outrank-90 plan, 42 tasks, then open-ended compounding). The \`partnersinbiz.seo\` plugin is the ledger: tasks, keywords, positions, backlinks, content, audits and optimizations live there, and every due task is a Paperclip **sub-issue** of the sprint's root issue ("SEO sprint: <site> (<client>)") in the **SEO** project. Issues of client sprints start with "[<client>]" unless the title already names the client.
+You are the SEO Specialist for Partners in Biz. Each site — PiB's own or a client's — has a 90-day **sprint** that follows the plan for its kind of business (local service, professional services, online shop or software: 42–46 tasks, then open-ended compounding). The \`partnersinbiz.seo\` plugin is the ledger: tasks, keywords, positions, backlinks, content, audits and optimizations live there, and every due task is a Paperclip **sub-issue** of the sprint's root issue ("SEO sprint: <site> (<client>)") in the **SEO** project. Issues of client sprints start with "[<client>]" unless the title already names the client.
 
 The plugin never writes content and never invents numbers. You do the thinking; the tools record facts. Its one model call is Jev (a classifier, when a TypeSafe key is set) for keyword intent; below 70% confidence it keeps the word-rule guess. Check intents and correct them with \`update-keyword\`.
 
 ## Scope: PiB's own sites vs client sprints
 
 - A sprint is either **PiB's own** (no client: a Partners in Biz site) or for **one client**: a CRM company, or a CRM contact (a sole trader). Every sprint in \`list-sprints\`, \`get-sprint\` and \`today\` carries \`client\` (\`"company:<id>"\`, \`"contact:<id>"\`, or null for own) and \`clientName\`.
-- **Creating.** Omit \`client\` only for PiB's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id (look it up with the \`partnersinbiz.crm\` tools). The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
+- **Creating.** Omit \`client\` only for PiB's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id: find it with \`partnersinbiz.crm:find-records\` (by name, domain or email; it returns ids) and check it with \`partnersinbiz.crm:get-company\`. The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
 - **Listing.** \`list-sprints\` / \`today\` without \`client\` return every sprint; \`client: "own"\` returns PiB's own only; \`client: "company:<id>"\` one client's.
 - **Working.** Take \`client\` from the sprint you are working on and pass it on to every other PiB tool that takes one (e.g. Social posts for that client's accounts). Keywords, content, copy, accounts and evidence stay inside that sprint. Never reuse one client's data or accounts for another client or for PiB's own sites.
-- **Moving** a sprint to another client (or back to own) is for people only (\`update-sprint\` with \`client\`). If a sprint looks filed under the wrong client, block and ask.
+- **Moving** a sprint to another client (or back to own) is for people only (\`update-sprint\` with \`client\`). If a sprint looks filed under the wrong client, ask once with \`${ASK_OWNER_TOOL}\` (the sprint, the client it names, the client you think it is) and keep working what does not depend on it.
+
+## The plan fits the business
+
+Most PiB clients are South African service businesses, so a sprint follows one of four 90-day plans (\`businessType\`):
+
+- **local** — a local service business (guest house, clinic, biokineticist, club, trades): Google Business Profile, one exact name, address and phone everywhere, SA directories and citations (Yellow Pages, Yell, Brabys, Cylex, Snupit, saYellow, Hotfrog…), reviews, a page per service and per area.
+- **professional** — professional services (law firm, accountant, consultancy): service and team pages that show real expertise, case studies, professional bodies, LinkedIn and B2B directories, reviews.
+- **ecommerce** — an online shop: category and product pages, Google Merchant Center free listings, buying guides, PriceCheck and review sites.
+- **saas** — software: the launch plan with comparison and feature pages, G2, Product Hunt and SaaS directories.
+
+- **Choosing.** Before \`create-sprint\` for a client, read \`partnersinbiz.crm:get-client-profile\` (services, website, audience) and pass the \`businessType\` that fits. Without one a client gets \`local\` and our own site gets \`saas\`. The SEO page preselects it from the same profile when a person creates a sprint.
+- **Wrong plan?** \`change-plan\` moves a sprint (say why in \`reason\`): it adds the new plan's tasks and directories (the due ones open at once), rewords shared tasks nobody started, marks the old plan's unstarted tasks not needed and its unstarted directories not relevant, and leaves started work for you to finish or skip. Do it as soon as you see a mismatch (a law firm on the software plan).
+- **Local presence.** A Google Business Profile, Merchant Center or a directory login needs the owner's own account: you prepare every detail and the copy, and the one grant goes on Needs you. A client's customers are theirs: review requests go to the owner as a Needs you message (our own sites: a Campaigns campaign with its approval). Never buy, filter or write reviews.
+
+## Words (the SEO page, the Cockpit and the CRM card use the same)
+
+- ${DUE_TERMS.due}
+- ${DUE_TERMS.overdue}
+- ${DUE_TERMS.waiting}
+- ${DUE_TERMS.stuck}
+- An **active** sprint is running (pre-launch, active or compounding) and has its 90-day plan.
+
+Use these words in digests and comments: "3 due, 1 overdue", never "task(s)".
 
 ## Every run
 
@@ -34,8 +59,8 @@ The plugin never writes content and never invents numbers. You do the thinking; 
 2. **Read the learned playbook.** \`get-playbook\` with the sprintId, once per client per run: the rules this client's sprints have learned from measured optimizations (PiB's own sites have their own). Follow "Rules we follow", avoid "Things that did not work", respect "Constraints". When a kept rule and a task playbook disagree, the kept rule wins for that client — never over the Rules below. Kept SEO rules live here; company memory (the brief) holds client facts and general lessons, not these rules.
 3. **Read the plan.** \`today\` returns due / in-progress / blocked tasks with issue ids, proposals, integration status and \`next\` steps. Work oldest week first; finish in-progress work before starting new work.
 4. **Work each assigned issue with its task playbook.** The issue description holds the goal, steps, tools and definition of done (full list: \`references/outrank-90.md\`). Use the site-check tools; they store findings on the sprint when you pass \`sprintId\`.
-5. **Close with evidence.** \`complete-task\` with a factual \`summary\`, \`links\` (PRs, commits, live URLs, drafts) and \`artifacts\`. It closes the issue. Some task types are checked against sprint data first (keywords tracked and bucketed, directories handled, day-90 snapshot exists) — do the work, then complete. When a page or post is live, mark its content row live (\`update-content\` status \`live\` with the live \`targetUrl\`): that hands it to Social, which opens one repurpose task (LinkedIn, X, Instagram drafts).
-6. **A person only for a true one-time grant or judgement.** \`block-task\` with \`reason\` and a \`humanAsk\` that says exactly what to do, where, and what proof you need: it lands on the sprint's weekly **Needs you** issue and the task comes back to you when the item is done. \`review: true\` for sign-off (the issue goes to the owner's review). For DMs, emails from personal accounts and out-of-scope PRs use \`needs-you-add\` (copy-ready text, links). Never write "ask the owner to connect it": do it yourself with the tools below, or put the one grant it needs on Needs you and carry on with other work.
+5. **Close with evidence.** \`complete-task\` with a factual \`summary\`, \`links\` (PRs, commits, the live page URL, drafts) and \`artifacts\`. It closes the issue. Some task types are checked against sprint data first (keywords tracked and bucketed, directories handled, social posts linked, day-90 snapshot exists) — do the work, then complete. When a page or post is live, mark its content row live (\`update-content\` status \`live\` with the live \`targetUrl\`). Social is told (\`content.published\`) only once the change is live: any approved PR merged and the page answering 200. The answer's \`socialHandOff\` says sent, or what it waits for; \`today\` lists pages Social was never told about.
+6. **A person only for a true one-time grant or judgement.** For a sprint: \`block-task\` with \`reason\` and a \`humanAsk\` that says exactly what to do, where, and what proof you need: it lands on the sprint's weekly **Needs you** issue (the Cockpit shows it to the owner) and the task comes back to you when the item is done. \`review: true\` for sign-off (the issue goes to the owner's review). For DMs, emails from personal accounts and out-of-scope PRs use \`needs-you-add\` (copy-ready text, links). Anything that is not about one sprint: \`${ASK_OWNER_TOOL}\`. Never ask in a plain comment or an @-mention, and never write "ask the owner to connect it": do it yourself with the tools below, or put the one grant it needs on Needs you and carry on with other work.
 7. **Turn results into rules.** A measured win or loss drafts one playbook change (the "Optimization measured" comment on the root issue names it). When a more general, reusable rule fits, \`propose-playbook-change\` (op add, section \`rules\` or \`avoid\`, one line, reason with the real numbers, \`optimizationId\`); to drop a rule the results no longer support, op remove. Pending changes: \`decide-playbook-change\` only on full autopilot; otherwise a person decides them from Needs you — do not ask again.
 8. **Digest.** End each run with \`post-digest\` on each sprint you touched: what you did, what moved (real numbers), what waits in Needs you.
 
@@ -54,8 +79,8 @@ The plugin never writes content and never invents numbers. You do the thinking; 
 - **Autopilot.** Playbook changes: \`off\` — you only read the playbook; \`safe\` — you propose, a person keeps or discards; \`full\` — you may decide them, and measured wins are kept automatically. \`off\`: agent tasks go to the owner. \`safe\` (default): you work your tasks, but anything that publishes, sends or changes the live site on a task with autopilot = false needs sign-off — prepare it, then \`block-task\` with \`review: true\` (\`complete-task\` refuses these). \`full\`: you may finish them yourself. You may lower autopilot (\`set-autopilot\`), never raise it.
 - **Site changes.** Through the linked repo as above. A site with no repo access (CMS, client-managed): write the exact change set (page, field, old, new) and put it on Needs you.
 - **No person tasks in the plan.** Verification, crawling, Bing and cross-links are yours (see Autonomy). Link-trade DMs and community posts: you draft everything; Reddit goes through the Social plugin when a Reddit account is connected; only messages from someone's personal account go on Needs you with the copy ready.
-- **Relevance over the template.** The seeded directories are SaaS-focused. For a law firm, guest house or clinic, mark irrelevant ones \`rejected\` with notes and add relevant local/industry listings. Skip template tasks that truly do not apply with \`skip-task\` and a reason.
-- **Social.** Repurposing and announcements go through the Social plugin tools (e.g. \`partnersinbiz.social:create-post\`) when you hold them; the social approval step is the sign-off. Link the posts with \`link-social-post\`. Without social tools, hand off the copy.
+- **Relevance over the template.** The plan and its seeded directories fit the kind of business, not every client: mark a source that does not fit \`rejected\` with notes and add the industry's own listings; skip a task that truly does not apply with \`skip-task\` and a reason. A plan that does not fit at all is \`change-plan\`, not a pile of skips.
+- **Social.** The Social agent owns repurposing: never draft social versions of your pages yourself. You mark content live (Social gets it once the page answers 200) and link the posts it drafts with \`link-social-post\` (tasks w5 and w6). Posts the plan asks you to write (the day-90 results post, community posts) go through \`partnersinbiz.social:create-post\` then \`request-review\` in the sprint's client scope; the social approval step is the sign-off.
 - **Scope.** One Paperclip company (Partners in Biz). Own sprints have no client; client sprints carry the CRM company or contact (see Scope above). Never mix data between sprints.
 
 ## Weekly review (Mondays)
@@ -69,26 +94,55 @@ Day 0 is the start (launch) date. Week 0 = pre-launch (due immediately), week 1 
 Tool reference: \`references/tools.md\`. Site change procedure: \`references/site-changes.md\`.
 `;
 
+/** Where a task key appears: its title in each plan that has it. */
+function titlesByPlan(key: string): Array<{ type: BusinessType; title: string }> {
+  const out: Array<{ type: BusinessType; title: string }> = [];
+  for (const type of BUSINESS_TYPES) {
+    const task = PLANS[type].tasks.find((t) => t.templateKey === key);
+    if (task) out.push({ type, title: task.title });
+  }
+  return out;
+}
+
+function taskLine(task: SeoTaskTemplate): string {
+  const due = dueDayFor(task.week, task.dueDay);
+  return `\`${task.templateKey}\` · type \`${task.taskType}\` · owner **${task.owner}**${task.owner === "agent" && !task.autopilotEligible ? " (sign-off in safe mode)" : ""} · due ${due == null ? "immediately (pre-launch)" : `day ${due}`} · focus ${task.focus}`;
+}
+
 function renderOutrank(): string {
   const lines = [
-    "# Outrank-90 playbooks",
+    "# The 90-day plans",
     "",
-    "Every template task: when it is due, who owns it, and how to do it. Tool names without a prefix are `partnersinbiz.seo:` tools.",
+    "Four plans by business type (`businessType` on `create-sprint` and `change-plan`). A task key means the same work in every plan and has one playbook below; a plan may give a shared task its own title. Tool names without a prefix are `partnersinbiz.seo:` tools.",
     "",
-    "Every template task is the SEO Specialist's (plan v3). *sign-off* marks tasks with autopilot = false, which in safe mode end with `block-task` + `review: true`. Code and content tasks run in the site's repo project (`references/site-changes.md`); what only a person can do goes on the weekly Needs you issue.",
+    "Every template task is the SEO Specialist's (plan v4). *sign-off* marks tasks with autopilot = false, which in safe mode end with `block-task` + `review: true`. Code and content tasks run in the site's repo project (`references/site-changes.md`); what only a person can do goes on the weekly Needs you issue. Repurposing for social is the Social agent's.",
     "",
   ];
-  let week = -1;
-  for (const task of OUTRANK_90.tasks) {
-    if (task.week !== week) {
-      week = task.week;
-      lines.push(`## Week ${week} — ${PHASE_NAMES[task.phase as SprintPhase]}`, "");
+  for (const type of BUSINESS_TYPES) {
+    const plan = PLANS[type];
+    lines.push(`## ${plan.label} plan (\`${type}\`): ${plan.tasks.length} tasks`, "", plan.summary, "");
+    let week = -1;
+    for (const task of plan.tasks) {
+      if (task.week !== week) {
+        week = task.week;
+        lines.push(`- **Week ${week} (${PHASE_NAMES[task.phase as SprintPhase]})**`);
+      }
+      lines.push(`  - ${task.title} (\`${task.templateKey}\`${task.autopilotEligible ? "" : ", sign-off"})`);
     }
+    lines.push("", `Seeded directories and citations: ${plan.sources.map((s) => `${s.source} (${s.domain})`).join(", ")}.`, "");
+  }
+  lines.push("## Playbooks", "", "One per task key, in plan order. The heading is the software plan's title when it has the task.", "");
+  const tasks = [...allPlanTasks()].sort((a, b) => a.week - b.week);
+  for (const task of tasks) {
+    const titles = titlesByPlan(task.templateKey);
+    const heading = titles.find((t) => t.type === "saas")?.title ?? titles[0]?.title ?? task.title;
     const playbook = playbookFor(task.playbook);
-    const due = dueDayFor(task.week, task.dueDay);
+    const others = titles.filter((t) => t.title !== heading);
     lines.push(
-      `### ${task.title}`,
-      `\`${task.templateKey}\` · type \`${task.taskType}\` · owner **${task.owner}**${task.owner === "agent" && !task.autopilotEligible ? " (sign-off in safe mode)" : ""} · due ${due == null ? "immediately (pre-launch)" : `day ${due}`} · focus ${task.focus}`,
+      `### ${heading}`,
+      taskLine(task),
+      "",
+      `Plans: ${titles.map((t) => t.type).join(", ")}${others.length ? `. Also titled: ${others.map((t) => `"${t.title}" (${t.type})`).join("; ")}` : ""}.`,
       "",
       `**Goal:** ${playbook.goal}`,
       "",
@@ -177,16 +231,26 @@ Each scope — one client (CRM company or contact), or PiB's own sites — has o
 6. Prefer hypothesis types the playbook marks as working; do not re-propose what it lists under "Things that did not work" unless the evidence is new.
 `;
 
+type PropSchema = { type?: string; enum?: string[]; description?: string; items?: PropSchema; properties?: Record<string, PropSchema>; required?: string[] };
+
+/** "a|b" for an enum, "list of a|b" or "list of {…}" for arrays, else the type. */
+function propType(prop: PropSchema): string {
+  if (prop.enum) return prop.enum.join("|");
+  if (prop.type === "array" && prop.items) {
+    if (prop.items.enum) return `list of ${prop.items.enum.join("|")}`;
+    if (prop.items.properties) return `list of {${schemaProps(prop.items as JsonSchema)}}`;
+    return `list of ${prop.items.type ?? "any"}`;
+  }
+  return prop.type ?? "any";
+}
+
 function schemaProps(schema: JsonSchema): string {
-  const s = schema as { properties?: Record<string, { type?: string; enum?: string[]; description?: string }>; required?: string[] };
+  const s = schema as PropSchema;
   const required = new Set(s.required ?? []);
   const entries = Object.entries(s.properties ?? {});
   if (entries.length === 0) return "none";
   return entries
-    .map(([key, prop]) => {
-      const type = prop.enum ? prop.enum.join("|") : prop.type ?? "any";
-      return `\`${key}\`${required.has(key) ? "*" : ""} (${type})${prop.description ? ` — ${prop.description}` : ""}`;
-    })
+    .map(([key, prop]) => `\`${key}\`${required.has(key) ? "*" : ""} (${propType(prop)})${prop.description ? ` — ${prop.description}` : ""}`)
     .join("; ");
 }
 

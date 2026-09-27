@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { tabFromSearch } from "../src/ui/index.js";
+import { movedTabTarget, tabFromSearch } from "../src/ui/index.js";
 import {
   DEFAULT_FILTERS,
   EMPTY_DRAFT,
@@ -217,22 +217,31 @@ describe("memory page helpers", () => {
 
   it("opens the Memory tab from ?tab=memory", () => {
     expect(tabFromSearch("?tab=memory")).toBe("memory");
-    expect(tabFromSearch("?tab=team")).toBe("team");
     expect(tabFromSearch("?tab=nope")).toBe("overview");
     expect(tabFromSearch("")).toBe("overview");
+  });
+
+  it("sends the old ?tab=team to Setup → Team (the Cockpit has no Team tab)", () => {
+    expect(tabFromSearch("?tab=team")).toBe("overview");
+    expect(movedTabTarget("?tab=team")).toBe("/setup?section=team");
+    expect(movedTabTarget("?tab=memory")).toBeNull();
+    expect(movedTabTarget("")).toBeNull();
+    expect(movedTabTarget(null)).toBeNull();
   });
 });
 
 describe("memory tab sections", () => {
-  it("shows the header stats, the Learned line, agent coverage and the Jev note", () => {
+  it("shows the header stats, the Learned line, agent coverage and the smart matching note, in plain words", () => {
     const html = renderToStaticMarkup(createElement(MemoryHeader, { overview: overview({ jevConfigured: false }), agents: AGENTS, linkFor, settingsHref: "/company/settings/instance/plugins/abc" }));
-    for (const text of ["Company memory", "Memory is what your agents learn", "at most 12, about 1,500 tokens", "Learned:", "you can do the same on any issue", "Active facts", "42", "3 pinned · 7 archived", "Added this week", "8 from Learned lines", "Clients covered", "Briefs this week", "75% picked by Jev", "5.3 facts", "~620 tokens · 1.4 s", "Feedback, 30 days", "3 missing · 5 noise", "Briefs use keyword matching. Add a TypeSafe key in Cockpit settings → Jev to let Jev pick facts.", "Agents asking memory first", "Olive 2/8", "Sam 9/10", "1 agent skips it"]) {
-      expect(html).toContain(text);
+    for (const text of ["Company memory", "Memory is what your agents learn", "the facts it needs: at most 12.", "Learned:", "you can do the same on any issue", "Active facts", "42", "3 pinned · 7 archived", "Added this week", "8 from Learned lines", "Clients covered", "Briefs this week", "75% by smart matching", "5.3 facts", "At most 12 per task", "Feedback, 30 days", "3 missing · 5 not helpful", "Smart matching (optional)", "briefs now pick facts by keywords", "Agents asking memory first", "Olive 2/8", "Sam 9/10", "1 agent skips it"]) {
+      expect(html, text).toContain(text);
     }
+    // No internal names or engineering units on screen.
+    for (const jargon of ["Jev", "TypeSafe", "tokens", " ms", "full scope"]) expect(html, jargon).not.toContain(jargon);
     expect(html).toContain('href="/PIB/company/settings/instance/plugins/abc"');
     expect(html).toContain('href="/PIB/agents/sam"');
     expect(html.indexOf("Olive 2/8")).toBeLessThan(html.indexOf("Sam 9/10"));
-    expect(renderToStaticMarkup(createElement(MemoryHeader, { overview: overview(), agents: AGENTS, linkFor, settingsHref: "/x" }))).not.toContain("Briefs use keyword matching");
+    expect(renderToStaticMarkup(createElement(MemoryHeader, { overview: overview(), agents: AGENTS, linkFor, settingsHref: "/x" }))).not.toContain("briefs now pick facts by keywords");
   });
 
   it("lists facts with client, area, kind, pin, use, feedback, source and the right buttons", () => {
@@ -243,9 +252,12 @@ describe("memory tab sections", () => {
       fact("m4", { expiresAt: "2026-12-31T00:00:00.000Z" }),
     ];
     const html = renderToStaticMarkup(createElement(FactsTable, { facts, clients: CLIENTS, agents: AGENTS, linkFor, busyId: null, handlers: { onEdit: noop, onPin: noop, onStatus: noop, onSupersede: noop }, now: NOW }));
-    for (const text of ["Never post to Northwind&#x27;s LinkedIn on Sundays.", "Northwind", "Company-wide", "Social", "Rule", "Warning", "Pinned", "Used 4×", "2 helpful · 0 noise", "1 helpful · 4 noise", "Saved from comment", "Agent", "Person", "by Sam", "Superseded by m1", "Expires 31 Dec 2026", "Unpin", "Pin", "Archive", "Restore", "Superseded by…", "Edit"]) {
-      expect(html).toContain(text);
+    for (const text of ["Never post to Northwind&#x27;s LinkedIn on Sundays.", "Northwind", "Company-wide", "Social", "Rule", "Warning", "Pinned", "Used 4×", "2 helpful · 0 not helpful", "1 helpful · 4 not helpful", "Saved from comment", "Agent", "Person", "by Sam", "Replaced by a newer fact", "Expires 31 Dec 2026", "Unpin", "Pin", "Archive", "Restore", "Replaced by…", "Edit"]) {
+      expect(html, text).toContain(text);
     }
+    // Fact ids are technical: not on the rows (they sit under Details in the edit dialog).
+    expect(html).not.toContain("<code");
+    expect(html).not.toContain("Superseded by m1");
     expect(html).toContain('href="/PIB/issues/PIB-12"');
     expect(html).toContain('href="/PIB/issues/PIB-12#comment-c9"');
     // Wide tables sit in a horizontal scroller.
@@ -265,15 +277,18 @@ describe("memory tab sections", () => {
       onOpen: noop,
       now: NOW,
     }));
-    for (const text of ["PIB-23", "Sam", "Jev", "5 of 120", "~620", "1.2 s", "3h ago", "“Northwind hosting”", "Keyword", "300 ms", "View"]) expect(html).toContain(text);
+    for (const text of ["PIB-23", "Sam", "Smart matching", "5 of 120", "3h ago", "“Northwind hosting”", "Keywords", "View"]) expect(html, text).toContain(text);
+    for (const jargon of ["Jev", "~620", "1.2 s", "300 ms", "Tokens", "Took"]) expect(html, jargon).not.toContain(jargon);
     expect(html).toContain('href="/PIB/issues/PIB-23"');
   });
 
   it("shows a brief's facts and what the keyword baseline would have picked", () => {
     const html = renderToStaticMarkup(createElement(BriefDetail, { brief: brief(), facts: [fact("m1"), fact("m2"), fact("m3", { status: "archived" })], clients: CLIENTS, agents: AGENTS, linkFor, now: NOW }));
-    for (const text of ["In the brief (2)", "0.91", "Jev only", "Baseline too", "What the keyword baseline would have picked", "1 of Jev&#x27;s picks, plus 1 Jev left out:", "Baseline only", "Archived now", "What the agent read", "Memory brief for PIB-23"]) {
-      expect(html).toContain(text);
+    for (const text of ["In the brief (2)", "91% match", "Smart matching only", "Keywords too", "What keyword matching would have picked", "1 of the smart picks, plus 1 it left out:", "Keywords only", "Archived now", "What the agent read", "Memory brief for PIB-23"]) {
+      expect(html, text).toContain(text);
     }
+    // The brief's and facts' ids sit under Details.
+    expect(html).toMatch(/<summary[^>]*>Details<\/summary><code[^>]*>Brief: b123\nFacts: m1, m2/);
     const same = renderToStaticMarkup(createElement(BriefDetail, { brief: brief({ baselineIds: ["m1", "m2"] }), facts: [fact("m1"), fact("m2")], clients: CLIENTS, agents: AGENTS, linkFor, now: NOW }));
     expect(same).toContain("The same facts.");
   });
@@ -296,7 +311,8 @@ describe("memory tab sections", () => {
       clients: CLIENTS,
       linkFor,
     }));
-    for (const text of ["1 of 42 facts", "~40 tokens", "30 candidates", "Northwind (named in the task)", "Write Northwind&#x27;s October posts", "(Northwind · social · rule · pinned) Never post on Sundays.", "Baseline too"]) expect(html).toContain(text);
+    for (const text of ["1 of 42 facts", "Northwind (named in the task)", "Write Northwind&#x27;s October posts", "Never post on Sundays.", "Keywords too", "What the agent reads", "(Northwind · social · rule · pinned) Never post on Sundays."]) expect(html, text).toContain(text);
+    for (const jargon of ["~40 tokens", "30 candidates"]) expect(html, jargon).not.toContain(jargon);
   });
 
   it("lists what needs attention with one-click fixes", () => {
@@ -309,14 +325,21 @@ describe("memory tab sections", () => {
       staleCount: 3,
       staleExamples: [],
       overCap: [{ scope: "*|seo", active: 134 }],
+      misfiled: [{ id: "m7", text: "Brightside Dental wants invoices on the 1st.", area: "billing" as const, kind: "fact" as const, clientRef: "company:bs1", clientName: "Brightside Dental", suggestion: "memory-add …" }],
       verdict: "3 missing-fact reports in 30 days: the keyword baseline would have caught 1, missed 2.",
     } as MemoryReview;
-    expect(attentionCount(review)).toBe(4);
-    const html = renderToStaticMarkup(createElement(AttentionList, { review, clients: CLIENTS, agents: AGENTS, linkFor, limits: LIMITS, busyKey: null, handlers: { onKeep: noop, onArchive: noop, onShowScope: noop } }));
-    for (const text of ["the keyword baseline would have caught 1, missed 2.", "3 active facts have not been used in 120 days.", "Likely duplicates (1)", "86% same words", "Keep A, supersede B", "Keep B, supersede A", "Noisy facts (1)", "4 noise", "Archive", "Agents skipping memory (1)", "Olive", "2 of 8 runs started with a brief", "Full scopes (1)", "Company-wide · SEO", "134 of 120", "Show these facts"]) {
-      expect(html).toContain(text);
+    expect(attentionCount(review)).toBe(5);
+    const moved: string[] = [];
+    const handlers = { onKeep: noop, onArchive: noop, onShowScope: noop, onMove: (fact: { id: string }) => void moved.push(fact.id) };
+    const html = renderToStaticMarkup(createElement(AttentionList, { review, clients: CLIENTS, agents: AGENTS, linkFor, limits: LIMITS, busyKey: null, handlers }));
+    for (const text of ["the keyword baseline would have caught 1, missed 2.", "3 active facts have not been used in 120 days.", "Likely duplicates (1)", "86% same words", "Keep A", "Keep B", "Facts that do not help (1)", "4 times no help", "Archive", "Agents skipping memory (1)", "Olive", "2 of 8 runs started with a brief", "Too many facts for one client and area (1)", "Company-wide · SEO", "134 of 120", "Show these facts", "Company-wide facts that name a client (1)", "Brightside Dental wants invoices on the 1st.", "Move to Brightside Dental"]) {
+      expect(html, text).toContain(text);
     }
-    const clean = renderToStaticMarkup(createElement(AttentionList, { review: { ...review, agentsSkippingMemory: [], duplicates: [], noisy: [], overCap: [], staleCount: 0 }, clients: CLIENTS, agents: AGENTS, linkFor, limits: LIMITS, busyKey: null, handlers: { onKeep: noop, onArchive: noop, onShowScope: noop } }));
+    expect(html).not.toContain("Full scopes");
+    const clean = renderToStaticMarkup(createElement(AttentionList, { review: { ...review, agentsSkippingMemory: [], duplicates: [], noisy: [], overCap: [], misfiled: [], staleCount: 0 }, clients: CLIENTS, agents: AGENTS, linkFor, limits: LIMITS, busyKey: null, handlers }));
     expect(clean).toContain("Nothing to clean up");
+    // A review from an older worker (no misfiled list) still renders.
+    const { misfiled: _misfiled, ...older } = review;
+    expect(attentionCount(older as MemoryReview)).toBe(4);
   });
 });

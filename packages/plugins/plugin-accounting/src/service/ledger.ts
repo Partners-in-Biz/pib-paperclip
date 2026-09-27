@@ -9,20 +9,26 @@
  *   stored too, but a later delivery of the same key runs again, so fixing
  *   the cause (map the role, reopen the period) and retrying works.
  * - Rejections open ONE issue per company ("Accounting: postings were
- *   rejected"); later ones are added to it as comments.
+ *   rejected"), for the Bookkeeper (else the Operator or the owner); later
+ *   ones are added to it as comments.
  * - `open-item.upserted` keeps the receivable/payable projection (last
  *   updatedAt wins).
- * - `bank.match.result` settles the outbox entry for a bank match.
- * - `mail.received` with category bank_statement opens a "statement
- *   received" issue.
+ * - `bank.match.result` settles the outbox entry for a bank match and moves
+ *   the bank line. Billing often answers twice (`needs_review`, then a
+ *   person's `settled` or `rejected`): the later answer still applies to the
+ *   line even though the first one already settled the outbox row.
+ * - `mail.received` with category bank_statement opens a "Bank statement
+ *   received" issue for the Bookkeeper with the exact import steps.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
-  createWorkIssue,
+  ASK_OWNER_TOOL,
   isModuleEnabled,
   LEDGER_EVENTS,
+  outboxStatus,
   receiveOnce,
   settleOutbox,
+  type BankMatched,
   type BankMatchResult,
   type LedgerPostRequested,
   type LedgerPostResult,
@@ -32,8 +38,10 @@ import {
 import * as db from "../db.js";
 import { AccountingError, isIsoDate } from "../domain/util.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { routeBookkeeping } from "./agent.js";
+import { refreshSuggestions } from "./bank.js";
 import { ensureBook } from "./books.js";
-import { closeIssue, commentOn, errorMessage, issueStatus, ORIGIN, withLock } from "./common.js";
+import { closeIssue, commentOn, errorMessage, issueStatus, openIssue, ORIGIN, withLock } from "./common.js";
 import { postJournal, reverseJournal } from "./journals.js";
 
 const REJECTION_TITLE = "Accounting: postings were rejected";
@@ -159,7 +167,8 @@ export async function noteRejection(ctx: PluginContext, companyId: string, r: { 
       return;
     }
     try {
-      const issue = await createWorkIssue(ctx, {
+      const route = await routeBookkeeping(ctx, companyId);
+      const issue = await openIssue(ctx, {
         companyId,
         title: REJECTION_TITLE,
         description: [
@@ -169,12 +178,14 @@ export async function noteRejection(ctx: PluginContext, companyId: string, r: { 
           "",
           "Common fixes: map the missing role (Accounting → Chart & roles), reopen a closed period, or correct the document in Billing / Payroll.",
           "Then open **Accounting → Journals → Rejected** and click **Retry**. This issue closes itself when nothing is left to fix.",
+          "",
+          `**Bookkeeper:** read each error, work out the fix (\`list-accounts\` shows the role map; \`period-close-checklist\` shows closed months), and ask once with \`${ASK_OWNER_TOOL}\` for the person-only steps (map the role, reopen the period, then Retry), with the exact accounts, months and link. Do not re-post these journals by hand.`,
         ].join("\n"),
         priority: "high",
         originKind: ORIGIN,
         originId: "rejections",
-        wake: false,
-      });
+        wakeReason: "Postings were rejected",
+      }, route);
       await db.setRejectionIssue(ctx.db, companyId, issue.id);
     } catch (error) {
       ctx.logger.warn("Could not open the rejected-postings issue", { companyId, error: errorMessage(error) });
@@ -261,59 +272,106 @@ export async function receiveOpenItem(ctx: PluginContext, companyId: string, sen
 // Bank match results from Billing
 // ---------------------------------------------------------------------------
 
-export async function receiveMatchResult(ctx: PluginContext, companyId: string, payload: unknown): Promise<void> {
-  if (!isObject(payload) || typeof payload.key !== "string") return;
+/**
+ * Billing's answer to a bank match (`bank.match.result`).
+ *
+ * The first answer settles the outbox row. Billing often answers again
+ * later: `needs_review` first, then `settled` or `rejected` once a person
+ * decides in Billing. `settleOutbox` ignores a row that is already settled,
+ * so for a known `bank:` key the later answer is recorded on our row here
+ * and still applied to the line. A rejection returns the line to
+ * unreconciled with a note, and that invoice or bill is no longer
+ * suggested for it.
+ */
+export async function receiveMatchResult(ctx: PluginContext, companyId: string, payload: unknown): Promise<"applied" | "ignored"> {
+  if (!isObject(payload) || typeof payload.key !== "string" || !payload.key.startsWith("bank:")) return "ignored";
   const result = payload as unknown as BankMatchResult;
-  const settled = await settleOutbox(ctx, result.key, result as unknown as Record<string, unknown>, result.status === "rejected" ? "failed" : "done");
-  if (!settled) return;
-  const request = settled.payload as { bankTxId?: string };
+  // A refusal is a final business answer, not a failed delivery, so the row settles as done either way.
+  const settled = await settleOutbox(ctx, result.key, result as unknown as Record<string, unknown>, "done");
+  const row = settled ?? (await outboxStatus(ctx, result.key));
+  if (!row) return "ignored";
+  if (!settled) await db.recordOutboxAnswer(ctx.db, result.key, result);
+  const request = row.payload as Partial<BankMatched>;
   const lineId = request.bankTxId;
-  if (!lineId) return;
+  if (!lineId) return "ignored";
   const line = await db.getBankLine(ctx.db, companyId, lineId);
-  if (!line || line.status !== "matching") return;
-  const match = { ...(line.match ?? {}), billing: { status: result.status, paymentId: result.paymentId ?? null, error: result.error ?? null } };
+  if (!line || line.status !== "matching") return "ignored";
+  const current = (line.match ?? {}) as { outboxKey?: string; number?: string };
+  // The line was matched again since (or by hand): an old answer must not move it.
+  if (current.outboxKey && current.outboxKey !== result.key) return "ignored";
+  const what = current.number ? `the match to ${current.number}` : "the match";
   if (result.status === "rejected") {
-    await db.setLineState(ctx.db, companyId, lineId, ["matching"], {
+    const moved = await db.setLineState(ctx.db, companyId, lineId, ["matching"], {
       status: "unreconciled",
       match: null,
       journalId: null,
-      note: `Billing refused the match: ${result.error ?? "no reason given"}`,
+      note: `Billing refused ${what}: ${result.error ?? "no reason given"}. Match the line to something else or categorise it.`,
     });
-    return;
+    if (moved) await refreshSuggestions(ctx, companyId, { lineIds: [lineId], useJev: false }).catch(() => undefined);
+    return moved ? "applied" : "ignored";
   }
-  await db.setLineState(ctx.db, companyId, lineId, ["matching"], {
+  const match = { ...(line.match ?? {}), billing: { status: result.status, paymentId: result.paymentId ?? null, error: result.error ?? null } };
+  const moved = await db.setLineState(ctx.db, companyId, lineId, ["matching"], {
     status: "matching",
     match,
     journalId: null,
-    note: result.status === "needs_review" ? "Billing wants a person to check this payment before it posts." : "Billing recorded the payment; waiting for its journal.",
+    note: result.status === "needs_review"
+      ? `Billing wants a person to check this payment before it posts${result.error ? `: ${result.error}` : ""}.`
+      : "Billing recorded the payment; waiting for its journal.",
   });
+  return moved ? "applied" : "ignored";
 }
 
 // ---------------------------------------------------------------------------
 // Statement emails from the Mailbox
 // ---------------------------------------------------------------------------
 
+function kb(bytes: number | null | undefined): string {
+  const n = Math.max(0, Number(bytes ?? 0));
+  return n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/** The "Bank statement received" issue body: the files and the exact steps. */
+export function statementIssueText(mail: MailReceived): string {
+  const from = mail.from?.name ? `${mail.from.name} <${mail.from.email}>` : mail.from?.email ?? "an unknown sender";
+  const files = mail.attachments ?? [];
+  const table = files.length
+    ? ["| File | Type | Size | Attachment id |", "|---|---|---:|---|", ...files.map((a) => `| ${a.filename} | ${a.mime} | ${kb(a.bytes)} | \`${a.attachmentId}\` |`)].join("\n")
+    : "No attachments. The statement may be a link in the email: read it with `partnersinbiz.mailbox:get-message`.";
+  return [
+    `A bank statement arrived${mail.accountAddress ? ` in the mailbox ${mail.accountAddress}` : ""} from ${from} on ${mail.receivedAt}.`,
+    "",
+    table,
+    "",
+    `Message id: \`${mail.messageId}\``,
+    "",
+    "## Steps (Bookkeeper)",
+    `1. Get each CSV, OFX or MT940 file with \`partnersinbiz.mailbox:get-attachment\` (message id \`${mail.messageId}\` and the attachment id above).`,
+    "2. Import it with `partnersinbiz.accounting:import-statement`: the file text as `content` (or the link it returned as `url`), the `fileName`, and the `bankAccountId` from `list-bank-accounts`. Importing the same file again is safe: duplicates are skipped.",
+    "3. Reconcile: the import opens a \"Reconcile N new bank lines\" issue for the new lines. Work it with `list-bank-lines` and `accept-categorisation`.",
+    "4. Mark this issue done with the result (lines imported, duplicates skipped, the reconcile issue).",
+    "",
+    `Only a PDF? It cannot be imported. Ask the owner once with \`${ASK_OWNER_TOOL}\` for the CSV or OFX export from online banking (they can import it under Accounting → Bank → Import statement).`,
+    "",
+    "A person doing this by hand: download the file from the email and import it under **Accounting → Bank → Import statement**.",
+  ].join("\n");
+}
+
 export async function receiveMail(ctx: PluginContext, companyId: string, eventType: string, payload: unknown): Promise<boolean> {
   if (!isObject(payload) || typeof payload.key !== "string") return false;
   const mail = payload as unknown as MailReceived;
   if (mail.triage?.category !== "bank_statement") return false;
   const { repeat } = await receiveOnce(ctx, companyId, eventType, `mail:${mail.key}`, async () => {
-    const attachments = (mail.attachments ?? []).map((a) => `- ${a.filename} (${a.mime}, ${Math.round((a.bytes ?? 0) / 1024)} KB)`).join("\n") || "- (no attachments)";
-    const issue = await createWorkIssue(ctx, {
+    const route = await routeBookkeeping(ctx, companyId);
+    const issue = await openIssue(ctx, {
       companyId,
       title: `Bank statement received: ${(mail.subject || "(no subject)").slice(0, 120)}`,
-      description: [
-        `A bank statement arrived in the mailbox from ${mail.from?.name ? `${mail.from.name} <${mail.from.email}>` : mail.from?.email ?? "an unknown sender"} on ${mail.receivedAt}.`,
-        "",
-        attachments,
-        "",
-        "Download the CSV, OFX or MT940 file from the email and import it under **Accounting → Bank → Import statement**. PDF statements need a CSV/OFX export from the bank.",
-      ].join("\n"),
+      description: statementIssueText(mail),
       originKind: ORIGIN,
       originId: `mail:${mail.messageId}`,
-      wake: false,
-    });
-    return { issueId: issue.id };
+      wakeReason: "Bank statement to import",
+    }, route);
+    return { issueId: issue.id, via: route.via };
   });
   return !repeat;
 }

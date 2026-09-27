@@ -13,6 +13,7 @@ import {
   type MemoryKind,
 } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import { clientNames, crmClients, knownClientsFrom, type KnownClient } from "../clients.js";
 import type { Env } from "../env.js";
 import {
   baselineSelect,
@@ -103,9 +104,31 @@ export interface ClientResolution {
 }
 
 /**
+ * Every client memory can recognise: the CRM's companies (names and
+ * domains) and contacts, then clients only known from saved facts. A CRM
+ * copy that cannot be read (older install) just leaves the memory ones.
+ */
+export async function clientDirectory(env: Env, companyId: string): Promise<KnownClient[]> {
+  const [crm, memory] = await Promise.all([
+    crmClients(env.ctx, companyId).catch((error) => {
+      env.ctx.logger.info("Memory: the CRM client copy could not be read", { companyId, error: error instanceof Error ? error.message : String(error) });
+      return [];
+    }),
+    store.knownClients(env.ctx, companyId),
+  ]);
+  return knownClientsFrom(crm, memory);
+}
+
+/** One entry per client (display name), for Jev's pick and the Memory tab's pickers. */
+export function uniqueClients(known: KnownClient[]): Array<{ clientRef: string; clientName: string }> {
+  return [...clientNames(known).entries()].map(([clientRef, clientName]) => ({ clientRef, clientName }));
+}
+
+/**
  * Which client(s) the work is for: given explicitly (`company:<id>`,
- * `contact:<id>`, a known client name, or `own`), else names found in the
- * task text, else (with Jev, when memory knows clients) Jev's pick.
+ * `contact:<id>`, a client name or domain, or `own`), else names and
+ * domains of CRM clients (and clients memory knows) found in the task text,
+ * else (with Jev) Jev's pick.
  */
 export async function resolveClients(
   env: Env,
@@ -114,34 +137,37 @@ export async function resolveClients(
   task: Pick<TaskContext, "title" | "description" | "context">,
   options: { allowJev: boolean },
 ): Promise<ClientResolution> {
-  const known = await store.knownClients(env.ctx, companyId);
-  const nameOf = (ref: string) => known.find((k) => k.clientRef === ref)?.clientName ?? null;
+  const known = await clientDirectory(env, companyId);
+  const names = clientNames(known);
+  const nameOf = (ref: string) => names.get(ref) ?? null;
   const given = text(input.client, 200);
   if (given) {
     if (given.toLowerCase() === "own") return { refs: [], names: [], how: "own" };
     const parsed = parseClientParam(given);
     if (parsed) {
       const ref = `${parsed.kind}:${parsed.id}`;
-      const name = text(input.clientName, 200) ?? nameOf(ref);
+      // The CRM's name wins (it is the source of truth); a name passed for a client only memory knows updates it.
+      const crmName = known.some((k) => k.clientRef === ref && (k.source === "crm-company" || (k.source === "crm-contact" && ref.startsWith("contact:")))) ? nameOf(ref) : null;
+      const name = crmName ?? text(input.clientName, 200) ?? nameOf(ref);
       return { refs: [ref], names: name ? [name] : [], how: "given" };
     }
     const byName = known.find((k) => k.clientName.toLowerCase() === given.toLowerCase());
-    if (byName) return { refs: [byName.clientRef], names: [byName.clientName], how: "given" };
+    if (byName) return { refs: [byName.clientRef], names: [nameOf(byName.clientRef) ?? byName.clientName], how: "given" };
     throw new MemoryError(`Unknown client "${given}". Pass "company:<id>" or "contact:<id>" from the CRM (and clientName), or "own".`);
   }
   if (known.length === 0) return { refs: [], names: [], how: "none" };
   const hay = [task.title, task.description, ...task.context].join("\n");
   const named = clientsMentioned(hay, known);
-  if (named.length) return { refs: named, names: named.map((r) => nameOf(r)!).filter(Boolean), how: "named" };
+  if (named.length) return { refs: named, names: named.map((r) => nameOf(r)).filter((n): n is string => Boolean(n)), how: "named" };
   if (options.allowJev) {
     const config = await memoryJevConfig(env.ctx, companyId);
-    const choice = config ? clientChoice({ issueId: null, identifier: null, title: task.title, description: task.description, context: task.context, clientRefs: [], clientNames: [], area: null }, known) : null;
+    const choice = config ? clientChoice({ issueId: null, identifier: null, title: task.title, description: task.description, context: task.context, clientRefs: [], clientNames: [], area: null }, uniqueClients(known)) : null;
     if (config && choice) {
       const res = await jevOnce(config, choice.state, choice.questions, env.fetchImpl);
       const answer = res?.answers?.client;
       if (answer && answer.type === "choice" && answer.choice !== "none" && answer.confidence >= SELECTION.clientChoiceMin) {
         const ref = choice.options[answer.choice];
-        if (ref) return { refs: [ref], names: [nameOf(ref)!].filter(Boolean), how: "jev" };
+        if (ref) return { refs: [ref], names: [nameOf(ref)].filter((n): n is string => Boolean(n)), how: "jev" };
       }
     }
   }
@@ -206,12 +232,14 @@ export async function selectFacts(
   env: Env,
   companyId: string,
   task: TaskContext,
-  options: { mode: "brief" | "search"; maxFacts: number; allClients?: boolean },
+  options: { mode: "brief" | "search"; maxFacts: number; allClients?: boolean; includeArchived?: boolean },
 ): Promise<{ selection: Selection; model: string | null; jevInputTokens: number }> {
   const now = env.now();
   // A brief never mixes clients. An explicit search without a client looks at every client (each result names its client).
   const scope = options.mode === "search" && task.clientRefs.length === 0 && options.allClients ? "all" : task.clientRefs;
-  const scanned = (await store.scanCandidates(env.ctx, companyId, scope, SELECTION.scanLimit)).filter((f) => isLive(f, now));
+  const withArchived = options.mode === "search" && options.includeArchived === true;
+  const scanned = (await store.scanCandidates(env.ctx, companyId, scope, SELECTION.scanLimit, { includeArchived: withArchived }))
+    .filter((f) => isLive(f, now) || (withArchived && f.status === "archived"));
   if (scanned.length === 0) {
     return { selection: { method: "empty", selected: [], baselineIds: [], scores: {}, tokens: 0, candidateCount: 0 }, model: null, jevInputTokens: 0 };
   }
@@ -337,7 +365,7 @@ export async function recall(env: Env, companyId: string, input: RecallInput, ac
 // Search
 // ---------------------------------------------------------------------------
 
-export async function search(env: Env, companyId: string, input: { query?: unknown; client?: unknown; clientName?: unknown; area?: unknown; limit?: unknown }, actor: Actor) {
+export async function search(env: Env, companyId: string, input: { query?: unknown; client?: unknown; clientName?: unknown; area?: unknown; limit?: unknown; includeArchived?: unknown }, actor: Actor) {
   const query = text(input.query, 500);
   if (!query) throw new MemoryError("query is required: say what you need to know, e.g. \"Northwind blog tone\".");
   const area = isMemoryArea(input.area) ? input.area : null;
@@ -345,7 +373,7 @@ export async function search(env: Env, companyId: string, input: { query?: unkno
   const limit = Math.max(1, Math.min(MEMORY_LIMITS.searchMaxResults, typeof input.limit === "number" ? Math.floor(input.limit) : MEMORY_LIMITS.searchMaxResults));
   const task: TaskContext = { issueId: null, identifier: null, title: query, description: "", context: [], clientRefs: client.refs, clientNames: client.names, area };
   const own = typeof input.client === "string" && input.client.trim().toLowerCase() === "own";
-  const { selection, model, jevInputTokens } = await selectFacts(env, companyId, task, { mode: "search", maxFacts: limit, allClients: !own });
+  const { selection, model, jevInputTokens } = await selectFacts(env, companyId, task, { mode: "search", maxFacts: limit, allClients: !own, includeArchived: input.includeArchived === true });
   const id = shortId("s");
   const versionNow = await store.factsVersion(env.ctx, companyId);
   const body = selection.selected.length ? selection.selected.map((r) => factLine(r.fact)).join("\n") : `No stored facts match "${query}".`;
@@ -622,6 +650,104 @@ export async function updateFact(env: Env, companyId: string, input: UpdateInput
 }
 
 // ---------------------------------------------------------------------------
+// Export and import (backup, or seeding a new company with general lessons)
+// ---------------------------------------------------------------------------
+
+export const MEMORY_EXPORT_FORMAT = "pib-company-memory";
+export const MEMORY_EXPORT_VERSION = 1;
+
+export interface MemoryExport {
+  format: typeof MEMORY_EXPORT_FORMAT;
+  version: number;
+  exportedAt: string;
+  companyId: string;
+  facts: MemoryFact[];
+}
+
+export async function exportMemory(env: Env, companyId: string): Promise<MemoryExport> {
+  return { format: MEMORY_EXPORT_FORMAT, version: MEMORY_EXPORT_VERSION, exportedAt: env.now().toISOString(), companyId, facts: await store.exportFacts(env.ctx, companyId) };
+}
+
+export interface ImportResult {
+  added: number;
+  duplicates: number;
+  /** Client facts skipped because the file came from another company (its CRM ids do not exist here). */
+  skippedClient: number;
+  /** Replaced facts are history, not knowledge: not imported. */
+  skippedSuperseded: number;
+  invalid: Array<{ text: string; reason: string }>;
+}
+
+/**
+ * Restores an export into this company. From the same company everything
+ * active or archived comes back; from another company only company-wide facts
+ * (client facts point at the other company's CRM). Exact duplicates are
+ * skipped, secrets are refused, and nothing already here is changed.
+ */
+export async function importMemory(env: Env, companyId: string, payload: unknown, actor: Actor): Promise<ImportResult> {
+  const data = payload && typeof payload === "object" ? (payload as Partial<MemoryExport>) : null;
+  if (!data || data.format !== MEMORY_EXPORT_FORMAT || typeof data.version !== "number" || !Array.isArray(data.facts)) {
+    throw new MemoryError("That is not a company memory export (expected a file from Cockpit → Memory → Export).");
+  }
+  if (data.version > MEMORY_EXPORT_VERSION) throw new MemoryError(`This export is version ${data.version}; this Cockpit reads up to ${MEMORY_EXPORT_VERSION}. Update the Cockpit first.`);
+  if (data.facts.length > 50_000) throw new MemoryError("That export is too large to import at once (over 50,000 facts).");
+  const sameCompany = data.companyId === companyId;
+  const result: ImportResult = { added: 0, duplicates: 0, skippedClient: 0, skippedSuperseded: 0, invalid: [] };
+  for (const raw of data.facts) {
+    const fact = (raw && typeof raw === "object" ? raw : {}) as Partial<MemoryFact>;
+    if (fact.status === "superseded") {
+      result.skippedSuperseded += 1;
+      continue;
+    }
+    if (fact.clientRef && !sameCompany) {
+      result.skippedClient += 1;
+      continue;
+    }
+    let factText: string;
+    try {
+      factText = checkText(fact.text);
+    } catch (error) {
+      if (result.invalid.length < 20) result.invalid.push({ text: String(fact.text ?? "").slice(0, 80), reason: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    const clientRef = sameCompany && fact.clientRef && parseClientParam(fact.clientRef) ? fact.clientRef : null;
+    const textHash = factHash(clientRef, factText);
+    if (await store.findAnyByHash(env.ctx, companyId, textHash)) {
+      result.duplicates += 1;
+      continue;
+    }
+    const id = shortId("m");
+    const inserted = await store.insertFact(env.ctx, {
+      id,
+      companyId,
+      clientRef,
+      clientName: clientRef ? (typeof fact.clientName === "string" ? fact.clientName.slice(0, 200) : null) : null,
+      area: isMemoryArea(fact.area) ? fact.area : "general",
+      kind: isMemoryKind(fact.kind) ? fact.kind : "fact",
+      text: factText,
+      textHash,
+      pinned: fact.pinned === true && (fact.kind === "rule" || fact.kind === "warning"),
+      supersedes: null,
+      sourceIssueId: sameCompany && typeof fact.sourceIssueId === "string" ? fact.sourceIssueId : null,
+      sourceIdentifier: sameCompany && typeof fact.sourceIdentifier === "string" ? fact.sourceIdentifier : null,
+      sourceRunId: null,
+      createdByAgentId: null,
+      createdByUserId: actor.userId,
+      expiresAt: typeof fact.expiresAt === "string" && Number.isFinite(Date.parse(fact.expiresAt)) ? new Date(Date.parse(fact.expiresAt)).toISOString() : null,
+      sourceCommentId: null,
+      origin: "person",
+    });
+    if (!inserted) {
+      result.duplicates += 1;
+      continue;
+    }
+    if (fact.status === "archived") await store.updateFact(env.ctx, companyId, id, { status: "archived", pinned: false });
+    result.added += 1;
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Feedback
 // ---------------------------------------------------------------------------
 
@@ -762,11 +888,47 @@ export async function onCommentCreated(env: Env, event: Pick<PluginEvent, "compa
 // Review (Operator, weekly) and upkeep (daily job)
 // ---------------------------------------------------------------------------
 
+/** A company-wide fact that names a client: it reaches every client's brief, so it probably belongs to that client. */
+export interface MisfiledFact {
+  id: string;
+  text: string;
+  area: MemoryArea;
+  kind: MemoryKind;
+  clientRef: string;
+  clientName: string;
+  /** How to move it with the memory tools. */
+  suggestion: string;
+}
+
+/** Company-wide facts whose text names a known client (by name or domain), at most `limit`. */
+export function misfiledFacts(facts: MemoryFact[], known: KnownClient[], limit = 20): MisfiledFact[] {
+  const names = clientNames(known);
+  const out: MisfiledFact[] = [];
+  for (const fact of facts) {
+    if (fact.clientRef !== null || fact.status !== "active") continue;
+    const ref = clientsMentioned(fact.text, known)[0];
+    if (!ref) continue;
+    const clientName = names.get(ref) ?? ref;
+    out.push({
+      id: fact.id,
+      text: fact.text,
+      area: fact.area,
+      kind: fact.kind,
+      clientRef: ref,
+      clientName,
+      suggestion: `memory-add {text: (same text), client: "${ref}", area: "${fact.area}", kind: "${fact.kind}", supersedes: "${fact.id}"}`,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export async function review(env: Env, companyId: string) {
-  const [stats, facts, coverage] = await Promise.all([
+  const [stats, facts, coverage, known] = await Promise.all([
     store.memoryStats(env.ctx, companyId),
     store.activeFacts(env.ctx, companyId, 5000),
     store.recallCoverage(env.ctx, companyId).catch(() => [] as Array<{ agentId: string; runs: number; withBrief: number }>),
+    clientDirectory(env, companyId),
   ]);
   const now = env.now().getTime();
   const groups = new Map<string, MemoryFact[]>();
@@ -808,6 +970,7 @@ export async function review(env: Env, companyId: string) {
     staleCount: stale.length,
     staleExamples: stale.slice(0, 5).map((f) => ({ id: f.id, text: f.text, lastUsedAt: f.lastUsedAt })),
     overCap,
+    misfiled: misfiledFacts(facts, known),
     verdict,
   };
 }

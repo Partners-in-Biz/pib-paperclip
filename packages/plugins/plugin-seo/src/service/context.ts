@@ -1,4 +1,5 @@
 import * as db from "../db.js";
+import { planOf } from "../templates/plans.js";
 import { sprintClock, type SprintClock } from "../engine/sprint.js";
 import type { SprintCopy } from "../engine/copy.js";
 import { companyInfo, SeoError, type CompanyInfo, type Env } from "./common.js";
@@ -21,6 +22,7 @@ export function sprintCopy(sprint: db.Sprint): SprintCopy {
     clientName: sprint.clientName,
     autopilotMode: sprint.autopilotMode,
     notes: sprint.notes,
+    planName: planOf(sprint.templateId).name,
   };
 }
 

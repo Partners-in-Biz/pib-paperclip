@@ -345,6 +345,13 @@ export async function getMessageFull(fetchImpl: FetchLike, token: string, id: st
   return toMessage(await gmail(fetchImpl, token, "GET", `/messages/${encodeURIComponent(id)}`, { query: { format: "full" } }));
 }
 
+/** One attachment's bytes (`users.messages.attachments.get`), base64url-decoded. */
+export async function getAttachmentData(fetchImpl: FetchLike, token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
+  const body = await gmail(fetchImpl, token, "GET", `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`, { timeoutMs: 60_000 });
+  const data = typeof body.data === "string" ? body.data : "";
+  return new Uint8Array(Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64"));
+}
+
 /** Message-ID and References of every message in a thread (oldest first), for follow-ups. */
 export async function getThreadMetadata(fetchImpl: FetchLike, token: string, threadId: string): Promise<GmailMessage[]> {
   const body = await gmail(fetchImpl, token, "GET", `/threads/${encodeURIComponent(threadId)}`, {

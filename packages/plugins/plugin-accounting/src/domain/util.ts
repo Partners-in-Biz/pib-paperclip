@@ -131,16 +131,17 @@ function compact(value: unknown): unknown {
   return value;
 }
 
-export function formatRand(minor: number): string {
-  const sign = minor < 0 ? "-" : "";
-  const abs = Math.abs(minor);
-  const whole = Math.floor(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${sign}R${whole}.${String(abs % 100).padStart(2, "0")}`;
-}
-
 /** Plain decimal for CSV exports (no thousands separator). */
 export function decimal(minor: number): string {
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
   return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** `2026-09-28` → `28 Sep 2026` for text people read (issues, tool results); `?` when empty. */
+export function dayText(date: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date ?? "");
+  return m ? `${Number(m[3])} ${SHORT_MONTHS[Number(m[2]) - 1]} ${m[1]}` : "?";
 }

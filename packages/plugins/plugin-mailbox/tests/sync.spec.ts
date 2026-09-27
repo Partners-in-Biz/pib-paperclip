@@ -119,12 +119,14 @@ describe("sync-mailbox", () => {
     store.locks.clear();
     (host.ctx.config as { get: () => Promise<unknown> }).get = async () => ({});
     gmail.addMessage({ id: "z", headers: { From: "a@b.co", Subject: "x" } });
-    expect(await runSyncJob(env)).toEqual({ accounts: 1, synced: 0, failed: 0 });
+    expect(await runSyncJob(env)).toEqual({ accounts: 1, synced: 0, failed: 0, leadsResent: 0, leadsFailed: 0 });
     expect(gmail.calls).toHaveLength(0);
   });
 
   it("opens one reply issue per thread when an assignee is set", async () => {
     const { gmail, env, host, store, loaded, run, account } = setup({ ...JEV_CONFIG, triageIssueAssignee: "agent-42" });
+    // A lead from a known CRM contact: the CRM opens nothing, so the Mailbox asks for a reply.
+    store.crm.push({ kind: "contact", id: "c-new", name: "New Prospect", domain: null, emails: ["new@prospect.co.za"], accountIds: [] });
     gmail.jevResponse = jevAnswers({
       category: { type: "choice", choice: "lead", probabilities: { lead: 0.92 }, confidence: 0.92 },
       urgency: { type: "score", score: 1.4, probabilities: { "1": 0.6, "2": 0.4 }, confidence: 0.6 },

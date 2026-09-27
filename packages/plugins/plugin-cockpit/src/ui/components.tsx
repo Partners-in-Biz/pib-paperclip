@@ -11,6 +11,7 @@ import {
   Banknote,
   Bot,
   ChartColumn,
+  ChevronRight,
   Circle,
   CircleQuestionMark,
   Eye,
@@ -21,6 +22,7 @@ import {
   KeyRound,
   KpiCard,
   Megaphone,
+  MessageCircleQuestionMark,
   PackageCheck,
   Pill,
   ProgressBar,
@@ -33,6 +35,7 @@ import {
   Timeline,
   Users,
   Wallet,
+  formatShortDate,
   moduleAccent,
   moduleKeyOf,
   tokens,
@@ -57,7 +60,11 @@ import {
   type Tone,
   type WaitingEntry,
 } from "../merge.js";
+import { TEAM_SETUP_PATH } from "@partnersinbiz/pib-plugin-kit/team";
+import { ASK_KIND_LABEL, askTone } from "../ask-model.js";
 import type { BackupInfo } from "../view.js";
+import { plainDetail } from "../plain.js";
+import { kpiParts, readableDates } from "./kpis.js";
 import { healthCounts, runColumns, runsPerDay } from "./series.js";
 
 export type LinkPropsFor = (href: string) => AnchorHTMLAttributes<HTMLAnchorElement>;
@@ -70,9 +77,39 @@ export const TONE_COLOR: Record<Tone | HealthStatus, string> = {
   neutral: tone("neutral").solid,
 };
 
-/** Wrapping grid: as many columns of at least `min` as fit, one column on a phone. */
-export function grid(min: number, gap = 12): CSSProperties {
-  return { display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(min(${min}px, 100%), 1fr))`, gap };
+/** Wrapping grid: as many columns of at least `min` as fit, one column on a phone. `fill` stretches the items across the row. */
+export function grid(min: number, gap = 12, fill = false): CSSProperties {
+  return { display: "grid", gridTemplateColumns: `repeat(${fill ? "auto-fit" : "auto-fill"}, minmax(min(${min}px, 100%), 1fr))`, gap };
+}
+
+/** At most `lines` lines of text, cut with an ellipsis (long "why" texts on a phone). */
+export function clampLines(lines: number): CSSProperties {
+  return { display: "-webkit-box", WebkitLineClamp: lines, WebkitBoxOrient: "vertical", overflow: "hidden" };
+}
+
+/** A small "Details" disclosure for raw technical text (an API error, an adapter message). */
+export function Details({ raw, label = "Details" }: { raw: string | null | undefined; label?: string }) {
+  if (!raw) return null;
+  return (
+    <details style={{ minWidth: 0 }}>
+      <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600, color: tokens.muted, minHeight: 24, display: "inline-flex", alignItems: "center" }}>{label}</summary>
+      <code style={{ display: "block", marginTop: 4, padding: "6px 8px", borderRadius: 8, background: tokens.secondary, color: tokens.fg, fontSize: 11.5, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{raw}</code>
+    </details>
+  );
+}
+
+/** Anchor props that scroll to a section of this page (`#health`) without leaving it. */
+export function sectionLink(id: string): AnchorHTMLAttributes<HTMLAnchorElement> {
+  return {
+    href: `#${id}`,
+    onClick: (event) => {
+      if (typeof document === "undefined") return;
+      const target = document.getElementById(id);
+      if (!target) return;
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    },
+  };
 }
 
 /** A coloured health light with its label ("All good", "Needs attention", "Problems"). */
@@ -119,6 +156,16 @@ function linkOf(href: string | null | undefined, linkFor: LinkPropsFor): AnchorH
   return /^https?:\/\//i.test(href) ? { href, target: "_blank", rel: "noreferrer" } : linkFor(href);
 }
 
+/** True for a link to Setup → Team, where every agent role is hired, picked, changed or removed. */
+export function isTeamSetupHref(href: string | null | undefined): boolean {
+  return typeof href === "string" && href.startsWith(TEAM_SETUP_PATH);
+}
+
+/** The link label for a problem: "Fix in Setup" when the fix is staffing a role in Setup → Team. */
+export function fixLabel(href: string | null | undefined, fallback: string): string {
+  return isTeamSetupHref(href) ? "Fix in Setup" : fallback;
+}
+
 function OpenLink({ href, linkFor, label = "Open" }: { href: string | null | undefined; linkFor: LinkPropsFor; label?: string }) {
   if (!href) return null;
   const external = /^https?:\/\//i.test(href);
@@ -139,36 +186,79 @@ function since(iso: string | null | undefined, now: Date): string | null {
 // Today
 // ---------------------------------------------------------------------------
 
-/** The hero card: health light, the one-line summary and four quick counts. */
-export function TodayHero({ health, today, waiting, problems, agentAlerts, activeAgents, children }: {
+/** Where the company's run log lives (every agent run, newest first). */
+export const RUN_LOG_PATH = "/activity/runs";
+
+/**
+ * The hero card. Failing runs come first ("All 15 runs in the last 24 hours
+ * failed → Open run log"), then the one-line summary and four quick counts
+ * that fill their row. System health shows problems and warnings and jumps
+ * to the System health card.
+ */
+export function TodayHero({ health, today, waiting, problems, warnings = 0, agentAlerts, activeAgents, runAlert, linkFor, children }: {
   health: HealthStatus;
   today: string;
   waiting: WaitingEntry[];
   problems: number;
+  /** Checks that need attention but are not problems. */
+  warnings?: number;
   agentAlerts: number;
   activeAgents: number | null;
+  /** "All 15 runs in the last 24 hours failed", when runs fail. */
+  runAlert?: { text: string; tone: "bad" | "warn" } | null;
+  linkFor?: LinkPropsFor;
   children?: ReactNode;
 }) {
+  const narrow = useIsNarrow();
   const urgent = waiting.filter((item) => item.kind === "money" || item.kind === "legal").length;
+  const questions = waiting.filter((item) => item.ask).length;
+  const runTone = runAlert ? tone(runAlert.tone) : null;
   return (
-    <Card title="Today" icon={Sun} tone={health} strip actions={<Light status={health} />}>
+    <Card title="Today" icon={Sun} tone={runAlert ? worstTone(health, runAlert.tone) : health} strip actions={<Light status={runAlert ? worstTone(health, runAlert.tone) : health} />}>
+      {runAlert && runTone ? (
+        <a
+          {...(linkFor ? linkFor(RUN_LOG_PATH) : { href: RUN_LOG_PATH })}
+          data-run-alert={runAlert.tone}
+          className="pib-link-card"
+          style={{ display: "flex", gap: 10, alignItems: "center", minHeight: 44, padding: "8px 12px", borderRadius: 12, border: `1px solid ${runTone.border}`, background: runTone.soft, color: tokens.fg, textDecoration: "none", minWidth: 0 }}
+        >
+          <Bot size={16} color={runTone.solid} aria-hidden="true" style={{ flexShrink: 0 }} />
+          <strong style={{ fontSize: 14, flex: "1 1 auto", minWidth: 0, overflowWrap: "anywhere" }}>{runAlert.text}</strong>
+          {narrow
+            ? <ChevronRight size={18} aria-label="Open run log" style={{ color: tokens.muted, flexShrink: 0 }} />
+            : <span style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, whiteSpace: "nowrap", flexShrink: 0 }}>Open run log →</span>}
+        </a>
+      ) : null}
       <p style={{ margin: 0, fontSize: 15, fontWeight: 600, lineHeight: 1.45 }}>{today}</p>
-      <div style={grid(150, 10)}>
+      <div style={grid(150, 10, true)}>
         <KpiCard
           size="sm"
           label="Waiting on you"
           value={waiting.length}
           tone={urgent ? "bad" : waiting.length ? "warn" : "ok"}
-          hint={urgent ? `${urgent} money or legal` : waiting.length ? "Your decisions" : "Nothing to decide"}
+          hint={urgent ? `${urgent} money or legal` : questions ? `${questions} ${questions === 1 ? "question" : "questions"} from agents` : waiting.length ? "Your decisions" : "Nothing to decide"}
           icon={Inbox}
+          link={sectionLink("waiting")}
         />
-        <KpiCard size="sm" label="Problems to fix" value={problems} tone={problems ? "bad" : "ok"} hint={problems ? "See System health" : "All systems ok"} icon={HeartPulse} />
-        <KpiCard size="sm" label="Agent alerts" value={agentAlerts} tone={agentAlerts ? "warn" : "ok"} hint={agentAlerts ? "Budget or errors" : "No alerts"} icon={Bot} />
+        <KpiCard
+          size="sm"
+          label="System health"
+          value={problems || warnings ? `${problems} ${problems === 1 ? "problem" : "problems"}` : "All ok"}
+          tone={problems ? "bad" : warnings ? "warn" : "ok"}
+          hint={problems || warnings ? `${warnings} ${warnings === 1 ? "warning" : "warnings"}` : "Every check passes"}
+          icon={HeartPulse}
+          link={sectionLink("health")}
+        />
+        <KpiCard size="sm" label="Agent alerts" value={agentAlerts} tone={agentAlerts ? "warn" : "ok"} hint={agentAlerts ? "Errors or budget" : "No alerts"} icon={Bot} link={sectionLink("agents")} />
         <KpiCard size="sm" label="Agents working" value={activeAgents ?? "–"} hint={activeAgents === null ? "Agents not loaded" : "Active or idle now"} icon={Activity} />
       </div>
       {children}
     </Card>
   );
+}
+
+function worstTone(a: HealthStatus, b: "bad" | "warn"): HealthStatus {
+  return a === "bad" || b === "bad" ? "bad" : "warn";
 }
 
 // ---------------------------------------------------------------------------
@@ -177,45 +267,165 @@ export function TodayHero({ health, today, waiting, problems, agentAlerts, activ
 
 export const KIND_TONE: Record<WaitingEntry["kind"], ToneInput> = { money: "bad", legal: "warn", grant: "info", judgement: "accent", review: "neutral", other: "neutral" };
 export const KIND_ICON: Record<WaitingEntry["kind"], LucideIcon> = { money: Banknote, legal: Scale, grant: KeyRound, judgement: CircleQuestionMark, review: Eye, other: Circle };
+const KIND_PLURAL: Record<WaitingEntry["kind"], string> = { money: "Money", legal: "Legal", grant: "One-time grants", judgement: "Your calls", review: "Reviews", other: "Other" };
+
+/** "Answer" / "Fix in Setup": a small primary link-button (the host only styles its own class names). */
+export const primaryLinkStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  minHeight: 32,
+  padding: "0 12px",
+  borderRadius: 8,
+  background: tokens.primary,
+  color: tokens.primaryFg,
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+  whiteSpace: "nowrap",
+};
+
+function askedLine(ask: NonNullable<WaitingEntry["ask"]>, now: Date): string {
+  const age = since(ask.askedAt, now);
+  return [
+    `${ask.askedBy ?? "An agent"} asked${age ? ` ${age}` : ""}`,
+    ask.dueBy ? `needed by ${formatShortDate(ask.dueBy, now)}` : null,
+    ask.clientName ? `for ${ask.clientName}` : null,
+  ].filter(Boolean).join(" · ");
+}
+
+/** One question an agent asked the owner: money and legal red, the rest amber; the question, options, why and an Answer link to the issue. */
+export function AskCard({ item, linkFor, now }: { item: WaitingEntry; linkFor: LinkPropsFor; now: Date }) {
+  const ask = item.ask!;
+  const t = tone(askTone(ask.kind));
+  const answer = linkOf(item.href, linkFor);
+  return (
+    <div
+      data-ask={ask.kind}
+      style={{ position: "relative", display: "grid", gap: 8, padding: "12px 12px 12px 15px", borderRadius: 12, border: `1px solid ${t.border}`, background: `linear-gradient(90deg, ${t.soft}, transparent 70%), ${tokens.bg}`, minWidth: 0 }}
+    >
+      <span aria-hidden="true" style={{ position: "absolute", left: -1, top: 10, bottom: 10, width: 3, borderRadius: 999, background: t.solid }} />
+      <div style={{ display: "flex", gap: "6px 8px", alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+        <Pill tone={askTone(ask.kind)} icon={MessageCircleQuestionMark}>{ASK_KIND_LABEL[ask.kind]}</Pill>
+        <span style={{ fontSize: 12, color: tokens.muted, minWidth: 0, overflowWrap: "anywhere" }}>{askedLine(ask, now)}</span>
+      </div>
+      <p style={{ margin: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: "anywhere" }}>{ask.question}</p>
+      {ask.options.length ? (
+        <ol style={{ margin: 0, paddingLeft: 22, listStyle: "decimal outside", fontSize: 13, lineHeight: 1.55, overflowWrap: "anywhere" }}>
+          {ask.options.map((option, index) => (
+            <li key={index}>{option}{index === 0 && ask.options.length > 1 ? <span style={{ color: tokens.muted }}> (recommended)</span> : null}</li>
+          ))}
+        </ol>
+      ) : null}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+        {ask.why ? <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere" }}>{ask.why}</span> : <span />}
+        {answer ? <a {...answer} style={primaryLinkStyle} aria-label={`Answer: ${ask.question}`}>Answer →</a> : null}
+      </div>
+    </div>
+  );
+}
+
+/** The right-hand "Open →" of a tappable row: the label on a wide screen, a chevron on a phone. Never wraps. */
+function RowArrow({ label, narrow }: { label: string; narrow: boolean }) {
+  return narrow
+    ? <ChevronRight size={18} aria-hidden="true" style={{ color: tokens.muted, flexShrink: 0 }} />
+    : <span style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, whiteSpace: "nowrap" }}>{label} →</span>;
+}
+
+/**
+ * One thing waiting on you. The whole row opens it, with the arrow kept on
+ * the right (also on a phone). A count with examples (unassigned issues)
+ * opens each example instead.
+ */
+export function WaitingRow({ item, linkFor, now, first }: { item: WaitingEntry; linkFor: LinkPropsFor; now: Date; first: boolean }) {
+  const narrow = useIsNarrow();
+  const t = tone(KIND_TONE[item.kind]);
+  const examples = (item.examples ?? []).slice(0, narrow ? 3 : 5);
+  const link = examples.length ? null : linkOf(item.href, linkFor);
+  const meta = [item.why, item.sourceTitle, since(item.since, now)].filter(Boolean).join(" · ");
+  const row: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: link ? "3px minmax(0, 1fr) auto" : "3px minmax(0, 1fr)",
+    gap: 12,
+    alignItems: "center",
+    minHeight: 48,
+    padding: "10px 4px",
+    borderTop: first ? "none" : `1px solid ${tokens.border}`,
+    color: tokens.fg,
+    textDecoration: "none",
+    minWidth: 0,
+  };
+  const body = (
+    <>
+      <span aria-hidden="true" style={{ alignSelf: "stretch", borderRadius: 999, background: t.solid, opacity: item.kind === "review" || item.kind === "other" ? 0.5 : 1 }} />
+      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+          <Pill tone={KIND_TONE[item.kind]} icon={KIND_ICON[item.kind]}>{KIND_LABEL[item.kind]}</Pill>
+          <span style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 200px" }}>{item.title}</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, overflowWrap: "anywhere", ...(narrow ? clampLines(2) : {}) }}>{meta}</div>
+        {examples.length ? (
+          <ul style={{ margin: "2px 0 0", padding: 0, listStyle: "none", display: "grid", minWidth: 0 }}>
+            {examples.map((example, index) => {
+              const props = linkOf(example.href, linkFor);
+              const line = (
+                <>
+                  <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                    <span style={{ color: tokens.primary, fontWeight: 600 }}>{example.title}</span>
+                    {since(example.since, now) ? <span style={{ color: tokens.muted }}> · {since(example.since, now)}</span> : null}
+                  </span>
+                  {props ? <ChevronRight size={16} aria-hidden="true" style={{ color: tokens.muted, flexShrink: 0 }} /> : null}
+                </>
+              );
+              const lineStyle: CSSProperties = { display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", minHeight: 40, fontSize: 12.5, lineHeight: 1.45, color: tokens.fg, textDecoration: "none", borderTop: index ? `1px dashed ${tokens.border}` : "none", minWidth: 0 };
+              return <li key={index}>{props ? <a {...props} className="pib-link-card" style={lineStyle}>{line}</a> : <span style={lineStyle}>{line}</span>}</li>;
+            })}
+          </ul>
+        ) : null}
+      </div>
+      {link ? <RowArrow label={fixLabel(item.href, "Open")} narrow={narrow} /> : null}
+    </>
+  );
+  return link
+    ? <a {...link} className="pib-link-card" style={row}>{body}</a>
+    : <div style={row}>{body}</div>;
+}
 
 export function WaitingList({ items, linkFor, now, limit }: { items: WaitingEntry[]; linkFor: LinkPropsFor; now: Date; limit?: number }) {
   if (items.length === 0) return <Muted>Nothing waits on you. The agents have what they need.</Muted>;
   const shown = limit ? items.slice(0, limit) : items;
+  const asks = shown.filter((item) => item.ask);
+  const rest = shown.filter((item) => !item.ask);
   return (
-    <div style={{ display: "grid" }}>
-      {shown.map((item, index) => {
-        const t = tone(KIND_TONE[item.kind]);
-        return (
-          <div key={item.key} style={{ display: "grid", gridTemplateColumns: "3px minmax(0, 1fr)", gap: 12, padding: "10px 0", borderTop: index === 0 ? "none" : `1px solid ${tokens.border}` }}>
-            <span aria-hidden="true" style={{ borderRadius: 999, background: t.solid, opacity: item.kind === "review" || item.kind === "other" ? 0.5 : 1 }} />
-            <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <Pill tone={KIND_TONE[item.kind]} icon={KIND_ICON[item.kind]}>{KIND_LABEL[item.kind]}</Pill>
-                <Anchor href={item.href} linkFor={linkFor} style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 200px" }}>{item.title}</Anchor>
-                <OpenLink href={item.href} linkFor={linkFor} />
-              </div>
-              <div style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, overflowWrap: "anywhere" }}>
-                {item.why}
-                <span> · {item.sourceTitle}</span>
-                {since(item.since, now) ? <span> · {since(item.since, now)}</span> : null}
-              </div>
-            </div>
-          </div>
-        );
-      })}
+    <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+      {asks.length ? (
+        <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, letterSpacing: 0.2 }}>{asks.length === 1 ? "A question from an agent" : `${asks.length} questions from agents`}: reply on the issue and it goes back to them</span>
+          {asks.map((item) => <AskCard key={item.key} item={item} linkFor={linkFor} now={now} />)}
+        </div>
+      ) : null}
+      {rest.length ? (
+        <div style={{ display: "grid", minWidth: 0 }}>
+          {rest.map((item, index) => <WaitingRow key={item.key} item={item} linkFor={linkFor} now={now} first={index === 0} />)}
+        </div>
+      ) : null}
       {limit && items.length > limit ? <Muted>And {items.length - limit} more.</Muted> : null}
     </div>
   );
 }
 
-/** Counts per kind as toned pills (for the Waiting card header). */
+/** Counts per kind as toned pills (for the Waiting card header); questions from agents first. */
 export function WaitingKinds({ items }: { items: WaitingEntry[] }) {
+  const asks = items.filter((item) => item.ask);
   const counts = new Map<WaitingEntry["kind"], number>();
-  for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
-  if (counts.size === 0) return null;
+  for (const item of items) if (!item.ask) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+  if (counts.size === 0 && asks.length === 0) return null;
+  const urgentAsks = asks.some((item) => item.ask && askTone(item.ask.kind) === "bad");
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {[...counts.entries()].map(([kind, count]) => <Pill key={kind} tone={KIND_TONE[kind]} size="sm" dot>{count} {KIND_LABEL[kind].toLowerCase()}</Pill>)}
+      {asks.length ? <Pill tone={urgentAsks ? "bad" : "warn"} size="sm" dot>{asks.length} {asks.length === 1 ? "question" : "questions"}</Pill> : null}
+      {[...counts.entries()].map(([kind, count]) => <Pill key={kind} tone={KIND_TONE[kind]} size="sm" dot>{count} {(count === 1 ? KIND_LABEL[kind] : KIND_PLURAL[kind]).toLowerCase()}</Pill>)}
     </div>
   );
 }
@@ -233,18 +443,24 @@ export const KPI_GROUP_ICON: Record<keyof typeof KPI_GROUP_TITLES, LucideIcon> =
   other: ChartColumn,
 };
 
-export function KpiTile({ kpi, linkFor, size = "md" }: { kpi: KpiEntry; linkFor: LinkPropsFor; size?: "sm" | "md" }) {
+/**
+ * One number. A packed value ("1 · R 11,500.00 (1 over a day)") shows the
+ * amount with the count as its hint ("1 invoice, over a day old"); ISO dates
+ * read "25 Oct". The module icon says where it comes from.
+ */
+export function KpiTile({ kpi, linkFor, size = "md", now }: { kpi: KpiEntry; linkFor: LinkPropsFor; size?: "sm" | "md"; now?: Date }) {
   const accent = moduleAccent(kpi.plugin);
   const toned = kpi.tone && kpi.tone !== "neutral" ? kpi.tone : undefined;
+  const parts = kpiParts(kpi, now);
   return (
     <KpiCard
       size={size}
-      label={kpi.label}
-      value={kpi.value}
+      label={kpiLabel(kpi.label, now)}
+      value={parts.value}
       tone={kpi.tone ?? "neutral"}
       delta={kpi.delta ?? null}
       deltaTone={toned}
-      hint={kpi.pluginTitle}
+      hint={parts.hint ?? kpi.pluginTitle}
       icon={moduleKeyOf(kpi.plugin) ? accent.icon : undefined}
       iconAccent={moduleKeyOf(kpi.plugin) ? accent : undefined}
       link={linkOf(kpi.href, linkFor)}
@@ -252,7 +468,18 @@ export function KpiTile({ kpi, linkFor, size = "md" }: { kpi: KpiEntry; linkFor:
   );
 }
 
-export function KpiGroup({ group, kpis, linkFor }: { group: keyof typeof KPI_GROUP_TITLES; kpis: KpiEntry[]; linkFor: LinkPropsFor }) {
+/** A label with ISO dates as short dates ("VAT due (1 Sep to 31 Oct)"). */
+function kpiLabel(label: string, now?: Date): string {
+  return readableDates(label, now);
+}
+
+/**
+ * A group of numbers (Money, Pipeline, …): the tiles it is given (by default
+ * the ones that are not zero or need attention), two to a row in a half-width
+ * panel, filling the row.
+ */
+export function KpiGroup({ group, kpis, linkFor, hidden = 0, now }: { group: keyof typeof KPI_GROUP_TITLES; kpis: KpiEntry[]; linkFor: LinkPropsFor; hidden?: number; now?: Date }) {
+  const narrow = useIsNarrow();
   const bad = kpis.filter((k) => k.tone === "bad").length;
   const warn = kpis.filter((k) => k.tone === "warn").length;
   return (
@@ -262,8 +489,8 @@ export function KpiGroup({ group, kpis, linkFor }: { group: keyof typeof KPI_GRO
       actions={bad ? <Pill tone="bad" size="sm" dot>{bad} to fix</Pill> : warn ? <Pill tone="warn" size="sm" dot>{warn} to watch</Pill> : null}
     >
       {kpis.length === 0
-        ? <Muted>No numbers reported yet.</Muted>
-        : <div style={grid(150, 10)}>{kpis.map((kpi) => <KpiTile key={`${kpi.plugin}:${kpi.key}`} kpi={kpi} linkFor={linkFor} />)}</div>}
+        ? <Muted>{hidden ? `Nothing to report: ${hidden} ${hidden === 1 ? "number is" : "numbers are"} at zero.` : "No numbers reported yet."}</Muted>
+        : <div style={grid(narrow ? 130 : 190, narrow ? 8 : 10, true)}>{kpis.map((kpi) => <KpiTile key={`${kpi.plugin}:${kpi.key}`} kpi={kpi} linkFor={linkFor} now={now} size={narrow ? "sm" : "md"} />)}</div>}
     </Card>
   );
 }
@@ -293,7 +520,7 @@ export function RunsChart({ runs, now }: { runs: RunLite[]; now: Date }) {
           </span>
         ) : null}
       </div>
-      <BarChart data={runColumns(days)} series={RUN_SERIES} title="Agent runs per day" unit="runs" height={88} emptyText="No runs in the last 14 days." />
+      <BarChart data={runColumns(days, now)} series={RUN_SERIES} title="Agent runs per day" unit="runs" height={88} emptyText="No runs in the last 14 days." />
     </div>
   );
 }
@@ -320,6 +547,9 @@ export function activityItems(groups: ActivityGroup[], linkFor: LinkPropsFor): T
 
 export function ActivityList({ groups, linkFor, now, runs }: { groups: ActivityGroup[]; linkFor: LinkPropsFor; now: Date; runs?: RunLite[] }) {
   const withRuns = groups.filter((g) => g.runs.total > 0);
+  const items = activityItems(groups, linkFor);
+  // Runs that failed logged nothing: the run line above and the Today card say so, not "nothing notable".
+  const failed = withRuns.some((g) => g.runs.failed > 0);
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
       {runs ? <RunsChart runs={runs} now={now} /> : null}
@@ -327,14 +557,16 @@ export function ActivityList({ groups, linkFor, now, runs }: { groups: ActivityG
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} aria-label="Runs in this period">
           {withRuns.map((g) => (
             <Anchor key={g.key} href={g.agentId ? `/agents/${g.agentId}` : null} linkFor={linkFor}>
-              <Pill tone={g.runs.failed > 0 ? "warn" : "neutral"} icon={Bot}>{g.name}: {g.runs.total} {g.runs.total === 1 ? "run" : "runs"}{g.runs.failed ? `, ${g.runs.failed} failed` : ""}</Pill>
+              <Pill tone={g.runs.failed >= g.runs.total ? "bad" : g.runs.failed > 0 ? "warn" : "neutral"} icon={Bot}>{g.name}: {g.runs.failed >= g.runs.total ? `all ${g.runs.total} ${g.runs.total === 1 ? "run" : "runs"} failed` : `${g.runs.total} ${g.runs.total === 1 ? "run" : "runs"}${g.runs.failed ? `, ${g.runs.failed} failed` : ""}`}</Pill>
             </Anchor>
           ))}
         </div>
       ) : null}
       {groups.length === 0
         ? <Muted>No agent activity in this period.</Muted>
-        : <Timeline items={activityItems(groups, linkFor)} now={now} limit={12} empty="Ran, nothing notable logged." />}
+        : items.length
+          ? <Timeline items={items} now={now} limit={12} />
+          : failed ? null : <Muted>The agents ran; nothing notable was logged.</Muted>}
     </div>
   );
 }
@@ -351,6 +583,27 @@ export function agentTone(status: string): { tone: ToneInput; pulse: boolean } {
   return { tone: "neutral", pulse: false };
 }
 
+const AGENT_STATUS_LABEL: Record<string, string> = {
+  active: "Active",
+  idle: "Idle",
+  running: "Running",
+  paused: "Paused",
+  error: "Error",
+  pending_approval: "Awaiting approval",
+  terminated: "Removed",
+};
+
+/** An agent's status in plain words ("Awaiting approval", not "pending_approval"). */
+export function agentStatusLabel(status: string): string {
+  return AGENT_STATUS_LABEL[status] ?? (status ? status.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : "Unknown");
+}
+
+/** Where to read what went wrong: the agent's latest failed run, else the agent. */
+export function agentRunHref(row: Pick<AgentRow, "id" | "urlKey" | "lastFailedRunId">): string {
+  const agent = `/agents/${row.urlKey || row.id}`;
+  return row.lastFailedRunId ? `${agent}/runs/${row.lastFailedRunId}` : agent;
+}
+
 function budgetBar(row: AgentRow) {
   if (row.budgetRatio === null) return <span style={{ color: tokens.muted }}>{formatCents(row.spentMonthlyCents)} (no budget)</span>;
   return (
@@ -361,22 +614,44 @@ function budgetBar(row: AgentRow) {
   );
 }
 
+/**
+ * What is wrong with an agent, in plain words: "Stopped with an error ·
+ * Open run →" (the adapter's own text under Details), or its budget.
+ */
+function AgentAlert({ row, linkFor }: { row: AgentRow; linkFor: LinkPropsFor }) {
+  if (!row.alertText) return null;
+  const bad = row.alert === "error" || (row.budgetRatio ?? 0) >= 1;
+  return (
+    <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+      <span style={{ fontSize: 12, lineHeight: 1.45, color: tone(bad ? "bad" : "warn").fg, overflowWrap: "anywhere" }}>
+        {row.alertText}
+        {row.alert === "error" ? (
+          <>
+            {" "}
+            <a {...linkFor(agentRunHref(row))} style={{ color: tokens.primary, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>{row.lastFailedRunId ? "Open run →" : "Open agent →"}</a>
+          </>
+        ) : null}
+      </span>
+      <Details raw={row.alertRaw} />
+    </div>
+  );
+}
+
 const th: CSSProperties = { textAlign: "left", fontSize: 11.5, fontWeight: 600, color: tokens.muted, padding: "8px 10px", borderBottom: `1px solid ${tokens.border}`, whiteSpace: "nowrap" };
 const td: CSSProperties = { fontSize: 12.5, padding: "10px", borderBottom: `1px solid ${tokens.border}`, verticalAlign: "top" };
 
-/** One agent as a card (phones). */
+/** One agent as a card (phones). One status pill; what is wrong in plain words. */
 export function AgentCard({ row, linkFor, now }: { row: AgentRow; linkFor: LinkPropsFor; now: Date }) {
   const status = agentTone(row.status);
   const alertTone = row.alert === "error" || (row.budgetRatio ?? 0) >= 1 ? "bad" : "warn";
   return (
     <div style={{ display: "grid", gap: 8, padding: 12, borderRadius: 12, border: `1px solid ${row.alert ? tone(alertTone).border : tokens.border}`, background: tokens.bg, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <StatusDot tone={status.tone} pulse={status.pulse} size={8} />
         <Anchor href={`/agents/${row.urlKey || row.id}`} linkFor={linkFor} style={{ fontWeight: 650, fontSize: 14, flex: "1 1 120px", minWidth: 0, overflowWrap: "anywhere" }}>{row.name}</Anchor>
-        <Pill tone={status.tone} dot size="sm">{row.status.replace(/_/g, " ") || "unknown"}</Pill>
+        <Pill tone={status.tone} dot size="sm">{agentStatusLabel(row.status)}</Pill>
       </div>
       {row.title ? <div style={{ color: tokens.muted, fontSize: 12 }}>{row.title}</div> : null}
-      {row.alertText ? <div style={{ fontSize: 12, color: tone(alertTone).fg, lineHeight: 1.45 }}>{row.alertText}</div> : null}
+      <AgentAlert row={row} linkFor={linkFor} />
       <div style={{ fontSize: 12.5 }}>{budgetBar(row)}</div>
       <div style={{ fontSize: 12, color: tokens.muted }}>
         Last run {since(row.lastRunAt, now) ?? "never"}
@@ -414,11 +689,12 @@ export function AgentsTable({ rows, linkFor, now }: { rows: AgentRow[]; linkFor:
                     <Anchor href={`/agents/${row.urlKey || row.id}`} linkFor={linkFor} style={{ fontWeight: 600 }}>{row.name}</Anchor>
                   </span>
                   {row.title ? <div style={{ color: tokens.muted, fontSize: 11.5, paddingLeft: 16 }}>{row.title}</div> : null}
-                  {row.alertText ? <div style={{ marginTop: 4, paddingLeft: 16 }}><Chip tone={row.alert === "error" || (row.budgetRatio ?? 0) >= 1 ? "bad" : "warn"}>{row.alert === "error" ? "Error" : "Budget 80%+"}</Chip></div> : null}
                 </td>
-                <td style={td}>
-                  <Pill tone={status.tone} dot>{row.status.replace(/_/g, " ") || "unknown"}</Pill>
-                  {row.alertText ? <div style={{ color: tokens.muted, fontSize: 11.5, marginTop: 4, maxWidth: 220 }}>{row.alertText}</div> : null}
+                <td style={{ ...td, maxWidth: 260 }}>
+                  <div style={{ display: "grid", gap: 4, justifyItems: "start", minWidth: 0 }}>
+                    <Pill tone={status.tone} dot>{agentStatusLabel(row.status)}</Pill>
+                    <AgentAlert row={row} linkFor={linkFor} />
+                  </div>
                 </td>
                 <td style={{ ...td, whiteSpace: "nowrap" }}>
                   {since(row.lastRunAt, now) ?? "Never"}
@@ -481,42 +757,67 @@ export function HealthSummary({ groups }: { groups: HealthGroup[] }) {
   );
 }
 
-export function HealthList({ groups, linkFor, now, backup }: { groups: HealthGroup[]; linkFor: LinkPropsFor; now: Date; backup: BackupInfo | null }) {
+/** Folded health groups name their checks on the summary line; open, the checks themselves show. */
+const HEALTH_CSS = ".pib-health-group[open] .pib-health-titles{display:none}";
+
+/**
+ * System health: the failing and warning checks, grouped by plugin. A plugin
+ * with a problem opens; one with only warnings is one line naming them (open
+ * it for the details and fixes). The ok checks (and an up-to-date backup) sit
+ * behind "Show all". A raw service error reads as a plain sentence, with the
+ * raw text under Details.
+ */
+export function HealthList({ groups, linkFor, now, backup, showAll = false }: { groups: HealthGroup[]; linkFor: LinkPropsFor; now: Date; backup: BackupInfo | null; showAll?: boolean }) {
+  const shown = groups
+    .map((group) => ({ ...group, checks: showAll ? group.checks : group.checks.filter((check) => check.status !== "ok") }))
+    .filter((group) => group.checks.length > 0);
+  const showBackup = backup && (showAll || backup.status !== "ok");
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {backup ? (
+      <style>{HEALTH_CSS}</style>
+      {showBackup && backup ? (
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13, padding: "10px 12px", borderRadius: 12, border: `1px solid ${backup.status === "ok" ? tokens.border : tone(backup.status).border}`, background: backup.status === "ok" ? tokens.bg : tone(backup.status).soft }}>
           <Light status={backup.status} label="" />
           <strong>Last database backup</strong>
           <span style={{ color: tokens.muted }}>{backup.text}{backup.status !== "ok" ? " Backups run hourly; check the server." : ""}</span>
         </div>
       ) : null}
-      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : groups.map((group) => {
-        const failing = group.checks.filter((c) => c.status !== "ok").length;
+      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : shown.length === 0 ? <Muted>Every check passes.</Muted> : shown.map((group) => {
+        const all = groups.find((g) => g.plugin === group.plugin)?.checks ?? group.checks;
+        const failing = all.filter((c) => c.status !== "ok").length;
         const t = tone(group.status);
         const Glyph = groupIcon(group.plugin);
         return (
-          <details key={group.plugin} open={group.status !== "ok"} style={{ borderRadius: 12, border: `1px solid ${group.status === "ok" ? tokens.border : t.border}`, background: group.status === "ok" ? tokens.bg : `linear-gradient(180deg, ${t.soft}, transparent 80%), ${tokens.bg}`, padding: "10px 12px" }}>
-            <summary style={{ cursor: "pointer", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", listStyle: "none" }}>
-              <Light status={group.status} label="" />
-              <Glyph size={15} strokeWidth={2} color={tokens.muted} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong style={{ fontSize: 13.5 }}>{group.title}</strong>
-              <span style={{ fontSize: 12.5, color: failing ? t.fg : tokens.muted, fontWeight: failing ? 600 : 400 }}>
-                {failing === 0 ? `${group.checks.length} ${group.checks.length === 1 ? "check" : "checks"} ok` : `${failing} of ${group.checks.length} need attention`}
+          <details key={group.plugin} className="pib-health-group" open={group.status === "bad"} style={{ borderRadius: 12, border: `1px solid ${group.status === "ok" ? tokens.border : t.border}`, background: group.status === "ok" ? tokens.bg : `linear-gradient(180deg, ${t.soft}, transparent 80%), ${tokens.bg}`, padding: "10px 12px" }}>
+            <summary style={{ cursor: "pointer", display: "grid", gap: 2, listStyle: "none", minHeight: 28, minWidth: 0 }}>
+              <span style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                <Light status={group.status} label="" />
+                <Glyph size={15} strokeWidth={2} color={tokens.muted} aria-hidden="true" style={{ flexShrink: 0 }} />
+                <strong style={{ fontSize: 13.5 }}>{group.title}</strong>
+                <span style={{ fontSize: 12.5, color: failing ? t.fg : tokens.muted, fontWeight: failing ? 600 : 400 }}>
+                  {failing === 0 ? `${all.length} ${all.length === 1 ? "check" : "checks"} ok` : `${failing} of ${all.length} need attention`}
+                </span>
+              </span>
+              <span className="pib-health-titles" style={{ fontSize: 12.5, color: tokens.muted, paddingLeft: 43, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {group.checks.map((check) => check.title).join(" · ")}
               </span>
             </summary>
             <div style={{ display: "grid", marginTop: 8 }}>
-              {group.checks.map((check) => (
-                <div key={check.key} style={{ display: "grid", gap: 3, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <Light status={check.status} label="" size={8} />
-                    <span style={{ fontSize: 13, fontWeight: 600, flex: "1 1 180px", minWidth: 0, overflowWrap: "anywhere" }}>{check.title}</span>
-                    {check.status !== "ok" ? <OpenLink href={check.href} linkFor={linkFor} label="Fix" /> : null}
+              {group.checks.map((check) => {
+                const plain = check.raw ? { text: check.detail ?? "", raw: check.raw } : plainDetail(check.detail);
+                return (
+                  <div key={check.key} style={{ display: "grid", gap: 3, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <Light status={check.status} label="" size={8} />
+                      <span style={{ fontSize: 13, fontWeight: 600, flex: "1 1 180px", minWidth: 0, overflowWrap: "anywhere" }}>{check.title}</span>
+                      {check.status !== "ok" ? <OpenLink href={check.href} linkFor={linkFor} label={fixLabel(check.href, "Fix")} /> : null}
+                    </div>
+                    {plain?.text ? <div style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere", paddingLeft: 16 }}>{plain.text}{check.since && check.status !== "ok" ? ` Since ${since(check.since, now)}.` : ""}</div> : null}
+                    {check.fix && check.status !== "ok" ? <div style={{ fontSize: 12.5, overflowWrap: "anywhere", paddingLeft: 16 }}><span style={{ color: tokens.muted }}>Fix: </span>{check.fix}</div> : null}
+                    {plain?.raw ? <div style={{ paddingLeft: 16 }}><Details raw={plain.raw} /></div> : null}
                   </div>
-                  {check.detail ? <div style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere", paddingLeft: 16 }}>{check.detail}{check.since && check.status !== "ok" ? ` Since ${since(check.since, now)}.` : ""}</div> : null}
-                  {check.fix && check.status !== "ok" ? <div style={{ fontSize: 12.5, overflowWrap: "anywhere", paddingLeft: 16 }}><span style={{ color: tokens.muted }}>Fix: </span>{check.fix}</div> : null}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </details>
         );

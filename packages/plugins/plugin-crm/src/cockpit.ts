@@ -17,12 +17,16 @@ import {
   type ActivityItem,
   type CockpitKpi,
   type CockpitSnapshot,
+  type HealthCheck,
   type QualityMetric,
+  type TeamMemberReport,
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
+import { teamReport } from "./agent.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { knownCompanies } from "./setup-status.js";
+import { heldLeadStats } from "./store.js";
 
 const HREF = "/crm";
 const ORIGIN = `plugin:${PLUGIN_ID}`;
@@ -32,6 +36,7 @@ export const REPLY_PURPOSE = "crm.reply";
 export const CRM_JOBS: Array<{ key: string; title: string; every: number }> = [
   { key: "open-due-steps", title: "Open due sequence steps", every: 5 },
   { key: "redeliver-mail", title: "Resend sequence email requests", every: 5 },
+  { key: "held-leads", title: "Add held leads", every: 10 },
   { key: "emit-recent", title: "Share recent client changes", every: 15 },
   { key: "emit-all", title: "Share all clients (nightly)", every: 1440 },
   { key: "setup-status", title: "Setup and cockpit report", every: 60 },
@@ -148,6 +153,9 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   for (const job of CRM_JOBS) snap.health.push(await jobHealth(ctx, job.key, job.title, job.every));
   snap.health.push(await outboxHealth(ctx, companyId));
+  snap.health.push(await part(ctx, "held-leads", () => heldLeadsHealth(ctx, companyId), { key: "held-leads", title: "Leads waiting for the CRM", status: "ok" } as HealthCheck));
+  // The Account Manager this plugin staffs; the Cockpit shares it in roles.updated so every plugin can route work to it.
+  snap.team = await part(ctx, "team", () => teamReport(ctx, companyId), [{ role: "account-manager", agentId: null, status: null }] as TeamMemberReport[]);
 
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
@@ -155,37 +163,64 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   return snap;
 }
 
+/** Own leads held while the CRM is off or unsaved: warn at once, bad after a day. */
+export async function heldLeadsHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck> {
+  const stats = await heldLeadStats(ctx, companyId);
+  if (stats.count === 0) return { key: "held-leads", title: "Leads waiting for the CRM", status: "ok" };
+  const old = stats.oldest ? Date.now() - Date.parse(stats.oldest) > 86_400_000 : false;
+  return {
+    key: "held-leads",
+    title: "Leads waiting for the CRM",
+    status: old ? "bad" : "warn",
+    detail: `${plural(stats.count, "lead")} came in while the CRM was switched off or its settings were not saved. They are kept, not lost.`,
+    href: "/setup",
+    fix: "Switch the CRM on in Setup and save its settings once (Settings → Plugins → CRM). The held leads are then added within 10 minutes.",
+    since: stats.oldest,
+  };
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
-  const approvals = await ctx.db.query<{ id: string; name: string; email_approval_issue_id: string; created_at: string | null }>(
-    `SELECT q.id, q.name, q.email_approval_issue_id, i.created_at::text AS created_at
+  // Every open email approval, also while the Reviewer (an agent) holds it: only a person decides.
+  const approvals = await ctx.db.query<{ id: string; name: string; email_approval_issue_id: string; created_at: string | null; assignee_agent_id: string | null; due: string | null }>(
+    `SELECT q.id, q.name, q.email_approval_issue_id, i.created_at::text AS created_at, i.assignee_agent_id::text AS assignee_agent_id,
+            (SELECT count(*) FROM ${t(ctx, "enrollments")} e
+              WHERE e.sequence_id = q.id AND e.status = 'running' AND e.next_due_at <= now())::text AS due
        FROM ${t(ctx, "sequences")} q JOIN public.issues i ON i.id::text = q.email_approval_issue_id
       WHERE q.company_id = $1 AND q.email_approved_at IS NULL AND q.email_approval_issue_id IS NOT NULL
-        AND i.status NOT IN ('done', 'cancelled') AND i.assignee_agent_id IS NULL
+        AND i.status NOT IN ('done', 'cancelled')
       ORDER BY i.created_at LIMIT 20`,
     [companyId],
   );
-  const items: WaitingItem[] = approvals.map((row) => ({
-    key: `approval:${row.email_approval_issue_id}`,
-    title: `Approve email sending: ${row.name}`,
-    why: "A board user approves before a sequence emails contacts. Mark the issue done to approve.",
-    href: `/issues/${row.email_approval_issue_id}`,
-    issueId: row.email_approval_issue_id,
-    kind: "review",
-    since: row.created_at,
-  }));
-  const followUps = await ctx.db.query<{ id: string; title: string; origin_id: string; created_at: string | null }>(
-    `SELECT i.id::text AS id, i.title, i.origin_id, i.created_at::text AS created_at
+  const items: WaitingItem[] = approvals.map((row) => {
+    const due = n(row.due);
+    const held = due > 0 ? ` ${plural(due, "due step")} ${due === 1 ? "waits" : "wait"} for it.` : "";
+    return {
+      key: `approval:${row.email_approval_issue_id}`,
+      title: `Approve email sending: ${row.name}`,
+      why: row.assignee_agent_id
+        ? `The Reviewer checks it first, then a person marks the issue done to approve or cancelled to refuse.${held}`
+        : `A person approves before a sequence emails contacts: mark the issue done to approve or cancelled to refuse.${held}`,
+      href: `/issues/${row.email_approval_issue_id}`,
+      issueId: row.email_approval_issue_id,
+      kind: "review",
+      since: row.created_at,
+    };
+  });
+  // Lead and reply work that no agent holds (no Account Manager or Operator yet).
+  const followUps = await ctx.db.query<{ id: string; title: string; origin_id: string; created_at: string | null; assignee_user_id: string | null }>(
+    `SELECT i.id::text AS id, i.title, i.origin_id, i.created_at::text AS created_at, i.assignee_user_id::text AS assignee_user_id
        FROM public.issues i
-      WHERE i.company_id::text = $1 AND i.origin_kind = $2 AND (i.origin_id LIKE 'reply:%' OR i.origin_id LIKE 'lead:%')
-        AND i.status NOT IN ('done', 'cancelled') AND i.assignee_user_id IS NOT NULL AND i.assignee_agent_id IS NULL
+      WHERE i.company_id::text = $1 AND i.origin_kind = $2 AND (i.origin_id LIKE 'reply:%' OR i.origin_id LIKE 'lead:%' OR i.origin_id LIKE 'handoff:%' OR i.origin_id LIKE 'quote:%' OR i.origin_id LIKE 'won:%')
+        AND i.status NOT IN ('done', 'cancelled') AND i.assignee_agent_id IS NULL
       ORDER BY i.created_at LIMIT 20`,
     [companyId, ORIGIN],
   );
   for (const row of followUps) {
+    const lead = row.origin_id.startsWith("lead:");
     items.push({
       key: `followup:${row.id}`,
       title: row.title,
-      why: row.origin_id.startsWith("lead:") ? "A new lead is waiting for a person to reply." : "A contact replied and a person follows up.",
+      why: `${lead ? "A lead is waiting for a reply" : row.origin_id.startsWith("reply:") ? "A contact replied" : "CRM work is waiting"} and no agent holds it${row.assignee_user_id ? "" : " (nobody is assigned)"}. Hire the Account Manager in Setup → Team so agents do this.`,
       href: `/issues/${row.id}`,
       issueId: row.id,
       kind: "judgement",

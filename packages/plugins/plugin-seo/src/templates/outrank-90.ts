@@ -7,6 +7,11 @@
  * idempotent on it), an `owner` (who does the work) and a playbook key (the
  * skill's `references/outrank-90.md` section and the issue description).
  *
+ * Version 4 (plugin 0.8.0): the Social agent owns repurposing. Tasks w5/w6
+ * no longer draft social posts; they make sure the post is marked live (which
+ * hands it to Social once it answers 200) and link the Social drafts to the
+ * content row. `TEMPLATE_V4_CHANGES` lists what the upgrade rewrites.
+ *
  * Version 3 (plugin 0.6.0) removes every person task: the agent verifies
  * Search Console with the service account, gets pages crawled through the
  * sitemap / IndexNow / URL Inspection APIs, sets up Bing through its API,
@@ -18,10 +23,15 @@
  * Tasks with `autopilotEligible: false` are review-gated in `safe` mode: the
  * agent prepares the work and hands it over with `block-task` + `review: true`
  * (publishing posts, pSEO launches, pitches, public announcements).
+ *
+ * This is the software (SaaS) plan. `plans.ts` builds the local service,
+ * professional services and online shop plans from these tasks plus their own
+ * (the plan a sprint follows is its `template_id`). Titles are plain words
+ * (no GSC, DR or LCP): people read them on the SEO page.
  */
 
 export const TEMPLATE_ID = "outrank-90";
-export const TEMPLATE_VERSION = 3;
+export const TEMPLATE_VERSION = 4;
 export const TEMPLATE_NAME = "Outrank 90-Day SEO Sprint";
 
 export type TaskOwner = "agent" | "human";
@@ -61,62 +71,65 @@ export const OUTRANK_90: SeoTemplate = {
   name: TEMPLATE_NAME,
   tasks: [
     // Phase 0 — Pre-launch (Week 0)
-    task({ templateKey: "w0-meta-tags", week: 0, phase: 0, focus: "Pre-launch", title: "Set up meta tags on every page (title, description, OG image)", taskType: "meta-tag-audit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#metadata-check" }),
+    task({ templateKey: "w0-meta-tags", week: 0, phase: 0, focus: "Pre-launch", title: "Set up the title, description and share image on every page", taskType: "meta-tag-audit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#metadata-check" }),
     task({ templateKey: "w0-schema", week: 0, phase: 0, focus: "Pre-launch", title: "Add SoftwareApplication + FAQ schema (structured data)", taskType: "schema-add", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w0-gsc-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Verify site in Google Search Console (service account)", taskType: "gsc-verify", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w0-sitemap-submit", week: 0, phase: 0, focus: "Pre-launch", title: "Submit sitemap.xml to GSC", taskType: "sitemap-submit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#sitemap-check" }),
-    task({ templateKey: "w0-gsc-request-index", week: 0, phase: 0, focus: "Pre-launch", title: "Get the 5 core pages crawled (sitemap, IndexNow, URL Inspection)", taskType: "gsc-request-index", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w0-bing-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Set up Bing Webmaster Tools (API: add, verify, submit sitemap)", taskType: "bing-verify", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w0-cross-link", week: 0, phase: 0, focus: "Pre-launch", title: "Cross-link from a property we own to the new site (or skip)", taskType: "cross-link", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-gsc-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Verify the site in Google Search Console (service account)", taskType: "gsc-verify", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-sitemap-submit", week: 0, phase: 0, focus: "Pre-launch", title: "Submit the sitemap to Google Search Console", taskType: "sitemap-submit", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#sitemap-check" }),
+    task({ templateKey: "w0-gsc-request-index", week: 0, phase: 0, focus: "Pre-launch", title: "Get Google and Bing to crawl the 5 core pages", taskType: "gsc-request-index", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-bing-verify", week: 0, phase: 0, focus: "Pre-launch", title: "Set up Bing Webmaster Tools (add, verify, submit the sitemap)", taskType: "bing-verify", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w0-cross-link", week: 0, phase: 0, focus: "Pre-launch", title: "Link to the site from another site we own (or skip)", taskType: "cross-link", owner: "agent", autopilotEligible: true }),
     // Phase 1 — Foundation (Weeks 1-4)
-    task({ templateKey: "w1-robots-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check robots.txt — nothing blocking crawlers", taskType: "robots-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#robots-check" }),
-    task({ templateKey: "w1-gsc-index-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check all core pages are being indexed in GSC", taskType: "gsc-index-check", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w1-pagespeed-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check page speed at pagespeed.web.dev", taskType: "pagespeed-check", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w1-cwv-check", week: 1, phase: 1, focus: "Tech Audit", title: "Confirm Core Web Vitals: LCP < 2.5s, CLS minimal", taskType: "cwv-check", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w1-canonical-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check canonical tags on all key pages", taskType: "canonical-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#canonical-check" }),
-    task({ templateKey: "w1-alt-text", week: 1, phase: 1, focus: "Tech Audit", title: "Add alt text to all images", taskType: "alt-text-audit", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w1-noindex", week: 1, phase: 1, focus: "Tech Audit", title: "Add noindex to login, dashboard, onboarding pages", taskType: "noindex-add", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w2-keyword-discover", week: 2, phase: 1, focus: "Keywords", title: "Pick 20–30 winnable keywords (DR of top 3 results < 50)", taskType: "keyword-discover", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#keyword-discover" }),
-    task({ templateKey: "w2-keyword-bucket", week: 2, phase: 1, focus: "Keywords", title: "Sort keywords into 3 intent buckets (Problem / Solution / Brand)", taskType: "keyword-bucket", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w2-keyword-prioritize", week: 2, phase: 1, focus: "Keywords", title: "Identify 5 keywords for immediate content (solution-aware first)", taskType: "keyword-prioritize", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-robots-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check robots.txt: nothing blocks search engines", taskType: "robots-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#robots-check" }),
+    task({ templateKey: "w1-gsc-index-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check Google has indexed every core page", taskType: "gsc-index-check", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-pagespeed-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check page speed with PageSpeed Insights", taskType: "pagespeed-check", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-cwv-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check Core Web Vitals: loads in under 2.5 s, no layout jumps", taskType: "cwv-check", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-canonical-check", week: 1, phase: 1, focus: "Tech Audit", title: "Check the canonical tag on every key page", taskType: "canonical-check", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#canonical-check" }),
+    task({ templateKey: "w1-alt-text", week: 1, phase: 1, focus: "Tech Audit", title: "Describe every image (alt text)", taskType: "alt-text-audit", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w1-noindex", week: 1, phase: 1, focus: "Tech Audit", title: "Keep login, dashboard and onboarding pages out of Google (noindex)", taskType: "noindex-add", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w2-keyword-discover", week: 2, phase: 1, focus: "Keywords", title: "Pick 20–30 winnable keywords (top results with a domain rating under 50)", taskType: "keyword-discover", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#keyword-discover" }),
+    task({ templateKey: "w2-keyword-bucket", week: 2, phase: 1, focus: "Keywords", title: "Sort the keywords by intent: problem, solution or brand", taskType: "keyword-bucket", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w2-keyword-prioritize", week: 2, phase: 1, focus: "Keywords", title: "Pick the 5 keywords to write for first", taskType: "keyword-prioritize", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w2-keyword-record", week: 2, phase: 1, focus: "Keywords", title: "Record all keywords in the Keywords tab", taskType: "keyword-record", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w3-homepage", week: 3, phase: 1, focus: "Core Pages", title: "Write homepage with primary keyword in H1", taskType: "page-write", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#title-generate" }),
-    task({ templateKey: "w3-use-case-page", week: 3, phase: 1, focus: "Core Pages", title: "Write primary use-case page", taskType: "page-write", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w3-comparison-page", week: 3, phase: 1, focus: "Core Pages", title: "Write first comparison page (you vs category leader)", taskType: "page-write", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w3-homepage", week: 3, phase: 1, focus: "Core Pages", title: "Write the home page around the main keyword", taskType: "page-write", owner: "agent", autopilotEligible: true, internalToolPath: "/admin/seo/tools#title-generate" }),
+    task({ templateKey: "w3-use-case-page", week: 3, phase: 1, focus: "Core Pages", title: "Write the main use-case page", taskType: "page-write", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w3-comparison-page", week: 3, phase: 1, focus: "Core Pages", title: "Write the first comparison page (you vs the category leader)", taskType: "page-write", owner: "agent", autopilotEligible: true }),
     task({ templateKey: "w4-faq-schema", week: 4, phase: 1, focus: "Core Pages", title: "Add FAQ schema to all three core pages", taskType: "schema-add", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w4-internal-links", week: 4, phase: 1, focus: "Core Pages", title: "Add internal links between core pages", taskType: "internal-link-add", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w4-internal-links", week: 4, phase: 1, focus: "Core Pages", title: "Link the core pages to each other", taskType: "internal-link-add", owner: "agent", autopilotEligible: true }),
     // Phase 2 — Content engine (Weeks 5-10)
-    task({ templateKey: "w5-post-1", week: 5, phase: 2, focus: "Content", title: "Publish post 1 — comparison or alternative format", taskType: "post-publish", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w5-repurpose-1", week: 5, phase: 2, focus: "Content", title: "Repurpose post 1 → LinkedIn post + X thread", taskType: "post-repurpose", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w6-post-2", week: 6, phase: 2, focus: "Content", title: "Publish post 2 — use-case format", taskType: "post-publish", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w6-repurpose-2", week: 6, phase: 2, focus: "Content", title: "Repurpose post 2 → LinkedIn post + X thread", taskType: "post-repurpose", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w7-pillar", week: 7, phase: 2, focus: "Pillar Post", title: "Publish pillar post (2,000+ words on core topic)", taskType: "pillar-publish", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w7-pillar-links", week: 7, phase: 2, focus: "Pillar Post", title: "Add internal links from all existing posts to pillar", taskType: "internal-link-add", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w8-pseo-feature", week: 8, phase: 2, focus: "pSEO", title: "Launch feature page templates", taskType: "pseo-feature", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w8-pseo-comparison", week: 8, phase: 2, focus: "pSEO", title: "Launch alternative/comparison page templates", taskType: "pseo-comparison", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w5-post-1", week: 5, phase: 2, focus: "Content", title: "Publish post 1: a comparison or alternatives post", taskType: "post-publish", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w5-repurpose-1", week: 5, phase: 2, focus: "Content", title: "Hand post 1 to Social: mark it live, then link its social posts", taskType: "post-repurpose", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w6-post-2", week: 6, phase: 2, focus: "Content", title: "Publish post 2: a use-case post", taskType: "post-publish", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w6-repurpose-2", week: 6, phase: 2, focus: "Content", title: "Hand post 2 to Social: mark it live, then link its social posts", taskType: "post-repurpose", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w7-pillar", week: 7, phase: 2, focus: "Pillar Post", title: "Publish the pillar post (2,000+ words on the core topic)", taskType: "pillar-publish", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w7-pillar-links", week: 7, phase: 2, focus: "Pillar Post", title: "Link every existing post to the pillar", taskType: "internal-link-add", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w8-pseo-feature", week: 8, phase: 2, focus: "pSEO", title: "Launch a page for each feature (one template)", taskType: "pseo-feature", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w8-pseo-comparison", week: 8, phase: 2, focus: "pSEO", title: "Launch alternative and comparison pages (one template)", taskType: "pseo-comparison", owner: "agent", autopilotEligible: false }),
     // The old executor only flipped statuses. complete-task now refuses this task while any directory is still not started.
-    task({ templateKey: "w9-directories", week: 9, phase: 2, focus: "Backlinks", title: "Submit to 15 SaaS directories (log in Backlinks tab)", taskType: "directory-submission", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w9-link-trade-dm", week: 9, phase: 2, focus: "Backlinks", title: "Find 3 link-trade partners and draft the DMs", taskType: "link-trade-dm", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w10-guest-post", week: 10, phase: 2, focus: "Backlinks", title: "Pitch 1 guest post to a relevant DR 40+ blog", taskType: "guest-post-pitch", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w10-community", week: 10, phase: 2, focus: "Backlinks", title: "Share on IndieHackers and relevant subreddits (drafts, Reddit via Social)", taskType: "community-post", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w9-directories", week: 9, phase: 2, focus: "Backlinks", title: "Submit to the 15 SaaS directories (log each in Backlinks)", taskType: "directory-submission", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w9-link-trade-dm", week: 9, phase: 2, focus: "Backlinks", title: "Find 3 link-swap partners and draft the messages", taskType: "link-trade-dm", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w10-guest-post", week: 10, phase: 2, focus: "Backlinks", title: "Pitch a guest post to a relevant blog (domain rating 40+)", taskType: "guest-post-pitch", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w10-community", week: 10, phase: 2, focus: "Backlinks", title: "Share on IndieHackers and relevant subreddits (Reddit through Social)", taskType: "community-post", owner: "agent", autopilotEligible: false }),
     // Phase 3 — Authority (Weeks 11-13)
-    task({ templateKey: "w11-stuck-pages", week: 11, phase: 3, focus: "Authority", title: "Open GSC — find pages ranking position 8–20", taskType: "gsc-stuck-pages", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w11-update-stuck", week: 11, phase: 3, focus: "Authority", title: "Update each position 8–20 page (add depth, FAQ, structure)", taskType: "page-rewrite", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w12-cluster-pick", week: 12, phase: 3, focus: "Cluster", title: "Pick one keyword theme for content cluster", taskType: "cluster-pick", owner: "agent", autopilotEligible: true }),
-    task({ templateKey: "w12-cluster-publish", week: 12, phase: 3, focus: "Cluster", title: "Publish 5–7 supporting posts around pillar — all interlinked", taskType: "cluster-publish", owner: "agent", autopilotEligible: false }),
-    task({ templateKey: "w13-audit-metrics", week: 13, phase: 3, focus: "Day 90 Audit", title: "Pull all metrics: impressions, clicks, DR, keywords", taskType: "audit-snapshot", owner: "agent", autopilotEligible: true, dueDay: 90 }),
-    task({ templateKey: "w13-audit-report", week: 13, phase: 3, focus: "Day 90 Audit", title: "Fill in Day 90 Audit tab and screenshot it", taskType: "audit-render", owner: "agent", autopilotEligible: true, dueDay: 90 }),
-    task({ templateKey: "w13-audit-announce", week: 13, phase: 3, focus: "Day 90 Audit", title: "Post your GSC impressions chart on X/LinkedIn", taskType: "audit-announce", owner: "agent", autopilotEligible: false, dueDay: 90 }),
+    task({ templateKey: "w11-stuck-pages", week: 11, phase: 3, focus: "Authority", title: "Find pages ranking 8–20 in Google Search Console", taskType: "gsc-stuck-pages", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w11-update-stuck", week: 11, phase: 3, focus: "Authority", title: "Improve each page ranking 8–20 (depth, FAQ, structure)", taskType: "page-rewrite", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w12-cluster-pick", week: 12, phase: 3, focus: "Cluster", title: "Pick one keyword theme for a content cluster", taskType: "cluster-pick", owner: "agent", autopilotEligible: true }),
+    task({ templateKey: "w12-cluster-publish", week: 12, phase: 3, focus: "Cluster", title: "Publish 5–7 supporting posts around the pillar, all linked", taskType: "cluster-publish", owner: "agent", autopilotEligible: false }),
+    task({ templateKey: "w13-audit-metrics", week: 13, phase: 3, focus: "Day 90 Audit", title: "Pull the day-90 numbers: impressions, clicks, links, keywords", taskType: "audit-snapshot", owner: "agent", autopilotEligible: true, dueDay: 90 }),
+    task({ templateKey: "w13-audit-report", week: 13, phase: 3, focus: "Day 90 Audit", title: "Write the day-90 report", taskType: "audit-render", owner: "agent", autopilotEligible: true, dueDay: 90 }),
+    task({ templateKey: "w13-audit-announce", week: 13, phase: 3, focus: "Day 90 Audit", title: "Share the day-90 results on LinkedIn and X (with the client's OK)", taskType: "audit-announce", owner: "agent", autopilotEligible: false, dueDay: 90 }),
   ],
 };
 
 export interface DirectorySeed {
   source: string;
   domain: string;
-  dr: number;
+  /** Domain rating from a real source; null when we do not know it (never guessed). */
+  dr: number | null;
+  /** Backlink type: directory (a listing site) or citation (a business profile such as Google Business Profile). Default directory. */
+  type?: "directory" | "citation";
 }
 
-/** The 15 directories the old platform seeded into every sprint (DR from the old list). */
+/** The 15 SaaS directories the old platform seeded into every sprint (DR from the old list). The software plan's sources. */
 export const DEFAULT_DIRECTORIES: DirectorySeed[] = [
   { source: "producthunt.com", domain: "producthunt.com", dr: 80 },
   { source: "g2.com", domain: "g2.com", dr: 90 },
@@ -170,6 +183,9 @@ export const TEMPLATE_V3_CHANGES = [
   "w9-link-trade-dm",
   "w10-community",
 ] as const;
+
+/** Template keys changed in version 4: repurposing moved to the Social agent (rewritten on existing sprints). */
+export const TEMPLATE_V4_CHANGES = ["w5-repurpose-1", "w6-repurpose-2"] as const;
 
 export function templateTask(templateKey: string): SeoTaskTemplate | undefined {
   return OUTRANK_90.tasks.find((t) => t.templateKey === templateKey);

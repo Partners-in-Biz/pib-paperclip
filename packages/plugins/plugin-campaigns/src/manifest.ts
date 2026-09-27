@@ -37,9 +37,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "events.emit",
     "secrets.read-ref",
+    "agents.read",
     "issues.read",
     "issues.create",
+    "issues.update",
     "issues.wakeup",
+    "issue.comments.create",
     "plugin.state.read",
     "plugin.state.write",
     "api.routes.register",
@@ -60,7 +63,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "open-due-steps",
       displayName: "Open due campaign steps",
-      description: "Opens a Paperclip issue for each campaign step that is due.",
+      description: "Sends or opens an issue for each due campaign step, launches approved campaigns whose approval event was missed, and moves contacts on when a step issue was closed.",
       schedule: "*/5 * * * *",
     },
     {
@@ -72,7 +75,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "setup-status",
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what Campaigns still needs, and sends the Cockpit snapshot, for each company.",
+      description: "Tells the Setup plugin what Campaigns still needs, sends the Cockpit snapshot, and announces recent unsubscribes again, for each company.",
       schedule: "19 * * * *",
     },
   ],

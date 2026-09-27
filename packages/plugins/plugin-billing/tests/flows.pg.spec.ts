@@ -144,11 +144,15 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       expect(left).toEqual([expect.objectContaining({ sourceKind: "credit_note", availableMinor: 3_500 })]);
     });
 
-    it("refuses money on drafts and never lets agents confirm payments", async () => {
+    it("refuses money on drafts; agents never confirm payments and their send requests wait for a person", async () => {
       const invoice = await draft();
       await expect(h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: 100 })).rejects.toThrow(/Send the invoice/);
+      await expect(h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: 100 }, agentContext())).rejects.toThrow(/Send the invoice/);
       await expect(h.call("billing.confirm-pop", { popId: "x" }, agentContext())).rejects.toThrow(/Agents may not/);
-      await expect(h.call("billing.request-send", { invoiceId: invoice.id }, agentContext())).rejects.toThrow(/may not send/);
+      await expect(h.call("billing.request-pay", { invoiceId: invoice.id }, agentContext())).rejects.toThrow(/Agents may not/);
+      const asked = await h.call<{ issueId: string; pendingAction: string; already: boolean }>("billing.request-send", { invoiceId: invoice.id }, agentContext());
+      expect(asked).toMatchObject({ pendingAction: "send", already: false });
+      expect(await outbox("mail.send.requested")).toHaveLength(0);
     });
 
     it("pays in full when a payment approval issue is done", async () => {
@@ -245,7 +249,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       expect((await detail(invoice.id)).invoice.status).toBe("payment_pending_verification");
       expect((await detail(invoice.id)).payments).toHaveLength(0);
       const issue = h.issues.get(pops[0]!.issueId)!;
-      expect(issue.title).toBe(`Check proof of payment for ${invoice.number}`);
+      expect(issue.title).toBe(`Check proof of payment for ${invoice.number} (Lumen Digital)`);
       issue.status = "done";
       await h.deliver("issue.updated", COMPANY, {}, { entityId: issue.id });
       const d = await detail(invoice.id);

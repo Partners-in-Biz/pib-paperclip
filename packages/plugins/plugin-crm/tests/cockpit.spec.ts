@@ -64,10 +64,18 @@ const ROUTES: Route[] = [
     mine(s.sequences, p)
       .filter((q) => !q.email_approved_at && q.email_approval_issue_id)
       .map((q) => ({ q, i: (s.issues ?? []).find((i) => i.id === q.email_approval_issue_id) }))
-      .filter(({ i }) => i && !["done", "cancelled"].includes(i.status) && !i.assignee_agent_id)
-      .map(({ q, i }) => ({ id: q.id, name: q.name, email_approval_issue_id: q.email_approval_issue_id, created_at: i!.created_at }))],
+      .filter(({ i }) => i && !["done", "cancelled"].includes(i.status))
+      .map(({ q, i }) => ({
+        id: q.id, name: q.name, email_approval_issue_id: q.email_approval_issue_id, created_at: i!.created_at, assignee_agent_id: i!.assignee_agent_id ?? null,
+        due: String((s.enrollments ?? []).filter((e) => e.sequence_id === q.id && e.status === "running" && e.next_due_at && e.next_due_at <= new Date().toISOString()).length),
+      }))],
   [/origin_id LIKE 'reply:%'/, (p, s) =>
-    (s.issues ?? []).filter((i) => i.company_id === p[0] && i.origin_kind === p[1] && /^(reply|lead):/.test(i.origin_id) && !["done", "cancelled"].includes(i.status) && i.assignee_user_id && !i.assignee_agent_id)],
+    (s.issues ?? []).filter((i) => i.company_id === p[0] && i.origin_kind === p[1] && /^(reply|lead|handoff|quote|won):/.test(i.origin_id) && !["done", "cancelled"].includes(i.status) && !i.assignee_agent_id)],
+  [/min\(held_at\)::text AS oldest/, (p, s) => {
+    const rows = (s.held_leads ?? []).filter((row) => row.company_id === p[0] && !row.processed_at);
+    return [{ count: String(rows.length), oldest: rows.map((row) => row.held_at).sort()[0] ?? null }];
+  }],
+  [/SELECT DISTINCT company_id FROM \S+\.held_leads/, (_p, s) => [...new Set((s.held_leads ?? []).filter((row) => !row.processed_at).map((row) => row.company_id))].map((company_id) => ({ company_id }))],
   [/LEFT JOIN \S+\.contacts c ON/, (p, s) =>
     mine(s.activities, p)
       .filter((a) => ["deal_moved", "email_sent", "reply_classified", "lead_captured"].includes(a.kind))
@@ -177,8 +185,30 @@ describe("CRM cockpit snapshot", () => {
       ["contacts_follow_up", "0"],
       ["active_sequences", "0"],
     ]);
-    expect(snap.health.map((h) => h.key)).toEqual(["job:open-due-steps", "job:redeliver-mail", "job:emit-recent", "job:emit-all", "job:setup-status", "outbox"]);
+    expect(snap.health.map((h) => h.key)).toEqual(["job:open-due-steps", "job:redeliver-mail", "job:held-leads", "job:emit-recent", "job:emit-all", "job:setup-status", "outbox", "held-leads"]);
     expect(snap.health.every((h) => h.status === "ok")).toBe(true);
+    // The role this plugin staffs, unstaffed so far.
+    expect(snap.team).toEqual([{ role: "account-manager", agentId: null, status: null }]);
+  });
+
+  it("reports the linked Account Manager in the team field", async () => {
+    const { harness } = await boot();
+    harness.seed({ agents: [{ id: "am-1", companyId: CO, name: "Nomsa", status: "running" } as never] });
+    await harness.ctx.state.set({ scopeKind: "company", scopeId: CO, namespace: "pib-hire", stateKey: "role:account-manager" }, { agentId: "am-1", linkedAt: "2026-09-27T08:00:00Z", linkedBy: "manual", hire: null });
+    const snap = await cockpitSnapshot(harness.ctx, CO);
+    expect(snap.team).toEqual([{ role: "account-manager", agentId: "am-1", status: "running" }]);
+  });
+
+  it("held leads show as a health check: warn at once, bad after a day", async () => {
+    const store = seed();
+    store.held_leads = [{ id: "h1", key: "mail:x", company_id: CO, event: "e", payload: {}, reason: "off", attempts: 0, held_at: ago(30), processed_at: null }];
+    const { harness } = await boot({ store });
+    let check = (await cockpitSnapshot(harness.ctx, CO)).health.find((h) => h.key === "held-leads")!;
+    expect(check).toMatchObject({ status: "warn", href: "/setup" });
+    expect(check.detail).toMatch(/^1 lead came in while the CRM was switched off/);
+    store.held_leads[0]!.held_at = ago(2 * 1440);
+    check = (await cockpitSnapshot(harness.ctx, CO)).health.find((h) => h.key === "held-leads")!;
+    expect(check.status).toBe("bad");
   });
 
   it("configured company: money KPIs, waiting approvals and follow-ups, activity, quality", async () => {
@@ -212,9 +242,25 @@ describe("CRM cockpit snapshot", () => {
     expect(kpi("contacts_follow_up")).toMatchObject({ raw: 1, tone: "warn" });
     expect(kpi("active_sequences").raw).toBe(1);
     expect(snap.waiting.map((w) => [w.key, w.kind])).toEqual([["approval:iss-appr", "review"], ["followup:iss-reply", "judgement"]]);
+    expect(snap.waiting[0]!.why).toMatch(/^A person approves before a sequence emails contacts/);
     expect(snap.activity.slice(0, 3).map((a) => a.text)).toEqual(["Sent a sequence email to Nina New", "Moved deal Retainer to Won", "Added contact Nina New"]);
     expect(snap.quality.find((q) => q.key === "reply_classification_corrected_rate")).toMatchObject({ value: "30% (3 of 10)", tone: "bad" });
     expect(snap.quality.find((q) => q.key === "lead_score_coverage")).toMatchObject({ value: "33% (1 of 3)", tone: "bad" });
+  });
+
+  it("waiting lists an approval the Reviewer holds, with the due steps it holds up, and unassigned lead work", async () => {
+    const store = seed();
+    store.sequences![0]!.email_approval_issue_id = "iss-appr";
+    store.enrollments = [{ id: "e1", company_id: CO, sequence_id: "seq-intro", contact_id: "ada", status: "running", step_position: 1, next_due_at: ago(5) }];
+    store.issues = [
+      { id: "iss-appr", company_id: CO, status: "todo", assignee_agent_id: "agent-reviewer", assignee_user_id: null, created_at: ago(120), origin_kind: "plugin:partnersinbiz.crm", origin_id: "sequence-email:seq-intro" },
+      { id: "iss-lead", company_id: CO, title: "Follow up new lead: Zed", status: "todo", assignee_agent_id: null, assignee_user_id: null, created_at: ago(60), origin_kind: "plugin:partnersinbiz.crm", origin_id: "lead:mail:z" },
+    ];
+    const { harness } = await boot({ store });
+    const snap = await cockpitSnapshot(harness.ctx, CO);
+    expect(snap.waiting.map((w) => w.key)).toEqual(["approval:iss-appr", "followup:iss-lead"]);
+    expect(snap.waiting[0]!.why).toBe("The Reviewer checks it first, then a person marks the issue done to approve or cancelled to refuse. 1 due step waits for it.");
+    expect(snap.waiting[1]!.why).toMatch(/no agent holds it \(nobody is assigned\)\. Hire the Account Manager/);
   });
 
   it("repeated job failures turn the job check bad", async () => {
@@ -276,16 +322,39 @@ describe("Sequence email approval: Reviewer routing", () => {
     }
   });
 
-  it("an approval an agent closed is asked again; only a board user's done approves", async () => {
+  it("an approval an agent closed is reopened for the approver; only a person's done approves", async () => {
     const { harness, store } = await boot();
-    await setRoles(harness, { reviewerAgentId: "agent-reviewer", reviewOutward: true });
+    await setRoles(harness, { reviewerAgentId: "agent-reviewer", reviewOutward: true, ownerUserId: "user-peet" });
     const first = await harness.performAction<{ approvalIssueId: string }>("crm.set-sequence-delivery", { sequenceId: "seq-intro", delivery: "email" }, { companyId: CO, actor: BOARD });
     const approval = (await issues(harness)).find((row) => row.id === first.approvalIssueId)!;
     harness.seed({ issues: [{ ...approval, status: "done" }] });
+    const comment = vi.spyOn(harness.ctx.issues, "createComment");
     await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "agent", actorId: "agent-reviewer" });
     expect(store.sequences![0]!.email_approved_at ?? null).toBeNull();
+    const reopened = (await harness.ctx.issues.get(approval.id, CO))!;
+    expect(reopened).toMatchObject({ status: "todo", assigneeAgentId: null, assigneeUserId: "user-peet" });
+    expect(comment).toHaveBeenCalledWith(approval.id, expect.stringMatching(/An agent closed this approval \(email sending for sequence "Intro"\)/), CO);
+    // The same approval stays: asking again does not open a second one.
     const again = await harness.performAction<{ approvalIssueId: string }>("crm.set-sequence-delivery", { sequenceId: "seq-intro", delivery: "email" }, { companyId: CO, actor: BOARD });
-    expect(again.approvalIssueId).not.toBe(first.approvalIssueId);
+    expect(again.approvalIssueId).toBe(first.approvalIssueId);
+
+    harness.seed({ issues: [{ ...reopened, status: "done" }] });
+    await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "user", actorId: "user-peet" });
+    expect(store.sequences![0]!.email_approved_by).toBe("user:user-peet");
+  });
+
+  it("a person who cancels the approval refuses it: back to issues, and a hand-off for the Account Manager", async () => {
+    const { harness, store } = await boot();
+    await setRoles(harness, { ownerUserId: "user-peet", team: { "account-manager": { agentId: "am-1", status: "idle" } } });
+    const first = await harness.performAction<{ approvalIssueId: string }>("crm.set-sequence-delivery", { sequenceId: "seq-intro", delivery: "email" }, { companyId: CO, actor: BOARD });
+    const approval = (await issues(harness)).find((row) => row.id === first.approvalIssueId)!;
+    // Without a Reviewer the approval goes straight to the owner.
+    expect(approval.assigneeUserId).toBe("user-peet");
+    harness.seed({ issues: [{ ...approval, status: "cancelled" }] });
+    await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "user", actorId: "user-peet" });
+    expect(store.sequences![0]).toMatchObject({ delivery: "issue", email_approval_issue_id: null });
+    const handoff = (await issues(harness)).find((row) => row.originId === `handoff:sequence-refused:${approval.id}`)!;
+    expect(handoff).toMatchObject({ title: 'Hand-off: email sending refused for sequence "Intro"', assigneeAgentId: "am-1" });
   });
 
   it("the brief falls back to a board member", () => {
@@ -304,6 +373,7 @@ describe("lead.captured intake", () => {
     const { harness, store, emit } = await boot();
     await setRoles(harness, { ownerUserId: "user-peet" });
     await harness.emit(MAILBOX_LEAD, mailLead(), { companyId: CO });
+    expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, expect.objectContaining({ key: "mail:g-1", status: "stored", contactId: expect.any(String) }));
     await settleLeadScores();
     const nina = store.contacts!.find((c) => c.name === "Nina New")!;
     expect(nina).toMatchObject({ lifecycle: "lead", emails: ["nina@newco.test"], tags: ["lead"] });
@@ -315,38 +385,83 @@ describe("lead.captured intake", () => {
     expect(followUps[0]).toMatchObject({ title: "Follow up new lead: Nina New", assigneeUserId: "user-peet" });
     expect(followUps[0]!.description).toContain("Lead score: hot");
     expect(followUps[0]!.description).toContain("nina@newco.test");
+    // The Gmail message it came from, and who answers it.
+    expect(followUps[0]!.description).toContain("- Mailbox message: `g-1` (/PIB/mailbox?tab=inbox)");
+    expect(followUps[0]!.description).toContain("**Who replies:** you. Draft the reply in the Mailbox");
+    expect(followUps[0]!.description).toContain(`Contact: \`contact:${nina.id}\` · /PIB/crm?client=contact%3A${nina.id}`);
     // The new contact is shared with the other plugins' projections.
     expect(emit).toHaveBeenCalledWith("contact.upserted", CO, expect.objectContaining({ id: nina.id }));
 
-    // A re-delivery (the Mailbox re-emits for 30 minutes) changes nothing.
+    // A re-delivery (the Mailbox re-emits until it has the answer) changes nothing and gets the same answer.
+    emit.mockClear();
     await harness.emit(MAILBOX_LEAD, mailLead(), { companyId: CO });
     expect(store.contacts!.filter((c) => c.name === "Nina New")).toHaveLength(1);
     expect((await issues(harness)).filter((i) => i.originId === "lead:mail:g-1")).toHaveLength(1);
     expect(store.inbox!.map((row) => row.key)).toContain("lead:mail:g-1");
+    expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, { key: "mail:g-1", status: "stored", contactId: nina.id });
   });
 
-  it("an existing contact keeps its lifecycle; the follow-up goes to the contact's agent", async () => {
+  it("with an Account Manager, a new lead goes to it", async () => {
+    const { harness } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    await setRoles(harness, { ownerUserId: "user-peet", team: { "account-manager": { agentId: "am-1", status: "idle" } } });
+    await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-am" }), { companyId: CO });
+    const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-am");
+    expect(issue).toMatchObject({ assigneeAgentId: "am-1", status: "todo" });
+  });
+
+  it("an existing contact keeps its lifecycle; the follow-up goes to the contact's own agent while it can work", async () => {
     const { harness, store } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    harness.seed({ agents: [{ id: "agent-ada", companyId: CO, name: "Ada's agent", status: "idle" } as never] });
+    await setRoles(harness, { team: { "account-manager": { agentId: "am-1", status: "idle" } } });
     await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-2", email: "ada@acme.test", name: "Ada" }), { companyId: CO });
     expect(store.contacts).toHaveLength(2);
     expect(store.contacts!.find((c) => c.id === "ada")!.lifecycle).toBe("customer");
     const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-2");
     expect(issue).toMatchObject({ title: "Follow up lead: Ada Lovelace", assigneeAgentId: "agent-ada" });
+
+    // A paused own agent does not hold the work up: the Account Manager gets it.
+    harness.seed({ agents: [{ id: "agent-ada", companyId: CO, name: "Ada's agent", status: "paused" } as never] });
+    await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-2b", email: "ada@acme.test", name: "Ada" }), { companyId: CO });
+    const [second] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-2b");
+    expect(second).toMatchObject({ assigneeAgentId: "am-1" });
   });
 
-  it("a social lead matches by handle, and a new handle creates a contact that stores it", async () => {
+  it("an own social lead matches by handle, and a new handle creates a contact that stores it", async () => {
     const { harness, store } = await boot({ config: { timezone: "Africa/Johannesburg" } });
-    await harness.emit(SOCIAL_LEAD, { key: "social:inbox:1", source: "social", handle: "@Jane.Doe", platform: "Instagram", text: "How much for a logo?", clientKind: "company", clientRef: "acme" }, { companyId: CO });
+    await harness.emit(SOCIAL_LEAD, { key: "social:inbox:1", source: "social", handle: "@Jane.Doe", platform: "Instagram", text: "How much for a logo?" }, { companyId: CO });
     expect(store.contacts).toHaveLength(2);
     expect(store.activities!.find((a) => a.source_key === "lead:social:inbox:1")!.record_id).toBe("ig");
 
-    await harness.emit(SOCIAL_LEAD, { key: "social:inbox:2", source: "social", name: "Sam", handle: "sam_s", platform: "x", text: "DM me prices" }, { companyId: CO });
+    await harness.emit(SOCIAL_LEAD, { key: "social:inbox:2", source: "social", name: "Sam", handle: "sam_s", platform: "x", text: "DM me prices", url: "https://x.com/sam_s/status/1" }, { companyId: CO });
     const sam = store.contacts!.find((c) => c.name === "Sam")!;
     expect(sam.custom).toMatchObject({ handles: ["x:sam_s"], leadSource: "social", leadPlatform: "x" });
     const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:social:inbox:2");
     expect(issue!.description).toContain("X: @sam_s");
-    // Social scope never links the contact to the client company.
+    expect(issue!.description).toContain("- Social inbox item: `2` (/PIB/social?tab=inbox)");
+    expect(issue!.description).toContain("- Link: https://x.com/sam_s/status/1");
+    expect(issue!.description).toContain("**Who replies:** the Social agent answers this DM or comment in the Social inbox. Do not reply to it yourself");
     expect(store.contact_companies).toEqual([]);
+  });
+
+  it("a lead from a client's own social account is the client's: kept on their page, no contact, no tag, no follow-up", async () => {
+    const { harness, store, emit } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    const lead = { key: "social:inbox:c1", source: "social", name: "Jane", handle: "@Jane.Doe", platform: "instagram", text: "Do you deliver to Umhlanga?", url: "https://instagram.com/p/1", clientKind: "company", clientRef: "acme", confidence: 0.9, capturedAt: "2026-09-27T08:00:00Z" };
+    await harness.emit(SOCIAL_LEAD, lead, { companyId: CO });
+    await harness.emit(SOCIAL_LEAD, lead, { companyId: CO });
+    expect(store.contacts).toHaveLength(2);
+    expect(store.contacts!.some((c) => (c.tags as string[]).includes("lead") && c.name === "Jane")).toBe(false);
+    expect(store.activities!.filter((a) => a.kind === "lead_captured")).toHaveLength(0);
+    expect(await issues(harness)).toHaveLength(0);
+    expect(store.client_leads).toEqual([expect.objectContaining({ key: "social:inbox:c1", client_kind: "company", client_ref: "acme", handle: "Jane.Doe", item_id: "c1", message: "Do you deliver to Umhlanga?" })]);
+    expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, expect.objectContaining({ key: "social:inbox:c1", status: "stored", contactId: null, reason: expect.stringContaining("company:acme") }));
+  });
+
+  it("an email from someone on the client company's own domain is a person at our client: our lead, linked", async () => {
+    const { harness, store } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-dom", email: "boss@acme.test", name: "Boss", clientKind: "company", clientRef: "acme" }), { companyId: CO });
+    const boss = store.contacts!.find((c) => c.name === "Boss")!;
+    expect(store.contact_companies).toEqual([expect.objectContaining({ contact_id: boss.id, account_id: "acme" })]);
+    expect(store.client_leads ?? []).toEqual([]);
   });
 
   it("the lead and the mail.received for the same message do not collide in the inbox", async () => {
@@ -366,10 +481,44 @@ describe("lead.captured intake", () => {
     expect(store.contact_companies).toEqual([expect.objectContaining({ contact_id: person.id, account_id: "acme" })]);
   });
 
-  it("skips when the CRM settings were never saved, and ignores payloads without a way to reach the person", async () => {
+  it("holds an own lead while the settings are unsaved, answers held, and adds it once they are saved", async () => {
     const unsaved = await boot({ config: {} });
     await unsaved.harness.emit(MAILBOX_LEAD, mailLead(), { companyId: CO });
     expect(unsaved.store.contacts).toHaveLength(2);
+    expect(unsaved.store.held_leads).toEqual([expect.objectContaining({ key: "mail:g-1", company_id: CO, reason: "The CRM settings are not saved yet; the lead is held until they are." })]);
+    expect(unsaved.store.held_leads![0]!.processed_at ?? null).toBeNull();
+    expect(unsaved.emit).toHaveBeenCalledWith("lead.captured.result", CO, expect.objectContaining({ key: "mail:g-1", status: "held" }));
+    // The held lead shows in the Cockpit at once.
+    expect(unsaved.emit).toHaveBeenCalledWith("cockpit.snapshot", CO, expect.objectContaining({ health: expect.arrayContaining([expect.objectContaining({ key: "held-leads", status: "warn" })]) }));
+    // A second delivery is held once.
+    await unsaved.harness.emit(MAILBOX_LEAD, mailLead(), { companyId: CO });
+    expect(unsaved.store.held_leads).toHaveLength(1);
+
+    await unsaved.harness.runJob("held-leads");
+    expect(unsaved.store.contacts).toHaveLength(2);
+
+    unsaved.harness.setConfig({ timezone: "Africa/Johannesburg" });
+    unsaved.emit.mockClear();
+    await unsaved.harness.runJob("held-leads");
+    const nina = unsaved.store.contacts!.find((c) => c.name === "Nina New")!;
+    expect(nina).toBeTruthy();
+    expect(unsaved.store.held_leads![0]!.processed_at).toBeTruthy();
+    expect((await issues(unsaved.harness)).filter((i) => i.originId === "lead:mail:g-1")).toHaveLength(1);
+    expect(unsaved.emit).toHaveBeenCalledWith("lead.captured.result", CO, { key: "mail:g-1", status: "stored", contactId: nina.id });
+  });
+
+  it("holds an own lead while the CRM is switched off", async () => {
+    const { harness, store, emit } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    await harness.emit("plugin.partnersinbiz.setup.modules.updated", { companyId: CO, modules: { crm: false }, updatedAt: new Date().toISOString() }, { companyId: CO });
+    await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:off" }), { companyId: CO });
+    expect(store.held_leads).toHaveLength(1);
+    expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, expect.objectContaining({ key: "mail:off", status: "held", reason: expect.stringMatching(/switched off/) }));
+  });
+
+  it("answers ignored for payloads without a way to reach the person", async () => {
+    const { harness, emit } = await boot({ config: { timezone: "Africa/Johannesburg" } });
+    await harness.emit(MAILBOX_LEAD, { key: "mail:nobody", source: "email", text: "hi" }, { companyId: CO });
+    expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, expect.objectContaining({ key: "mail:nobody", status: "ignored" }));
     expect(asLead({ key: "x", source: "email", text: "hi" })).toBeNull();
     expect(asLead({ key: "x", source: "weird", email: "a@b.co" })).toMatchObject({ source: "other", email: "a@b.co" });
     expect(handleKey({ handle: "Jane", platform: null })).toBe("social:jane");

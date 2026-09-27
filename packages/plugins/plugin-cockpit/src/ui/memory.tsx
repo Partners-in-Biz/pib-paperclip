@@ -39,6 +39,7 @@ import {
   attentionCount,
   briefTitle,
   clientLabel,
+  clientOptions,
   editDraft,
   editParams,
   filtersActive,
@@ -49,7 +50,9 @@ import {
   listParams,
   minExpiry,
   newClientRef,
+  PAGE_SIZE,
   pageCount,
+  plainMemoryMessage,
   textCheck,
   type AddDraft,
   type AddResult,
@@ -69,14 +72,15 @@ import {
   BriefDetail,
   BriefsList,
   FactFiltersBar,
-  FactId,
   FactsTable,
+  IdDetails,
   MemoryHeader,
   Pager,
   PreviewResult,
   SmallButton,
   type AttentionHandlers,
   type FactHandlers,
+  type MisfiledFactView,
 } from "./memory-parts.js";
 
 const FACTS_ID = "memory-facts";
@@ -92,11 +96,14 @@ function useMemoryActions() {
   const add = usePluginAction("memory.add");
   const update = usePluginAction("memory.update");
   const review = usePluginAction("memory.review");
-  return useMemo(() => ({ overview, list, brief, preview, add, update, review }), [overview, list, brief, preview, add, update, review]);
+  const exportAll = usePluginAction("memory.export");
+  const importAll = usePluginAction("memory.import");
+  return useMemo(() => ({ overview, list, brief, preview, add, update, review, exportAll, importAll }), [overview, list, brief, preview, add, update, review, exportAll, importAll]);
 }
 
+/** Each client once (memory may know one under two refs), for the pickers. */
 function sortedClients(clients: MemoryClient[]): MemoryClient[] {
-  return [...clients].sort((a, b) => a.clientName.localeCompare(b.clientName));
+  return clientOptions(clients).map((option) => ({ clientRef: option.value, clientName: option.label }));
 }
 
 interface BriefView {
@@ -109,7 +116,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   /** The page's agents (names and links for briefs, facts and coverage). */
   agents: AgentRef[];
   linkFor: LinkPropsFor;
-  /** Cockpit settings, where the Jev key goes. */
+  /** Cockpit settings, where smart matching (optional) is switched on. */
   settingsHref: string;
   /** Bump to reload everything (the page's Refresh button). */
   refreshKey?: number;
@@ -133,6 +140,10 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   const [superseding, setSuperseding] = useState<MemoryFact | null>(null);
   const [briefView, setBriefView] = useState<BriefView | null>(null);
   const seq = useRef({ overview: 0, review: 0, list: 0 });
+  // A client known under several refs is filtered on all of them.
+  const clientsRef = useRef<MemoryClient[]>([]);
+  clientsRef.current = overview?.clients ?? [];
+  const importInput = useRef<HTMLInputElement | null>(null);
   const now = new Date();
 
   /** A toast for the result of a row action (the row may be far down the page); a status line when toasts are unavailable. */
@@ -174,7 +185,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
     const mine = ++seq.current.list;
     setListLoading(true);
     try {
-      const data = (await actions.list(listParams(filters, page))) as FactList | null;
+      const data = (await actions.list(listParams(filters, page, PAGE_SIZE, clientsRef.current))) as FactList | null;
       if (mine !== seq.current.list) return;
       setList({ facts: Array.isArray(data?.facts) ? data.facts : [], total: Number(data?.total) || 0 });
       setListError(null);
@@ -230,7 +241,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
     setBusy(key);
     try {
       const result = (await actions.update(params)) as { message?: unknown } | null;
-      notify(done, "success", typeof result?.message === "string" ? result.message : undefined);
+      notify(done, "success", plainMemoryMessage(result?.message));
       await reloadAll();
     } catch (error) {
       notify(failed, "error", actionErrorText(error));
@@ -246,8 +257,23 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
     onSupersede: (fact) => setSuperseding(fact),
   }), [runUpdate]);
 
+  /** Saves a company-wide fact again for the client it names (the old one is superseded), then reloads. */
+  const moveToClient = useCallback(async (fact: MisfiledFactView, key: string) => {
+    setBusy(key);
+    try {
+      const result = (await actions.add({ text: fact.text, client: fact.clientRef, clientName: fact.clientName, area: fact.area, kind: fact.kind, supersedes: fact.id })) as AddResult;
+      notify(`Moved to ${fact.clientName}`, "success", plainMemoryMessage(result?.message));
+      await reloadAll();
+    } catch (error) {
+      notify("Could not move the fact", "error", actionErrorText(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [actions, notify, reloadAll]);
+
   const attentionHandlers = useMemo<AttentionHandlers>(() => ({
-    onKeep: (keepId, dropId, key) => void runUpdate(key, { id: dropId, status: "superseded", supersededBy: keepId }, `Kept ${keepId}`, "Could not supersede"),
+    onMove: (fact, key) => void moveToClient(fact, key),
+    onKeep: (keepId, dropId, key) => void runUpdate(key, { id: dropId, status: "superseded", supersededBy: keepId }, "Kept the better wording", "Could not replace the other one"),
     onArchive: (id, key) => void runUpdate(key, { id, status: "archived" }, "Archived", "Could not archive"),
     onShowScope: (clientRef, area) => {
       setFilters({ ...DEFAULT_FILTERS, client: clientRef ?? "own", area });
@@ -255,7 +281,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
       setPage(0);
       if (typeof document !== "undefined") document.getElementById(FACTS_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
     },
-  }), [runUpdate]);
+  }), [runUpdate, moveToClient]);
 
   const closeAdd = useCallback(() => setAdding(false), []);
   const closeEdit = useCallback(() => setEditing(null), []);
@@ -271,13 +297,13 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   const replaceWithNew = useCallback(async (oldId: string, newId: string) => {
     const result = (await actions.update({ id: oldId, status: "superseded", supersededBy: newId })) as { message?: unknown } | null;
     void reloadAll();
-    return typeof result?.message === "string" ? result.message : `Updated [${oldId}].`;
+    return plainMemoryMessage(result?.message) ?? "The old fact is replaced.";
   }, [actions, reloadAll]);
 
   const saveEdit = useCallback(async (params: Record<string, unknown>) => {
     const result = (await actions.update(params)) as { message?: unknown } | null;
     setEditing(null);
-    notify("Saved", "success", typeof result?.message === "string" ? result.message : undefined);
+    notify("Saved", "success", plainMemoryMessage(result?.message));
     await reloadAll();
   }, [actions, notify, reloadAll]);
 
@@ -288,7 +314,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   const confirmSupersede = useCallback(async (fact: MemoryFact, newId: string) => {
     const result = (await actions.update({ id: fact.id, status: "superseded", supersededBy: newId })) as { message?: unknown } | null;
     setSuperseding(null);
-    notify("Marked as superseded", "success", typeof result?.message === "string" ? result.message : undefined);
+    notify("Replaced by the newer fact", "success", plainMemoryMessage(result?.message));
     await reloadAll();
   }, [actions, notify, reloadAll]);
 
@@ -303,6 +329,43 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   }, [actions]);
 
   const runPreview = useCallback(async (params: Record<string, unknown>) => (await actions.preview(params)) as BriefResult, [actions]);
+
+  /** Downloads every fact as JSON (a backup that Import restores). */
+  const downloadBackup = useCallback(async () => {
+    setBusy("export");
+    try {
+      const data = await actions.exportAll({});
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `company-memory-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify("Memory exported", "success", "Keep the file somewhere safe; Import restores it.");
+    } catch (error) {
+      notify("Export failed", "error", actionErrorText(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [actions, notify]);
+
+  const restoreBackup = useCallback(async (file: File) => {
+    setBusy("import");
+    try {
+      const data = JSON.parse(await file.text()) as unknown;
+      const result = (await actions.importAll({ data })) as { added: number; duplicates: number; skippedClient: number; skippedSuperseded: number; invalid: unknown[] };
+      const parts = [`${result.added} added`, result.duplicates ? `${result.duplicates} already known` : null, result.skippedClient ? `${result.skippedClient} client facts skipped (another company's clients)` : null, result.invalid.length ? `${result.invalid.length} refused` : null].filter(Boolean);
+      notify("Memory imported", result.invalid.length ? "warn" : "success", parts.join(", ") + ".");
+      await reloadAll();
+    } catch (error) {
+      notify("Import failed", "error", error instanceof SyntaxError ? "That file is not valid JSON." : actionErrorText(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [actions, notify, reloadAll]);
 
   if (!overview) {
     if (overviewError) {
@@ -325,6 +388,14 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
   const briefSummary = briefView ? overview.briefs.find((b) => b.id === briefView.id) ?? null : null;
   const briefHeading = briefView?.data ? briefTitle(briefView.data.brief) : briefSummary ? briefTitle(briefSummary) : "Brief";
   const addButton = <Button type="button" onClick={() => setAdding(true)}>Add fact</Button>;
+  const backupButtons = (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      {everHadFacts ? <SmallButton onClick={() => void downloadBackup()} disabled={busy === "export"}>{busy === "export" ? "Exporting…" : "Export"}</SmallButton> : null}
+      <input ref={importInput} type="file" accept="application/json,.json" aria-label="Memory export file to import" style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreBackup(file); }} />
+      <SmallButton onClick={() => importInput.current?.click()} disabled={busy === "import"}>{busy === "import" ? "Importing…" : "Import"}</SmallButton>
+      {everHadFacts ? addButton : null}
+    </div>
+  );
 
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
@@ -336,7 +407,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
         icon={TriangleAlert}
         tone={attention ? "warn" : review ? "ok" : undefined}
         strip={attention > 0}
-        subtitle="Likely duplicates, noisy facts, agents skipping memory and full scopes."
+        subtitle="Likely duplicates, facts that do not help, facts under the wrong client, and agents that skip memory."
       >
         {review ? (
           <AttentionList review={review} clients={overview.clients} agents={agents} linkFor={linkFor} limits={overview.limits} busyKey={busy} handlers={attentionHandlers} />
@@ -350,13 +421,13 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
         )}
       </Card>
 
-      <Card id={FACTS_ID} title={list ? `Facts (${formatCount(list.total)})` : "Facts"} icon={BookOpen} subtitle="Pinned rules first, then the most recently changed." actions={everHadFacts ? addButton : undefined}>
+      <Card id={FACTS_ID} title={list ? `Facts (${formatCount(list.total)})` : "Facts"} icon={BookOpen} subtitle="Pinned rules first, then the most recently changed. Export keeps a backup; Import restores one, or seeds a new company with company-wide lessons." actions={backupButtons}>
         {!everHadFacts && !filtersActive(filters) ? (
           <EmptyState
             compact
             icon={Lightbulb}
             title="No facts yet: agents add them as they learn"
-            description="When an agent finishes a task, it saves what will matter next time with memory-add. You can add a fact yourself too."
+            description="Agents end a closing comment with Learned: lines and each lesson is saved here automatically. You can add a fact yourself, or import a memory export."
             action={addButton}
           />
         ) : (
@@ -371,7 +442,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
             {list === null ? (
               listError ? null : <Muted>Loading facts…</Muted>
             ) : list.facts.length === 0 ? (
-              <Muted>{filtersActive(filters) ? "No facts match these filters." : "No active facts right now. Pick Archived or Superseded above to see older ones."}</Muted>
+              <Muted>{filtersActive(filters) ? "No facts match these filters." : "No active facts right now. Pick Archived or Replaced above to see older ones."}</Muted>
             ) : (
               <FactsTable facts={list.facts} clients={overview.clients} agents={agents} linkFor={linkFor} busyId={busy} handlers={factHandlers} now={now} />
             )}
@@ -380,7 +451,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
         )}
       </Card>
 
-      <Card title="Recent briefs" icon={FileText} subtitle="The last 20 briefs agents got. Open one to see its facts and what the keyword baseline would have picked.">
+      <Card title="Recent briefs" icon={FileText} subtitle="The last 20 briefs agents got. Open one to see the facts it held.">
         <BriefsList briefs={overview.briefs} agents={agents} linkFor={linkFor} onOpen={(id) => void openBrief(id)} now={now} />
       </Card>
 
@@ -389,7 +460,7 @@ export function MemoryPanel({ agents, linkFor, settingsHref, refreshKey = 0 }: {
       <AddFactModal open={adding} overview={overview} onClose={closeAdd} onAdd={addFact} onReplace={replaceWithNew} />
       <EditFactModal fact={editing} overview={overview} onClose={closeEdit} onSave={saveEdit} />
       <SupersedeModal fact={superseding} clients={overview.clients} onClose={closeSupersede} onSearch={searchScope} onConfirm={confirmSupersede} />
-      <Modal open={briefView !== null} title={briefHeading} description={briefView ? `Brief ${briefView.id}` : undefined} onClose={closeBrief}>
+      <Modal open={briefView !== null} title={briefHeading} onClose={closeBrief}>
         {briefView?.error ? (
           <p role="alert" style={errorLine}>{briefView.error}</p>
         ) : briefView?.data ? (
@@ -584,11 +655,10 @@ function AddFactModal({ open, overview, onClose, onAdd, onReplace }: {
     >
       {result ? (
         <>
-          <p role="status" style={{ margin: 0, padding: "10px 12px", borderRadius: 12, border: `1px solid ${resultTone.border}`, background: resultTone.soft, fontSize: 13, lineHeight: 1.5, ...breakAnywhere }}>{result.message}</p>
+          <p role="status" style={{ margin: 0, padding: "10px 12px", borderRadius: 12, border: `1px solid ${resultTone.border}`, background: resultTone.soft, fontSize: 13, lineHeight: 1.5, ...breakAnywhere }}>{plainMemoryMessage(result.message) ?? (result.status === "added" ? "Saved." : "Memory already has this fact.")}</p>
           <div style={{ display: "grid", gap: 4, fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>
             <span>{result.fact.text}</span>
             <span style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-              <FactId id={result.fact.id} />
               <Pill size="sm" variant="outline">{clientLabel(result.fact.clientRef, result.fact.clientName, overview.clients)}</Pill>
               <Pill size="sm">{areaLabel(result.fact.area)}</Pill>
               <Pill size="sm" tone={kindTone(result.fact.kind)}>{kindLabel(result.fact.kind)}</Pill>
@@ -602,7 +672,7 @@ function AddFactModal({ open, overview, onClose, onAdd, onReplace }: {
                 const done = replaced[s.id];
                 return (
                   <div key={s.id} style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 10, border: `1px solid ${s.relation === "conflict" ? tone("warn").border : tokens.border}`, background: tokens.bg, minWidth: 0 }}>
-                    <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{s.text} <FactId id={s.id} /></span>
+                    <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{s.text}</span>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                       <Pill size="sm" tone={s.relation === "conflict" ? "warn" : "neutral"} dot={s.relation === "conflict"}>{s.relation === "conflict" ? "May contradict" : s.relation === "same" ? "Same" : "Similar"}</Pill>
                       {result.status === "added" && !done?.ok ? <SmallButton disabled={busy} onClick={() => void replace(s.id)}>Replace it with the new fact</SmallButton> : null}
@@ -723,7 +793,7 @@ function EditFactModal({ fact, overview, onClose, onSave }: {
     }
   }
 
-  const description = fact ? [clientLabel(fact.clientRef, fact.clientName, overview.clients), fact.sourceIdentifier ? `from ${fact.sourceIdentifier}` : null, fact.id].filter(Boolean).join(" · ") : undefined;
+  const description = fact ? [clientLabel(fact.clientRef, fact.clientName, overview.clients), fact.sourceIdentifier ? `from ${fact.sourceIdentifier}` : null].filter(Boolean).join(" · ") : undefined;
 
   return (
     <Modal
@@ -767,6 +837,7 @@ function EditFactModal({ fact, overview, onClose, onSave }: {
           </div>
           <span style={{ fontSize: 12, color: tokens.muted, marginTop: -6 }}>It stops appearing in briefs from this date.</span>
           {error ? <p role="alert" style={errorLine}>{error}</p> : null}
+          <IdDetails lines={[`Fact: ${fact.id}`, fact.supersededBy ? `Replaced by: ${fact.supersededBy}` : null, fact.supersedes ? `Replaces: ${fact.supersedes}` : null]} />
         </>
       ) : null}
     </Modal>
@@ -846,8 +917,8 @@ function SupersedeModal({ fact, clients, onClose, onSearch, onConfirm }: {
   return (
     <Modal
       open={fact !== null}
-      title="Superseded by…"
-      description="Pick the newer fact that replaces this one. The old fact stops appearing in briefs and stays in the list as superseded."
+      title="Replaced by a newer fact"
+      description="Pick the newer fact that replaces this one. The old fact stops appearing in briefs and stays in the list as replaced."
       onClose={close}
       footer={(
         <>
@@ -859,7 +930,7 @@ function SupersedeModal({ fact, clients, onClose, onSearch, onConfirm }: {
       {fact ? (
         <>
           <div style={{ padding: "10px 12px", borderRadius: 10, background: tokens.secondary, fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>
-            {fact.text} <FactId id={fact.id} />
+            {fact.text}
           </div>
           <Field label={`Find the newer fact (${clientLabel(fact.clientRef, fact.clientName, clients)})`}>
             <Input type="search" value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search active facts" autoComplete="off" />
@@ -869,7 +940,7 @@ function SupersedeModal({ fact, clients, onClose, onSearch, onConfirm }: {
           ) : candidates === null ? (
             <Muted>Loading facts…</Muted>
           ) : candidates.length === 0 ? (
-            <Muted>{q.trim() ? "No active fact matches." : "No other active facts for this client."} Type the id below, or add the newer fact first.</Muted>
+            <Muted>{q.trim() ? "No active fact matches." : "No other active facts for this client."} Add the newer fact first.</Muted>
           ) : (
             <div role="radiogroup" aria-label="Newer fact" style={{ display: "grid", gap: 6, maxHeight: 280, overflowY: "auto", overscrollBehavior: "contain", minWidth: 0 }}>
               {candidates.map((c) => {
@@ -880,7 +951,6 @@ function SupersedeModal({ fact, clients, onClose, onSearch, onConfirm }: {
                     <span style={{ display: "grid", gap: 4, minWidth: 0 }}>
                       <span style={{ fontSize: 13, lineHeight: 1.45, ...breakAnywhere }}>{c.text}</span>
                       <span style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-                        <FactId id={c.id} />
                         <Pill size="sm">{areaLabel(c.area)}</Pill>
                         <Pill size="sm" tone={kindTone(c.kind)}>{kindLabel(c.kind)}</Pill>
                       </span>
@@ -890,9 +960,14 @@ function SupersedeModal({ fact, clients, onClose, onSearch, onConfirm }: {
               })}
             </div>
           )}
-          <Field label="Or type its id">
-            <Input value={typed} onChange={(event) => setTyped(event.target.value)} placeholder="m…" autoComplete="off" />
-          </Field>
+          <details style={{ minWidth: 0 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600, color: tokens.muted }}>Details: pick it by id</summary>
+            <div style={{ marginTop: 8 }}>
+              <Field label="The newer fact's id">
+                <Input value={typed} onChange={(event) => setTyped(event.target.value)} placeholder="m…" autoComplete="off" />
+              </Field>
+            </div>
+          </details>
           {error ? <p role="alert" style={errorLine}>{error}</p> : null}
         </>
       ) : null}

@@ -1,42 +1,56 @@
 /**
  * Lead hand-off: `lead.captured` from Social (inbox intent = lead) and the
- * Mailbox (mail triaged as a lead from an unknown sender).
+ * Mailbox (mail triaged as a lead from an unknown sender). Every delivery is
+ * answered with `lead.captured.result` (`stored` / `held` / `ignored`), so
+ * senders can keep it in the kit outbox until the CRM answers.
  *
- * Each lead key is handled once (`receiveOnce`, key `lead:<key>` so it never
- * collides with the `mail:<id>` keys of `mail.received`):
- * find or create the contact (email, then social handle), log a
- * `lead_captured` activity, set lifecycle lead on a new contact, take the
- * Jev lead score, and open one follow-up issue for the contact's agent or
- * owner (else the company owner from the Cockpit roles).
+ * - A lead that came in on a CLIENT's channel (its social account or
+ *   mailbox: the payload's client scope) is the client's lead, not ours
+ *   (POPIA). It is kept in `client_leads` and shown on that client's page;
+ *   no CRM contact, no `lead` tag, no follow-up (Social's reply queue answers
+ *   it). One exception: an email from someone whose address is on the
+ *   client company's own domain is a person at our client writing to us.
+ * - Our own lead while the CRM is off or its settings are unsaved is held in
+ *   `held_leads`; the `held-leads` job adds it once the CRM is ready.
+ * - Otherwise, once per key (`receiveOnce`, key `lead:<key>`): find or create
+ *   the contact (email, then social handle), log a `lead_captured`
+ *   activity, take the Jev lead score and open one follow-up issue for the
+ *   contact's owner or the Account Manager.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import {
-  companyRoles,
   configSaved,
   HANDOFF_EVENTS,
   isModuleEnabled,
-  PIB_PLUGINS,
+  LEAD_SOURCES,
   pluginEvent,
+  readConfig,
   receiveOnce,
   type LeadCaptured,
+  type LeadCapturedResult,
 } from "@partnersinbiz/pib-plugin-kit";
-import { asRecord, contactsByEmail, contactsByHandle, getAccount, getContact, insertActivityOnce, insertContact, insertLink } from "./db.js";
-import { createContact, linkContact, LOCAL_BOARD_USER_ID, normalizeEmail, type ContactDraft } from "./domain.js";
+import { asRecord, contactsByEmail, contactsByHandle, getAccount, getContact, insertActivityOnce, insertContact, insertLink, table } from "./db.js";
+import { createContact, linkContact, normalizeEmail, type ContactDraft } from "./domain.js";
 import { leadBand } from "./lead-levels.js";
 import { openIssueOnce, scoreLead } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { companyPrefix, crmLink, pagePath, refOf, type ClientKind } from "./refs.js";
+import { recordAssignee } from "./routing.js";
+import { heldLeadCompanies, holdLead, insertClientLead, markHeldLeadDone, markHeldLeadFailed, pendingHeldLeads } from "./store.js";
 import { emitChanges } from "./sync.js";
 
-/** The two senders of `lead.captured` the CRM listens to. */
-export const LEAD_EVENTS = [
-  pluginEvent(PIB_PLUGINS.social, HANDOFF_EVENTS.leadCaptured),
-  pluginEvent(PIB_PLUGINS.mailbox, HANDOFF_EVENTS.leadCaptured),
-] as const;
+/** The senders of `lead.captured` the CRM listens to (Social and the Mailbox). */
+export const LEAD_EVENTS = LEAD_SOURCES.map((source) => pluginEvent(source, HANDOFF_EVENTS.leadCaptured));
 
 const SOURCE_LABELS: Record<LeadCaptured["source"], string> = { social: "social media", email: "email", form: "a form", other: "another channel" };
 
 function str(value: unknown, max = 300): string | null {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null;
+}
+
+/** The lead's key, or null when the payload has none (then it cannot be answered). */
+export function leadKey(payload: unknown): string | null {
+  return str(asRecord(payload).key, 200);
 }
 
 /** Validates the payload. Null when it is unusable (no key, or no way to reach the person). */
@@ -63,14 +77,51 @@ export function asLead(payload: unknown): LeadCaptured | null {
     clientKind,
     clientRef: clientKind ? str(body.clientRef, 200) : null,
     confidence,
-    capturedAt: str(body.capturedAt, 40) ?? new Date().toISOString(),
+    capturedAt: isoOrNow(str(body.capturedAt, 40)),
   };
+}
+
+/** A real timestamp, or now: a malformed one must not fail the insert (the sender would retry forever). */
+function isoOrNow(value: string | null): string {
+  const time = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(time) ? new Date(time).toISOString() : new Date().toISOString();
 }
 
 /** `instagram:jane.doe` — the form stored in `custom.handles`. */
 export function handleKey(lead: Pick<LeadCaptured, "handle" | "platform">): string | null {
   if (!lead.handle) return null;
   return `${lead.platform ?? "social"}:${lead.handle.toLowerCase()}`;
+}
+
+/** Where the lead came from in the sending module: the Social inbox item or the Gmail message. */
+export function leadOrigin(key: string): { kind: "social" | "mail" | "other"; id: string | null } {
+  const social = /^social:inbox:(.+)$/.exec(key);
+  if (social) return { kind: "social", id: social[1]! };
+  const mail = /^mail:(.+)$/.exec(key);
+  if (mail) return { kind: "mail", id: mail[1]! };
+  return { kind: "other", id: null };
+}
+
+function emailDomain(email: string): string {
+  return (email.split("@").pop() ?? "").trim().toLowerCase().replace(/^www\./, "");
+}
+
+function bareDomain(value: string): string {
+  return value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+}
+
+/**
+ * The client whose channel the lead came in on, or null for our own lead.
+ * An email from the client company's own domain is a person at our client
+ * writing to us: our lead, linked to that company.
+ */
+export async function channelClient(ctx: PluginContext, companyId: string, lead: LeadCaptured): Promise<{ kind: ClientKind; id: string } | null> {
+  if (!lead.clientKind || !lead.clientRef) return null;
+  if (lead.source === "email" && lead.clientKind === "company" && lead.email) {
+    const account = await getAccount(ctx, lead.clientRef).catch(() => null);
+    if (account && account.companyId === companyId && account.domain && emailDomain(lead.email) === bareDomain(account.domain)) return null;
+  }
+  return { kind: lead.clientKind, id: lead.clientRef };
 }
 
 export interface LeadOutcome extends Record<string, unknown> {
@@ -80,18 +131,127 @@ export interface LeadOutcome extends Record<string, unknown> {
   scored: boolean;
 }
 
-export async function onLeadCaptured(ctx: PluginContext, event: PluginEvent): Promise<void> {
-  const lead = asLead(event.payload);
-  const companyId = event.companyId;
-  if (!lead || !companyId) return;
+/** Why the CRM cannot take an own lead yet, or null when it can. */
+async function notReady(ctx: PluginContext, companyId: string): Promise<string | null> {
+  if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) return "The CRM is switched off for this company; the lead is held until it is on again.";
+  // The host refuses issue calls for a company whose CRM settings were never saved.
+  if (!(await configSaved(ctx, companyId))) return "The CRM settings are not saved yet; the lead is held until they are.";
+  return null;
+}
+
+async function inboxResult(ctx: PluginContext, key: string): Promise<Record<string, unknown> | null> {
+  const rows = await ctx.db.query<{ result: unknown }>(`SELECT result FROM ${table(ctx, "inbox")} WHERE key = $1`, [key]);
+  const result = rows[0]?.result;
+  return result && typeof result === "object" ? (result as Record<string, unknown>) : null;
+}
+
+/** Our own sending address sent to the CRM as a lead: not a lead. */
+async function ownAddress(ctx: PluginContext, companyId: string, lead: LeadCaptured): Promise<boolean> {
+  if (!lead.email) return false;
   try {
-    if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) return;
-    // The host refuses issue calls for a company whose CRM settings were never saved.
-    if (!(await configSaved(ctx, companyId))) return;
-    await receiveOnce(ctx, companyId, event.eventType, `lead:${lead.key}`, () => handleLead(ctx, companyId, lead));
-  } catch (error) {
-    ctx.logger.error("CRM lead intake failed", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
+    const from = (await readConfig(ctx, companyId)).mailFrom;
+    return typeof from === "string" && from.trim().toLowerCase() === lead.email;
+  } catch {
+    return false;
   }
+}
+
+/** Decides what happens to one `lead.captured` delivery. Throws only when it should be retried. */
+export async function intakeLead(ctx: PluginContext, companyId: string, eventType: string, payload: unknown): Promise<LeadCapturedResult | null> {
+  const key = leadKey(payload);
+  if (!key) return null;
+  const lead = asLead(payload);
+  if (!lead) return { key, status: "ignored", contactId: null, reason: "No email address or social handle to reach the person." };
+
+  const client = await channelClient(ctx, companyId, lead);
+  if (client) {
+    const origin = leadOrigin(lead.key);
+    await insertClientLead(ctx, companyId, {
+      key: lead.key,
+      clientKind: client.kind,
+      clientRef: client.id,
+      source: lead.source,
+      platform: lead.platform ?? null,
+      name: lead.name ?? null,
+      handle: lead.handle ?? null,
+      email: lead.email ?? null,
+      message: lead.text,
+      url: lead.url ?? null,
+      itemId: origin.id,
+      confidence: lead.confidence ?? null,
+      capturedAt: lead.capturedAt,
+    });
+    return { key, status: "stored", contactId: null, reason: `The client's own lead (${refOf(client.kind, client.id)}): kept on their CRM page, not added to our contacts.` };
+  }
+
+  if (await ownAddress(ctx, companyId, lead)) return { key, status: "ignored", contactId: null, reason: "The lead is our own sending address." };
+
+  const seen = await inboxResult(ctx, `lead:${lead.key}`);
+  if (seen) return { key, status: "stored", contactId: typeof seen.contactId === "string" ? seen.contactId : null };
+
+  const held = await notReady(ctx, companyId);
+  if (held) {
+    await holdLead(ctx, { companyId, key: lead.key, event: eventType, payload: asRecord(payload), reason: held });
+    return { key, status: "held", contactId: null, reason: held };
+  }
+
+  const { result } = await receiveOnce(ctx, companyId, eventType, `lead:${lead.key}`, () => handleLead(ctx, companyId, lead));
+  return { key, status: "stored", contactId: typeof result.contactId === "string" ? result.contactId : null };
+}
+
+/** Tells the sender what happened, so its outbox can stop re-sending. */
+export async function answerLead(ctx: PluginContext, companyId: string, result: LeadCapturedResult): Promise<void> {
+  try {
+    await ctx.events.emit(HANDOFF_EVENTS.leadCapturedResult, companyId, result as unknown as Record<string, unknown>);
+  } catch (error) {
+    ctx.logger.info("CRM lead result emit failed; the sender asks again", { key: result.key, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export async function onLeadCaptured(ctx: PluginContext, event: PluginEvent, onHeld?: (companyId: string) => Promise<unknown>): Promise<void> {
+  const companyId = event.companyId;
+  if (!companyId) return;
+  try {
+    const result = await intakeLead(ctx, companyId, event.eventType, event.payload);
+    if (!result) return;
+    await answerLead(ctx, companyId, result);
+    if (result.status === "held" && onHeld) await onHeld(companyId).catch(() => undefined);
+  } catch (error) {
+    // No answer: the sender re-sends it and it is handled then.
+    ctx.logger.error("CRM lead intake failed", { key: leadKey(event.payload), error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** Job: add held leads for companies whose CRM is ready now. */
+export async function processHeldLeads(ctx: PluginContext): Promise<{ processed: number; failed: number; waiting: number }> {
+  let processed = 0;
+  let failed = 0;
+  let waiting = 0;
+  for (const companyId of await heldLeadCompanies(ctx)) {
+    const reason = await notReady(ctx, companyId).catch(() => "unknown");
+    const rows = await pendingHeldLeads(ctx, companyId);
+    if (reason) {
+      waiting += rows.length;
+      continue;
+    }
+    for (const held of rows) {
+      const lead = asLead(held.payload);
+      if (!lead) {
+        await markHeldLeadDone(ctx, companyId, held.key);
+        continue;
+      }
+      try {
+        const { result } = await receiveOnce(ctx, companyId, held.event, `lead:${lead.key}`, () => handleLead(ctx, companyId, lead));
+        await markHeldLeadDone(ctx, companyId, held.key);
+        await answerLead(ctx, companyId, { key: lead.key, status: "stored", contactId: typeof result.contactId === "string" ? result.contactId : null });
+        processed += 1;
+      } catch (error) {
+        failed += 1;
+        await markHeldLeadFailed(ctx, companyId, held.key, held.attempts + 1, error instanceof Error ? error.message : String(error)).catch(() => undefined);
+      }
+    }
+  }
+  return { processed, failed, waiting };
 }
 
 async function findContact(ctx: PluginContext, companyId: string, lead: LeadCaptured): Promise<ContactDraft | null> {
@@ -110,6 +270,7 @@ async function findContact(ctx: PluginContext, companyId: string, lead: LeadCapt
 export async function handleLead(ctx: PluginContext, companyId: string, lead: LeadCaptured): Promise<LeadOutcome> {
   let contact = await findContact(ctx, companyId, lead);
   let created = false;
+  let linkedCompany: string | null = null;
   if (!contact) {
     const handle = handleKey(lead);
     contact = createContact({
@@ -122,11 +283,12 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
     });
     await insertContact(ctx, contact);
     created = true;
-    // A lead from mail whose sender's domain matched a CRM company works there.
+    // An email from a client company's own domain: a person at that client, linked to it.
     if (lead.source === "email" && lead.clientKind === "company" && lead.clientRef) {
       const account = await getAccount(ctx, lead.clientRef).catch(() => null);
       if (account && account.companyId === companyId) {
         await insertLink(ctx, linkContact({ companyId, contactId: contact.id, accountId: account.id, roleLabel: "staff" })).catch(() => undefined);
+        linkedCompany = account.id;
       }
     }
   }
@@ -144,12 +306,13 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
 
   const score = await scoreLead(ctx, companyId, contact.id).catch(() => null);
   const fresh = (await getContact(ctx, contact.id)) ?? contact;
+  const prefix = await companyPrefix(ctx, companyId);
   const issueId = await openIssueOnce(ctx, {
     companyId,
     originId: `lead:${lead.key}`,
     title: `Follow up ${created ? "new lead" : "lead"}: ${fresh.name}`.slice(0, 200),
-    description: leadIssueDescription(fresh, lead, { created, score: score ? leadBand(score) : null }),
-    assignee: await leadAssignee(ctx, companyId, fresh),
+    description: leadIssueDescription(fresh, lead, { created, score: score ? leadBand(score) : null, prefix, linkedCompany }),
+    assignee: await recordAssignee(ctx, companyId, created ? null : fresh),
     wakeReason: "A new lead came in",
   });
 
@@ -163,20 +326,36 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
   return { contactId: contact.id, created, issueId, scored: Boolean(score) };
 }
 
-/** The contact's agent, else its owner, else the company owner from the Cockpit roles, else nobody (the board). */
-export async function leadAssignee(ctx: PluginContext, companyId: string, contact: Pick<ContactDraft, "assigneeAgentId" | "ownerUserId">): Promise<{ assigneeAgentId?: string; assigneeUserId?: string }> {
-  if (contact.assigneeAgentId) return { assigneeAgentId: contact.assigneeAgentId };
-  if (contact.ownerUserId && contact.ownerUserId !== LOCAL_BOARD_USER_ID) return { assigneeUserId: contact.ownerUserId };
-  const owner = (await companyRoles(ctx, companyId))?.ownerUserId;
-  return owner ? { assigneeUserId: owner } : {};
+function titleCase(value: string): string {
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
-export function leadIssueDescription(contact: ContactDraft, lead: LeadCaptured, info: { created: boolean; score: "cold" | "warm" | "hot" | null }): string {
+/** Who answers the lead, in one line: Social DMs are the Social agent's; email is drafted in the Mailbox. */
+export function whoReplies(lead: Pick<LeadCaptured, "source" | "key">): string {
+  const origin = leadOrigin(lead.key);
+  if (lead.source === "social" || origin.kind === "social") {
+    return "**Who replies:** the Social agent answers this DM or comment in the Social inbox. Do not reply to it yourself; if they give an email address or ask for a quote, carry on here.";
+  }
+  if (lead.source === "email" || origin.kind === "mail") {
+    return "**Who replies:** you. Draft the reply in the Mailbox in the same thread (`mailbox-draft` skill); a person approves sending.";
+  }
+  return "**Who replies:** you, in the channel the lead came from, through that module's approval step.";
+}
+
+export function leadIssueDescription(
+  contact: ContactDraft,
+  lead: LeadCaptured,
+  info: { created: boolean; score: "cold" | "warm" | "hot" | null; prefix?: string | null; linkedCompany?: string | null },
+): string {
+  const origin = leadOrigin(lead.key);
+  const prefix = info.prefix ?? null;
   const reach = [
     lead.email ? `- Email: ${lead.email}` : null,
-    lead.handle ? `- ${lead.platform ? `${lead.platform.charAt(0).toUpperCase()}${lead.platform.slice(1)}` : "Social"}: @${lead.handle}` : null,
+    lead.handle ? `- ${lead.platform ? titleCase(lead.platform) : "Social"}: @${lead.handle}` : null,
+    origin.kind === "social" && origin.id ? `- Social inbox item: \`${origin.id}\` (${pagePath(prefix, "/social?tab=inbox")})` : null,
+    origin.kind === "mail" && origin.id ? `- Mailbox message: \`${origin.id}\` (${pagePath(prefix, "/mailbox?tab=inbox")})` : null,
     lead.url ? `- Link: ${lead.url}` : null,
-    lead.clientRef ? `- Came in for: ${lead.clientKind === "contact" ? "client contact" : "client"} \`${lead.clientRef}\`` : null,
+    info.linkedCompany ? `- Works at: \`${refOf("company", info.linkedCompany)}\` (their email is on the company's domain)` : null,
     info.score ? `- Lead score: ${info.score}` : null,
     lead.confidence != null ? `- Triage confidence: ${Math.round(lead.confidence * 100)}%` : null,
   ].filter((line): line is string => Boolean(line));
@@ -187,7 +366,10 @@ export function leadIssueDescription(contact: ContactDraft, lead: LeadCaptured, 
     "",
     `> ${(lead.text || "(no message)").replace(/\n+/g, " ")}`,
     "",
-    "Reply within one working day in the same channel. Then log what happened on the contact (`log-activity`) and set the next action (`update-contact` with nextActionKind and nextActionDueAt), or create a deal when they want a quote.",
-    `Contact id: \`${contact.id}\``,
+    whoReplies(lead),
+    "",
+    "**Your part, within one working day:** qualify them (fit, need, budget, timing), log what you learn (`log-activity`), set the next step (`update-contact` with nextActionKind and nextActionDueAt), and create a deal (`create-deal`) when they want a quote. Qualified: set lifecycle prospect.",
+    "",
+    `Contact: \`${refOf("contact", contact.id)}\` · ${crmLink(prefix, "contact", contact.id)}`,
   ].join("\n");
 }

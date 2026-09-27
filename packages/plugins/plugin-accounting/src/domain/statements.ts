@@ -363,3 +363,15 @@ export function fingerprintLines(bankAccountId: string, lines: ParsedLine[]): st
     return sha256(`${base}|${n}`);
   });
 }
+
+/**
+ * Statement lines dated after `today` (`YYYY-MM-DD`). A bank statement only
+ * holds money that already moved, so a later date is almost always a wrong
+ * date (often day and month swapped). Such lines count in no "as at today"
+ * figure until that day, agents may not reconcile them, and the import says
+ * so, so a person checks the date first.
+ */
+export function linesDatedAfter(lines: Array<{ date: string }>, today: string): { count: number; first: string | null } {
+  const later = lines.map((l) => l.date).filter((d) => d > today).sort();
+  return { count: later.length, first: later[0] ?? null };
+}

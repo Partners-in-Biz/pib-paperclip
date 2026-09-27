@@ -2,10 +2,10 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import * as db from "../db.js";
 import { dueDepreciation } from "../domain/assets.js";
-import { vatPeriodFor } from "../domain/periods.js";
+import { endsBeforeBooks, vatPeriodFor } from "../domain/periods.js";
 import { trialBalance } from "../domain/reports.js";
 import { addMonths, lastDayOfMonth, monthOf, requireMonth, todayIso } from "../domain/util.js";
-import { loadChart } from "./books.js";
+import { booksStartFor, loadChart } from "./books.js";
 import { BOOK_CURRENCY, readSettings } from "./common.js";
 import { verifyJournalChain } from "./journals.js";
 
@@ -49,7 +49,7 @@ export async function closeChecklist(ctx: PluginContext, companyId: string, mont
     const posted = await db.journalsWithSourcePrefix(ctx.db, companyId, `depreciation:${asset.id}:`);
     due += dueDepreciation(asset, month, new Set(posted.map((j) => j.sourceKey.split(":").pop()!))).length;
   }
-  items.push({ key: "depreciation", label: "Depreciation is posted up to the month", ok: due === 0, detail: assets.length === 0 ? "No assets" : due ? `${due} month(s) not posted (Assets → Run depreciation)` : "Posted" });
+  items.push({ key: "depreciation", label: "Depreciation is posted up to the month", ok: due === 0, detail: assets.length === 0 ? "No assets" : due ? `${due} month(s) not posted (Books setup → Assets & exchange rates → Run depreciation)` : "Posted" });
 
   const foreign = (await db.listOpenItems(ctx.db, companyId)).filter((i) => i.currency !== BOOK_CURRENCY && i.outstandingMinor > 0);
   const reval = foreign.length ? await db.journalBySourceKey(ctx.db, companyId, `fx-reval:${month}`) : null;
@@ -57,13 +57,15 @@ export async function closeChecklist(ctx: PluginContext, companyId: string, mont
     key: "fx",
     label: "Open foreign-currency items are revalued at the month end",
     ok: foreign.length === 0 || Boolean(reval),
-    detail: foreign.length === 0 ? "No foreign-currency items" : reval ? `Posted ${reval.number}` : `${foreign.length} item(s) not revalued (Reports → FX)`,
+    detail: foreign.length === 0 ? "No foreign-currency items" : reval ? `Posted ${reval.number}` : `${foreign.length} item(s) not revalued (Books setup → Assets & exchange rates → Revalue)`,
   });
 
   const vat = vatPeriodFor(end, settings.vatCategory, settings.yearEndMonth);
   if (vat && vat.end === end) {
     const ret = await db.vatReturnByPeriod(ctx.db, companyId, vat.start, vat.end);
-    items.push({ key: "vat", label: `VAT201 for ${vat.start} to ${vat.end} is approved`, ok: ret?.status === "locked", detail: ret ? ret.status.replace("_", " ") : "Not prepared" });
+    // A VAT period that ended before these books start was filed from the previous books.
+    const previousBooks = !ret && endsBeforeBooks(vat, (await booksStartFor(ctx, companyId))?.date);
+    if (!previousBooks) items.push({ key: "vat", label: `VAT201 for ${vat.start} to ${vat.end} is approved`, ok: ret?.status === "locked", detail: ret ? ret.status.replace("_", " ") : "Not prepared" });
   }
 
   const chart = await loadChart(ctx, companyId);

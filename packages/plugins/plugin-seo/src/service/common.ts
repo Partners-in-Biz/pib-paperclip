@@ -10,6 +10,7 @@ import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/
 import { localDate, localHour } from "../engine/time.js";
 import type { FetchLike } from "../integrations/google.js";
 import { SKILLS } from "../skills.js";
+import { sqlAnnouncementStore, type AnnouncementStore } from "./announcement-store.js";
 import { sqlPlaybookStore, type PlaybookStore } from "./playbook-store.js";
 
 export class SeoError extends Error {
@@ -53,6 +54,8 @@ export interface Env {
   skills: ReturnType<typeof createSkillSyncer>;
   /** Learned playbooks (SQL on the plugin namespace; in-memory in tests). */
   playbooks: PlaybookStore;
+  /** content.published hand-offs waiting for the change to be live (SQL; in-memory in tests). */
+  announcements: AnnouncementStore;
 }
 
 export function createEnv(ctx: PluginContext, overrides: Partial<Omit<Env, "ctx">> = {}): Env {
@@ -63,6 +66,7 @@ export function createEnv(ctx: PluginContext, overrides: Partial<Omit<Env, "ctx"
     site: overrides.site ?? ((url, init) => safeFetch(ctx, url, init)),
     skills: overrides.skills ?? createSkillSyncer(ctx, SKILLS),
     playbooks: overrides.playbooks ?? sqlPlaybookStore(ctx.db),
+    announcements: overrides.announcements ?? sqlAnnouncementStore(ctx.db),
   };
 }
 

@@ -551,6 +551,8 @@ export interface PostRow {
   /** Growth Lab: the experiment and arm this post tests (null when untagged). */
   experiment_id?: string | null;
   experiment_arm?: string | null;
+  /** The Social agent task that picks a time for this approved post (none when it had a time). */
+  schedule_issue_id?: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -558,7 +560,7 @@ export interface PostRow {
 const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
-  "created_at", "updated_at",
+  "schedule_issue_id", "created_at", "updated_at",
 ].join(", ");
 
 export function postMedia(row: Pick<PostRow, "media">): MediaRef[] {
@@ -623,6 +625,8 @@ export interface PostWrite {
   company_id: string;
   body: string;
   status: PostStatus;
+  /** A draft's proposed publish time (ISO); approval schedules the post for it. */
+  scheduled_at?: string | null;
   scope: "org" | "personal";
   owner_user_id: string | null;
   media: MediaRef[];
@@ -641,10 +645,11 @@ export async function insertPost(ctx: PluginContext, row: PostWrite): Promise<vo
     `INSERT INTO ${table(ctx, "posts")}
       (id, company_id, body, overrides, media, status, scheduled_at, scope, owner_user_id, first_comment, client_kind, client_ref,
        client_name, source, source_ref, created_by_agent_id)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, NULL, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $16::timestamptz, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     [
       row.id, row.company_id, row.body, JSON.stringify(row.overrides), JSON.stringify(row.media), row.status, row.scope, row.owner_user_id,
       row.first_comment, row.client_kind, row.client_ref, row.client_name, row.source, row.source_ref, row.created_by_agent_id,
+      row.scheduled_at ?? null,
     ],
   );
 }
@@ -655,6 +660,8 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
   overrides?: Partial<Record<SocialPlatform, PlatformOverride>>;
   firstComment?: string | null;
   scope?: ScopeWrite;
+  /** The proposed publish time; null clears it, undefined keeps it. */
+  scheduledAt?: string | null;
 }): Promise<number> {
   const result = await ctx.db.execute(
     `UPDATE ${table(ctx, "posts")}
@@ -665,6 +672,7 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
             client_kind = CASE WHEN $8::boolean THEN $9 ELSE client_kind END,
             client_ref = CASE WHEN $8::boolean THEN $10 ELSE client_ref END,
             client_name = CASE WHEN $8::boolean THEN $11 ELSE client_name END,
+            scheduled_at = CASE WHEN $12::boolean THEN $13::timestamptz ELSE scheduled_at END,
             updated_at = now()
       WHERE id = $1 AND company_id = $2`,
     [
@@ -673,9 +681,15 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
       fields.overrides ? JSON.stringify(fields.overrides) : null,
       fields.firstComment !== undefined, fields.firstComment ?? null,
       fields.scope !== undefined, fields.scope?.client_kind ?? null, fields.scope?.client_ref ?? null, fields.scope?.client_name ?? null,
+      fields.scheduledAt !== undefined, fields.scheduledAt ?? null,
     ],
   );
   return result.rowCount;
+}
+
+/** Remember (or clear) the agent task that picks a time for an approved post. */
+export async function setPostScheduleIssue(ctx: PluginContext, companyId: string, id: string, issueId: string | null): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET schedule_issue_id = $3 WHERE id = $1 AND company_id = $2`, [id, companyId, issueId]);
 }
 
 /** Guarded status change: only applies when the post is still in one of `from`. */

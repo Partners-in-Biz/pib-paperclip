@@ -4,6 +4,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  hireStatus,
   isModuleEnabled,
   isSecretRef,
   moduleOfPlugin,
@@ -16,8 +17,11 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
+import { ACCOUNT_MANAGER_ROLE, AM_NAME } from "./agent.js";
 import { listSequences, sequenceDelivery, table } from "./db.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
+import { heldLeadStats } from "./store.js";
 import { crmCompanyIds } from "./sync.js";
 
 const SETTINGS_FALLBACK = "/company/settings/instance/plugins";
@@ -73,6 +77,24 @@ export async function knownCompanies(ctx: PluginContext): Promise<string[]> {
   return [...new Set([...fromRows, ...fromState])];
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "27 Sep 2026" in South African time, as every PiB page shows a date. */
+export function dayLabel(iso: string, timeZone = "Africa/Johannesburg"): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  let parts: { day: number; month: number; year: number };
+  try {
+    const pick = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { day: "numeric", month: "numeric", year: "numeric", timeZone }).formatToParts(date).map((part) => [part.type, part.value]),
+    );
+    parts = { day: Number(pick.day), month: Number(pick.month) - 1, year: Number(pick.year) };
+  } catch {
+    parts = { day: date.getUTCDate(), month: date.getUTCMonth(), year: date.getUTCFullYear() };
+  }
+  return `${parts.day} ${MONTHS[parts.month] ?? ""} ${parts.year}`;
+}
+
 function asList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
@@ -88,28 +110,32 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
   const { href: settings, uuid } = await settingsHref(ctx);
   const items: SetupItem[] = [];
 
+  const held = await heldLeadStats(ctx, companyId).catch(() => ({ count: 0, oldest: null }));
   const settingsRow = settingsItem({
     saved,
     pluginId: uuid ?? "",
     title: "Save the CRM settings",
-    agentNext: "Sequence steps open issues on time and your clients are shared with the other plugins.",
+    agentNext: "Sequence steps open issues on time, held leads are added, and your clients are shared with the other plugins.",
+    ...(held.count > 0 && !saved ? { detail: `${held.count} ${held.count === 1 ? "lead is" : "leads are"} waiting until the settings are saved. Until then the scheduled jobs cannot act for this company.` } : {}),
   });
   items.push({ ...settingsRow, href: settings });
+
+  items.push(await agentItem(ctx, companyId));
 
   const jev = jevKeySet(config);
   items.push({
     key: "jev",
-    title: "Add the Jev (TypeSafe) key",
+    title: "Smart sorting key (optional)",
     status: jev ? "done" : "optional",
     required: false,
     detail: jev
-      ? "Lead scoring and reply classification use Jev."
+      ? "Lead scoring and reply sorting use smart sorting (Jev by TypeSafe)."
       : "Optional. Used for lead scoring and reply classification. Without it the CRM uses its built-in rules.",
     href: settings,
     hrefLabel: "Open settings",
     steps: jev ? undefined : [
       "Create an API key at typesafe.ai → API keys.",
-      "In the CRM settings, pick or create a Paperclip secret for Jev → TypeSafe API key.",
+      "In the CRM settings, under **Smart sorting (Jev by TypeSafe)**, pick or create a Paperclip secret for the TypeSafe API key.",
       "Click Save Configuration.",
     ],
     agentNext: "Scores new leads and sorts sequence replies (interested, not now, unsubscribe) on its own.",
@@ -143,7 +169,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     detail: !hasClients
       ? "Nothing to send yet."
       : lastShare
-        ? `Last sent in full ${lastShare.slice(0, 10)}. Changes are sent again every 15 minutes.`
+        ? `Last sent in full ${dayLabel(lastShare)}. Changes are sent again every 15 minutes.`
         : "Billing, Social, SEO and Campaigns pick clients from the CRM. Send the list once now; after that it is sent nightly.",
     href: "/crm",
     hrefLabel: "Open CRM",
@@ -178,6 +204,40 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     items,
     checkedAt: new Date().toISOString(),
   };
+}
+
+/** The Account Manager, staffed in Setup → Team (kit TEAM_ROLES `account-manager`, item key `agent`). */
+async function agentItem(ctx: PluginContext, companyId: string): Promise<SetupItem> {
+  const base = {
+    key: "agent",
+    title: `Hire or link the ${AM_NAME}`,
+    required: true,
+    href: teamSetupPath("account-manager"),
+    hrefLabel: "Open Team in Setup",
+    agentNext: "Follows up leads, works sequence steps and replies, fills in client profiles and drafts quotes, invoices and client emails for approval.",
+  };
+  try {
+    const hire = await hireStatus(ctx, companyId, ACCOUNT_MANAGER_ROLE);
+    const agent = hire.agent;
+    const openHire = hire.hire?.status === "open" ? hire.hire : null;
+    return {
+      ...base,
+      status: agent ? "done" : "missing",
+      detail: agent
+        ? `${agent.name} is the ${AM_NAME} (${agent.status}).`
+        : openHire
+          ? `The hire task ${openHire.identifier ?? openHire.title} is open. The agent is linked once it appears, or pick one in Setup → Team.`
+          : `No ${AM_NAME} yet, so lead follow-ups, replies and sequence steps go to the Operator or to you. A hire task asks your hiring agent (or a person) to create one; the CRM links and wires it.`,
+      steps: agent ? undefined : [
+        `Open Setup → Team → ${AM_NAME}.`,
+        "Hire one (a hire task for your hiring agent or a person), or pick an agent you already have.",
+        "Approve and resume the new agent once it exists.",
+      ],
+      action: !agent && !openHire ? { plugin: PLUGIN_ID, key: "crm.start-hire", params: {}, label: "Open a hire task" } : null,
+    };
+  } catch (error) {
+    return { ...base, status: "unknown", detail: `Could not check the ${AM_NAME}: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 async function companyHasClients(ctx: PluginContext, companyId: string): Promise<boolean> {

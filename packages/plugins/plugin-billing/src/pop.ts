@@ -14,9 +14,10 @@ import type { BillingSettings } from "./config.js";
 import { asObject, table } from "./db.js";
 import { BillingError, isOpenStatus } from "./domain.js";
 import { emitInvoiceItem } from "./openitems.js";
+import { personAssignee } from "./routing.js";
 import { settle, type SettleResult } from "./settle.js";
 
-export type MatchBasis = "thread" | "number" | "sender" | "upload" | "none";
+export type MatchBasis = "thread" | "number" | "sender" | "upload" | "agent" | "none";
 
 /** "LUM-001" / "lum 1" / "LUM001" → "LUM-1"; null when it is not a document number. */
 export function referenceKey(value: string): string | null {
@@ -99,11 +100,13 @@ export interface PopRow {
   reviewed_at: unknown;
   reject_reason: string | null;
   received_at: unknown;
+  /** The day the customer says they paid (agent requests). */
+  paid_on?: unknown;
 }
 
 const POP_COLUMNS = `id, company_id, invoice_id, source, match_basis, status, amount_minor, reference, from_email, from_name, subject, snippet,
           mail_message_id, mail_thread_id, attachments, file_key, file_name, file_mime, issue_id, payment_id, reviewed_by, reviewed_at,
-          reject_reason, received_at`;
+          reject_reason, received_at, paid_on::text AS paid_on`;
 
 export async function getPop(ctx: PluginContext, id: string): Promise<PopRow | null> {
   const rows = await ctx.db.query<PopRow>(`SELECT ${POP_COLUMNS} FROM ${table(ctx, "pops")} WHERE id = $1`, [id]);
@@ -127,7 +130,8 @@ export async function listPops(ctx: PluginContext, companyId: string, filter: { 
 export interface NewPop {
   companyId: string;
   invoiceId: string | null;
-  source: "email" | "upload";
+  /** `agent`: an agent asked for the check (the customer said so on a call, WhatsApp, a DM…). */
+  source: "email" | "upload" | "agent";
   basis: MatchBasis;
   amountMinor?: number | null;
   reference?: string | null;
@@ -142,6 +146,8 @@ export interface NewPop {
   fileName?: string | null;
   fileMime?: string | null;
   receivedAt?: string | null;
+  /** YYYY-MM-DD the customer says they paid. */
+  paidOn?: string | null;
   others?: string[];
   createdBy?: string | null;
 }
@@ -155,8 +161,8 @@ export async function recordPop(ctx: PluginContext, pop: NewPop, settings: Billi
   const res = await ctx.db.execute(
     `INSERT INTO ${table(ctx, "pops")}
       (id, company_id, invoice_id, source, match_basis, status, amount_minor, reference, from_email, from_name, subject, snippet,
-       mail_message_id, mail_thread_id, attachments, file_key, file_name, file_mime, received_at)
-     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18)
+       mail_message_id, mail_thread_id, attachments, file_key, file_name, file_mime, received_at, paid_on)
+     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19)
      ON CONFLICT DO NOTHING`,
     [
       id,
@@ -177,6 +183,7 @@ export async function recordPop(ctx: PluginContext, pop: NewPop, settings: Billi
       pop.fileName ?? null,
       pop.fileMime ?? null,
       pop.receivedAt ?? new Date().toISOString(),
+      pop.paidOn ?? null,
     ],
   );
   if ((res.rowCount ?? 0) === 0) {
@@ -204,22 +211,26 @@ async function openPopIssue(ctx: PluginContext, pop: NewPop & { id: string }, ba
   const owed = balance ? formatMoneyMinor(balance.outstandingMinor, invoice!.currency) : null;
   const claimed = pop.amountMinor ? formatMoneyMinor(pop.amountMinor, invoice?.currency ?? "ZAR") : null;
   const from = pop.fromEmail ? `${pop.fromName ? `${pop.fromName} ` : ""}<${pop.fromEmail}>` : "an upload";
-  const title = invoice ? `Check proof of payment for ${invoice.number}` : `Match a proof of payment from ${pop.fromEmail ?? "an upload"}`;
+  const customer = invoice ? String(asObject(invoice.customer_snapshot ?? invoice.customer).name ?? "") : "";
+  const title = invoice ? `Check proof of payment for ${invoice.number}${customer ? ` (${customer})` : ""}` : `Match a proof of payment from ${pop.fromEmail ?? "an upload"}`;
+  const came = pop.source === "agent"
+    ? `An agent asked for this payment to be checked. What the customer said or sent: "${(pop.snippet ?? "").slice(0, 600)}"${pop.reference ? ` (reference ${pop.reference})` : ""}.`
+    : `A proof of payment came in from ${from}${pop.subject ? ` ("${pop.subject}")` : ""}.`;
   const lines = [
-    `A proof of payment came in from ${from}${pop.subject ? ` ("${pop.subject}")` : ""}.`,
+    came,
     invoice
       ? `It is linked to invoice ${invoice.number} (${owed} still owed)${pop.basis === "number" ? " by the invoice number it quotes" : pop.basis === "thread" ? " because it is a reply to that invoice" : pop.basis === "sender" ? " because it is the sender's only open invoice" : ""}.`
-      : "No open invoice matched it. Open Billing → Payments → Proof of payment and pick the invoice.",
-    claimed ? `The customer says they paid ${claimed}.` : "",
+      : "No open invoice matched it. Open Billing → Invoices → Payments and pick the invoice.",
+    claimed ? `The customer says they paid ${claimed}${pop.paidOn ? ` on ${pop.paidOn}` : ""}.` : pop.paidOn ? `The customer says they paid on ${pop.paidOn}.` : "",
     pop.others?.length ? `It also mentions ${pop.others.length} other open invoice(s); check whether it covers them too.` : "",
     "",
     "Check the bank account. Only when the money is in:",
     invoice
-      ? `- Mark this issue done to record ${claimed ?? owed} against ${invoice.number}, or use Confirm on the Billing page to enter a different amount.`
+      ? `- Mark this issue done to record ${claimed ?? owed} against ${invoice.number}, or use Money is in on the Billing page to enter a different amount.`
       : "- Confirm it on the Billing page once you have picked the invoice.",
-    "- Cancel this issue to reject the proof of payment (the invoice goes back to unpaid).",
+    "- Cancel this issue to reject it (the invoice goes back to unpaid).",
     "",
-    "Billing never records a payment from an email alone.",
+    "Billing never records a payment from a proof or a message alone.",
   ].filter((line) => line !== "");
   const issue = await createWorkIssue(ctx, {
     companyId: pop.companyId,
@@ -227,11 +238,26 @@ async function openPopIssue(ctx: PluginContext, pop: NewPop & { id: string }, ba
     description: lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: pop.id,
-    ...(settings.reviewerUserId ? { assigneeUserId: settings.reviewerUserId } : {}),
+    // Money: a person checks it (the Billing approver, else the owner).
+    ...(await personAssignee(ctx, pop.companyId, settings)),
   });
   await ctx.db.execute(`UPDATE ${table(ctx, "pops")} SET issue_id = $2 WHERE id = $1`, [pop.id, issue.id]);
   await recordDecisionIssue(ctx, { issueId: issue.id, companyId: pop.companyId, kind: "pop", subjectKind: "pop", subjectId: pop.id, payload: { invoiceId: pop.invoiceId } });
   return issue.id;
+}
+
+/** Money for these POPs is recorded: resolve their checks and close their issues. */
+export async function closePopIssues(ctx: PluginContext, companyId: string, popIds: string[], status: "done" | "cancelled" = "done"): Promise<void> {
+  for (const popId of popIds) {
+    const pop = await getPop(ctx, popId);
+    if (!pop?.issue_id) continue;
+    await ctx.db.execute(`UPDATE ${table(ctx, "decision_issues")} SET status = 'resolved', resolved_at = now() WHERE issue_id = $1 AND status = 'open'`, [pop.issue_id]);
+    try {
+      await ctx.issues.update(pop.issue_id, { status }, companyId);
+    } catch (error) {
+      ctx.logger.info("Could not close the proof-of-payment issue", { popId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
 
 export async function recordDecisionIssue(
@@ -272,7 +298,9 @@ export async function confirmPop(
     sourceKey: `pop:${pop.id}`,
     source: "pop",
     popId: pop.id,
-    paidAt: input.paidAt ?? null,
+    // The day the customer said they paid, unless the person entered the day it cleared.
+    // A claimed day after today can't be right for money that is in: then it is today.
+    paidAt: input.paidAt ?? (pop.paid_on && String(pop.paid_on).slice(0, 10) <= new Date().toISOString().slice(0, 10) ? `${String(pop.paid_on).slice(0, 10)}T12:00:00.000Z` : null),
     method: "eft",
     reference: input.reference ?? pop.reference ?? pop.subject ?? null,
     createdBy: input.createdBy ?? null,

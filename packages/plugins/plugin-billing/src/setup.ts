@@ -16,7 +16,7 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
-import { billingSettings, emailEnabled, ledgerEnabled, r2Configured, type BillingSettings } from "./config.js";
+import { billingSettings, emailEnabled, ledgerEnabled, r2Configured, vatRegistered } from "./config.js";
 import { asObject, table } from "./db.js";
 import manifest from "./manifest.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -70,12 +70,6 @@ async function count(ctx: PluginContext, sql: string, params: unknown[]): Promis
   return Number(rows[0]?.n ?? 0);
 }
 
-function vatRegistered(settings: BillingSettings): boolean {
-  if (settings.defaultTaxCode === "za_out_of_scope") return false;
-  if (settings.defaultTaxCode == null && settings.defaultTaxRate != null && Number(settings.defaultTaxRate) <= 0) return false;
-  return true;
-}
-
 export async function setupStatus(ctx: PluginContext, companyId: string): Promise<SetupStatus> {
   const [saved, settings, link] = await Promise.all([configSaved(ctx, companyId), billingSettings(ctx, companyId), settingsLink(ctx)]);
   const settingsHref = link.href;
@@ -100,11 +94,18 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
       required: true,
       status: missing.length ? "missing" : "done",
       detail: missing.length
-        ? `Missing: ${missing.join(", ")}. These print on every invoice and quote.${needsVat ? " Not VAT registered? Set the default VAT code to za_out_of_scope." : ""}`
+        ? `Missing: ${missing.join(", ")}. These print on every invoice and quote.${needsVat ? " Not registered for VAT? Switch off **VAT registered** in Billing settings; then no VAT number is needed and invoices charge no VAT." : ""}`
         : undefined,
       href: settingsHref,
       hrefLabel: "Open settings",
-      steps: missing.length ? ["Open Billing settings.", "Under Your business (sender), fill in the business name, address and VAT number.", "Click Save Configuration."] : undefined,
+      steps: missing.length
+        ? [
+            "Open Billing settings.",
+            `Under **Your business (sender)**, fill in the business name and address${needsVat ? ", and the VAT number" : ""}.`,
+            ...(needsVat ? ["Not registered for VAT? Switch off **VAT registered** instead of adding a VAT number."] : []),
+            "Click **Save Configuration**.",
+          ]
+        : undefined,
       agentNext: "Invoices and quotes print your business details (and are titled Tax invoice when a VAT number is set).",
     };
   }));
@@ -225,7 +226,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
       href: settingsHref,
       hrefLabel: "Open settings",
       steps: on ? undefined : ["Open Billing settings.", "Under Payment reminders, switch on Send reminders and check the stages.", "Click Save Configuration."],
-      agentNext: "Overdue invoices are chased by email at 07:00 each day.",
+      agentNext: "Overdue invoices are chased by email every morning (09:00 SAST).",
     };
   }));
 
@@ -244,14 +245,14 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     };
   }));
 
-  items.push(await probe("jev", "Smart categories (Jev key)", false, async () => {
+  items.push(await probe("jev", "Smart categories (optional)", false, async () => {
     const on = settings.jev?.enabled !== false && Boolean(settings.jev?.apiKey);
     return {
       key: "jev",
-      title: "Smart categories (Jev key)",
+      title: "Smart categories (optional)",
       required: false,
       status: on ? "done" : "optional",
-      detail: on ? undefined : "Optional. With a Jev key, Billing suggests categories for expenses read from receipts. Without it, fixed rules are used.",
+      detail: on ? undefined : "Optional. With the smart sorting key (Jev by TypeSafe), Billing suggests categories for expenses read from receipts. Without it, fixed rules are used.",
       href: settingsHref,
       hrefLabel: "Open settings",
       agentNext: "New expenses get a suggested category.",

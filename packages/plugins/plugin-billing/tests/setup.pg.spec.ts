@@ -25,7 +25,7 @@ const FULL = {
 describe("manifest", () => {
   it("declares the setup-status route and matches the package version", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.3.6");
+    expect(manifest.version).toBe("0.4.0");
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.apiRoutes).toContainEqual(SETUP_STATUS_ROUTE);
     expect(manifest.capabilities).toContain("api.routes.register");
@@ -77,7 +77,7 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
 
   it("lists what is missing before anything is saved, linking to the plugin list", async () => {
     const s = await status();
-    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: "0.3.6" });
+    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: "0.4.0" });
     expect(s.items[0]).toMatchObject({ key: "settings", status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(s, "sender")).toMatchObject({ status: "missing", required: true });
     expect(item(s, "eft")).toMatchObject({ status: "missing", required: true });
@@ -105,8 +105,18 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
     h.config.set(COMPANY, { ...FULL, sender });
     expect(item(await status(), "sender")).toMatchObject({ status: "missing" });
     expect(item(await status(), "sender").detail).toContain("VAT number");
+    // Plain words for the owner: a switch, not a VAT code to type.
+    expect(item(await status(), "sender").detail).toContain("Switch off **VAT registered**");
+    expect(item(await status(), "sender").detail).not.toContain("za_out_of_scope");
     h.config.set(COMPANY, { ...FULL, sender, defaultTaxCode: "za_out_of_scope" });
     expect(item(await status(), "sender").status).toBe("done");
+    h.config.set(COMPANY, { ...FULL, sender, vatRegistered: false });
+    expect(item(await status(), "sender").status).toBe("done");
+    // Not VAT registered: new documents charge no VAT, whatever the default code says.
+    const draft = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-small", customerName: "Small Co" });
+    await h.call("billing.add-line", { invoiceId: draft.id, description: "Design", quantity: 1, unitAmountMinor: 100_000 });
+    const detail = await h.call<{ invoice: { totalMinor: number; defaultTaxCode: string | null } }>("billing.invoice-detail", { invoiceId: draft.id });
+    expect(detail.invoice).toMatchObject({ totalMinor: 100_000, defaultTaxCode: "za_out_of_scope" });
   });
 
   it("pushes the status to the Setup plugin from the hourly job", async () => {
@@ -152,7 +162,7 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
       expect(((await h.client.query(`SELECT status FROM ${NAMESPACE}.invoices WHERE id = $1`, [invoice.id])).rows[0] as { status: string }).status).toBe("sent");
     });
 
-    it("sends no journals while Accounting is off, and says so in the status", async () => {
+    it("sends no journals while Accounting is off, says so, and posts what it missed once it is on", async () => {
       await switchModules({ accounting: false });
       const off = await sentInvoice();
       expect(await journalKeys()).toEqual([]);
@@ -160,8 +170,9 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
       expect(item(await status(), "ledger").detail).toContain("Accounting is switched off");
 
       await switchModules({ accounting: true });
+      expect(await journalKeys()).toEqual([`billing:invoice:${off.id}:issue`]);
       const on = await sentInvoice();
-      expect(await journalKeys()).toEqual([`billing:invoice:${on.id}:issue`]);
+      expect((await journalKeys()).sort()).toEqual([`billing:invoice:${off.id}:issue`, `billing:invoice:${on.id}:issue`].sort());
     });
 
     it("keeps re-sending in-flight work while Billing is off", async () => {

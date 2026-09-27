@@ -2,13 +2,18 @@
  * Loads everything the Setup page and widget show for one company:
  * saved module choice, installed plugins, and each enabled module's status
  * (live check → stored projection → stand-in).
+ *
+ * The page reports what it checked live (`setup.report-statuses`), so the
+ * stored statuses, the sidebar badge, the Finish setup issue and the Cockpit
+ * count exactly what the page shows.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { MODULES, type ModuleKey, type SetupStatus } from "../kit-setup.js";
+import { MODULES, setupSummary, type ModuleKey, type SetupStatus, type SetupSummary } from "../kit-setup.js";
 import { effectiveModules, ORDERED_MODULES } from "../modules.js";
 import { memoryStatus, WIKI_PLUGIN, type WikiSnapshot } from "../memory.js";
 import { parseSetupStatus, standInStatus } from "../status.js";
+import { withTeamLinks } from "../team.js";
 import { fetchInstalledPlugins, fetchLiveStatus, type LiveResult, type PluginRecordLite } from "./api.js";
 import { fetchMemoryLive } from "./memory-client.js";
 
@@ -20,6 +25,8 @@ export interface LoadResult {
   finishIssueId: string | null;
   settingsSaved: boolean;
   installed: Record<string, { id: string; status?: string | null }> | null;
+  /** The one setup count from the stored statuses (older workers do not send it). */
+  summary?: SetupSummary | null;
 }
 
 export type StatusSource = "live" | "stored" | "stand-in";
@@ -37,7 +44,7 @@ export interface ModuleView {
   note: string | null;
 }
 
-/** Pure: pick the status to show for each module. */
+/** Pure: pick the status to show for each module (team items link to Setup → Team). */
 export function resolveModuleViews(input: {
   modules: Partial<Record<ModuleKey, boolean>> | null;
   installed: Record<string, PluginRecordLite> | null;
@@ -74,11 +81,66 @@ export function resolveModuleViews(input: {
             : standInStatus({ pluginKey, module, kind: "not-ready", pluginId: installed?.id ?? null, reason: live.reason });
           view.source = "stand-in";
         }
+        // Agent roles (and who gets the daily brief) are staffed in Setup → Team.
+        if (view.status) view.status = withTeamLinks(view.status, pluginKey);
       }
       views.push(view);
     }
   }
   return views;
+}
+
+/**
+ * The page's setup count: kit `setupSummary` over the switched-on modules'
+ * statuses, exactly like the sidebar, the Finish setup issue and the Cockpit.
+ * Null while a module is still being checked.
+ */
+export function viewsSummary(views: ModuleView[], modules: Partial<Record<ModuleKey, boolean>> | null): SetupSummary | null {
+  const enabled = views.filter((view) => view.enabled);
+  if (enabled.some((view) => !view.status)) return null;
+  return setupSummary(enabled.map((view) => ({ module: view.module, items: view.status!.items })), modules);
+}
+
+/** Statuses the page checked live, for `setup.report-statuses` (Company wiki reports on its own). */
+export function reportableStatuses(live: Record<string, LiveResult | undefined>): Record<string, SetupStatus> {
+  const out: Record<string, SetupStatus> = {};
+  for (const [key, result] of Object.entries(live)) if (result?.ok && key !== WIKI_PLUGIN) out[key] = result.status;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Shared work: the host's StrictMode mounts twice, and the sidebar, widget and
+// page all load at once. The same request within a few seconds is sent once.
+// ---------------------------------------------------------------------------
+
+const SHARE_MS = 3000;
+const shared = new Map<string, { at: number; promise: Promise<unknown> }>();
+
+export function sharedRequest<T>(key: string, run: () => Promise<T>, fresh = false, now: () => number = Date.now): Promise<T> {
+  const hit = shared.get(key);
+  if (!fresh && hit && now() - hit.at < SHARE_MS) return hit.promise as Promise<T>;
+  const promise = run();
+  shared.set(key, { at: now(), promise });
+  promise.catch(() => shared.delete(key));
+  return promise;
+}
+
+export function clearSharedRequests(): void {
+  shared.clear();
+}
+
+/** The sidebar badge follows the page: it reloads when the page reported new statuses. */
+const listeners = new Set<() => void>();
+
+export function onSetupChanged(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function setupChanged(): void {
+  for (const listener of [...listeners]) listener();
 }
 
 export interface SetupData {
@@ -95,6 +157,7 @@ export interface SetupData {
 export function useSetupData(companyId: string | null | undefined, options: { live?: boolean } = {}): SetupData {
   const loadAction = usePluginAction("setup.load");
   const reportMemory = usePluginAction("setup.report-memory");
+  const reportAction = usePluginAction("setup.report-statuses");
   const [load, setLoad] = useState<LoadResult | null>(null);
   const [installed, setInstalled] = useState<Record<string, PluginRecordLite> | null>(null);
   const [live, setLive] = useState<Record<string, LiveResult | undefined>>({});
@@ -104,32 +167,46 @@ export function useSetupData(companyId: string | null | undefined, options: { li
   const token = useRef(0);
   const wantLive = options.live !== false;
 
-  const checkPlugins = useCallback(async (keys: string[], company: string) => {
+  const checkPlugins = useCallback(async (keys: string[], company: string, fresh: boolean) => {
     if (keys.length === 0) return;
     setChecking((current) => new Set([...current, ...keys]));
     // Company wiki (upstream LLM Wiki) has no setup-status route: the page checks it and reports it.
-    const check = (key: string) => key === WIKI_PLUGIN
+    const check = (key: string) => sharedRequest(`live|${company}|${key}`, () => (key === WIKI_PLUGIN
       ? fetchMemoryLive(company, (snapshot: WikiSnapshot) => reportMemory({ snapshot }))
-      : fetchLiveStatus(key, company);
-    const results = await Promise.all(keys.map(async (key) => [key, await check(key)] as const));
-    setLive((current) => ({ ...current, ...Object.fromEntries(results) }));
+      : fetchLiveStatus(key, company)), fresh);
+    const results = Object.fromEntries(await Promise.all(keys.map(async (key) => [key, await check(key)] as const)));
+    setLive((current) => ({ ...current, ...results }));
     setChecking((current) => {
       const next = new Set(current);
       for (const key of keys) next.delete(key);
       return next;
     });
-    return Object.fromEntries(results);
-  }, [reportMemory]);
+    // Store what the page saw, so the badge, the issue and the Cockpit count the same.
+    const report = reportableStatuses(results);
+    if (Object.keys(report).length) {
+      try {
+        await sharedRequest(`report|${company}|${Object.keys(report).sort().join(",")}`, () => reportAction({ statuses: report }), fresh);
+      } catch {
+        // The plugins' hourly pushes catch up.
+      }
+    }
+    // Company wiki reported inside its check; either way the badge may have moved.
+    if (Object.values(results).some((result) => result?.ok)) setupChanged();
+    return results;
+  }, [reportMemory, reportAction]);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (fresh = true) => {
     if (!companyId) return;
     const mine = ++token.current;
     setLoading(true);
     setError(null);
     try {
-      const plugins = await fetchInstalledPlugins().catch(() => null);
-      const report = plugins ? Object.fromEntries(Object.values(plugins).map((p) => [p.pluginKey, { id: p.id, status: p.status }])) : undefined;
-      const result = (await loadAction(report ? { installed: report } : {})) as LoadResult;
+      const { plugins, result } = await sharedRequest(`load|${companyId}`, async () => {
+        const plugins = await fetchInstalledPlugins().catch(() => null);
+        const report = plugins ? Object.fromEntries(Object.values(plugins).map((p) => [p.pluginKey, { id: p.id, status: p.status }])) : undefined;
+        const result = (await loadAction(report ? { installed: report } : {})) as LoadResult;
+        return { plugins, result };
+      }, fresh);
       if (mine !== token.current) return;
       setInstalled(plugins);
       setLoad(result);
@@ -139,7 +216,7 @@ export function useSetupData(companyId: string | null | undefined, options: { li
         const keys = ORDERED_MODULES.filter((module) => enabled[module])
           .flatMap((module) => [...MODULES[module].plugins] as string[])
           .filter((key) => !plugins || plugins[key]?.status === "ready");
-        await checkPlugins(keys, companyId);
+        await checkPlugins(keys, companyId, fresh);
       }
     } catch (err) {
       if (mine !== token.current) return;
@@ -151,16 +228,17 @@ export function useSetupData(companyId: string | null | undefined, options: { li
   useEffect(() => {
     setLoad(null);
     setLive({});
-    void reload();
+    // A second mount within a few seconds (StrictMode, widget + page) reuses the same requests.
+    void reload(false);
   }, [companyId]);
 
   const recheck = useCallback(async (pluginKey: string) => {
     if (!companyId) return null;
-    const results = await checkPlugins([pluginKey], companyId);
+    const results = await checkPlugins([pluginKey], companyId, true);
     const result = results?.[pluginKey];
     return result?.ok ? result.status : null;
   }, [companyId, checkPlugins]);
 
   const views = load ? resolveModuleViews({ modules: load.modules, installed, live, stored: load.statuses }) : [];
-  return { loading, error, load, installed, views, checking, reload, recheck };
+  return { loading, error, load, installed, views, checking, reload: () => reload(true), recheck };
 }

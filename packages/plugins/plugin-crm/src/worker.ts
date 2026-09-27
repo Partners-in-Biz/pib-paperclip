@@ -1,4 +1,3 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
 import { randomUUID } from "node:crypto";
 import {
   definePlugin,
@@ -10,8 +9,41 @@ import {
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
+import {
+  clientScopeFromInput,
+  COCKPIT_ROUTE,
+  createSkillSyncer,
+  createWorkIssue,
+  isModuleEnabled,
+  linkAgent,
+  MAIL_EVENTS,
+  normalizeToolResult,
+  PIB_PLUGINS,
+  pluginEvent,
+  publishCockpitSnapshot,
+  readConfig,
+  registerHireWatch,
+  registerModuleWatch,
+  registerRoleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
+  startHire,
+  trackJob,
+  unlinkAgent,
+  type ClientRef,
+} from "@partnersinbiz/pib-plugin-kit";
+import {
+  accountManager,
+  ACCOUNT_MANAGER_ROLE,
+  hireOptions,
+  hireView,
+  onAccountManagerLinked,
+  tryLinkAccountManager,
+  wireAgent,
+} from "./agent.js";
 import { asRecord, asStringList, table } from "./db.js";
 import {
+  contactCompanyLinks,
   defineField,
   dueEnrollments,
   enrollmentByIssue,
@@ -23,6 +55,7 @@ import {
   listSavedViews,
   mergeContacts,
   enrollmentsForContact,
+  enrollmentsForSequence,
   ensurePipeline,
   getAccount,
   getContact,
@@ -60,7 +93,6 @@ import {
   saveEnrollment,
   stageKind,
   stopEnrollmentsForContact,
-  enrollmentById,
   sequenceDelivery,
   sequenceEmailApproved,
   recordDates,
@@ -69,25 +101,25 @@ import { crmSeries } from "./series.js";
 import {
   advanceEnrollment,
   applyFieldPatch,
+  assertActivityKind,
   assertCanEmail,
   assertDelivery,
   assertAmountMinor,
   assertCurrency,
+  assertFieldType,
   assertMergeTargets,
   assertProductName,
   forecastPipeline,
-  assertViewName,
   createSavedView,
-  isDuplicatePair,
   normalizeEmail,
   parseCsv,
+  personalize,
   toCsv,
   assertLifecycle,
   assertNextAction,
   assertPrincipalType,
   assertRecordType,
   assertSharePrincipal,
-  canCompleteStep,
   canSeeRecord,
   columnKeysFor,
   createAccount,
@@ -95,18 +127,19 @@ import {
   createDealProduct,
   createProduct,
   CrmError,
+  EMAIL_STATUSES,
   scoreBand,
   scoreContact,
   linkContact,
   LOCAL_BOARD_USER_ID,
   requireVisible,
   sequenceIssueCopy,
-  stageStopsEnrollments,
   startEnrollment,
   type AccountDraft,
   type CompletionMode,
   type ContactDraft,
   type DealDraft,
+  type EmailStatus,
   type ProductDraft,
   type RecordType,
   type SequenceStepDraft,
@@ -116,27 +149,39 @@ import { PLUGIN_ID } from "./namespace.js";
 import { CRM_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
-import {
-  clientScopeFromInput,
-  COCKPIT_ROUTE,
-  createSkillSyncer,
-  createWorkIssue,
-  isModuleEnabled,
-  MAIL_EVENTS,
-  PIB_PLUGINS,
-  pluginEvent,
-  readConfig,
-  registerModuleWatch,
-  registerRoleWatch,
-  rememberPluginUiBase,
-  SETUP_STATUS_ROUTE,
-  trackJob,
-  type ClientRef,
-} from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
-import { LEAD_EVENTS, onLeadCaptured } from "./leads.js";
-import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
 import {
+  deleteCompanyRecord,
+  INVOICE_PAID_EVENT,
+  moveDealTo,
+  moveToWonWith,
+  onDealWon,
+  onContactSuppressed,
+  onInvoicePaid,
+  onQuoteAccepted,
+  QUOTE_ACCEPTED_EVENT,
+  reemitHandoffs,
+  setEmailStatus,
+  SUPPRESSION_EVENTS,
+} from "./handoffs.js";
+import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
+import {
+  findRecords,
+  getClientProfileTool,
+  getCompany as getCompanyTool,
+  getContact as getContactTool,
+  listDealsTool,
+  listSequencesTool,
+  listStagesTool,
+  pickProfile,
+  updateClientProfile,
+} from "./lookup.js";
+import { companyPrefix, crmLink, refOf } from "./refs.js";
+import { contactAssignee } from "./mail.js";
+import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
+import { getClientProfile, handoffCompanies, heldLeadStats, listClientLeads } from "./store.js";
+import {
+  ensureApprovalOpen,
   onApprovalIssue,
   onMailReceived,
   onSendResult,
@@ -150,6 +195,9 @@ import { jevConfigFor } from "./jev.js";
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+
+/** Syncs the CRM skills for a company (always resolves; failures are logged by the kit). */
+const syncSkills = async (companyId: string) => (skillSync ? skillSync.force(companyId) : []);
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -175,16 +223,22 @@ const plugin = definePlugin({
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);
+      if (context.companyId && context.actor.type === "user") await tryLinkAccountManager(ctx, context.companyId, syncSkills);
       return load(ctx, context);
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
+    registerAction("crm.delete-company", (params, context) => deleteCompanyAction(ctx, context, params));
     registerAction("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
     registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
+    registerAction("crm.set-email-status", (params, context) => emailStatusAction(ctx, context, params));
+    registerAction("crm.update-client-profile", async (params, context) => updateClientProfile(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.link-contact", (params, context) => linkAction(ctx, context, params));
     registerAction("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
     registerAction("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
+    registerAction("crm.update-deal", async (params, context) => updateDealRecord(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.sequence-detail", async (params, context) => sequenceDetail(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.log-activity", (params, context) => activityAction(ctx, context, params));
     registerAction("crm.share-record", (params, context) => shareAction(ctx, context, params));
     registerAction("crm.set-human-owned", (params, context) => humanOwnedAction(ctx, context, params));
@@ -198,11 +252,63 @@ const plugin = definePlugin({
     registerAction("crm.sync-skills", (_params, context) => syncSkillsAction(ctx, context));
     registerAction("crm.settings-status", (_params, context) => settingsStatusAction(ctx, context));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
+
+    // The Account Manager (Setup → Team calls these; kit TEAM_ROLES "account-manager").
+    registerAction("crm.hire-options", async (_params, context) => {
+      requireUser(context, "hire the Account Manager");
+      return hireOptions(ctx, requireCompany(context));
+    });
+    registerAction("crm.start-hire", async (params, context) => {
+      const userId = requireUser(context, "hire the Account Manager");
+      return {
+        hire: await startHire(ctx, requireCompany(context), ACCOUNT_MANAGER_ROLE, {
+          title: optionalString(params, "title"),
+          description: optionalString(params, "description"),
+          assigneeAgentId: optionalString(params, "assigneeAgentId") ?? null,
+          assigneeUserId: optionalString(params, "assigneeUserId") ?? null,
+          actorUserId: userId,
+        }),
+      };
+    });
+    registerAction("crm.link-agent", async (params, context) => {
+      const userId = requireUser(context, "link the Account Manager");
+      const companyId = requireCompany(context);
+      let wired: Awaited<ReturnType<typeof wireAgent>> | null = null;
+      const { agent, steps } = await linkAgent(ctx, companyId, ACCOUNT_MANAGER_ROLE, requiredString(params, "agentId"), {
+        by: "manual",
+        userId,
+        onLinked: async (c, agentId, by) => {
+          wired = await wireAgent(ctx, c, agentId, by.userId, syncSkills);
+          return wired.steps;
+        },
+      });
+      return { agent, steps, instructions: (wired as { instructions?: string[] } | null)?.instructions ?? [] };
+    });
+    registerAction("crm.unlink-agent", async (_params, context) => {
+      requireUser(context, "unlink the Account Manager");
+      await unlinkAgent(ctx, requireCompany(context), ACCOUNT_MANAGER_ROLE);
+      return { ok: true };
+    });
+    registerAction("crm.resync-agent", async (_params, context) => {
+      const userId = requireUser(context, "re-sync the Account Manager");
+      const companyId = requireCompany(context);
+      const agent = await accountManager(ctx, companyId);
+      if (!agent) throw new CrmError("No Account Manager is linked yet. Hire one or pick an agent you already have in Setup → Team.");
+      return wireAgent(ctx, companyId, agent.id, userId, syncSkills);
+    });
+    registerHireWatch(ctx, [{ role: ACCOUNT_MANAGER_ROLE, onLinked: onAccountManagerLinked(ctx, syncSkills) }]);
+
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
       await trackJob(ctx, "redeliver-mail", async () => {
         const result = await redeliverMail(ctx);
         if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
+      });
+    });
+    ctx.jobs.register("held-leads", async () => {
+      await trackJob(ctx, "held-leads", async () => {
+        const result = await processHeldLeads(ctx);
+        if (result.processed || result.failed) ctx.logger.info("CRM held leads", result);
       });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
@@ -215,12 +321,27 @@ const plugin = definePlugin({
     ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
+        await linkPendingHires(ctx);
+        await reemitAllHandoffs(ctx);
         await publishAllSetupStatus(ctx);
         await publishAllCockpit(ctx);
       });
     });
     // Leads handed over by Social (inbox intent) and the Mailbox (mail triaged as a lead).
-    for (const eventType of LEAD_EVENTS) ctx.events.on(eventType, (event) => onLeadCaptured(ctx, event));
+    for (const eventType of LEAD_EVENTS) {
+      ctx.events.on(eventType, (event) => onLeadCaptured(ctx, event, async (companyId) => publishCockpitSnapshot(ctx, companyId, await cockpitSnapshot(ctx, companyId))));
+    }
+    // Sales hand-offs from Billing, and opt-outs from Campaigns and the Mailbox.
+    // Both can make a client a customer: share the new lifecycle with the other modules at once.
+    ctx.events.on(QUOTE_ACCEPTED_EVENT, async (event) => {
+      await onQuoteAccepted(ctx, event, moveToWonWith(ctx));
+      if (event.companyId) await afterMutation(ctx, event.companyId, "quote.accepted", {});
+    });
+    ctx.events.on(INVOICE_PAID_EVENT, async (event) => {
+      await onInvoicePaid(ctx, event);
+      if (event.companyId) await afterMutation(ctx, event.companyId, "invoice.paid", {});
+    });
+    for (const eventType of SUPPRESSION_EVENTS) ctx.events.on(eventType, (event) => onContactSuppressed(ctx, event));
     ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
@@ -249,6 +370,45 @@ const plugin = definePlugin({
 export default plugin;
 runWorker(plugin, import.meta.url);
 
+/** Hourly: link hires that appeared (agent events are at-most-once). */
+async function linkPendingHires(ctx: PluginContext): Promise<void> {
+  for (const companyId of await crmCompanyIds(ctx).catch(() => [] as string[])) {
+    if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
+    if (Object.keys(await readConfig(ctx, companyId).catch(() => ({}))).length === 0) continue;
+    await tryLinkAccountManager(ctx, companyId, syncSkills);
+  }
+}
+
+/** Hourly: re-send the last day's hand-offs (deal.won, contact.suppressed, deletes). */
+async function reemitAllHandoffs(ctx: PluginContext): Promise<void> {
+  for (const companyId of await handoffCompanies(ctx, 24).catch(() => [] as string[])) {
+    try {
+      if (Object.keys(await readConfig(ctx, companyId)).length === 0) continue;
+      await reemitHandoffs(ctx, companyId);
+    } catch (error) {
+      ctx.logger.info("CRM hand-off re-send skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+function requireCompany(context: PluginPerformActionContext): string {
+  if (!context.companyId) throw new CrmError("Open the CRM inside a company");
+  return context.companyId;
+}
+
+function requireUser(context: PluginPerformActionContext, what: string): string {
+  if (context.actor.type !== "user" || !context.actor.userId) throw new CrmError(`Only a board user can ${what}`);
+  return context.actor.userId;
+}
+
+/** Tools whose result is a company or contact record: agents get its ref and link too. */
+const RECORD_TOOLS: Record<string, "company" | "contact"> = {
+  "create-company": "company",
+  "update-company": "company",
+  "create-contact": "contact",
+  "update-contact": "contact",
+};
+
 async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
     const viewer = await viewerFor(ctx, {
@@ -259,12 +419,17 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     });
     const body = objectParams(params);
     await skillSync?.ensure(run.companyId).catch(() => undefined);
-    const data = await dispatch(ctx, viewer, name, body, "agent");
+    let data = await dispatch(ctx, viewer, name, body, "agent");
     if (CRM_MUTATIONS.has(name)) await afterMutation(ctx, run.companyId, name, body);
+    const kind = RECORD_TOOLS[name];
+    if (kind && data && typeof data === "object" && typeof (data as { id?: unknown }).id === "string") {
+      const id = (data as { id: string }).id;
+      data = { ref: refOf(kind, id), link: crmLink(await companyPrefix(ctx, run.companyId), kind, id), ...(data as Record<string, unknown>) };
+    }
     if (data && typeof data === "object" && "refused" in data && Array.isArray(data.refused) && data.refused.length > 0) {
       return { error: `Refused to overwrite human-owned fields: ${data.refused.join(", ")}`, data };
     }
-    return { content: toolContent(name, data), data };
+    return { content: toolContent(data), data };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "CRM tool failed" };
   }
@@ -294,6 +459,8 @@ async function dispatch(
       return createDeal(ctx, viewer, body);
     case "move-deal":
       return moveDeal(ctx, viewer, body);
+    case "update-deal":
+      return updateDealRecord(ctx, viewer, body, source);
     case "share-record":
       return shareRecord(ctx, viewer, body);
     case "define-field":
@@ -302,8 +469,6 @@ async function dispatch(
       return createSequence(ctx, viewer, body);
     case "enroll-contact":
       return enroll(ctx, viewer, body);
-    case "complete-step":
-      return completeStep(ctx, viewer, body);
     case "create-product":
       return createProductRecord(ctx, viewer, body);
     case "update-product":
@@ -338,6 +503,24 @@ async function dispatch(
       return listDealProductsRecord(ctx, viewer, body);
     case "set-sequence-delivery":
       return setSequenceDelivery(ctx, viewer, body);
+    case "find-records":
+      return findRecords(ctx, viewer, body);
+    case "get-company":
+      return getCompanyTool(ctx, viewer, body);
+    case "get-contact":
+      return getContactTool(ctx, viewer, body);
+    case "list-deals":
+      return listDealsTool(ctx, viewer, body);
+    case "list-stages":
+      return listStagesTool(ctx, viewer);
+    case "list-sequences":
+      return listSequencesTool(ctx, viewer);
+    case "get-client-profile":
+      return getClientProfileTool(ctx, viewer, body);
+    case "update-client-profile":
+      return updateClientProfile(ctx, viewer, body, source);
+    case "set-email-status":
+      return setEmailStatusRecord(ctx, viewer, body, source);
     default:
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
@@ -402,6 +585,10 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   }
 
   const settingsSaved = Object.keys(await readConfig(ctx, viewer.companyId).catch(() => ({}))).length > 0;
+  const [hire, held] = await Promise.all([
+    context.actor.type === "user" ? hireView(ctx, viewer.companyId, context.actor.userId ?? null).catch(() => null) : Promise.resolve(null),
+    heldLeadStats(ctx, viewer.companyId).catch(() => ({ count: 0, oldest: null })),
+  ]);
   const [dealDates, contactDates] = await Promise.all([
     recordDates(ctx, "deals", visibleDeals.map((deal) => deal.id)).catch(() => []),
     recordDates(ctx, "contacts", visibleContacts.map((contact) => contact.id)).catch(() => []),
@@ -416,6 +603,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   });
   return {
     settingsSaved,
+    hire,
+    heldLeads: held.count,
     series,
     accounts: visibleAccounts,
     contacts: visibleContacts,
@@ -479,6 +668,36 @@ async function updateCompanyAction(ctx: PluginContext, context: PluginPerformAct
 
 async function updateContactAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   return updateContact(ctx, await actionViewer(ctx, context), params, actionSource(context));
+}
+
+/** A person deletes a company (its people and deals stay). Emits `company.deleted`. */
+async function deleteCompanyAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  requireUser(context, "delete a company");
+  const viewer = await actionViewer(ctx, context);
+  const account = await requireAccount(ctx, viewer, companyIdOf(params));
+  if (account.companyId !== viewer.companyId) throw new CrmError("Only this workspace's own companies can be deleted");
+  if (params.confirm !== account.name && params.confirm !== true) throw new CrmError("Confirm the delete with the company's name");
+  return deleteCompanyRecord(ctx, viewer.companyId, account);
+}
+
+async function emailStatusAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  return setEmailStatusRecord(ctx, await actionViewer(ctx, context), params, actionSource(context));
+}
+
+/** Agents may only suppress (unsubscribed or bounced); only a person allows email again. */
+async function setEmailStatusRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
+  const status = requiredString(params, "status") as EmailStatus;
+  if (!(EMAIL_STATUSES as readonly string[]).includes(status)) throw new CrmError("status must be ok, unsubscribed or bounced");
+  if (status === "ok" && source !== "human") throw new CrmError("Only a person can allow email to a contact again");
+  const result = await setEmailStatus(ctx, contact, status, { source, note: optionalString(params, "note") ?? null });
+  return {
+    ...result,
+    contact: refOf("contact", contact.id),
+    message: status === "ok"
+      ? "Email allowed again in the CRM. Campaigns and the Mailbox keep their own opt-out lists."
+      : "Sequences stopped. Campaigns and the Mailbox were told not to send marketing email to this address.",
+  };
 }
 
 async function clientWorkspaceAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -548,12 +767,18 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       accountId: deal.accountId,
     }));
 
-  const activities = await listActivities(ctx, ref.kind, ref.id, 50);
+  const [activities, profileRecord, clientLeads] = await Promise.all([
+    listActivities(ctx, ref.kind, ref.id, 50),
+    getClientProfile(ctx, viewer.companyId, ref.kind, ref.id).catch(() => null),
+    listClientLeads(ctx, viewer.companyId, ref.kind, ref.id, 20).catch(() => []),
+  ]);
   return {
     ...base,
     found: true as const,
     company: account,
     contact,
+    profile: profileRecord ? { ...pickProfile(profileRecord), humanOwned: profileRecord.humanOwned, updatedAt: profileRecord.updatedAt } : null,
+    clientLeads,
     contacts,
     companies,
     deals,
@@ -663,7 +888,7 @@ async function updateProductRecord(ctx: PluginContext, viewer: Viewer, params: R
 }
 
 async function scoreContactRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
   const engagement = await contactEngagement(ctx, contact.id);
   const score = scoreContact({
     lifecycle: contact.lifecycle,
@@ -683,7 +908,7 @@ async function scoreContactRecord(ctx: PluginContext, viewer: Viewer, params: Re
     ...score,
     band: scoreBand(score.total),
     jev,
-    ...(jev ? {} : { jevNote: jevReady ? "Jev did not answer; showing the rule score only." : "Jev is not set up; showing the rule score only." }),
+    ...(jev ? {} : { jevNote: jevReady ? "Smart sorting did not answer; showing the rule score only." : "Smart sorting is not set up; showing the rule score only." }),
   };
 }
 
@@ -712,8 +937,8 @@ async function findDuplicates(ctx: PluginContext, viewer: Viewer) {
 }
 
 async function mergeContactsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const primaryId = requiredString(params, "primaryContactId");
-  const duplicateId = requiredString(params, "duplicateContactId");
+  const primaryId = contactIdOf(params, "primaryContactId");
+  const duplicateId = contactIdOf(params, "duplicateContactId");
   assertMergeTargets(primaryId, duplicateId);
   const primary = await requireContact(ctx, viewer, primaryId);
   const duplicate = await requireContact(ctx, viewer, duplicateId);
@@ -760,17 +985,23 @@ async function deleteSavedViewRecord(ctx: PluginContext, viewer: Viewer, params:
   return { deleted: true, viewId: id };
 }
 
+const EXPORT_COLUMNS = ["id", "ref", "name", "emails", "phones", "lifecycle", "email_status", "tags", "companies"];
+
 async function exportContacts(ctx: PluginContext, viewer: Viewer) {
-  const contacts = await listContacts(ctx, viewer.companyId);
-  const visible = contacts.filter((contact) => canSeeRecord(viewer, contact, []));
+  const [contacts, links, grants] = await Promise.all([listContacts(ctx, viewer.companyId), listLinks(ctx, viewer.companyId), grantsFor(ctx, "contact", viewer.companyId)]);
+  const visible = contacts.filter((contact) => canSeeRecord(viewer, contact, grants.get(contact.id) ?? []));
   const rows = visible.map((contact) => ({
+    id: contact.id,
+    ref: refOf("contact", contact.id),
     name: contact.name,
     emails: contact.emails.join(";"),
     phones: contact.phones.join(";"),
     lifecycle: contact.lifecycle,
+    email_status: contact.emailStatus ?? "ok",
     tags: contact.tags.join(";"),
+    companies: links.filter((link) => link.contactId === contact.id).map((link) => refOf("company", link.accountId)).join(";"),
   }));
-  return { csv: toCsv(["name", "emails", "phones", "lifecycle", "tags"], rows), count: rows.length };
+  return { csv: toCsv(EXPORT_COLUMNS, rows), count: rows.length, columns: EXPORT_COLUMNS };
 }
 
 async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -812,14 +1043,14 @@ function splitList(value: string | undefined): string[] {
 
 async function fieldHistory(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const recordType = assertRecordType(requiredString(params, "recordType"));
-  const recordId = requiredString(params, "recordId");
+  const recordId = recordIdOf(params, recordType);
   await requireRecord(ctx, viewer, recordType, recordId);
   const facts = await listFacts(ctx, recordType, recordId);
   return { recordType, recordId, facts };
 }
 
 async function bulkTagContacts(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const contactIds = stringList(params, "contactIds") ?? [];
+  const contactIds = (stringList(params, "contactIds") ?? []).map((id) => idOf(id, "contact"));
   const tags = stringList(params, "tags") ?? [];
   const action = requiredString(params, "action");
   if (action !== "add" && action !== "remove") throw new CrmError("Action must be add or remove");
@@ -842,7 +1073,7 @@ async function bulkTagContacts(ctx: PluginContext, viewer: Viewer, params: Recor
 }
 
 async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
   const links = (await listLinks(ctx, viewer.companyId)).filter((link) => link.contactId === contact.id);
   const accounts = [];
   for (const link of links) {
@@ -852,7 +1083,7 @@ async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<s
   const deals = (await listDeals(ctx, viewer.companyId)).filter((deal) => deal.contactId === contact.id);
   const activities = await listActivities(ctx, "contact", contact.id, 20);
   return {
-    contact: { id: contact.id, name: contact.name, lifecycle: contact.lifecycle, tags: contact.tags },
+    contact: { ref: refOf("contact", contact.id), id: contact.id, name: contact.name, lifecycle: contact.lifecycle, tags: contact.tags },
     companies: accounts,
     deals: deals.map((deal) => ({ id: deal.id, title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency })),
     activities,
@@ -872,6 +1103,7 @@ async function pipelineForecast(ctx: PluginContext, viewer: Viewer) {
 
 async function addDealProduct(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
+  if (params.quantity != null && (!Number.isInteger(params.quantity) || Number(params.quantity) < 1)) throw new CrmError("quantity must be a whole number of at least 1");
   const product = await requireProduct(ctx, viewer, requiredString(params, "productId"));
   const line = createDealProduct({
     companyId: viewer.companyId,
@@ -919,7 +1151,8 @@ async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<
 }
 
 async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
-  const account = await requireAccount(ctx, viewer, requiredString(params, "companyRecordId"));
+  const account = await requireAccount(ctx, viewer, companyIdOf(params));
+  const lifecycleBefore = account.lifecycle;
   const result = applyFieldPatch({
     columns: {
       name: account.name,
@@ -943,7 +1176,21 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   account.custom = result.custom;
   await saveAccount(ctx, account);
   await insertFacts(ctx, account.companyId, "company", account.id, result.facts);
+  if (account.lifecycle === "churned" && lifecycleBefore !== "churned") await offboardCompany(ctx, account);
   return { ...account, refused: result.refused };
+}
+
+/** A company became churned: its people's running sequences stop, and it is logged. */
+async function offboardCompany(ctx: PluginContext, account: AccountDraft): Promise<void> {
+  const people = (await listLinks(ctx, account.companyId)).filter((link) => link.accountId === account.id);
+  for (const link of people) await stopEnrollmentsForContact(ctx, account.companyId, link.contactId);
+  await insertActivity(ctx, {
+    companyId: account.companyId,
+    recordType: "company",
+    recordId: account.id,
+    kind: "note",
+    body: `Lifecycle set to churned: stopped the sequences of ${people.length} ${people.length === 1 ? "person" : "people"}.`,
+  }).catch(() => undefined);
 }
 
 async function createContactRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -966,7 +1213,8 @@ async function createContactRecord(ctx: PluginContext, viewer: Viewer, params: R
 }
 
 async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
-  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
+  const lifecycleBefore = contact.lifecycle;
   const result = applyFieldPatch({
     columns: {
       name: contact.name,
@@ -994,13 +1242,17 @@ async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<
   contact.custom = result.custom;
   await saveContact(ctx, contact);
   await insertFacts(ctx, contact.companyId, "contact", contact.id, result.facts);
+  if (contact.lifecycle === "churned" && lifecycleBefore !== "churned") {
+    await stopEnrollmentsForContact(ctx, contact.companyId, contact.id);
+    await insertActivity(ctx, { companyId: contact.companyId, recordType: "contact", recordId: contact.id, kind: "note", body: "Lifecycle set to churned: running sequences stopped." }).catch(() => undefined);
+  }
   scoreLeadLater(ctx, viewer.companyId, contact.id);
   return { ...contact, refused: result.refused };
 }
 
 async function linkRecords(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
-  const account = await requireAccount(ctx, viewer, requiredString(params, "companyRecordId"));
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
+  const account = await requireAccount(ctx, viewer, companyIdOf(params));
   if (contact.companyId !== viewer.companyId || account.companyId !== viewer.companyId) {
     throw new CrmError("Links stay inside this workspace");
   }
@@ -1011,28 +1263,29 @@ async function linkRecords(ctx: PluginContext, viewer: Viewer, params: Record<st
     roleLabel: optionalString(params, "roleLabel"),
   });
   await insertLink(ctx, link);
-  return link;
+  return { ...link, contact: refOf("contact", contact.id), company: refOf("company", account.id) };
 }
 
 async function logActivity(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const recordType = assertRecordType(requiredString(params, "recordType"));
-  const recordId = requiredString(params, "recordId");
+  const recordId = recordIdOf(params, recordType);
+  const kind = assertActivityKind(params.kind);
   await requireRecord(ctx, viewer, recordType, recordId);
   const id = await insertActivity(ctx, {
     companyId: viewer.companyId,
     recordType,
     recordId,
-    kind: optionalString(params, "kind") ?? "note",
+    kind,
     body: requiredString(params, "body"),
     issueId: optionalString(params, "issueId"),
   });
-  return { id };
+  return { id, recordType, recordId, kind };
 }
 
 async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const accountId = optionalString(params, "companyRecordId");
-  const contactId = optionalString(params, "contactId");
+  const accountId = optionalId(params, "companyRecordId", "company");
+  const contactId = optionalId(params, "contactId", "contact");
   if (accountId) await requireAccount(ctx, viewer, accountId);
   if (contactId) await requireContact(ctx, viewer, contactId);
   const deal: DealDraft = {
@@ -1054,29 +1307,156 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
     humanOwned: [],
   };
   await insertDeal(ctx, deal);
-  return deal;
+  return { ...deal, client: deal.accountId ? refOf("company", deal.accountId) : deal.contactId ? refOf("contact", deal.contactId) : null };
 }
 
-async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, how = "in the CRM") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
-  const stage = await getStage(ctx, requiredString(params, "stageId"));
-  if (!stage || stage.company_id !== deal.companyId) throw new CrmError("Stage was not found");
-  const moved = deal.stageId !== stage.id;
-  deal.stageId = stage.id;
-  await saveDeal(ctx, deal);
-  if (moved) {
-    // Recorded for the deal's history and the Cockpit's activity list; never fails the move.
-    await insertActivity(ctx, { companyId: deal.companyId, recordType: "deal", recordId: deal.id, kind: "deal_moved", body: `Moved to ${stage.name}` }).catch(() => undefined);
+  const stage = await resolveStage(ctx, deal, requiredString(params, "stageId"));
+  const moved = await moveDealTo(ctx, deal, stage, how);
+  return {
+    ...moved.deal,
+    stageName: stage.name,
+    stageKind: moved.stageKind,
+    ...(moved.won ? { won: moved.won, next: moved.won.firstWin ? "First win: the Cockpit opens onboarding. Fill the client profile (update-client-profile)." : "Won: Billing opens its drafting task." } : {}),
+  };
+}
+
+/** `""` or null clears a link; a value is the id (or `company:<id>` / `contact:<id>`). */
+function linkParam(params: Record<string, unknown>, key: string, kind: "company" | "contact"): string | null | undefined {
+  if (!(key in params)) return undefined;
+  const value = params[key];
+  if (value == null || (typeof value === "string" && value.trim() === "")) return null;
+  if (typeof value !== "string") throw new CrmError(`${key} must be a string`);
+  return idOf(value.trim(), kind);
+}
+
+/**
+ * Title, value and currency, who the deal is for (its company and contact),
+ * and its stage. A stage change is a move (won and lost do what move-deal
+ * does). Fields a person locked keep their value when an agent writes.
+ */
+async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
+  const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
+  const result = applyFieldPatch({
+    columns: { title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency },
+    custom: deal.custom,
+    humanOwned: deal.humanOwned,
+    columnKeys: columnKeysFor("deal"),
+    patch: patchFrom(params, ["title", "amountMinor", "currency"]),
+    source,
+  });
+  const next: DealDraft = { ...deal, custom: result.custom };
+  const title = String(result.columns.title ?? "").trim();
+  if (!title) throw new CrmError("Deal title is required");
+  next.title = title;
+  next.amountMinor = assertAmountMinor(result.columns.amountMinor ?? 0);
+  next.currency = assertCurrency(String(result.columns.currency ?? deal.currency));
+
+  const facts = [...result.facts];
+  const accountId = linkParam(params, "companyRecordId", "company");
+  if (accountId !== undefined && accountId !== deal.accountId) {
+    if (accountId) {
+      const account = await requireAccount(ctx, viewer, accountId);
+      if (account.companyId !== deal.companyId) throw new CrmError("Links stay inside this workspace");
+    }
+    next.accountId = accountId;
+    facts.push({ fieldKey: "companyRecordId", value: accountId, source, refused: false });
   }
-  if (stageStopsEnrollments(stageKind(stage.kind)) && deal.contactId) {
-    await stopEnrollmentsForContact(ctx, deal.companyId, deal.contactId);
+  const contactId = linkParam(params, "contactId", "contact");
+  if (contactId !== undefined && contactId !== deal.contactId) {
+    if (contactId) {
+      const contact = await requireContact(ctx, viewer, contactId);
+      if (contact.companyId !== deal.companyId) throw new CrmError("Links stay inside this workspace");
+    }
+    next.contactId = contactId;
+    facts.push({ fieldKey: "contactId", value: contactId, source, refused: false });
   }
-  return { ...deal, stageKind: stage.kind };
+
+  const how = source === "human" ? "in the CRM" : "by an agent in the CRM";
+  const stageValue = optionalString(params, "stageId");
+  const stage = stageValue ? await resolveStage(ctx, next, stageValue) : null;
+  let won: Awaited<ReturnType<typeof onDealWon>> | null = null;
+  let saved = next;
+  if (stage && stage.id !== deal.stageId) {
+    // The move saves every field above too, then runs the won / lost effects.
+    const moved = await moveDealTo(ctx, next, stage, how);
+    saved = moved.deal;
+    won = moved.won;
+  } else {
+    await saveDeal(ctx, next);
+    // A deal won without a client could not make anyone a customer or tell Billing: linking its client now does.
+    const hadClient = Boolean(deal.accountId || deal.contactId);
+    const isWon = stageKind((await listStages(ctx, deal.pipelineId).catch(() => [])).find((row) => row.id === next.stageId)?.kind ?? "open") === "won";
+    if (isWon && !hadClient && (next.accountId || next.contactId)) won = await onDealWon(ctx, next, `${how}, when its client was linked`);
+  }
+  await insertFacts(ctx, deal.companyId, "deal", deal.id, facts);
+  const stages = await listStages(ctx, saved.pipelineId).catch(() => []);
+  const current = stages.find((row) => row.id === saved.stageId);
+  return {
+    ...saved,
+    stageName: current?.name ?? null,
+    stageKind: stageKind(current?.kind ?? "open"),
+    client: saved.accountId ? refOf("company", saved.accountId) : saved.contactId ? refOf("contact", saved.contactId) : null,
+    refused: result.refused,
+    ...(won ? { won, next: won.issueId ? "Won, but it still has no client: link one (companyRecordId or contactId)." : won.firstWin ? "First win: the Cockpit opens onboarding. Fill the client profile (update-client-profile)." : "Won: Billing opens its drafting task." } : {}),
+  };
+}
+
+/** One sequence for its drawer: steps in order and who is enrolled (people this viewer may see). */
+async function sequenceDetail(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const sequence = await getSequence(ctx, requiredString(params, "sequenceId"));
+  if (!sequence || sequence.company_id !== viewer.companyId) throw new CrmError("Sequence was not found");
+  const [steps, enrollments, records] = await Promise.all([
+    listSteps(ctx, sequence.id),
+    enrollmentsForSequence(ctx, viewer.companyId, sequence.id),
+    visibleRecords(ctx, viewer),
+  ]);
+  const names = new Map(records.visibleContacts.map((row) => [row.id, row.name]));
+  const mine = enrollments.filter((row) => row.sequenceId === sequence.id);
+  const enrolled = mine
+    .filter((row) => names.has(row.contactId))
+    .map((row) => ({
+      contactId: row.contactId,
+      name: names.get(row.contactId)!,
+      status: row.status,
+      stepPosition: row.stepPosition,
+      nextDueAt: row.nextDueAt,
+      // A due step waits on its issue (done by a person or agent) or on the Mailbox sending it.
+      issueId: row.openIssueId,
+      sending: Boolean(row.sendingKey),
+    }));
+  return {
+    id: sequence.id,
+    name: sequence.name,
+    delivery: sequenceDelivery(sequence),
+    emailApproved: sequenceEmailApproved(sequence),
+    completionMode: completionModeOf(sequence.completion_mode),
+    steps: steps.map((step) => ({ position: step.position, delayMinutes: step.delayMinutes, title: step.title, body: step.body })),
+    enrolled,
+    hidden: mine.length - enrolled.length,
+  };
+}
+
+/** A stage by id, by name (case-insensitive) or by the words won / lost. */
+async function resolveStage(ctx: PluginContext, deal: DealDraft, value: string) {
+  const byId = await getStage(ctx, value);
+  if (byId) {
+    if (byId.company_id !== deal.companyId) throw new CrmError("Stage was not found");
+    return byId;
+  }
+  const stages = await listStages(ctx, deal.pipelineId);
+  const lower = value.trim().toLowerCase();
+  const byName = stages.find((stage) => stage.name.toLowerCase() === lower);
+  if (byName) return byName;
+  const byKind = lower === "won" || lower === "lost" ? stages.find((stage) => stageKind(stage.kind) === lower) : null;
+  if (byKind) return byKind;
+  throw new CrmError(`No stage ${value}. Stages: ${stages.map((stage) => stage.name).join(", ")} (list-stages has their ids).`);
 }
 
 async function shareRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const recordType = assertRecordType(requiredString(params, "recordType"));
-  const recordId = requiredString(params, "recordId");
+  const recordId = recordIdOf(params, recordType);
   const principalType = assertPrincipalType(requiredString(params, "principalType"));
   assertSharePrincipal(principalType);
   const record = await requireRecord(ctx, viewer, recordType, recordId);
@@ -1099,9 +1479,9 @@ async function defineRecordField(ctx: PluginContext, viewer: Viewer, params: Rec
     recordType: assertRecordType(requiredString(params, "recordType")),
     fieldKey,
     label: requiredString(params, "label"),
-    fieldType: optionalString(params, "fieldType") ?? "text",
+    fieldType: assertFieldType(params.fieldType),
   });
-  return { fieldKey };
+  return { fieldKey, fieldType: assertFieldType(params.fieldType), next: "Values go in custom on create or update, e.g. custom: { \"" + fieldKey + "\": ... }." };
 }
 
 async function createSequence(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -1139,7 +1519,7 @@ async function setSequenceDelivery(ctx: PluginContext, viewer: Viewer, params: R
 }
 
 async function enroll(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const contact = await requireContact(ctx, viewer, requiredString(params, "contactId"));
+  const contact = await requireContact(ctx, viewer, contactIdOf(params));
   const sequence = await getSequence(ctx, requiredString(params, "sequenceId"));
   if (!sequence || sequence.company_id !== viewer.companyId) throw new CrmError("Sequence was not found");
   if (sequenceDelivery(sequence) === "email") assertCanEmail(contact.emailStatus);
@@ -1157,29 +1537,12 @@ async function enroll(ctx: PluginContext, viewer: Viewer, params: Record<string,
   return enrollment;
 }
 
-async function completeStep(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const enrollment = await enrollmentById(ctx, requiredString(params, "enrollmentId"));
-  if (!enrollment || enrollment.companyId !== viewer.companyId) throw new CrmError("Enrollment was not found");
-  if (enrollment.status !== "running") throw new CrmError("Enrollment is not running");
-  await requireContact(ctx, viewer, enrollment.contactId);
-  const sequence = await getSequence(ctx, enrollment.sequenceId);
-  if (!sequence) throw new CrmError("Sequence was not found");
-  const mode = completionModeOf(sequence.completion_mode);
-  const issue = enrollment.openIssueId ? await ctx.issues.get(enrollment.openIssueId, viewer.companyId) : null;
-  if (!canCompleteStep({ completionMode: mode, issueStatus: issue?.status ?? null, sentConfirmed: params.sentConfirmed === true })) {
-    throw new CrmError(mode === "manual" ? "The sequence issue is not done yet" : "Confirm the message was sent before completing this step");
-  }
-  const steps = await listSteps(ctx, enrollment.sequenceId);
-  const next = advanceEnrollment(enrollment, steps, new Date());
-  await saveEnrollment(ctx, next);
-  return next;
-}
-
 async function openDueSteps(ctx: PluginContext) {
   const due = await dueEnrollments(ctx);
-  const assigneeModeByCompany = new Map<string, string>();
   const sequences = new Map<string, Promise<Awaited<ReturnType<typeof getSequence>>>>();
   const enabled = new Map<string, Promise<boolean>>();
+  const prefixes = new Map<string, Promise<string | null>>();
+  const approvalsChecked = new Set<string>();
   for (const enrollment of due) {
     try {
       if (!enabled.has(enrollment.companyId)) enabled.set(enrollment.companyId, isModuleEnabled(ctx, enrollment.companyId, PLUGIN_ID));
@@ -1188,12 +1551,19 @@ async function openDueSteps(ctx: PluginContext) {
       const step = steps.find((item) => item.position === enrollment.stepPosition);
       const contact = await getContact(ctx, enrollment.contactId);
       if (!step || !contact) continue;
-      if (!assigneeModeByCompany.has(enrollment.companyId)) {
-        const config = await readConfig(ctx, enrollment.companyId);
-        assigneeModeByCompany.set(enrollment.companyId, String(config.sequenceIssueAssignee ?? "contact"));
-      }
-      const assignToContact = assigneeModeByCompany.get(enrollment.companyId) !== "none";
-      const copy = sequenceIssueCopy(contact.name, step);
+      if (!sequences.has(enrollment.sequenceId)) sequences.set(enrollment.sequenceId, getSequence(ctx, enrollment.sequenceId));
+      const sequence = await sequences.get(enrollment.sequenceId)!;
+      if (!prefixes.has(enrollment.companyId)) prefixes.set(enrollment.companyId, companyPrefix(ctx, enrollment.companyId));
+      const prefix = await prefixes.get(enrollment.companyId)!;
+      const company = await contactCompanyName(ctx, contact.id);
+      const copy = sequenceIssueCopy(contact.name, step, {
+        contactId: contact.id,
+        sequenceName: sequence?.name ?? "Sequence",
+        stepCount: steps.length,
+        completionMode: completionModeOf(sequence?.completion_mode),
+        body: personalize(step.body, { name: contact.name, email: contact.emails[0] ?? null, company }),
+        link: crmLink(prefix, "contact", contact.id),
+      });
       // Explicit companyId: jobs have no invocation scope, and the host only
       // allows a job's call for a company that has saved CRM settings.
       const openIssue = async (note?: string) => {
@@ -1203,21 +1573,21 @@ async function openDueSteps(ctx: PluginContext) {
           description: note ? `${note}\n\n${copy.description}` : copy.description,
           originKind: "plugin:partnersinbiz.crm",
           originId: enrollment.id,
-          ...(assignToContact && contact.assigneeAgentId
-            ? { assigneeAgentId: contact.assigneeAgentId }
-            : assignToContact && contact.ownerUserId && contact.ownerUserId !== LOCAL_BOARD_USER_ID
-              ? { assigneeUserId: contact.ownerUserId }
-              : {}),
+          ...(await contactAssignee(ctx, enrollment.companyId, contact)),
           wakeReason: "CRM sequence step is due",
         });
         enrollment.openIssueId = issue.id;
         await saveEnrollment(ctx, enrollment);
       };
-      if (!sequences.has(enrollment.sequenceId)) sequences.set(enrollment.sequenceId, getSequence(ctx, enrollment.sequenceId));
-      const sequence = await sequences.get(enrollment.sequenceId)!;
       if (sequence && sequenceDelivery(sequence) === "email") {
-        // Email waits until a board user has approved the sequence once.
-        if (!sequenceEmailApproved(sequence)) continue;
+        if (!sequenceEmailApproved(sequence)) {
+          // Waits for a person's approval, visibly: the Cockpit lists the approval with its due steps.
+          if (!approvalsChecked.has(sequence.id)) {
+            approvalsChecked.add(sequence.id);
+            await ensureApprovalOpen(ctx, enrollment.companyId, sequence);
+          }
+          continue;
+        }
         await sendSequenceStep(ctx, { enrollment, step, contact, issueFallback: (note) => openIssue(note) });
         continue;
       }
@@ -1230,6 +1600,11 @@ async function openDueSteps(ctx: PluginContext) {
       });
     }
   }
+}
+
+async function contactCompanyName(ctx: PluginContext, contactId: string): Promise<string | null> {
+  const links = await contactCompanyLinks(ctx, contactId).catch(() => []);
+  return links[0]?.name ?? null;
 }
 
 async function afterMutation(ctx: PluginContext, companyId: string, name: string, params: Record<string, unknown>) {
@@ -1322,8 +1697,9 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   if (!enrollment) return;
   const sequence = await getSequence(ctx, enrollment.sequenceId);
   if (!sequence) return;
-  // Email sequences hand a step to a person only when the email could not go out; done moves the contact on.
-  if (completionModeOf(sequence.completion_mode) !== "manual" && sequenceDelivery(sequence) !== "email") return;
+  // Marking a step's issue done moves the contact on, whatever the delivery: a
+  // manual step is done, a sent step's message went out (its issue says to mark
+  // it done only then), and an email step that could not be sent was handled by hand.
   const steps = await listSteps(ctx, enrollment.sequenceId);
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }
@@ -1440,6 +1816,30 @@ function requiredString(params: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
+/** Accepts a bare id or the ref form (`contact:<id>`, `company:<id>`). */
+function idOf(value: string, kind: "company" | "contact"): string {
+  const prefix = `${kind}:`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function contactIdOf(params: Record<string, unknown>, key = "contactId"): string {
+  return idOf(requiredString(params, key), "contact");
+}
+
+function companyIdOf(params: Record<string, unknown>, key = "companyRecordId"): string {
+  return idOf(requiredString(params, key), "company");
+}
+
+function optionalId(params: Record<string, unknown>, key: string, kind: "company" | "contact"): string | undefined {
+  const value = optionalString(params, key);
+  return value ? idOf(value, kind) : undefined;
+}
+
+function recordIdOf(params: Record<string, unknown>, recordType: RecordType): string {
+  const value = requiredString(params, "recordId");
+  return recordType === "deal" ? value : idOf(value, recordType);
+}
+
 function optionalString(params: Record<string, unknown>, key: string): string | undefined {
   const value = params[key];
   if (value == null || value === "") return undefined;
@@ -1503,8 +1903,8 @@ function stepsFrom(params: Record<string, unknown>): SequenceStepDraft[] {
   });
 }
 
-function toolContent(name: string, data: unknown): string {
-  if (data && typeof data === "object" && "name" in data && typeof data.name === "string") return `${name}: ${data.name}`;
-  if (data && typeof data === "object" && "title" in data && typeof data.title === "string") return `${name}: ${data.title}`;
-  return name;
+/** What the agent reads: the result as JSON (ids, refs, links), capped. `data` carries the same. */
+function toolContent(data: unknown): string {
+  const json = JSON.stringify(data ?? { ok: true });
+  return json.length <= 12_000 ? json : `${json.slice(0, 12_000)}… (truncated; the full result is in data)`;
 }

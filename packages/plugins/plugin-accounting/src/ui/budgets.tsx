@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, Field, Input, Section, Select } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Section, Select, formatDate, formatMoney, formatMonth } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
-import { centsToInput, Muted, rand, Row, small, Table, Td, toCents, useRunner } from "./shared.js";
+import { centsToInput, Muted, Row, small, Table, Td, toCents, useRunner } from "./shared.js";
 
 function addMonths(month: string, n: number): string {
   const [y, m] = month.split("-").map(Number) as [number, number];
@@ -78,9 +78,9 @@ export function BudgetsTab({ data, onMessage }: { data: LoadResult; onMessage: (
           </Row>
         }
       >
-        <Muted>Income and costs per month, in rand. Budget vs actual is under Reports.</Muted>
+        <Muted>What you expect to earn and spend per account each month, in rand. Compare them under Reports → Budget against actual.</Muted>
         <div style={{ overflowX: "auto" }}>
-          <Table head={["Account", ...budgetMonths.map((m) => ({ label: m, right: true }))]}>
+          <Table head={["Account", ...budgetMonths.map((m) => ({ label: formatMonth(m), right: true }))]}>
             {plAccounts.map((a) => (
               <tr key={a.id}>
                 <Td>{`${a.code} ${a.name}`}</Td>
@@ -90,6 +90,8 @@ export function BudgetsTab({ data, onMessage }: { data: LoadResult; onMessage: (
                     <Td key={m} right>
                       <input
                         value={cells[key] ?? ""}
+                        inputMode="decimal"
+                        aria-label={`${a.name}, ${formatMonth(m)}`}
                         onChange={(e) => {
                           setCells({ ...cells, [key]: e.target.value });
                           setDirty(new Set(dirty).add(key));
@@ -116,18 +118,18 @@ export function BudgetsTab({ data, onMessage }: { data: LoadResult; onMessage: (
         {forecast ? (
           <>
             <Muted>
-              Open receivables and payables by due date (overdue ones in the first month), recurring costs estimated at {rand(forecast.recurringCostsMinor)} a month (average of {forecast.basedOn.from} to {forecast.basedOn.to}, less what is already in payables), plus the lines below.
+              Money owed to you and by you, by due date (overdue amounts in the first month), regular costs of about {formatMoney(forecast.recurringCostsMinor)} a month (the average from {formatDate(forecast.basedOn.from)} to {formatDate(forecast.basedOn.to)}, less bills already waiting), plus the lines below.
             </Muted>
-            <Table head={["Month", { label: "Opening", right: true }, { label: "Receipts", right: true }, { label: "Payments", right: true }, { label: "Recurring", right: true }, { label: "Other", right: true }, { label: "Closing", right: true }]}>
+            <Table head={["Month", { label: "Start", right: true }, { label: "Money in", right: true }, { label: "Bills", right: true }, { label: "Regular costs", right: true }, { label: "Other", right: true }, { label: "End", right: true }]}>
               {forecast.rows.map((r) => (
                 <tr key={r.month}>
-                  <Td>{r.month}</Td>
-                  <Td right>{rand(r.openingMinor)}</Td>
-                  <Td right>{rand(r.receiptsMinor)}</Td>
-                  <Td right>{rand(-r.paymentsMinor)}</Td>
-                  <Td right>{rand(-r.recurringMinor)}</Td>
-                  <Td right>{rand(r.manualMinor)}</Td>
-                  <Td right strong>{rand(r.closingMinor)}</Td>
+                  <Td>{formatMonth(r.month)}</Td>
+                  <Td right>{formatMoney(r.openingMinor)}</Td>
+                  <Td right>{formatMoney(r.receiptsMinor)}</Td>
+                  <Td right>{formatMoney(-r.paymentsMinor)}</Td>
+                  <Td right>{formatMoney(-r.recurringMinor)}</Td>
+                  <Td right>{formatMoney(r.manualMinor)}</Td>
+                  <Td right strong>{formatMoney(r.closingMinor)}</Td>
                 </tr>
               ))}
             </Table>
@@ -136,10 +138,10 @@ export function BudgetsTab({ data, onMessage }: { data: LoadResult; onMessage: (
               <Table head={["Month", "Description", { label: "Amount", right: true }, "Repeats", ""]}>
                 {forecast.manualLines.map((l) => (
                   <tr key={l.id}>
-                    <Td>{l.month}</Td>
+                    <Td>{formatMonth(l.month)}</Td>
                     <Td>{l.description}</Td>
-                    <Td right>{rand(l.amountMinor)}</Td>
-                    <Td>{l.repeat === "monthly" ? `monthly${l.untilMonth ? ` until ${l.untilMonth}` : ""}` : "once"}</Td>
+                    <Td right>{formatMoney(l.amountMinor)}</Td>
+                    <Td>{l.repeat === "monthly" ? `Monthly${l.untilMonth ? ` until ${formatMonth(l.untilMonth)}` : ""}` : "Once"}</Td>
                     <Td><Button type="button" variant="secondary" style={small} onClick={() => void run("del", async () => { await deleteLine({ id: l.id }); await refreshForecast(); })}>Remove</Button></Td>
                   </tr>
                 ))}

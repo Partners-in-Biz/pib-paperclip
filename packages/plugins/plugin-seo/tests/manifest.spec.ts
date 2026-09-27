@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { HANDLERS } from "../src/dispatch.js";
 import manifest from "../src/manifest.js";
@@ -5,6 +6,8 @@ import { SKILL_CANONICAL_KEY } from "../src/constants.js";
 import { OUTRANK_DOC, SKILLS, TOOLS_DOC } from "../src/skills.js";
 import { OUTRANK_90 } from "../src/templates/outrank-90.js";
 import { SEO_TOOLS } from "../src/tools.js";
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
 describe("manifest", () => {
   it("declares the capabilities every host call needs", () => {
@@ -32,7 +35,8 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.7.1");
+    expect(manifest.version).toBe("0.8.0");
+    expect(manifest.version).toBe(pkg.version);
   });
 
   it("uses secret-ref fields without a type", () => {
@@ -65,14 +69,14 @@ describe("manifest", () => {
     expect(manifest.projects).toEqual([expect.objectContaining({ projectKey: "seo", displayName: "SEO" })]);
   });
 
-  it("declares paused routines with disabled SAST triggers", () => {
+  it("ships the routines on: active, with their SAST schedules enabled", () => {
     const routines = manifest.routines!;
     expect(routines.map((r) => r.title)).toEqual(["Run today's SEO", "Weekly SEO review"]);
     for (const routine of routines) {
-      expect(routine).toMatchObject({ status: "paused", concurrencyPolicy: "skip_if_active", catchUpPolicy: "skip_missed" });
+      expect(routine).toMatchObject({ status: "active", concurrencyPolicy: "skip_if_active", catchUpPolicy: "skip_missed" });
       expect(routine.assigneeRef).toEqual({ resourceKind: "agent", resourceKey: "seo-specialist" });
       expect(routine.projectRef).toEqual({ resourceKind: "project", resourceKey: "seo" });
-      expect(routine.triggers?.[0]).toMatchObject({ kind: "schedule", enabled: false, timezone: "Africa/Johannesburg" });
+      expect(routine.triggers?.[0]).toMatchObject({ kind: "schedule", enabled: true, timezone: "Africa/Johannesburg" });
     }
     expect(routines[0]!.triggers![0]!.cronExpression).toBe("30 6 * * *");
     expect(routines[1]!.triggers![0]!.cronExpression).toBe("0 7 * * 1");
@@ -86,10 +90,17 @@ describe("tools", () => {
     expect(manifest.tools).toEqual(SEO_TOOLS);
   });
 
-  it("keeps the old tool names working", () => {
-    for (const name of ["create-sprint", "record-rank", "record-audit", "open-task", "add-keyword", "add-page", "rank-history", "audit-summary"]) {
+  it("has dropped the six legacy aliases (their replacements stay)", () => {
+    for (const name of ["open-task", "add-keyword", "record-rank", "rank-history", "add-page", "record-audit"]) {
+      expect(HANDLERS[name], name).toBeUndefined();
+      expect(SEO_TOOLS.some((t) => t.name === name), name).toBe(false);
+    }
+    for (const name of ["create-sprint", "add-task", "add-keywords", "record-position", "keyword-history", "record-finding", "audit-summary"]) {
       expect(HANDLERS[name], name).toBeDefined();
     }
+    // No skill text points at a removed name.
+    const text = [SKILLS[0]!.markdown, ...(SKILLS[0]!.files ?? []).map((f) => f.content)].join("\n");
+    for (const name of ["open-task", "add-keyword`", "record-rank", "rank-history", "add-page", "record-audit"]) expect(text, name).not.toContain(name);
   });
 });
 

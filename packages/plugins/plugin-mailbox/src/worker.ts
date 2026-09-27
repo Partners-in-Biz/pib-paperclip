@@ -15,13 +15,16 @@ import {
   COCKPIT_ROUTE,
   createSkillSyncer,
   decisionStats,
+  HANDOFF_EVENTS,
   registerModuleWatch,
   registerRoleWatch,
+  settleOutbox,
   trackJob,
   SETUP_STATUS_ROUTE,
   MAIL_CATEGORIES,
   MAIL_EVENTS,
   MAIL_SENDERS,
+  PIB_PLUGINS,
   pluginEvent,
   pluginUiBase,
   registerCrmProjection,
@@ -30,11 +33,13 @@ import {
   type MailAddress,
   type MailSendRequested,
 } from "@partnersinbiz/pib-plugin-kit";
-import { gmailRedirectUri, loadMailboxConfig, validateMailboxConfig } from "./config.js";
+import { gmailRedirectUri, loadMailboxConfig, r2Configured, validateMailboxConfig } from "./config.js";
+import { getAttachment, listMailboxes } from "./agent-mail.js";
+import { onContactSuppressed, reannounceSuppressions, suppressionEvents } from "./suppression.js";
 import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
-import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
+import { publishAllSetupStatus, rememberCompany, settingsHref, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
-import { SqlStore } from "./db.js";
+import { SqlStore, type RecentMessageRow } from "./db.js";
 import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { createEnv, errorMessage, type Env } from "./gmail/env.js";
 import { toMailAddress } from "./gmail/headers.js";
@@ -42,7 +47,7 @@ import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
-import type { AccountRow, MessageRow, SendRow } from "./gmail/types.js";
+import type { AccountRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -80,7 +85,7 @@ const plugin = definePlugin({
     ctx.actions.register("mailbox.create-account", (params, context) => createAccount(requiredCompany(context), context.actor.userId, params));
     ctx.actions.register("mailbox.create-delegation", (params, context) => createDelegation(requiredCompany(context), params));
     ctx.actions.register("mailbox.create-draft", (params, context) =>
-      createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent"),
+      createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent", drafter(context)),
     );
     ctx.actions.register("mailbox.list-inbox", (params, context) => listInbox(requiredCompany(context), params));
     ctx.actions.register("mailbox.mark-read", (params, context) => markRead(requiredCompany(context), params));
@@ -115,6 +120,7 @@ const plugin = definePlugin({
       await trackJob(ctx, SETUP_STATUS_JOB_KEY, async () => {
         await publishAllSetupStatus(ctx, requireStore());
         await publishAllCockpit(ctx);
+        await reannounceSuppressions(requireEnv());
       });
     });
 
@@ -123,6 +129,21 @@ const plugin = definePlugin({
         await handleSendRequested(requireEnv(), event);
       });
     }
+    // Unsubscribes and hard bounces the CRM and Campaigns found join the do-not-email list.
+    for (const eventType of suppressionEvents()) {
+      ctx.events.on(eventType as `plugin.${string}`, (event) => onContactSuppressed(requireEnv(), event));
+    }
+    // The CRM answered a lead: stop re-sending it.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.crm, HANDOFF_EVENTS.leadCapturedResult), async (event) => {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      if (typeof payload.key !== "string" || !payload.key.startsWith("mail:")) return;
+      if (payload.status !== "stored" && payload.status !== "held" && payload.status !== "ignored") return;
+      try {
+        await settleOutbox(ctx, payload.key, payload, "done");
+      } catch (error) {
+        ctx.logger.info("Lead result not recorded", { key: payload.key, error: errorMessage(error) });
+      }
+    });
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
@@ -170,7 +191,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
   try {
     const body = objectParams(params);
     if (name === "create-draft") {
-      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true) };
+      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null) };
     }
     if (name === "send-draft") {
       const result = await sendDraft(run.companyId, run.agentId, requiredString(body, "messageId"));
@@ -216,6 +237,14 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       const row = await requireStore().getSend(run.companyId, requiredString(body, "key"));
       if (!row) return { content: "No send request with that key", data: { key: body.key, status: "unknown" } };
       return { content: `Send ${row.status}`, data: sendView(row) };
+    }
+    if (name === "list-mailboxes") {
+      const data = await listMailboxes(requireEnv(), run.companyId, run.agentId);
+      return { content: `${data.accounts.length} mailbox(es); default ${data.defaultAddress ?? "none"}`, data };
+    }
+    if (name === "get-attachment") {
+      const data = await getAttachment(requireEnv(), run.companyId, run.agentId, requiredString(body, "messageId"), requiredString(body, "attachmentId"), optionalString(body, "account"));
+      return { content: `${data.filename} (${data.mime}, ${data.bytes} bytes)${data.url ? ", url valid 15 minutes" : ""}${data.text != null ? ", text included" : ""}`, data };
     }
     return { error: "Unknown mailbox tool" };
   } catch (error) {
@@ -272,8 +301,10 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     s.dailyCounts(companyId, DAILY_DAYS).catch(() => []),
   ]);
   const raw = loaded.raw;
+  const settingsLink = await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }));
   return {
     settings: {
+      href: settingsLink.href,
       saved: loaded.config.saved,
       publicBaseUrl: base,
       redirectUri,
@@ -283,17 +314,47 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
       jev: configured(raw, "jev.apiKey") && (raw.jev as { enabled?: boolean } | undefined)?.enabled !== false,
       labelPrefix: loaded.config.labelPrefix,
       sendRatePerMinute: loaded.config.sendRatePerMinute,
-      triageIssues: Boolean(loaded.config.triageAssignee),
+      triageIssues: loaded.config.replyIssues,
+      r2: r2Configured(raw),
     },
+    suppressions: (await s.listSuppressions(companyId, 200).catch(() => [])).map((row) => ({ email: row.email, scope: row.scope, reason: row.reason, source: row.source, at: row.updated_at })),
     accounts: accounts.map(accountView),
     delegations,
-    messages,
+    messages: messages.map(draftView),
     templates,
     unreadCount,
     sendCounts: Object.fromEntries(sendCounts.map((row) => [row.status, Number(row.n)])),
     categoryCounts: Object.fromEntries(categoryCounts.map((row) => [row.category ?? "untriaged", Number(row.n)])),
     categories: MAIL_CATEGORIES,
     daily: shapeDaily(dailyRows, DAILY_DAYS),
+  };
+}
+
+/** A driver time (Date, ISO or Postgres text) as ISO; null when missing or unreadable. */
+export function isoTime(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+/** A draft (or other unsent mail) as the page lists and previews it. */
+export function draftView(row: RecentMessageRow) {
+  const draft: DraftExtras = row.draft && typeof row.draft === "object" ? row.draft : {};
+  return {
+    id: row.id,
+    account_id: row.account_id,
+    subject: row.subject,
+    body: row.body ?? "",
+    status: row.status,
+    direction: row.direction,
+    send_error: row.send_error,
+    to_addrs: row.to_addrs ?? [],
+    cc_addrs: row.cc_addrs ?? [],
+    bcc_addrs: row.bcc_addrs ?? [],
+    created_at: isoTime(row.created_at),
+    drafted_by: draft.by && typeof draft.by.id === "string" ? draft.by : null,
+    is_reply: Boolean(draft.replyToMessageId),
+    has_html: Boolean(draft.html),
   };
 }
 
@@ -312,7 +373,7 @@ function messageView(row: MessageRow) {
     from: row.from_addr,
     to: row.to_addrs,
     snippet: row.snippet,
-    attachments: (row.attachments ?? []).map((a) => ({ filename: a.filename, mime: a.mime, bytes: a.bytes })),
+    attachments: (row.attachments ?? []).map((a) => ({ attachmentId: a.attachmentId, filename: a.filename, mime: a.mime, bytes: a.bytes })),
     category: row.category,
     urgency: row.urgency == null ? null : Number(row.urgency),
     needs_reply: row.needs_reply == null ? null : Number(row.needs_reply),
@@ -345,6 +406,8 @@ function sendView(row: SendRow) {
   return {
     key: row.key,
     status: row.status,
+    marketing: row.request?.marketing === true,
+    skipped: row.skipped ?? [],
     permanent: row.permanent,
     attempts: row.attempts,
     error: row.error,
@@ -422,9 +485,11 @@ async function createAccount(companyId: string, ownerUserId: string | null, para
   return { id };
 }
 
+/** Board action (the Mailboxes tab and the Setup items): read, draft unless canDraft is false, send only when canSend. */
 async function createDelegation(companyId: string, params: Record<string, unknown>) {
   const defaults = defaultDelegation();
   const canSend = params.canSend === true;
+  const canDraft = params.canDraft === false ? false : defaults.canDraft;
   const id = randomUUID();
   await requireStore().insertDelegation({
     id,
@@ -432,10 +497,10 @@ async function createDelegation(companyId: string, params: Record<string, unknow
     accountId: requiredString(params, "accountId"),
     agentId: requiredString(params, "agentId"),
     canRead: defaults.canRead,
-    canDraft: defaults.canDraft,
+    canDraft,
     canSend,
   });
-  return { id, canSend };
+  return { id, canRead: defaults.canRead, canDraft, canSend };
 }
 
 function addresses(params: Record<string, unknown>, key: string): MailAddress[] {
@@ -452,7 +517,14 @@ function addresses(params: Record<string, unknown>, key: string): MailAddress[] 
   return out;
 }
 
-async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean) {
+/** Who is saving a draft through a page action: the agent, or the signed-in person. */
+function drafter(context: PluginPerformActionContext): DraftExtras["by"] {
+  if (context.actor.type === "agent" && context.actor.agentId) return { kind: "agent", id: context.actor.agentId };
+  if (context.actor.type === "user" && context.actor.userId) return { kind: "user", id: context.actor.userId };
+  return null;
+}
+
+async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean, by: DraftExtras["by"] = null) {
   const accountId = requiredString(params, "accountId");
   if (enforceDelegation) {
     if (!agentId) throw new MailboxError("This agent is not allowed to draft on that mailbox");
@@ -477,7 +549,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId },
+    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by },
   });
   return { id, status: "draft", to: to.map((a) => a.email) };
 }
@@ -603,7 +675,7 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
   if (!row) throw new MailboxError("Message not found");
   if (agentId) assertMayRead(await delegationFor(row.account_id, agentId));
   const account = await requireStore().getAccount(companyId, row.account_id);
-  const base = { messageId: row.id, accountId: row.account_id, attachments: (row.attachments ?? []).map((a) => ({ filename: a.filename, mime: a.mime, bytes: a.bytes })) };
+  const base = { messageId: row.id, accountId: row.account_id, attachments: (row.attachments ?? []).map((a) => ({ attachmentId: a.attachmentId, filename: a.filename, mime: a.mime, bytes: a.bytes })) };
   if (!row.gmail_message_id || !account) {
     return { ...base, subject: row.subject, text: row.body, truncated: false, from: row.from_addr, to: row.to_addrs, date: row.received_at ?? row.created_at };
   }

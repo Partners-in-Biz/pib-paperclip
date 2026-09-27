@@ -3,36 +3,68 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
 export const CAMPAIGN_SKILL = `# Campaigns
 
-Use the \`partnersinbiz.campaigns\` tools to run themed email programs.
+Themed email programs for PiB's own marketing or a client's, with the \`partnersinbiz.campaigns\` tools. You build and run them; a person approves every launch.
 
-- A campaign groups email steps that target an audience. Contacts come from the CRM plugin; if one you just created is missing, ask a person to run CRM \"resync\".
-- A campaign is PiB's own work or a client's. Pass \`client\` (\`company:<CRM company id>\` or \`contact:<CRM contact id>\`) to \`create-campaign\` for a client; omit it for PiB's own campaigns. \`list-campaigns\` takes the same \`client\` (omit it for own work). Issues for a client campaign start with \`[Client name]\`.
-- \`audienceMode\` chooses who launch enrolls: \`tags\` (CRM contacts matching \`audienceTags\`; empty means every contact), \`client_contacts\` (the contacts at the client company, narrowed by \`audienceTags\` when set; the default for a company client), or \`client_contact\` (the client contact alone; the default for a contact client).
-- \`update-campaign\` edits a draft, including moving it to another client or back to own work.
-- \`create-campaign\` then \`add-campaign-step\` build the program. A step has a subject, body, and a \`delayDays\` wait after the previous step.
-- Every campaign needs approval. \`request-campaign-approval\` opens a Paperclip issue for a person; \`launch-campaign\` refuses to run until a person marks that issue done. When the company has a Reviewer, the issue goes to the Reviewer first; the Reviewer comments PASS or CHANGES NEEDED and reassigns it to the person, and never marks it done.
-- \`launch-campaign\` enrolls matching contacts (or the \`contactIds\` you pass) and opens each due step's Paperclip issue with the recipient's address. A person sends the email and marks the issue done.
-- \`pause-campaign\` and \`resume-campaign\` control a running program. \`complete-campaign\` ends it.
-- \`campaign-stats\` reports enrolled, running, and completed counts. \`campaign-funnel\` shows how many contacts are at each step.
-- \`enroll-contact\` adds one contact to a campaign. \`complete-step\` advances an enrollment after its issue is done.
-- \`create-ab-variant\` adds a B variant to a step so contacts are split between two versions. The enrollment records which variant was sent.
-- \`record-step-event\` records an open or click on a step. \`campaign-step-analytics\` reports opens and clicks per step.
-- \`set-step-html\` sets the rich HTML body of a step. The plain body stays as a fallback for clients that cannot render HTML.
-- \`create-campaign-template\` saves a reusable campaign with its steps. \`create-campaign-from-template\` makes a new draft from one.
-- \`suggest-ab-winner\` compares reply rates per variant from Mailbox sends (at least 20 sends per variant, else inconclusive). It only suggests. \`declare-ab-winner\` records the winner a person chose; new enrollments then get only that variant. Without a winner, contacts are split evenly between A and B.
-- \`delivery\` is \`issue\` (default: a due step opens an issue and a person sends it) or \`email\` (after the approved launch the Mailbox sends each due step; \`{{first_name}}\`, \`{{name}}\`, \`{{company}}\` are filled in). The approval issue says which. Switching a draft to email after approval needs a new approval.
-- Replies arrive from the Mailbox and are recorded per step and variant. With Jev: interested or a question stops the campaign for that contact and opens a follow-up issue for the campaign's creator; not now stops it; unsubscribe and bounces stop every campaign for the contact and suppress the address; out of office moves the next step 5 days. When Jev is unsure or not set up, the creator gets an issue to decide.
-- Do not copy mailbox credentials or tokens into a campaign issue. The person sends from their mailbox.
-- A contact is enrolled once per campaign. A second running enrollment is refused.
+## Scope
+- Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`.
+- Find contacts, tags and clients with \`partnersinbiz.crm:find-records\`. New CRM contacts and clients reach Campaigns within 15 minutes. If one is "not found", wait 15 minutes and try again.
+
+## Build
+1. \`create-campaign\`: name, \`delivery\`, audience, \`client\`, optional \`startAt\` (no step is due before it).
+2. \`add-campaign-step\` per email (subject, body, \`delayDays\` after the previous step). \`create-ab-variant\` adds a B version; \`set-step-html\` sets an HTML body.
+3. \`request-campaign-approval\`.
+- \`update-campaign\` edits a draft, including moving it to another client (or \`client: "own"\` for own work).
+- Templates: \`create-campaign-template\`, \`list-campaign-templates\`, \`create-campaign-from-template\`.
+
+## Audience
+- \`audienceMode\`: \`tags\` (contacts with any of \`audienceTags\`), \`client_contacts\` (the people at the client company, narrowed by tags), \`client_contact\` (the client contact alone).
+- Tags mode with no tags means **all CRM contacts**. It launches only when the approval says "All contacts (N)" and a person approves. Prefer tags.
+- Unsubscribed and bounced addresses are never enrolled, emailed or given a step issue.
+- \`enroll-contact\` adds one contact: only someone who fits the approved audience and agreed to hear from us.
+
+## Writing the emails (POPIA)
+For a client's campaign, read \`partnersinbiz.crm:get-client-profile\` first (brand voice, audience, banned words). Every email must:
+- say who we are: the business name (the client's, for client work) and a real person;
+- say why they get it (they are a client, asked about something, signed up);
+- say how to opt out: "Reply STOP and we will not email you again." Email delivery also adds an unsubscribe header.
+- make no claims we cannot back up, and use honest subjects.
+Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}\`, \`{{email}}\`. Add a fallback for a missing value: \`{{first_name|there}}\` gives "there". Use the fallback in greetings. A misspelt token is sent as typed.
+
+## Approval and launch
+- \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, start date and every step. With a Reviewer it checks first, comments PASS or CHANGES NEEDED and hands it to the person; nobody but a person marks it done.
+- A person marks it **done**: the campaign launches by itself and a comment says how many were enrolled. If it cannot launch, the issue goes back to the person with the reason.
+- A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft, request approval again.
+- Changing a draft after asking (steps, HTML, audience, sender, delivery, dates) cancels that approval (\`approvalReset: true\`). Request again.
+- \`launch-campaign\` is only for a paused campaign (it enrolls audience contacts not in it yet) or an approved draft that has not launched.
+
+## Running
+- \`issue\` delivery: each due step opens an issue for you with the email filled in for that contact. Send it (\`partnersinbiz.mailbox:create-draft\`, then \`send-draft\` when your delegation allows), then mark the issue **done**: that moves them to the next step. **Cancel** the issue to stop the campaign for that contact.
+- \`email\` delivery: the Mailbox sends each due step as marketing mail. A failed send opens "Email not sent" for you: fix the cause, send it yourself, then mark it done (or cancel to stop).
+- \`pause-campaign\`, \`resume-campaign\`, \`complete-campaign\` control the whole campaign.
+
+## Replies
+- With Jev: interested or a question stops this campaign for them and opens "Reply from" for you: answer, then log it in the CRM. Not now stops it. Unsubscribe stops every campaign and adds the address to the do-not-email list. A bounce stops and suppresses. Out of office moves the next step 5 days.
+- Jev unsure or not set up: "Check reply from" asks you to read it and choose: \`suppress-address\` (they want no more email), \`stop-enrollment\` (not now, or they want a person), or leave it running.
+
+## Do-not-email list
+- \`suppress-address\` records any opt-out you see anywhere ("stop", "remove me", a complaint) at once. It stops their campaigns and tells the CRM and the Mailbox. (\`partnersinbiz.crm:set-email-status\` does the same for a CRM contact.)
+- The list is shared: opt-outs and hard bounces from the CRM and the Mailbox apply here too.
+
+## Results
+- \`campaign-stats\`, \`campaign-funnel\`, \`campaign-step-analytics\`. \`record-step-event\` only for an open or click from a real report; never estimate.
+- A/B: \`suggest-ab-winner\` (20 sends per variant, else inconclusive). A person picks the winner: ask with the suggestion, then \`declare-ab-winner\`.
+
+## Never
+- Never mark an approval issue done, email a suppressed address, launch to all contacts without the approval saying so, invent numbers, or copy mailbox credentials into an issue.
 `;
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: "campaigns",
     displayName: "Campaigns",
     slug: "pib-campaigns",
-    description: "Run themed email programs that enroll contacts and open issues for due steps.",
+    description: "Build, get approved and run email campaigns for PiB or a client, within POPIA.",
     markdown: withFrontmatter(
-      { name: "pib-campaigns", description: "Run approved, themed email programs that enroll CRM contacts and open issues for due steps." },
+      { name: "pib-campaigns", description: "Build, get approved and run themed email campaigns for PiB or a client: audience, POPIA-safe copy, launch on approval, step issues, replies and the shared do-not-email list." },
       CAMPAIGN_SKILL,
     ),
   },

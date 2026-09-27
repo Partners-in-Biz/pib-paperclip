@@ -40,7 +40,7 @@ import {
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
 import { SOCIAL_MEDIA_MIME } from "../platforms.js";
-import { AgentCard } from "./agent.js";
+import { AgentBox } from "./agent.js";
 import { Thumb, uploadToR2 } from "./composer.js";
 import { Banner, Card, chipStyle, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import { ACCOUNT_TONE, countDelta, destinationSegments, liftTrend, platformIndex, postSegments, publishedSeries, recentActivity, toneOf, upcoming } from "./series.js";
@@ -204,11 +204,12 @@ export function OverviewTab({ snapshot, posts, run, onOpenPicker, onOpenPost, ta
                 </button>
               ))}
             </div>
-          ) : <EmptyState compact icon={CalendarCheck} title="Nothing scheduled" description="Approved posts get a time slot from the post sheet." />}
+          ) : <EmptyState compact icon={CalendarCheck} title="Nothing scheduled" description="Approved posts are scheduled at their proposed time; without one, the Social agent picks a time." />}
         </SectionCard>
       </div>
 
-      <AgentCard agent={snapshot.agent} run={run} ownPage={!snapshot.scope} />
+      {/* Only when something is wrong with the Social agent; it is staffed in Setup → Team. */}
+      <AgentBox agent={snapshot.agent} run={run} ownPage={!snapshot.scope} />
     </div>
   );
 }
@@ -248,7 +249,7 @@ function TriageChip({ label, tone: t, title }: { label: string; tone?: ToneInput
   return <Pill tone={t ?? "neutral"} size="sm" title={title}>{label}</Pill>;
 }
 
-/** Jev's answers on an inbox item, with a way to correct them (logged as labelled data). */
+/** The triage on an inbox item (Jev or the built-in rules), with a way to correct it (Jev's answers are logged as labelled data). */
 function TriageRow({ item, run }: { item: InboxItem; run: RunAction }) {
   const [fixing, setFixing] = useState(false);
   const t = item.triage;
@@ -260,7 +261,7 @@ function TriageRow({ item, run }: { item: InboxItem; run: RunAction }) {
       <Row>
         {t.escalate ? <TriageChip label={`Needs a person${mark("escalate")}`} tone="bad" title="Legal, safety or PR risk" /> : null}
         {t.action === "spam_read" && !t.corrected.includes("intent") ? <TriageChip label="Marked spam" tone="warn" /> : null}
-        <TriageChip label={`${t.intent}${mark("intent")}`} tone={INTENT_TONE[t.intent]} title={`Jev ${Math.round(t.intentConfidence * 100)}% sure`} />
+        <TriageChip label={`${t.intent}${mark("intent")}`} tone={INTENT_TONE[t.intent]} title={t.source === "rules" ? `Built-in rules${t.reasons?.length ? `: ${t.reasons.join(", ")}` : ""}` : `Jev ${Math.round(t.intentConfidence * 100)}% sure`} />
         <TriageChip label={`${t.sentiment}${mark("sentiment")}`} tone={t.sentiment === "negative" ? "bad" : t.sentiment === "positive" ? "ok" : undefined} />
         <TriageChip label={`${t.needsReply ? "needs reply" : "no reply needed"}${mark("needs_reply")}`} tone={t.needsReply ? "warn" : undefined} />
         {t.action === "queued" ? <TriageChip label="Queued for the agent" tone="info" /> : null}
@@ -309,7 +310,7 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
       </Toolbar>
       <Muted>
         Comments on recent posts (Facebook, Instagram, Threads, YouTube) and mentions (X, Bluesky, Mastodon) are pulled every 15 minutes.
-        {snapshot.config.jev ? " Jev sorts new items: spam is marked read, replies go to the agent in one issue per account per day, and risky items go to a person." : ""}
+        {` ${snapshot.config.jev ? "Jev" : "Built-in rules (add a Jev key in the settings for better reading)"} sort new items: spam is marked read, replies go to the agent in one issue per account per day, risky items go to a person, and leads go to the CRM.`}
       </Muted>
       {items.length === 0 ? <EmptyState icon={MessageSquare} title="Nothing here" description="New comments and mentions show up here every 15 minutes." /> : null}
       {items.map((item) => {

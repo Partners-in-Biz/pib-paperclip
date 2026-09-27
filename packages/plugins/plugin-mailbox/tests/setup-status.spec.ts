@@ -46,11 +46,17 @@ describe("Mailbox setup status", () => {
   it("an unconfigured company: settings missing, Gmail missing, the rest waits on Gmail", async () => {
     const status = await setupStatus(harnessCtx({}), CO, new MemoryStore(), NOW);
     expect(status).toMatchObject({ plugin: "partnersinbiz.mailbox", module: "mailbox", title: "Mailbox", version: PLUGIN_VERSION });
-    expect(status.items.map((row) => row.key)).toEqual(["settings", "gmail", "default_account", "jev", "sync"]);
+    expect(status.items.map((row) => row.key)).toEqual(["settings", "gmail", "default_account", "jev", "sync", "delegation", "bookkeeper_delegation", "attachments"]);
+    expect(item(status, "delegation")).toMatchObject({ status: "optional", required: false, href: "/setup?section=team#team-account-manager" });
+    expect(item(status, "attachments")).toMatchObject({ status: "optional", required: false });
     const settings = item(status, "settings");
-    expect(settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
+    expect(settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins", title: "One-time technical setup (admin)" });
     expect(settings.detail).toContain("Public base URL, Token encryption key, Google client secret");
-    expect(item(status, "gmail")).toMatchObject({ status: "missing", required: true, href: "/mailbox", blockedBy: ["settings"] });
+    // The step buttons do the step: connect Gmail (the page starts the Google sign-in) and choose the sending account.
+    expect(item(status, "gmail")).toMatchObject({ status: "missing", required: true, href: "/mailbox?tab=mailboxes&connect=gmail", hrefLabel: "Connect Gmail", blockedBy: ["settings"] });
+    expect(item(status, "default_account")).toMatchObject({ href: "/mailbox?tab=mailboxes", hrefLabel: "Choose sending account" });
+    expect(item(status, "jev").title).toBe("Smart sorting (optional)");
+    for (const row of status.items) expect(`${row.title} ${row.detail ?? ""} ${row.hrefLabel ?? ""}`, row.key).not.toMatch(/Jev|TypeSafe|Open Mailbox/);
     expect(item(status, "gmail").steps!.join(" ")).toMatch(/unverified app/);
     expect(item(status, "gmail").steps![0]).toMatch(/Open the Mailbox page once/);
     expect(item(status, "default_account")).toMatchObject({ status: "missing", blockedBy: ["gmail"], action: null });
@@ -60,7 +66,7 @@ describe("Mailbox setup status", () => {
 
   it("saved but without the Google client secret says only that", async () => {
     const status = await setupStatus(harnessCtx({ publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20) }), CO, new MemoryStore(), NOW);
-    expect(item(status, "settings")).toMatchObject({ status: "missing", detail: "Still needed: Google client secret." });
+    expect(item(status, "settings")).toMatchObject({ status: "missing", detail: "An admin connects Paperclip to Google once, so Gmail can be connected. Still needed: Google client secret." });
   });
 
   it("a healthy company: connected default account synced recently", async () => {
@@ -79,6 +85,30 @@ describe("Mailbox setup status", () => {
       status: "missing",
       action: { plugin: "partnersinbiz.mailbox", key: "mailbox.set-default", params: { accountId: "acc-1" } },
     });
+  });
+
+  it("asks once for the Account Manager's and the Bookkeeper's mailbox access, with one-click actions", async () => {
+    const ctx = harnessCtx(FULL);
+    await ctx.state.set({ scopeKind: "company", scopeId: CO, namespace: "pib-cockpit", stateKey: "roles" }, {
+      companyId: CO, operatorAgentId: null, reviewerAgentId: null, ownerUserId: "user-owner", reviewOutward: false, updatedAt: new Date(NOW).toISOString(),
+      team: { "account-manager": { agentId: "agent-am", status: "idle" }, bookkeeper: { agentId: "agent-bk", status: "idle" } },
+    });
+    const store = new MemoryStore();
+    store.addAccount({ id: "acc-1", company_id: CO, address: "peet@partnersinbiz.online", token_sealed: "sealed", is_default: true, last_sync_at: new Date(NOW).toISOString() });
+    let status = await setupStatus(ctx, CO, store, NOW);
+    expect(item(status, "delegation")).toMatchObject({
+      status: "missing", required: true,
+      action: { plugin: "partnersinbiz.mailbox", key: "mailbox.create-delegation", params: { accountId: "acc-1", agentId: "agent-am" } },
+    });
+    expect(item(status, "bookkeeper_delegation")).toMatchObject({
+      status: "missing", required: true,
+      action: { key: "mailbox.create-delegation", params: { accountId: "acc-1", agentId: "agent-bk", canDraft: false } },
+    });
+    store.delegate("acc-1", "agent-am");
+    store.delegate("acc-1", "agent-bk", { can_draft: false });
+    status = await setupStatus(ctx, CO, store, NOW);
+    expect(item(status, "delegation").status).toBe("done");
+    expect(item(status, "bookkeeper_delegation").status).toBe("done");
   });
 
   it("a sync older than 10 minutes is blocked and carries the last error", async () => {

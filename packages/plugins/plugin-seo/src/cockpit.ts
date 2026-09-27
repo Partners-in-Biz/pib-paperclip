@@ -22,20 +22,35 @@ import {
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
-import { DAILY_JOB_KEY, WEEKLY_JOB_KEY } from "./constants.js";
+import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
+import { parseSeoConfig } from "./config.js";
+import { AGENT_KEY, DAILY_JOB_KEY, WEEKLY_JOB_KEY } from "./constants.js";
+import * as db from "./db.js";
 import { t } from "./db.js";
 import { PLAYBOOK_ITEM_KEY } from "./engine/items.js";
+import { agentTrouble } from "./engine/due.js";
+import { plainError } from "./engine/plain.js";
+import { sprintClock } from "./engine/sprint.js";
+import { localDate } from "./engine/time.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
 import { sprintPagePath } from "./engine/scope.js";
 import { PLUGIN_ID } from "./namespace.js";
 import type { Env } from "./service/common.js";
-import { reemitRecentContent } from "./service/handoff.js";
+import { announcementLine, processAnnouncements } from "./service/handoff.js";
 import { SEO_ROLE } from "./service/hire.js";
+import { activeTotals, isActiveSprint, sprintOverviews, type SprintOverview } from "./service/overview.js";
 import { seoOn } from "./service/setup-status.js";
 
 type Scoped = { sprint_id: string; site_name: string; client_kind: string | null; client_ref: string | null; client_name: string | null };
 
 const RUNNING = "('pre_launch', 'active', 'compounding')";
+
+/** The SEO agent as the snapshot needs it: its status decides whether due work is stuck. */
+interface AgentView {
+  id: string;
+  name: string | null;
+  status: string | null;
+}
 const STALE_NEEDS_YOU_DAYS = 7;
 
 function count(value: unknown): number {
@@ -87,19 +102,9 @@ function json<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
-interface SprintRow extends Scoped {
-  status: string;
-  current_day: number | null;
-  health: unknown;
-  autopilot_mode: string;
-}
-
-async function runningSprints(ctx: PluginContext, companyId: string): Promise<SprintRow[]> {
-  return ctx.db.query<SprintRow>(
-    `SELECT id AS sprint_id, site_name, client_kind, client_ref, client_name, status, current_day, health, autopilot_mode
-       FROM ${t("sprints")} WHERE company_id = $1 AND status IN ${RUNNING} AND seeded_at IS NOT NULL ORDER BY created_at`,
-    [companyId],
-  );
+/** Active sprints (running with a 90-day plan; service/overview.ts), oldest first. */
+async function activeSprints(ctx: PluginContext, companyId: string): Promise<db.Sprint[]> {
+  return (await db.listSprints(ctx.db, companyId)).filter(isActiveSprint).reverse();
 }
 
 // ── KPIs ────────────────────────────────────────────────────────────────────
@@ -114,13 +119,15 @@ export function sprintDayLabel(days: number[]): string | null {
   return min === max ? fmt(min) : `days ${Math.max(min, 0)}–${max} of 90`;
 }
 
-async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[]): Promise<CockpitKpi[]> {
+async function kpis(
+  ctx: PluginContext,
+  companyId: string,
+  sprints: db.Sprint[],
+  input: { today: string; overviews: Map<string, SprintOverview>; agent: AgentView | null },
+): Promise<CockpitKpi[]> {
   const rows = await ctx.db.query<Record<string, string | null>>(
     `SELECT
        (SELECT count(*) FROM ${t("sprint_tasks")} WHERE company_id = $1 AND status = 'done' AND completed_at >= now() - interval '7 days')::text AS done_7d,
-       (SELECT count(*) FROM ${t("sprint_tasks")} k JOIN ${t("sprints")} s ON s.id = k.sprint_id
-          WHERE k.company_id = $1 AND s.status IN ${RUNNING} AND k.status IN ('not_started', 'in_progress')
-            AND COALESCE(k.due_day, 0) < COALESCE(s.current_day, 0))::text AS overdue,
        (SELECT count(*) FROM ${t("keywords")} w JOIN ${t("sprints")} s ON s.id = w.sprint_id
           WHERE w.company_id = $1 AND s.status IN ${RUNNING} AND w.retired_at IS NULL AND w.current_position > 0 AND w.current_position <= 10)::text AS top10,
        (SELECT count(*) FROM ${t("keywords")} w JOIN ${t("sprints")} s ON s.id = w.sprint_id
@@ -133,9 +140,10 @@ async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[])
   );
   const r = rows[0] ?? {};
   const done = count(r.done_7d);
-  const overdue = count(r.overdue);
   const top10 = count(r.top10);
   const tracked = count(r.tracked);
+  // Due, overdue and stuck: the SEO page's definitions (engine/due.ts), so both show the same numbers.
+  const totals = activeTotals(sprints, input.overviews);
   const out: CockpitKpi[] = [
     {
       key: "seo_active_sprints",
@@ -143,14 +151,35 @@ async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[])
       value: String(sprints.length),
       raw: sprints.length,
       tone: "neutral",
-      delta: sprintDayLabel(sprints.map((s) => (s.current_day == null ? Number.NaN : s.current_day))),
+      delta: sprintDayLabel(sprints.map((s) => sprintClock(s.startDate, input.today).day)),
       href: "/seo",
       group: "marketing",
     },
     { key: "seo_tasks_done_7d", label: "SEO tasks done (7 days)", value: String(done), raw: done, tone: sprints.length > 0 && done === 0 ? "warn" : "neutral", href: "/seo", group: "marketing" },
-    { key: "seo_overdue_tasks", label: "Overdue SEO tasks", value: String(overdue), raw: overdue, tone: overdue > 10 ? "bad" : overdue > 0 ? "warn" : "ok", href: "/seo", group: "marketing" },
-    { key: "seo_keywords_top10", label: "Keywords in the top 10", value: String(top10), raw: top10, tone: "neutral", delta: tracked ? `of ${tracked} tracked` : null, href: "/seo", group: "marketing" },
+    {
+      key: "seo_overdue_tasks",
+      label: "Overdue SEO tasks",
+      value: String(totals.overdue),
+      raw: totals.overdue,
+      tone: totals.overdue > 10 ? "bad" : totals.overdue > 0 ? "warn" : "ok",
+      delta: totals.due ? `${totals.due} due now; overdue = open a week after its day` : "nothing due",
+      href: "/seo",
+      group: "marketing",
+    },
   ];
+  if (totals.stuck > 0) {
+    out.push({
+      key: "seo_stuck_tasks",
+      label: "Stuck SEO tasks",
+      value: String(totals.stuck),
+      raw: totals.stuck,
+      tone: "bad",
+      delta: `${agentTrouble(input.agent)}: fix in Setup → Team`,
+      href: teamSetupPath("seo-specialist"),
+      group: "marketing",
+    });
+  }
+  out.push({ key: "seo_keywords_top10", label: "Keywords in the top 10", value: String(top10), raw: top10, tone: "neutral", delta: tracked ? `of ${tracked} tracked` : null, href: "/seo", group: "marketing" });
   if (r.clicks != null) {
     const clicks = Math.round(count(r.clicks));
     out.push({ key: "seo_clicks", label: "Search clicks (last 8 days, Search Console)", value: clicks.toLocaleString("en-US"), raw: clicks, tone: "neutral", href: "/seo", group: "marketing" });
@@ -168,7 +197,7 @@ async function kpis(ctx: PluginContext, companyId: string, sprints: SprintRow[])
       group: "marketing",
     });
   }
-  const scores = sprints.map((s) => json<{ score?: unknown }>(s.health, {}).score).filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+  const scores = sprints.map((s) => (s.health as { score?: unknown }).score).filter((x): x is number => typeof x === "number" && Number.isFinite(x));
   if (scores.length > 0) {
     const score = Math.round(Math.min(...scores));
     out.push({ key: "seo_health_score", label: scores.length > 1 ? "SEO health (lowest sprint)" : "SEO health", value: `${score}/100`, raw: score, tone: healthTone(score), href: "/seo", group: "marketing" });
@@ -186,6 +215,11 @@ interface IntegrationRow extends Scoped {
   updated_at: string | null;
 }
 
+/**
+ * Search Console, PageSpeed and Bing problems in plain words (engine/plain.ts;
+ * the raw error stays on the sprint's Integrations tab under Details). One
+ * that clears on its own, like the free PageSpeed daily limit, is not a check.
+ */
 export function integrationChecks(rows: IntegrationRow[]): HealthCheck[] {
   const checks: HealthCheck[] = [];
   for (const row of rows) {
@@ -193,11 +227,12 @@ export function integrationChecks(rows: IntegrationRow[]): HealthCheck[] {
     const href = sprintHref(row, "integrations");
     if (row.provider === "gsc") {
       if (row.status === "needs_reconnect" || row.status === "error" || row.last_error) {
+        const plain = plainError(row.last_error, "gsc");
         checks.push({
           key: `gsc:${row.sprint_id}`,
           title: `Search Console pull failing: ${where}`,
           status: "bad",
-          detail: row.last_error ? clip(row.last_error, 300) : `Connection status: ${row.status.replace("_", " ")}.`,
+          detail: plain ? plain.text : row.status === "needs_reconnect" ? "Google turned down the saved Search Console sign-in." : `Connection status: ${row.status.replace("_", " ")}.`,
           href,
           fix: "Check the service account has access to the property (or reconnect Search Console) on the sprint's Integrations tab.",
           since: row.updated_at,
@@ -214,13 +249,15 @@ export function integrationChecks(rows: IntegrationRow[]): HealthCheck[] {
         });
       }
     } else {
+      const plain = plainError(row.last_error, row.provider === "bing" ? "bing" : "pagespeed");
+      if (plain && !plain.needsPerson && plain.tone === "info") continue;
       checks.push({
         key: `${row.provider}:${row.sprint_id}`,
-        title: `${row.provider === "bing" ? "Bing" : "PageSpeed"} errors: ${where}`,
+        title: `${row.provider === "bing" ? "Bing" : "PageSpeed"} check failing: ${where}`,
         status: "warn",
-        detail: clip(row.last_error ?? "Error", 300),
+        detail: plain?.text ?? "The check failed; the next daily run tries again.",
         href,
-        fix: row.provider === "bing" ? "Check the Bing Webmaster API key in the SEO settings." : "Add or check the PageSpeed API key in the SEO settings (quota errors clear on their own).",
+        fix: row.provider === "bing" ? "Check the Bing Webmaster API key in the SEO settings." : "Check the PageSpeed API key in the SEO settings, and that the page opens in a browser.",
         since: row.updated_at,
       });
     }
@@ -249,7 +286,7 @@ export function staleNeedsYou(digests: Array<Scoped & { items: unknown }>, now: 
   return out;
 }
 
-async function healthChecks(ctx: PluginContext, companyId: string, sprints: SprintRow[]): Promise<HealthCheck[]> {
+async function healthChecks(ctx: PluginContext, companyId: string, sprints: db.Sprint[]): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [
     await part(ctx, "job:daily", () => jobHealth(ctx, DAILY_JOB_KEY, "Daily SEO run", 60), { key: `job:${DAILY_JOB_KEY}`, title: "Daily SEO run", status: "ok" as const }),
     await part(ctx, "job:weekly", () => jobHealth(ctx, WEEKLY_JOB_KEY, "Weekly SEO review", 7 * 24 * 60), { key: `job:${WEEKLY_JOB_KEY}`, title: "Weekly SEO review", status: "ok" as const }),
@@ -295,7 +332,7 @@ async function healthChecks(ctx: PluginContext, companyId: string, sprints: Spri
       key: "service-account",
       title: "Google service account not set",
       status: "warn",
-      detail: `${plural(sprints.length - connected, "running sprint")} without Search Console data. The agent verifies sites and pulls rankings through the service account.`,
+      detail: `${plural(sprints.length - connected, "active sprint")} without Search Console data. The agent verifies sites and pulls rankings through the service account.`,
       href: "/company/settings/instance/plugins",
       fix: "Add the service account JSON key in the SEO plugin settings (Google → Service account).",
     });
@@ -316,7 +353,41 @@ async function healthChecks(ctx: PluginContext, companyId: string, sprints: Spri
     [] as Array<Scoped & { items: unknown }>,
   );
   checks.push(...staleNeedsYou(digests, new Date()));
+  checks.push(...(await part(ctx, "announcements", () => announcementChecks(ctx, companyId), [] as HealthCheck[])));
   return checks;
+}
+
+interface AnnouncementRow extends Scoped {
+  key: string;
+  url: string | null;
+  status: string;
+  last_error: string | null;
+  queued_at: string | null;
+}
+
+/** Pages marked live that Social has not been told about for 3 days (they never answered 200). Pure. */
+export function stuckAnnouncementChecks(rows: AnnouncementRow[]): HealthCheck[] {
+  if (rows.length === 0) return [{ key: "social-handoff", title: "Live pages handed to Social", status: "ok" }];
+  const first = rows[0]!;
+  return [{
+    key: "social-handoff",
+    title: "Live pages not handed to Social",
+    status: "warn",
+    detail: `${plural(rows.length, "page")} marked live never answered 200, so Social was not told: ${rows.slice(0, 3).map((r) => `${prefix(r)}${r.url ?? r.key}`).join("; ")}.`,
+    href: sprintHref(first, "content"),
+    fix: announcementLine({ key: first.key, status: "stuck", lastError: first.last_error, url: first.url }),
+    since: first.queued_at,
+  }];
+}
+
+async function announcementChecks(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+  const rows = await ctx.db.query<AnnouncementRow>(
+    `SELECT a.key, a.url, a.status, a.last_error, a.queued_at::text AS queued_at, s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
+       FROM ${t("announcements")} a JOIN ${t("sprints")} s ON s.id = a.sprint_id
+      WHERE a.company_id = $1 AND a.status = 'stuck' ORDER BY a.queued_at LIMIT 20`,
+    [companyId],
+  );
+  return stuckAnnouncementChecks(rows);
 }
 
 // ── waiting ─────────────────────────────────────────────────────────────────
@@ -473,7 +544,7 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
   if (total > 0) {
     const corrected = stats.reduce((sum, s) => sum + count(s.corrected), 0);
     const rate = corrected / total;
-    out.push({ key: "seo_decisions_corrected_30d", label: "Jev decisions corrected by people (30 days)", value: `${corrected} of ${total}`, raw: Math.round(rate * 1000) / 1000, tone: rate > 0.25 ? "bad" : rate > 0.1 ? "warn" : "ok" });
+    out.push({ key: "seo_decisions_corrected_30d", label: "Smart sorting decisions corrected by people (30 days)", value: `${corrected} of ${total}`, raw: Math.round(rate * 1000) / 1000, tone: rate > 0.25 ? "bad" : rate > 0.1 ? "warn" : "ok" });
   }
   return out;
 }
@@ -482,20 +553,40 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
 
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
   const snap = emptySnapshot(PLUGIN_ID, "SEO");
-  const sprints = await part(ctx, "sprints", () => runningSprints(ctx, companyId), [] as SprintRow[]);
-  const agentId = await part(ctx, "agent", () => linkedAgentId(ctx, companyId, SEO_ROLE), null);
-  snap.kpis = await part(ctx, "kpis", () => kpis(ctx, companyId, sprints), [] as CockpitKpi[]);
+  // Sprint days follow the company's timezone, exactly as on the SEO page.
+  const config = await part(ctx, "config", () => readConfig(ctx, companyId), {} as Record<string, unknown>);
+  const today = localDate(new Date(), parseSeoConfig(config).timezone);
+  const sprints = await part(ctx, "sprints", () => activeSprints(ctx, companyId), [] as db.Sprint[]);
+  // The linked agent, or one the host created before hiring moved to tasks.
+  const legacy = async (id: string) => {
+    const resolved = await ctx.agents.managed.get(AGENT_KEY, id);
+    return resolved.agentId && resolved.agent ? resolved.agentId : null;
+  };
+  const agentId = await part(ctx, "agent", () => linkedAgentId(ctx, companyId, SEO_ROLE, legacy), null);
+  const agent = await part(
+    ctx,
+    "agent-status",
+    async (): Promise<AgentView | null> => {
+      if (!agentId) return null;
+      const found = await ctx.agents.get(agentId, companyId);
+      return found ? { id: agentId, name: found.name ?? null, status: found.status ? String(found.status) : null } : null;
+    },
+    null,
+  );
+  const overviews = await part(ctx, "overviews", () => sprintOverviews(ctx.db, companyId, sprints, today, agent), new Map<string, SprintOverview>());
+  snap.kpis = await part(ctx, "kpis", () => kpis(ctx, companyId, sprints, { today, overviews, agent }), [] as CockpitKpi[]);
   snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId, sprints), [] as HealthCheck[]);
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, agentId), [] as QualityMetric[]);
+  snap.team = [{ role: "seo-specialist", agentId, status: agent?.status ?? null }];
   return snap;
 }
 
 /**
- * Hourly (seo-daily, next to the setup status): push each company's snapshot
- * and re-emit content that went live in the last 24 hours. Skips companies
- * whose SEO module is off or whose settings were never saved.
+ * Hourly (seo-daily, next to the setup status): push each company's snapshot,
+ * send pages that are now live to Social and re-send the last 24 hours'.
+ * Skips companies whose SEO module is off or whose settings were never saved.
  */
 export async function publishCockpitSnapshots(env: Env, companies: string[]): Promise<{ published: number; skipped: number; content: number }> {
   const result = { published: 0, skipped: 0, content: 0 };
@@ -507,7 +598,8 @@ export async function publishCockpitSnapshots(env: Env, companies: string[]): Pr
       }
       await publishCockpitSnapshot(env.ctx, companyId, await cockpitSnapshot(env.ctx, companyId));
       result.published += 1;
-      result.content += await part(env.ctx, "content-handoff", () => reemitRecentContent(env, companyId), 0);
+      const handOff = await part(env.ctx, "content-handoff", () => processAnnouncements(env, companyId), { sent: 0, waiting: 0, stuck: 0, resent: 0 });
+      result.content += handOff.sent + handOff.resent;
     } catch (error) {
       result.skipped += 1;
       env.ctx.logger.info("SEO cockpit snapshot skipped", { companyId, error: error instanceof Error ? error.message : String(error) });

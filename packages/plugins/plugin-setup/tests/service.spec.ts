@@ -7,7 +7,7 @@ import manifest, { JOBS } from "../src/manifest.js";
 import { allModulesOn } from "../src/modules.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import { handleApiRoute, registerSetup } from "../src/register.js";
-import { onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, saveModules, weeklyFinishSetup } from "../src/service.js";
+import { onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportStatuses, saveModules, SUMMARY_EVENT, weeklyFinishSetup } from "../src/service.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 
@@ -28,7 +28,8 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.2.1");
+    expect(manifest.version).toBe("0.3.1");
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
     }
@@ -54,7 +55,9 @@ describe("module choice", () => {
     const result = await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "user-1" }, clock);
     expect(result.modules).toEqual({ ...allModulesOn(), seo: false });
     expect(store.module_choices).toEqual([expect.objectContaining({ company_id: A, updated_by: "user-1", updated_at: "2026-09-26T08:00:00.000Z" })]);
-    expect(emitted).toEqual([{ name: SETUP_EVENTS.modulesUpdated, companyId: A, payload: { companyId: A, modules: { ...allModulesOn(), seo: false }, updatedAt: "2026-09-26T08:00:00.000Z" } }]);
+    expect(emitted.filter((e) => e.name === SETUP_EVENTS.modulesUpdated)).toEqual([{ name: SETUP_EVENTS.modulesUpdated, companyId: A, payload: { companyId: A, modules: { ...allModulesOn(), seo: false }, updatedAt: "2026-09-26T08:00:00.000Z" } }]);
+    // The setup count goes to the Cockpit too (one number everywhere).
+    expect(emitted.filter((e) => e.name === SUMMARY_EVENT)).toEqual([{ name: SUMMARY_EVENT, companyId: A, payload: expect.objectContaining({ companyId: A, requiredLeft: expect.any(Number), finishIssueId: expect.any(String) }) }]);
 
     const res = await handleApiRoute(ctx, apiInput(A));
     expect(res.status).toBe(200);
@@ -76,7 +79,10 @@ describe("module choice", () => {
     await saveModules(ctx, { companyId: B, modules: {}, userId: "u" }, fixedClock("2026-09-26T08:05:00.000Z"));
     emitted.length = 0;
     expect(await reemitModules(ctx)).toEqual({ emitted: 1, skipped: 1, failed: 0 });
-    expect(emitted).toEqual([{ name: SETUP_EVENTS.modulesUpdated, companyId: A, payload: expect.objectContaining({ companyId: A, updatedAt: "2026-09-26T08:00:00.000Z" }) }]);
+    expect(emitted).toEqual([
+      { name: SETUP_EVENTS.modulesUpdated, companyId: A, payload: expect.objectContaining({ companyId: A, updatedAt: "2026-09-26T08:00:00.000Z" }) },
+      { name: SUMMARY_EVENT, companyId: A, payload: expect.objectContaining({ companyId: A, requiredLeft: expect.any(Number) }) },
+    ]);
   });
 
   it("wires the action to board users only, with the hourly job", async () => {
@@ -85,7 +91,7 @@ describe("module choice", () => {
     const save = actions.get("setup.save-modules")!;
     await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/board user/);
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
-    expect(emitted).toHaveLength(1);
+    expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
     expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup].sort());
     expect([...handlers.keys()].sort()).toEqual(Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`).sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
@@ -131,7 +137,7 @@ describe("Finish setup issue", () => {
     const { issues, store } = await setup();
     expect(issues.size).toBe(1);
     const issue = [...issues.values()][0]!;
-    expect(issue).toMatchObject({ companyId: A, status: "todo", assigneeUserId: "owner-1", originKind: `plugin:${SETUP_PLUGIN}`, title: "Finish setup: 1 item left" });
+    expect(issue).toMatchObject({ companyId: A, status: "todo", assigneeUserId: "owner-1", originKind: `plugin:${SETUP_PLUGIN}`, title: "Finish setup: 1 step left" });
     expect(issue.description).toContain("**Save the plugin settings**");
     expect(issue.description).toContain("(/PIB/company/settings/instance/plugins/crm-uuid)");
     expect(store.finish_issues).toEqual([expect.objectContaining({ company_id: A, issue_id: issue.id, missing_count: 1 })]);
@@ -142,7 +148,7 @@ describe("Finish setup issue", () => {
     const id = [...issues.keys()][0]!;
     await onStatusEvent(ctx, PIB_PLUGINS.crm, { companyId: A, payload: crmStatus([item("settings", "done"), item("gmail", "missing", { title: "Connect Gmail", href: "/mailbox" }), item("import", "missing", { title: "Import contacts" })]) } as never);
     expect(issues.size).toBe(1);
-    expect(issues.get(id)).toMatchObject({ title: "Finish setup: 2 items left", status: "todo" });
+    expect(issues.get(id)).toMatchObject({ title: "Finish setup: 2 steps left", status: "todo" });
     expect(issues.get(id)!.description).toContain("[Open](/PIB/mailbox)");
     const print = store.finish_issues![0]!.fingerprint;
 
@@ -177,5 +183,39 @@ describe("Finish setup issue", () => {
     expect(await refreshFinishIssue(env.ctx, "nobody", { allowCreate: true })).toEqual({ action: "skipped", reason: "no module choice saved" });
     await saveModules(env.ctx, { companyId: B, modules: ONLY_CRM, userId: "u" });
     expect(env.issues.size).toBe(0);
+  });
+});
+
+describe("setup.report-statuses (the page reports what it checked live)", () => {
+  it("stores PiB statuses, never the wiki or unknown plugins, keeps the newest, and updates the issue and the Cockpit's count", async () => {
+    const env = fakeCtx({ savedConfigs: { [A]: { weeklyIssue: true } }, prefixes: { [A]: "PIB" } });
+    await rememberInstalled(env.ctx, INSTALLED);
+    await saveModules(env.ctx, { companyId: A, modules: ONLY_CRM, userId: "owner-1" }, fixedClock("2026-09-26T08:00:00.000Z"));
+    const id = [...env.issues.keys()][0]!;
+    env.emitted.length = 0;
+    const live = crmStatus([item("settings", "done"), item("agent", "missing"), item("import", "missing")], "2026-09-26T09:30:00.000Z");
+    const result = await reportStatuses(env.ctx, A, { [PIB_PLUGINS.crm]: live, "paperclipai.plugin-llm-wiki": crmStatus([]), "evil.plugin": crmStatus([]) }, fixedClock("2026-09-26T09:31:00.000Z"));
+    expect(result.stored).toEqual([PIB_PLUGINS.crm]);
+    expect(result.summary).toEqual({ requiredDone: 1, requiredTotal: 3, requiredLeft: 2, optionalLeft: 0 });
+    expect(env.store.statuses).toHaveLength(1);
+    expect(env.issues.get(id)).toMatchObject({ title: "Finish setup: 2 steps left" });
+    expect(env.emitted).toEqual([{ name: SUMMARY_EVENT, companyId: A, payload: expect.objectContaining({ companyId: A, requiredLeft: 2, finishIssueId: id }) }]);
+    // A reported time in the future is stored as now, so the plugin's own next push still wins.
+    await reportStatuses(env.ctx, A, { [PIB_PLUGINS.crm]: live }, fixedClock("2026-09-26T09:40:00.000Z"));
+    await reportStatuses(env.ctx, A, { [PIB_PLUGINS.crm]: { ...live, checkedAt: "2030-01-01T00:00:00.000Z" } }, fixedClock("2026-09-26T09:45:00.000Z"));
+    expect(env.store.statuses![0]!.checked_at).toBe("2026-09-26T09:45:00.000Z");
+    await onStatusEvent(env.ctx, PIB_PLUGINS.crm, { companyId: A, payload: crmStatus([item("settings", "done"), item("agent", "missing")], "2026-09-26T10:00:00.000Z") } as never);
+    expect(env.issues.get(id)).toMatchObject({ title: "Finish setup: 1 step left" });
+  });
+
+  it("serves the one count on setup.load and takes reports from board users only", async () => {
+    const { ctx, actions } = fakeCtx({ savedConfigs: { [A]: {} } });
+    registerSetup(ctx);
+    await actions.get("setup.save-modules")!({ modules: ONLY_CRM, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "u1", agentId: null } });
+    const report = actions.get("setup.report-statuses")!;
+    await expect(report({ statuses: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/Setup page/);
+    await report({ statuses: { [PIB_PLUGINS.crm]: crmStatus([item("settings", "done"), item("agent", "missing")]) } }, { companyId: A, actor: { type: "user", userId: "u1" } });
+    const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "u1" } })) as { summary: unknown };
+    expect(load.summary).toEqual({ requiredDone: 1, requiredTotal: 2, requiredLeft: 1, optionalLeft: 0 });
   });
 });

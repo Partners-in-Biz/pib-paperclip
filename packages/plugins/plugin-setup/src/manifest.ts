@@ -1,7 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
 
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.1";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -28,7 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: VERSION,
   displayName: "Setup",
-  description: "Guided setup per company: choose the modules it uses, see what each plugin still needs, fix it with deep links or Do it for me, and copy setup from another company.",
+  description: "Guided setup per company: hire its agents (Team), choose the modules it uses, see what each plugin still needs, fix it with deep links or Do it for me, and copy setup from another company.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
