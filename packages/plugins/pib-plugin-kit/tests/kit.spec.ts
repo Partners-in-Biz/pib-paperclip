@@ -101,6 +101,27 @@ describe("skills", () => {
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
+  it("resets a skill whose company copy drifted even when its version is marked deployed", async () => {
+    const state = new Map<string, unknown>();
+    const reset = vi.fn(async () => ({}));
+    let drift: { changedFiles: string[] } | null = { changedFiles: ["SKILL.md"] };
+    const reconcile = vi.fn(async () => ({ defaultDrift: drift }));
+    const ctx = {
+      state: {
+        get: async (k: { stateKey: string; scopeId?: string }) => state.get(`${k.scopeId}:${k.stateKey}`) ?? null,
+        set: async (k: { stateKey: string; scopeId?: string }, v: unknown) => void state.set(`${k.scopeId}:${k.stateKey}`, v),
+      },
+      skills: { managed: { reset, reconcile } },
+    } as unknown as PluginContext;
+    const skills = [{ skillKey: "operator", markdown: "new" }];
+    // An interrupted upgrade marked the new version as deployed, but the company still has the old copy.
+    state.set(`co:${"x"}`, null);
+    await syncManagedSkills(ctx, "co", skills); // first run: marks the version
+    expect((await syncManagedSkills(ctx, "co", skills))[0]!.action).toBe("reset");
+    drift = null;
+    expect((await syncManagedSkills(ctx, "co", skills))[0]!.action).toBe("reconcile");
+  });
+
   it("adds frontmatter", () => {
     const md = withFrontmatter({ name: "pib-seo-sprint", description: 'Run "the" sprint' }, "# Body");
     expect(md).toContain("name: pib-seo-sprint");

@@ -54,9 +54,13 @@ export async function syncManagedSkills(
     try {
       const deployed = options.force ? null : await ctx.state.get(stateKey(companyId, skill.skillKey));
       if (deployed === version) {
-        await ctx.skills.managed.reconcile(skill.skillKey, companyId);
-        results.push({ skillKey: skill.skillKey, action: "reconcile" });
-        continue;
+        const resolution = (await ctx.skills.managed.reconcile(skill.skillKey, companyId)) as { defaultDrift?: { changedFiles?: string[] } | null } | null;
+        // The marker says this version is deployed, but the company's copy can still differ (an upgrade
+        // interrupted mid-copy, or an edit): only an unchanged copy counts as up to date.
+        if (!resolution?.defaultDrift?.changedFiles?.length) {
+          results.push({ skillKey: skill.skillKey, action: "reconcile" });
+          continue;
+        }
       }
       await ctx.skills.managed.reset(skill.skillKey, companyId);
       await ctx.state.set(stateKey(companyId, skill.skillKey), version);
