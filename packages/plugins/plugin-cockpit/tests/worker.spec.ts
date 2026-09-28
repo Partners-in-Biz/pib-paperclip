@@ -55,7 +55,7 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.4.1");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [
@@ -321,8 +321,13 @@ describe("System health issue", () => {
   it("warns about plugins that stopped reporting", async () => {
     const { env, store, issues, clock } = setup();
     await withRoles(env);
-    await env.ctx.state.set({ scopeKind: "instance", namespace: "cockpit", stateKey: "installed-plugins" }, { [PIB_PLUGINS.crm]: { id: "c", status: "ready" }, [PIB_PLUGINS.seo]: { id: "s", status: "ready" } });
-    store.snapshots = [{ company_id: A, plugin_key: PIB_PLUGINS.crm, kind: "cockpit", payload: snapshot(PIB_PLUGINS.crm, "2026-09-26T09:30:00.000Z"), checked_at: "2026-09-26T09:30:00.000Z", received_at: "2026-09-26T09:30:00.000Z" }];
+    await env.ctx.state.set({ scopeKind: "instance", namespace: "cockpit", stateKey: "installed-plugins" }, { [PIB_PLUGINS.crm]: { id: "c", status: "ready" }, [PIB_PLUGINS.seo]: { id: "s", status: "ready" }, [PIB_PLUGINS.payroll]: { id: "p", status: "ready" } });
+    const seoSetup = { plugin: PIB_PLUGINS.seo, items: [{ key: "settings", status: "done" }] };
+    store.snapshots = [
+      { company_id: A, plugin_key: PIB_PLUGINS.crm, kind: "cockpit", payload: snapshot(PIB_PLUGINS.crm, "2026-09-26T09:30:00.000Z"), checked_at: "2026-09-26T09:30:00.000Z", received_at: "2026-09-26T09:30:00.000Z" },
+      // SEO saved its settings (it reported its setup) but never reported to the Cockpit; Payroll's settings are not saved.
+      { company_id: A, plugin_key: PIB_PLUGINS.seo, kind: "setup", payload: seoSetup, checked_at: "2026-09-26T09:30:00.000Z", received_at: "2026-09-26T09:30:00.000Z" },
+    ];
     // The Cockpit started listening at 10:00; SEO never reported. Not stale yet.
     expect(await refreshHealthIssue(env, A)).toMatchObject({ action: "none" });
     clock.set("2026-09-26T14:00:00.000Z");
@@ -331,6 +336,7 @@ describe("System health issue", () => {
     const text = issues.get((result as { issueId: string }).issueId)!.description;
     expect(text).toContain("CRM plugin not reporting");
     expect(text).toContain("SEO plugin not reporting");
+    expect(text).not.toContain("Payroll plugin not reporting");
   });
 
   it("the hourly job skips companies without saved settings or roles", async () => {

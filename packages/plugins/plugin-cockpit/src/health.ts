@@ -11,6 +11,7 @@ import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
 import { clearHealthIssue, getHealthIssue, getRoles, listRoles, listSnapshots, saveHealthIssue } from "./db.js";
 import { message, readInstalled, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
+import { settingsSavedIn } from "./flows.js";
 import { agentHealth, parseSnapshot, staleChecks, type AgentLite, type CockpitSnapshot, type HealthEntry } from "./merge.js";
 import { ownSnapshot } from "./own.js";
 import { plainDetail } from "./plain.js";
@@ -69,11 +70,17 @@ export async function storedSnapshots(env: Env, companyId: string): Promise<Arra
 }
 
 /** Plugins that should be reporting: known from a snapshot, or installed and ready; module on. */
+/**
+ * Plugins that should be reporting: module on, and either already reporting or
+ * installed, ready and with settings saved. Unsaved settings are a Setup step
+ * (the Flows tab shows them), not a plugin that went quiet.
+ */
 export async function expectedPlugins(env: Env, companyId: string, known: string[]): Promise<string[]> {
   const installed = await readInstalled(env.ctx);
+  const setup = new Map((await listSnapshots(env.ctx, companyId, "setup").catch(() => [])).map((row) => [row.pluginKey, row.payload]));
   const keys = new Set(known);
   for (const [key, entry] of Object.entries(installed ?? {})) {
-    if (entry.status === "ready" && key !== PLUGIN_KEY && key !== "partnersinbiz.setup") keys.add(key);
+    if (entry.status === "ready" && key !== PLUGIN_KEY && key !== "partnersinbiz.setup" && settingsSavedIn(setup.get(key))) keys.add(key);
   }
   const out: string[] = [];
   for (const key of keys) if (await isModuleEnabled(env.ctx, companyId, key)) out.push(key);

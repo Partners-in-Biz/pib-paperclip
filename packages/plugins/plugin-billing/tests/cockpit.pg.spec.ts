@@ -20,7 +20,7 @@ const OTHER = "22222222-2222-2222-2222-222222222222";
 describe("manifest", () => {
   it("declares the cockpit route", () => {
     expect(manifest.apiRoutes).toContainEqual(COCKPIT_ROUTE);
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.5.1");
   });
 });
 
@@ -223,6 +223,12 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
     await h.deliver(MODULES_UPDATED, COMPANY, { companyId: COMPANY, modules: { billing: false }, updatedAt: new Date().toISOString() });
     await h.runJob("mark-overdue");
     expect(h.emitted.filter((e) => e.name === "cockpit.snapshot")).toEqual([]);
+  });
+
+  it("also pushes for a company with settings saved and no billing data yet", async () => {
+    h.config.set(COMPANY, { ...SETTINGS });
+    await h.runJob("mark-overdue");
+    expect(h.emitted.filter((e) => e.name === "cockpit.snapshot").map((e) => e.companyId)).toEqual([COMPANY]);
   });
 
   describe("Reviewer routing", () => {

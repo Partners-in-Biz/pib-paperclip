@@ -142,7 +142,11 @@ export async function startHarness(): Promise<Harness> {
         return { queued: true };
       },
     },
-    companies: { get: async (id: string) => ({ id, name: "Partners in Biz", issuePrefix: "PIB" }) },
+    companies: {
+      get: async (id: string) => ({ id, name: "Partners in Biz", issuePrefix: "PIB" }),
+      // The host's company list: the test company plus one that never saved Billing settings.
+      list: async () => [{ id: COMPANY, name: "Partners in Biz", issuePrefix: "PIB" }, { id: "33333333-3333-3333-3333-333333333333", name: "Other", issuePrefix: "OTH" }],
+    },
     config: { get: async (companyId: string) => config.get(companyId) ?? {} },
     secrets: { resolve: async (ref: { secretId: string }) => `secret-${ref.secretId}` },
     state: {

@@ -531,10 +531,21 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   return snap;
 }
 
+/** Companies with billing data, plus any whose Billing settings are saved (a new company has no data yet). */
+async function reportingCompanyIds(ctx: PluginContext): Promise<string[]> {
+  const ids = new Set(await knownCompanyIds(ctx).catch(() => [] as string[]));
+  try {
+    for (const company of await ctx.companies.list({ limit: 100 })) ids.add(company.id);
+  } catch (error) {
+    ctx.logger.info("Company list unavailable for the Cockpit push", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return [...ids];
+}
+
 /** Hourly push to the Cockpit for companies with Billing on and settings saved. Never throws. */
 export async function publishAllCockpit(ctx: PluginContext): Promise<number> {
   let published = 0;
-  for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
+  for (const companyId of await reportingCompanyIds(ctx)) {
     try {
       if (!(await billingOn(ctx, companyId)) || !(await configSaved(ctx, companyId))) continue;
       await publishCockpitSnapshot(ctx, companyId, await cockpitSnapshot(ctx, companyId));

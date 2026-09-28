@@ -5,7 +5,7 @@
 import type { ModuleKey } from "@partnersinbiz/pib-plugin-kit/setup";
 import { askWaitingItem, type AskView } from "./ask-model.js";
 import { BACKUP_STALE_HOURS, PLUGIN_KEY } from "./constants.js";
-import { buildFlows, type FlowsView } from "./flows.js";
+import { buildFlows, settingsSavedIn, type FlowsView } from "./flows.js";
 import {
   activityGroups,
   agentRows,
@@ -178,7 +178,8 @@ export function buildView(input: ViewInput): CockpitView {
     ...new Set([
       ...Object.keys(storedTimes),
       ...Object.entries(input.installed ?? {})
-        .filter(([key, p]) => p.status === "ready" && key !== "partnersinbiz.setup")
+        // Not reported yet and settings unsaved: a Setup step (see Flows), not a quiet plugin.
+        .filter(([key, p]) => p.status === "ready" && key !== "partnersinbiz.setup" && (!input.load.setupStatuses || settingsSavedIn(input.load.setupStatuses[key])))
         .map(([key]) => key),
     ]),
   ].filter((key) => key !== PLUGIN_KEY && pluginEnabled(input.modules, key) && (!input.installed || input.installed[key]));

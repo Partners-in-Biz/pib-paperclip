@@ -172,6 +172,11 @@ function roleTitle(role: TeamRoleKey): string {
 }
 
 /** The plugin's `settings` item: true done, false not done, null when its status does not say. */
+/** Settings saved, going by a plugin's setup status: it reports one once they are saved, and its "settings" item is not open. */
+export function settingsSavedIn(status: unknown): boolean {
+  return Boolean(status) && settingsDone(status) !== false;
+}
+
 export function settingsDone(status: unknown): boolean | null {
   if (!status || typeof status !== "object") return null;
   const items = (status as { items?: unknown }).items;
@@ -220,8 +225,7 @@ export function stageOff(stage: Pick<FlowStage, "module" | "plugin" | "role">, i
     if (input.cockpitSettingsSaved === false) return settings;
   } else if (input.setupStatuses) {
     // A plugin reports its setup once its settings are saved, so no status at all means they are not.
-    const status = input.setupStatuses[stage.plugin];
-    if (!status || settingsDone(status) === false) return settings;
+    if (!settingsSavedIn(input.setupStatuses[stage.plugin])) return settings;
   }
   return stage.role ? roleOff(stage.role, input) : null;
 }
