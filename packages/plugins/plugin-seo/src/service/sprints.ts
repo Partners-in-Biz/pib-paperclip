@@ -112,7 +112,10 @@ export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVarian
 export async function ensureRootIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, projectId: string | null): Promise<db.Sprint> {
   if (sprint.rootIssueId) {
     const existing = await getIssue(env, sprint.companyId, sprint.rootIssueId);
-    if (existing) {
+    // A closed root issue is retired (e.g. its thread grew too long to hand an agent): open a fresh one.
+    if (existing && (existing.status === "done" || existing.status === "cancelled")) {
+      // fall through to create a new root issue
+    } else if (existing) {
       if (existing.identifier && existing.identifier !== sprint.rootIssueIdentifier) {
         await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { root_issue_identifier: existing.identifier });
         return { ...sprint, rootIssueIdentifier: existing.identifier };
@@ -523,13 +526,24 @@ export async function updateSprintTool(env: Env, companyId: string, actor: Actor
   return { sprintId: sprint.id, updated: Object.keys(patch), ...(moved ? { client: moved.client, clientName: moved.clientName } : {}) };
 }
 
+/** A digest is a short daily note on the sprint issue; long ones made its thread too big to hand an agent. */
+export const DIGEST_MAX = 1000;
+
 export async function postDigest(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   if (!sprint.rootIssueId) throw new SeoError("This sprint has no root issue yet");
+  const summary = reqStr(params, "summary", { max: 6000 });
+  if (summary.length > DIGEST_MAX) {
+    throw new SeoError(`Keep the digest under ${DIGEST_MAX} characters: what moved (real numbers) and what waits on whom. The full report belongs on the task's own issue.`);
+  }
   const info = await companyInfo(env, companyId);
   const today = await sprintToday(env, info, sprint);
+  const mark = { scopeKind: "company" as const, scopeId: companyId, namespace: "seo-digest", stateKey: `${sprint.id}:${info.today}` };
+  if (await env.ctx.state.get(mark).catch(() => null)) {
+    return { sprintId: sprint.id, rootIssueId: sprint.rootIssueId, posted: false, reason: "Today's digest is already posted. Put task details on the task's own issue." };
+  }
   const body = digestComment({
-    summary: reqStr(params, "summary", { max: 6000 }),
+    summary,
     day: today.day,
     week: today.week,
     phase: today.phase,
@@ -539,5 +553,6 @@ export async function postDigest(env: Env, companyId: string, actor: Actor, para
   });
   const ok = await commentOn(env, companyId, sprint.rootIssueId, body);
   if (!ok) throw new SeoError("The digest comment could not be posted");
+  await env.ctx.state.set(mark, new Date().toISOString()).catch(() => undefined);
   return { sprintId: sprint.id, rootIssueId: sprint.rootIssueId, posted: true, by: actorLabel(actor) };
 }

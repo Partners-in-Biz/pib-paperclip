@@ -44,7 +44,7 @@ Procedure:
 3. Close each finished task with partnersinbiz.seo:complete-task (summary, PR/commit links, check output). Only for a true one-time grant or judgement call partnersinbiz.seo:block-task with a precise humanAsk (review: true for sign-off); it lands on the sprint's weekly Needs you issue. Do not redo tasks already waiting there.
 4. Follow each sprint's next steps from today: verify Search Console yourself with the service account, link the site repo if you know its project (link-site), request indexing, set up Bing. Items already on Needs you close on their own once done.
 5. Never invent numbers. Positions update automatically from GSC each morning.
-6. For each sprint you touched, call partnersinbiz.seo:post-digest with what you did, what moved (real numbers) and what waits on whom.
+6. For each sprint you touched, call partnersinbiz.seo:post-digest once, under 1,000 characters: what moved (real numbers) and what waits on whom.
 7. Close this routine issue with a one-line summary per sprint.`;
 
 const WEEKLY_ROUTINE_DESCRIPTION = `Weekly SEO review across active sprints (the seo-weekly job ran the detectors at 07:00 SAST).
@@ -60,7 +60,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.9.1",
+  version: "0.9.2",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",

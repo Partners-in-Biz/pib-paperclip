@@ -127,7 +127,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Sprints", name: "pause-sprint", displayName: "Pause SEO sprint", description: "Stop the daily run and new task issues for a sprint.", parametersSchema: schema(["sprintId"], { sprintId, reason: text("Why it is paused, posted on the sprint root issue (max 1000 chars)") }) },
   { group: "Sprints", name: "resume-sprint", displayName: "Resume SEO sprint", description: "Resume a paused or archived sprint; its status follows the calendar again.", parametersSchema: schema(["sprintId"], { sprintId }) },
   { group: "Sprints", name: "archive-sprint", displayName: "Archive SEO sprint", description: "End a sprint. Nothing runs for it afterwards.", parametersSchema: schema(["sprintId"], { sprintId, reason: text("Why it ends, posted on the sprint root issue (max 1000 chars)") }) },
-  { group: "Sprints", name: "post-digest", displayName: "Post SEO digest", description: "Post a digest comment on the sprint root issue: your summary plus today's completed and waiting tasks.", parametersSchema: schema(["sprintId", "summary"], { sprintId, summary: text("What you did, what moved, what is next — real numbers only") }) },
+  { group: "Sprints", name: "post-digest", displayName: "Post SEO digest", description: "Once a day: post a short digest (under 1,000 characters) on the sprint root issue: your summary plus today's completed and waiting tasks. Full task reports belong on the task issue.", parametersSchema: schema(["sprintId", "summary"], { sprintId, summary: text("What you did, what moved, what is next — real numbers only") }) },
 
   // Tasks
   {
