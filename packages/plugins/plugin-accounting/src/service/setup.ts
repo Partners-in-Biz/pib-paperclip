@@ -114,7 +114,8 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
         const defaults: string[] = [];
         if (blank(raw.vatCategory)) defaults.push("VAT category B");
         if (raw.financialYearEndMonth == null || raw.financialYearEndMonth === "") defaults.push("year-end February");
-        const note = defaults.length ? ` Using the defaults: ${defaults.join(", ")}.` : "";
+        const vatHint = missing.includes("VAT number") ? " Not registered for VAT? Set **VAT category** to none in Accounting settings; then no VAT number is needed." : "";
+        const note = (defaults.length ? ` Using the defaults: ${defaults.join(", ")}.` : "") + vatHint;
         return {
           done: missing.length === 0,
           detail: `Still missing: ${missing.join(", ")}.${note}`,
