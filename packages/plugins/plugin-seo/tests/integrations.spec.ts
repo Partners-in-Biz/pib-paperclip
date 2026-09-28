@@ -76,6 +76,8 @@ describe("Google OAuth", () => {
     expect(url.searchParams.get("scope")).toBe(GSC_SCOPE);
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("state")).toBe("st-1");
+    // The Google client is shared with Gmail and YouTube: merging earlier grants makes Google refuse the request.
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
   });
 
   it("exchanges the code with a form body", async () => {

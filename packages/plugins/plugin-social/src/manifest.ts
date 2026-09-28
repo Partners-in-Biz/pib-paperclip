@@ -9,7 +9,7 @@ import { SOCIAL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.7.0",
+  version: "0.7.1",
   displayName: "Social",
   description:
     "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Inbox triage (built-in rules, or Jev); Growth Lab scores, experiments and playbook. " +

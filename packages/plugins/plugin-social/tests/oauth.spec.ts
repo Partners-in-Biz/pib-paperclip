@@ -55,6 +55,12 @@ describe("authorize URLs", () => {
     });
   }
 
+  it("youtube asks only for YouTube scopes and never merges earlier grants (the Google client is shared)", async () => {
+    const { parsed } = await authorize("youtube");
+    expect(parsed.searchParams.has("include_granted_scopes")).toBe(false);
+    for (const s of parsed.searchParams.get("scope")!.split(" ")) expect(s).toMatch(/^https:\/\/www\.googleapis\.com\/auth\/youtube/);
+  });
+
   it("linkedin adds organization scopes only when company pages are on", async () => {
     const off = (await authorize("linkedin")).parsed.searchParams.get("scope")!;
     const on = (await authorize("linkedin", { linkedinOrgPages: true })).parsed.searchParams.get("scope")!;

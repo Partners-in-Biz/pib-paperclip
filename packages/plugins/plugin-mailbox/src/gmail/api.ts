@@ -67,7 +67,8 @@ export function buildGoogleAuthorizeUrl(input: { clientId: string; redirectUri: 
     scope: GMAIL_SCOPES.join(" "),
     access_type: "offline",
     prompt: "consent",
-    include_granted_scopes: "true",
+    // No include_granted_scopes: every PiB Google connection shares one OAuth client, so it would pull other
+    // connections' scopes (YouTube, Drive, Gmail) into this request, and Google refuses YouTube mixed with others.
     state: input.state,
   });
   if (input.loginHint) params.set("login_hint", input.loginHint);

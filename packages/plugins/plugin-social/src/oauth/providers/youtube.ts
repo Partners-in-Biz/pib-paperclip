@@ -103,7 +103,8 @@ export const youtubeProvider: SocialProvider = {
       scope: scopesFor(youtubeProvider, env).join(" "),
       access_type: "offline",
       prompt: "consent",
-      include_granted_scopes: "true",
+      // No include_granted_scopes: every PiB Google connection shares one OAuth client, so it would pull other
+      // connections' scopes (YouTube, Drive, Gmail) into this request, and Google refuses YouTube mixed with others.
       state,
     });
     return { url: `https://accounts.google.com/o/oauth2/v2/auth?${qs.toString()}` };
