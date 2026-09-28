@@ -17,7 +17,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import type { ClientKind } from "./client-ref.js";
 import { PIB_PLUGINS } from "./contracts.js";
-import { teamRoleHealth, type TeamRoleKey } from "./team.js";
+import { teamRoleChain, teamRoleHealth, type TeamRoleKey } from "./team.js";
 import type { FlowStageReport } from "./flows.js";
 
 export const COCKPIT_PLUGIN = "partnersinbiz.cockpit";
@@ -322,6 +322,11 @@ export async function routeWork(ctx: PluginContext, companyId: string, roles: Te
   }
   const owner = (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
   return owner ? { assigneeAgentId: null, assigneeUserId: owner, via: "owner" } : { assigneeAgentId: null, assigneeUserId: null, via: "none" };
+}
+
+/** Work for one role: that role, then the roles covering it (kit `teamRoleChain`), then the Operator, then the owner. */
+export async function routeRole(ctx: PluginContext, companyId: string, role: TeamRoleKey): Promise<WorkRoute> {
+  return routeWork(ctx, companyId, teamRoleChain(role));
 }
 
 /** Unknown status counts as usable (older Cockpits did not send it). */

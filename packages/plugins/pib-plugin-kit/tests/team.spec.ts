@@ -4,6 +4,7 @@ import {
   COMPANY_OS_SKILL_KEY,
   TEAM_ROLES,
   teamRole,
+  teamRoleChain,
   teamRoleForSetupItem,
   teamRoleHealth,
   teamSetupPath,
@@ -12,7 +13,7 @@ import {
 
 describe("team roles", () => {
   it("lists every recommended PiB agent once, with its plugin's actions", () => {
-    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
+    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
     expect(new Set(TEAM_ROLES.map((r) => `${r.pluginKey}:${r.setupItemKey}`)).size).toBe(TEAM_ROLES.length);
     for (const role of TEAM_ROLES) {
       expect(role.actions.options).toMatch(/\.hire-options$/);
@@ -25,6 +26,20 @@ describe("team roles", () => {
     expect(teamRole("account-manager").pluginKey).toBe("partnersinbiz.crm");
     expect(teamRole("reviewer").required).toBe(false);
     expect(teamRole("payroll-clerk").required).toBe(false);
+  });
+
+  it("makes the sales roles optional CRM roles covered by the Account Manager", () => {
+    for (const key of ["sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk"] as const) {
+      const role = teamRole(key);
+      expect(role.pluginKey).toBe("partnersinbiz.crm");
+      expect(role.required).toBe(false);
+      expect(role.coveredBy).toBe("account-manager");
+      expect(role.actions.params).toEqual({ role: key });
+      expect(role.skills[0]).toBe("plugin/partnersinbiz-crm/crm-records");
+      expect(teamRoleChain(key)).toEqual([key, "account-manager"]);
+    }
+    expect(teamRole("account-manager").actions.params).toBeUndefined();
+    expect(teamRoleChain("bookkeeper")).toEqual(["bookkeeper"]);
   });
 
   it("builds canonical skill keys like the host", () => {
@@ -41,7 +56,8 @@ describe("team roles", () => {
 
   it("keeps roles for switched-on modules only", () => {
     expect(activeTeamRoles(null)).toHaveLength(TEAM_ROLES.length);
-    expect(activeTeamRoles({ payroll: false, social: false }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "seo-specialist", "bookkeeper"]);
+    expect(activeTeamRoles({ payroll: false, social: false }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "seo-specialist", "bookkeeper"]);
+    expect(activeTeamRoles({ crm: false }).some((r) => r.pluginKey === "partnersinbiz.crm")).toBe(false);
   });
 
   it("rates a role: missing, hiring, attention or ok", () => {

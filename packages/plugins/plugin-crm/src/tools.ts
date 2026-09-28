@@ -449,14 +449,14 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "find-duplicates",
     displayName: "Find duplicate contacts",
-    description: "Contacts that share an email address. Merge only after a person confirmed they are the same person.",
+    description: "Contacts that share an email address (exact duplicates): merge them with merge-contacts, keeping the oldest as the primary. Likely but uncertain duplicates (similar names) go to a person first.",
     parametersSchema: schema([], {}),
   },
   {
     name: "merge-contacts",
     displayName: "Merge contacts",
     description:
-      "Fold a duplicate contact into the primary: links, deals, activities, facts and sequences move, then the duplicate is deleted. Only after a person confirmed they are the same person.",
+      "Fold a duplicate contact into the primary: links, deals, activities, facts and sequences move, then the duplicate is deleted. Use it for contacts that share an email; ask a person first when they only look alike.",
     parametersSchema: schema(["primaryContactId", "duplicateContactId"], {
       primaryContactId: text("The contact to keep."),
       duplicateContactId: text("The contact to fold in and delete."),

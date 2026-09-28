@@ -20,7 +20,7 @@ import { asObject, getQuote, table } from "./db.js";
 import { daysPastDue } from "./domain.js";
 import { optedOutClients, requestStage, sentStages } from "./dunning.js";
 import { WORK_ORIGINS } from "./origins.js";
-import { billingPath, companyPrefix, pagePath, workRoute } from "./routing.js";
+import { billingPath, companyPrefix, pagePath, quoteRoute, workRoute } from "./routing.js";
 import { billingOn } from "./setup.js";
 import { closeStandingIssue, getWorkIssue, upsertStandingIssue } from "./workissues.js";
 
@@ -384,7 +384,7 @@ export async function openQuoteReplyIssue(ctx: PluginContext, companyId: string,
     title: `Quote reply: ${quote.number} (${name})`,
     description,
     fingerprint: mail.key,
-    route: await workRoute(ctx, companyId),
+    route: await quoteRoute(ctx, companyId),
     wake: true,
     comment: `New reply from ${from}: "${snippet.slice(0, 300)}"`,
     wakeReason: "A customer replied to a quote",

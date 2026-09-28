@@ -113,6 +113,18 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Links a hired Account Manager, re-sends the last day's hand-offs, tells the Setup plugin what the CRM still needs, sends the Cockpit snapshot, and checks WordPress sites the Connector has not heard from in 6 hours.",
       schedule: "17 * * * *",
     },
+    {
+      jobKey: "sales-daily",
+      displayName: "Sales: quiet deals and duplicate contacts",
+      description: "Daily 07:30 SAST: opens a pipeline check for the Sales Lead when open deals have gone quiet for 14 days, and a duplicates issue for the CRM Data Steward when contacts share an email. Never a second one while the last is open.",
+      schedule: "30 5 * * *",
+    },
+    {
+      jobKey: "sales-weekly",
+      displayName: "Sales: weekly pipeline summary and CRM hygiene",
+      description: "Mondays 08:00 SAST: the weekly pipeline summary for the Sales Lead and the CRM hygiene report for the CRM Data Steward, for companies with CRM records.",
+      schedule: "0 6 * * 1",
+    },
   ],
   skills: SKILLS,
   apiRoutes: [

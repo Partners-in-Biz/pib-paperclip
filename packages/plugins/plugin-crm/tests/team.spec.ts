@@ -9,7 +9,7 @@ import { COMPANY_OS_HIRE_SKILL } from "@partnersinbiz/pib-plugin-kit";
 import { TEAM_ROLES, teamRole, teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import manifest from "../src/manifest.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
-import { ACCOUNT_MANAGER_ROLE } from "../src/agent.js";
+import { ACCOUNT_MANAGER_ROLE, CRM_HIRE_ROLES, CRM_ROLE_KEYS, crmRoleOf } from "../src/agent.js";
 import { SKILLS } from "../src/skills.js";
 import { setupStatus } from "../src/setup-status.js";
 import { EXTRA_SKILLS, ROLE_SKILLS, TEAM_ROLE } from "../src/ui/role-skills.js";
@@ -32,10 +32,31 @@ function emptyCompany(): PluginContext {
 describe("Account Manager role matches TEAM_ROLES", () => {
   const role = teamRole(TEAM_ROLE);
 
-  it("is the one CRM role in the registry", () => {
-    expect(TEAM_ROLES.filter((r) => r.pluginKey === PLUGIN_ID).map((r) => r.key)).toEqual([TEAM_ROLE]);
+  it("the CRM's roles are the registry's CRM roles, the Account Manager first", () => {
+    expect(TEAM_ROLES.filter((r) => r.pluginKey === PLUGIN_ID).map((r) => r.key)).toEqual([...CRM_ROLE_KEYS]);
+    expect(CRM_ROLE_KEYS[0]).toBe(TEAM_ROLE);
     expect(role.pagePath).toBe("/crm");
     expect(ACCOUNT_MANAGER_ROLE.roleKey).toBe(TEAM_ROLE);
+  });
+
+  it("each sales hire role matches its registry role, and ships its skills", () => {
+    const shipped = SKILLS.map((s) => [`plugin/partnersinbiz-crm/${s.skillKey}`, s.slug]);
+    for (const key of CRM_ROLE_KEYS.filter((k) => k !== TEAM_ROLE)) {
+      const hire = CRM_HIRE_ROLES[key];
+      const registry = teamRole(key);
+      expect(hire.roleKey).toBe(key);
+      expect(hire.skills.map((s) => s.key)).toEqual(registry.skills);
+      expect(hire.skills.at(-1)).toEqual(COMPANY_OS_HIRE_SKILL);
+      for (const skill of hire.skills.slice(0, -1)) expect(shipped).toContainEqual([skill.key, skill.slug]);
+      expect(registry.actions.params).toEqual({ role: key });
+      expect(registry.coveredBy).toBe(TEAM_ROLE);
+    }
+  });
+
+  it("actions pick the role from params.role, the Account Manager by default", () => {
+    expect(crmRoleOf({})).toBe(ACCOUNT_MANAGER_ROLE);
+    expect(crmRoleOf({ role: "deal-desk" })).toBe(CRM_HIRE_ROLES["deal-desk"]);
+    expect(() => crmRoleOf({ role: "bookkeeper" })).toThrow(/Unknown CRM role/);
   });
 
   it("same plugin and skills as the hire role, ending with the company operating manual", () => {

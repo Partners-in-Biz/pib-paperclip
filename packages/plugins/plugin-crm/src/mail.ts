@@ -289,7 +289,8 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       legacyOriginId: LEGACY_ORIGINS.reply(mail.messageId),
       title: `${followUp ? "Reply from" : "Check reply from"} ${name}: ${subject}`.slice(0, 200),
       description: lines.join("\n"),
-      assignee: await contactAssignee(ctx, companyId, contact),
+      // A lead's reply is sales work; a client's is the Account Manager's.
+      assignee: await recordAssignee(ctx, companyId, contact, contact.lifecycle === "lead" ? "inbound-qualifier" : "account-manager"),
       wakeReason: "A CRM contact replied",
     });
   }

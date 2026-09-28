@@ -57,6 +57,7 @@ import {
   hireStale,
   isTeamPath,
   OWNER_ANCHOR,
+  coverTitle,
   ownerChoices,
   ownerLabel,
   ownerPatch,
@@ -537,12 +538,12 @@ const HEALTH: Record<TeamRowHealth, { label: string; tone: ToneInput; icon: Luci
   unknown: { label: "Can't check", tone: "neutral", icon: CircleQuestionMark },
 };
 
-export function healthLabel(role: Pick<TeamRole, "required">, health: TeamRowHealth): { label: string; tone: ToneInput; icon: LucideIcon } {
-  if (health === "missing" && !role.required) return { label: "Not hired", tone: "neutral", icon: CircleDot };
+export function healthLabel(role: Pick<TeamRole, "required" | "coveredBy">, health: TeamRowHealth): { label: string; tone: ToneInput; icon: LucideIcon } {
+  if (health === "missing" && !role.required) return { label: coverTitle(role) ? "Covered" : "Not hired", tone: "neutral", icon: CircleDot };
   return HEALTH[health];
 }
 
-export function HealthPill({ role, health }: { role: Pick<TeamRole, "required">; health: TeamRowHealth }) {
+export function HealthPill({ role, health }: { role: Pick<TeamRole, "required" | "coveredBy">; health: TeamRowHealth }) {
   const pill = healthLabel(role, health);
   return <Pill tone={pill.tone} icon={pill.icon}>{pill.label}</Pill>;
 }
@@ -662,7 +663,7 @@ export function TeamRoleRow({ state, open, highlight, busy, note, linkFor, now, 
   else if (health === "unknown") status = <span style={muted}>Could not check</span>;
   else if (agent) status = <AgentName agent={agent} linkFor={linkFor} />;
   else if (hire) status = <span style={{ fontSize: 13 }}>Hire task <a {...linkFor(hirePath(hire))} style={linkStyle}>{hire.identifier ?? "open"}</a> is open</span>;
-  else status = <span style={muted}>No one yet</span>;
+  else status = <span style={muted}>{coverTitle(role) ? `The ${coverTitle(role)} covers it` : "No one yet"}</span>;
 
   // Full-height (36px) buttons: the page is used on phones.
   const small = { padding: "0 12px" } as const;
@@ -721,7 +722,7 @@ export function TeamRoleRow({ state, open, highlight, busy, note, linkFor, now, 
           {health === "unknown" ? <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, ...breakAnywhere }}>{state.error}</p> : null}
           {health === "missing" ? (
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
-              Hire opens a ready-made hire task for whoever hires here (usually the CEO). The new agent is linked and set up for you. Already have one? Pick it.
+              {coverTitle(role) ? `Until you hire one, the ${coverTitle(role)} does this work. ` : ""}Hire opens a ready-made hire task for whoever hires here (usually the CEO). The new agent is linked and set up for you. Already have one? Pick it.
             </p>
           ) : null}
           {hire ? (

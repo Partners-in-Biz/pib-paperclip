@@ -55,7 +55,7 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.4.1");
+    expect(manifest.version).toBe("0.4.2");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [

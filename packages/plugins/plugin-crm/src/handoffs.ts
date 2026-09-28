@@ -146,7 +146,7 @@ export async function onDealWon(ctx: PluginContext, deal: DealDraft, how: string
       ].join("\n"),
       originKind: ORIGIN,
       originId: originFor.wonClient(deal.id),
-      ...(await teamAssignee(ctx, deal.companyId)),
+      ...(await teamAssignee(ctx, deal.companyId, "sales-lead")),
       wakeReason: "A won deal needs its client",
     });
     return { firstWin: false, emitted: false, issueId: issue.id };
@@ -387,7 +387,7 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
     ].join("\n"),
     originKind: ORIGIN,
     originId: originFor.quoteDeal(quoteRef),
-    ...(await teamAssignee(ctx, companyId)),
+    ...(await teamAssignee(ctx, companyId, "sales-lead")),
     wakeReason: "An accepted quote needs its deal",
   });
   await insertActivityOnce(ctx, {

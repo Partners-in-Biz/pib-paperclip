@@ -1,8 +1,9 @@
 /**
  * Who gets Billing's issues, so nothing is left unassigned.
  *
- * - Work (drafting, follow-ups, replies): the Account Manager, else the
- *   Bookkeeper, else the Operator, else the owner (`routeWork`).
+ * - Work (drafting, follow-ups, invoice replies): the Account Manager, else the
+ *   Bookkeeper, else the Operator, else the owner (`routeWork`). Quote
+ *   replies go to the Deal Desk first (`quoteRoute`).
  * - Outward approvals (sending an invoice, quote or reminder): the Reviewer
  *   first when one is running, else the Billing approver (settings
  *   `reviewerUserId`), else the owner.
@@ -10,7 +11,7 @@
  *   matches, bills): the Billing approver, else the owner. Never an agent.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { companyRoles, reviewerAgentId, routeWork, teamAgentId, teamSetupPath, type TeamRoleKey, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
+import { companyRoles, reviewerAgentId, routeWork, teamAgentId, teamRoleChain, teamSetupPath, type TeamRoleKey, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
 import type { BillingSettings } from "./config.js";
 
 /** Billing work goes to these roles, in order (then the Operator, then the owner). */
@@ -19,6 +20,17 @@ export const WORK_ROLES: TeamRoleKey[] = ["account-manager", "bookkeeper"];
 export async function workRoute(ctx: PluginContext, companyId: string): Promise<WorkRoute> {
   try {
     return await routeWork(ctx, companyId, WORK_ROLES);
+  } catch {
+    return { assigneeAgentId: null, assigneeUserId: null, via: "none" };
+  }
+}
+
+/** Quote replies are sales work: the Deal Desk, else who covers it (the Account Manager), then the Bookkeeper. */
+export const QUOTE_ROLES: TeamRoleKey[] = [...teamRoleChain("deal-desk"), "bookkeeper"];
+
+export async function quoteRoute(ctx: PluginContext, companyId: string): Promise<WorkRoute> {
+  try {
+    return await routeWork(ctx, companyId, QUOTE_ROLES);
   } catch {
     return { assigneeAgentId: null, assigneeUserId: null, via: "none" };
   }

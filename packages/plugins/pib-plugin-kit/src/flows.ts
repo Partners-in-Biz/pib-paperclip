@@ -50,9 +50,9 @@ export const FLOWS: FlowDefinition[] = [
     title: "Lead to cash",
     summary: "A lead becomes a client, is quoted, invoiced and paid, and the money lands in the books.",
     stages: [
-      s({ key: "lead.in", label: "New leads", description: "Leads from Social and the Mailbox, waiting for a first follow-up.", module: "crm", plugin: PIB_PLUGINS.crm, role: "account-manager", waitingOn: "agent", href: "/crm?tab=contacts" }),
-      s({ key: "deal.open", label: "Open deals", description: "Qualified leads being worked towards a quote.", module: "crm", plugin: PIB_PLUGINS.crm, role: "account-manager", waitingOn: "agent", href: "/crm?tab=deals" }),
-      s({ key: "quote.draft", label: "Quotes to send", description: "Drafted quotes nobody has asked to send yet.", module: "billing", plugin: PIB_PLUGINS.billing, role: "account-manager", waitingOn: "agent", href: "/billing?tab=quotes" }),
+      s({ key: "lead.in", label: "New leads", description: "Leads from Social and the Mailbox, waiting for a first follow-up.", module: "crm", plugin: PIB_PLUGINS.crm, role: "inbound-qualifier", waitingOn: "agent", href: "/crm?tab=contacts" }),
+      s({ key: "deal.open", label: "Open deals", description: "Qualified leads being worked towards a quote.", module: "crm", plugin: PIB_PLUGINS.crm, role: "sales-lead", waitingOn: "agent", href: "/crm?tab=deals" }),
+      s({ key: "quote.draft", label: "Quotes to send", description: "Drafted quotes nobody has asked to send yet.", module: "billing", plugin: PIB_PLUGINS.billing, role: "deal-desk", waitingOn: "agent", href: "/billing?tab=quotes" }),
       s({ key: "quote.approval", label: "Quotes to approve", description: "Quotes waiting for a person to approve sending.", module: "billing", plugin: PIB_PLUGINS.billing, role: null, waitingOn: "person", href: "/billing?tab=quotes" }),
       s({ key: "quote.sent", label: "Quotes with the customer", description: "Sent quotes waiting for the customer's answer.", module: "billing", plugin: PIB_PLUGINS.billing, role: null, waitingOn: "customer", href: "/billing?tab=quotes" }),
       s({ key: "invoice.draft", label: "Invoices to send", description: "Drafted invoices nobody has asked to send yet.", module: "billing", plugin: PIB_PLUGINS.billing, role: "account-manager", waitingOn: "agent", href: "/billing?tab=invoices" }),

@@ -73,7 +73,7 @@ describe("the invoice-draft skill", () => {
 describe("manifest", () => {
   it("keeps the package version, comments capability and the follow-up jobs", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.5.1");
+    expect(manifest.version).toBe("0.5.2");
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.capabilities).toContain("issue.comments.create");
     const jobs = new Map((manifest.jobs ?? []).map((j) => [j.jobKey, j.schedule]));

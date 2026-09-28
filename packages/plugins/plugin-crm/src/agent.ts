@@ -36,18 +36,28 @@ export const AM_ROLE_KEY = "account-manager" as const;
 export const AM_NAME = "Account Manager";
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
+/** The CRM's roles: the Account Manager, and the optional sales team it covers while unstaffed. */
+export const CRM_ROLE_KEYS = ["account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk"] as const;
+export type CrmRoleKey = (typeof CRM_ROLE_KEYS)[number];
+
 /** The CRM's own skills, as the host keys them. */
 export const CRM_SKILL_KEYS = {
   records: teamSkillKey(PLUGIN_ID, "crm-records"),
   outbound: teamSkillKey(PLUGIN_ID, "crm-outbound"),
+  salesLead: teamSkillKey(PLUGIN_ID, "sales-lead"),
+  inboundQualify: teamSkillKey(PLUGIN_ID, "inbound-qualify"),
+  dataSteward: teamSkillKey(PLUGIN_ID, "data-steward"),
+  dealDesk: teamSkillKey(PLUGIN_ID, "deal-desk"),
 } as const;
+
+const RECORDS_SKILL = { key: CRM_SKILL_KEYS.records, slug: "pib-crm-records", purpose: "finding clients, keeping records and the client lifecycle from lead to offboarding" };
 
 export const AM_INSTRUCTIONS = `# Account Manager, Partners in Biz
 
-You look after Partners in Biz's leads and clients: the CRM (\`partnersinbiz.crm\` tools) plus drafts in Billing, the Mailbox and Campaigns.
+You look after Partners in Biz's clients once they buy: onboarding, invoices, monthly reports, sequences and campaigns. You also cover any sales role (Sales Lead, Inbound Qualifier, CRM Data Steward, Deal Desk) that has no agent of its own. You work in the CRM (\`partnersinbiz.crm\` tools) plus drafts in Billing, the Mailbox and Campaigns.
 
 - Follow the **pib-crm-records** skill (finding clients, records, the client lifecycle from lead to offboarding) and the **pib-crm-outbound** skill (lead follow-up, sequences, replies and the rules for marketing email). Read both before your first task.
-- Your work arrives as CRM issues assigned to you: lead follow-ups, contact replies, sequence steps, won deals and hand-offs.
+- Your work arrives as CRM issues assigned to you: client work, contact replies, sequence steps, won deals, and sales work while its role is unstaffed.
 - Find the client first (\`find-records\`) and name it as \`company:<id>\` or \`contact:<id>\`. One client per task; never mix clients.
 - Quotes, invoices, emails and campaigns go out only through their module's approval step. Never send, publish or pay outside it.
 `;
@@ -64,7 +74,7 @@ export const ACCOUNT_MANAGER_ROLE: HireRole = {
     "Follows up leads, works sequence steps and contact replies, keeps the CRM current, fills in client profiles, runs client onboarding, monthly reports and offboarding, and drafts quotes, invoices, client emails and campaigns for approval. A person approves anything that is sent or charged.",
   adapterPreference: ["hermes_local", "claude_local"],
   skills: [
-    { key: CRM_SKILL_KEYS.records, slug: "pib-crm-records", purpose: "finding clients, keeping records and the client lifecycle from lead to offboarding" },
+    RECORDS_SKILL,
     { key: CRM_SKILL_KEYS.outbound, slug: "pib-crm-outbound", purpose: "lead follow-up, sequences, replies and the rules for marketing email" },
     COMPANY_OS_HIRE_SKILL,
   ],
@@ -81,6 +91,110 @@ export const ACCOUNT_MANAGER_ROLE: HireRole = {
   ],
   toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.billing, PIB_PLUGINS.campaigns, PIB_PLUGINS.mailbox, PIB_PLUGINS.partners],
 };
+
+interface SalesRoleSpec {
+  roleKey: Exclude<CrmRoleKey, "account-manager">;
+  name: string;
+  icon: string;
+  capabilities: string;
+  skill: { key: string; slug: string; purpose: string };
+  /** One line for the AGENTS.md: where the work comes from. */
+  work: string;
+  toolPlugins: string[];
+}
+
+function salesHireRole(spec: SalesRoleSpec): HireRole {
+  return {
+    pluginKey: PLUGIN_ID,
+    pluginName: "CRM",
+    roleKey: spec.roleKey,
+    displayName: spec.name,
+    title: spec.name,
+    role: "general",
+    icon: spec.icon,
+    capabilities: spec.capabilities,
+    adapterPreference: ["hermes_local", "claude_local"],
+    skills: [RECORDS_SKILL, spec.skill, COMPANY_OS_HIRE_SKILL],
+    // $25 a month. The Company Cockpit alerts at 80% ($20).
+    budgetMonthlyCents: 2500,
+    suggestedManager: spec.roleKey === "sales-lead" ? "the CEO" : "the Sales Lead",
+    instructions: `# ${spec.name}, Partners in Biz
+
+You are part of the sales team. Follow the **${spec.skill.slug}** skill and the **pib-crm-records** skill; read both before your first task.
+
+- ${spec.work}
+- Find the client first (\`find-records\`) and name it as \`company:<id>\` or \`contact:<id>\`. One client per task; never mix clients.
+- Anything sent to a customer, and any price outside the guardrails, goes through its approval step or to a person.
+`,
+    pluginSetup: [
+      "Grants the agent `tools:use` for plugin tools. It merges into the agent's one tools grant.",
+      `Makes it the owner of the CRM's ${spec.name} work. Until then the Account Manager covers it.`,
+      `Keeps the \`pib-crm-records\` and \`${spec.skill.slug}\` skills up to date.`,
+      "Budget: $25 a month to start. The Cockpit alerts at 80% ($20).",
+    ],
+    toolPlugins: spec.toolPlugins,
+  };
+}
+
+export const SALES_LEAD_ROLE = salesHireRole({
+  roleKey: "sales-lead",
+  name: "Sales Lead",
+  icon: "target",
+  capabilities: "Runs the pipeline: keeps every open deal owned and moving, chases or closes stale deals, routes leads and quotes to the right teammate, and writes the weekly pipeline summary.",
+  skill: { key: CRM_SKILL_KEYS.salesLead, slug: "pib-sales-lead", purpose: "the pipeline, stale deals and the weekly pipeline summary" },
+  work: "Your work arrives as CRM issues: daily pipeline checks, the Monday pipeline summary, and hand-offs for won deals and accepted quotes.",
+  toolPlugins: [PIB_PLUGINS.crm],
+});
+
+export const INBOUND_QUALIFIER_ROLE = salesHireRole({
+  roleKey: "inbound-qualifier",
+  name: "Inbound Qualifier",
+  icon: "inbox",
+  capabilities: "Answers new leads the same day, qualifies them (need, budget, timeline, decision maker), records the answers and hands qualified deals on.",
+  skill: { key: CRM_SKILL_KEYS.inboundQualify, slug: "pib-inbound-qualify", purpose: "answering and qualifying new leads" },
+  work: "Your work arrives as CRM lead follow-up issues and replies from leads.",
+  toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.mailbox],
+});
+
+export const DATA_STEWARD_ROLE = salesHireRole({
+  roleKey: "crm-data-steward",
+  name: "CRM Data Steward",
+  icon: "database",
+  capabilities: "Keeps one CRM record per person and company: merges contacts that share an email, asks a person about likely duplicates, and reports weekly on data hygiene.",
+  skill: { key: CRM_SKILL_KEYS.dataSteward, slug: "pib-data-steward", purpose: "duplicates, merges and CRM hygiene" },
+  work: "Your work arrives as CRM issues: duplicate contacts found by the daily check, and the weekly CRM hygiene report.",
+  toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.cockpit],
+});
+
+export const DEAL_DESK_ROLE = salesHireRole({
+  roleKey: "deal-desk",
+  name: "Deal Desk",
+  icon: "file-text",
+  capabilities: "Turns qualified deals into quotes within the pricing guardrails, asks a person to approve each send, and answers quote replies.",
+  skill: { key: CRM_SKILL_KEYS.dealDesk, slug: "pib-deal-desk", purpose: "quotes, pricing guardrails and quote replies" },
+  work: "Your work arrives as issues: qualified deals that need a quote, and customer replies to quotes.",
+  toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.billing],
+});
+
+export const CRM_HIRE_ROLES: Record<CrmRoleKey, HireRole> = {
+  "account-manager": ACCOUNT_MANAGER_ROLE,
+  "sales-lead": SALES_LEAD_ROLE,
+  "inbound-qualifier": INBOUND_QUALIFIER_ROLE,
+  "crm-data-steward": DATA_STEWARD_ROLE,
+  "deal-desk": DEAL_DESK_ROLE,
+};
+
+export function isCrmRoleKey(value: unknown): value is CrmRoleKey {
+  return typeof value === "string" && (CRM_ROLE_KEYS as readonly string[]).includes(value);
+}
+
+/** The role an action is for: `params.role`, else the Account Manager. */
+export function crmRoleOf(params: Record<string, unknown> | null | undefined): HireRole {
+  const key = params?.role;
+  if (key === undefined || key === null || key === "") return ACCOUNT_MANAGER_ROLE;
+  if (!isCrmRoleKey(key)) throw new Error(`Unknown CRM role "${String(key)}". Use one of: ${CRM_ROLE_KEYS.join(", ")}.`);
+  return CRM_HIRE_ROLES[key];
+}
 
 // ---------------------------------------------------------------------------
 // The tools grant (the host keeps one `tools:use` grant per agent)
@@ -113,10 +227,10 @@ function desiredSkills(agent: unknown): string[] {
  * the worker cannot). The company operating manual is the Cockpit's skill:
  * the page attaches it once it exists in the company, so it is not checked here.
  */
-export function missingRoleSkills(agent: unknown): string[] {
+export function missingRoleSkills(agent: unknown, role: HireRole = ACCOUNT_MANAGER_ROLE): string[] {
   const have = desiredSkills(agent).map((s) => s.toLowerCase());
   const own = Object.values(CRM_SKILL_KEYS) as string[];
-  return ACCOUNT_MANAGER_ROLE.skills
+  return role.skills
     .filter((skill) => own.includes(skill.key))
     .filter((skill) => !have.some((k) => k === skill.key.toLowerCase() || k === skill.slug || k.endsWith(`/${skill.slug}`) || k.endsWith(`/${skill.key.split("/").pop()!}`)))
     .map((skill) => skill.slug);
@@ -187,7 +301,9 @@ export async function wireAgent(
   agentId: string,
   userId: string | null,
   syncSkills: (companyId: string) => Promise<unknown>,
+  role: HireRole = ACCOUNT_MANAGER_ROLE,
 ): Promise<WireResult> {
+  const crmSkills = role.skills.filter((skill) => skill.key !== COMPANY_OS_HIRE_SKILL.key).map((skill) => `\`${skill.slug}\``).join(" and ");
   const agent = await ctx.agents.get(agentId, companyId);
   if (!agent) throw new Error("That agent was not found in this company.");
   const name = String(agent.name ?? "the agent");
@@ -197,11 +313,11 @@ export async function wireAgent(
 
   try {
     await syncSkills(companyId);
-    steps.push("Synced the `pib-crm-records` and `pib-crm-outbound` skills to their latest version.");
+    steps.push(`Synced the ${crmSkills} skills to their latest version.`);
   } catch (error) {
-    steps.push(`The CRM skills did not sync (${errorMessage(error)}). Re-sync the Account Manager in Setup → Team to try again.`);
+    steps.push(`The CRM skills did not sync (${errorMessage(error)}). Re-sync the ${role.displayName} in Setup → Team to try again.`);
   }
-  const missingSkills = missingRoleSkills(agent);
+  const missingSkills = missingRoleSkills(agent, role);
   if (missingSkills.length > 0) {
     const ask = `Attach ${missingSkills.map((slug) => `\`${slug}\``).join(", ")} to ${name} (Agents → ${name} → Skills, or open the CRM page, which attaches them for you).`;
     steps.push(ask);
@@ -235,46 +351,64 @@ export async function wireAgent(
     instructions.push(ask);
   }
 
-  const adoptedIssues = await adoptWaitingWork(ctx, companyId, { id: agentId, status }).catch(() => 0);
+  // Sales roles pick up new work as it arrives; waiting work stays with whoever covers it now.
+  const adoptedIssues = role.roleKey === AM_ROLE_KEY ? await adoptWaitingWork(ctx, companyId, { id: agentId, status }).catch(() => 0) : 0;
   steps.push(adoptedIssues > 0
     ? `Handed ${name} ${adoptedIssues} waiting CRM issue${adoptedIssues === 1 ? "" : "s"}.`
-    : `${name} now gets new CRM work (no CRM issues were waiting).`);
+    : role.roleKey === AM_ROLE_KEY
+      ? `${name} now gets new CRM work (no CRM issues were waiting).`
+      : `${name} now gets new ${role.displayName} work.`);
 
   if (status === "pending_approval") instructions.unshift(`Approve the ${name} hire in Approvals.`);
   if (status === "paused" || status === "pending_approval") instructions.push(`Open Agents → ${name}, check its adapter has a working model key, then click Resume.`);
   return { agent: { id: agentId, name, status }, grant, missingSkills, adoptedIssues, steps, instructions };
 }
 
+export function onRoleLinked(ctx: PluginContext, syncSkills: (companyId: string) => Promise<unknown>, role: HireRole = ACCOUNT_MANAGER_ROLE): OnAgentLinked {
+  return async (companyId, agentId, by) => (await wireAgent(ctx, companyId, agentId, by.userId, syncSkills, role)).steps;
+}
+
 export function onAccountManagerLinked(ctx: PluginContext, syncSkills: (companyId: string) => Promise<unknown>): OnAgentLinked {
-  return async (companyId, agentId, by) => (await wireAgent(ctx, companyId, agentId, by.userId, syncSkills)).steps;
+  return onRoleLinked(ctx, syncSkills, ACCOUNT_MANAGER_ROLE);
 }
 
-/** Links the pending hire when exactly one new agent matches. Never throws. */
+/** Links each role's pending hire when exactly one new agent matches. Never throws. */
 export async function tryLinkAccountManager(ctx: PluginContext, companyId: string, syncSkills: (companyId: string) => Promise<unknown>): Promise<HireAgentSummary | null> {
-  try {
-    return await tryLinkPendingHire(ctx, companyId, ACCOUNT_MANAGER_ROLE, onAccountManagerLinked(ctx, syncSkills));
-  } catch (error) {
-    ctx.logger.info("Account Manager hire link check failed", { companyId, error: errorMessage(error) });
-    return null;
+  let accountManagerAgent: HireAgentSummary | null = null;
+  for (const role of Object.values(CRM_HIRE_ROLES)) {
+    try {
+      const linked = await tryLinkPendingHire(ctx, companyId, role, onRoleLinked(ctx, syncSkills, role));
+      if (role === ACCOUNT_MANAGER_ROLE) accountManagerAgent = linked;
+    } catch (error) {
+      ctx.logger.info("CRM hire link check failed", { companyId, role: role.roleKey, error: errorMessage(error) });
+    }
   }
+  return accountManagerAgent;
 }
 
-/** The linked Account Manager, or null. Cheap enough for jobs. */
-export async function accountManager(ctx: PluginContext, companyId: string): Promise<{ id: string; name: string; status: string; agent: unknown } | null> {
+/** The agent linked to a CRM role, or null. Cheap enough for jobs. */
+export async function roleAgent(ctx: PluginContext, companyId: string, role: HireRole): Promise<{ id: string; name: string; status: string; agent: unknown } | null> {
   try {
-    const id = await linkedAgentId(ctx, companyId, ACCOUNT_MANAGER_ROLE);
+    const id = await linkedAgentId(ctx, companyId, role);
     if (!id) return null;
     const agent = await ctx.agents.get(id, companyId);
-    return agent ? { id, name: String(agent.name ?? AM_NAME), status: String(agent.status ?? ""), agent } : null;
+    return agent ? { id, name: String(agent.name ?? role.displayName), status: String(agent.status ?? ""), agent } : null;
   } catch {
     return null;
   }
 }
 
-/** For the Cockpit snapshot: the role and its agent, so the Cockpit can share it in `roles.updated`. */
+/** The linked Account Manager, or null. */
+export async function accountManager(ctx: PluginContext, companyId: string): Promise<{ id: string; name: string; status: string; agent: unknown } | null> {
+  return roleAgent(ctx, companyId, ACCOUNT_MANAGER_ROLE);
+}
+
+/** For the Cockpit snapshot: each CRM role and its agent, so the Cockpit can share them in `roles.updated`. */
 export async function teamReport(ctx: PluginContext, companyId: string): Promise<TeamMemberReport[]> {
-  const agent = await accountManager(ctx, companyId);
-  return [{ role: AM_ROLE_KEY, agentId: agent?.id ?? null, status: agent?.status ?? null }];
+  return Promise.all(CRM_ROLE_KEYS.map(async (key) => {
+    const agent = await roleAgent(ctx, companyId, CRM_HIRE_ROLES[key]);
+    return { role: key, agentId: agent?.id ?? null, status: agent?.status ?? null };
+  }));
 }
 
 export interface HireView {
@@ -287,12 +421,12 @@ export interface HireView {
 }
 
 /** Hire status for the CRM page's agent box. */
-export async function hireView(ctx: PluginContext, companyId: string, userId: string | null): Promise<HireView> {
-  const status = await hireStatus(ctx, companyId, ACCOUNT_MANAGER_ROLE);
+export async function hireView(ctx: PluginContext, companyId: string, userId: string | null, role: HireRole = ACCOUNT_MANAGER_ROLE): Promise<HireView> {
+  const status = await hireStatus(ctx, companyId, role);
   let missingSkills: string[] = [];
   if (status.agent) {
     try {
-      missingSkills = missingRoleSkills(await ctx.agents.get(status.agent.id, companyId));
+      missingSkills = missingRoleSkills(await ctx.agents.get(status.agent.id, companyId), role);
     } catch {
       missingSkills = [];
     }
@@ -317,7 +451,7 @@ export async function hireView(ctx: PluginContext, companyId: string, userId: st
   return { ...status, hire: { ...status.hire, identifier, issueStatus, assigneeName }, missingSkills };
 }
 
-export async function hireOptions(ctx: PluginContext, companyId: string) {
-  const [agents, status] = await Promise.all([listCompanyAgents(ctx, companyId), hireStatus(ctx, companyId, ACCOUNT_MANAGER_ROLE)]);
-  return { draft: hireTaskDraft(ACCOUNT_MANAGER_ROLE), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null, status };
+export async function hireOptions(ctx: PluginContext, companyId: string, role: HireRole = ACCOUNT_MANAGER_ROLE) {
+  const [agents, status] = await Promise.all([listCompanyAgents(ctx, companyId), hireStatus(ctx, companyId, role)]);
+  return { draft: hireTaskDraft(role), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null, status };
 }

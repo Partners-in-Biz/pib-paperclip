@@ -977,6 +977,39 @@ export async function contactsByEmail(ctx: PluginContext, companyId: string, ema
   return rows.map(mapContact);
 }
 
+/** Contacts with a phone whose last 9 digits match (kit-free `phoneMatchKey`), oldest first. */
+export async function contactsByPhone(ctx: PluginContext, companyId: string, phoneKey: string): Promise<ContactDraft[]> {
+  const rows = await ctx.db.query<ContactRow>(
+    `SELECT ${CONTACT_COLUMNS}
+       FROM ${table(ctx, "contacts")} c
+      WHERE c.company_id = $1
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(c.phones) AS p(value) WHERE right(regexp_replace(p.value, '\\D', '', 'g'), 9) = $2)
+      ORDER BY c.created_at, c.id
+      LIMIT 10`,
+    [companyId, phoneKey],
+  );
+  return rows.map(mapContact);
+}
+
+/** Companies with this website domain (compared without scheme or `www.`), else this exact name; oldest first. */
+export async function companiesByDomainOrName(ctx: PluginContext, companyId: string, domain: string | null, name: string): Promise<AccountDraft[]> {
+  const rows = await ctx.db.query<AccountRow>(
+    `SELECT id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields,
+            owner_user_id, assignee_agent_id, tags
+       FROM ${table(ctx, "companies")} a
+      WHERE a.company_id = $1
+        AND (($2::text IS NOT NULL
+              AND regexp_replace(split_part(regexp_replace(lower(trim(coalesce(a.domain, ''))), '^[a-z][a-z0-9+.-]*://', ''), '/', 1), '^www\\.', '') = $2)
+             OR lower(trim(a.name)) = $3)
+      ORDER BY (($2::text IS NOT NULL
+              AND regexp_replace(split_part(regexp_replace(lower(trim(coalesce(a.domain, ''))), '^[a-z][a-z0-9+.-]*://', ''), '/', 1), '^www\\.', '') = $2)) DESC,
+               a.created_at, a.id
+      LIMIT 10`,
+    [companyId, domain, name.trim().toLowerCase()],
+  );
+  return rows.map(mapAccount);
+}
+
 /**
  * Contacts with this social handle (`<platform>:<handle>`, lower case) in
  * `custom.handles`, oldest first. Written by the lead intake.

@@ -599,6 +599,104 @@ export function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
+/** Unique normalized emails, in order. */
+export function normalizeEmails(values: string[]): string[] {
+  return [...new Set(values.map(normalizeEmail).filter(Boolean))];
+}
+
+/**
+ * The part of a phone number that survives formatting: its last 9 digits
+ * (`082 123 4567`, `+27 82 123 4567` and `27821234567` all give `821234567`).
+ * Null for numbers too short to match safely.
+ */
+export function phoneMatchKey(value: string): string | null {
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : null;
+}
+
+/** A website as a comparable domain: `https://www.Acme.co.za/about` gives `acme.co.za`. */
+export function normalizeDomain(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const host = value.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split(/[/?#]/)[0]!.split("@").pop()!.split(":")[0]!.replace(/^www\./, "").replace(/\.$/, "");
+  return host.includes(".") ? host : null;
+}
+
+/** A name that is really a placeholder: empty, an email address, a handle or "New lead". */
+function placeholderName(name: string): boolean {
+  const n = name.trim();
+  return !n || n.includes("@") || n.toLowerCase() === "new lead";
+}
+
+function ownedAndSet(humanOwned: string[], field: string, value: unknown): boolean {
+  if (!humanOwned.includes(field)) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== null && value !== undefined && value !== "";
+}
+
+export interface ContactFill {
+  name?: string;
+  emails?: string[];
+  phones?: string[];
+  tags?: string[];
+  custom?: Record<string, unknown>;
+  nextActionKind?: NextActionKind | null;
+  nextActionDueAt?: string | null;
+}
+
+/**
+ * Folds new details into an existing contact instead of creating a second
+ * one. Only fills what is empty and adds what is missing: a set value, and a
+ * field a person owns, keep theirs. Returns the fields that changed.
+ */
+export function fillContact(existing: ContactDraft, incoming: ContactFill): string[] {
+  const changed: string[] = [];
+  const owned = existing.humanOwned;
+  if (incoming.name?.trim() && placeholderName(existing.name) && !placeholderName(incoming.name) && !owned.includes("name")) {
+    existing.name = incoming.name.trim();
+    changed.push("name");
+  }
+  const addList = (field: "emails" | "phones" | "tags", add: string[], same: (a: string, b: string) => boolean) => {
+    if (ownedAndSet(owned, field, existing[field])) return;
+    const extra = add.filter((v) => v && !existing[field].some((have) => same(have, v)));
+    if (extra.length) {
+      existing[field] = [...existing[field], ...extra];
+      changed.push(field);
+    }
+  };
+  addList("emails", normalizeEmails(incoming.emails ?? []), (a, b) => normalizeEmail(a) === b);
+  addList("phones", (incoming.phones ?? []).map((p) => p.trim()).filter(Boolean), (a, b) => {
+    const ka = phoneMatchKey(a);
+    return ka ? ka === phoneMatchKey(b) : a === b;
+  });
+  addList("tags", (incoming.tags ?? []).map((t) => t.trim()).filter(Boolean), (a, b) => a.toLowerCase() === b.toLowerCase());
+  for (const [key, value] of Object.entries(incoming.custom ?? {})) {
+    if (value === null || value === undefined || value === "") continue;
+    const current = existing.custom[key];
+    if (current !== null && current !== undefined && current !== "") continue;
+    existing.custom = { ...existing.custom, [key]: value };
+    changed.push(key);
+  }
+  if (incoming.nextActionKind && !existing.nextActionKind && !owned.includes("nextActionKind")) {
+    existing.nextActionKind = incoming.nextActionKind;
+    existing.nextActionDueAt = incoming.nextActionDueAt ?? existing.nextActionDueAt;
+    changed.push("nextActionKind");
+  }
+  return changed;
+}
+
+/** Contacts grouped by a shared email (exact duplicates), in the order found. */
+export function duplicateGroups(contacts: Array<{ id: string; name: string; emails: string[] }>): Array<{ email: string; contacts: Array<{ id: string; name: string }> }> {
+  const byEmail = new Map<string, Array<{ id: string; name: string }>>();
+  for (const contact of contacts) {
+    for (const email of normalizeEmails(contact.emails)) {
+      const list = byEmail.get(email) ?? [];
+      if (!list.some((c) => c.id === contact.id)) list.push({ id: contact.id, name: contact.name });
+      byEmail.set(email, list);
+    }
+  }
+  return [...byEmail].filter(([, list]) => list.length > 1).map(([email, list]) => ({ email, contacts: list }));
+}
+
 export function isDuplicatePair(a: { emails: string[] }, b: { emails: string[] }): boolean {
   const aEmails = new Set(a.emails.map(normalizeEmail).filter(Boolean));
   const bEmails = new Set(b.emails.map(normalizeEmail).filter(Boolean));

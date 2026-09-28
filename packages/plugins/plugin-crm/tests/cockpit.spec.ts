@@ -190,7 +190,13 @@ describe("CRM cockpit snapshot", () => {
     expect(snap.health.map((h) => h.key)).toEqual(["job:open-due-steps", "job:redeliver-mail", "job:held-leads", "job:emit-recent", "job:emit-all", "job:setup-status", "outbox", "held-leads"]);
     expect(snap.health.every((h) => h.status === "ok")).toBe(true);
     // The role this plugin staffs, unstaffed so far.
-    expect(snap.team).toEqual([{ role: "account-manager", agentId: null, status: null }]);
+    expect(snap.team).toEqual([
+      { role: "account-manager", agentId: null, status: null },
+      { role: "sales-lead", agentId: null, status: null },
+      { role: "inbound-qualifier", agentId: null, status: null },
+      { role: "crm-data-steward", agentId: null, status: null },
+      { role: "deal-desk", agentId: null, status: null },
+    ]);
   });
 
   it("reports the linked Account Manager in the team field", async () => {
@@ -198,7 +204,13 @@ describe("CRM cockpit snapshot", () => {
     harness.seed({ agents: [{ id: "am-1", companyId: CO, name: "Nomsa", status: "running" } as never] });
     await harness.ctx.state.set({ scopeKind: "company", scopeId: CO, namespace: "pib-hire", stateKey: "role:account-manager" }, { agentId: "am-1", linkedAt: "2026-09-27T08:00:00Z", linkedBy: "manual", hire: null });
     const snap = await cockpitSnapshot(harness.ctx, CO);
-    expect(snap.team).toEqual([{ role: "account-manager", agentId: "am-1", status: "running" }]);
+    expect(snap.team).toEqual([
+      { role: "account-manager", agentId: "am-1", status: "running" },
+      { role: "sales-lead", agentId: null, status: null },
+      { role: "inbound-qualifier", agentId: null, status: null },
+      { role: "crm-data-steward", agentId: null, status: null },
+      { role: "deal-desk", agentId: null, status: null },
+    ]);
   });
 
   it("held leads show as a health check: warn at once, bad after a day", async () => {

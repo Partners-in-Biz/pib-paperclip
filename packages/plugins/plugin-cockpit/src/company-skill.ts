@@ -31,7 +31,8 @@ const MODULE_TOOLS: Partial<Record<ModuleKey, string>> = {
 function moduleRoles(key: ModuleKey): string {
   const plugin = MODULE_TOOLS[key];
   const slug = plugin ? `plugin/${plugin.replace(/[^a-z0-9]+/g, "-")}/` : null;
-  const titles = TEAM_ROLES.filter((r) => r.module === key || (slug && (r.extraSkills ?? []).some((skill) => skill.startsWith(slug)))).map((r) => r.title);
+  // Covered roles are listed under the role that covers them (the team list), not per module.
+  const titles = TEAM_ROLES.filter((r) => !r.coveredBy && (r.module === key || (slug && (r.extraSkills ?? []).some((skill) => skill.startsWith(slug))))).map((r) => r.title);
   return titles.join(", ") || "—";
 }
 
@@ -57,9 +58,27 @@ export function toolNaming(): string {
   return "Each module's tools are `partnersinbiz.<module>:<tool>` (the module in brackets above).";
 }
 
+/** One line per role; roles another role covers go on one line under it (they share its work). */
 function teamList(): string {
-  return TEAM_ROLES.map((r) => `- **${r.title}**${r.required ? "" : " (optional)"}: ${agentFacingSummary(r.summary)}`).join("\n");
+  const covered = (key: string) => TEAM_ROLES.filter((r) => r.coveredBy === key);
+  const lines: string[] = [];
+  for (const r of TEAM_ROLES.filter((role) => !role.coveredBy)) {
+    lines.push(`- **${r.title}**${r.required ? "" : " (optional)"}: ${agentFacingSummary(r.summary)}`);
+    const team = covered(r.key);
+    if (team.length) {
+      lines.push(`  - Optional roles it covers while unstaffed: ${team.map((t) => `**${t.title}** (${SHORT_ROLE[t.key] ?? t.summary})`).join(", ")}.`);
+    }
+  }
+  return lines.join("\n");
 }
+
+/** A few words per covered role, for the manual's team list. */
+const SHORT_ROLE: Partial<Record<string, string>> = {
+  "sales-lead": "the pipeline",
+  "inbound-qualifier": "new leads",
+  "crm-data-steward": "clean records",
+  "deal-desk": "quotes",
+};
 
 /** Who decides what, and the tool that asks for it. */
 const APPROVALS = `| What | Who decides | How to ask |
@@ -77,12 +96,12 @@ const APPROVALS = `| What | Who decides | How to ask |
 /** The main flows across modules, step by step, with the role that owns each step. */
 export const COMPANY_FLOWS = `## Main flows
 
-Each step names the role that owns it. If that role is not staffed, the Operator gets the work.
+Each step names the role that owns it. An unstaffed sales role's work goes to the Account Manager, any other to the Operator.
 
 ### Lead to cash
-1. **Lead in** (Social DMs and comments, the Mailbox) → the CRM stores it and opens a follow-up for the **Account Manager** (done: work logged plus a next action, a deal, or a lifecycle call; churned when not a fit). Leads from a *client's* channels stay with that client; they never become our contacts.
-2. **Qualify** (Account Manager): \`find-records\` / \`get-company\` before creating anything, then the deal. Replies: the Social agent answers social DMs; email replies are Mailbox drafts.
-3. **Quote** (Account Manager): \`create-quote\` with the \`dealId\` → \`request-quote-send\` → a person approves → the Mailbox sends it. When the customer replies, Billing opens an issue for the Account Manager.
+1. **Lead in** (Social DMs and comments, the Mailbox) → the CRM stores it and opens a follow-up for the **Inbound Qualifier** (done: work logged plus a next action, a deal, or a lifecycle call; churned when not a fit). Leads from a *client's* channels stay with that client; they never become our contacts.
+2. **Qualify** (Inbound Qualifier): \`find-records\` / \`get-company\` before creating anything, then the deal. The **Sales Lead** chases quiet deals. Replies: the Social agent answers social DMs; email replies are Mailbox drafts.
+3. **Quote** (Deal Desk): \`create-quote\` with the \`dealId\` → \`request-quote-send\` → a person approves → the Mailbox sends it. When the customer replies, Billing opens an issue for the Deal Desk.
 4. **Won**: quote accepted or deal moved to won (a pick-the-deal issue: \`move-deal\` to won with the \`quoteId\`) → the CRM makes the client a customer, Billing opens a drafting task, and on a first win the Cockpit opens onboarding.
 5. **Invoice** (Account Manager): \`convert-quote\` or \`create-invoice\` → \`request-invoice-send\` → a person approves → sent. Accounting posts the journal.
 6. **Paid**: the Bookkeeper matches the bank line, or a proof of payment goes through \`request-payment-check\` → Billing settles it and tells the CRM.

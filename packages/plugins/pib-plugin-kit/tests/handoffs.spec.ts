@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { operatorAgentId, reviewerAgentId, roleAgentUsable, routeWork, suppressionEmail, suppressionScope, teamAgentId, type RolesPayload } from "../src/cockpit.js";
+import { operatorAgentId, reviewerAgentId, roleAgentUsable, routeRole, routeWork, suppressionEmail, suppressionScope, teamAgentId, type RolesPayload } from "../src/cockpit.js";
 import { COMPANY_OS_HIRE_SKILL, hireSkills, hireTaskDraft, matchesRole, type HireRole } from "../src/agent-hire.js";
 import { COMPANY_OS_SKILL } from "../src/asking.js";
 import { COMPANY_OS_SKILL_KEY } from "../src/team.js";
@@ -64,6 +64,15 @@ describe("hand-off helpers", () => {
     const noAgents = fakeCtx({ ownerUserId: "owner" }).ctx;
     expect(await routeWork(noAgents, "c1", ["bookkeeper"])).toEqual({ assigneeAgentId: null, assigneeUserId: "owner", via: "owner" });
     expect(await routeWork(fakeCtx(null).ctx, "c1", ["bookkeeper"])).toEqual({ assigneeAgentId: null, assigneeUserId: null, via: "none" });
+  });
+
+  it("routes a role's work down its cover chain", async () => {
+    const team = { "account-manager": { agentId: "am", status: "idle" }, "deal-desk": { agentId: "dd", status: "error" } };
+    const ctx = fakeCtx({ operatorAgentId: "op", ownerUserId: "owner", team }).ctx;
+    expect(await routeRole(ctx, "c1", "deal-desk")).toEqual({ assigneeAgentId: "am", assigneeUserId: null, via: "account-manager" });
+    const staffed = fakeCtx({ team: { ...team, "sales-lead": { agentId: "sl", status: "idle" } } }).ctx;
+    expect(await routeRole(staffed, "c1", "sales-lead")).toEqual({ assigneeAgentId: "sl", assigneeUserId: null, via: "sales-lead" });
+    expect(await routeRole(fakeCtx({ operatorAgentId: "op" }).ctx, "c1", "inbound-qualifier")).toEqual({ assigneeAgentId: "op", assigneeUserId: null, via: "operator" });
   });
 
   it("every hire gets the company operating manual", () => {

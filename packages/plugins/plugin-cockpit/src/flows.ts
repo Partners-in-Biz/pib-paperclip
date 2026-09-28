@@ -10,7 +10,7 @@
 import { roleAgentUsable, type TeamMemberReport } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { FLOW_STAGES, FLOWS, type FlowKey, type FlowStage, type FlowStageReport, type FlowWaitingOn } from "@partnersinbiz/pib-plugin-kit/flows";
 import type { ModuleKey } from "@partnersinbiz/pib-plugin-kit/setup";
-import { TEAM_ROLES, teamSetupPath, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
+import { TEAM_ROLES, teamRoleChain, teamSetupPath, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
 import { PLUGIN_KEY } from "./constants.js";
 
 export type { FlowKey, FlowStageReport, FlowWaitingOn };
@@ -185,7 +185,22 @@ export function settingsDone(status: unknown): boolean | null {
   return item ? item.status === "done" : null;
 }
 
+/**
+ * A stage's role is working when it, or a role covering it (kit
+ * `teamRoleChain`: a sales role falls back to the Account Manager), has a
+ * running agent. Otherwise: the role's own problem when it has an agent
+ * (paused, in error), else the problem of the role that would cover it.
+ */
 function roleOff(role: TeamRoleKey, input: OffInput): StageOff | null {
+  const chain = teamRoleChain(role);
+  const results = chain.map((key) => singleRoleOff(key, input));
+  if (results.some((result) => result === null)) return null;
+  const own = results[0]!;
+  const unstaffed = own.key.endsWith(":none") || own.key.endsWith(":gone");
+  return unstaffed && results.length > 1 ? results[results.length - 1]! : own;
+}
+
+function singleRoleOff(role: TeamRoleKey, input: OffInput): StageOff | null {
   const title = roleTitle(role);
   const module = TEAM_ROLES.find((r) => r.key === role)?.module;
   if (module && input.modules?.[module] === false) {
@@ -333,10 +348,14 @@ function waitsOf(stage: FlowStage, team: FlowTeam): StageWaits {
   if (stage.waitingOn === "person") return { kind: "person", label: "You", name: null, role: null };
   if (stage.waitingOn === "customer") return { kind: "customer", label: "The customer", name: null, role: null };
   if (stage.waitingOn === "system") return { kind: "system", label: "Automatic", name: null, role: null };
-  const title = stage.role ? roleTitle(stage.role) : "An agent";
-  const holder = stage.role ? team[stage.role] : undefined;
+  if (!stage.role) return { kind: "agent", label: "An agent", name: null, role: null };
+  // Whoever actually does it: the role, else the first staffed role covering it.
+  const chain = teamRoleChain(stage.role);
+  const doer = chain.find((key) => team[key]?.agentId && roleAgentUsable(team[key]!.status)) ?? stage.role;
+  const title = roleTitle(doer);
+  const holder = team[doer];
   const name = holder?.agentId && holder.name ? holder.name : null;
-  return { kind: "agent", label: name ? `${name} (${title})` : title, name, role: stage.role ? title : null };
+  return { kind: "agent", label: name ? `${name} (${title})` : title, name, role: title };
 }
 
 function joinAnd(parts: string[]): string {

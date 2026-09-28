@@ -35,6 +35,17 @@ export const ROUTES: Route[] = [
     mine(s.contacts, p)
       .filter((row) => (row.emails as string[]).some((email) => email.trim().toLowerCase() === p[1]))
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))],
+  [/jsonb_array_elements_text\(c\.phones\)/, (p, s) =>
+    mine(s.contacts, p)
+      .filter((row) => (row.phones as string[]).some((phone) => phone.replace(/\D/g, "").slice(-9) === p[1]))
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))],
+  [/regexp_replace\(split_part/, (p, s) => {
+    const bare = (d: unknown) => String(d ?? "").trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split("/")[0]!.replace(/^www\./, "");
+    const byDomain = (row: Row) => p[1] != null && bare(row.domain) === p[1];
+    return mine(s.companies, p)
+      .filter((row) => byDomain(row) || String(row.name).trim().toLowerCase() === p[2])
+      .sort((a, b) => Number(byDomain(b)) - Number(byDomain(a)) || String(a.created_at).localeCompare(String(b.created_at)));
+  }],
   [/custom -> 'handles' @>/, (p, s) => {
     const [key] = JSON.parse(String(p[1])) as string[];
     return mine(s.contacts, p).filter((row) => Array.isArray(row.custom?.handles) && row.custom.handles.includes(key));

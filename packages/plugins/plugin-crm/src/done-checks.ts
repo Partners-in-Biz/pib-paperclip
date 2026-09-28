@@ -8,15 +8,17 @@
  * the deal was moved), so an agent is never trapped.
  *
  * No rule: the sequence email approval (only a person decides; an agent's
- * close is reopened for the approver) and the refused-sequence hand-off (a
- * judgement call).
+ * close is reopened for the approver), the refused-sequence hand-off (a
+ * judgement call), and the Monday pipeline summary and hygiene report
+ * (reports, like routine issues).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { DoneCheckIssue, DoneCheckResult, DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
-import { asRecord, contactCompanyLinks, enrollmentById, getContact, getDeal, listDeals, listSteps, stageKind, table } from "./db.js";
-import { ACTIVITY_KINDS, type ContactDraft, type DealDraft } from "./domain.js";
+import { asRecord, contactCompanyLinks, enrollmentById, findDuplicateContacts, getContact, getDeal, listDeals, listSteps, stageKind, table } from "./db.js";
+import { ACTIVITY_KINDS, duplicateGroups, type ContactDraft, type DealDraft } from "./domain.js";
 import { clientDeals } from "./handoffs.js";
 import { CRM_ORIGINS, parseStepRef } from "./origins.js";
+import { idleDeals } from "./sales.js";
 
 /** Timeline entries that show someone worked the client: logged with `log-activity`, a sequence email sent, a deal moved or won. */
 export const WORK_KINDS: string[] = [...ACTIVITY_KINDS, "email_sent", "deal_moved", "deal_won"];
@@ -207,6 +209,20 @@ export async function checkQuoteDeal(ctx: PluginContext, issue: DoneCheckIssue):
   };
 }
 
+/** Pipeline check: no open deal is still quiet (each was revived or closed). */
+export async function checkPipeline(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const quiet = await idleDeals(ctx, issue.companyId, 10);
+  if (!quiet.length) return DONE;
+  return { done: false, missing: quiet.map((deal) => `"${deal.title}" (\`${deal.id}\`) is still quiet: log what you did (\`log-activity\`) or \`move-deal\` it to lost.`) };
+}
+
+/** Duplicates: no two contacts share an email. */
+export async function checkDuplicates(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const groups = duplicateGroups(await findDuplicateContacts(ctx, issue.companyId));
+  if (!groups.length) return DONE;
+  return { done: false, missing: groups.slice(0, 10).map((g) => `${g.email} is still on ${g.contacts.length} contacts (${g.contacts.map((c) => `\`${c.id}\``).join(", ")}): merge them with \`merge-contacts\`.`) };
+}
+
 /** One rule per kind of work the CRM hands to agents. */
 export const CRM_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: CRM_ORIGINS.leadFollowUp, label: "Lead follow-up", check: (issue, ctx) => checkLeadFollowUp(ctx, issue) },
@@ -215,6 +231,8 @@ export const CRM_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: CRM_ORIGINS.sendFailed, label: "Sequence email not sent", check: (issue, ctx) => checkSendFailed(ctx, issue) },
   { originPrefix: CRM_ORIGINS.wonClient, label: "Won deal without a client", check: (issue, ctx) => checkWonClient(ctx, issue) },
   { originPrefix: CRM_ORIGINS.quoteDeal, label: "Deal for an accepted quote", check: (issue, ctx) => checkQuoteDeal(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.pipelineCheck, label: "Quiet deals", check: (issue, ctx) => checkPipeline(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.duplicates, label: "Duplicate contacts", check: (issue, ctx) => checkDuplicates(ctx, issue) },
 ];
 
 /** The host issue as the kit's done-check sees it. */

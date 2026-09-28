@@ -36,6 +36,10 @@ import {
 import {
   accountManager,
   ACCOUNT_MANAGER_ROLE,
+  CRM_HIRE_ROLES,
+  crmRoleOf,
+  onRoleLinked,
+  roleAgent,
   hireOptions,
   hireView,
   onAccountManagerLinked,
@@ -43,6 +47,7 @@ import {
   wireAgent,
 } from "./agent.js";
 import { asRecord, asStringList, table } from "./db.js";
+import { runSalesDaily, runSalesWeekly } from "./sales.js";
 import {
   contactCompanyLinks,
   defineField,
@@ -90,6 +95,9 @@ import {
   saveProduct,
   saveAccount,
   saveContact,
+  companiesByDomainOrName,
+  contactsByEmail,
+  contactsByPhone,
   saveDeal,
   saveEnrollment,
   stageKind,
@@ -113,6 +121,12 @@ import {
   forecastPipeline,
   createSavedView,
   normalizeEmail,
+  normalizeEmails,
+  normalizeDomain,
+  phoneMatchKey,
+  fillContact,
+  duplicateGroups,
+  type ContactFill,
   parseCsv,
   personalize,
   toCsv,
@@ -282,15 +296,17 @@ const plugin = definePlugin({
     registerAction("crm.unlink-client-project", async (params, context) => unlinkClientProject(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
 
-    // The Account Manager (Setup → Team calls these; kit TEAM_ROLES "account-manager").
-    registerAction("crm.hire-options", async (_params, context) => {
-      requireUser(context, "hire the Account Manager");
-      return hireOptions(ctx, requireCompany(context));
+    // The CRM's roles (Setup → Team calls these; kit TEAM_ROLES "account-manager" and the sales roles, picked by `params.role`).
+    registerAction("crm.hire-options", async (params, context) => {
+      const role = crmRoleOf(params);
+      requireUser(context, `hire the ${role.displayName}`);
+      return hireOptions(ctx, requireCompany(context), role);
     });
     registerAction("crm.start-hire", async (params, context) => {
-      const userId = requireUser(context, "hire the Account Manager");
+      const role = crmRoleOf(params);
+      const userId = requireUser(context, `hire the ${role.displayName}`);
       return {
-        hire: await startHire(ctx, requireCompany(context), ACCOUNT_MANAGER_ROLE, {
+        hire: await startHire(ctx, requireCompany(context), role, {
           title: optionalString(params, "title"),
           description: optionalString(params, "description"),
           assigneeAgentId: optionalString(params, "assigneeAgentId") ?? null,
@@ -300,32 +316,35 @@ const plugin = definePlugin({
       };
     });
     registerAction("crm.link-agent", async (params, context) => {
-      const userId = requireUser(context, "link the Account Manager");
+      const role = crmRoleOf(params);
+      const userId = requireUser(context, `link the ${role.displayName}`);
       const companyId = requireCompany(context);
       let wired: Awaited<ReturnType<typeof wireAgent>> | null = null;
-      const { agent, steps } = await linkAgent(ctx, companyId, ACCOUNT_MANAGER_ROLE, requiredString(params, "agentId"), {
+      const { agent, steps } = await linkAgent(ctx, companyId, role, requiredString(params, "agentId"), {
         by: "manual",
         userId,
         onLinked: async (c, agentId, by) => {
-          wired = await wireAgent(ctx, c, agentId, by.userId, syncSkills);
+          wired = await wireAgent(ctx, c, agentId, by.userId, syncSkills, role);
           return wired.steps;
         },
       });
       return { agent, steps, instructions: (wired as { instructions?: string[] } | null)?.instructions ?? [] };
     });
-    registerAction("crm.unlink-agent", async (_params, context) => {
-      requireUser(context, "unlink the Account Manager");
-      await unlinkAgent(ctx, requireCompany(context), ACCOUNT_MANAGER_ROLE);
+    registerAction("crm.unlink-agent", async (params, context) => {
+      const role = crmRoleOf(params);
+      requireUser(context, `unlink the ${role.displayName}`);
+      await unlinkAgent(ctx, requireCompany(context), role);
       return { ok: true };
     });
-    registerAction("crm.resync-agent", async (_params, context) => {
-      const userId = requireUser(context, "re-sync the Account Manager");
+    registerAction("crm.resync-agent", async (params, context) => {
+      const role = crmRoleOf(params);
+      const userId = requireUser(context, `re-sync the ${role.displayName}`);
       const companyId = requireCompany(context);
-      const agent = await accountManager(ctx, companyId);
-      if (!agent) throw new CrmError("No Account Manager is linked yet. Hire one or pick an agent you already have in Setup → Team.");
-      return wireAgent(ctx, companyId, agent.id, userId, syncSkills);
+      const agent = await roleAgent(ctx, companyId, role);
+      if (!agent) throw new CrmError(`No ${role.displayName} is linked yet. Hire one or pick an agent you already have in Setup → Team.`);
+      return wireAgent(ctx, companyId, agent.id, userId, syncSkills, role);
     });
-    registerHireWatch(ctx, [{ role: ACCOUNT_MANAGER_ROLE, onLinked: onAccountManagerLinked(ctx, syncSkills) }]);
+    registerHireWatch(ctx, Object.values(CRM_HIRE_ROLES).map((role) => ({ role, onLinked: onRoleLinked(ctx, syncSkills, role) })));
 
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
@@ -348,6 +367,18 @@ const plugin = definePlugin({
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     ctx.jobs.register("emit-recent", () => trackJob(ctx, "emit-recent", () => emitForAllCompanies(ctx, 1800)));
     ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
+    ctx.jobs.register("sales-daily", async () => {
+      await trackJob(ctx, "sales-daily", async () => {
+        const result = await runSalesDaily(ctx);
+        if (result.pipeline || result.duplicates) ctx.logger.info("CRM sales daily", result);
+      });
+    });
+    ctx.jobs.register("sales-weekly", async () => {
+      await trackJob(ctx, "sales-weekly", async () => {
+        const result = await runSalesWeekly(ctx);
+        if (result.summaries || result.hygiene) ctx.logger.info("CRM sales weekly", result);
+      });
+    });
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
         await linkPendingHires(ctx);
@@ -984,20 +1015,7 @@ async function requireProduct(ctx: PluginContext, viewer: Viewer, id: string): P
 }
 
 async function findDuplicates(ctx: PluginContext, viewer: Viewer) {
-  const contacts = await findDuplicateContacts(ctx, viewer.companyId);
-  const groups: Array<{ email: string; contacts: Array<{ id: string; name: string }> }> = [];
-  const byEmail = new Map<string, Array<{ id: string; name: string }>>();
-  for (const contact of contacts) {
-    for (const email of contact.emails.map(normalizeEmail).filter(Boolean)) {
-      const list = byEmail.get(email) ?? [];
-      list.push({ id: contact.id, name: contact.name });
-      byEmail.set(email, list);
-    }
-  }
-  for (const [email, list] of byEmail) {
-    if (list.length > 1) groups.push({ email, contacts: list });
-  }
-  return groups;
+  return duplicateGroups(await findDuplicateContacts(ctx, viewer.companyId));
 }
 
 async function mergeContactsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -1080,24 +1098,35 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
   const tagsIdx = headers.indexOf("tags");
   if (nameIdx < 0) throw new CrmError("CSV needs a name column");
   let created = 0;
+  let updated = 0;
   for (let i = 1; i < parsed.length; i++) {
     const row = parsed[i];
     const name = (row[nameIdx] ?? "").trim();
     if (!name) continue;
+    const emails = normalizeEmails(splitList(row[emailIdx]));
+    const phones = splitList(row[phoneIdx]);
+    const tags = splitList(row[tagsIdx]);
+    // Earlier rows are already saved, so a person listed twice in the file is matched too.
+    const existing = await findExistingContact(ctx, viewer.companyId, emails, phones);
+    if (existing) {
+      await foldIntoExisting(ctx, existing, { name, emails, phones, tags }, `Import row ${i + 1}`);
+      updated += 1;
+      continue;
+    }
     const contact = createContact({
       companyId: viewer.companyId,
       name,
-      emails: splitList(row[emailIdx]),
-      phones: splitList(row[phoneIdx]),
+      emails,
+      phones,
       lifecycle: lifecycleIdx >= 0 ? row[lifecycleIdx] : undefined,
-      tags: splitList(row[tagsIdx]),
+      tags,
       ownerUserId: viewer.userId,
       assigneeAgentId: viewer.agentId,
     });
     await insertContact(ctx, contact);
     created += 1;
   }
-  return { created };
+  return { created, updated };
 }
 
 function splitList(value: string | undefined): string[] {
@@ -1199,9 +1228,40 @@ async function listDealProductsRecord(ctx: PluginContext, viewer: Viewer, params
 }
 
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const name = requiredString(params, "name");
+  const domain = normalizeDomain(optionalString(params, "domain"));
+  const [existing] = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
+  if (existing) {
+    const filled: string[] = [];
+    if (domain && !existing.domain && !existing.humanOwned.includes("domain")) {
+      existing.domain = optionalString(params, "domain")!.trim();
+      filled.push("domain");
+    }
+    const newTags = (stringList(params, "tags") ?? []).filter((t) => !existing.tags.some((have) => have.toLowerCase() === t.toLowerCase()));
+    if (newTags.length && !(existing.humanOwned.includes("tags") && existing.tags.length)) {
+      existing.tags = [...existing.tags, ...newTags];
+      filled.push("tags");
+    }
+    for (const [key, value] of Object.entries(customOf(params) ?? {})) {
+      const current = existing.custom[key];
+      if (value === null || value === undefined || value === "" || (current !== null && current !== undefined && current !== "")) continue;
+      existing.custom = { ...existing.custom, [key]: value };
+      filled.push(key);
+    }
+    if (filled.length) await saveAccount(ctx, existing);
+    const on = domain && normalizeDomain(existing.domain) === domain ? `website ${domain}` : `name ${existing.name}`;
+    await insertActivity(ctx, {
+      companyId: existing.companyId,
+      recordType: "company",
+      recordId: existing.id,
+      kind: "note",
+      body: `Creating a company matched this one on ${on}, so no second record was created.${filled.length ? ` Added: ${filled.join(", ")}.` : ""}`,
+    }).catch(() => undefined);
+    return { ...existing, matched: true, matchedOn: on, filled };
+  }
   const account = createAccount({
     companyId: viewer.companyId,
-    name: requiredString(params, "name"),
+    name,
     domain: optionalString(params, "domain"),
     lifecycle: optionalString(params, "lifecycle"),
     currency: optionalString(params, "currency"),
@@ -1257,12 +1317,64 @@ async function offboardCompany(ctx: PluginContext, account: AccountDraft): Promi
   }).catch(() => undefined);
 }
 
+/** The oldest contact sharing an email, else a phone (last 9 digits), with what matched. */
+async function findExistingContact(ctx: PluginContext, companyId: string, emails: string[], phones: string[]): Promise<{ contact: ContactDraft; on: string } | null> {
+  for (const email of emails) {
+    const [hit] = await contactsByEmail(ctx, companyId, email);
+    if (hit) return { contact: hit, on: `email ${email}` };
+  }
+  for (const phone of phones) {
+    const key = phoneMatchKey(phone);
+    if (!key) continue;
+    const [hit] = await contactsByPhone(ctx, companyId, key);
+    if (hit) return { contact: hit, on: `phone ${phone}` };
+  }
+  return null;
+}
+
+/**
+ * Adds the new details to the contact that already has this email or phone
+ * (never a second record) and logs it. Returns the contact, marked `matched`.
+ */
+async function foldIntoExisting(
+  ctx: PluginContext,
+  match: { contact: ContactDraft; on: string },
+  fill: ContactFill,
+  via: string,
+): Promise<ContactDraft & { matched: true; matchedOn: string; filled: string[] }> {
+  const { contact } = match;
+  const filled = fillContact(contact, fill);
+  if (filled.length) await saveContact(ctx, contact);
+  await insertActivity(ctx, {
+    companyId: contact.companyId,
+    recordType: "contact",
+    recordId: contact.id,
+    kind: "note",
+    body: `${via} matched this contact on ${match.on}, so no second record was created.${filled.length ? ` Added: ${filled.join(", ")}.` : ""}`,
+  }).catch(() => undefined);
+  return { ...contact, matched: true, matchedOn: match.on, filled };
+}
+
 async function createContactRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const emails = normalizeEmails(stringList(params, "emails") ?? []);
+  const phones = stringList(params, "phones") ?? [];
+  const existing = await findExistingContact(ctx, viewer.companyId, emails, phones);
+  if (existing) {
+    return foldIntoExisting(ctx, existing, {
+      name: requiredString(params, "name"),
+      emails,
+      phones,
+      tags: stringList(params, "tags"),
+      custom: customOf(params),
+      nextActionKind: params.nextActionKind === undefined || params.nextActionKind === null ? null : assertNextAction(params.nextActionKind),
+      nextActionDueAt: optionalString(params, "nextActionDueAt") ?? null,
+    }, "Creating a contact");
+  }
   const contact = createContact({
     companyId: viewer.companyId,
     name: requiredString(params, "name"),
-    emails: stringList(params, "emails"),
-    phones: stringList(params, "phones"),
+    emails,
+    phones,
     lifecycle: optionalString(params, "lifecycle"),
     tags: stringList(params, "tags"),
     custom: customOf(params),

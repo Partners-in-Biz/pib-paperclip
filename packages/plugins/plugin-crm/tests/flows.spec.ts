@@ -60,10 +60,10 @@ function held(key: string, minutesAgo: number): Row {
 }
 
 describe("company graph stages the CRM owns", () => {
-  it("are lead.in and deal.open, worked by the Account Manager", () => {
+  it("are lead.in (Inbound Qualifier) and deal.open (Sales Lead)", () => {
     expect(flowStagesFor(PLUGIN_ID).map((stage) => [stage.key, stage.role, stage.flow])).toEqual([
-      ["lead.in", "account-manager", "lead-to-cash"],
-      ["deal.open", "account-manager", "lead-to-cash"],
+      ["lead.in", "inbound-qualifier", "lead-to-cash"],
+      ["deal.open", "sales-lead", "lead-to-cash"],
     ]);
     expect(FLOW_STAGES["lead.in"]!.href).toBe("/crm?tab=contacts");
   });

@@ -367,7 +367,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       count: data.unassigned.count,
       items: data.unassigned.items.slice(0, 5).map((i) => ({ issue: i.identifier ?? i.id, title: i.title, status: i.status, priority: i.priority, createdAt: i.createdAt, href: link(`/issues/${i.identifier ?? i.id}`) })),
     },
-    /** Who holds each team role (for hand-offs); a role missing here is not staffed. */
+    /** Who holds each team role (for hand-offs); an unstaffed sales role names who covers it (`coveredBy`). */
     team: Object.fromEntries(
       TEAM_ROLES.map((role) => {
         const member = role.key === "operator"
@@ -375,7 +375,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
           : role.key === "reviewer"
             ? { agentId: roles?.reviewerAgentId ?? null, status: roles?.reviewerStatus ?? null }
             : roles?.team?.[role.key] ?? { agentId: null, status: null };
-        return [role.key, { title: role.title, agentId: member.agentId, agent: member.agentId ? names.get(member.agentId) ?? null : null, status: member.status ?? null }];
+        const coveredBy = role.coveredBy ? TEAM_ROLES.find((r) => r.key === role.coveredBy)?.title ?? null : null;
+        return [role.key, { title: role.title, agentId: member.agentId, agent: member.agentId ? names.get(member.agentId) ?? null : null, status: member.status ?? null, ...(coveredBy && !member.agentId ? { coveredBy } : {}) }];
       }),
     ),
     health: {

@@ -20,9 +20,22 @@
 import { PIB_PLUGINS } from "./contracts.js";
 import type { ModuleKey } from "./setup.js";
 
-export type TeamRoleKey = "operator" | "reviewer" | "account-manager" | "seo-specialist" | "social" | "bookkeeper" | "payroll-clerk";
+export type TeamRoleKey =
+  | "operator"
+  | "reviewer"
+  | "account-manager"
+  | "sales-lead"
+  | "inbound-qualifier"
+  | "crm-data-steward"
+  | "deal-desk"
+  | "seo-specialist"
+  | "social"
+  | "bookkeeper"
+  | "payroll-clerk";
 
 export interface TeamRoleActions {
+  /** Sent with every action call, e.g. `{ role: "sales-lead" }` when one plugin staffs several roles. */
+  params?: Record<string, string>;
   options: string;
   start: string;
   /** Plugin roles only; Cockpit roles save through `cockpit.save-team`. */
@@ -42,6 +55,8 @@ export interface TeamRole {
   summary: string;
   /** Recommended for every company that uses the module (false = optional). */
   required: boolean;
+  /** While this role has no running agent, its work goes to this role (and on down its chain). */
+  coveredBy?: TeamRoleKey;
   /** The item key for this role in the plugin's setup checklist. */
   setupItemKey: string;
   /** Cockpit roles are saved with `cockpit.save-team`. */
@@ -69,13 +84,34 @@ export const COMPANY_OS_SKILL_KEY = teamSkillKey(PIB_PLUGINS.cockpit, "company-o
 
 const withOs = (...keys: string[]): string[] => [...keys, COMPANY_OS_SKILL_KEY];
 
-const pluginActions = (prefix: string, resync?: string): TeamRoleActions => ({
+const pluginActions = (prefix: string, resync?: string, params?: Record<string, string>): TeamRoleActions => ({
+  ...(params ? { params } : {}),
   options: `${prefix}.hire-options`,
   start: `${prefix}.start-hire`,
   link: `${prefix}.link-agent`,
   unlink: `${prefix}.unlink-agent`,
   ...(resync ? { resync } : {}),
 });
+
+const crmSkill = (key: string) => teamSkillKey(PIB_PLUGINS.crm, key);
+
+/** A CRM sales role: optional, and covered by the Account Manager while unstaffed. */
+function salesRole(key: TeamRoleKey, title: string, summary: string, skill: string, extraSkills: string[] = []): TeamRole {
+  return {
+    key,
+    pluginKey: PIB_PLUGINS.crm,
+    module: "crm",
+    title,
+    summary,
+    required: false,
+    coveredBy: "account-manager",
+    setupItemKey: key,
+    skills: withOs(crmSkill("crm-records"), crmSkill(skill)),
+    ...(extraSkills.length ? { extraSkills } : {}),
+    actions: pluginActions("crm", "crm.resync-agent", { role: key }),
+    pagePath: "/crm",
+  };
+}
 
 export const TEAM_ROLES: TeamRole[] = [
   {
@@ -111,10 +147,10 @@ export const TEAM_ROLES: TeamRole[] = [
     pluginKey: PIB_PLUGINS.crm,
     module: "crm",
     title: "Account Manager",
-    summary: "Looks after leads and clients: follows up leads, keeps the CRM current, drafts quotes, invoices and client emails, and prepares campaigns and sequences for approval.",
+    summary: "Looks after clients once they buy: onboarding, invoices, monthly reports, sequences and campaigns. Covers any sales role with no agent.",
     required: true,
     setupItemKey: "agent",
-    skills: withOs(teamSkillKey(PIB_PLUGINS.crm, "crm-records"), teamSkillKey(PIB_PLUGINS.crm, "crm-outbound")),
+    skills: withOs(crmSkill("crm-records"), crmSkill("crm-outbound")),
     extraSkills: [
       teamSkillKey(PIB_PLUGINS.billing, "invoice-draft"),
       teamSkillKey(PIB_PLUGINS.campaigns, "campaigns"),
@@ -124,6 +160,32 @@ export const TEAM_ROLES: TeamRole[] = [
     actions: pluginActions("crm", "crm.resync-agent"),
     pagePath: "/crm",
   },
+  salesRole(
+    "sales-lead",
+    "Sales Lead",
+    "Runs the pipeline: every open deal has an owner, a next step and a date; chases stale deals and sends you a weekly pipeline summary.",
+    "sales-lead",
+  ),
+  salesRole(
+    "inbound-qualifier",
+    "Inbound Qualifier",
+    "Answers new leads fast, qualifies them (need, budget, timeline, decision maker) and books the call or hands them on.",
+    "inbound-qualify",
+    [crmSkill("crm-outbound"), teamSkillKey(PIB_PLUGINS.mailbox, "mailbox-draft")],
+  ),
+  salesRole(
+    "crm-data-steward",
+    "CRM Data Steward",
+    "Keeps the CRM clean: one record per person and company, merges exact duplicates, and asks you about likely ones.",
+    "data-steward",
+  ),
+  salesRole(
+    "deal-desk",
+    "Deal Desk",
+    "Writes proposals and quotes within your pricing guardrails and answers quote replies; anything outside them comes to you.",
+    "deal-desk",
+    [teamSkillKey(PIB_PLUGINS.billing, "invoice-draft")],
+  ),
   {
     key: "seo-specialist",
     pluginKey: PIB_PLUGINS.seo,
@@ -179,6 +241,17 @@ export function teamRole(key: TeamRoleKey): TeamRole {
   const role = TEAM_ROLES.find((r) => r.key === key);
   if (!role) throw new Error(`Unknown team role ${key}`);
   return role;
+}
+
+/** The role, then the roles that cover it while it is unstaffed: `["deal-desk", "account-manager"]`. */
+export function teamRoleChain(key: TeamRoleKey): TeamRoleKey[] {
+  const chain: TeamRoleKey[] = [];
+  let next: TeamRoleKey | undefined = key;
+  while (next && !chain.includes(next)) {
+    chain.push(next);
+    next = TEAM_ROLES.find((r) => r.key === next)?.coveredBy;
+  }
+  return chain;
 }
 
 /** The team role behind a plugin's setup checklist item, if any. */

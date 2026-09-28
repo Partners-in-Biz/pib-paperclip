@@ -13,6 +13,7 @@
 import {
   activeTeamRoles,
   TEAM_INACTIVE_STATUSES,
+  TEAM_ROLES,
   TEAM_SETUP_PATH,
   teamRoleForSetupItem,
   teamRoleHealth,
@@ -28,6 +29,11 @@ export type { TeamRole, TeamRoleHealth, TeamRoleKey };
 export { TEAM_SETUP_PATH, teamSetupPath };
 
 export const COCKPIT_PLUGIN_KEY: string = MODULES.cockpit.plugins[0];
+
+/** Who does an optional role's work while it has no agent (kit `coveredBy`), or null. */
+export function coverTitle(role: Pick<TeamRole, "coveredBy">): string | null {
+  return role.coveredBy ? TEAM_ROLES.find((r) => r.key === role.coveredBy)?.title ?? null : null;
+}
 /** Anchor of the Team section, and of the "Who gets the daily brief" block. */
 export const TEAM_ANCHOR = "team";
 export const OWNER_ANCHOR = "team-owner";

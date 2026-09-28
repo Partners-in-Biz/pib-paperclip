@@ -71,7 +71,7 @@ export class RoleNotReadyError extends Error {}
 
 async function roleAction(role: TeamRole, key: string, companyId: string, params: Record<string, unknown>): Promise<unknown> {
   try {
-    return await runPluginAction(role.pluginKey, key, companyId, params);
+    return await runPluginAction(role.pluginKey, key, companyId, { ...params, ...(role.actions.params ?? {}) });
   } catch (error) {
     if (missingActionError(message(error))) throw new RoleNotReadyError(roleNotReady(role));
     throw error;

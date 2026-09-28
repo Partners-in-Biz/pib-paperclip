@@ -26,6 +26,14 @@ export const CRM_ORIGINS = {
   sequenceRefused: "crm:sequence-refused:",
   /** `crm:sequence-email:<sequence id>`: approve a sequence's email sending (a person decides; never checked). */
   sequenceEmail: "crm:sequence-email:",
+  /** `crm:pipeline-check:<date>`: open deals gone quiet (Sales Lead). */
+  pipelineCheck: "crm:pipeline-check:",
+  /** `crm:pipeline-summary:<date>`: the Monday pipeline summary (Sales Lead; a report, never checked). */
+  pipelineSummary: "crm:pipeline-summary:",
+  /** `crm:duplicates:<date>`: contacts that share an email (CRM Data Steward). */
+  duplicates: "crm:duplicates:",
+  /** `crm:hygiene:<date>`: the Monday CRM hygiene report (CRM Data Steward; a report, never checked). */
+  hygiene: "crm:hygiene:",
 } as const;
 
 export const originFor = {
@@ -37,6 +45,10 @@ export const originFor = {
   quoteDeal: (quoteRef: string) => `${CRM_ORIGINS.quoteDeal}${quoteRef}`,
   sequenceRefused: (approvalIssueId: string) => `${CRM_ORIGINS.sequenceRefused}${approvalIssueId}`,
   sequenceEmail: (sequenceId: string) => `${CRM_ORIGINS.sequenceEmail}${sequenceId}`,
+  pipelineCheck: (date: string) => `${CRM_ORIGINS.pipelineCheck}${date}`,
+  pipelineSummary: (date: string) => `${CRM_ORIGINS.pipelineSummary}${date}`,
+  duplicates: (date: string) => `${CRM_ORIGINS.duplicates}${date}`,
+  hygiene: (date: string) => `${CRM_ORIGINS.hygiene}${date}`,
 };
 
 /** The ids issues had before 0.5.0 (a step issue's was the bare enrollment id). */
@@ -50,7 +62,7 @@ export const LEGACY_ORIGINS = {
 };
 
 /** Work the CRM hands to agents (not approvals or hires), old and new ids. */
-export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused):/;
+export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene):/;
 
 /** Lead follow-ups, old and new ids. */
 export function isLeadFollowUp(originId: string | null | undefined): boolean {

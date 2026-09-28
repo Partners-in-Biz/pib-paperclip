@@ -314,7 +314,7 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
     legacyOriginId: LEGACY_ORIGINS.leadFollowUp(lead.key),
     title: `Follow up ${created ? "new lead" : "lead"}: ${fresh.name}`.slice(0, 200),
     description: leadIssueDescription(fresh, lead, { created, score: score ? leadBand(score) : null, prefix, linkedCompany }),
-    assignee: await recordAssignee(ctx, companyId, created ? null : fresh),
+    assignee: await recordAssignee(ctx, companyId, created ? null : fresh, "inbound-qualifier"),
     wakeReason: "A new lead came in",
   });
 

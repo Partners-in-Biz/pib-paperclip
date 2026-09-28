@@ -50,6 +50,13 @@ Agents use the managed skills `crm-records` (finding clients, records, the clien
   An opt-out, a stopped or finished sequence, a deleted record or no open deal left also counts as finished. Approvals and the refused-sequence hand-off have no check.
 - **`move-deal` `quoteId`.** Moving a deal to won with the accepted quote's id records it on the deal (custom `quoteId`, `quoteNumber`) and logs it on the deal's timeline.
 
+## Sales team and one record per person (0.7.0)
+- **Roles:** four optional roles alongside the Account Manager, staffed in Setup → Team: Sales Lead, Inbound Qualifier, CRM Data Steward, Deal Desk. While a role has no agent, the Account Manager covers it (kit `coveredBy`, `teamRoleChain`). The `crm.*-agent` actions take `params.role` (default `account-manager`).
+- **Routing:** new leads and leads' replies go to the Inbound Qualifier; won-deal and accepted-quote hand-offs to the Sales Lead; duplicates to the Data Steward. Billing sends quote replies to the Deal Desk.
+- **Jobs:** `sales-daily` (07:30 SAST) opens a pipeline check for deals quiet 14 days and a duplicates issue. `sales-weekly` (Mondays 08:00 SAST) opens the pipeline summary and the CRM hygiene report. The pipeline check and duplicates issues have done-checks.
+- **No duplicates:** `create-contact` and `import-contacts` match on email, then on phone (last 9 digits); `create-company` matches on the website domain, then the name. A match fills only empty fields, adds missing emails, phones and tags, logs a note, and returns `matched: true`.
+- **Skills:** `pib-sales-lead`, `pib-inbound-qualify`, `pib-data-steward`, `pib-deal-desk`.
+
 ## Websites, the PiB Connector and projects (0.6.0)
 
 - **Websites.** A client (company or contact) can have several sites (`client_sites`): address (scheme and host; one record per host per company), label, platform (wordpress, nextjs, custom, shopify, wix, other), SEO plugin (yoast, rankmath, none), hosting, access (`repo`, `connector`, `sftp`), the site's project, the SFTP `webRoot` and notes for agents. Tools `list-client-sites`, `save-client-site`, `check-client-site`, `site-changes`; actions `crm.save-client-site`, `crm.delete-client-site` (people), `crm.connect-client-site`, `crm.check-client-site`. The client page has a Websites card.

@@ -1,5 +1,6 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+import { DATA_STEWARD_SKILL, DEAL_DESK_SKILL, INBOUND_QUALIFY_SKILL, SALES_LEAD_SKILL } from "./skills-sales.js";
 import { CLIENT_SITES_SKILL, IOS_RELEASE_SKILL } from "./skills-sites.js";
 
 export const CRM_RECORDS_SKILL = `# CRM records and the client lifecycle
@@ -16,7 +17,7 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 - Money is an integer in minor units plus a currency: R 1,500.00 is \`150000\` ZAR.
 - Log calls, meetings and decisions with \`log-activity\` (add the \`issueId\`). Set the next step on the contact (nextActionKind and nextActionDueAt).
 - A field a person owns keeps its value: fill it only while it is empty. A refused write is noted on the record; do not retry it.
-- Merge duplicates only after a person confirmed they are the same person.
+- One record per person and company: the CRM refuses a second contact with the same email or phone (it updates the existing one) and a second company with the same website. Contacts that share an email are merged with \`merge-contacts\` (the Data Steward's job); likely but uncertain duplicates go to a person.
 - New and changed clients reach the other modules within 15 minutes. If a module does not show a client yet, wait 15 minutes; do not ask anyone to resync.
 
 ## The client lifecycle
@@ -71,6 +72,10 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - No claims we cannot back up, no pressure, no guarantees.
 `;
 
+function salesSkill(skillKey: string, slug: string, displayName: string, description: string, body: string): PluginManagedSkillDeclaration {
+  return { skillKey, displayName, slug, description, markdown: withFrontmatter({ name: slug, description }, body) };
+}
+
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: "crm-records",
@@ -92,6 +97,10 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       CRM_OUTBOUND_SKILL,
     ),
   },
+  salesSkill("sales-lead", "pib-sales-lead", "Sales Lead", "Run the pipeline: chase stale deals, keep every open deal owned and moving, and write the weekly pipeline summary.", SALES_LEAD_SKILL),
+  salesSkill("inbound-qualify", "pib-inbound-qualify", "Inbound qualifying", "Answer new leads the same day, qualify them (need, budget, timeline, decision maker) and hand qualified deals on.", INBOUND_QUALIFY_SKILL),
+  salesSkill("data-steward", "pib-data-steward", "CRM data steward", "Keep one CRM record per person and company: merge exact duplicates, ask about likely ones, and report weekly on data hygiene.", DATA_STEWARD_SKILL),
+  salesSkill("deal-desk", "pib-deal-desk", "Deal desk", "Turn qualified deals into quotes within the pricing guardrails, ask to send them, and handle quote replies.", DEAL_DESK_SKILL),
   {
     skillKey: "wp-sites",
     displayName: "Client websites (WordPress)",

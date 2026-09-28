@@ -209,6 +209,19 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       ...over,
     });
 
+    it("goes to the Deal Desk when there is one", async () => {
+      await h.deliver(ROLES, COMPANY, {
+        companyId: COMPANY, operatorAgentId: "agent-op", reviewerAgentId: null, reviewOutward: false, ownerUserId: "owner-1",
+        team: { "account-manager": { agentId: "agent-am", status: "idle" }, "deal-desk": { agentId: "agent-dd", status: "idle" } },
+        updatedAt: new Date(Date.now() + 1000).toISOString(),
+      });
+      const q = await quote();
+      await h.client.query(`UPDATE ${NAMESPACE}.quotes SET status = 'sent', sent_at = now() WHERE id = $1`, [q.id]);
+      await h.deliver(MAIL_RECEIVED, COMPANY, reply({ key: "mbx:dd1", messageId: "gm-dd1", replyTo: { plugin: "partnersinbiz.billing", kind: "quote", id: q.id } }));
+      const row = (await workIssue(`billing:quote-reply:${q.id}`))!;
+      expect(h.issues.get(row.issue_id)).toMatchObject({ assigneeAgentId: "agent-dd" });
+    });
+
     it("opens one issue per quote for the Account Manager, with the reply and the next steps", async () => {
       const q = await quote();
       await h.client.query(`UPDATE ${NAMESPACE}.quotes SET status = 'sent', sent_at = now() WHERE id = $1`, [q.id]);

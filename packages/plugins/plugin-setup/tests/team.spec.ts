@@ -84,7 +84,7 @@ const bookkeeper = teamRole("bookkeeper");
 
 describe("team roles", () => {
   it("lists the roles of switched-on modules whose plugin is installed", () => {
-    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
+    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
     const installed = {
       "partnersinbiz.cockpit": { status: "ready" },
       "partnersinbiz.seo": { status: "ready" },
@@ -527,6 +527,28 @@ describe("the Account Manager (CRM) row", () => {
       expect(roleHealth(loaded.states["seo-specialist"])).toBe("missing");
       expect(calls.some((u) => u.includes("/api/plugins/partnersinbiz.crm/actions/crm.hire-options"))).toBe(true);
       await expect(fetchHireOptions("c1", am)).rejects.toThrow("The CRM plugin cannot staff the Account Manager yet.");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("a sales role sends its role with every call, and shows as covered until staffed", async () => {
+    const dealDesk = teamRole("deal-desk");
+    const bodies: Array<{ url: string; body: unknown }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/actions/")) bodies.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (String(url).includes("/actions/crm.hire-options")) return new Response(JSON.stringify({ data: hireOptions({ agent: null, linkedBy: null, hire: null, candidates: [] }) }), { status: 200 });
+      return new Response(JSON.stringify([]), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const loaded = await loadTeam({ companyId: "c1", roles: [dealDesk], installed: null });
+      expect(JSON.stringify(bodies[0]!.body)).toContain('"role":"deal-desk"');
+      const state = loaded.states["deal-desk"]!;
+      expect(roleHealth(state)).toBe("missing");
+      const html = renderToStaticMarkup(createElement(TeamRoleRow, { state, open: true, linkFor, now: NOW, onToggle: () => undefined }));
+      for (const text of ["Covered", "The Account Manager covers it", "Until you hire one, the Account Manager does this work."]) expect(html, text).toContain(text);
+      expect(html).not.toContain("Not hired");
     } finally {
       globalThis.fetch = realFetch;
     }

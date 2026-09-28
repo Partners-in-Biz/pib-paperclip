@@ -138,6 +138,17 @@ describe("where the graph is switched off", () => {
     expect(stageOff(stage("quote.draft"), { ...on, team: { "account-manager": { agentId: "am", name: null, status: null } } })).toBeNull();
   });
 
+  it("a sales stage runs while the Account Manager covers its unstaffed role", () => {
+    const am = { "account-manager": { agentId: "am", name: "Ama", status: "idle" } };
+    expect(stageOff(stage("quote.draft"), { ...on, team: am })).toBeNull();
+    expect(stageOff(stage("quote.draft"), { ...on, team: { "deal-desk": { agentId: "dd", name: "Dee", status: "idle" } } })).toBeNull();
+    // Nobody to do it: the fix is the covering role.
+    expect(stageOff(stage("quote.draft"), { ...on, team: {} })).toMatchObject({ key: "role:account-manager:none", reason: "No Account Manager yet", href: "/setup?section=team#team-account-manager" });
+    // Its own agent is paused and nobody covers: that is the problem to fix.
+    expect(stageOff(stage("quote.draft"), { ...on, team: { "deal-desk": { agentId: "dd", name: "Dee", status: "paused" } } })).toMatchObject({ key: "role:deal-desk:paused", reason: "Dee (Deal Desk) is paused" });
+    expect(stageOff(stage("quote.draft"), { ...on, team: { ...am, "deal-desk": { agentId: "dd", name: "Dee", status: "paused" } } })).toBeNull();
+  });
+
   it("says why, in plain words, with the Setup link that fixes it", () => {
     expect(stageOff(stage("quote.draft"), { ...on, modules: { billing: false } })).toEqual({ kind: "module", key: "module:billing", reason: "Billing is switched off in Setup", phrase: "Billing switched off", href: "/setup?section=modules" });
     expect(stageOff(stage("quote.draft"), { ...on, installed: {} })).toMatchObject({ kind: "installed", reason: "The Billing plugin is not installed", href: "/setup?section=checklist#module-billing" });
