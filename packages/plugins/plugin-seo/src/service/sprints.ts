@@ -50,6 +50,7 @@ import { loadServiceAccount } from "./google-access.js";
 import { needsYouView } from "./needs-you.js";
 import { playbookSummary } from "./playbook.js";
 import { siteLinkView } from "./site.js";
+import { autoLinkWordPressSite, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
 import { isCodeTask } from "../engine/site-change.js";
 
 /** The plan to seed: `businessType` when given, else local for a client and software for our own sites. */
@@ -188,6 +189,20 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     notes: str(params, "notes", { max: 4000 }) ?? null,
   });
   let sprint = await requireSprint(env, companyId, id);
+  // The client's one WordPress site at this URL with a connected Connector: link it now (best effort, never fails creation).
+  let wordpressLinked: string | null = null;
+  if (client) {
+    try {
+      const wp = await autoLinkWordPressSite(env, sprint);
+      if (wp) {
+        await db.updateSprint(env.ctx.db, companyId, id, { site_access: "wordpress", site_id: wp.id, hosting: "other" });
+        sprint = await requireSprint(env, companyId, id);
+        wordpressLinked = wp.url;
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO WordPress auto-link skipped", { sprintId: id, error: errorMessage(error) });
+    }
+  }
   const seeded = await seedTemplate(env, sprint, plan);
   await env.skills.ensure(companyId).catch(() => []);
   const projectId = await ensureProject(env, companyId);
@@ -229,8 +244,11 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     issuesOpened: materialised.created,
     issuesPending: materialised.remaining,
     warnings,
-    next:
-      "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.",
+    siteAccess: sprint.siteAccess,
+    ...(wordpressLinked ? { wordpressSite: wordpressLinked } : {}),
+    next: wordpressLinked
+      ? `Linked to the client's WordPress site ${wordpressLinked} through the PiB Connector: the agent makes SEO changes there itself. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.`
+      : "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.",
   };
 }
 
@@ -397,6 +415,16 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
       next.push("Search Console: waiting for the service account key (on the Needs you issue). Work the other tasks meanwhile; rankings start once it is set.");
     }
   }
+  const wpSite = await sprintWordPressSite(env, sprint);
+  if (sprint.siteAccess === "wordpress") {
+    next.push(
+      !wpSite
+        ? "The linked WordPress site is no longer in the CRM: ask a person to pick it again (needs-you-add key site_project); work the other tasks."
+        : wpSite.connector_status === "connected"
+          ? `WordPress (${wordPressSiteView(wpSite).summary}): make SEO changes with the partnersinbiz.crm:wp-* tools and siteId "${wpSite.id}" (get-site-link, references/wordpress.md).`
+          : `WordPress: the PiB Connector on ${wpSite.url} is not connected. Site changes wait for it (needs-you-add key wp_connector, then block-task); work the other tasks.`,
+    );
+  }
   if (sprint.siteAccess === "unlinked") {
     const waiting = notStarted.filter((t) => t.owner === "agent" && !t.issueId && isCodeTask(t)).length;
     if (waiting > 0) next.push(`${plural(waiting, "code task")} ${waiting === 1 ? "waits" : "wait"} for the site repo link (on Needs you). If you know the repo's project, link it with link-site.`);
@@ -443,7 +471,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     upcoming: tasks.filter((t) => t.dueDay != null && t.dueDay > clock.day).slice(0, 5).map(brief),
     proposals: proposals.map((p) => ({ optimizationId: p.id, hypothesis: p.hypothesis, signal: p.signalType, severity: p.severity })),
     integrations: integrations.map(integrationView),
-    siteRepo: siteLinkView(sprint),
+    siteRepo: siteLinkView(sprint, wpSite),
     serviceAccountEmail: sa.key?.clientEmail ?? null,
     playbook: { version: playbook.version, pending: playbook.pending, read: "Call get-playbook with this sprintId before working its tasks and follow it." },
     needsYou: needsYou ? { issueId: needsYou.issueId, issueIdentifier: needsYou.issueIdentifier, open: needsYou.open.map((i) => ({ key: i.key, title: i.title, kind: i.kind })) } : null,

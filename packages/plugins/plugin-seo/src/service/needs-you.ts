@@ -42,6 +42,7 @@ import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "
 import { settingsPath } from "./settings-path.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { routePrReview } from "./review.js";
+import { sprintWordPressSite, wpConnectorItemFor } from "./wordpress.js";
 
 const nowIso = (env: Env) => env.now().toISOString();
 
@@ -185,6 +186,12 @@ export async function checkNeedsYouItem(env: Env, info: CompanyInfo, sprint: db.
     }
     case "playbook_decided":
       return (await env.playbooks.pendingForSprint(sprint.companyId, sprint.id)).length === 0;
+    case "wp_connector": {
+      // Another site link replaced the WordPress one: only a person can say whether the item still matters.
+      if (sprint.siteAccess !== "wordpress") return null;
+      const site = await sprintWordPressSite(env, sprint);
+      return site?.connector_status === "connected";
+    }
     default:
       return null;
   }
@@ -277,7 +284,7 @@ export async function needsYouTool(env: Env, companyId: string, params: Params) 
 const KINDS = ["grant", "review", "pr", "message", "task", "indexing"] as const;
 
 /** Keys with a standard item (exact steps and links written by the plugin). */
-export const STANDARD_KEYS = ["github_token", "site_project", "service_account", "bing_key"] as const;
+export const STANDARD_KEYS = ["github_token", "site_project", "service_account", "bing_key", "wp_connector"] as const;
 
 export async function needsYouAddTool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
@@ -285,6 +292,11 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
   const taskIds = strList(params, "taskIds", { max: 20, itemMax: 100 });
   const key = str(params, "key", { max: 120 });
   if (key && (STANDARD_KEYS as readonly string[]).includes(key)) {
+    if (key === "wp_connector") {
+      if (sprint.siteAccess !== "wordpress") throw new SeoError("wp_connector is for a sprint linked to a WordPress site (link-site with wordpressSiteId).");
+      const item = wpConnectorItemFor(info, sprint, await sprintWordPressSite(env, sprint), taskIds);
+      return { sprintId: sprint.id, ...(await addNeedsYou(env, info, sprint, item, { reopen: true })), standard: true, by: actorLabel(actor) };
+    }
     const settings = await settingsPath(env, info);
     const item =
       key === "github_token"

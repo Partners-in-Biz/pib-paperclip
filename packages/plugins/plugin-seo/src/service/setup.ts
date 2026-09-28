@@ -6,6 +6,7 @@ import { companyInfo, str, type CompanyInfo, type Env, type Params } from "./com
 import { requireSprint } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { integrationAuth, settingsPath } from "./gsc.js";
+import { sprintCrmPath, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
 
 async function secretSet(info: CompanyInfo, path: string): Promise<boolean> {
   try {
@@ -36,11 +37,13 @@ export async function companySetupFacts(env: Env, info: CompanyInfo): Promise<Se
 }
 
 /** One sprint's facts for the checklist. */
-export async function sprintSetupFacts(env: Env, sprint: db.Sprint): Promise<NonNullable<SetupFacts["sprint"]>> {
-  const [gsc, bing] = await Promise.all([
+export async function sprintSetupFacts(env: Env, sprint: db.Sprint, prefix: string | null = null): Promise<NonNullable<SetupFacts["sprint"]>> {
+  const [gsc, bing, site] = await Promise.all([
     db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc"),
     db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "bing"),
+    sprintWordPressSite(env, sprint),
   ]);
+  const view = site ? wordPressSiteView(site) : null;
   return {
     siteName: sprint.siteName,
     siteUrl: sprint.siteUrl,
@@ -48,6 +51,7 @@ export async function sprintSetupFacts(env: Env, sprint: db.Sprint): Promise<Non
     siteAccess: sprint.siteAccess,
     siteProjectId: sprint.siteProjectId,
     repoUrl: sprint.repoUrl,
+    wordpress: view ? { url: view.url, summary: view.summary, connected: view.connected, clientName: sprint.clientName, clientPath: sprintCrmPath(prefix, sprint) } : null,
     changePolicy: sprint.changePolicy,
     autopilotMode: sprint.autopilotMode,
     property: gsc?.status === "connected" ? gsc.propertyUrl : null,
@@ -57,7 +61,7 @@ export async function sprintSetupFacts(env: Env, sprint: db.Sprint): Promise<Non
 }
 
 export async function setupChecklist(env: Env, info: CompanyInfo, sprint: db.Sprint | null): Promise<SetupItem[]> {
-  const [facts, sprintFacts] = await Promise.all([companySetupFacts(env, info), sprint ? sprintSetupFacts(env, sprint) : Promise.resolve(null)]);
+  const [facts, sprintFacts] = await Promise.all([companySetupFacts(env, info), sprint ? sprintSetupFacts(env, sprint, info.prefix) : Promise.resolve(null)]);
   return buildSetupChecklist({ ...facts, ...(sprintFacts ? { sprint: sprintFacts } : {}) });
 }
 

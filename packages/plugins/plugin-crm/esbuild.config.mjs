@@ -1,5 +1,7 @@
+import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
+import { buildConnectorZip } from "../pib-wp-connector/build.mjs";
 
 const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 const watch = process.argv.includes("--watch");
@@ -15,3 +17,6 @@ if (watch) {
   await Promise.all([workerCtx.rebuild(), manifestCtx.rebuild(), uiCtx.rebuild()]);
   await Promise.all([workerCtx.dispose(), manifestCtx.dispose(), uiCtx.dispose()]);
 }
+
+// The PiB Connector WordPress plugin, served next to the page (Websites → Connect WordPress).
+await buildConnectorZip(fileURLToPath(new URL("./dist/ui/pib-connector.zip", import.meta.url)));

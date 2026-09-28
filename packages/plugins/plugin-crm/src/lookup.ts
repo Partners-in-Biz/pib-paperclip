@@ -488,7 +488,7 @@ export function applyProfilePatch(current: ClientProfileRecord | null, patch: Pa
 }
 
 /** The client must be visible to the viewer. Returns its name. */
-async function requireClient(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string }): Promise<string> {
+export async function requireClient(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string }): Promise<string> {
   const records = await visible(ctx, viewer);
   const row = client.kind === "company" ? records.accounts.find((a) => a.id === client.id) : records.contacts.find((c) => c.id === client.id);
   if (!row) throw new CrmError(`${client.kind === "company" ? "Company" : "Contact"} was not found or is not visible to you (find it with find-records)`);

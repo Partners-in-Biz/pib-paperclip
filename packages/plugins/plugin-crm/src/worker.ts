@@ -196,6 +196,23 @@ import {
   setDelivery,
 } from "./mail.js";
 import { jevConfigFor } from "./jev.js";
+import {
+  checkClientSite,
+  clientSitesAndProjects,
+  connectClientSite,
+  deleteClientSite,
+  emitSites,
+  linkClientProject,
+  listClientProjectsTool,
+  listClientSitesTool,
+  refreshSite,
+  runWpTool,
+  saveClientSite,
+  siteChangesTool,
+  staleConnectorSites,
+  unlinkClientProject,
+  WP_TOOL_NAMES,
+} from "./sites.js";
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
@@ -255,6 +272,14 @@ const plugin = definePlugin({
     registerAction("crm.resync", (_params, context) => resyncAction(ctx, context));
     registerAction("crm.sync-skills", (_params, context) => syncSkillsAction(ctx, context));
     registerAction("crm.settings-status", (_params, context) => settingsStatusAction(ctx, context));
+    // Websites and projects on the client page.
+    registerAction("crm.save-client-site", async (params, context) => saveClientSite(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.delete-client-site", async (params, context) => deleteClientSite(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.connect-client-site", async (params, context) => connectClientSite(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.check-client-site", async (params, context) => checkClientSite(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.site-changes", async (params, context) => siteChangesTool(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.link-client-project", async (params, context) => linkClientProject(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.unlink-client-project", async (params, context) => unlinkClientProject(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
 
     // The Account Manager (Setup → Team calls these; kit TEAM_ROLES "account-manager").
@@ -329,6 +354,7 @@ const plugin = definePlugin({
         await reemitAllHandoffs(ctx);
         await publishAllSetupStatus(ctx);
         await publishAllCockpit(ctx);
+        await refreshStaleSites(ctx);
       });
     });
     // Leads handed over by Social (inbox intent) and the Mailbox (mail triaged as a lead).
@@ -385,6 +411,18 @@ async function linkPendingHires(ctx: PluginContext): Promise<void> {
     if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
     if (Object.keys(await readConfig(ctx, companyId).catch(() => ({}))).length === 0) continue;
     await tryLinkAccountManager(ctx, companyId, syncSkills);
+  }
+}
+
+/** Hourly: ping Connector sites not heard from in 6 hours (a few per run), so every module sees a current status. */
+async function refreshStaleSites(ctx: PluginContext): Promise<void> {
+  for (const site of await staleConnectorSites(ctx, 6, 10).catch(() => [])) {
+    try {
+      if (Object.keys(await readConfig(ctx, site.companyId)).length === 0) continue;
+      await refreshSite(ctx, site, "system:crm-hourly-check");
+    } catch (error) {
+      ctx.logger.info("CRM site check skipped", { siteId: site.id, error: error instanceof Error ? error.message : String(error) });
+    }
   }
 }
 
@@ -530,7 +568,22 @@ async function dispatch(
       return updateClientProfile(ctx, viewer, body, source);
     case "set-email-status":
       return setEmailStatusRecord(ctx, viewer, body, source);
+    case "list-client-sites":
+      return listClientSitesTool(ctx, viewer, body);
+    case "save-client-site":
+      return saveClientSite(ctx, viewer, body, source);
+    case "check-client-site":
+      return checkClientSite(ctx, viewer, body);
+    case "connect-client-site":
+      return connectClientSite(ctx, viewer, body, source);
+    case "site-changes":
+      return siteChangesTool(ctx, viewer, body);
+    case "list-client-projects":
+      return listClientProjectsTool(ctx, viewer, body);
+    case "link-client-project":
+      return linkClientProject(ctx, viewer, body);
     default:
+      if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
 }
@@ -776,10 +829,11 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       accountId: deal.accountId,
     }));
 
-  const [activities, profileRecord, clientLeads] = await Promise.all([
+  const [activities, profileRecord, clientLeads, sitesAndProjects] = await Promise.all([
     listActivities(ctx, ref.kind, ref.id, 50),
     getClientProfile(ctx, viewer.companyId, ref.kind, ref.id).catch(() => null),
     listClientLeads(ctx, viewer.companyId, ref.kind, ref.id, 20).catch(() => []),
+    clientSitesAndProjects(ctx, viewer, ref, (account ?? contact)!.name),
   ]);
   return {
     ...base,
@@ -788,6 +842,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     contact,
     profile: profileRecord ? { ...pickProfile(profileRecord), humanOwned: profileRecord.humanOwned, updatedAt: profileRecord.updatedAt } : null,
     clientLeads,
+    ...sitesAndProjects,
     contacts,
     companies,
     deals,
@@ -1641,6 +1696,7 @@ async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | nu
     try {
       if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await emitChanges(ctx, companyId, sinceSeconds);
+      await emitSites(ctx, companyId, sinceSeconds);
       if (sinceSeconds == null) await recordFullShare(ctx, companyId);
     } catch (error) {
       ctx.logger.info("CRM change broadcast skipped", {
@@ -1681,8 +1737,9 @@ async function onPartnerGrantRevoked(ctx: PluginContext, companyId: string, payl
 async function resyncAction(ctx: PluginContext, context: PluginPerformActionContext) {
   const viewer = await actionViewer(ctx, context);
   const counts = await emitChanges(ctx, viewer.companyId, null);
+  const sites = await emitSites(ctx, viewer.companyId, null);
   await recordFullShare(ctx, viewer.companyId);
-  return { ok: true, ...counts };
+  return { ok: true, ...counts, sites };
 }
 
 async function syncSkillsAction(ctx: PluginContext, context: PluginPerformActionContext) {

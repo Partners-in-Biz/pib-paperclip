@@ -1,0 +1,181 @@
+/**
+ * The PiB Connector client: signed calls from Paperclip to a client's
+ * WordPress site. Protocol: packages/wordpress/pib-connector/PROTOCOL.md.
+ *
+ * Every call is a POST with a JSON body, signed with the site's key:
+ * HMAC-SHA256(key, "<ts>\n<nonce>\nPOST\n<route>\n<sha256(body)>").
+ * The host's `ctx.http.fetch` blocks private addresses, does not follow
+ * redirects and gives up after 30 seconds.
+ */
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { CrmError } from "./domain.js";
+
+export const CONNECTOR_ROUTE_PREFIX = "/pib-connector/v1/";
+
+/** Every endpoint the Connector has, and whether it changes the site. */
+export const CONNECTOR_ENDPOINTS = {
+  ping: false,
+  health: false,
+  log: false,
+  undo: true,
+  "seo/get": false,
+  "seo/set": true,
+  "schema/get": false,
+  "schema/set": true,
+  "redirects/list": false,
+  "redirects/set": true,
+  "redirects/delete": true,
+  "robots/get": false,
+  "robots/set": true,
+  "sitemap/get": false,
+  "sitemap/set": true,
+  "plugins/list": false,
+  "plugins/backups": false,
+  "plugins/install": true,
+  "plugins/rollback": true,
+} as const;
+export type ConnectorEndpoint = keyof typeof CONNECTOR_ENDPOINTS;
+
+/** `pibc_` + 43 base64url characters (32 random bytes). */
+export function newConnectorKey(): string {
+  return `pibc_${randomBytes(32).toString("base64url")}`;
+}
+
+export function isConnectorKey(value: unknown): value is string {
+  return typeof value === "string" && /^pibc_[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+/** First 12 hex characters of sha256(key): shown on both sides so people can compare keys without seeing them. */
+export function connectorKeyId(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 12);
+}
+
+export function sha256Hex(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+export function signConnectorRequest(key: string, input: { timestamp: number; nonce: string; route: string; body: string }): string {
+  const payload = [String(input.timestamp), input.nonce, "POST", input.route, sha256Hex(input.body)].join("\n");
+  return createHmac("sha256", key).update(payload).digest("hex");
+}
+
+export interface ConnectorSite {
+  url: string;
+  connectorKey: string | null;
+}
+
+export class ConnectorError extends CrmError {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number | null,
+  ) {
+    super(message);
+  }
+}
+
+/** Errors that mean the site is unreachable or the key is wrong, not that one request was refused. */
+export function isConnectionFailure(error: unknown): boolean {
+  if (!(error instanceof ConnectorError)) return false;
+  return ["pib_unreachable", "pib_not_installed", "pib_not_paired", "pib_bad_signature", "pib_bad_response", "pib_redirected"].includes(error.code);
+}
+
+/** `https://www.acme.co.za/some/page` → `https://www.acme.co.za` (the site's own origin, as stored). */
+export function siteBase(url: string): string {
+  const parsed = new URL(url);
+  return parsed.origin;
+}
+
+interface RawResponse {
+  status: number;
+  text: string;
+  contentType: string;
+  location: string | null;
+}
+
+async function post(ctx: PluginContext, url: string, headers: Record<string, string>, body: string): Promise<RawResponse> {
+  let res: Response;
+  try {
+    res = await ctx.http.fetch(url, { method: "POST", headers, body, redirect: "manual" });
+  } catch (error) {
+    throw new ConnectorError(`Could not reach the site: ${error instanceof Error ? error.message : String(error)}`, "pib_unreachable", null);
+  }
+  return {
+    status: res.status,
+    text: (await res.text()).slice(0, 2_000_000),
+    contentType: res.headers.get("content-type") ?? "",
+    location: res.headers.get("location"),
+  };
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Call one Connector endpoint. Tries `/wp-json/…` first and falls back to
+ * `?rest_route=…` when the site has no pretty permalinks. Returns `data`.
+ */
+export async function callConnector(
+  ctx: PluginContext,
+  site: ConnectorSite,
+  endpoint: ConnectorEndpoint,
+  params: Record<string, unknown> = {},
+  options: { actor?: string | null } = {},
+): Promise<Record<string, unknown>> {
+  if (!site.connectorKey) throw new ConnectorError("This site has no Connector key yet. On the CRM client page open Websites → Connect WordPress.", "pib_not_paired", null);
+  const route = `${CONNECTOR_ROUTE_PREFIX}${endpoint}`;
+  const body = JSON.stringify(params ?? {});
+  const base = siteBase(site.url);
+  const candidates = [`${base}/wp-json${route}`, `${base}/?rest_route=${encodeURIComponent(route)}`];
+  let last: RawResponse | null = null;
+  for (const url of candidates) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = randomBytes(16).toString("hex");
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "PiB-Paperclip-CRM/1.0 (+https://partnersinbiz.online)",
+      "X-PIB-Key-Id": connectorKeyId(site.connectorKey),
+      "X-PIB-Timestamp": String(timestamp),
+      "X-PIB-Nonce": nonce,
+      "X-PIB-Signature": signConnectorRequest(site.connectorKey, { timestamp, nonce, route, body }),
+    };
+    if (options.actor) headers["X-PIB-Actor"] = options.actor.slice(0, 120);
+    const res = await post(ctx, url, headers, body);
+    last = res;
+    const json = parseJson(res.text) as { ok?: unknown; data?: unknown; code?: unknown; message?: unknown } | null;
+    if (res.status >= 200 && res.status < 300 && json && json.ok === true) {
+      return json.data && typeof json.data === "object" && !Array.isArray(json.data) ? (json.data as Record<string, unknown>) : {};
+    }
+    if (json && typeof json.code === "string") {
+      // WordPress answered. rest_no_route on /wp-json means the plugin is not active; try the other form only for a plain 404.
+      if (json.code === "rest_no_route") {
+        throw new ConnectorError("The PiB Connector is not installed or not active on this site (WordPress has no pib-connector route). Install and activate it in wp-admin → Plugins.", "pib_not_installed", res.status);
+      }
+      throw new ConnectorError(typeof json.message === "string" ? json.message : `The Connector refused the request (${json.code})`, json.code, res.status);
+    }
+    if (res.status >= 300 && res.status < 400) {
+      throw new ConnectorError(
+        `The site redirects ${url.split("?")[0]} to ${res.location ?? "another address"}. Save the site with its final address (for example with or without www, https) and try again.`,
+        "pib_redirected",
+        res.status,
+      );
+    }
+    if (res.status === 404) continue;
+    break;
+  }
+  if (last?.status === 404) {
+    throw new ConnectorError("The site's WordPress REST API did not answer (404 on /wp-json and ?rest_route). Check that this is a WordPress site and that nothing blocks the REST API.", "pib_not_installed", 404);
+  }
+  throw new ConnectorError(
+    `The site answered ${last?.status ?? "nothing"} without a Connector response${last?.contentType.includes("html") ? " (an HTML page: a firewall, cache or maintenance page may be in the way)" : ""}.`,
+    "pib_bad_response",
+    last?.status ?? null,
+  );
+}

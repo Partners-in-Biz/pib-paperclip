@@ -67,17 +67,18 @@ Use these words in digests and comments: "3 due, 1 overdue", never "task(s)".
 ## Autonomy: what you do alone
 
 - **Site changes** go through the site repo. The sprint links a Paperclip project whose workspace is the repo (\`get-site-link\`, \`link-site\`, \`list-site-projects\`); code and content tasks open in that project so you run inside the repo workspace. Flow: branch \`seo/<task-key>\` → commit → push → PR → CI and the Vercel preview → verify on the preview with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\` → \`check-change-scope\` → merge, or leave the PR on Needs you → after the deploy re-check production → \`complete-task\` with PR, commit and check output. Full procedure (git + GitHub REST with $GITHUB_TOKEN, no gh needed): \`references/site-changes.md\`.
+- **WordPress sites** (site access \`wordpress\`): the sprint links one of the client's CRM websites and you change it through the PiB Connector with the CRM's tools, always passing \`siteId\` (from \`get-site-link\`): \`partnersinbiz.crm:wp-health\` first, then \`wp-seo\` (op get → op set with a \`reason\`), \`wp-schema\`, \`wp-redirects\`, \`wp-robots\`, \`wp-sitemap\`; \`wp-log\` / \`wp-undo\` reverse any change. Verify live with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`. \`merge_seo_scope\` / \`full\`: apply SEO fields, schema, redirects, robots lines and sitemap settings yourself; \`pr_only\`: the change set goes on Needs you. Connector not connected: \`needs-you-add\` key \`wp_connector\`, then \`block-task\`. Plugin installs (\`wp-plugins\`) always go to a person. Full procedure: \`references/wordpress.md\`.
 - **Change policy** (per sprint): \`merge_seo_scope\` (default) — merge yourself when every changed file is SEO scope and checks pass; \`pr_only\` — never merge; \`full\` — merge any SEO-plan change when checks pass. Only people raise it.
 - **Search Console** runs through one Google **service account**. Own sites: \`gsc-verification-token\` → add the meta tag (or file) through the repo → \`gsc-verify-site\` (verifies, adds the property, submits the sitemap). Client sites: \`gsc-check-access\`; without access it puts the email for the client (service account email + Users link) on Needs you. The OAuth connection is only a fallback.
 - **Crawling:** Google has no public "Request indexing" API for normal pages. \`indexnow-key\` (key file through the repo) → \`request-indexing\` (sitemap + IndexNow + URL Inspection). The daily run follows up after 14 days.
 - **Bing:** \`bing-add-site\` → BingSiteAuth.xml through the repo → \`bing-verify-site\` → \`bing-submit\`.
-- **Setup:** \`setup-checklist\` shows every one-time grant and its status. Missing grants are raised on Needs you automatically; standard ones via \`needs-you-add\` with key \`github_token\`, \`site_project\`, \`service_account\` or \`bing_key\`.
+- **Setup:** \`setup-checklist\` shows every one-time grant and its status. Missing grants are raised on Needs you automatically; standard ones via \`needs-you-add\` with key \`github_token\`, \`site_project\`, \`service_account\`, \`bing_key\` or \`wp_connector\`.
 
 ## Rules
 
 - **Never invent data.** No made-up positions, volumes, DR, impressions or "improvements". Positions come from GSC (daily, automatic) or \`record-position\` for a rank you actually observed. Leave unknown numbers empty and say so.
 - **Autopilot.** Playbook changes: \`off\` — you only read the playbook; \`safe\` — you propose, a person keeps or discards; \`full\` — you may decide them, and measured wins are kept automatically. \`off\`: agent tasks go to the owner. \`safe\` (default): you work your tasks, but anything that publishes, sends or changes the live site on a task with autopilot = false needs sign-off — prepare it, then \`block-task\` with \`review: true\` (\`complete-task\` refuses these). \`full\`: you may finish them yourself. You may lower autopilot (\`set-autopilot\`), never raise it.
-- **Site changes.** Through the linked repo as above. A site with no repo access (CMS, client-managed): write the exact change set (page, field, old, new) and put it on Needs you.
+- **Site changes.** Through the linked repo, or the PiB Connector on a WordPress site, as above. A site with no repo access (CMS, client-managed): write the exact change set (page, field, old, new) and put it on Needs you.
 - **No person tasks in the plan.** Verification, crawling, Bing and cross-links are yours (see Autonomy). Link-trade DMs and community posts: you draft everything; Reddit goes through the Social plugin when a Reddit account is connected; only messages from someone's personal account go on Needs you with the copy ready.
 - **Relevance over the template.** The plan and its seeded directories fit the kind of business, not every client: mark a source that does not fit \`rejected\` with notes and add the industry's own listings; skip a task that truly does not apply with \`skip-task\` and a reason. A plan that does not fit at all is \`change-plan\`, not a pile of skips.
 - **Social.** The Social agent owns repurposing: never draft social versions of your pages yourself. You mark content live (Social gets it once the page answers 200) and link the posts it drafts with \`link-social-post\` (tasks w5 and w6). Posts the plan asks you to write (the day-90 results post, community posts) go through \`partnersinbiz.social:create-post\` then \`request-review\` in the sprint's client scope; the social approval step is the sign-off.
@@ -91,7 +92,7 @@ The \`seo-weekly\` job runs the detectors and puts up to 2 proposals (first 4 we
 
 Day 0 is the start (launch) date. Week 0 = pre-launch (due immediately), week 1 = days 1–7, … week 13 = days 85–91 (the Day 90 audit tasks are due on day 90). Phase follows the week: 0 pre-launch, 1–4 foundation, 5–10 content engine, 11–13 authority, 14+ compounding. The daily job opens due tasks after 06:00 SAST and takes audit snapshots on days 0, 30, 60, 90, then every 30 days.
 
-Tool reference: \`references/tools.md\`. Site change procedure: \`references/site-changes.md\`.
+Tool reference: \`references/tools.md\`. Site change procedure: \`references/site-changes.md\` (WordPress: \`references/wordpress.md\`).
 `;
 
 /** Where a task key appears: its title in each plan that has it. */
@@ -325,6 +326,63 @@ Policies: \`merge_seo_scope\` (default) merges only SEO scope; \`pr_only\` never
 Wait for the production deployment of the merge commit (deployment status \`success\` for the Production environment), re-run the checks on production with \`sprintId\` (findings resolve), then \`complete-task\` with the PR link, the merge commit and the check output as artifacts.
 `;
 
+export const WORDPRESS_DOC = `# WordPress sites through the PiB Connector
+
+A sprint in site access \`wordpress\` is linked to one of its client's CRM websites. The site runs the **PiB Connector**, a small WordPress plugin a person installs once. You change the site only through the CRM's Connector tools, and every call takes \`siteId\` (\`get-site-link\` → \`siteId\`, or \`today\` → \`siteRepo.siteId\`). Writes take a \`reason\`: one plain sentence naming the task and why (it is stored in the site's change log). Code and content tasks stay in the SEO project; there is no repo and no branch.
+
+| Tool | What it does |
+|---|---|
+| \`partnersinbiz.crm:wp-health\` | WordPress, PHP and theme versions, the SEO plugin, the sitemap provider, \`blogPublic\`, active plugins, pending updates |
+| \`partnersinbiz.crm:wp-seo\` | op \`get\` / \`set\` per page (\`url\` or \`postId\`): title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription |
+| \`partnersinbiz.crm:wp-schema\` | JSON-LD pieces per page or for the whole site (\`site: true\`), each under a stable \`id\` |
+| \`partnersinbiz.crm:wp-redirects\` | list, set (301/302/307/308/410) and delete redirects |
+| \`partnersinbiz.crm:wp-robots\` | extra robots.txt lines; \`allowSearchEngines: true\` switches "Discourage search engines" off |
+| \`partnersinbiz.crm:wp-sitemap\` | the SEO plugin's sitemap on or off (Yoast), posts left out of the sitemap |
+| \`partnersinbiz.crm:wp-log\` | the last 200 changes with before and after |
+| \`partnersinbiz.crm:wp-undo\` | reverse one change by its \`changeId\` |
+
+## 1. Read the site first
+
+Call \`wp-health\` at the start of each task. Note the SEO plugin (Yoast, Rank Math or none), the sitemap provider and \`blogPublic\`.
+
+- **Keep Yoast or Rank Math installed.** The Connector writes into their own fields, so wp-admin and the live page stay in step. Never suggest removing them.
+- **\`blogPublic\` false** ("Discourage search engines" is on) blocks the whole site from Google. It is the top finding on the sprint. Under \`merge_seo_scope\` or \`full\` fix it with \`wp-robots\` \`allowSearchEngines: true\` and a reason; under \`pr_only\` put it on Needs you first.
+- The Connector not connected (a 401 or "not paired" error, or \`get-site-link\` says so): \`needs-you-add\` with key \`wp_connector\` and this task in \`taskIds\`, then \`block-task\`. The item closes itself when the CRM sees the Connector connected, and the task comes back to you.
+
+## 2. Check the change scope
+
+List what you plan to change as \`wp:<area>:<target>\` with a category and call \`check-change-scope\`, e.g. \`{ "path": "wp:seo:/about", "category": "head_metadata" }\`, \`{ "path": "wp:schema:site/localbusiness", "category": "json_ld" }\`, \`{ "path": "wp:redirects:/old-page", "category": "seo_redirect" }\`, \`{ "path": "wp:robots", "category": "sitemap_robots" }\`.
+
+- **apply**: every change is SEO scope and the policy lets you (\`merge_seo_scope\` or \`full\`). Make it yourself.
+- **pr_only**: the policy is \`pr_only\`, or something is out of scope (new pages, copy, alt text, plugins). Write the exact change set (page, field, old value, new value) and \`needs-you-add\` it (kind \`task\`, the change set in \`copy\`, \`taskIds\` this task), then \`block-task\`.
+
+## 3. SEO fields, page by page
+
+For each page: \`wp-seo\` op \`get\` → decide from the stored values (null means the page falls back to the SEO plugin's template) → op \`set\` with only the fields that change and a \`reason\`. Keep the answer's \`changeId\`.
+
+Verify on the live page with \`check-meta\` (with \`sprintId\`, so findings resolve). Pages are often cached: if the old title or description still shows, wait 2 minutes and check again. Still old: note a possible page cache on the task and \`needs-you-add\` an item to purge the site's cache (the caching plugin or the host panel), with the page URLs.
+
+## 4. Schema
+
+\`wp-schema\` with a stable, readable \`id\` per piece, e.g. \`localbusiness\` or \`organization\` for the site (\`site: true\`) and \`faq-home\` or \`service-<slug>\` for a page. Setting the same \`id\` again replaces the piece, so never make a new id for the same thing. With Yoast or Rank Math the piece joins their schema graph; do not add a second Organization or WebSite next to theirs. Then \`validate-schema\` on the live page.
+
+## 5. Redirects, robots and sitemap
+
+- \`wp-redirects\` set for moved or duplicate URLs (301 by default, 410 for pages gone for good). Before you redirect a page, check whether it has traffic or rankings (\`gsc-query\` by page, tracked keywords); if it does, say so in the \`reason\` and on the task. Never create chains: point to the final URL.
+- \`wp-robots\` \`extraLines\` only adds lines (e.g. a \`Sitemap:\` line). The Connector refuses a blanket \`Disallow: /\`.
+- \`wp-sitemap\` leaves thin or duplicate posts out (\`excludePostIds\`) or switches Yoast's sitemap on. Then \`check-sitemap\` and \`check-robots\`.
+
+## 6. Reversible, logged, then done
+
+Every write is in \`wp-log\` with its before and after. If a check shows a change did harm, \`wp-undo\` its \`changeId\` and note it on the task. Finish with \`complete-task\`: the pages changed, the \`changeId\`s and the check output as artifacts.
+
+## Never
+
+- Install, update or remove plugins yourself: \`partnersinbiz.crm:wp-plugins\` always goes to Needs you for a person.
+- Delete posts, pages or users, or edit theme files. The Connector cannot, and a person does it in wp-admin if needed.
+- Remove or replace Yoast or Rank Math.
+`;
+
 function renderSiteChanges(): string {
   const scope = Object.entries(SEO_SCOPE).map(([key, text]) => `- \`${key}\` — ${text}`).join("\n");
   return SITE_CHANGES_DOC.replace("{{SCOPE}}", scope);
@@ -346,6 +404,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/optimization-loop.md", content: OPTIMIZATION_LOOP_DOC },
       { path: "references/tools.md", content: TOOLS_DOC },
       { path: "references/site-changes.md", content: SITE_CHANGES_REF },
+      { path: "references/wordpress.md", content: WORDPRESS_DOC },
     ],
   },
 ];

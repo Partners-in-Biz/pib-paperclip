@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { crmProjectionMigration } from "@partnersinbiz/pib-plugin-kit";
+import { crmProjectionMigration, crmSiteProjectionMigration } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
 import {
@@ -40,6 +40,14 @@ describe("migrations", () => {
     expect(readFileSync(new URL("009_seo.sql", migrationsDir), "utf8").trim()).toBe(crmProjectionMigration(NAMESPACE).trim());
     expect(all).toContain(`ADD COLUMN IF NOT EXISTS created_at`);
     expect(all).toContain("keywords_sprint_phrase");
+  });
+
+  it("015 adds the CRM site projection from the kit and the wordpress site mode", () => {
+    const sql = readFileSync(new URL("015_seo.sql", migrationsDir), "utf8");
+    expect(sql.startsWith(crmSiteProjectionMigration(NAMESPACE))).toBe(true);
+    expect(sql).toContain(`ALTER TABLE ${NAMESPACE}.sprints ADD COLUMN site_id text`);
+    expect(sql).toContain(`DROP CONSTRAINT sprints_site_access_check`);
+    expect(sql).toContain("CHECK (site_access IN ('unlinked', 'repo', 'none', 'wordpress'))");
   });
 });
 

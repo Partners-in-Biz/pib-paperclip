@@ -47,6 +47,8 @@ export interface SetupFacts {
     siteAccess: string;
     siteProjectId: string | null;
     repoUrl: string | null;
+    /** wordpress mode: the linked CRM site (null when it was removed from the CRM). */
+    wordpress?: { url: string; summary: string; connected: boolean; clientName: string | null; clientPath: string } | null;
     changePolicy: string;
     autopilotMode: string;
     property: string | null;
@@ -79,7 +81,23 @@ export function siteProjectSteps(prefix: string | null, siteName: string, repoUr
     `Open Projects (${p(prefix, "/projects")}) → **New project**, name it after the site (e.g. "${siteName} website").`,
     `In the project add a **workspace** with the repo URL ${repoUrl ?? "(the site's GitHub repo, e.g. https://github.com/<org>/<repo>)"} and the default branch (usually main).`,
     "Back here: SEO → this sprint → Integrations → **Site repo** → pick the project → Save. The repo URL is read from the project's workspace.",
+    "A WordPress site of a CRM client? Pick it under **WordPress** instead: the agent changes it through the PiB Connector.",
     "No repo (a CMS or a client-managed site)? Choose **No repo access** instead: the agent writes exact change sets and sends them through the Needs you digest.",
+  ];
+}
+
+/** The CRM client page (Websites is on it), with the company prefix. */
+export function crmClientPath(prefix: string | null, client: { kind: string; id: string } | null): string {
+  return p(prefix, client ? `/crm?client=${client.kind}:${encodeURIComponent(client.id)}` : "/crm");
+}
+
+/** Pair the PiB Connector on a client's WordPress site (the one-time grant for wordpress mode). */
+export function wpConnectorSteps(clientName: string | null, siteUrl: string | null): string[] {
+  return [
+    `Open Paperclip → CRM → ${clientName ?? "the client"} → **Websites** → ${siteUrl ?? "the site"} → **Connect WordPress**, and copy the key.`,
+    "In wp-admin → Plugins → Add New → **Upload Plugin**, upload pib-connector.zip (download link on the same CRM panel) and activate it.",
+    "In wp-admin → Settings → **PiB Connector**, paste the key and save.",
+    "Back in the CRM, press **Check**.",
   ];
 }
 
@@ -166,21 +184,38 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
   const s = f.sprint;
   if (s) {
     const linked = s.siteAccess === "repo" && s.siteProjectId;
-    items.push({
-      key: "site_project",
-      label: "Site repo linked",
-      status: linked ? (s.repoUrl ? "done" : "warn") : s.siteAccess === "none" ? "done" : "todo",
-      detail: linked
-        ? s.repoUrl
-          ? `Repo ${s.repoUrl} · change policy ${s.changePolicy.replace(/_/g, " ")}.`
-          : "Project linked, but its workspace has no repo URL."
-        : s.siteAccess === "none"
-          ? "No repo access (CMS or client-managed): the agent sends exact change sets through the Needs you digest."
-          : "Not linked: code and content tasks wait until the site's repo project is linked.",
-      steps: linked && s.repoUrl ? [] : s.siteAccess === "none" ? [] : siteProjectSteps(f.prefix, s.siteName, s.repoUrl),
-      links: [{ label: "Projects", url: p(f.prefix, "/projects") }, ...(s.siteProjectId ? [{ label: "Site project", url: p(f.prefix, `/projects/${s.siteProjectId}`) }] : [])],
-      next: "Opens every code and content task in the site project, works on `seo/<task>` branches, opens PRs and merges SEO-scope changes when checks pass.",
-    });
+    if (s.siteAccess === "wordpress") {
+      const wp = s.wordpress ?? null;
+      items.push({
+        key: "site_project",
+        label: "Site linked (WordPress)",
+        status: wp?.connected ? "done" : "warn",
+        detail: !wp
+          ? "Linked to a WordPress site that is no longer in the CRM. Pick the site again or link another way."
+          : wp.connected
+            ? `${wp.url} · ${wp.summary} · change policy ${s.changePolicy.replace(/_/g, " ")}.`
+            : `${wp.url} · ${wp.summary}. The PiB Connector is not connected yet: the agent cannot change the site.`,
+        steps: wp?.connected ? [] : wpConnectorSteps(wp?.clientName ?? null, wp?.url ?? s.siteUrl),
+        links: wp ? [{ label: "CRM client → Websites", url: wp.clientPath }] : [],
+        next: "Makes every SEO change through the PiB Connector (SEO fields, schema, redirects, robots and sitemap), then verifies it on the live site.",
+      });
+    } else {
+      items.push({
+        key: "site_project",
+        label: "Site repo linked",
+        status: linked ? (s.repoUrl ? "done" : "warn") : s.siteAccess === "none" ? "done" : "todo",
+        detail: linked
+          ? s.repoUrl
+            ? `Repo ${s.repoUrl} · change policy ${s.changePolicy.replace(/_/g, " ")}.`
+            : "Project linked, but its workspace has no repo URL."
+          : s.siteAccess === "none"
+            ? "No repo access (CMS or client-managed): the agent sends exact change sets through the Needs you digest."
+            : "Not linked: code and content tasks wait until the site's repo project is linked.",
+        steps: linked && s.repoUrl ? [] : s.siteAccess === "none" ? [] : siteProjectSteps(f.prefix, s.siteName, s.repoUrl),
+        links: [{ label: "Projects", url: p(f.prefix, "/projects") }, ...(s.siteProjectId ? [{ label: "Site project", url: p(f.prefix, `/projects/${s.siteProjectId}`) }] : [])],
+        next: "Opens every code and content task in the site project, works on `seo/<task>` branches, opens PRs and merges SEO-scope changes when checks pass.",
+      });
+    }
     items.push({
       key: "gsc_property",
       label: "Search Console property",

@@ -13,6 +13,7 @@ import {
   SERVICE_ACCOUNT_STEPS,
   SITE_VERIFICATION_API_URL,
   siteProjectSteps,
+  wpConnectorSteps,
 } from "./setup.js";
 
 type SprintLike = { siteName: string; siteUrl: string; clientName: string | null; repoUrl?: string | null };
@@ -31,6 +32,21 @@ export function linkSiteItem(ctx: { prefix: string | null }, sprint: SprintLike,
     links: [{ label: "Projects", url: p(ctx.prefix, "/projects") }],
     after: "Opens the waiting code tasks in the site project and works them on seo/<task> branches: PR, checks, preview verification, merge of SEO-scope changes.",
     check: "site_project",
+    taskIds,
+  };
+}
+
+/** Pair the PiB Connector on the sprint's WordPress site; closes on its own once the CRM sees it connected. */
+export function wpConnectorItem(input: { clientName: string | null; clientPath: string; siteUrl: string }, taskIds: string[] = []): NewNeedsYouItem {
+  return {
+    key: "wp_connector",
+    kind: "grant",
+    title: `Connect the PiB Connector on ${input.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}`,
+    why: "This WordPress site is changed through the PiB Connector (SEO fields, schema, redirects, robots and sitemap). It is not connected yet, so the agent cannot change the site.",
+    steps: wpConnectorSteps(input.clientName, input.siteUrl),
+    links: [{ label: "CRM client → Websites", url: input.clientPath }],
+    after: "Reads the site's health through the Connector and carries on with the waiting SEO changes, verifying each on the live site.",
+    check: "wp_connector",
     taskIds,
   };
 }

@@ -7,7 +7,7 @@ import { addDays } from "./time.js";
 import { sprintLabel, withClientPrefix, type SprintCopy } from "./copy.js";
 
 /** How the plugin knows an item is done without asking. `manual` = a person says so. */
-export type NeedsYouCheck = "manual" | "site_project" | "service_account" | "gsc_access" | "bing_key" | "github_token" | "task_done" | "playbook_decided";
+export type NeedsYouCheck = "manual" | "site_project" | "service_account" | "gsc_access" | "bing_key" | "github_token" | "task_done" | "playbook_decided" | "wp_connector";
 
 export type NeedsYouKind = "grant" | "review" | "pr" | "message" | "task" | "indexing";
 

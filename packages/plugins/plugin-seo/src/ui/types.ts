@@ -4,7 +4,7 @@
  */
 import type { NextTask } from "../engine/due.js";
 import type { BusinessType } from "../templates/plans.js";
-import type { NeedsYouView, ProjectOption, SetupItem, SiteLink } from "./autonomy.js";
+import type { NeedsYouView, ProjectOption, SetupItem, SiteLink, WordPressSite } from "./autonomy.js";
 import type { RoutineRef } from "./routines.js";
 import type { TrafficDay } from "./series.js";
 
@@ -200,6 +200,8 @@ export type SprintBundle = {
   needsYou: NeedsYouView | null;
   setup: SetupItem[];
   projects: ProjectOption[];
+  /** The sprint client's WordPress sites from the CRM (wordpress site mode). */
+  wordpressSites?: WordPressSite[];
   /** The scope's learned playbook: version and changes waiting for a decision. */
   playbook?: { playbookId: string | null; version: number | null; pending: number } | null;
 };

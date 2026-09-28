@@ -443,15 +443,16 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
 
   // Site repo
-  { group: "Site repo", name: "list-site-projects", displayName: "List site projects", description: "Paperclip projects that could hold the site repo (repo URL from their workspace), best match first, plus how to create one.", parametersSchema: schema([], { sprintId }) },
+  { group: "Site repo", name: "list-site-projects", displayName: "List site projects", description: "Paperclip projects that could hold the site repo (repo URL from their workspace), best match first, plus how to create one. With sprintId also the client's WordPress sites from the CRM (wordpressSites: siteId, url, summary, Connector status) for wordpress mode.", parametersSchema: schema([], { sprintId }) },
   {
     group: "Site repo",
     name: "link-site",
     displayName: "Link site repo",
-    description: "Link the Paperclip project whose workspace holds the site repo (code and content tasks open there), or noRepo: true for a CMS / client-managed site. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
+    description: "Link the Paperclip project whose workspace holds the site repo (code and content tasks open there), wordpressSiteId for a client's WordPress site reached through the PiB Connector (changes through the partnersinbiz.crm:wp-* tools), or noRepo: true for a CMS / client-managed site without the Connector. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       projectId: text("Paperclip project whose workspace holds the site repo (from list-site-projects)"),
+      wordpressSiteId: text("CRM website id of the sprint client's WordPress site (from list-site-projects wordpressSites): wordpress mode, changes through the PiB Connector"),
       noRepo: flag("No repo access: change sets go through Needs you"),
       unlink: flag("Remove the site link, back to unlinked (people only)"),
       defaultBranch: text("The repo's default branch (default: from the workspace, else main)"),
@@ -460,12 +461,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       changePolicy: choice(CHANGE_POLICIES, "What you may merge: merge_seo_scope = SEO-scope PRs, pr_only = none, full = any PR; agents may only lower it"),
     }),
   },
-  { group: "Site repo", name: "get-site-link", displayName: "Get site link", description: "The sprint's site repo link, change policy and the exact SEO scope you may merge alone.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  { group: "Site repo", name: "get-site-link", displayName: "Get site link", description: "The sprint's site link (repo project, WordPress site through the PiB Connector, or none), change policy, the exact SEO scope you may merge or apply alone, and what to do next.", parametersSchema: schema(["sprintId"], { sprintId }) },
   {
     group: "Site repo",
     name: "check-change-scope",
     displayName: "Check change scope",
-    description: "Before merging your PR: list every changed file with its SEO category and the check state. Returns merge, wait (checks not green) or pr_only (out of scope or policy pr_only → leave it open and add it to Needs you).",
+    description: "Before merging your PR: list every changed file with its SEO category and the check state. Returns merge, wait (checks not green) or pr_only (out of scope or policy pr_only → leave it open and add it to Needs you). On a WordPress sprint list each Connector change (path wp:<area>:<target>, e.g. wp:seo:/about) instead: returns apply (make it yourself, then verify live) or pr_only (change set on Needs you).",
     parametersSchema: schema(["sprintId", "changes"], {
       sprintId,
       changes: {
@@ -475,12 +476,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
           type: "object",
           required: ["path", "category"],
           properties: {
-            path: text("The file's path in the repo"),
+            path: text("The file's path in the repo; on a WordPress sprint wp:<area>:<target>, e.g. wp:seo:/about, wp:schema:site/localbusiness, wp:redirects:/old-page"),
             category: choice([...SEO_SCOPE_CATEGORIES, "other"], "What the change is (SEO scope from get-site-link); other = not SEO scope"),
           },
         },
       },
-      checks: choice(["passed", "failed", "pending"], "CI and preview deployment checks on the PR head commit"),
+      checks: choice(["passed", "failed", "pending"], "CI and preview deployment checks on the PR head commit (not used on WordPress sprints)"),
     }),
   },
 
@@ -490,11 +491,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Needs you",
     name: "needs-you-add",
     displayName: "Add to Needs you",
-    description: "Put something only a person can do on the sprint's weekly Needs you issue (deduped by key): an out-of-scope PR to merge (kind pr), a DM or email from a personal account with copy-ready text (kind message), a one-time grant. Say exactly what to do and what you do after. Standard keys github_token, site_project, service_account and bing_key fill in the exact steps and links themselves (pass taskIds; why = what failed).",
+    description: "Put something only a person can do on the sprint's weekly Needs you issue (deduped by key): an out-of-scope PR to merge (kind pr), a DM or email from a personal account with copy-ready text (kind message), a one-time grant. Say exactly what to do and what you do after. Standard keys github_token, site_project, service_account, bing_key and wp_connector fill in the exact steps and links themselves (pass taskIds; why = what failed).",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       kind: choice(["grant", "review", "pr", "message", "task", "indexing"], "Item type (default grant): grant, review, pr (PR to merge), message (text to send), task or indexing"),
-      key: text("Stable key for dedupe, e.g. pr:<url>; or a standard key: github_token, site_project, service_account, bing_key"),
+      key: text("Stable key for dedupe, e.g. pr:<url>; or a standard key: github_token, site_project, service_account, bing_key, wp_connector"),
       title: text("Short title (max 200 chars); required unless a standard key"),
       why: text("Why it is needed (max 2000 chars); required unless a standard key (github_token: what failed)"),
       steps: list("Exact steps"),
@@ -506,7 +507,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text("Item key (from needs-you)"), note: text("What was done, stored on the item (max 1000 chars)") }) },
-  { group: "Needs you", name: "setup-checklist", displayName: "Setup checklist", description: "Every one-time setup item (settings, service account, GitHub access, agent, keys; per sprint: site repo, property, Bing, autopilot) with status, links and what you do next.", parametersSchema: schema([], { sprintId }) },
+  { group: "Needs you", name: "setup-checklist", displayName: "Setup checklist", description: "Every one-time setup item (settings, service account, GitHub access, agent, keys; per sprint: site repo or WordPress Connector, property, Bing, autopilot) with status, links and what you do next.", parametersSchema: schema([], { sprintId }) },
 
   // Audits
   { group: "Audits", name: "run-audit-snapshot", displayName: "Take audit snapshot", description: "Record traffic, rankings, authority, content, CWV and task counts now (day 0/30/60/90 and monthly snapshots happen automatically).", parametersSchema: schema(["sprintId"], { sprintId, day: int("Override the sprint day label"), notes: text("Notes stored with the snapshot (max 2000 chars)") }) },

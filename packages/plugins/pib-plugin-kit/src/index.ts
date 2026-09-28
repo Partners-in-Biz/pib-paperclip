@@ -9,6 +9,7 @@ export * from "./safe-fetch.js";
 export * from "./issues.js";
 export * from "./crm-projection.js";
 export * from "./client-ref.js";
+export * from "./client-sites.js";
 export * from "./agent-hire.js";
 export * from "./grants.js";
 export * from "./contracts.js";

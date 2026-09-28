@@ -35,7 +35,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.9.2");
+    expect(manifest.version).toBe("0.10.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -109,8 +109,13 @@ describe("skill", () => {
   it("is the pib- prefixed multi-file skill", () => {
     expect(skill).toMatchObject({ skillKey: "seo-sprint", slug: "pib-seo-sprint" });
     expect(skill.markdown).toMatch(/^---\nname: pib-seo-sprint\nslug: pib-seo-sprint\n/);
-    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md"]);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md"]);
     expect(skill.markdown).toContain("complete-task");
+    expect(skill.markdown).toContain("references/wordpress.md");
+    const wp = skill.files!.find((f) => f.path === "references/wordpress.md")!.content;
+    for (const tool of ["wp-health", "wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-log", "wp-undo", "wp-plugins"]) expect(wp).toContain(`partnersinbiz.crm:${tool}`);
+    expect(wp).toContain("allowSearchEngines");
+    expect(wp).toContain("wp_connector");
     expect(skill.markdown).toContain("Never invent data");
   });
 

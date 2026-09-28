@@ -1,4 +1,5 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersinbiz/pib-plugin-kit/client-sites";
 import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
 
 /**
@@ -121,6 +122,178 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       bannedWords: textList("Words and phrases never to use for them."),
       toneNotes: text("Anything else about tone: emoji, formality, words they prefer, topics to avoid."),
     }),
+  },
+  // -------------------------------------------------------------------------
+  // Websites and projects
+  // -------------------------------------------------------------------------
+  {
+    name: "list-client-sites",
+    displayName: "List client websites",
+    description:
+      "A client's websites (a client can have several): address, platform (WordPress, Next.js …), SEO plugin, hosting, how agents reach it (repo project, PiB Connector, SFTP) and whether the Connector answers. Use the site id with the wp-* tools.",
+    parametersSchema: schema(["client"], { client: P.client }),
+  },
+  {
+    name: "save-client-site",
+    displayName: "Save client website",
+    description:
+      "Add a website to a client, or change one (pass siteId). Only the fields you send change. repo and sftp access need the site's Paperclip project (projectId). You cannot connect the PiB Connector: a person does that on the CRM client page.",
+    parametersSchema: schema([], {
+      siteId: text("The site to change (from list-client-sites). Leave out to add a new site."),
+      client: P.client,
+      url: text("The site's address, e.g. https://www.acme.co.za (scheme and host; paths are dropped)."),
+      label: text("Short name when a client has several sites, e.g. main site, shop, auctions."),
+      platform: oneOf(SITE_PLATFORMS, "What the site is built on."),
+      seoPlugin: oneOf(SITE_SEO_PLUGINS, "WordPress only: the SEO plugin on the site. The Connector's health check fills it in."),
+      hosting: text("Where it is hosted, e.g. xneelo, vercel, afrihost."),
+      access: { type: "array", items: { type: "string", enum: [...SITE_ACCESS_KINDS] }, description: "How agents reach it: repo (code in the project's workspace), connector (PiB Connector plugin), sftp (file access; the login is env on the project)." },
+      projectId: text("The Paperclip project for this site's code and deploys (from list-client-projects)."),
+      webRoot: text("SFTP only: the WordPress folder under the SFTP login, e.g. public_html."),
+      notes: text("Anything an agent must know: staging URL, cache plugin, who deploys, rules like 'deactivate, never delete'."),
+    }),
+  },
+  {
+    name: "check-client-site",
+    displayName: "Check client website",
+    description: "Ping the site's PiB Connector and read its health (WordPress, PHP, theme, SEO plugin, sitemap, search engine visibility, plugins). Updates the site's status for every module.",
+    parametersSchema: schema(["siteId"], { siteId: text("The site (from list-client-sites).") }),
+  },
+  {
+    name: "connect-client-site",
+    displayName: "Pair the Connector over SFTP",
+    description:
+      "Only for a WordPress site with sftp access and a project: makes a new Connector key and returns the steps to install and pair the plugin over SFTP (plugin folder, key file, mu-plugin loader). The old key stops working. Sites without SFTP are paired by a person on the CRM client page.",
+    parametersSchema: schema(["siteId"], { siteId: text("The site (from list-client-sites).") }),
+  },
+  {
+    name: "site-changes",
+    displayName: "Website change log",
+    description: "The changes Paperclip made to a site through the Connector (newest first), with who asked, why and the change ids wp-undo takes.",
+    parametersSchema: schema(["siteId"], { siteId: text("The site (from list-client-sites)."), limit: int("How many (default 30, max 100).", { minimum: 1, maximum: 100 }) }),
+  },
+  {
+    name: "wp-health",
+    displayName: "WordPress: health",
+    description: "Through the PiB Connector: WordPress and PHP versions, theme, SEO plugin, sitemap provider, whether search engines are allowed, redirects provider, plugins and waiting updates.",
+    parametersSchema: schema(["siteId"], { siteId: text("A WordPress site with the Connector (from list-client-sites).") }),
+  },
+  {
+    name: "wp-seo",
+    displayName: "WordPress: page SEO",
+    description:
+      "Read (op get) or change (op set) a page's SEO title, meta description, canonical, noindex/nofollow, focus keyword and Open Graph title/description. Writes go into the site's SEO plugin (Yoast or Rank Math) so wp-admin shows the same. Only the fields you send change; null or an empty string clears an override. Check the live page afterwards with check-meta.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["get", "set"], "get reads, set changes."),
+      url: text("The page: full or site-relative URL (/about). The home page is /."),
+      postId: int("The WordPress post or page id, instead of url.", { minimum: 1 }),
+      title: { type: ["string", "null"], description: "SEO title (under ~60 characters)." } as JsonSchema,
+      description: { type: ["string", "null"], description: "Meta description (under ~155 characters)." } as JsonSchema,
+      canonical: { type: ["string", "null"], description: "Canonical URL, only when it must differ from the page." } as JsonSchema,
+      noindex: { type: ["boolean", "null"], description: "true keeps the page out of search, false forces index, null uses the default." } as JsonSchema,
+      nofollow: { type: ["boolean", "null"], description: "true adds nofollow, null uses the default." } as JsonSchema,
+      focusKeyword: { type: ["string", "null"], description: "The page's main keyword." } as JsonSchema,
+      ogTitle: { type: ["string", "null"], description: "Title for social shares." } as JsonSchema,
+      ogDescription: { type: ["string", "null"], description: "Description for social shares." } as JsonSchema,
+      reason: text("Required for set: one line on why (kept in the site's log)."),
+    }),
+  },
+  {
+    name: "wp-schema",
+    displayName: "WordPress: schema",
+    description:
+      "Read (op get) or add, replace or remove (op set) JSON-LD pieces on a page or the whole site. Pieces join the SEO plugin's schema graph, so there is one graph, not two. Use stable ids (localbusiness, faq-home). Validate the live page with validate-schema afterwards.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["get", "set"], "get reads, set changes."),
+      url: text("The page (full or site-relative URL)."),
+      postId: int("The WordPress post or page id, instead of url.", { minimum: 1 }),
+      site: bool("true for site-wide pieces (Organization, LocalBusiness) instead of one page."),
+      id: text("set: the piece's id, lowercase letters, digits and dashes."),
+      piece: bag("set: one JSON-LD object with @type (no @context), under 20 KB."),
+      remove: bool("set: true removes the piece with this id."),
+      reason: text("Required for set: one line on why."),
+    }),
+  },
+  {
+    name: "wp-redirects",
+    displayName: "WordPress: redirects",
+    description: "List, add or change (op set) and remove (op delete) redirects on the site. 301 for moved pages, 410 for pages gone for good. Refuses loops. Never redirect a page with traffic without saying so in the reason.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["list", "set", "delete"], "list, set or delete."),
+      from: text("The old path, e.g. /old-page."),
+      to: text("Where it goes: a path or full URL (not needed for 410)."),
+      code: { type: "integer", enum: [301, 302, 307, 308, 410], description: "HTTP code (301 by default on the site)." } as JsonSchema,
+      reason: text("Required for set and delete."),
+    }),
+  },
+  {
+    name: "wp-robots",
+    displayName: "WordPress: robots.txt",
+    description: "Read (op get) robots.txt and whether search engines are allowed, or (op set) add extra robots.txt lines and switch search engines on. It never blocks the whole site and never switches search engines off.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["get", "set"], "get reads, set changes."),
+      extraLines: text("set: the extra lines (they replace the previous extra lines), e.g. Sitemap: https://acme.co.za/sitemap_index.xml"),
+      allowSearchEngines: bool("set: true switches search engines on (Settings → Reading)."),
+      reason: text("Required for set."),
+    }),
+  },
+  {
+    name: "wp-sitemap",
+    displayName: "WordPress: sitemap",
+    description: "Read (op get) which sitemap the site serves, or (op set) switch the Yoast sitemap on or off and keep posts or pages out of it.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["get", "set"], "get reads, set changes."),
+      seoPluginSitemap: bool("set: switch the SEO plugin's sitemap on (true) or off (Yoast only)."),
+      excludePostIds: { type: "array", items: { type: "integer" }, description: "set: post and page ids to keep out of the sitemap (replaces the list)." } as JsonSchema,
+      reason: text("Required for set."),
+    }),
+  },
+  {
+    name: "wp-plugins",
+    displayName: "WordPress: plugins",
+    description:
+      "List plugins and backups. install and rollback are for people only (they deploy our own plugins with a backup first); you prepare them and put them on Needs you. Off on the site until a person switches it on.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["list", "backups", "install", "rollback"], "list, backups, install or rollback."),
+      zipUrl: text("install: https link to the plugin zip."),
+      sha256: text("install: the zip's sha256."),
+      slug: text("install: the plugin folder name inside the zip."),
+      backupId: text("rollback: the backup to restore (from op backups)."),
+      reason: text("Required for install and rollback."),
+    }),
+  },
+  {
+    name: "wp-log",
+    displayName: "WordPress: Connector log",
+    description: "The site's own log of Connector changes (last 200), with before and after values and change ids for wp-undo.",
+    parametersSchema: schema(["siteId"], { siteId: text("A WordPress site with the Connector."), limit: int("How many (default 50).", { minimum: 1, maximum: 200 }) }),
+  },
+  {
+    name: "wp-undo",
+    displayName: "WordPress: undo a change",
+    description: "Revert one Connector change (SEO fields, schema, redirects, robots, sitemap) to its before state. Plugin installs are reverted with wp-plugins rollback.",
+    parametersSchema: schema(["siteId", "changeId", "reason"], {
+      siteId: text("A WordPress site with the Connector."),
+      changeId: text("The change id (from the change's result, wp-log or site-changes)."),
+      reason: text("Why it is reverted."),
+    }),
+  },
+  {
+    name: "list-client-projects",
+    displayName: "List client projects",
+    description: "The Paperclip projects (code folders) that belong to a client, and the company's projects that belong to no client yet (suggested ones match the client's name).",
+    parametersSchema: schema(["client"], { client: P.client }),
+  },
+  {
+    name: "link-client-project",
+    displayName: "Link project to client",
+    description: "Make a Paperclip project part of a client, so it shows on the client's CRM page. A project belongs to one client.",
+    parametersSchema: schema(["client", "projectId"], { client: P.client, projectId: text("The project (from list-client-projects).") }),
   },
   {
     name: "contact-graph",

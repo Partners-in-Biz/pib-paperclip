@@ -27,7 +27,13 @@ import { companyInfo } from "../src/service/common.js";
 import { upgradeSprintPlan, v3Target } from "../src/service/upgrade.js";
 import { blockTask, createTaskIssue, type MaterialiseContext } from "../src/service/tasks.js";
 import { addNeedsYou, recheckNeedsYou, resolveNeedsYou } from "../src/service/needs-you.js";
-import { linkSiteTool } from "../src/service/site.js";
+import { checkChangeScopeTool, getSiteLinkTool, linkSiteTool } from "../src/service/site.js";
+import { needsYouAddTool } from "../src/service/needs-you.js";
+import { autoLinkWordPressSite } from "../src/service/wordpress.js";
+import { evaluateWordPressChange } from "../src/engine/site-change.js";
+import { wpConnectorItem } from "../src/engine/items.js";
+import { siteSection } from "../src/engine/copy.js";
+import { registerCrmSiteProjection } from "@partnersinbiz/pib-plugin-kit";
 import type { SprintTask } from "../src/db.js";
 import { validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
@@ -71,8 +77,10 @@ const INTEGRATION = { id: "int-1", company_id: "co-1", sprint_id: "sp-1", provid
  * integrations and needs_you rows are kept in memory so writes are visible to
  * later reads.
  */
-function fakeHost(opts: { sprint?: Row; tasks?: Row[]; integration?: Row; config?: Row; fetch?: (url: string, init?: RequestInit) => Promise<Response> } = {}) {
+function fakeHost(opts: { sprint?: Row; tasks?: Row[]; integration?: Row; config?: Row; sites?: Row[]; fetch?: (url: string, init?: RequestInit) => Promise<Response> } = {}) {
   const sprint: Row = { ...SPRINT, ...(opts.sprint ?? {}) };
+  // CRM website projection rows (crm_sites).
+  const sites: Row[] = (opts.sites ?? []).map((site) => ({ ...site }));
   const tasks = new Map<string, Row>((opts.tasks ?? []).map((t) => [String(t.id), { ...t }]));
   const integration: Row = { ...INTEGRATION, ...(opts.integration ?? {}) };
   const digests: Row[] = [];
@@ -111,6 +119,8 @@ function fakeHost(opts: { sprint?: Row; tasks?: Row[]; integration?: Row; config
           return [...tasks.values()].filter((t) => !statuses || statuses.includes(String(t.status)));
         }
         if (/FROM plugin_seo_8099f8879a\.integrations/.test(sql)) return params.includes("bing") ? [] : [integration];
+        if (/FROM plugin_seo_8099f8879a\.crm_sites WHERE company_id = \$1 AND id = \$2/.test(sql)) return sites.filter((x) => x.company_id === params[0] && x.id === params[1] && !x.deleted);
+        if (/FROM plugin_seo_8099f8879a\.crm_sites/.test(sql)) return sites.filter((x) => x.company_id === params[0] && x.client_kind === params[1] && x.client_ref === params[2] && !x.deleted);
         if (/FROM plugin_seo_8099f8879a\.needs_you WHERE company_id = \$1 AND sprint_id = \$2 AND week_start = \$3/.test(sql)) return digests.filter((d) => d.week_start === params[2]);
         if (/FROM plugin_seo_8099f8879a\.needs_you WHERE company_id = \$1 AND sprint_id = \$2 AND week_start < \$3/.test(sql)) {
           return digests.filter((d) => String(d.week_start) < String(params[2])).sort((a, b) => String(b.week_start).localeCompare(String(a.week_start))).slice(0, 1);
@@ -196,7 +206,7 @@ function fakeHost(opts: { sprint?: Row; tasks?: Row[]; integration?: Row; config
   } as unknown as PluginContext;
   const fetchImpl = vi.fn(opts.fetch ?? (async () => new Response("{}")));
   const env = createEnv(ctx, { now: () => new Date("2026-09-26T08:00:00Z"), fetch: fetchImpl as never, site: vi.fn(async () => ({ status: 404, text: "", url: "", redirects: [], headers: {}, ms: 1 })) as never });
-  return { env, ctx, sprint, tasks, integration, digests, issuesCreated, issueUpdates, comments, executes, wakeups, fetch: fetchImpl };
+  return { env, ctx, sprint, sites, tasks, integration, digests, issuesCreated, issueUpdates, comments, executes, wakeups, fetch: fetchImpl };
 }
 
 const SA_CONFIG = { google: { serviceAccountJson: { type: "secret_ref", secretId: "sa" } }, bingApiKey: { type: "secret_ref", secretId: "b" } };
@@ -725,5 +735,214 @@ describe("Cockpit Reviewer routing (sign-offs and out-of-scope PRs)", () => {
     const result = await needsYouAddTool(host.env, "co-1", agentActor, { sprintId: "sp-1", kind: "pr", title: "Merge PR #13", why: "Out of scope", after: "Carries on." });
     expect((result as { reviewIssueId?: string }).reviewIssueId).toBeUndefined();
     expect(host.issuesCreated.every((i) => !String(i.originId).startsWith("review:"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.10.0: WordPress sites through the PiB Connector
+// ---------------------------------------------------------------------------
+
+const CLIENT_SPRINT: Row = { client_kind: "company", client_ref: "crm-1", client_name: "Hunt and Gun", site_url: "https://huntandgun.co.za", site_name: "Hunt and Gun", seeded_at: null, root_issue_id: null };
+
+function siteRow(extra: Row = {}): Row {
+  return {
+    id: "site-1", company_id: "co-1", client_kind: "company", client_ref: "crm-1", label: "Main site", url: "https://www.huntandgun.co.za",
+    platform: "wordpress", seo_plugin: "yoast", hosting: "xneelo", access: ["connector"], project_id: null,
+    connector_status: "connected", connector_version: "1.0.0", connector_seen_at: "2026-09-26T07:00:00Z", deleted: false, ...extra,
+  };
+}
+
+const person: Actor = { kind: "user", userId: "user-1" };
+
+describe("link-site: wordpress mode", () => {
+  it("refuses PiB's own sprints, other clients' sites, non-WordPress sites and unknown sites", async () => {
+    const own = fakeHost({ sites: [siteRow()] });
+    await expect(linkSiteTool(own.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" })).rejects.toThrow(/own sprints/);
+    const other = fakeHost({ sprint: CLIENT_SPRINT, sites: [siteRow({ client_ref: "crm-2" })] });
+    await expect(linkSiteTool(other.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" })).rejects.toThrow(/different CRM client/);
+    const contact = fakeHost({ sprint: CLIENT_SPRINT, sites: [siteRow({ client_kind: "contact" })] });
+    await expect(linkSiteTool(contact.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" })).rejects.toThrow(/different CRM client/);
+    const next = fakeHost({ sprint: CLIENT_SPRINT, sites: [siteRow({ platform: "nextjs" })] });
+    await expect(linkSiteTool(next.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" })).rejects.toThrow(/not a WordPress site/);
+    const missing = fakeHost({ sprint: CLIENT_SPRINT, sites: [siteRow({ deleted: true })] });
+    await expect(linkSiteTool(missing.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" })).rejects.toThrow(/not found in the CRM/);
+    expect(other.sprint.site_access).toBe("unlinked");
+  });
+
+  it("links a connected site: wordpress mode, site id, no repo, hosting other", async () => {
+    const host = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "repo", site_project_id: "site-proj", repo_url: "https://github.com/a/b" }, sites: [siteRow()] });
+    const result = await linkSiteTool(host.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" });
+    expect(host.sprint).toMatchObject({ site_access: "wordpress", site_id: "site-1", site_project_id: null, repo_url: null, hosting: "other" });
+    expect(result).toMatchObject({ siteAccess: "wordpress", siteId: "site-1", siteProjectId: null, repoUrl: null, warnings: [] });
+    expect(result.site).toMatchObject({ siteId: "site-1", url: "https://www.huntandgun.co.za", seoPlugin: "yoast", connected: true, summary: "WordPress · Yoast SEO · Connector connected" });
+    expect(host.digests).toHaveLength(0);
+    // Another mode clears the site id.
+    await linkSiteTool(host.env, "co-1", person, { sprintId: "sp-1", noRepo: true });
+    expect(host.sprint).toMatchObject({ site_access: "none", site_id: null });
+  });
+
+  it("puts wp_connector on Needs you when the Connector is not connected, and the daily check closes it", async () => {
+    const host = fakeHost({ sprint: CLIENT_SPRINT, sites: [siteRow({ connector_status: "pending", access: ["connector"] })] });
+    const result = await linkSiteTool(host.env, "co-1", person, { sprintId: "sp-1", wordpressSiteId: "site-1" });
+    expect(result.warnings.join(" ")).toMatch(/CRM client page → Websites/);
+    expect(result.site?.summary).toBe("WordPress · Yoast SEO · Connector: waiting for the key");
+    const items = host.digests[0]!.items as Row[];
+    expect(items.map((i) => [i.key, i.check, i.status])).toEqual([["wp_connector", "wp_connector", "open"]]);
+    expect((items[0]!.steps as string[]).join(" ")).toContain("CRM → Hunt and Gun → **Websites**");
+    expect(items[0]!.links).toEqual([{ label: "CRM client → Websites", url: "/PIB/crm?client=company:crm-1" }]);
+
+    const db = await import("../src/db.js");
+    const info = await companyInfo(host.env, "co-1");
+    const sprint = (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!;
+    expect(await recheckNeedsYou(host.env, info, sprint)).toBe(0);
+    host.sites[0]!.connector_status = "connected";
+    expect(await recheckNeedsYou(host.env, info, sprint)).toBe(1);
+    expect((host.digests[0]!.items as Row[])[0]!.status).toBe("done");
+  });
+
+  it("get-site-link explains the Connector flow by change policy", async () => {
+    const host = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1" }, sites: [siteRow()] });
+    const link = await getSiteLinkTool(host.env, "co-1", { sprintId: "sp-1" });
+    for (const tool of ["wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-health", "wp-log", "wp-undo", "wp-plugins"]) expect(link.next).toContain(`partnersinbiz.crm:${tool}`);
+    expect(link.next).toContain('siteId "site-1"');
+    expect(link.next).toMatch(/apply SEO fields, schema, redirects/);
+    expect(link.site?.connected).toBe(true);
+    const prOnly = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1", change_policy: "pr_only" }, sites: [siteRow({ connector_status: "none" })] });
+    const next = (await getSiteLinkTool(prOnly.env, "co-1", { sprintId: "sp-1" })).next;
+    expect(next).toMatch(/key wp_connector, then block-task/);
+    expect(next).toMatch(/put it on Needs you \(needs-you-add kind task/);
+  });
+
+  it("needs-you-add wp_connector writes the standard item; refused on a sprint without WordPress", async () => {
+    const host = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1" }, sites: [siteRow({ connector_status: "error" })], tasks: [taskRow()] });
+    const added = await needsYouAddTool(host.env, "co-1", agentActor, { sprintId: "sp-1", key: "wp_connector", taskIds: ["t-1"] });
+    expect(added).toMatchObject({ added: true, standard: true, key: "wp_connector" });
+    expect((host.digests[0]!.items as Row[])[0]).toMatchObject({ key: "wp_connector", kind: "grant", check: "wp_connector", taskIds: ["t-1"] });
+    const repo = fakeHost({ sprint: CLIENT_SPRINT });
+    await expect(needsYouAddTool(repo.env, "co-1", agentActor, { sprintId: "sp-1", key: "wp_connector" })).rejects.toThrow(/WordPress site/);
+  });
+
+  it("auto-links only the one connected WordPress site at the sprint URL", async () => {
+    const db = await import("../src/db.js");
+    const pick = async (sites: Row[]) => {
+      const host = fakeHost({ sprint: CLIENT_SPRINT, sites });
+      return autoLinkWordPressSite(host.env, (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!);
+    };
+    expect((await pick([siteRow()]))?.id).toBe("site-1");
+    expect(await pick([siteRow({ connector_status: "pending" })])).toBeNull();
+    expect(await pick([siteRow({ url: "https://shop.example.com" })])).toBeNull();
+    expect(await pick([siteRow(), siteRow({ id: "site-2", url: "https://huntandgun.co.za/shop" })])).toBeNull();
+    expect((await pick([siteRow(), siteRow({ id: "site-2", platform: "nextjs", url: "https://huntandgun.co.za" })]))?.id).toBe("site-1");
+    const own = fakeHost({ sites: [siteRow({ url: "https://partnersinbiz.online" })] });
+    expect(await autoLinkWordPressSite(own.env, (await db.getSprint(own.env.ctx.db, "co-1", "sp-1"))!)).toBeNull();
+  });
+});
+
+describe("check-change-scope: wordpress", () => {
+  const seo = [{ path: "wp:seo:/about", category: "head_metadata" }, { path: "wp:schema:site/localbusiness", category: "json_ld" }, { path: "wp:redirects:/old", category: "seo_redirect" }, { path: "wp:robots", category: "sitemap_robots" }];
+
+  it("applies SEO scope under merge_seo_scope and full, hands everything else to a person", () => {
+    expect(evaluateWordPressChange("merge_seo_scope", seo)).toMatchObject({ decision: "apply", verdict: "apply", siteAccess: "wordpress", inScope: true });
+    expect(evaluateWordPressChange("full", seo).decision).toBe("apply");
+    expect(evaluateWordPressChange("pr_only", seo)).toMatchObject({ decision: "pr_only", inScope: true });
+    const content = evaluateWordPressChange("merge_seo_scope", [...seo, { path: "wp:page:/new-service", category: "new_content" }]);
+    expect(content.decision).toBe("pr_only");
+    expect(content.outOfScope.map((o) => o.path)).toEqual(["wp:page:/new-service"]);
+    const plugin = evaluateWordPressChange("full", [{ path: "wp:plugins:hunt-auctions", category: "other" }]);
+    expect(plugin).toMatchObject({ decision: "pr_only" });
+    expect(plugin.outOfScope[0]!.reason).toMatch(/plugin installs/);
+    expect(evaluateWordPressChange("full", []).decision).toBe("pr_only");
+  });
+
+  it("the tool uses the WordPress rules on a wordpress sprint and the repo rules otherwise", async () => {
+    const wp = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1" }, sites: [siteRow()] });
+    const verdict = await checkChangeScopeTool(wp.env, "co-1", { sprintId: "sp-1", changes: seo });
+    expect(verdict).toMatchObject({ decision: "apply", siteAccess: "wordpress", changePolicy: "merge_seo_scope" });
+    const repo = fakeHost({ sprint: { site_access: "repo", site_project_id: "site-proj" } });
+    const merge = await checkChangeScopeTool(repo.env, "co-1", { sprintId: "sp-1", changes: [{ path: "src/app/layout.tsx", category: "head_metadata" }], checks: "passed" });
+    expect(merge).toMatchObject({ decision: "merge" });
+    expect(merge).not.toHaveProperty("siteAccess");
+  });
+});
+
+describe("WordPress copy, checklist and Needs you item", () => {
+  it("task issues in wordpress mode name the Connector tools and the site id", () => {
+    const text = siteSection({ access: "wordpress", siteId: "site-1", repoUrl: null, defaultBranch: "main", branch: "seo/w0", changePolicy: "merge_seo_scope", hosting: "other" }).join("\n");
+    expect(text).toContain("## Site changes (WordPress)");
+    expect(text).toContain("siteId `site-1`");
+    expect(text).toContain("partnersinbiz.crm:wp-seo");
+    expect(text).toContain("references/wordpress.md");
+    expect(siteSection({ access: "wordpress", siteId: "site-1", repoUrl: null, defaultBranch: "main", branch: "b", changePolicy: "pr_only", hosting: null }).join(" ")).toMatch(/do not apply anything/);
+  });
+
+  it("opens wordpress code tasks in the SEO project with the WordPress section", async () => {
+    const host = fakeHost({ sprint: { site_access: "wordpress", site_id: "site-1", client_kind: "company", client_ref: "crm-1" }, sites: [siteRow()], tasks: [taskRow()] });
+    const db = await import("../src/db.js");
+    const info = await companyInfo(host.env, "co-1");
+    const sprint = (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!;
+    await createTaskIssue(host.env, { info, sprint, day: 0, agent: { id: "agent-1", status: "active" }, projectId: "seo-proj" }, (await db.getTask(host.env.ctx.db, "co-1", "t-1"))!);
+    expect(host.issuesCreated[0]).toMatchObject({ projectId: "seo-proj" });
+    expect(String(host.issuesCreated[0]!.description)).toContain("partnersinbiz.crm:wp-seo");
+  });
+
+  it("the setup checklist counts WordPress as linked and shows the Connector steps until it is connected", () => {
+    const base = { siteName: "Hunt and Gun", siteUrl: "https://huntandgun.co.za", isClient: true, siteAccess: "wordpress", siteProjectId: null, repoUrl: null, changePolicy: "merge_seo_scope", autopilotMode: "safe", property: null, gscVia: null, bingVerified: false };
+    const wordpress = { url: "https://huntandgun.co.za", summary: "WordPress · Yoast SEO · Connector connected", connected: true, clientName: "Hunt and Gun", clientPath: "/PIB/crm?client=company:crm-1" };
+    const facts = { prefix: "PIB", settingsPath: null, settingsSaved: true, serviceAccount: { configured: false, email: null, error: null }, agent: null, pagespeedKey: false, bingKey: false };
+    const done = buildSetupChecklist({ ...facts, sprint: { ...base, wordpress } }).find((i) => i.key === "site_project")!;
+    expect(done).toMatchObject({ status: "done", steps: [] });
+    const waiting = buildSetupChecklist({ ...facts, sprint: { ...base, wordpress: { ...wordpress, connected: false } } }).find((i) => i.key === "site_project")!;
+    expect(waiting.status).toBe("warn");
+    expect(waiting.steps.join(" ")).toContain("Connect WordPress");
+    expect(waiting.steps.join(" ")).toContain("Upload Plugin");
+    expect(waiting.links[0]!.url).toBe("/PIB/crm?client=company:crm-1");
+  });
+
+  it("the wp_connector item has the exact pairing steps", () => {
+    const item = wpConnectorItem({ clientName: "Hunt and Gun", clientPath: "/PIB/crm?client=company:crm-1", siteUrl: "https://huntandgun.co.za/" }, ["t-1"]);
+    expect(item).toMatchObject({ key: "wp_connector", kind: "grant", check: "wp_connector", taskIds: ["t-1"], title: "Connect the PiB Connector on huntandgun.co.za" });
+    expect(item.steps).toEqual([
+      "Open Paperclip → CRM → Hunt and Gun → **Websites** → https://huntandgun.co.za/ → **Connect WordPress**, and copy the key.",
+      "In wp-admin → Plugins → Add New → **Upload Plugin**, upload pib-connector.zip (download link on the same CRM panel) and activate it.",
+      "In wp-admin → Settings → **PiB Connector**, paste the key and save.",
+      "Back in the CRM, press **Check**.",
+    ]);
+  });
+});
+
+describe("CRM site projection", () => {
+  it("upserts and soft-deletes sites with SQL the host accepts", async () => {
+    const handlers = new Map<string, (event: Row) => Promise<void>>();
+    const executes: Array<{ sql: string; params: unknown[] }> = [];
+    const ctx = {
+      events: { on: (name: string, fn: (event: Row) => Promise<void>) => handlers.set(name, fn) },
+      db: {
+        namespace: NAMESPACE,
+        async execute(sql: string, params: unknown[] = []) {
+          validateRuntimeExecute(sql, NAMESPACE);
+          validateParams(sql, params);
+          executes.push({ sql, params });
+          return { rowCount: 1 };
+        },
+      },
+      logger: { info: vi.fn() },
+    } as unknown as PluginContext;
+    registerCrmSiteProjection(ctx, NAMESPACE);
+    const payload = {
+      id: "site-1", clientKind: "company", clientRef: "crm-1", label: "Main site", url: "https://huntandgun.co.za", platform: "wordpress", seoPlugin: "yoast",
+      hosting: "xneelo", access: ["connector", "sftp"], projectId: null, connectorStatus: "connected", connectorVersion: "1.0.0", connectorSeenAt: "2026-09-26T07:00:00Z", updatedAt: "2026-09-26T07:00:00Z",
+    };
+    await handlers.get("plugin.partnersinbiz.crm.site.upserted")!({ companyId: "co-1", payload });
+    expect(executes).toHaveLength(1);
+    expect(executes[0]!.sql).toContain(`INSERT INTO ${NAMESPACE}.crm_sites`);
+    expect(executes[0]!.params.slice(0, 8)).toEqual(["site-1", "co-1", "company", "crm-1", "Main site", "https://huntandgun.co.za", "wordpress", "yoast"]);
+    expect(executes[0]!.params[9]).toBe(JSON.stringify(["connector", "sftp"]));
+    expect(executes[0]!.params[11]).toBe("connected");
+    // No company or no id: ignored.
+    await handlers.get("plugin.partnersinbiz.crm.site.upserted")!({ companyId: null, payload });
+    expect(executes).toHaveLength(1);
+    await handlers.get("plugin.partnersinbiz.crm.site.deleted")!({ companyId: "co-1", payload: { id: "site-1" } });
+    expect(executes[1]!.sql).toContain("SET deleted = true");
+    expect(executes[1]!.params).toEqual(["site-1"]);
   });
 });

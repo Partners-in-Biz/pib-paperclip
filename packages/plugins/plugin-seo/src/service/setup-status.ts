@@ -201,8 +201,8 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
   });
 
   items.push(running.length
-    ? sprintAggregate("site_project", pick("site_project"), { title: "Link each site's repo project", required: true, tab: "integrations" })
-    : noSprint("site_project", "Link each site's repo project", true, "Linked per sprint once a sprint is active."));
+    ? sprintAggregate("site_project", pick("site_project"), { title: "Link each site (repo project or WordPress)", required: true, tab: "integrations" })
+    : noSprint("site_project", "Link each site (repo project or WordPress)", true, "Linked per sprint once a sprint is active."));
 
   items.push({
     ...fromEngine(engine.github_token!, { required: false, title: "Give the agent GitHub access" }),

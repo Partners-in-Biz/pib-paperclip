@@ -90,7 +90,15 @@ export interface SiteCopy {
   branch: string;
   changePolicy: string;
   hosting: string | null;
+  /** wordpress mode: the CRM site id every Connector tool call takes. */
+  siteId?: string | null;
 }
+
+const WP_POLICY_LINE: Record<string, string> = {
+  merge_seo_scope: "apply SEO fields, schema, redirects, extra robots.txt lines and sitemap settings yourself",
+  pr_only: "do not apply anything: write the exact change set (page, field, old value, new value), put it on Needs you with `partnersinbiz.seo:needs-you-add` (kind task, the change set in `copy`), then `block-task`",
+  full: "apply SEO fields, schema, redirects, extra robots.txt lines and sitemap settings yourself",
+};
 
 const POLICY_LINE: Record<string, string> = {
   merge_seo_scope: "merge it yourself when every changed file is SEO scope and the checks pass; anything else stays an open PR in the Needs you digest",
@@ -99,6 +107,15 @@ const POLICY_LINE: Record<string, string> = {
 };
 
 export function siteSection(site: SiteCopy): string[] {
+  if (site.access === "wordpress") {
+    return [
+      "## Site changes (WordPress)",
+      `This site is WordPress, reached through the PiB Connector (siteId \`${site.siteId ?? "see get-site-link"}\`). Make every SEO change with the CRM's Connector tools, passing \`siteId\`: \`partnersinbiz.crm:wp-seo\` (op get, then op set: title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription), \`partnersinbiz.crm:wp-schema\`, \`partnersinbiz.crm:wp-redirects\`, \`partnersinbiz.crm:wp-robots\`, \`partnersinbiz.crm:wp-sitemap\`; every write takes a \`reason\`. Read \`partnersinbiz.crm:wp-health\` first.`,
+      `Change policy: ${WP_POLICY_LINE[site.changePolicy] ?? WP_POLICY_LINE.pr_only}. Then verify on the live site with \`check-meta\`, \`validate-schema\`, \`check-sitemap\` or \`crawler-sim\`, and \`complete-task\` with the Connector change ids (\`partnersinbiz.crm:wp-log\`) and the check output. Every change can be undone with \`partnersinbiz.crm:wp-undo\`.`,
+      "Connector not connected? `partnersinbiz.seo:needs-you-add` with key `wp_connector`, then `block-task`. Plugin installs always go to Needs you. New pages, copy and alt text are wp-admin edits: change set on Needs you. Details: skill reference `references/wordpress.md`.",
+      "",
+    ];
+  }
   if (site.access !== "repo") {
     return [
       "## Site changes",

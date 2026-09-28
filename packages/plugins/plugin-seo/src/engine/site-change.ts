@@ -1,7 +1,8 @@
 /**
- * Site changes the SEO agent makes through the site's repo, and when it may
- * merge them itself. Pure: the skill, the playbooks and `check-change-scope`
- * all read these rules.
+ * Site changes the SEO agent makes through the site's repo (or, on a
+ * WordPress site, through the PiB Connector), and when it may merge or apply
+ * them itself. Pure: the skill, the playbooks and `check-change-scope` all
+ * read these rules.
  */
 
 export const CHANGE_POLICIES = ["merge_seo_scope", "pr_only", "full"] as const;
@@ -10,20 +11,23 @@ export type ChangePolicy = (typeof CHANGE_POLICIES)[number];
 export const HOSTINGS = ["vercel", "netlify", "other"] as const;
 export type Hosting = (typeof HOSTINGS)[number];
 
-export const SITE_ACCESS = ["unlinked", "repo", "none"] as const;
-/** unlinked: nobody said yet; repo: a Paperclip project with the repo workspace; none: no repo (CMS or client-managed). */
+export const SITE_ACCESS = ["unlinked", "repo", "none", "wordpress"] as const;
+/**
+ * unlinked: nobody said yet; repo: a Paperclip project with the repo workspace; none: no repo (CMS or client-managed);
+ * wordpress: a CRM website with the PiB Connector (changes through the CRM's Connector tools).
+ */
 export type SiteAccess = (typeof SITE_ACCESS)[number];
 
 /** What an agent may merge alone under `merge_seo_scope`. */
 export const SEO_SCOPE: Record<string, string> = {
   head_metadata: "`<head>` metadata: title, meta description, canonical, robots meta, Open Graph / Twitter tags (Next.js `metadata` / `generateMetadata`).",
   json_ld: "JSON-LD structured data blocks (Organization, WebSite, FAQPage, Product, LocalBusiness …), including fixes such as a broken WebSite SearchAction.",
-  sitemap_robots: "sitemap.xml / `app/sitemap.ts` and robots.txt / `app/robots.ts`.",
+  sitemap_robots: "sitemap.xml / `app/sitemap.ts` and robots.txt / `app/robots.ts`. On WordPress: extra robots.txt lines (`wp-robots`) and the sitemap settings (`wp-sitemap`).",
   verification_file: "Search engine verification and key files: the google-site-verification meta tag or HTML file, BingSiteAuth.xml, the IndexNow key file.",
   image_alt: "Image alt text.",
   internal_links: "Internal links and their anchor text inside existing copy.",
   new_content: "New blog posts and landing pages written from an approved brief (content files or pages only; no new components beyond the page itself).",
-  seo_redirect: "Redirects that fix an SEO problem (moved or duplicate URLs), in the site's redirect config.",
+  seo_redirect: "Redirects that fix an SEO problem (moved or duplicate URLs), in the site's redirect config. On WordPress: `wp-redirects`.",
 };
 
 export const SEO_SCOPE_CATEGORIES = Object.keys(SEO_SCOPE);
@@ -104,6 +108,60 @@ export function evaluateChange(policy: ChangePolicy, changes: ProposedChange[], 
   }
   reasons.push(policy === "full" ? "Policy full and checks passed: merge." : "Every change is SEO scope and checks passed: merge (squash).");
   return { decision: "merge", inScope, outOfScope, reasons };
+}
+
+/**
+ * What the PiB Connector applies on a WordPress site: SEO fields (title,
+ * description, canonical, robots meta, Open Graph), schema, redirects, extra
+ * robots.txt lines and sitemap settings. New pages, copy and alt text are
+ * edits in wp-admin, so they go to a person.
+ */
+export const WORDPRESS_SCOPE_CATEGORIES = ["head_metadata", "json_ld", "seo_redirect", "sitemap_robots"];
+
+/** A plugin install or update through the Connector (path `wp:plugins:…` or category `plugins`) always goes to a person. */
+const WP_PLUGIN_CHANGE = /^wp:plugins?\b/i;
+
+export interface WordPressVerdict {
+  /** apply = make the change yourself through the Connector tools, then verify it live. */
+  decision: "apply" | "pr_only";
+  verdict: "apply" | "pr_only";
+  siteAccess: "wordpress";
+  inScope: boolean;
+  outOfScope: Array<{ path: string; reason: string }>;
+  reasons: string[];
+}
+
+/**
+ * Whether the agent may apply a change set on a WordPress site itself. Paths
+ * name the Connector area and target, e.g. `wp:seo:/about`,
+ * `wp:schema:site/localbusiness`, `wp:redirects:/old-page`.
+ */
+export function evaluateWordPressChange(policy: ChangePolicy, changes: ProposedChange[]): WordPressVerdict {
+  const outOfScope: WordPressVerdict["outOfScope"] = [];
+  const reasons: string[] = [];
+  if (changes.length === 0) reasons.push("No changes were listed.");
+  for (const change of changes) {
+    const path = change.path.trim();
+    if (change.category === "plugins" || WP_PLUGIN_CHANGE.test(path)) {
+      outOfScope.push({ path, reason: "plugin installs always go to a person (Needs you)" });
+      continue;
+    }
+    if (!WORDPRESS_SCOPE_CATEGORIES.includes(change.category)) {
+      outOfScope.push({ path, reason: `category "${change.category}" is not something the Connector applies (only SEO fields, schema, redirects, robots and sitemap settings)` });
+    }
+  }
+  const inScope = changes.length > 0 && outOfScope.length === 0;
+  const done = (decision: WordPressVerdict["decision"]): WordPressVerdict => ({ decision, verdict: decision, siteAccess: "wordpress", inScope, outOfScope, reasons });
+  if (policy === "pr_only") {
+    reasons.push("This sprint's change policy is pr_only: write the exact change set (page, field, old value, new value), put it on Needs you (needs-you-add kind task, the change set in copy) and block-task.");
+    return done("pr_only");
+  }
+  if (!inScope) {
+    if (outOfScope.length > 0) reasons.push("Out of scope for the Connector: put the exact change set on Needs you (needs-you-add kind task) and block-task.");
+    return done("pr_only");
+  }
+  reasons.push("Every change is SEO scope: apply it with the Connector tools (siteId and a reason on every write), then verify it on the live site.");
+  return done("apply");
 }
 
 /**

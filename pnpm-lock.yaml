@@ -768,6 +768,8 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/plugins/pib-wp-connector: {}
+
   packages/plugins/plugin-accounting:
     dependencies:
       '@partnersinbiz/pib-plugin-kit':

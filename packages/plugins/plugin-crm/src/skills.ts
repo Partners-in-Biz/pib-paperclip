@@ -1,5 +1,6 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+import { CLIENT_SITES_SKILL, IOS_RELEASE_SKILL } from "./skills-sites.js";
 
 export const CRM_RECORDS_SKILL = `# CRM records and the client lifecycle
 
@@ -89,6 +90,26 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     markdown: withFrontmatter(
       { name: "pib-crm-outbound", description: "Follow up leads (who replies to what), run CRM sequences and replies, merge tokens, and the POPIA, opt-out and sender rules for every marketing email." },
       CRM_OUTBOUND_SKILL,
+    ),
+  },
+  {
+    skillKey: "wp-sites",
+    displayName: "Client websites (WordPress)",
+    slug: "pib-wp-sites",
+    description: "Client websites: the PiB Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
+    markdown: withFrontmatter(
+      { name: "pib-wp-sites", description: "Work on client WordPress sites: PiB Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
+      CLIENT_SITES_SKILL,
+    ),
+  },
+  {
+    skillKey: "ios-release",
+    displayName: "iOS releases (Mac build host)",
+    slug: "pib-ios-release",
+    description: "Build, sign and upload a client's native iOS app from the Mac build environment with xcodebuild and the asc CLI; App Review submission needs a person.",
+    markdown: withFrontmatter(
+      { name: "pib-ios-release", description: "Build and ship a client's native iOS app on the Mac build environment: check the host, pick the App Store Connect key, archive and export with API-key signing, upload to TestFlight with asc, and ask a person before submitting for review." },
+      IOS_RELEASE_SKILL,
     ),
   },
 ];

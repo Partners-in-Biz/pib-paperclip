@@ -22,6 +22,7 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import type { ClientKind, ClientRef } from "./client-ref.js";
+import type { CrmSiteEvent } from "./client-sites.js";
 
 export const CRM_PLUGIN_ID = "partnersinbiz.crm";
 
@@ -236,5 +237,121 @@ CREATE TABLE ${namespace}.crm_contacts (
   deleted boolean NOT NULL DEFAULT false
 );
 CREATE INDEX crm_contacts_company ON ${namespace}.crm_contacts (company_id, name);
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Client websites (CRM `site.upserted` / `site.deleted`)
+// ---------------------------------------------------------------------------
+
+/**
+ * A consumer that needs client websites adds `crmSiteProjectionMigration(NS)`
+ * as a new migration and calls `registerCrmSiteProjection`. The projection
+ * never holds the Connector key: Connector calls go through the CRM's tools.
+ */
+export interface CrmSiteRow {
+  id: string;
+  client_kind: ClientKind;
+  client_ref: string;
+  label: string | null;
+  url: string;
+  platform: string;
+  seo_plugin: string | null;
+  hosting: string | null;
+  access: string[];
+  project_id: string | null;
+  connector_status: string;
+  connector_version: string | null;
+  connector_seen_at: unknown;
+}
+
+export function registerCrmSiteProjection(ctx: PluginContext, namespace: string): void {
+  const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
+    try {
+      await fn(event);
+    } catch (error) {
+      ctx.logger.info(`CRM site projection ${label} failed`, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  ctx.events.on(`plugin.${CRM_PLUGIN_ID}.site.upserted`, guard("site.upserted", async (event) => {
+    const p = event.payload as CrmSiteEvent;
+    if (!p?.id || !p.url || !event.companyId) return;
+    await ctx.db.execute(
+      `INSERT INTO ${namespace}.crm_sites
+         (id, company_id, client_kind, client_ref, label, url, platform, seo_plugin, hosting, access, project_id,
+          connector_status, connector_version, connector_seen_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ${textArrayParam(10)}, $11, $12, $13, $14, $15, false)
+       ON CONFLICT (id) DO UPDATE SET client_kind = EXCLUDED.client_kind, client_ref = EXCLUDED.client_ref, label = EXCLUDED.label,
+         url = EXCLUDED.url, platform = EXCLUDED.platform, seo_plugin = EXCLUDED.seo_plugin, hosting = EXCLUDED.hosting,
+         access = EXCLUDED.access, project_id = EXCLUDED.project_id, connector_status = EXCLUDED.connector_status,
+         connector_version = EXCLUDED.connector_version, connector_seen_at = EXCLUDED.connector_seen_at,
+         updated_at = EXCLUDED.updated_at, deleted = false
+       WHERE ${namespace}.crm_sites.updated_at <= EXCLUDED.updated_at`,
+      [
+        p.id,
+        event.companyId,
+        p.clientKind === "contact" ? "contact" : "company",
+        p.clientRef,
+        p.label ?? null,
+        p.url,
+        p.platform,
+        p.seoPlugin ?? null,
+        p.hosting ?? null,
+        jsonList(p.access),
+        p.projectId ?? null,
+        p.connectorStatus ?? "none",
+        p.connectorVersion ?? null,
+        p.connectorSeenAt ?? null,
+        p.updatedAt,
+      ],
+    );
+  }));
+  ctx.events.on(`plugin.${CRM_PLUGIN_ID}.site.deleted`, guard("site.deleted", async (event) => {
+    const p = event.payload as { id?: string };
+    if (!p?.id) return;
+    await ctx.db.execute(`UPDATE ${namespace}.crm_sites SET deleted = true, updated_at = now() WHERE id = $1`, [p.id]);
+  }));
+}
+
+const SITE_COLUMNS = "id, client_kind, client_ref, label, url, platform, seo_plugin, hosting, access, project_id, connector_status, connector_version, connector_seen_at";
+
+/** A client's websites, oldest first. */
+export async function listCrmSites(ctx: PluginContext, namespace: string, companyId: string, ref: ClientRef): Promise<CrmSiteRow[]> {
+  return ctx.db.query<CrmSiteRow>(
+    `SELECT ${SITE_COLUMNS} FROM ${namespace}.crm_sites
+      WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND deleted = false
+      ORDER BY url`,
+    [companyId, ref.kind, ref.id],
+  );
+}
+
+export async function getCrmSite(ctx: PluginContext, namespace: string, companyId: string, id: string): Promise<CrmSiteRow | null> {
+  const rows = await ctx.db.query<CrmSiteRow>(
+    `SELECT ${SITE_COLUMNS} FROM ${namespace}.crm_sites WHERE company_id = $1 AND id = $2 AND deleted = false`,
+    [companyId, id],
+  );
+  return rows[0] ?? null;
+}
+
+export function crmSiteProjectionMigration(namespace: string): string {
+  return `CREATE TABLE ${namespace}.crm_sites (
+  id text PRIMARY KEY,
+  company_id text NOT NULL,
+  client_kind text NOT NULL,
+  client_ref text NOT NULL,
+  label text,
+  url text NOT NULL,
+  platform text NOT NULL,
+  seo_plugin text,
+  hosting text,
+  access text[] NOT NULL DEFAULT '{}',
+  project_id text,
+  connector_status text NOT NULL DEFAULT 'none',
+  connector_version text,
+  connector_seen_at timestamptz,
+  updated_at timestamptz NOT NULL,
+  deleted boolean NOT NULL DEFAULT false
+);
+CREATE INDEX crm_sites_client ON ${namespace}.crm_sites (company_id, client_kind, client_ref);
 `;
 }

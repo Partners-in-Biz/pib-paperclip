@@ -89,7 +89,7 @@ export function IntegrationsTab({ companyId, bundle, load, call, reload, onMessa
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
       <NeedsYouSection sprintId={sprintId} view={bundle.needsYou} call={call} issueLink={bundle.needsYou?.issueId ? <IssueLink id={bundle.needsYou.issueId} identifier={bundle.needsYou.issueIdentifier} /> : null} />
-      {bundle.sprint.site ? <SiteRepoSection sprintId={sprintId} site={bundle.sprint.site} projects={bundle.projects ?? []} prefix={bundle.prefix} call={call} /> : null}
+      {bundle.sprint.site ? <SiteRepoSection sprintId={sprintId} site={bundle.sprint.site} projects={bundle.projects ?? []} wordpressSites={bundle.wordpressSites ?? []} prefix={bundle.prefix} call={call} /> : null}
       <SetupChecklist
         title="This sprint's setup"
         items={(bundle.setup ?? []).filter((item) => SPRINT_SETUP_KEYS.includes(item.key))}

@@ -17,6 +17,7 @@ import {
   listCrmClients,
   pluginUiBase,
   registerCrmProjection,
+  registerCrmSiteProjection,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -63,7 +64,8 @@ import { playbookSummary } from "./service/playbook.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { routineViews, saveRoutineReport } from "./service/routines.js";
-import { siteProjectOptions } from "./service/site.js";
+import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./service/site.js";
+import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS } from "./tools.js";
 
@@ -113,6 +115,8 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     // Clients are CRM companies or CRM contacts (sole traders).
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
+    // Client websites (platform, SEO plugin, Connector status) for the wordpress site mode; never the Connector key.
+    registerCrmSiteProjection(ctx, NAMESPACE);
     ctx.logger.info("SEO plugin ready");
   },
 
@@ -337,10 +341,12 @@ function registerActions(e: Env) {
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
-    const [needsYou, setup, projects, playbook, overviews, timed] = await Promise.all([
+    const [needsYou, setup, projects, wordpressSites, wpSite, playbook, overviews, timed] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
       siteProjectOptions(e, companyId, sprint.siteUrl).catch(() => []),
+      wordPressSiteOptions(e, sprint).catch(() => []),
+      sprintWordPressSite(e, sprint),
       playbookSummary(e, sprint).catch(() => null),
       sprintOverviews(ctx.db, companyId, [sprint], info.today, agent),
       // Tasks whose runs stop at the workspace check show as stuck, with the fix (engine/due.ts).
@@ -349,7 +355,7 @@ function registerActions(e: Env) {
     const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
     for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
     return {
-      sprint: sprintView(sprint, info.today, overviews.get(sprintId)),
+      sprint: { ...sprintView(sprint, info.today, overviews.get(sprintId)), site: siteLinkView(sprint, wpSite) },
       prefix: info.prefix,
       scoreboard: sprint.scoreboard,
       today: sprint.today,
@@ -367,6 +373,7 @@ function registerActions(e: Env) {
       needsYou,
       setup,
       projects,
+      wordpressSites,
       playbook,
     };
   });

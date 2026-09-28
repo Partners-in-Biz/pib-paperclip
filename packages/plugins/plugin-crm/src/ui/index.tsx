@@ -68,6 +68,7 @@ import { leadBand, type LeadScore } from "../lead-levels.js";
 import type { CrmSeries } from "../series.js";
 import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LIFECYCLE_LABEL, LifecyclePill, Muted, StagePill, type NeedsGroup } from "./overview.js";
 import { AccountManagerBox, type HireView } from "./agent.js";
+import { ProjectsCard, WebsitesCard, type ConnectResult, type ProjectView, type SiteView } from "./sites.js";
 import { ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
 import { crmTabBadges, dealClientLabel, dealsByStage, displayText, followUpDue, moduleInstalled, parseMoneyInput, toggleOwned, type CrmTab } from "./crm-view.js";
 import { DealSheet, type DealView } from "./deal.js";
@@ -1048,6 +1049,10 @@ interface WorkspaceData {
   options?: { companies: Array<{ id: string; name: string }>; contacts: Array<{ id: string; name: string }> };
   profile?: ClientProfileView | null;
   clientLeads?: ClientLeadView[];
+  sites?: SiteView[];
+  projects?: ProjectView[];
+  projectOptions?: ProjectView[];
+  connectorDownload?: string | null;
 }
 
 /** What `GET /api/plugins/<key>/api/client-summary` returns for one client. */
@@ -1094,6 +1099,12 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   const updateProfile = usePluginAction("crm.update-client-profile");
   const setEmailStatus = usePluginAction("crm.set-email-status");
   const deleteCompany = usePluginAction("crm.delete-company");
+  const saveSite = usePluginAction("crm.save-client-site");
+  const deleteSite = usePluginAction("crm.delete-client-site");
+  const connectSite = usePluginAction("crm.connect-client-site");
+  const checkSite = usePluginAction("crm.check-client-site");
+  const linkProject = usePluginAction("crm.link-client-project");
+  const unlinkProject = usePluginAction("crm.unlink-client-project");
   // Only installed modules get a card, like the workspace tabs; nothing shows while that is unknown.
   const contributions = useUiContributions();
   const sources = WORK_SOURCES.filter((source) => moduleInstalled(contributions, source.pluginKey) === true);
@@ -1334,6 +1345,48 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
           {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
           {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
           {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} /> : null}
+          {company || companies.length === 0 ? (
+            <WebsitesCard
+              sites={data.sites ?? []}
+              projects={data.projects ?? []}
+              download={data.connectorDownload ?? null}
+              projectLinkProps={(path) => navigation.linkProps(path)}
+              onSave={(patch, success) => run(() => saveSite({ client: `${client.kind}:${client.id}`, ...patch }), success)}
+              onDelete={(siteId) => run(() => deleteSite({ siteId }), "Website removed")}
+              onConnect={async (siteId) => {
+                setMessage("");
+                try {
+                  const result = (await connectSite({ siteId })) as ConnectResult;
+                  await refresh();
+                  return result;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
+              onCheck={async (siteId) => {
+                setMessage("");
+                try {
+                  const result = (await checkSite({ siteId })) as { connected?: boolean; error?: string; warnings?: string[] };
+                  await refresh();
+                  setMessage(result.connected ? ["Connector answers.", ...(result.warnings ?? [])].join(" ") : result.error ?? "The site did not answer.");
+                  return Boolean(result.connected);
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return false;
+                }
+              }}
+            />
+          ) : null}
+          {company || companies.length === 0 ? (
+            <ProjectsCard
+              projects={data.projects ?? []}
+              options={data.projectOptions ?? []}
+              projectLinkProps={(path) => navigation.linkProps(path)}
+              onLink={(projectId) => run(() => linkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project linked")}
+              onUnlink={(projectId) => run(() => unlinkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project unlinked")}
+            />
+          ) : null}
 
           {company ? (
             <SectionCard

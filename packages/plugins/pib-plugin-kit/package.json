@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./oauth-client": "./src/oauth-bridge/client.ts",
     "./client-ref": "./src/client-ref.ts",
+    "./client-sites": "./src/client-sites.ts",
     "./build": "./src/build.mjs",
     "./setup-client": "./src/setup-client.ts",
     "./setup": "./src/setup.ts",

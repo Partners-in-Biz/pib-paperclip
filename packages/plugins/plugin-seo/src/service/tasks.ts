@@ -79,6 +79,7 @@ export function siteCopyFor(sprint: db.Sprint, task: db.SprintTask): SiteCopy | 
     branch: branchFor(task),
     changePolicy: sprint.changePolicy,
     hosting: sprint.hosting,
+    siteId: sprint.siteId,
   };
 }
 
@@ -582,7 +583,7 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
       moved += 1;
     }
   }
-  // Code tasks that waited for the link open now (in the site project, or the SEO project without a repo).
+  // Code tasks that waited for the link open now (in the site project, or the SEO project without a repo or on WordPress).
   const opened = await materialiseDueTasks(env, mc);
   return { moved, opened: opened.created };
 }

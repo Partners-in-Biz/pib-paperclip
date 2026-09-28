@@ -29,12 +29,14 @@ import { addNeedsYou, recheckNeedsYou } from "./needs-you.js";
 import { activateShippedRoutines } from "./routines.js";
 import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
+import { isCodeTask } from "../engine/site-change.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
 import { publishSetupStatuses, seoCompanies, seoOn } from "./setup-status.js";
 import { publishCockpitSnapshots } from "../cockpit.js";
 import { scheduledSnapshots } from "./snapshots.js";
 import { healTasks, materialiseDueTasks } from "./tasks.js";
+import { sprintWordPressSite, wpConnectorItemFor } from "./wordpress.js";
 
 const JOB_BUDGET_MS = 200_000;
 
@@ -149,6 +151,14 @@ async function raiseGrants(env: Env, info: CompanyInfo, sprint: db.Sprint): Prom
     await addNeedsYou(env, info, sprint, serviceAccountItem({ prefix: info.prefix, settingsPath: settings }, idsOf("gsc-verify")));
   } else if (!gscReady && sa.key && (sprint.clientRef || sprint.siteAccess === "none")) {
     await gscCheckAccess(env, sprint.companyId, { sprintId: sprint.id }).catch(() => undefined);
+  }
+  if (sprint.siteAccess === "wordpress") {
+    // WordPress mode needs the PiB Connector paired once; the daily re-check closes the item when the CRM sees it.
+    const site = await sprintWordPressSite(env, sprint);
+    if (site && site.connector_status !== "connected") {
+      const waiting = open.filter((t) => t.owner === "agent" && t.status === "blocked" && isCodeTask(t)).map((t) => t.id);
+      await addNeedsYou(env, info, sprint, wpConnectorItemFor(info, sprint, site, waiting));
+    }
   }
   const bingTasks = idsOf("bing-verify");
   if (bingTasks.length > 0 && !(await info.loaded.secrets.get("bingApiKey").catch(() => undefined))) {

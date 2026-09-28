@@ -1,5 +1,6 @@
 /**
- * Setup checklist, Needs you items and the site repo link (0.6.0).
+ * Setup checklist, Needs you items and the site link (0.6.0): a repo project,
+ * a client's WordPress site through the PiB Connector (0.10.0), or none.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
@@ -34,9 +35,23 @@ export type NeedsYouItem = {
 
 export type NeedsYouView = { weekStart: string; issueId: string | null; issueIdentifier: string | null; open: NeedsYouItem[]; done: NeedsYouItem[] };
 
+/** A client's WordPress site from the CRM, as the site link shows it. */
+export type WordPressSite = {
+  siteId: string;
+  url: string;
+  label: string | null;
+  connectorStatus: string;
+  connected: boolean;
+  /** "WordPress · Yoast SEO · Connector connected" */
+  summary: string;
+  suggested?: boolean;
+};
+
 export type SiteLink = {
-  siteAccess: "unlinked" | "repo" | "none";
+  siteAccess: "unlinked" | "repo" | "none" | "wordpress";
   siteProjectId: string | null;
+  siteId?: string | null;
+  site?: WordPressSite | null;
   repoUrl: string | null;
   defaultBranch: string;
   framework: string | null;
@@ -190,57 +205,106 @@ const POLICY_TEXT: Record<SiteLink["changePolicy"], string> = {
   full: "Merge any SEO change when checks pass",
 };
 
-export function SiteRepoSection({ sprintId, site, projects, prefix, call }: { sprintId: string; site: SiteLink; projects: ProjectOption[]; prefix: string | null; call: CallFn }) {
-  const [projectId, setProjectId] = useState<string>(site.siteAccess === "none" ? "__none" : site.siteProjectId ?? "");
+const WP = "wp:";
+
+function currentChoice(site: SiteLink): string {
+  if (site.siteAccess === "none") return "__none";
+  if (site.siteAccess === "wordpress" && site.siteId) return `${WP}${site.siteId}`;
+  return site.siteProjectId ?? "";
+}
+
+function siteHost(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [], prefix, call }: { sprintId: string; site: SiteLink; projects: ProjectOption[]; wordpressSites?: WordPressSite[]; prefix: string | null; call: CallFn }) {
+  const [projectId, setProjectId] = useState<string>(currentChoice(site));
   const [branch, setBranch] = useState(site.defaultBranch);
   const [hosting, setHosting] = useState(site.hosting ?? "");
   const [policy, setPolicy] = useState<SiteLink["changePolicy"]>(site.changePolicy);
+  // A stable key: callers may pass a fresh [] each render.
+  const wpKey = wordpressSites.map((w) => `${w.siteId}:${w.connectorStatus}`).join(",");
   useEffect(() => {
-    setProjectId(site.siteAccess === "none" ? "__none" : site.siteProjectId ?? projects.find((p) => p.suggested)?.projectId ?? "");
+    const suggestedWp = wordpressSites.find((w) => w.suggested && w.connected);
+    setProjectId(currentChoice(site) || (suggestedWp ? `${WP}${suggestedWp.siteId}` : projects.find((p) => p.suggested)?.projectId ?? ""));
     setBranch(site.defaultBranch);
     setHosting(site.hosting ?? "");
     setPolicy(site.changePolicy);
-  }, [site.siteAccess, site.siteProjectId, site.defaultBranch, site.hosting, site.changePolicy, projects]);
+  }, [site.siteAccess, site.siteProjectId, site.siteId, site.defaultBranch, site.hosting, site.changePolicy, projects, wpKey]);
+  const wordpressId = projectId.startsWith(WP) ? projectId.slice(WP.length) : null;
+  const pickedWp = wordpressId ? wordpressSites.find((w) => w.siteId === wordpressId) ?? (site.site?.siteId === wordpressId ? site.site : null) : null;
   const picked = projects.find((p) => p.projectId === projectId) ?? null;
   const save = () =>
     void call(
       "link-site",
       {
         sprintId,
-        ...(projectId === "__none" ? { noRepo: true } : projectId ? { projectId } : {}),
-        ...(branch.trim() ? { defaultBranch: branch.trim() } : {}),
+        ...(projectId === "__none" ? { noRepo: true } : wordpressId ? { wordpressSiteId: wordpressId } : projectId ? { projectId } : {}),
+        ...(branch.trim() && !wordpressId ? { defaultBranch: branch.trim() } : {}),
         ...(hosting ? { hosting } : {}),
         changePolicy: policy,
       },
-      projectId === "__none" ? "Saved: no repo access. Change sets go through Needs you." : "Site repo linked. Code tasks open in the site project.",
+      projectId === "__none"
+        ? "Saved: no repo access. Change sets go through Needs you."
+        : wordpressId
+          ? "WordPress site linked. The agent changes it through the PiB Connector."
+          : "Site repo linked. Code tasks open in the site project.",
     );
+  const current = site.siteAccess === "wordpress" ? site.site ?? null : null;
   const projectsPath = prefix ? `/${prefix}/projects` : "/projects";
   return (
     <Section
       title="Site repo"
-      actions={<Pill dot tone={site.siteAccess === "unlinked" ? "warn" : site.siteAccess === "repo" ? "ok" : "neutral"}>{site.siteAccess === "repo" ? "linked" : site.siteAccess === "none" ? "no repo" : "not linked"}</Pill>}
+      actions={
+        <Pill dot tone={site.siteAccess === "unlinked" ? "warn" : site.siteAccess === "repo" || (site.siteAccess === "wordpress" && current?.connected) ? "ok" : site.siteAccess === "wordpress" ? "warn" : "neutral"}>
+          {site.siteAccess === "repo" ? "linked" : site.siteAccess === "wordpress" ? "WordPress" : site.siteAccess === "none" ? "no repo" : "not linked"}
+        </Pill>
+      }
     >
-      <span style={{ fontSize: 13, color: tokens.muted }}>
-        Code and content tasks open in this project, so the agent works in its repo workspace: branch, PR, checks, preview, merge.
-        {site.repoUrl ? <> Repo: <code style={breakAnywhere}>{site.repoUrl}</code>.</> : null}
-      </span>
+      {site.siteAccess === "wordpress" ? (
+        <span style={{ fontSize: 13, color: tokens.muted, display: "grid", gap: 4 }}>
+          <span>
+            The agent changes this WordPress site through the PiB Connector: SEO fields, schema, redirects, robots and sitemap, each checked on the live site.
+            {current ? <> Site: <code style={breakAnywhere}>{siteHost(current.url)}</code> · {current.summary}.</> : " The linked site is no longer in the CRM: pick it again."}
+          </span>
+          {current && !current.connected ? <span style={{ color: tokens.destructive }}>The Connector is not connected yet. Connect it on the CRM client page → Websites.</span> : null}
+        </span>
+      ) : (
+        <span style={{ fontSize: 13, color: tokens.muted }}>
+          Code and content tasks open in this project, so the agent works in its repo workspace: branch, PR, checks, preview, merge.
+          {site.repoUrl ? <> Repo: <code style={breakAnywhere}>{site.repoUrl}</code>.</> : null}
+        </span>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(200), gap: 10 }}>
-        <Field label="Project with the repo workspace">
+        <Field label={wordpressSites.length > 0 ? "Repo project or WordPress site" : "Project with the repo workspace"}>
           <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
             <option value="">Choose a project…</option>
-            {projects.map((p) => (
-              <option key={p.projectId} value={p.projectId}>
-                {p.name}
-                {p.repoUrl ? ` — ${p.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "")}` : " — no repo URL"}
-                {p.suggested ? " (match)" : ""}
-              </option>
-            ))}
+            <optgroup label="Repo projects">
+              {projects.map((p) => (
+                <option key={p.projectId} value={p.projectId}>
+                  {p.name}
+                  {p.repoUrl ? ` — ${p.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "")}` : " — no repo URL"}
+                  {p.suggested ? " (match)" : ""}
+                </option>
+              ))}
+            </optgroup>
+            {wordpressSites.length > 0 ? (
+              <optgroup label="WordPress (PiB Connector)">
+                {wordpressSites.map((w) => (
+                  <option key={w.siteId} value={`${WP}${w.siteId}`}>
+                    {w.label ? `${w.label} — ` : ""}{siteHost(w.url)} — {w.summary}{w.suggested ? " (match)" : ""}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
             <option value="__none">No repo access (CMS or client-managed)</option>
           </Select>
         </Field>
-        <Field label="Default branch">
-          <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={picked?.defaultBranch ?? "main"} />
-        </Field>
+        {wordpressId ? null : (
+          <Field label="Default branch">
+            <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={picked?.defaultBranch ?? "main"} />
+          </Field>
+        )}
         <Field label="Hosting">
           <Select value={hosting} onChange={(e) => setHosting(e.target.value)}>
             <option value="">Unknown</option>
@@ -258,10 +322,13 @@ export function SiteRepoSection({ sprintId, site, projects, prefix, call }: { sp
         </Field>
       </div>
       {picked && !picked.repoUrl ? <span style={{ fontSize: 12, color: tokens.destructive }}>This project has no repo URL on its workspace. Add one in the project first.</span> : null}
+      {pickedWp && !pickedWp.connected && site.siteAccess !== "wordpress" ? (
+        <span style={{ fontSize: 12, color: tokens.destructive }}>The PiB Connector is not connected on this site yet. Connect it on the CRM client page → Websites; until then the agent cannot change the site.</span>
+      ) : null}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <Button type="button" disabled={!projectId} onClick={save}>Save</Button>
         <span style={{ fontSize: 12, color: tokens.muted }}>
-          No project for the site yet? <a href={projectsPath} style={{ color: tokens.fg }}>Projects</a> → New project → add a workspace with the repo URL, then pick it here.
+          No project for the site yet? <a href={projectsPath} style={{ color: tokens.fg }}>Projects</a> → New project → add a workspace with the repo URL, then pick it here. A client's WordPress site is added on the CRM client page → Websites.
         </span>
       </div>
     </Section>
