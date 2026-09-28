@@ -48,7 +48,7 @@ import {
 import { clip, SocialError } from "./domain.js";
 import { localDate } from "./growth/engine.js";
 import { sendLead } from "./handoff.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 
 export const TRIAGE_PURPOSE = "social-inbox-triage";
@@ -353,7 +353,7 @@ async function queueForAgent(ctx: PluginContext, config: SocialConfig, account: 
       description,
       priority: "medium",
       originKind: ORIGIN_KIND,
-      originId: `inbox:${account.id}:${day}`,
+      originId: `${SOCIAL_ORIGINS.replyQueue}${account.id}:${day}`,
       assigneeAgentId: assignee.assigneeAgentId,
       assigneeUserId: assignee.assigneeUserId,
       wakeReason: "Social comments need replies",
@@ -399,7 +399,7 @@ async function escalateToPerson(ctx: PluginContext, config: SocialConfig, item: 
       ].filter((line) => line !== null).join("\n"),
       priority: "high",
       originKind: ORIGIN_KIND,
-      originId: `inbox-escalate:${item.id}`,
+      originId: `${SOCIAL_ORIGINS.escalation}${item.id}`,
       assigneeUserId: await personAssignee(ctx, companyId, postOwner ?? account?.created_by_user_id),
       wake: false,
     });

@@ -32,6 +32,7 @@ import {
   type ResolvedScope,
 } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
+import { handoffPayload } from "./done-checks.js";
 import {
   accountMeta,
   accountMetrics,
@@ -67,6 +68,7 @@ import {
   setInboxItemStatus,
   setPostStatus,
   setRssFeedActive,
+  table,
   updateAccountSettings,
   updatePostContent,
   type AccountRow,
@@ -287,6 +289,8 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     media: postMedia(row),
     overrides: postOverrides(row),
     source: row.source ?? "manual",
+    /** The SEO page this draft repurposes (its hand-off key), when it was drafted for one. */
+    handoffKey: row.source === "repurpose" ? row.source_ref : null,
     experimentId: row.experiment_id ?? null,
     experimentArm: row.experiment_arm ?? null,
     /** The Social agent task that picks a time for this approved post, if one was opened. */
@@ -324,14 +328,38 @@ async function attachAccounts(ctx: PluginContext, viewer: Viewer, post: PostRow,
   for (const account of accounts) await insertDestination(ctx, { companyId: viewer.companyId, postId: post.id, accountId: account.id });
 }
 
+/**
+ * The repurpose hand-off a draft is for (`handoffKey` on create-post): the
+ * SEO page's key and scope. Unknown keys are refused, so a draft is never
+ * linked to a page that was not handed to Social.
+ */
+export async function requireHandoff(ctx: PluginContext, companyId: string, key: string): Promise<{ key: string; scope: ClientScope; title: string }> {
+  const rows = await ctx.db.query<{ key: string; payload: unknown }>(
+    `SELECT key, payload FROM ${table(ctx, "handoffs")} WHERE company_id = $1 AND key = $2 AND kind = 'repurpose' LIMIT 1`,
+    [companyId, key],
+  );
+  if (!rows[0]) throw new SocialError(`Unknown hand-off key ${key}. Use the key from the "Repurpose for social" issue (e.g. seo:content:<id>).`);
+  const payload = handoffPayload(rows[0].payload);
+  const scope: ClientScope = payload.clientRef ? { kind: payload.clientKind === "contact" ? "contact" : "company", id: payload.clientRef } : null;
+  return { key: rows[0].key, scope, title: payload.title ?? payload.url ?? key };
+}
+
 export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
   const params = postParams(input);
   const body = requiredString(params, "body");
   const scope = postVisibility(params);
   if (scope === "personal" && !viewer.userId) throw new SocialError("A personal post needs its owner");
   const scheduledAt = proposedTime(params) ?? null;
-  // Omitting the client means own work.
-  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  // A draft for a repurposed SEO page is linked to it and stays in the page's scope (the repurpose done-check counts it).
+  const handoffKey = optionalString(params, "handoffKey");
+  const handoff = handoffKey ? await requireHandoff(ctx, viewer.companyId, handoffKey) : null;
+  // Omitting the client means own work (or the page's scope for a hand-off draft).
+  const target = await scopeFromParams(ctx, viewer.companyId, params, handoff?.scope ?? null);
+  if (handoff && !sameClient(target.scope, handoff.scope)) {
+    throw new SocialError(
+      `The page "${handoff.title}" belongs to ${handoff.scope ? formatClientParam(handoff.scope) : "own work"}; its drafts stay in that scope. ${handoff.scope ? `Pass client: "${formatClientParam(handoff.scope)}"` : "Leave the client out"} (or leave it out with handoffKey).`,
+    );
+  }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
   const overrides = normalizeOverrides(params.overrides) ?? {};
   const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
@@ -347,8 +375,8 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     first_comment: optionalString(params, "firstComment") ?? null,
     scheduled_at: scheduledAt,
     ...scopeColumns(target),
-    source: viewer.isAgent ? "agent" : "manual",
-    source_ref: null,
+    source: handoff ? "repurpose" : viewer.isAgent ? "agent" : "manual",
+    source_ref: handoff?.key ?? null,
     created_by_agent_id: viewer.agentId,
   };
   for (const account of accounts) assertAccountScope(row, account);

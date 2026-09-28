@@ -43,7 +43,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 
 | Tool | Use it for |
 |---|---|
-| ${T(TOOL_NAMES.brief)} | Everything at once, compact JSON. Start here. \`windowHours: 168\` for the weekly retro. It includes \`asks\` (questions agents asked the owner), \`unassigned\` (open issues nobody holds) and \`team\` (the agent in each role). |
+| ${T(TOOL_NAMES.brief)} | Everything at once, compact JSON. Start here. \`windowHours: 168\` for the weekly retro. It includes \`asks\` (questions agents asked the owner), \`stuckFlows\` (where work is stuck), \`unassigned\` (open issues nobody holds) and \`team\` (the agent in each role). |
 | ${T(TOOL_NAMES.health)} | Problems worst first, each with \`fix\` and \`href\`. |
 | ${T(TOOL_NAMES.waiting)} | What waits on a person: questions for the owner first, then money and legal. |
 | ${T(TOOL_NAMES.scorecards)} | Per agent: runs, failures, spend vs budget, quality metrics. |
@@ -63,13 +63,13 @@ ${routingMap()}
 
 ## Daily operations review (07:00, routine)
 
-1. **Read.** Call ${T(TOOL_NAMES.brief)}. Note \`health\`, \`waiting\`, \`asks\`, \`unassigned\`, \`team\`, \`agents\` and \`kpis\`.
+1. **Read.** Call ${T(TOOL_NAMES.brief)}. Note \`health\`, \`waiting\`, \`asks\`, \`stuckFlows\`, \`unassigned\`, \`team\`, \`agents\` and \`kpis\`.
 2. **Health first.** For every \`bad\` check, then every \`warn\`:
    - Follow its \`fix\`. If an agent owns the broken thing (a failed publish, a stuck sync, a failing job in its plugin), open or reuse an issue for that agent with the check, the detail and the link, and wake it.
    - Agent **in error**: read its last run (\`GET /api/companies/{companyId}/heartbeat-runs?agentId=…&limit=5\`). If the cause is clear and fixable by an agent, hand it off. If it needs a key, a login or money, it goes on the brief.
    - Agent at **80%+ of its budget**: check what it spent on. Narrow its work (pause low-value routines, comment on its issues). Never raise a budget; that is the owner's call, so put it on the brief with the numbers.
    - "Plugin not reporting": check the plugin is on and its settings are saved (Setup page). If a person must act, it goes on the brief.
-   - The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when everything is ok.
+   - The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when everything is ok (closing it yourself reopens it).
 3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.**
    - Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks). Missing or paused: the owner fixes it in Setup → Team; put it on the brief with the link \`/<prefix>/setup?section=team\`.
    - Each module's routines are on (their setup items and health checks say when one is off).
@@ -80,10 +80,11 @@ ${routingMap()}
    - Reassign it when the wrong agent has it.
    - Split it into a hand-off (below) when another agent must do part of it.
    - Only when a person must decide or grant something: the agent asks with ${T(TOOL_NAMES.askOwner)} on its issue (ask on it yourself if it did not).
-6. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions and say so on the issue. Keep only money, legal, one-time grants (a login consent, a key, a DNS record) and real judgement.
-7. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Make sure each has an owner agent and is not blocked.
-8. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief per day.
-9. Close the routine issue with one line: what you fixed, what you handed off, what waits on the owner.
+6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first (the owner sees the same on Cockpit → Flows). Waiting on an agent: wake it, or hand the work to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
+7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions and say so on the issue. Keep only money, legal, one-time grants (a login consent, a key, a DNS record) and real judgement.
+8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Make sure each has an owner agent and is not blocked.
+9. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief per day.
+10. Close the routine issue with one line: what you fixed, what you handed off, what waits on the owner.
 
 ## The daily brief
 
@@ -106,11 +107,11 @@ Short. The owner reads it on their phone. Use this shape:
 \`\`\`
 
 - Never more than ~20 lines. Link every item. No filler, no restating numbers that are fine.
-- "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after your clean-up in step 6.
+- "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after your clean-up in step 7.
 
 ## Onboarding a new client
 
-When a client is won for the first time, the Cockpit opens **Onboard new client: <name> (company:<id>)** for you. Follow its checklist: one \`Hand-off\` issue per role (children of the onboarding issue), ONE ${T(TOOL_NAMES.askOwner)} (kind \`grant\`) for every login and access only the owner or the client can give, then track it until every module shows the client and the first work is scheduled. Close it with the links as evidence.
+When a client is won for the first time, the Cockpit opens **Onboard new client: <name> (company:<id>)** for you. Follow its checklist: one \`Hand-off\` issue per role (children of the onboarding issue), ONE ${T(TOOL_NAMES.askOwner)} (kind \`grant\`) for every login and access only the owner or the client can give, then track it until every module shows the client and the first work is scheduled. Close it with the links as evidence. When you close it, the Cockpit checks the work: every checklist line ticked (\`- [x]\`), or a comment \`Skipped: <item>, because <why>\`. If it reopens, it lists what's missing: finish those.
 
 ## Act or escalate
 

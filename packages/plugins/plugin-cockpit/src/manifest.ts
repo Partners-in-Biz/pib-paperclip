@@ -15,10 +15,11 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 3. Check the team: routines on, roles staffed (Setup → Team), questions to the owner answered (\`asks\`, oldest first on the brief).
 4. Route every unassigned issue (\`unassigned\`) to the agent in the role that owns the work.
 5. Unblock agents: answer from context, reassign, or hand off. Only a real grant or decision goes to the owner, with ${tool(TOOL_NAMES.askOwner)}.
-6. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
-7. Make sure today's important work has an agent and is not blocked.
-8. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
-9. Close this issue with one line: fixed, handed off, waiting on the owner.
+6. Work the stuck stages (\`stuckFlows\`): wake or hand off to the agent each one waits on; one waiting on a person goes on the brief.
+7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
+8. Make sure today's important work has an agent and is not blocked.
+9. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
+10. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
 

@@ -41,6 +41,8 @@ export interface RawData {
   setupMissing: number | null;
   /** The open Finish setup issue (listed once, as the setup item). */
   setupIssueId: string | null;
+  /** The setup statuses Setup stored, by plugin (the Flows tab's "settings not saved"). */
+  setupStatuses: Record<string, unknown> | null;
   agents: AgentLite[];
   hostActivity: HostActivityLite[];
   runs: RunLite[];
@@ -124,6 +126,7 @@ function rawFrom(base: BaseData, extra: Partial<Pick<RawData, "live" | "agents" 
     myIssues: base.myIssues,
     setupMissing: setupCount(base.setupLoad, base.modules),
     setupIssueId: base.setupLoad?.finishIssueId ?? null,
+    setupStatuses: base.setupLoad ? Object.fromEntries(Object.entries(base.setupLoad.statuses ?? {}).map(([key, row]) => [key, row?.status ?? null])) : null,
     agents: extra.agents ?? [],
     hostActivity: extra.hostActivity ?? [],
     runs: extra.runs ?? [],

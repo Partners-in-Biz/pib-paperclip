@@ -278,6 +278,19 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema([], { status: oneOf(["pending", "confirmed", "rejected"], "Only this status (pending = waiting for a person's check).") }),
   },
   {
+    name: "log-follow-up",
+    displayName: "Log follow-up",
+    description: "Record what you did or decided that leaves no other trace in Billing: a reply you drafted in the Mailbox, what the owner decided, a promise to pay, an email that is not a bill. Internal only (never on the document). Billing's checks count it when you close the issue it belongs to.",
+    parametersSchema: schema(["note"], {
+      invoiceId: str("The invoice it is about (pass exactly one of invoiceId, quoteId, billId, dealId)."),
+      quoteId: str("The quote it is about (for a quote reply)."),
+      billId: str("The draft bill it is about (from a Complete the bill issue)."),
+      dealId: str("The CRM deal id of a Deal won issue, e.g. when the owner says it is not billed."),
+      note: str("What you did or what was decided, in one or two plain sentences (max 1,000 characters)."),
+      mailDraftId: str("The Mailbox draft id when you drafted a reply."),
+    }),
+  },
+  {
     name: "request-reminder-send",
     displayName: "Request payment reminder",
     description: "Ask for the next payment reminder on an overdue invoice (the stage wording from Billing settings, with the PDF and EFT details). Opens an approval issue; a person's done sends it from the Mailbox. Refused when automatic reminders are on, the next stage is not due, all stages went out or the client is opted out (the message says what to do instead).",

@@ -29,3 +29,11 @@ The plugin reads contacts from the CRM plugin's namespace to build the audience.
 - **New tools:** `stop-enrollment` (`enrollmentId`, `everyCampaign`), `suppress-address` (`email`, `reason`). Every tool parameter is described, with enums where fixed.
 - **Capabilities:** `agents.read`, `issues.update`, `issue.comments.create`.
 - Migration `011_campaigns.sql`: suppressions get `scope`, `source` and more reasons; campaigns get `approved_by_user_id`, `launched_at`, `launch_error`.
+
+## Flows and done checks (0.5.0)
+
+- **Stages.** The Cockpit snapshot carries `flows` for the campaigns flow: `campaign.draft` (drafts without a launch approval, or with a refused one), `campaign.approval` (drafts whose approval is open, or approved and launching), `campaign.running` (active campaigns; stuck = campaigns with a failed send or a send due over a day ago) and `campaign.replies` (open reply issues; stuck = open over 2 days).
+- **Origin ids.** Every issue has `campaigns:<kind>:…`: `campaigns:step:<enrollment>:<position>`, `campaigns:send-failed:<enrollment>:<position>`, `campaigns:revise:<campaign>:<refused approval>`, `campaigns:reply:<enrollment>:<message>` and `campaigns:approval:<campaign>` (a person's decision). They are namespaced because the CRM also uses `reply:` and `send-failed:`.
+- **Done checks** (kit `registerDoneChecks`, registered after the plugin's own `issue.updated` handler): an agent closing a step issue or "Email not sent" passes once the contact moved on or was stopped; "Revise campaign" needs the draft changed after the refusal (`campaigns.edited_at`) and a new approval; a reply needs `log-reply`, a stop after the reply, or the address suppressed. Unfinished closes reopen with what is missing; the third goes to the Operator.
+- **New tool** `log-reply` (`messageId`, `outcome` `answered` | `no-reply-needed`, `note`, `mailDraftId`).
+- Migration `012_campaigns.sql`: `campaigns.edited_at` and the `reply_log` table.

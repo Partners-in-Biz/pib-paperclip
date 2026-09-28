@@ -14,6 +14,7 @@ Use the \`partnersinbiz.payroll\` tools to run Partners in Biz's own payroll (it
 - **Never ask for, repeat or store ID numbers, tax reference numbers or bank details.** Tools only show masked values (\`••••1234\`). If a person pastes one in an issue, do not copy it anywhere; ask them to enter it on the Payroll page.
 - **Never invent figures.** PAYE, UIF, SDL and ETI come from the calculation. If a number looks wrong, say what and why.
 - Payroll never pays anyone and never files with SARS.
+- When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
 
 ## Who does what
 
@@ -55,7 +56,7 @@ Made at lock and stored privately. Emailed through the Mailbox when "Email paysl
 "EMP201 for <month> due by <date>" opens early each month (for the Bookkeeper, else you).
 1. \`emp201-summary\` with \`month\`: check the runs included and the totals (PAYE, SDL, UIF, ETI used, total payable). A run for the month that is not locked yet is not in it: say so.
 2. Ask the owner once with \`${ASK_OWNER_TOOL}\`: export it under Payroll → Statutory → EMP201 (monthly) → Download CSV, file it on eFiling and pay the total by the due date. Give the totals.
-3. Mark the issue done when they confirm, with their payment reference.
+3. When they confirm it is filed and paid, record it with \`mark-emp201-filed\` (\`month\` and their payment reference as \`reference\`), then mark the issue done. Until it is marked filed, the Cockpit shows the EMP201 as still to file.
 
 ### 7. EMP501 (twice a year)
 The interim reconciliation covers March to August (file by the end of October); the annual one March to February (file by the end of May). \`emp501-summary\` with \`period\` compares the EMP201s declared with the IRP5/IT3(a) certificate totals. If it does not reconcile, find the month with \`emp201-summary\`. Then ask the owner once to export the pack and the certificates (Payroll → Statutory) and file on eFiling, with the totals and any difference.
@@ -77,6 +78,7 @@ The interim reconciliation covers March to August (file by the end of October); 
 | \`request-pay-run-approval\` | Send to a board member (their approval locks it) |
 | \`request-leave\` / \`list-leave\` / \`leave-balances\` | Leave |
 | \`emp201-summary\` / \`emp501-summary\` | Monthly and twice-yearly SARS totals (a person files) |
+| \`mark-emp201-filed\` | Record the owner's confirmation that the EMP201 is filed and paid |
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [

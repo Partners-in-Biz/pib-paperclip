@@ -62,3 +62,8 @@ New: `search-mail`, `get-message`, `correct-triage`, `mail-status`.
 ### Tables (migrations 003–007)
 
 `accounts` + Gmail columns (status, sealed token, `history_id`, label cache), `messages` + Gmail ids, headers, triage and send context, `send_requests`, `oauth_sessions`, `thread_issues`, the kit CRM projection, `decisions` and `inbox`; 006 adds `messages.bounce`; 007 adds `suppressions`, `send_requests.skipped` and the kit `outbox`.
+
+### Done-check (0.4.0)
+
+- "Reply needed" issues now use origin `mailbox:reply:<accountId>:<threadId>` (the reconnect issue `mailbox:reconnect:<accountId>`). When an agent closes a reply issue, the Mailbox checks the thread (kit `registerDoneChecks`): the newest mail that still needs a reply must have a reply draft (`create-draft` with `replyToMessageId`, also queued or sent) or a sent reply after it, or be triaged as needing none (`correct-triage` needsReply false or another category). Otherwise the issue is reopened with what is missing. A person's close is never checked; the reconnect issue has no check.
+- New capability `issue.comments.create` (the reopen comment). The Mailbox owns no stage in the kit `FLOWS`, so its snapshot reports no `flows`.

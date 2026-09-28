@@ -33,7 +33,7 @@ import {
   tokens,
   useIsNarrow,
 } from "@partnersinbiz/pib-plugin-ui";
-import { DUE_TERMS, agentTrouble } from "../engine/due.js";
+import { DUE_TERMS, projectFixPath, stuckText } from "../engine/due.js";
 import { suggestBusinessType } from "../engine/business-type.js";
 import { fixPlurals, lowerFirst, plural } from "../engine/plain.js";
 import { BUSINESS_TYPES, PLANS, type BusinessType } from "../templates/plans.js";
@@ -88,12 +88,14 @@ export function groupSprints(sprints: SprintSummary[]): Group[] {
 }
 
 function sumNumbers(sprints: SprintSummary[]) {
-  const out = { due: 0, overdue: 0, stuck: 0, waitingOnYou: 0 };
+  const out = { due: 0, overdue: 0, stuck: 0, stuckRuns: 0, waitingOnYou: 0, runsProjectIds: [] as string[] };
   for (const s of sprints.filter(isActive)) {
     out.due += s.tasks?.due ?? 0;
     out.overdue += s.tasks?.overdue ?? 0;
     out.stuck += s.tasks?.stuck ?? 0;
+    out.stuckRuns += s.tasks?.stuckRuns ?? 0;
     out.waitingOnYou += s.tasks?.waitingOnYou ?? 0;
+    for (const id of s.tasks?.runsProjectIds ?? []) if (!out.runsProjectIds.includes(id)) out.runsProjectIds.push(id);
   }
   return out;
 }
@@ -143,7 +145,14 @@ export function SprintHome({
         <KpiCard label="Due now" value={sum.due} icon={CalendarCheck} tone={sum.overdue ? "warn" : undefined} hint={sum.overdue ? `${sum.overdue} overdue` : "None overdue"} />
         <KpiCard label="Needs you" value={sum.waitingOnYou} icon={UserRound} tone={sum.waitingOnYou ? "warn" : undefined} hint={sum.waitingOnYou ? "Grants, sign-offs and approvals" : "Nothing waiting"} />
         {sum.stuck ? (
-          <KpiCard label="Stuck" value={sum.stuck} icon={CircleAlert} tone="bad" hint={`${agentTrouble(data.agent)}: fix in Setup`} link={nav.linkProps(TEAM_SETUP_HREF)} />
+          <KpiCard
+            label="Stuck"
+            value={sum.stuck}
+            icon={CircleAlert}
+            tone="bad"
+            hint={`${stuckText(sum, data.agent)}: ${sum.stuck > sum.stuckRuns ? "fix in Setup" : "fix the project"}`}
+            link={nav.linkProps(sum.stuck > sum.stuckRuns ? TEAM_SETUP_HREF : projectFixPath(sum.runsProjectIds))}
+          />
         ) : (
           <KpiCard label="Lowest health" value={lowest ?? "—"} icon={HeartPulse} hint={lowest == null ? "After the first weekly review" : "Weekly review score, out of 100"} />
         )}

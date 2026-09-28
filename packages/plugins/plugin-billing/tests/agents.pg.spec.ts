@@ -288,7 +288,7 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
 
       const other = await draft();
       const both = await Promise.all([tool("request-invoice-send", { invoiceId: other.id }), tool("request-invoice-send", { invoiceId: other.id })]);
-      const open = [...h.issues.values()].filter((i) => i.originId === other.id && i.title.startsWith("Approve sending invoice") && i.status !== "cancelled");
+      const open = [...h.issues.values()].filter((i) => i.originId === `billing:invoice-send:${other.id}` && i.title.startsWith("Approve sending invoice") && i.status !== "cancelled");
       expect(open).toHaveLength(1);
       expect(both.every((r) => r.data.issueId === open[0]!.id)).toBe(true);
       await expect(h.call("billing.request-pay", { invoiceId: (await sent()).id }, userContext()).then(async (r: any) => r)).resolves.toMatchObject({ pendingAction: "pay" });

@@ -133,7 +133,7 @@ describe("publish-due engine", () => {
       companyId: "co",
       status: "todo",
       originKind: "plugin:partnersinbiz.social",
-      originId: "p1",
+      originId: "post-failed:p1",
       assigneeUserId: "user-1",
       projectId: "proj-social",
     });

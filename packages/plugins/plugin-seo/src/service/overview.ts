@@ -4,7 +4,7 @@
  * Cockpit all read them from here, so their numbers agree.
  */
 import * as db from "../db.js";
-import { agentCanWork, nextTask, tallyTasks, type NextTask, type TaskTally } from "../engine/due.js";
+import { agentCanWork, isOpenTask, nextTask, stuckCause, tallyTasks, WORKSPACE_FAILURE_CODE, type NextTask, type TaskTally } from "../engine/due.js";
 import { countOpenNeedsYou } from "../engine/needs-you.js";
 import { isRunning, sprintClock } from "../engine/sprint.js";
 import { planTask } from "../templates/plans.js";
@@ -18,6 +18,8 @@ export interface SprintNumbers extends TaskTally {
   needsYou: number;
   /** What waits on a person: Needs you items, plus proposals unless autopilot is full (what the Cockpit lists). */
   waitingOnYou: number;
+  /** Projects whose workspace check stops the runs of this sprint's stuck tasks (fix each one's Codebase). */
+  runsProjectIds: string[];
 }
 
 export interface SprintOverview {
@@ -41,12 +43,15 @@ export function displayTitle(task: Pick<db.SprintTask, "title" | "templateKey" |
 
 export function overviewFor(
   sprint: db.Sprint,
-  input: { today: string; openTasks: db.SprintTask[]; totals?: db.SprintTotals; needsYou?: number; agent: { status?: string | null } | null },
+  input: { today: string; openTasks: Array<db.SprintTask & { runsFailing?: boolean | null }>; totals?: db.SprintTotals; needsYou?: number; agent: { status?: string | null } | null },
 ): SprintOverview {
   const day = sprintClock(sprint.startDate, input.today).day;
   // A paused or archived sprint waits on purpose: its work is not stuck.
-  const canWork = isRunning(sprint.status) ? agentCanWork(input.agent) : true;
-  const tally = tallyTasks(input.openTasks, day, canWork);
+  const running = isRunning(sprint.status);
+  const canWork = running ? agentCanWork(input.agent) : true;
+  const openTasks = running ? input.openTasks : input.openTasks.map((task) => ({ ...task, runsFailing: false }));
+  const tally = tallyTasks(openTasks, day, canWork);
+  const runsProjectIds = [...new Set(openTasks.filter((task) => task.issueProjectId && stuckCause(task, day, canWork) === "runs").map((task) => task.issueProjectId!))];
   const totals = input.totals ?? { total: tally.total, done: 0, skipped: 0, openIssues: 0, proposals: 0 };
   const needsYou = input.needsYou ?? 0;
   const numbers: SprintNumbers = {
@@ -58,9 +63,28 @@ export function overviewFor(
     proposals: totals.proposals,
     needsYou,
     waitingOnYou: needsYou + (sprint.autopilotMode === "full" ? 0 : totals.proposals),
+    runsProjectIds,
   };
-  const tasks = input.openTasks.map((task) => ({ ...task, title: displayTitle(task, sprint.templateId) }));
+  const tasks = openTasks.map((task) => ({ ...task, title: displayTitle(task, sprint.templateId) }));
   return { numbers, next: nextTask(tasks, day, sprint.startDate, canWork) };
+}
+
+/**
+ * Marks each open task whose issue's latest run stopped at the host's
+ * workspace check (no checkout of the project's repo on the server): that
+ * work is stuck (engine/due.ts). Unknown when the lookup fails: never throws.
+ */
+export async function withRunFailures<T extends db.SprintTask>(sdb: db.SeoDb, companyId: string, tasks: T[]): Promise<Array<T & { runsFailing: boolean }>> {
+  const issueIds = tasks.filter((task) => task.issueId && isOpenTask(task)).map((task) => task.issueId!);
+  let failing = new Map<string, unknown>();
+  if (issueIds.length > 0) {
+    try {
+      failing = await db.issuesWithFailingRuns(sdb, companyId, issueIds, WORKSPACE_FAILURE_CODE);
+    } catch {
+      failing = new Map();
+    }
+  }
+  return tasks.map((task) => ({ ...task, runsFailing: Boolean(task.issueId && isOpenTask(task) && failing.has(task.issueId)) }));
 }
 
 /** Numbers and the next thing due for every given sprint of a company. */
@@ -73,11 +97,13 @@ export async function sprintOverviews(
 ): Promise<Map<string, SprintOverview>> {
   const out = new Map<string, SprintOverview>();
   if (sprints.length === 0) return out;
-  const [totals, open, digests] = await Promise.all([
+  const [totals, listed, digests] = await Promise.all([
     db.sprintTotals(sdb, companyId),
     db.listOpenTasksForCompany(sdb, companyId),
     db.openNeedsYouDigests(sdb, companyId).catch(() => [] as Array<{ sprintId: string; items: [] }>),
   ]);
+  // Runs that stop at the workspace check make due work stuck, like an agent that cannot work.
+  const open = await withRunFailures(sdb, companyId, listed);
   const needs = countOpenNeedsYou(digests);
   const bySprint = new Map<string, db.SprintTask[]>();
   for (const task of open) {
@@ -91,9 +117,24 @@ export async function sprintOverviews(
   return out;
 }
 
+export interface ActiveTotals {
+  active: number;
+  due: number;
+  overdue: number;
+  stuck: number;
+  /** Of `stuck`: runs stop at the workspace check. */
+  stuckRuns: number;
+  /** Stuck or overdue, each task once. */
+  attention: number;
+  mostDaysLate: number;
+  waitingOnYou: number;
+  /** Projects whose workspace check stops the runs (see SprintNumbers). */
+  runsProjectIds: string[];
+}
+
 /** Sums over active sprints: what the SEO page's tiles and the Cockpit show. */
-export function activeTotals(sprints: db.Sprint[], overviews: Map<string, SprintOverview>): { active: number; due: number; overdue: number; stuck: number; waitingOnYou: number } {
-  const out = { active: 0, due: 0, overdue: 0, stuck: 0, waitingOnYou: 0 };
+export function activeTotals(sprints: db.Sprint[], overviews: Map<string, SprintOverview>): ActiveTotals {
+  const out: ActiveTotals = { active: 0, due: 0, overdue: 0, stuck: 0, stuckRuns: 0, attention: 0, mostDaysLate: 0, waitingOnYou: 0, runsProjectIds: [] };
   for (const sprint of sprints) {
     if (!isActiveSprint(sprint)) continue;
     const n = overviews.get(sprint.id)?.numbers;
@@ -102,7 +143,11 @@ export function activeTotals(sprints: db.Sprint[], overviews: Map<string, Sprint
     out.due += n.due;
     out.overdue += n.overdue;
     out.stuck += n.stuck;
+    out.stuckRuns += n.stuckRuns;
+    out.attention += n.attention;
+    out.mostDaysLate = Math.max(out.mostDaysLate, n.mostDaysLate);
     out.waitingOnYou += n.waitingOnYou;
+    for (const id of n.runsProjectIds ?? []) if (!out.runsProjectIds.includes(id)) out.runsProjectIds.push(id);
   }
   return out;
 }

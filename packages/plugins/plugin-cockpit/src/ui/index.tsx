@@ -7,13 +7,14 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, PageFrame, PageHeader, PageMessage, Tabs, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, PageFrame, PageHeader, PageMessage, Tabs, Workflow, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
 import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
 import { uiBase, useCockpitData, useSidebarView } from "./data.js";
+import { FlowsPanel, FlowsSummary } from "./flows.js";
 import { dedupeKpis, visibleKpis } from "./kpis.js";
 import { runAlert, runStats } from "./series.js";
 import { MemoryPanel } from "./memory.js";
@@ -33,10 +34,10 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "profile", "memory"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
-/** `?tab=profile` and `?tab=memory` open those tabs; anything else is the overview. */
+/** `?tab=flows`, `?tab=profile` and `?tab=memory` open those tabs; anything else is the overview. */
 export function tabFromSearch(search: string | null | undefined): TabId {
   const value = new URLSearchParams(search ?? "").get("tab");
   return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
@@ -135,6 +136,7 @@ export function CockpitPage({ context }: PluginPageProps) {
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
+          { id: "flows", label: "Flows", icon: Workflow, count: view?.flows.stuck.length || null, countTone: "warn" },
           { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
         ]}
@@ -151,6 +153,8 @@ export function CockpitPage({ context }: PluginPageProps) {
           billingSettingsHref={settingsPath(data.raw?.installed?.[MODULES.billing.plugins[0]]?.id ?? null)}
           accountingSettingsHref={settingsPath(data.raw?.installed?.[MODULES.accounting.plugins[0]]?.id ?? null)}
         />
+      ) : view && tab === "flows" ? (
+        <FlowsPanel view={view.flows} linkFor={linkFor} focus={location.hash} />
       ) : view ? (
         <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} />
       ) : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>}
@@ -222,6 +226,8 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now
       >
         <WaitingList items={view.waiting} linkFor={linkFor} now={now} />
       </Card>
+
+      <FlowsSummary view={view.flows} linkFor={linkFor} />
 
       <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
         {shownNumbers > 0 || showAllNumbers ? (

@@ -44,7 +44,7 @@ describe("a won deal", () => {
     await setRoles(harness, { team: { "account-manager": { agentId: "am-1", status: "idle" } } });
     const moved = await tool(harness, "move-deal", { dealId: "d-orphan", stageId: "won" });
     expect(moved.won).toMatchObject({ emitted: false, issueId: expect.any(String) });
-    const issue = (await crmIssues(harness)).find((i) => i.originId === "won:d-orphan")!;
+    const issue = (await crmIssues(harness)).find((i) => i.originId === "crm:won-client:d-orphan")!;
     expect(issue).toMatchObject({ assigneeAgentId: "am-1", title: 'Hand-off: link the won deal "Mystery deal" to its client' });
     expect(emitted(emit, "deal.won")).toEqual([]);
   });
@@ -88,7 +88,7 @@ describe("Billing: quote accepted", () => {
     const { harness, emit } = await boot({ store });
     await setRoles(harness, { team: { "account-manager": { agentId: "am-1", status: "idle" } } });
     await harness.emit(`${BILLING}.quote.accepted`, quote(), { companyId: CO });
-    const issue = (await crmIssues(harness)).find((i) => i.originId === "quote:q1")!;
+    const issue = (await crmIssues(harness)).find((i) => i.originId === "crm:quote-deal:q1")!;
     expect(issue).toMatchObject({ assigneeAgentId: "am-1", title: "Hand-off: pick the deal for accepted quote Q-0001 (company:acme)" });
     expect(issue.description).toContain("`d-acme`");
     expect(issue.description).toContain("`d-acme-2`");
@@ -201,13 +201,15 @@ describe("sequence steps", () => {
     await setRoles(harness, { team: { "account-manager": { agentId: "am-1", status: "idle" } } });
     await harness.runJob("open-due-steps");
     const [issue] = await crmIssues(harness);
-    expect(issue).toMatchObject({ title: "Say hello: Ada Lovelace", assigneeAgentId: "am-1", originId: "e1" });
+    expect(issue).toMatchObject({ title: "Say hello: Ada Lovelace", assigneeAgentId: "am-1", originId: "crm:step:e1:1" });
     expect(issue!.description).toContain('Sequence "Intro", step 1 of 2, for `contact:ada` (Ada Lovelace).');
     expect(issue!.description).toContain("Call Ada");
     expect(issue!.description).toContain("Mark this issue done when the step is done: that moves the contact to the next step.");
+    expect(issue!.description).toContain("**Done when** the step is logged on them");
 
-    // Marking it done moves the contact on.
-    harness.seed({ issues: [{ ...issue!, status: "done" }] });
+    // Once the step is logged, the agent's close moves the contact on (the issue opened an hour ago).
+    await tool(harness, "log-activity", { recordType: "contact", recordId: "ada", kind: "call", body: "Called Ada; she will read the proposal." });
+    harness.seed({ issues: [{ ...issue!, status: "done", createdAt: new Date(Date.parse(ago(60))) }] });
     await harness.emit("issue.updated", {}, { companyId: CO, entityId: issue!.id, actorType: "agent", actorId: "am-1" });
     expect(store.enrollments![0]).toMatchObject({ step_position: 2, open_issue_id: null });
   });

@@ -23,6 +23,7 @@ import { onAskComment, onAskIssueUpdated, openAskViews } from "./asks.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listSnapshots, upsertSnapshot } from "./db.js";
+import { doneCheckFor } from "./done-checks.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
@@ -279,12 +280,20 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       ctx.logger.info("Memory: could not read Learned lines from a comment", { issueId: event.entityId, error: message(error) });
     }
   });
-  // An open question follows its issue: closed, cancelled, or handed back without a reply.
+  // One issue.updated handler (each extra subscription would deliver every event again):
+  // an open question follows its issue, and an agent's close of an onboarding or
+  // System health issue is checked (unfinished work reopens with what is missing).
+  const doneCheck = doneCheckFor(env);
   ctx.events.on("issue.updated", async (event) => {
     try {
       await onAskIssueUpdated(env, event);
     } catch (error) {
       ctx.logger.info("Ask: could not follow an issue update", { issueId: event.entityId, error: message(error) });
+    }
+    try {
+      await doneCheck(event);
+    } catch (error) {
+      ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
     }
   });
 

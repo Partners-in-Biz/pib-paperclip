@@ -16,6 +16,7 @@ import { balancesFor, leaveView, loadLeaveData, requestLeave } from "./leave.js"
 import { rulesReviewState } from "./rules-review.js";
 import { adjustItem, calculateRun, createRun, requestApproval, runDetail, runSummary, runVariances } from "./runs.js";
 import { emp201, emp501 } from "./statutory.js";
+import { emp201Filing, markEmp201FiledTool } from "./emp201-filing.js";
 
 // ---------------------------------------------------------------------------
 // Agent tools
@@ -78,9 +79,14 @@ export async function dispatchTool(e: Env, name: string, companyId: string, acto
     }
     case "request-leave":
       return requestLeave(e, companyId, actor, params);
-    case "emp201-summary":
+    case "emp201-summary": {
       // Figures only: the employer's SARS reference numbers stay on the board page.
-      return { emp201: (await emp201(e, companyId, params)).emp201 };
+      const month = reqStr(params, "month", 7);
+      const filing = await emp201Filing(e, companyId, month);
+      return { emp201: (await emp201(e, companyId, params)).emp201, filed: filing ? { filedOn: filing.filedOn } : null };
+    }
+    case "mark-emp201-filed":
+      return markEmp201FiledTool(e, companyId, actor, params);
     case "emp501-summary": {
       // Company totals only (no certificate rows or personal details).
       const period = params.period === "annual" ? "annual" : "interim";

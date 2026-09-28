@@ -30,6 +30,7 @@ import {
   type TeamMemberReport,
 } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
+import { WORK_ORIGIN_RE } from "./origins.js";
 
 export const AM_ROLE_KEY = "account-manager" as const;
 export const AM_NAME = "Account Manager";
@@ -138,9 +139,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Work issues the CRM opens for its agent (not approvals or hires). */
-const WORK_ORIGINS = /^(lead|reply|send-failed|handoff|won|quote|step):/;
-
 /**
  * Hands the Account Manager CRM work that was waiting without an agent: open
  * `todo`/`backlog` CRM issues with no assignee or held by the Operator (the
@@ -157,7 +155,8 @@ export async function adoptWaitingWork(ctx: PluginContext, companyId: string, ag
       issues = [];
     }
     for (const issue of issues) {
-      if (!WORK_ORIGINS.test(String(issue.originId ?? "")) && !isStepIssue(issue.originId)) continue;
+      // Work issues the CRM opens for its agent (not approvals or hires), old and new origin ids.
+      if (!WORK_ORIGIN_RE.test(String(issue.originId ?? "")) && !isStepIssue(issue.originId)) continue;
       const free = !issue.assigneeAgentId && !issue.assigneeUserId;
       const operatorHeld = Boolean(operator && issue.assigneeAgentId === operator);
       if (!free && !operatorHeld) continue;
@@ -173,7 +172,7 @@ export async function adoptWaitingWork(ctx: PluginContext, companyId: string, ag
   return adopted;
 }
 
-/** Sequence step issues use the enrollment id (a uuid) as their origin id. */
+/** Step issues opened before 0.5.0 used the bare enrollment id (a uuid) as their origin id. */
 function isStepIssue(originId: string | null | undefined): boolean {
   return typeof originId === "string" && /^[0-9a-f-]{36}$/i.test(originId);
 }

@@ -21,6 +21,7 @@ import {
   PIB_PLUGINS,
   pluginEvent,
   redeliver,
+  checkDoneOnUpdate,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -64,6 +65,8 @@ import { certificates, emp201, emp501, exportDownload, exportStatutory, importYt
 import { overview, rulesView, runTool } from "./service/agent-tools.js";
 import { followUp } from "./service/jobs.js";
 import { cockpitSnapshot } from "./service/cockpit.js";
+import { payrollDoneChecks } from "./service/done-checks.js";
+import { emp201Filing, markEmp201Filed, unmarkEmp201Filed } from "./service/emp201-filing.js";
 import { markRulesReviewed } from "./service/rules-review.js";
 import { settingsHref, setupStatus } from "./service/setup.js";
 
@@ -91,6 +94,7 @@ const plugin = definePlugin({
       });
     }
 
+    const doneChecks = payrollDoneChecks(e);
     ctx.events.on("issue.updated", async (event: PluginEvent) => {
       if (!event.entityId || !event.companyId) return;
       try {
@@ -100,6 +104,9 @@ const plugin = definePlugin({
       } catch (error) {
         ctx.logger.error("Payroll issue update failed", { issueId: event.entityId, error: errorMessage(error) });
       }
+      // Same subscription (a second would run both twice): an agent closing "Prepare pay run" or
+      // "EMP201 due" is checked; unfinished work opens again with what is missing.
+      await checkDoneOnUpdate(ctx, doneChecks, event);
     });
     ctx.events.on(LEDGER_RESULT_EVENT, async (event: PluginEvent) => {
       try {
@@ -268,7 +275,14 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
   action("payroll.download-payslip", (companyId, actor, params) => payslipDownload(e, companyId, actor, params));
 
   action("payroll.net-pay-file", (companyId, actor, params) => netPayFile(e, companyId, actor, params));
-  action("payroll.emp201", (companyId, _actor, params) => emp201(e, companyId, params));
+  // { month } → { emp201, employer, filing: { filedOn, reference, … } | null }.
+  action("payroll.emp201", async (companyId, _actor, params) => ({ ...(await emp201(e, companyId, params)), filing: await emp201Filing(e, companyId, reqStr(params, "month", 7)) }));
+  // { month, reference?, filedOn? } → the filing. A person marks the EMP201 filed and paid on eFiling (Payroll never files).
+  action("payroll.mark-emp201-filed", async (companyId, actor, params) => {
+    requireUser(actor);
+    return markEmp201Filed(e, companyId, actor, params);
+  });
+  action("payroll.unmark-emp201-filed", (companyId, actor, params) => unmarkEmp201Filed(e, companyId, actor, params));
   action("payroll.certificates", async (companyId, _actor, params) => {
     const taxYear = optStr(params, "taxYear", 7) ?? taxYearOf(today(e));
     const { certificates: certs } = await certificates(e, companyId, taxYear, false);

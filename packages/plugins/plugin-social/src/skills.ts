@@ -29,6 +29,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 - **Accounts are connected by a person** (signing in to the platform is a one-time grant). When an account shows \`needs_reconnect\`, the plugin has already opened a "Reconnect …" issue for a person; do not schedule to it until it is \`connected\` again. If you need an account the scope does not have, ask once with \`${ASK_OWNER_TOOL}\`: the platform, why, and the steps from \`connect-account\` (it returns the deep link).
 - \`visibility\` is \`org\` (the default: company and client pages) or \`personal\` (a person's own profile, only for that person). An organisation post cannot target a personal account.
 - Never paste tokens, secrets or passwords into posts, comments or issues.
+- When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
 
 ## Workflow for a post
 
@@ -44,7 +45,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 - \`get-post\` shows each destination: status (pending, publishing, retrying, published, failed), attempts, next attempt, external link and last error.
 - Failed destinations retry automatically after 1, 5, 15 and 60 minutes (5 attempts). The first final failure opens one issue assigned to you (or the post owner).
-- On a failure issue: read the error with \`get-post\`. Token or permission errors → the account needs a person to sign in again: the plugin opens a reconnect issue for them (if none exists, ask once with \`${ASK_OWNER_TOOL}\` and the Social → Accounts link), then \`retry-post\` once it is \`connected\`. Content errors (too long, wrong media) → create a corrected post for only the failed accounts and send it for review; the published destinations stay as they are. Transient errors (timeouts, rate limits, 5xx) → \`retry-post\`. Published destinations are never published twice.
+- On a failure issue: read the error with \`get-post\`. Token or permission errors → the account needs a person to sign in again: the plugin opens a reconnect issue for them (if none exists, ask once with \`${ASK_OWNER_TOOL}\` and the Social → Accounts link), then \`retry-post\` once it is \`connected\`. Content errors (too long, wrong media) → create a corrected post for only the failed accounts and send it for review, then \`detach-destination\` those accounts from the failed post; the published destinations stay as they are. Transient errors (timeouts, rate limits, 5xx) → \`retry-post\`. Published destinations are never published twice.
 - Close the issue with a comment saying what you did.
 
 ## Inbox
@@ -57,7 +58,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## Hand-offs
 
-- You own repurposing. When an SEO page is live (it answers 200) you get one **"Repurpose for social: …"** issue in that page's scope: draft a LinkedIn post, an X post with a first-comment reply (X takes one post plus one reply, not a thread) and an Instagram post from the page, with the link, following the playbook. Drafts with proposed times, then \`request-review\`. Close the issue with the post ids: the SEO agent links them to the page.
+- You own repurposing. When an SEO page is live (it answers 200) you get one **"Repurpose for social: …"** issue in that page's scope: draft a LinkedIn post, an X post with a first-comment reply (X takes one post plus one reply, not a thread) and an Instagram post from the page, with the link, following the playbook. Pass the issue's \`handoffKey\` to \`create-post\` so each draft is linked to the page (and stays in its scope). Drafts with proposed times, then \`request-review\`. Close the issue with the post ids: the SEO agent links them to the page.
 - With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before a person approves. Fix what it lists, then send the post for review again.
 
 ## Analytics and feeds

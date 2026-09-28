@@ -217,7 +217,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     await db.deleteRole(ctx.db, CO, "revenue");
     const r2 = await post(unknownRole);
     expect(r2!.error).toMatch(/No account is mapped to role revenue:weird/);
-    const rejectionIssues = [...issues.values()].filter((i) => i.originId === "rejections");
+    const rejectionIssues = [...issues.values()].filter((i) => i.originId === "accounting:rejections");
     expect(rejectionIssues).toHaveLength(1);
     expect(comments.some((c) => c.issueId === rejectionIssues[0]!.id && c.body.includes("bad2"))).toBe(true);
     // Fix the cause and retry: posts, and once nothing is left the issue closes.
@@ -703,8 +703,10 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       "accept-categorisation": { lineId: "missing" },
       gl: { accountCode: "1100" },
       "create-manual-journal": { date: "2026-09-21", memo: "Accrual", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] },
-      "import-statement": { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx" },
+      "import-statement": { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx", messageId: "m-tools" },
       "prepare-reconciliation": { bankAccountId: bank.id, periodStart: "2026-09-01", periodEnd: "2026-09-30", openingMinor: 10_000_00 },
+      "mark-statement-email": { messageId: "m-promo", outcome: "not_statement", reason: "A marketing email from the bank" },
+      "mark-not-needed": { month: "2026-08", step: "reconciliation", bankAccountId: bank.id, reason: "No statement for August: nothing moved" },
     };
     for (const tool of ACCOUNTING_TOOLS) {
       const result = await harness.executeTool<{ error?: string; data?: unknown }>(tool.name, toolParams[tool.name] ?? {}, run);
@@ -722,6 +724,19 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     expect((await harness.performAction<{ total: number }>("accounting.journals", { kind: "manual" }, asUser)).total).toBe(1);
 
     await harness.emit("plugin.partnersinbiz.mailbox.mail.received", { key: "m-w", messageId: "m-w", threadId: "t", from: { email: "x@bank.co.za" }, to: [], subject: "Statement", snippet: "", receivedAt: "2026-10-01T00:00:00Z", attachments: [], triage: { category: "bank_statement" } }, { companyId: W });
+
+    // Done-checks are registered: an agent closing the statement issue before anything is imported opens it again; a person's close stands.
+    const [statementIssue] = await harness.ctx.issues.list({ companyId: W, originId: "accounting:statement:m-w" });
+    await harness.ctx.issues.update(statementIssue!.id, { status: "done" }, W);
+    await harness.emit("issue.updated", {}, { companyId: W, entityId: statementIssue!.id, actorType: "agent", actorId: "a-1" });
+    expect((await harness.ctx.issues.get(statementIssue!.id, W))!.status).toBe("todo");
+    expect(await db.getStatementEmail(ctx.db, W, "m-w")).toMatchObject({ status: "received" });
+    await harness.ctx.issues.update(statementIssue!.id, { status: "done" }, W);
+    await harness.emit("issue.updated", {}, { companyId: W, entityId: statementIssue!.id, actorType: "user", actorId: "u-1" });
+    expect((await harness.ctx.issues.get(statementIssue!.id, W))!.status).toBe("done");
+    // The person decided: the email no longer waits to be imported.
+    expect(await db.getStatementEmail(ctx.db, W, "m-w")).toMatchObject({ status: "closed", resolvedBy: { kind: "user", userId: "u-1" } });
+    expect((await harness.performAction<{ statementEmails: unknown[] }>("accounting.bank", {}, asUser)).statementEmails).toEqual([]);
 
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ base: "ZAR", date: "2026-09-25", rates: { USD: 0.055, EUR: 0.05 } }), { status: 200 })) as typeof fetch;
@@ -741,7 +756,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.2.0" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.0" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -936,7 +951,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       state.set("roles", ROLES(M));
       const mail = { key: "gmail:mx1", messageId: "mx1", threadId: "t1", accountAddress: "accounts@pib.test", from: { email: "statements@fnb.co.za", name: "FNB" }, to: [], subject: "Your October statement", snippet: "", receivedAt: "2026-11-01T06:00:00Z", attachments: [{ attachmentId: "att-9", filename: "oct.csv", mime: "text/csv", bytes: 2048 }], triage: { category: "bank_statement", urgency: null, needsReply: null, phishing: null, confidence: 0.9 } };
       expect(await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", mail)).toBe(true);
-      const statementIssue = [...issues.values()].find((i) => i.originId === "mail:mx1")!;
+      const statementIssue = [...issues.values()].find((i) => i.originId === "accounting:statement:mx1")!;
       // No Bookkeeper yet: the Operator gets it (never unassigned), and it is woken as an agent.
       expect(statementIssue).toMatchObject({ assigneeAgentId: "agent-op", assigneeUserId: null, status: "todo", title: "Bank statement received: Your October statement" });
       for (const text of ["partnersinbiz.mailbox:get-attachment", "`att-9`", "`mx1`", "partnersinbiz.accounting:import-statement", "list-bank-accounts", "Reconcile N new bank lines", "partnersinbiz.cockpit:ask-owner"]) {
@@ -956,7 +971,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       // The Cockpit knows a running Bookkeeper: it gets the next statement.
       state.set("roles", ROLES(M, { team: { bookkeeper: { agentId: "agent-bk", status: "idle" } } }));
       await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx2", messageId: "mx2" });
-      expect([...issues.values()].find((i) => i.originId === "mail:mx2")).toMatchObject({ assigneeAgentId: "agent-bk" });
+      expect([...issues.values()].find((i) => i.originId === "accounting:statement:mx2")).toMatchObject({ assigneeAgentId: "agent-bk" });
 
       // The plugin's own linked Bookkeeper wins while it runs; a paused one is skipped.
       const realGet = ctx.agents.get;
@@ -965,10 +980,10 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       state.set("role:bookkeeper", { agentId: "agent-own", linkedAt: "2026-09-01T00:00:00Z", linkedBy: "manual", hire: null });
       try {
         await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx3", messageId: "mx3" });
-        expect([...issues.values()].find((i) => i.originId === "mail:mx3")).toMatchObject({ assigneeAgentId: "agent-own" });
+        expect([...issues.values()].find((i) => i.originId === "accounting:statement:mx3")).toMatchObject({ assigneeAgentId: "agent-own" });
         status = "paused";
         await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx4", messageId: "mx4" });
-        expect([...issues.values()].find((i) => i.originId === "mail:mx4")).toMatchObject({ assigneeAgentId: "agent-bk" });
+        expect([...issues.values()].find((i) => i.originId === "accounting:statement:mx4")).toMatchObject({ assigneeAgentId: "agent-bk" });
       } finally {
         ctx.agents.get = realGet;
         state.delete("role:bookkeeper");
@@ -977,7 +992,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       // Nobody at all but the owner: a person gets it.
       state.set("roles", ROLES(M, { operatorAgentId: null, team: {} }));
       await receiveMail(ctx, M, "plugin.partnersinbiz.mailbox.mail.received", { ...mail, key: "gmail:mx5", messageId: "mx5" });
-      expect([...issues.values()].find((i) => i.originId === "mail:mx5")).toMatchObject({ assigneeAgentId: null, assigneeUserId: "user-owner" });
+      expect([...issues.values()].find((i) => i.originId === "accounting:statement:mx5")).toMatchObject({ assigneeAgentId: null, assigneeUserId: "user-owner" });
     });
 
     it("import-statement takes a get-attachment link, skips duplicates, refuses PDFs and finds the bank account", async () => {
@@ -1110,6 +1125,237 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       const book = (await db.getBook(ctx.db, J))!;
       expect(issues.get(book.rejectionIssueId!)).toMatchObject({ assigneeAgentId: "agent-op", title: "Accounting: postings were rejected" });
       expect(issues.get(book.rejectionIssueId!)!.description).toContain("partnersinbiz.cockpit:ask-owner");
+    });
+  });
+
+  describe("done-checks and flows", () => {
+    const ROLES = (companyId: string) => ({ companyId, operatorAgentId: "agent-op", operatorStatus: "active", reviewerAgentId: null, ownerUserId: "user-owner", reviewOutward: false, updatedAt: new Date().toISOString() });
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const statementMail = (messageId: string, receivedAt = new Date().toISOString()) => ({
+      key: `gmail:${messageId}`, messageId, threadId: "t1", accountAddress: "accounts@pib.test", from: { email: "statements@fnb.co.za", name: "FNB" }, to: [], subject: "Your statement", snippet: "", receivedAt,
+      attachments: [{ attachmentId: `att-${messageId}`, filename: "sep.ofx", mime: "application/x-ofx", bytes: 2048 }], triage: { category: "bank_statement", urgency: null, needsReply: null, phishing: null, confidence: 0.9 },
+    });
+    const byOrigin = (originId: string) => [...issues.values()].find((i) => i.originId === originId)!;
+    /** The agent marks the issue done: the kit runs Accounting's rules on it. */
+    const agentCloses = async (companyId: string, issueId: string) => {
+      const { runDoneCheck } = await import("@partnersinbiz/pib-plugin-kit");
+      const { accountingDoneChecks } = await import("../src/service/done-checks.js");
+      issues.get(issueId)!.status = "done";
+      return runDoneCheck(ctx, accountingDoneChecks(), { entityId: issueId, companyId, actorType: "agent" });
+    };
+    const lastComment = (issueId: string) => comments.filter((c) => c.issueId === issueId).at(-1)?.body ?? "";
+
+    afterAll(() => void state.delete("roles"));
+
+    it("Bank statement received: opens again until the email is imported; a duplicate or no statement also finishes it", async () => {
+      const E = "co-dc-mail";
+      configs.set(E, { legalName: "Mail DC", vatNumber: "4888888881", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(E));
+      await ensureBook(ctx, E);
+      const bank = await saveBankAccount(ctx, E, { name: "DC bank" });
+      const { importStatementTool } = await import("../src/service/bank.js");
+      const { markStatementEmail } = await import("../src/service/statement-emails.js");
+
+      await receiveMail(ctx, E, "plugin.partnersinbiz.mailbox.mail.received", statementMail("dc1"));
+      const issue = byOrigin("accounting:statement:dc1");
+      expect(issue.description).toContain('`messageId: "dc1"`');
+      expect(issue.description).toContain("partnersinbiz.accounting:mark-statement-email");
+      expect(await db.getStatementEmail(ctx.db, E, "dc1")).toMatchObject({ status: "received", issueId: issue.id, sender: "FNB <statements@fnb.co.za>" });
+
+      // Closed without importing: open again, with what is missing, and the agent is woken.
+      expect(await agentCloses(E, issue.id)).toBe("reopened");
+      expect(issue.status).toBe("todo");
+      expect(lastComment(issue.id)).toContain("Nothing from statement email `dc1` is imported yet");
+      expect(lastComment(issue.id)).toContain('`import-statement` and `messageId: "dc1"`');
+
+      // Imported with the email's messageId: the close passes.
+      const imported = await importStatementTool(ctx, E, agent, { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx", messageId: "dc1" });
+      expect(imported.statementEmail).toEqual({ messageId: "dc1", status: "imported" });
+      expect(imported.next.join(" ")).toContain("dc1 is now marked imported");
+      expect(await agentCloses(E, issue.id)).toBe("passed");
+      expect(issue.status).toBe("done");
+
+      // The same file again from a second email: linked as already imported (finished another way).
+      await receiveMail(ctx, E, "plugin.partnersinbiz.mailbox.mail.received", statementMail("dc2"));
+      const again = await importStatementTool(ctx, E, agent, { content: fixture("statement.ofx"), fileName: "sep.ofx", messageId: "dc2" });
+      expect(again).toMatchObject({ duplicateFile: true, imported: 0, statementEmail: { messageId: "dc2", status: "duplicate" } });
+      expect(await agentCloses(E, byOrigin("accounting:statement:dc2").id)).toBe("passed");
+
+      // No statement in the email: recorded with a reason, then the close passes.
+      await receiveMail(ctx, E, "plugin.partnersinbiz.mailbox.mail.received", statementMail("dc3"));
+      await expect(markStatementEmail(ctx, E, agent, { messageId: "dc3", outcome: "not_statement", reason: "no" })).rejects.toThrow(/Say why/);
+      await expect(markStatementEmail(ctx, E, agent, { messageId: "dc3", outcome: "ignore", reason: "A newsletter" })).rejects.toThrow(/outcome/);
+      expect(await markStatementEmail(ctx, E, agent, { messageId: "dc3", outcome: "not_statement", reason: "FNB newsletter, no statement" })).toMatchObject({ status: "not_statement" });
+      expect(await agentCloses(E, byOrigin("accounting:statement:dc3").id)).toBe("passed");
+      // An imported email stays imported.
+      expect(await markStatementEmail(ctx, E, agent, { messageId: "dc1", outcome: "duplicate", reason: "Same statement as before" })).toMatchObject({ status: "imported" });
+
+      // A person's close is never checked.
+      await receiveMail(ctx, E, "plugin.partnersinbiz.mailbox.mail.received", statementMail("dc4", daysAgo(3)));
+      const fourth = byOrigin("accounting:statement:dc4");
+      fourth.status = "done";
+      const { runDoneCheck } = await import("@partnersinbiz/pib-plugin-kit");
+      const { accountingDoneChecks } = await import("../src/service/done-checks.js");
+      expect(await runDoneCheck(ctx, accountingDoneChecks(), { entityId: fourth.id, companyId: E, actorType: "user" })).toBe("skipped");
+
+      // The Cockpit stage: dc4 is still to import, received 3 days ago (stuck).
+      const { flowReports } = await import("../src/service/cockpit.js");
+      expect((await flowReports(ctx, E)).find((f) => f.stage === "books.statements")).toMatchObject({ count: 1, stuck: 1, stuckReason: "1 over 2 days old", oldestDays: 3 });
+    });
+
+    it("Reconcile N new bank lines: done when every line from the statement is matched or excluded; future-dated lines wait for a person", async () => {
+      const R = "co-dc-rec";
+      configs.set(R, { legalName: "Rec DC", vatNumber: "4888888882", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(R));
+      await ensureBook(ctx, R);
+      const bank = await saveBankAccount(ctx, R, { name: "Rec bank" });
+      const imported = await importStatement(ctx, R, user, { bankAccountId: bank.id, content: fixture("fnb.csv"), fileName: "sep.csv" });
+      const issue = issues.get(imported.issueId!)!;
+      expect(issue.originId).toBe(`accounting:reconcile:${imported.statementId}`);
+
+      expect(await agentCloses(R, issue.id)).toBe("reopened");
+      const first = lastComment(issue.id);
+      expect(first).toContain("**Not done yet** (Reconcile new bank lines)");
+      expect(first).toContain('Still open: 1 Sep 2026, -R 150.00, "FNB Monthly account fee"');
+      expect(first).toContain("Accepting is switched off for agents, so a person accepts these 5 lines on Accounting → Bank");
+
+      // A person categorises three and excludes one; one line is dated in the future (agents may not touch it).
+      const lines = await db.listBankLines(ctx.db, R, { statementId: imported.statementId });
+      const [fee, receipt, google, coffee1, coffee2] = [-150_00, 11_500_00, -1_150_00, -50_00, -50_00].map((amount, i, all) => lines.filter((l) => l.amountMinor === amount)[all.slice(0, i).filter((a) => a === amount).length]!);
+      await categorise(ctx, R, user, { lineId: fee!.id, accountCode: "6120" });
+      await categorise(ctx, R, user, { lineId: google!.id, accountCode: "6150", taxCode: "za_std_15" });
+      await excludeLine(ctx, R, user, { lineId: coffee1!.id, note: "Personal card, not the business" });
+      await q(`UPDATE ${NAMESPACE}.bank_lines SET date = current_date + 5 WHERE id = $1`, [coffee2!.id]);
+      configs.set(R, { ...configs.get(R), agentsMayAcceptCategorisation: true });
+      expect(await agentCloses(R, issue.id)).toBe("reopened");
+      const second = lastComment(issue.id);
+      expect(second).toContain("ACME PTY LTD INV-1001");
+      expect(second).not.toContain("COFFEE");
+      expect(second).toContain("Accept or categorise it with `accept-categorisation`");
+
+      await categorise(ctx, R, user, { lineId: receipt!.id, accountCode: "4000", taxCode: "za_std_15" });
+      expect(await agentCloses(R, issue.id)).toBe("passed");
+
+      // The Cockpit stage counts the future-dated line as stuck (a person checks the date).
+      const { flowReports } = await import("../src/service/cockpit.js");
+      expect((await flowReports(ctx, R)).find((f) => f.stage === "bank.match")).toMatchObject({ count: 1, stuck: 1, stuckReason: "1 dated in the future (check the date)" });
+    });
+
+    it("Month-end close: a reconciliation per bank account with lines and the VAT201, or each recorded as not needed", async () => {
+      const Z = "co-dc-close";
+      configs.set(Z, { legalName: "Close DC", vatNumber: "4888888883", vatCategory: "C", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(Z));
+      await ensureBook(ctx, Z);
+      await q(`UPDATE ${NAMESPACE}.books SET seeded_at = '2026-08-01T08:00:00Z' WHERE company_id = $1`, [Z]);
+      const main = await saveBankAccount(ctx, Z, { name: "Main" });
+      const card = await saveBankAccount(ctx, Z, { name: "Card" });
+      await saveBankAccount(ctx, Z, { name: "Unused" });
+      await importStatement(ctx, Z, user, { bankAccountId: main.id, content: fixture("fnb.csv"), fileName: "main.csv" });
+      await importStatement(ctx, Z, user, { bankAccountId: card.id, content: fixture("statement.ofx"), fileName: "card.ofx" });
+      const { monthEndCloseIssue } = await import("../src/service/agent.js");
+      const issue = issues.get((await monthEndCloseIssue(ctx, Z, new Date("2026-10-02T03:20:00Z")))!)!;
+      expect(issue.originId).toBe("accounting:close:2026-09");
+      expect(issue.description).toContain("mark-not-needed");
+
+      // Nothing prepared: both accounts with lines and the VAT201 are missing (the unused account needs nothing).
+      expect(await agentCloses(Z, issue.id)).toBe("reopened");
+      let body = lastComment(issue.id);
+      expect(body).toContain(`No reconciliation for Main for Sep 2026: \`prepare-reconciliation\` with \`bankAccountId: "${main.id}"\``);
+      expect(body).toContain("No reconciliation for Card for Sep 2026");
+      expect(body).toContain('No VAT201 for Sep 2026: `prepare-vat201` with `periodStart: "2026-09-01"`');
+      expect(body).not.toContain("Unused");
+
+      // Main is prepared (still a draft: lines open), the card account is not needed, and the VAT201 is saved.
+      const { prepareReconciliationTool } = await import("../src/service/reconcile.js");
+      const { prepareVat201Tool } = await import("../src/service/vat.js");
+      const { markNotNeeded } = await import("../src/service/close.js");
+      expect(await prepareReconciliationTool(ctx, Z, agent, { bankAccountId: main.id, month: "2026-09" })).toMatchObject({ status: "draft", ready: false });
+      await expect(markNotNeeded(ctx, Z, agent, { month: "2026-09", step: "reconciliation", bankAccountId: card.id, reason: "?" })).rejects.toThrow(/Say why/);
+      expect(await markNotNeeded(ctx, Z, agent, { month: "2026-09", step: "reconciliation", bankAccountId: card.id, reason: "Card statement runs to the 14th; reconciled on its own period" })).toMatchObject({ recorded: true, bankAccount: { id: card.id } });
+      expect(await agentCloses(Z, issue.id)).toBe("reopened");
+      body = lastComment(issue.id);
+      expect(body).not.toContain("No reconciliation");
+      expect(body).toContain("No VAT201 for Sep 2026");
+      // Saved (a draft until the period has ended, then its approval is asked for): either counts as prepared.
+      expect(["draft", "pending_approval"]).toContain((await prepareVat201Tool(ctx, Z, agent, { periodStart: "2026-09-01", periodEnd: "2026-09-30" })).status);
+      expect(await agentCloses(Z, issue.id)).toBe("passed");
+
+      // The checklist shows the reason next to the missing approvals.
+      const checklist = await closeChecklist(ctx, Z, "2026-09");
+      expect(checklist.items.find((i) => i.key === "reconciliations")!.detail).toContain("not needed: Card (Card statement runs to the 14th; reconciled on its own period)");
+
+      // A VAT201 that is not due for the month is not recorded.
+      configs.set(Z, { ...configs.get(Z), vatCategory: "B" });
+      expect(await markNotNeeded(ctx, Z, agent, { month: "2026-09", step: "vat201", reason: "Nothing to file" })).toMatchObject({ recorded: false });
+      expect(await markNotNeeded(ctx, Z, agent, { month: "2026-08", step: "vat201", reason: "Filed by the accountant from the old books" })).toMatchObject({ recorded: true, vatPeriod: { label: "Jul–Aug 2026" } });
+      const { closeNeeds } = await import("../src/service/close.js");
+      expect((await closeNeeds(ctx, Z, "2026-08")).vat).toMatchObject({ done: true, notNeeded: "Filed by the accountant from the old books" });
+    });
+
+    it("Rejected postings: open again while one is still rejected; done once they are re-posted or dismissed", async () => {
+      const J = "co-dc-rej";
+      configs.set(J, { legalName: "Rej DC", vatNumber: "4888888884", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(J));
+      await ensureBook(ctx, J);
+      const bad = invoiceRequest("billing:invoice:dc-bad:issue", "2026-09-03", { lines: [{ role: "ar", debitMinor: 100, creditMinor: 0 }, { role: "revenue", debitMinor: 0, creditMinor: 99 }] });
+      await receivePostRequest(ctx, J, `plugin.${BILLING}.ledger.post.requested`, bad);
+      const issueId = (await db.getBook(ctx.db, J))!.rejectionIssueId!;
+      expect(issues.get(issueId)!.originId).toBe("accounting:rejections");
+      expect(await agentCloses(J, issueId)).toBe("reopened");
+      expect(lastComment(issueId)).toContain("`billing:invoice:dc-bad:issue` (partnersinbiz.billing) is still rejected");
+      expect(lastComment(issueId)).toContain("Only a person fixes these");
+
+      // A second one, refused because no account is mapped to revenue: still open after the first is gone.
+      await db.deleteRole(ctx.db, J, "revenue");
+      expect(await receivePostRequest(ctx, J, `plugin.${BILLING}.ledger.post.requested`, invoiceRequest("billing:invoice:dc-role:issue", "2026-09-04"))).toMatchObject({ status: "rejected" });
+      const { dismissRejection } = await import("../src/service/ledger.js");
+      await dismissRejection(ctx, J, "billing:invoice:dc-bad:issue");
+      expect(await agentCloses(J, issueId)).toBe("reopened");
+      expect(lastComment(issueId)).toContain("`billing:invoice:dc-role:issue` (partnersinbiz.billing) is still rejected");
+      expect(lastComment(issueId)).not.toContain("dc-bad");
+
+      // A person maps the role and retries (re-posted): nothing is left, the issue closes itself, and an agent's close passes.
+      await mapRole(ctx, J, "revenue", "4000");
+      expect(await retryRejection(ctx, J, "billing:invoice:dc-role:issue")).toMatchObject({ status: "posted" });
+      expect(issues.get(issueId)!.status).toBe("done");
+      expect(await agentCloses(J, issueId)).toBe("passed");
+    });
+
+    it("the Cockpit reports every Accounting stage with one definition per number", async () => {
+      const F = "co-dc-flow";
+      configs.set(F, { legalName: "Flow DC", vatNumber: "4888888885", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(F));
+      await ensureBook(ctx, F);
+      const bank = await saveBankAccount(ctx, F, { name: "Flow bank" });
+      const imported = await importStatement(ctx, F, user, { bankAccountId: bank.id, content: fixture("fnb.csv"), fileName: "flow.csv" });
+      const lines = await db.listBankLines(ctx.db, F, { statementId: imported.statementId });
+      // Two lines waiting 8 days since import, one dated in the future, one reconciled.
+      await q(`UPDATE ${NAMESPACE}.bank_lines SET created_at = now() - interval '8 days' WHERE id = $1 OR id = $2`, [lines[0]!.id, lines[1]!.id]);
+      await q(`UPDATE ${NAMESPACE}.bank_lines SET date = current_date + 3 WHERE id = $1`, [lines[2]!.id]);
+      await categorise(ctx, F, user, { lineId: lines[3]!.id, accountCode: "6120" });
+      await receiveMail(ctx, F, "plugin.partnersinbiz.mailbox.mail.received", statementMail("fl1", daysAgo(1)));
+      await receiveMail(ctx, F, "plugin.partnersinbiz.mailbox.mail.received", statementMail("fl2", daysAgo(4)));
+      const draft = await saveDraft(ctx, F, { date: "2026-09-10", memo: "Accrue audit fee", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] }, agent);
+      const pending = await requestDraftApproval(ctx, F, draft.id, agent);
+      await q(`UPDATE ${NAMESPACE}.journal_drafts SET updated_at = now() - interval '4 days' WHERE id = $1`, [pending.id]);
+      const draft2 = await saveDraft(ctx, F, { date: "2026-09-11", memo: "Accrue bank fees", lines: [{ accountCode: "6120", debitMinor: 10_00 }, { accountCode: "2300", creditMinor: 10_00 }] }, agent);
+      await requestDraftApproval(ctx, F, draft2.id, agent);
+
+      const { flowStagesFor } = await import("@partnersinbiz/pib-plugin-kit");
+      const snap = await cockpitSnapshot(ctx, F);
+      expect(snap.flows!.map((f) => f.stage).sort()).toEqual(flowStagesFor("partnersinbiz.accounting").map((s) => s.key).sort());
+      expect(snap.flows).toEqual([
+        { stage: "bank.match", count: 4, stuck: 3, stuckReason: "2 waiting over 7 days, 1 dated in the future (check the date)", oldestDays: 8 },
+        { stage: "books.statements", count: 2, stuck: 1, stuckReason: "1 over 2 days old", oldestDays: 4 },
+        { stage: "books.approval", count: 2, stuck: 1, stuckReason: "1 waiting over 3 days", oldestDays: 4 },
+      ]);
+      // The same numbers as the KPI and the waiting list.
+      expect(snap.kpis.find((k) => k.key === "unreconciled")!.raw).toBe(4);
+      expect(snap.waiting.filter((w) => w.title.startsWith("Approve manual journal"))).toHaveLength(2);
+      // Importing the older email clears it from the stage.
+      const { importStatementTool } = await import("../src/service/bank.js");
+      await importStatementTool(ctx, F, agent, { bankAccountId: bank.id, content: fixture("statement.ofx"), messageId: "fl2" });
+      expect((await cockpitSnapshot(ctx, F)).flows!.find((f) => f.stage === "books.statements")).toMatchObject({ count: 1, stuck: 0, stuckReason: null, oldestDays: 1 });
     });
   });
 

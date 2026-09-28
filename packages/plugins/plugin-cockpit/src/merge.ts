@@ -18,6 +18,7 @@ import {
 import { MODULES, moduleOfPlugin, setupLeftLabel, setupSummary, type ModuleKey, type SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { BUDGET_ALERT_RATIO, PLUGIN_KEY, STALE_AFTER_MS } from "./constants.js";
+import { parseFlowReports } from "./flows.js";
 
 export type { ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
 
@@ -142,7 +143,8 @@ export function teamSignature(team: TeamMemberReport[] | null | undefined): stri
  * A `CockpitSnapshot` from a route body or event payload (plain, or wrapped
  * in `{ data }` / `{ snapshot }`). The plugin comes from the caller (the
  * subscription or route that delivered it), so a payload cannot claim to be
- * another plugin. Null when it is not a snapshot.
+ * another plugin. Null when it is not a snapshot. `flows` is kept only when
+ * the plugin sends it (older plugins do not), and only for its own stages.
  */
 export function parseSnapshot(body: unknown, pluginKey: string): CockpitSnapshot | null {
   let root = body;
@@ -169,6 +171,7 @@ export function parseSnapshot(body: unknown, pluginKey: string): CockpitSnapshot
       .slice(0, 10),
     quality: compact(records(source.quality).map(parseQuality)),
     ...(team.length ? { team } : {}),
+    ...(Array.isArray(source.flows) ? { flows: parseFlowReports(source.flows, pluginKey) } : {}),
   };
 }
 

@@ -19,6 +19,8 @@ export * from "./pdf.js";
 export * from "./tool-result.js";
 export * from "./setup.js";
 export * from "./cockpit.js";
+export * from "./flows.js";
+export * from "./done-checks.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

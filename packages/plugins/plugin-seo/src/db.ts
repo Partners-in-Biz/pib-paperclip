@@ -1767,6 +1767,28 @@ export async function listOpenTasksForCompany(db: SeoDb, companyId: string): Pro
   return rows.map(taskFrom);
 }
 
+/**
+ * Issues whose latest run (last 30 days) stopped at the host's workspace
+ * check (`error_code` = `code`, e.g. workspace_validation_failed): the
+ * project has no checkout of its repo on the server, so nothing the agent
+ * does on them runs. A later run that got past the check clears it.
+ */
+export async function issuesWithFailingRuns(db: SeoDb, companyId: string, issueIds: string[], code: string): Promise<Map<string, { at: string | null }>> {
+  const out = new Map<string, { at: string | null }>();
+  const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
+  if (ids.length === 0) return out;
+  const rows = await db.query(
+    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error_code, r.created_at::text AS at
+       FROM public.heartbeat_runs r
+      WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days'
+        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+    [companyId, JSON.stringify(ids)],
+  );
+  for (const row of rows) if (row.error_code === code && row.issue_id) out.set(String(row.issue_id), { at: s(row.at) });
+  return out;
+}
+
 /** Open Needs you digests of the company's sprints that are not archived, newest week first. */
 export async function openNeedsYouDigests(db: SeoDb, companyId: string): Promise<Array<{ sprintId: string; items: NeedsYouItem[] }>> {
   const rows = await db.query(

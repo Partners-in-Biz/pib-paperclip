@@ -33,6 +33,23 @@ export const ORIGIN = {
   needsYou: `plugin:${PLUGIN_ID}:needs-you`,
 } as const;
 
+/**
+ * Origin id of a sprint task's issue: `seo:task:<taskId>` (the done-check
+ * matches on it). Issues opened before 0.9.0 carry the bare task id; the
+ * daily heal moves open ones to this form.
+ */
+export const TASK_ORIGIN_PREFIX = "seo:task:";
+
+export function taskOriginId(taskId: string): string {
+  return `${TASK_ORIGIN_PREFIX}${taskId}`;
+}
+
+/** The task id in a task issue's origin id, or null. */
+export function taskIdFromOrigin(originId: string | null | undefined): string | null {
+  if (!originId?.startsWith(TASK_ORIGIN_PREFIX)) return null;
+  return originId.slice(TASK_ORIGIN_PREFIX.length) || null;
+}
+
 export function isOurOrigin(originKind: unknown): boolean {
   return typeof originKind === "string" && (originKind === `plugin:${PLUGIN_ID}` || originKind.startsWith(`plugin:${PLUGIN_ID}:`));
 }

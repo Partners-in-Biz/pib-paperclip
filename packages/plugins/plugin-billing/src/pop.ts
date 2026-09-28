@@ -14,6 +14,7 @@ import type { BillingSettings } from "./config.js";
 import { asObject, table } from "./db.js";
 import { BillingError, isOpenStatus } from "./domain.js";
 import { emitInvoiceItem } from "./openitems.js";
+import { APPROVAL_ORIGINS } from "./origins.js";
 import { personAssignee } from "./routing.js";
 import { settle, type SettleResult } from "./settle.js";
 
@@ -237,7 +238,7 @@ async function openPopIssue(ctx: PluginContext, pop: NewPop & { id: string }, ba
     title,
     description: lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: pop.id,
+    originId: `${APPROVAL_ORIGINS.paymentCheck}${pop.id}`,
     // Money: a person checks it (the Billing approver, else the owner).
     ...(await personAssignee(ctx, pop.companyId, settings)),
   });

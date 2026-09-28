@@ -18,6 +18,7 @@ import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import type { ClientKind } from "./client-ref.js";
 import { PIB_PLUGINS } from "./contracts.js";
 import { teamRoleHealth, type TeamRoleKey } from "./team.js";
+import type { FlowStageReport } from "./flows.js";
 
 export const COCKPIT_PLUGIN = "partnersinbiz.cockpit";
 
@@ -117,6 +118,8 @@ export interface CockpitSnapshot {
   quality: QualityMetric[];
   /** The team roles this plugin staffs and the agent linked to each (the Cockpit shares them in `roles.updated`). */
   team?: TeamMemberReport[];
+  /** Live numbers for the company-graph stages this plugin owns (kit `FLOWS`); the Cockpit's Flows view draws them. */
+  flows?: FlowStageReport[];
 }
 
 export interface TeamMemberReport {

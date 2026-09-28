@@ -48,7 +48,7 @@ import {
   useIsNarrow,
   type LucideIcon,
 } from "@partnersinbiz/pib-plugin-ui";
-import { agentCanWork, agentTrouble, daysLate, dueDateOf, tallyTasks, taskState, type TaskState } from "../engine/due.js";
+import { agentCanWork, agentTrouble, daysLate, dueDateOf, projectFixPath, RUNS_FIX, RUNS_TROUBLE, tallyTasks, taskState, type TaskState } from "../engine/due.js";
 import { fixPlurals, lowerFirst, plainError, plainTerms, plainWarning, plural } from "../engine/plain.js";
 import { PHASE_NAMES, type SprintPhase } from "../templates/outrank-90.js";
 import { PLANS, type BusinessType } from "../templates/plans.js";
@@ -83,6 +83,11 @@ const AUTOPILOT: Record<string, { label: string; text: string }> = {
   full: { label: "Full", text: "The agent finishes its tasks without sign-off." },
   off: { label: "Off", text: "Every task goes to the sprint owner." },
 };
+
+/** Projects whose workspace check stops these tasks' runs (their Codebase needs a checkout of the site repo). */
+function runsProjectIds(tasks: Task[]): string[] {
+  return [...new Set(tasks.filter((task) => task.runsFailing && task.issueProjectId).map((task) => task.issueProjectId!))];
+}
 
 /** Integrations a person has to fix (not ones that clear on their own, like the free PageSpeed limit). */
 function integrationProblems(bundle: SprintBundle): number {
@@ -256,7 +261,7 @@ export function SprintCockpit({
         </div>
         <MoreMenu items={items} label="Sprint actions" />
       </div>
-      <StuckBanner stuck={tally.stuck} agent={load.agent} />
+      <StuckBanner stuck={tally.stuck} stuckRuns={tally.stuckRuns} runsProjectIds={runsProjectIds(bundle.tasks)} agent={load.agent} />
       {!scope && s.legacyClientName ? (
         <Banner tone="warn" action={<Button type="button" variant="secondary" style={small} onClick={() => setDialog("link")}>Link to CRM client</Button>}>
           <span>This sprint names a client (“{s.legacyClientName}”) but is not linked to a CRM record, so it shows under our own sites.</span>
@@ -755,7 +760,10 @@ function stateDetail(task: Task, bundle: SprintBundle, state: TaskState, agent: 
   const date = dueDateOf(bundle.sprint.startDate, task.dueDay);
   switch (state) {
     case "stuck":
-      return `${agentTrouble(agent)}, so nobody works on this task until that is fixed.`;
+      // The agent's trouble comes first (nothing runs until it is fixed); otherwise its runs stop at the workspace check.
+      return !agentCanWork(agent) || !task.runsFailing
+        ? `${agentTrouble(agent)}, so nobody works on this task until that is fixed.`
+        : `Its runs stop before they start: ${RUNS_TROUBLE}. ${RUNS_FIX}`;
     case "waiting":
       return task.humanAsk ? `Waiting on you: ${task.humanAsk}` : task.issueStatus === "in_review" ? "Ready for your sign-off on its issue." : "Waiting on a person: see Needs you on the Integrations tab.";
     case "overdue":
@@ -792,7 +800,11 @@ function TaskSheet({ task, bundle, agent, canWork, onClose, call }: { task: Task
       <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
         <div><StatePill label={STATE_LABEL[state]} tone={STATE_TONE[state]} size="md" /></div>
         <span style={{ lineHeight: 1.5, ...breakAnywhere }}>{stateDetail(task, bundle, state, agent)}</span>
-        {state === "stuck" ? <a {...nav.linkProps(TEAM_SETUP_HREF)} style={{ ...linkButton, width: "fit-content" }}>Fix in Setup → Team</a> : null}
+        {state === "stuck" ? (
+          agentCanWork(agent) && task.runsFailing
+            ? <a {...nav.linkProps(projectFixPath(task.issueProjectId ? [task.issueProjectId] : []))} style={{ ...linkButton, width: "fit-content" }}>Open the project</a>
+            : <a {...nav.linkProps(TEAM_SETUP_HREF)} style={{ ...linkButton, width: "fit-content" }}>Fix in Setup → Team</a>
+        ) : null}
         <span>Issue: <IssueLink id={task.issueId} identifier={task.issueIdentifier} /></span>
         {task.blockerReason && state !== "skipped" ? <span style={{ color: tokens.muted }}><strong>Why:</strong> {task.blockerReason}</span> : null}
       </div>

@@ -103,6 +103,8 @@ export interface GmailStore {
   outboundInThread(companyId: string, threadId: string): Promise<MessageRow | null>;
   /** Newest message with a Message-ID in a Gmail thread (for follow-up headers). */
   latestInThread(companyId: string, threadId: string): Promise<MessageRow | null>;
+  /** A Gmail thread's messages plus the drafts that answer it, newest first (the reply issue's done-check). */
+  replyThread(companyId: string, threadId: string): Promise<MessageRow[]>;
   listInbox(companyId: string, filter: InboxFilter): Promise<MessageRow[]>;
   markDraftSent(companyId: string, id: string, fields: SentFields & { context: SendContext; sendKey: string }): Promise<void>;
   setDraftStatus(companyId: string, id: string, status: "draft" | "queued", error: string | null): Promise<void>;
@@ -502,6 +504,16 @@ export class SqlStore implements GmailStore {
       [companyId, threadId],
     );
     return rows[0] ? normaliseMessage(rows[0]) : null;
+  }
+
+  async replyThread(companyId: string, threadId: string): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND (gmail_thread_id = $2 OR draft ->> 'threadId' = $2)
+        ORDER BY COALESCE(received_at, created_at) DESC LIMIT 200`,
+      [companyId, threadId],
+    );
+    return rows.map(normaliseMessage);
   }
 
   async listInbox(companyId: string, filter: InboxFilter): Promise<MessageRow[]> {

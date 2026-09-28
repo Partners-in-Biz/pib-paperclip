@@ -9,6 +9,14 @@ import { COMPANY_OS_SKILL_KEY } from "./team.js";
 
 export const ASK_OWNER_TOOL = "partnersinbiz.cockpit:ask-owner";
 
+/** Every ask-owner comment starts with this (the Cockpit writes it; a plugin's done-check spots the ask by it). */
+export const ASK_OWNER_COMMENT_MARK = "**Question for the owner";
+
+/** True when a comment is a question the Cockpit put to the owner (first ask or update). */
+export function isAskOwnerComment(body: string | null | undefined): boolean {
+  return typeof body === "string" && body.trimStart().startsWith(ASK_OWNER_COMMENT_MARK);
+}
+
 export const ASKING_HEADING = "## Asking a person";
 
 export const ASKING_SECTION = `${ASKING_HEADING}

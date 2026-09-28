@@ -8,8 +8,10 @@
  * - **Overdue**: due, and still open a week (7 days) or more after its day.
  * - **Waiting on you**: blocked on a person (it is on the sprint's Needs you
  *   list), in sign-off, or a person's own task. Not counted as due work.
- * - **Stuck**: due agent work while the SEO agent cannot work (paused, in
- *   error, waiting for approval, or no agent linked).
+ * - **Stuck**: due agent work nobody can move: the SEO agent cannot work
+ *   (paused, in error, waiting for approval, or no agent linked), or the
+ *   task's runs stop before they start because its project's workspace has
+ *   no checkout on the server (`workspace_validation_failed`).
  */
 import { teamRoleHealth } from "@partnersinbiz/pib-plugin-kit/team";
 import { addDays } from "./time.js";
@@ -17,12 +19,28 @@ import { addDays } from "./time.js";
 /** A task is overdue this many days after its day. */
 export const OVERDUE_AFTER_DAYS = 7;
 
+/** The host's error code when a run stops at the workspace check (no checkout of the project's repo on the server). */
+export const WORKSPACE_FAILURE_CODE = "workspace_validation_failed";
+
+/** Why runs stop at the workspace check, in plain words (the page, the Cockpit and `today` use it). */
+export const RUNS_TROUBLE = "the site repo has no checkout on the server (the workspace check fails)";
+
+/** The fix for RUNS_TROUBLE, in plain words. */
+export const RUNS_FIX =
+  "Open the project in Paperclip → Configuration → Codebase and set its local folder to a checkout of the site repo on the server (or give the server access to the private repo), then retry the blocked task issues.";
+
+/** Where RUNS_TROUBLE is fixed: the first failing project's Configuration tab (Codebase), else the SEO page. */
+export function projectFixPath(projectIds: string[] | null | undefined): string {
+  return projectIds?.[0] ? `/projects/${projectIds[0]}/configuration` : "/seo";
+}
+
 /** The words, once: the page's hints, the skill and the tool descriptions use these. */
 export const DUE_TERMS = {
   due: "Due: the plan has reached the task's day and it is not done yet.",
   overdue: `Overdue: still open ${OVERDUE_AFTER_DAYS} or more days after its day.`,
   waiting: "Waiting on you: it needs a person (a Needs you item or a sign-off).",
-  stuck: "Stuck: the SEO agent cannot work (paused, in error or not linked), so nothing moves until it is fixed in Setup → Team.",
+  stuck:
+    "Stuck: nobody can move it. Either the SEO agent cannot work (paused, in error or not linked; fix it in Setup → Team), or the task's runs stop before they start because its project has no checkout of the site repo on the server.",
 } as const;
 
 export interface TimedTask {
@@ -34,6 +52,8 @@ export interface TimedTask {
   issueStatus?: string | null;
   /** agent, unassigned, user, reviewer, needs_you or none (see service/tasks.ts). */
   assigneeKind?: string | null;
+  /** The latest run on its issue stopped at the workspace check (see WORKSPACE_FAILURE_CODE). */
+  runsFailing?: boolean | null;
 }
 
 const OPEN_STATUSES = new Set(["not_started", "in_progress", "blocked"]);
@@ -44,9 +64,14 @@ export function isOpenTask(task: Pick<TimedTask, "status">): boolean {
   return OPEN_STATUSES.has(task.status);
 }
 
-/** Blocked on a person, in sign-off, or a person's own task. */
+/**
+ * Blocked on a person, in sign-off, or a person's own task. A task whose runs
+ * stop at the workspace check is not waiting on anyone's answer: it is stuck
+ * (the host marks such an issue blocked, which would otherwise read as
+ * "waiting on you").
+ */
 export function isWaitingTask(task: TimedTask): boolean {
-  if (!isOpenTask(task)) return false;
+  if (!isOpenTask(task) || task.runsFailing) return false;
   if (task.status === "blocked" || task.issueStatus === "in_review") return true;
   return Boolean(task.assigneeKind && PERSON_ASSIGNEES.has(task.assigneeKind));
 }
@@ -91,8 +116,31 @@ export function agentTrouble(agent: { name?: string | null; status?: string | nu
   return `${name} cannot work (${status.replace(/_/g, " ")})`;
 }
 
+/**
+ * Why due agent work cannot move, or null: the agent cannot work (checked
+ * first: nothing runs until it is fixed), or the task's runs stop at the
+ * workspace check.
+ */
+export function stuckCause(task: TimedTask, day: number, canWork: boolean): "agent" | "runs" | null {
+  if (!isDueTask(task, day) || !isAgentWork(task)) return null;
+  if (!canWork) return "agent";
+  return task.runsFailing ? "runs" : null;
+}
+
 export function isStuckTask(task: TimedTask, day: number, canWork: boolean): boolean {
-  return !canWork && isDueTask(task, day) && isAgentWork(task);
+  return stuckCause(task, day, canWork) !== null;
+}
+
+/**
+ * Why due work is stuck, in plain words, from a tally (agent trouble first):
+ * "Sam is in error", "the site repo has no checkout on the server, …", or both.
+ */
+export function stuckText(numbers: Pick<TaskTally, "stuck" | "stuckRuns">, agent: { name?: string | null; status?: string | null } | null | undefined): string {
+  const byAgent = numbers.stuck - numbers.stuckRuns > 0;
+  const byRuns = numbers.stuckRuns > 0;
+  if (byAgent && byRuns) return `${agentTrouble(agent)}, and ${RUNS_TROUBLE}`;
+  if (byAgent) return agentTrouble(agent);
+  return byRuns ? `${RUNS_TROUBLE[0]!.toUpperCase()}${RUNS_TROUBLE.slice(1)}` : "";
 }
 
 export type TaskState = "done" | "skipped" | "waiting" | "stuck" | "overdue" | "in_progress" | "due" | "upcoming";
@@ -118,12 +166,18 @@ export interface TaskTally {
   due: number;
   overdue: number;
   stuck: number;
+  /** Of `stuck`: stuck because their runs stop at the workspace check (the agent itself can work). */
+  stuckRuns: number;
+  /** Stuck or overdue, each task once (the Cockpit's Flows view counts these as stuck). */
+  attention: number;
+  /** The most days any due task is past its day (0 when nothing is due). */
+  mostDaysLate: number;
   waiting: number;
   upcoming: number;
 }
 
 export function emptyTally(): TaskTally {
-  return { total: 0, done: 0, skipped: 0, open: 0, due: 0, overdue: 0, stuck: 0, waiting: 0, upcoming: 0 };
+  return { total: 0, done: 0, skipped: 0, open: 0, due: 0, overdue: 0, stuck: 0, stuckRuns: 0, attention: 0, mostDaysLate: 0, waiting: 0, upcoming: 0 };
 }
 
 export function tallyTasks(tasks: TimedTask[], day: number, canWork = true): TaskTally {
@@ -148,8 +202,13 @@ export function tallyTasks(tasks: TimedTask[], day: number, canWork = true): Tas
       continue;
     }
     tally.due += 1;
-    if (isOverdueTask(task, day)) tally.overdue += 1;
-    if (isStuckTask(task, day, canWork)) tally.stuck += 1;
+    tally.mostDaysLate = Math.max(tally.mostDaysLate, daysLate(task, day));
+    const overdue = isOverdueTask(task, day);
+    const cause = stuckCause(task, day, canWork);
+    if (overdue) tally.overdue += 1;
+    if (cause) tally.stuck += 1;
+    if (cause === "runs") tally.stuckRuns += 1;
+    if (overdue || cause) tally.attention += 1;
   }
   return tally;
 }

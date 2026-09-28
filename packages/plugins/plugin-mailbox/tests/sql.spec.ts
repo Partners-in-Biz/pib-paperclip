@@ -110,6 +110,7 @@ describe("runtime SQL passes the host guard", () => {
     await s.outboundByRfcIds(c, ["<x@y>"]);
     await s.outboundInThread(c, "t1");
     await s.latestInThread(c, "t1");
+    await s.replyThread(c, "t1");
     await s.listInbox(c, { limit: 10 });
     await s.listInbox(c, { accountId: "a", category: "lead", needsReply: true, clientKind: "company", clientRef: "r", limit: 10 });
     await s.markDraftSent(c, "d", { gmailMessageId: "g", gmailThreadId: "t", rfcMessageId: null, accountId: "a", fromAddress: "x@y.co", context: input.context, sendKey: "k" });

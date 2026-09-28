@@ -16,6 +16,7 @@ import {
   createSkillSyncer,
   decisionStats,
   HANDOFF_EVENTS,
+  registerDoneChecks,
   registerModuleWatch,
   registerRoleWatch,
   settleOutbox,
@@ -40,6 +41,7 @@ import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
 import { publishAllSetupStatus, rememberCompany, settingsHref, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { SqlStore, type RecentMessageRow } from "./db.js";
+import { mailboxDoneChecks } from "./done-checks.js";
 import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { createEnv, errorMessage, type Env } from "./gmail/env.js";
 import { toMailAddress } from "./gmail/headers.js";
@@ -64,6 +66,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // An agent's close of a "Reply needed" issue is checked: reopened while the thread still has no reply.
+    registerDoneChecks(ctx, mailboxDoneChecks(store));
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {

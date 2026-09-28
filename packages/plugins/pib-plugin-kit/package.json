@@ -13,7 +13,9 @@
     "./setup": "./src/setup.ts",
     "./cockpit": "./src/cockpit.ts",
     "./agent-client": "./src/agent-client.ts",
-    "./team": "./src/team.ts"
+    "./team": "./src/team.ts",
+    "./asking": "./src/asking.ts",
+    "./flows": "./src/flows.ts"
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",

@@ -11,6 +11,7 @@
  * each part is wrapped so one failing query never breaks the snapshot.
  */
 import {
+  cleanFlowReports,
   configSaved,
   emptySnapshot,
   formatMoneyMinor,
@@ -20,6 +21,7 @@ import {
   outboxHealth,
   publishCockpitSnapshot,
   type CockpitSnapshot,
+  type FlowStageReport,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
@@ -30,6 +32,7 @@ import { PLUGIN_ID } from "../namespace.js";
 import { rulesCheckText } from "../rule-labels.js";
 import { ruleVersionFor } from "../rules.js";
 import { emp201DueDate } from "../statutory.js";
+import { emp201Filing } from "./emp201-filing.js";
 import { errorMessage, today, type Env } from "./env.js";
 import { rulesReviewState } from "./rules-review.js";
 import { emp201Series } from "./statutory.js";
@@ -60,6 +63,69 @@ export function nextPayDay(from: string, payDay: number): string {
     if (date >= from) return date;
   }
   return from;
+}
+
+// ── Flows (kit FLOWS: payroll.prepare, payroll.approval, payroll.emp201) ──
+
+/** A run whose pay day is this close (or past) is stuck at its stage. */
+export const PAY_DAY_STUCK_DAYS = 2;
+/** An EMP201 not filed this close to its due date (or after it) is stuck. */
+export const EMP201_STUCK_DAYS = 2;
+
+const addMonth = (month: string, n: number) => {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7);
+};
+
+function runStage(stage: string, runs: db.PayRun[], date: string): FlowStageReport {
+  const days = runs.map((r) => daysBetween(date, r.payDate));
+  const past = days.filter((d) => d < 0).length;
+  const soon = days.filter((d) => d >= 0 && d <= PAY_DAY_STUCK_DAYS).length;
+  const why = [past ? `${past} past pay day` : "", soon ? `${soon} with pay day in ${PAY_DAY_STUCK_DAYS} days or less` : ""].filter(Boolean).join(", ");
+  return {
+    stage,
+    count: runs.length,
+    stuck: past + soon,
+    stuckReason: why || null,
+    ...(runs.length ? { amountMinor: runs.reduce((s, r) => s + r.totals.netPayMinor, 0), currency: "ZAR" } : {}),
+  };
+}
+
+/**
+ * One report per stage Payroll owns, with the same definitions as its
+ * KPIs, waiting items, triggers and pages:
+ * - `payroll.prepare`: runs in draft or calculated (net pay as calculated so
+ *   far). Stuck: pay day in 2 days or less, or past.
+ * - `payroll.approval`: runs waiting for a person to approve, and approved
+ *   runs waiting to be locked. Stuck: pay day in 2 days or less, or past.
+ * - `payroll.emp201`: last month's EMP201 when it is due (locked pay runs in
+ *   the month, or staff on the books: then a nil return) and not marked
+ *   filed, with the total to pay SARS. Stuck: 2 days or less before the due
+ *   date (the 7th, earlier over a weekend or public holiday), or after it.
+ */
+export async function payrollFlowReports(e: Env, companyId: string, runs: db.PayRun[], date = today(e)): Promise<FlowStageReport[]> {
+  const reports = [
+    runStage("payroll.prepare", runs.filter((r) => r.status === "draft" || r.status === "calculated"), date),
+    runStage("payroll.approval", runs.filter((r) => r.status === "pending_approval" || r.status === "approved"), date),
+  ];
+  const month = addMonth(date.slice(0, 7), -1);
+  const due = emp201DueDate(month);
+  const locked = runs.filter((r) => r.payDate.slice(0, 7) === month && r.kind !== "reversal" && (r.status === "locked" || r.status === "reversed"));
+  const needed = locked.length > 0 || (await db.listEmployees(e.ctx, companyId, { status: "active" })).length > 0;
+  if (!needed || (await emp201Filing(e, companyId, month))) {
+    reports.push({ stage: "payroll.emp201", count: 0, stuck: 0, stuckReason: null });
+    return reports;
+  }
+  const days = daysBetween(date, due);
+  const total = locked.length ? ((await emp201Series(e, companyId, month).catch(() => [])).at(-1)?.totalPayableMinor ?? null) : 0;
+  reports.push({
+    stage: "payroll.emp201",
+    count: 1,
+    stuck: days <= EMP201_STUCK_DAYS ? 1 : 0,
+    stuckReason: days < 0 ? `${readableMonth(month)} overdue since ${readableDate(due)}` : days <= EMP201_STUCK_DAYS ? `${readableMonth(month)} due ${readableDate(due)}` : null,
+    ...(total != null ? { amountMinor: total, currency: "ZAR" } : {}),
+  });
+  return reports;
 }
 
 export async function cockpitSnapshot(e: Env, companyId: string): Promise<CockpitSnapshot> {
@@ -128,8 +194,17 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
     const last = series[series.length - 1];
     if (!last) return;
     const days = daysBetween(date, due);
-    // EMP201: the monthly PAYE, UIF and SDL declaration to SARS. The amount is the value; the due date sits in the label.
-    snap.kpis.push({ key: "emp201", label: `SARS EMP201 for ${readableMonth(month)}, due ${readableDate(due)}`, value: money(last.totalPayableMinor), raw: last.totalPayableMinor, tone: days <= 3 ? "warn" : "neutral", href: `${PAGE}?tab=statutory`, group: "money" });
+    const filing = await emp201Filing(e, companyId, month);
+    // EMP201: the monthly PAYE, UIF and SDL declaration to SARS. The amount is the value; the due date (or the day it was filed) sits in the label.
+    snap.kpis.push({
+      key: "emp201",
+      label: filing ? `SARS EMP201 for ${readableMonth(month)}, filed ${readableDate(filing.filedOn)}` : `SARS EMP201 for ${readableMonth(month)}, due ${readableDate(due)}`,
+      value: money(last.totalPayableMinor),
+      raw: last.totalPayableMinor,
+      tone: filing ? "ok" : days <= 3 ? "warn" : "neutral",
+      href: `${PAGE}?tab=statutory`,
+      group: "money",
+    });
   });
 
   // ── Health ──────────────────────────────────────────────────────────────
@@ -246,6 +321,11 @@ export async function cockpitSnapshot(e: Env, companyId: string): Promise<Cockpi
   await part("team", async () => {
     const agent = (await hireStatus(ctx, companyId, CLERK_ROLE)).agent;
     snap.team = [{ role: "payroll-clerk", agentId: agent?.id ?? null, status: agent?.status ?? null }];
+  });
+
+  // ── Flows: live numbers for the company-graph stages Payroll owns ──
+  await part("flows", async () => {
+    snap.flows = cleanFlowReports(PLUGIN_ID, await payrollFlowReports(e, companyId, runs, date));
   });
 
   if (failed.length) {

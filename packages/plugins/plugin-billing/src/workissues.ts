@@ -4,10 +4,13 @@
  * quote, one drafting issue per won deal). A run updates the same issue
  * instead of opening another, reopens it when work comes back after it was
  * closed, and closes it when there is nothing left.
+ *
+ * The key is also the issue's origin id (`billing:<kind>:<id>`), which the
+ * done checks match on (`donechecks.ts`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue, PIB_PLUGINS, wakeIssue, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
-import { table } from "./db.js";
+import { asObject, table } from "./db.js";
 import { assigneeOf } from "./routing.js";
 
 export interface WorkIssueRow {
@@ -18,32 +21,41 @@ export interface WorkIssueRow {
   issue_id: string;
   fingerprint: string | null;
   status: "open" | "closed";
+  /** When the issue was last created or reopened: done checks count work since then. */
+  opened_at?: unknown;
+  /** What the issue is about (the client of a won deal, a quote's status when the customer replied). */
+  detail?: unknown;
+  created_at?: unknown;
 }
 
 const CLOSED = new Set(["done", "cancelled"]);
+const COLUMNS = "key, company_id, kind, subject_id, issue_id, fingerprint, status, opened_at, detail, created_at";
 
 export async function getWorkIssue(ctx: PluginContext, key: string): Promise<WorkIssueRow | null> {
-  const rows = await ctx.db.query<WorkIssueRow>(
-    `SELECT key, company_id, kind, subject_id, issue_id, fingerprint, status FROM ${table(ctx, "work_issues")} WHERE key = $1`,
-    [key],
-  );
+  const rows = await ctx.db.query<WorkIssueRow>(`SELECT ${COLUMNS} FROM ${table(ctx, "work_issues")} WHERE key = $1`, [key]);
   return rows[0] ?? null;
+}
+
+/** The row's `detail` as an object (empty when none). */
+export function workDetail(row: Pick<WorkIssueRow, "detail"> | null | undefined): Record<string, unknown> {
+  return asObject(row?.detail);
 }
 
 /** Open standing issues for a company, optionally of one kind (for the page). */
 export async function openWorkIssues(ctx: PluginContext, companyId: string, kind?: string): Promise<WorkIssueRow[]> {
   return kind
     ? ctx.db.query<WorkIssueRow>(
-        `SELECT key, company_id, kind, subject_id, issue_id, fingerprint, status FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND kind = $2 AND status = 'open' ORDER BY updated_at DESC LIMIT 50`,
+        `SELECT ${COLUMNS} FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND kind = $2 AND status = 'open' ORDER BY updated_at DESC LIMIT 50`,
         [companyId, kind],
       )
     : ctx.db.query<WorkIssueRow>(
-        `SELECT key, company_id, kind, subject_id, issue_id, fingerprint, status FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND status = 'open' ORDER BY updated_at DESC LIMIT 50`,
+        `SELECT ${COLUMNS} FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND status = 'open' ORDER BY updated_at DESC LIMIT 50`,
         [companyId],
       );
 }
 
 export interface StandingIssueInput {
+  /** Stable key, also the issue's origin id: `billing:<kind>:<id>`. */
   key: string;
   companyId: string;
   kind: string;
@@ -60,6 +72,8 @@ export interface StandingIssueInput {
   wakeReason?: string;
   /** false: leave an issue someone closed alone (only refresh open ones). Default true. */
   reopen?: boolean;
+  /** What the issue is about, kept for its done check (replaces the stored detail when given). */
+  detail?: Record<string, unknown> | null;
 }
 
 export interface StandingIssueResult {
@@ -80,12 +94,14 @@ async function comment(ctx: PluginContext, issueId: string, companyId: string, b
   }
 }
 
-async function saveRow(ctx: PluginContext, input: StandingIssueInput, issueId: string): Promise<void> {
+async function saveRow(ctx: PluginContext, input: StandingIssueInput, issueId: string, opened: boolean): Promise<void> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "work_issues")} (key, company_id, kind, subject_id, issue_id, fingerprint, status)
-     VALUES ($1, $2, $3, $4, $5, $6, 'open')
-     ON CONFLICT (key) DO UPDATE SET issue_id = EXCLUDED.issue_id, fingerprint = EXCLUDED.fingerprint, status = 'open', updated_at = now()`,
-    [input.key, input.companyId, input.kind, input.subjectId ?? null, issueId, input.fingerprint],
+    `INSERT INTO ${table(ctx, "work_issues")} AS w (key, company_id, kind, subject_id, issue_id, fingerprint, status, opened_at, detail)
+     VALUES ($1, $2, $3, $4, $5, $6, 'open', now(), $7::jsonb)
+     ON CONFLICT (key) DO UPDATE SET issue_id = EXCLUDED.issue_id, fingerprint = EXCLUDED.fingerprint, status = 'open', updated_at = now(),
+       opened_at = CASE WHEN $8::boolean THEN now() ELSE COALESCE(w.opened_at, now()) END,
+       detail = COALESCE(EXCLUDED.detail, w.detail)`,
+    [input.key, input.companyId, input.kind, input.subjectId ?? null, issueId, input.fingerprint, input.detail ? JSON.stringify(input.detail) : null, opened],
   );
 }
 
@@ -104,7 +120,7 @@ export async function upsertStandingIssue(ctx: PluginContext, input: StandingIss
       ...assignee,
       wakeReason: input.wakeReason,
     });
-    await saveRow(ctx, input, issue.id);
+    await saveRow(ctx, input, issue.id, true);
     return { issueId: issue.id, created: true, reopened: false, updated: false };
   }
   const reopen = CLOSED.has(String(existing.status));
@@ -113,7 +129,9 @@ export async function upsertStandingIssue(ctx: PluginContext, input: StandingIss
   // Follow the route (e.g. an Account Manager was hired), but never unassign when nobody is available.
   const routed = Boolean(input.route.assigneeAgentId || input.route.assigneeUserId);
   const reassign = routed && ((input.route.assigneeAgentId ?? null) !== (existing.assigneeAgentId ?? null) || (input.route.assigneeUserId ?? null) !== (existing.assigneeUserId ?? null));
-  if (reopen || changed || reassign) {
+  // Issues opened before 0.5 carry the old origin id: give them the current one so their done check runs.
+  const origin = (existing as { originId?: string | null }).originId !== input.key;
+  if (reopen || changed || reassign || origin) {
     await ctx.issues.update(
       existing.id,
       {
@@ -121,6 +139,7 @@ export async function upsertStandingIssue(ctx: PluginContext, input: StandingIss
         description: input.description,
         ...(reopen ? { status: "todo" as const } : {}),
         ...(reassign ? { assigneeAgentId: input.route.assigneeAgentId ?? null, assigneeUserId: input.route.assigneeUserId ?? null } : {}),
+        ...(origin ? { originId: input.key } : {}),
       },
       input.companyId,
     );
@@ -130,7 +149,7 @@ export async function upsertStandingIssue(ctx: PluginContext, input: StandingIss
   if (input.route.assigneeAgentId && (reopen || reassign || (changed && input.wake))) {
     await wakeIssue(ctx, existing.id, input.companyId, input.wakeReason ?? "Billing work updated");
   }
-  await saveRow(ctx, input, existing.id);
+  await saveRow(ctx, input, existing.id, reopen);
   return { issueId: existing.id, created: false, reopened: reopen, updated: changed };
 }
 
@@ -150,4 +169,24 @@ export async function closeStandingIssue(ctx: PluginContext, key: string, compan
   }
   await ctx.db.execute(`UPDATE ${table(ctx, "work_issues")} SET status = 'closed', updated_at = now() WHERE key = $1`, [key]);
   return true;
+}
+
+/**
+ * Open standing issues made before 0.5 carry the old origin id (`digest:drafts:…`,
+ * `quote-reply:…`, `deal-won:…`). Give each the key it is stored under, so its
+ * done check runs. Daily; cheap (a few open rows). Returns how many changed.
+ */
+export async function refreshWorkIssueOrigins(ctx: PluginContext, companyId: string): Promise<number> {
+  let changed = 0;
+  for (const row of await openWorkIssues(ctx, companyId)) {
+    try {
+      const issue = await ctx.issues.get(row.issue_id, companyId);
+      if (!issue || CLOSED.has(String(issue.status)) || (issue as { originId?: string | null }).originId === row.key) continue;
+      await ctx.issues.update(issue.id, { originId: row.key }, companyId);
+      changed += 1;
+    } catch (error) {
+      ctx.logger.info("Work issue origin not updated", { key: row.key, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return changed;
 }

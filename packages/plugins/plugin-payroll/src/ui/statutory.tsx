@@ -29,7 +29,7 @@ import {
 import { ruleLabel, rulesCheckText } from "../rule-labels.js";
 import { plural } from "./series.js";
 import { download, Money, Muted, Notice, rand, Row, StatusPill } from "./shared.js";
-import type { Emp201View, RunFn, Snapshot } from "./types.js";
+import type { Emp201FilingView, Emp201View, RunFn, Snapshot } from "./types.js";
 
 type Certificate = { employeeId: string; employeeNumber: string; name: string; kind: string; payeMinor: number; grossTaxableMinor: number; uifMinor: number; sdlMinor: number; codes: Record<string, number>; includesOpening: boolean };
 type Emp501 = { reconciled: boolean; declared: { payeMinor: number; sdlMinor: number; uifMinor: number; etiMinor: number }; certificates: { count: number; irp5: number; it3a: number; payeMinor: number }; difference: { payeMinor: number; sdlMinor: number; uifMinor: number } };
@@ -38,6 +38,8 @@ const toolbar = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center
 
 export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMessage: (m: string) => void }) {
   const emp201 = usePluginAction("payroll.emp201");
+  const markFiled = usePluginAction("payroll.mark-emp201-filed");
+  const unmarkFiled = usePluginAction("payroll.unmark-emp201-filed");
   const certs = usePluginAction("payroll.certificates");
   const emp501 = usePluginAction("payroll.emp501");
   const exportFile = usePluginAction("payroll.export");
@@ -46,6 +48,15 @@ export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; 
   const [month, setMonth] = useState(s.today.slice(0, 7));
   const [taxYear, setTaxYear] = useState(s.rules.taxYear);
   const [e201, setE201] = useState<Emp201View | null>(null);
+  const [filing, setFiling] = useState<Emp201FilingView | null>(null);
+  const [reference, setReference] = useState("");
+  const [filedOn, setFiledOn] = useState(s.today);
+  const showEmp201 = (forMonth: string) =>
+    run(async () => {
+      const r = (await emp201({ month: forMonth })) as { emp201: Emp201View; filing: Emp201FilingView | null };
+      setE201(r.emp201);
+      setFiling(r.filing);
+    });
   const [certificates, setCertificates] = useState<Certificate[] | null>(null);
   const [e501, setE501] = useState<Emp501 | null>(null);
   const [period, setPeriod] = useState<"annual" | "interim">("interim");
@@ -67,7 +78,7 @@ export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; 
         actions={(
           <div style={toolbar}>
             <Input type="month" aria-label="Month" value={month} onChange={(e) => setMonth(e.target.value)} style={{ width: 170 }} />
-            <Button type="button" variant="secondary" disabled={!month} onClick={() => void run(async () => setE201(((await emp201({ month })) as { emp201: Emp201View }).emp201))}>Show</Button>
+            <Button type="button" variant="secondary" disabled={!month} onClick={() => void showEmp201(month)}>Show</Button>
             <Button type="button" variant="secondary" disabled={!month} onClick={() => exportAndDownload({ kind: "emp201", month }, "EMP201 figures downloaded")}>Download CSV</Button>
           </div>
         )}
@@ -89,6 +100,23 @@ export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; 
                 : ""}
             </Muted>
             {e201.notes.map((n) => <p key={n} style={{ margin: 0, fontSize: 12.5 }}>{n}</p>)}
+            <Emp201Filed
+              month={e201.month}
+              today={s.today}
+              filing={filing}
+              reference={reference}
+              filedOn={filedOn}
+              onReference={setReference}
+              onFiledOn={setFiledOn}
+              onMark={() => void run(async () => {
+                setFiling((await markFiled({ month: e201.month, reference: reference.trim() || undefined, filedOn })) as Emp201FilingView);
+                setReference("");
+              }, `EMP201 for ${formatMonth(e201.month)} marked filed`)}
+              onUndo={() => void run(async () => {
+                await unmarkFiled({ month: e201.month });
+                setFiling(null);
+              }, `EMP201 for ${formatMonth(e201.month)} is no longer marked filed`)}
+            />
           </div>
         ) : <Muted>Pick a month and click Show to see its PAYE, SDL, UIF and ETI from locked pay runs.</Muted>}
       </SectionCard>
@@ -278,5 +306,50 @@ function TaxRulesSection({ s, run }: { s: Snapshot; run: RunFn }) {
       </div>
       {sourceList}
     </SectionCard>
+  );
+}
+
+/**
+ * Whether the month's EMP201 is filed. Payroll never files or pays: a person
+ * does it on eFiling, then marks it here (or the agent records their
+ * confirmation), so the Cockpit stops showing it as due.
+ */
+function Emp201Filed(props: {
+  month: string;
+  today: string;
+  filing: Emp201FilingView | null;
+  reference: string;
+  filedOn: string;
+  onReference: (value: string) => void;
+  onFiledOn: (value: string) => void;
+  onMark: () => void;
+  onUndo: () => void;
+}) {
+  const { month, today, filing } = props;
+  if (filing) {
+    return (
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+        <StatusPill status="filed" label={`Filed ${formatDate(filing.filedOn)}`} tone="ok" />
+        {filing.reference ? <span style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere" }}>Reference {filing.reference}</span> : null}
+        <Button type="button" variant="secondary" onClick={props.onUndo} style={{ height: 28, fontSize: 12 }}>Not filed yet</Button>
+      </div>
+    );
+  }
+  if (month >= today.slice(0, 7)) {
+    return <Muted style={{ fontSize: 12.5 }}>Once {formatMonth(month)} has ended and you have filed and paid it on eFiling, mark it filed here.</Muted>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      <Muted style={{ fontSize: 12.5 }}>Filed and paid on eFiling? Mark it filed so the Cockpit stops showing it as due.</Muted>
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", minWidth: 0 }}>
+        <Field label="Payment reference (optional)">
+          <Input value={props.reference} autoComplete="off" maxLength={60} placeholder="PRN from eFiling" onChange={(e) => props.onReference(e.target.value)} style={{ width: 200, maxWidth: "100%" }} />
+        </Field>
+        <Field label="Filed on">
+          <Input type="date" value={props.filedOn} max={today} onChange={(e) => props.onFiledOn(e.target.value)} style={{ width: 160 }} />
+        </Field>
+        <Button type="button" disabled={!props.filedOn} onClick={props.onMark}>Mark as filed</Button>
+      </div>
+    </div>
   );
 }

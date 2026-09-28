@@ -501,6 +501,7 @@ export function sequenceIssueCopy(
       "",
       `Do the step, log what happened (\`log-activity\`), then: ${done}`,
       "Email you write yourself is marketing email: say who we are, add an opt-out line, and skip anyone whose email status is not ok.",
+      "**Done when** the step is logged on them (or their sequence stopped). Closing checks it.",
       ...(context.link ? ["", `Contact: ${context.link}`] : []),
     ].join("\n"),
   };

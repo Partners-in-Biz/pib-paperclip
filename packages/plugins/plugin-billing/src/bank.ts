@@ -11,6 +11,7 @@ import { createWorkIssue, formatMoneyMinor, OPEN_ITEM_EVENTS, PIB_PLUGINS, recei
 import { invoiceBalance } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { BillingError } from "./domain.js";
+import { APPROVAL_ORIGINS } from "./origins.js";
 import { recordDecisionIssue } from "./pop.js";
 import { personAssignee } from "./routing.js";
 import { billPaidMinor, getBill, settle, settleBill, unreconciledPayment } from "./settle.js";
@@ -69,7 +70,7 @@ async function openReview(ctx: PluginContext, companyId: string, match: BankMatc
         "Cancel this issue if the match is wrong; then fix it in Accounting.",
       ].join("\n"),
       originKind: `plugin:${PIB_PLUGINS.billing}`,
-      originId: match.key,
+      originId: `${APPROVAL_ORIGINS.bankMatch}${match.key}`,
       // Money: a person decides (the Billing approver, else the owner).
       ...(await personAssignee(ctx, companyId, settings)),
     });

@@ -15,15 +15,15 @@ Never tell a customer an invoice is paid until \`invoice-detail\` shows status \
 
 ## Your work arrives as issues
 
-| Issue | What to do |
-|---|---|
-| Deal won: … | Draft the quote, invoice or retainer (sections 2 to 4). |
-| Quote reply: Q-… | The customer answered a quote: accept and convert, decline, or answer with a Mailbox draft (section 2). |
-| Drafts to send (daily) | Drafts nobody asked to send, and accepted quotes not invoiced yet: check each, then ask to send. |
-| Overdue invoices (weekly) | The next step for each overdue invoice (section 6). |
-| Complete the bill from … | Add the supplier invoice's lines, then \`request-bill-approval\` (section 7). |
+| Issue | What to do | Done when |
+|---|---|---|
+| Deal won: … | Draft the quote, invoice or retainer (sections 2 to 4). | A quote, invoice or retainer is drafted for the deal or its client, or the deal's invoice is asked to send. Not billed? Say why with \`log-follow-up\` (dealId). |
+| Quote reply: Q-… | The customer answered a quote: accept and convert, decline, or answer with a Mailbox draft (section 2). | The quote's status changed, a new quote for the deal is drafted, or your drafted answer is logged with \`log-follow-up\` (quoteId, mailDraftId). |
+| Drafts to send (daily) | Drafts nobody asked to send, and accepted quotes not invoiced yet: check each, then ask to send. | No draft over a day old is left without a send request (a cancelled or deleted draft counts). |
+| Overdue invoices (weekly) | The next step for each overdue invoice (section 6). | Each listed invoice that needs a step has one: a reminder request, a payment check, a \`log-follow-up\` note, or it is paid. |
+| Complete the bill from … | Add the supplier invoice's lines, then \`request-bill-approval\` (section 7). | The bill has its lines and an approval request. Not a bill? Say so with \`log-follow-up\` (billId). |
 
-These issues update themselves, reopen when new work arrives and close when nothing is left. Mark one done only when its list is handled.
+These issues update themselves, reopen when new work arrives and close when nothing is left. Mark one done only when its list is handled. When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those. If only a person can finish something (the owner must cancel a draft or decide on a debt), leave the issue blocked and say who must do what.
 
 ## 1. The client
 
@@ -36,7 +36,7 @@ These issues update themselves, reopen when new work arrives and close when noth
 1. \`create-quote\` (currency, customerKind, customerRef, validUntil, and \`dealId\` when it is for a CRM deal).
 2. \`add-quote-line\` per item: description, quantity, \`unitAmountMinor\` (cents, excl. VAT unless \`pricesIncludeVat\`), \`taxCode\`. Fix it with \`remove-quote-line\` and \`update-quote\`.
 3. \`quote-detail\` to check it, then \`request-quote-send\`. A person approves; the Mailbox emails it with the PDF and it becomes \`sent\`.
-4. The customer replies and you get a "Quote reply" issue with the reply. Accepted: \`set-quote-status\` \`accepted\` (this tells the CRM, which marks the deal won). Declined: \`set-quote-status\` \`declined\`. A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with \`replyToMessageId\`); for a new price, draft a new quote with the same \`dealId\`.
+4. The customer replies and you get a "Quote reply" issue with the reply. Accepted: \`set-quote-status\` \`accepted\` (this tells the CRM, which marks the deal won). Declined: \`set-quote-status\` \`declined\`. A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with \`replyToMessageId\`), then log it with \`log-follow-up\` (quoteId, note, mailDraftId); for a new price, draft a new quote with the same \`dealId\`.
 5. \`convert-quote\` makes a draft invoice with the same client, lines, VAT codes and deal. Then section 3, step 2.
 
 ## 3. Invoice
@@ -69,6 +69,7 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 - They reply with a question or a dispute: answer with a Mailbox draft; a person sends it.
 - Every reminder sent, or over 60 days overdue: \`partnersinbiz.cockpit:ask-owner\` (call them, a payment plan, a credit note or a write-off).
 - A credit (a mistake, a discount the owner agreed): \`create-credit-note\` (invoiceId, amountMinor incl. VAT, reason) opens a decision for a person.
+- Anything that leaves no other trace in Billing (what you asked the owner and what they decided, a promise to pay, a reply you drafted): \`log-follow-up\` (invoiceId, note). Notes are internal and show in \`invoice-detail\` (\`followUps\`).
 
 ## 7. Supplier bills, expenses and time
 
@@ -89,6 +90,7 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 | Retainers and next invoice dates | \`list-retainers\`, \`list-recurring-invoices\` |
 | Supplier bills still owed | \`list-bills\` |
 | Time not invoiced yet | \`list-time-entries\` (unbilled \`true\`) |
+| What was already done about an invoice or quote | \`invoice-detail\` or \`quote-detail\` (\`followUps\`) |
 
 \`invoice-html\` and \`quote-html\` return a printable copy (large); read documents with the detail tools instead. Profit and loss, the balance sheet and VAT201 are in Accounting (the Bookkeeper's tools), not Billing.
 `;

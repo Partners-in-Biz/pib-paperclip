@@ -17,6 +17,10 @@ export type SprintNumbers = {
   due: number;
   overdue: number;
   stuck: number;
+  /** Of `stuck`: runs stop at the workspace check (the site repo has no checkout on the server). */
+  stuckRuns?: number;
+  /** Projects whose Codebase needs the fix for `stuckRuns`. */
+  runsProjectIds?: string[];
   waiting: number;
   upcoming: number;
   openIssues: number;
@@ -127,10 +131,14 @@ export type Task = {
   issueId: string | null;
   issueIdentifier: string | null;
   issueStatus: string | null;
+  /** Project the issue runs in (the site project for code tasks). */
+  issueProjectId?: string | null;
   assigneeKind: string | null;
   blockerReason: string | null;
   humanAsk: string | null;
   completedAt: string | null;
+  /** Its latest run stopped at the workspace check: stuck until the project's Codebase is fixed. */
+  runsFailing?: boolean;
 };
 
 export type Keyword = {

@@ -137,7 +137,7 @@ beforeEach(() => {
 
 describe("manifest", () => {
   it("declares the setup-status route and its capability, at the bumped version", () => {
-    expect(manifest.version).toBe("0.2.0");
+    expect(manifest.version).toBe("0.3.0");
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: SETUP_STATUS_ROUTE.routeKey, path: "/setup-status", method: "GET" }),
       expect.objectContaining({ routeKey: "cockpit", path: "/cockpit", method: "GET" }),
@@ -150,7 +150,7 @@ describe("setup status", () => {
   it("lists everything still missing for a company that has not set up payroll", async () => {
     const host = makeHost({});
     const status = await setupStatus(host.env, C);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.payroll", module: "payroll", title: "Payroll", version: "0.2.0", checkedAt: "2026-09-20T08:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.payroll", module: "payroll", title: "Payroll", version: "0.3.0", checkedAt: "2026-09-20T08:00:00.000Z" });
     expect(status.items.map((i) => i.key)).toEqual(["settings", "employer", "encryption_key", "private_storage", "approver", "employees", "tax_rules", "rules_review", "mailbox", "payslip_email", "clerk"]);
     // Before the page reported its installation uuid, settings links go to the plugin list.
     expect(item(status, "settings")).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });

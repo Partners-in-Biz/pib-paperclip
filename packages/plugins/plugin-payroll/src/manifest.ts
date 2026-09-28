@@ -8,7 +8,7 @@ import { PAYROLL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "Payroll",
   description:
     "South African payroll: employees with sealed ID, tax and bank details, PAYE/UIF/SDL/ETI pay runs with separate approval, payslips by email, leave, EMP201/IRP5/EMP501 packs and net-pay bank files. Posts every locked run to Accounting.",
@@ -34,6 +34,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     "issues.wakeup",
     "issue.comments.create",
+    // The EMP201 issue's done-check reads its comments (the owner's ask and reply).
+    "issue.comments.read",
     "plugin.state.read",
     "plugin.state.write",
     "secrets.read-ref",

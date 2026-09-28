@@ -43,7 +43,7 @@ describe("Gmail tokens", () => {
       title: `Reconnect Gmail: ${gmail.email}`,
       assigneeUserId: "user-1",
       originKind: "plugin:partnersinbiz.mailbox",
-      originId: "reconnect:acc-1",
+      originId: "mailbox:reconnect:acc-1",
       priority: "high",
       status: "todo",
     });

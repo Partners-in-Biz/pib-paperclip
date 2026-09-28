@@ -31,7 +31,43 @@ export const SWEEP_ROUTES: Route[] = [
       .map(({ e, i }) => ({ ...e, issue_status: i!.status }))],
 ];
 
+const DAY = 86_400_000;
+const olderThan = (at: unknown, ms: number) => Boolean(at) && Date.parse(String(at)) < Date.now() - ms;
+
+/** The Cockpit's flow queries (`campaignFlows`), emulated on the store (the SQL itself runs in flows.pg.spec.ts). */
+export const FLOW_ROUTES: Route[] = [
+  [/AS drafts,/, (p, s) => {
+    const mine = (s.campaigns ?? []).filter((c) => c.company_id === p[0]);
+    const issueOf = (c: Row) => (s.issues ?? []).find((i) => i.id === c.approval_issue_id);
+    const drafts = mine.filter((c) => c.status === "draft");
+    const open = drafts.filter((c) => issueOf(c) && issueOf(c)!.status !== "cancelled").length;
+    return [{ drafts: String(drafts.length - open), approval: String(open), active: String(mine.filter((c) => c.status === "active").length) }];
+  }],
+  [/LEFT JOIN \S+\.outbox o ON o\.key = 'campaigns:step:'/, (p, s) => {
+    const active = new Set((s.campaigns ?? []).filter((c) => c.status === "active").map((c) => c.id));
+    const groups = new Map<string, { failed: number; waiting: number; oldest: string | null }>();
+    for (const e of (s.campaign_enrollments ?? []).filter((row) => row.company_id === p[0] && row.status === "running" && active.has(row.campaign_id))) {
+      const out = (s.outbox ?? []).find((o) => o.key === `campaigns:step:${e.id}:${e.step_position}`);
+      const failed = out?.status === "failed";
+      const waiting = !failed && olderThan(e.next_due_at, DAY);
+      const g = groups.get(e.campaign_id) ?? { failed: 0, waiting: 0, oldest: null };
+      if (failed) g.failed += 1;
+      if (waiting) g.waiting += 1;
+      if ((failed || waiting) && (!g.oldest || String(e.next_due_at) < g.oldest)) g.oldest = String(e.next_due_at);
+      groups.set(e.campaign_id, g);
+    }
+    return [...groups].map(([campaign_id, g]) => ({ campaign_id, failed: String(g.failed), waiting: String(g.waiting), oldest: g.oldest }));
+  }],
+  [/FROM public\.issues i\s+WHERE i\.company_id = \$1::uuid/, (p, s) => {
+    const prefixes = [String(p[2]).replace(/%$/, ""), String(p[3]).replace(/%$/, "")];
+    const open = (s.issues ?? []).filter((i) => (i.company_id ?? p[0]) === p[0] && (i.origin_kind ?? p[1]) === p[1] && prefixes.some((prefix) => String(i.origin_id ?? "").startsWith(prefix)) && !["done", "cancelled"].includes(i.status));
+    const oldest = open.map((i) => String(i.created_at)).sort()[0] ?? null;
+    return [{ open: String(open.length), stuck: String(open.filter((i) => olderThan(i.created_at, 2 * DAY)).length), oldest }];
+  }],
+];
+
 export const ROUTES: Route[] = [
+  ...FLOW_ROUTES,
   [/unnest\(emails\)/, (p, s) =>
     (s.crm_contacts ?? []).filter((row) => row.company_id === p[0] && !row.deleted && (row.emails as string[]).some((email) => email.toLowerCase() === p[1]))],
   [/campaign_id IN \(SELECT id FROM/, (_p, s) => {

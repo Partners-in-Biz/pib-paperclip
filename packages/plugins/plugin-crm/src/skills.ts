@@ -19,7 +19,7 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 - New and changed clients reach the other modules within 15 minutes. If a module does not show a client yet, wait 15 minutes; do not ask anyone to resync.
 
 ## The client lifecycle
-1. **Lead.** New person or company (lifecycle \`lead\`). Qualify: an owner-led business that needs what we sell, with budget and a reason to start soon.
+1. **Lead.** New person or company (lifecycle \`lead\`). Qualify: an owner-led business that needs what we sell, with budget and a reason to start soon. Not a fit: log why and set lifecycle \`churned\`.
 2. **Qualified.** Set lifecycle \`prospect\` and \`create-deal\` with the value and the client. Fix a deal later with \`update-deal\` (title, value, its client, its stage): a deal without its client or value cannot be quoted, and the CRM overview lists it.
 3. **Proposal.** Move the deal to the Proposal stage (\`list-stages\`, \`move-deal\`). Draft the quote in Billing (\`pib-invoice-draft\`) with the deal id, so the customer's acceptance closes the deal. A person approves sending.
 4. **Won.** When the customer accepts, Billing tells the CRM and the deal moves to won; or move it yourself (\`move-deal\` to \`won\`). The CRM sets lifecycle \`customer\`, logs the win and tells Billing and the Cockpit. On a first win the Cockpit opens onboarding.
@@ -29,6 +29,11 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 
 ## Leads from a client's own channels
 A message to a client's own social account or mailbox is that client's lead. The CRM keeps it on the client's page (Leads from their channels), never as our contact. Never add those people to our CRM, sequences or campaigns (POPIA); the client's work in Social answers them.
+
+## Closing CRM issues
+When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
+- **Link the won deal to its client:** the deal has a company or contact (\`update-deal\`).
+- **Pick the deal for an accepted quote:** \`move-deal\` the deal it closes to won, with the issue's \`quoteId\`.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound: leads, sequences and marketing email
@@ -45,6 +50,14 @@ Social and the Mailbox hand leads to the CRM; each opens one "Follow up lead" is
 - **Email delivery:** the Mailbox sends each step once a person approved the sequence (\`set-sequence-delivery\` asks; you cannot approve it). Until then due steps wait and show in the Cockpit. If the person refuses, the steps come back to you as issues.
 - A won or lost deal, an opt-out, a bounce or lifecycle \`churned\` stops a contact's sequences.
 - **Replies** are sorted by Jev: interested or a question stop the sequence and give you a "Reply from" issue (answer from the Mailbox); not now sets an email next action in 30 days; unsubscribe and bounces suppress the address everywhere; out of office moves the next step 5 days. When Jev is unsure you get an issue to decide.
+
+## Closing CRM issues
+When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
+- **Lead follow-up:** something logged on them since the lead came in, plus a next action, a deal, or a lifecycle decision (prospect, or churned when not a fit).
+- **Reply from / Check reply:** the answer logged (\`log-activity\`), or a decision recorded: a next action, a deal move, or \`set-email-status\`.
+- **Sequence step:** the step logged on the contact; only then does closing move them to the next step.
+- **Email not sent:** the address fixed, the contact reached and logged, or \`set-email-status\` bounced.
+- An opt-out or a stopped sequence also counts as finished.
 
 ## Merge tokens
 \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}\`, \`{{email}}\`. Add a fallback for empty values: \`{{first_name|there}}\`. An unknown token is sent as typed, so check the spelling.

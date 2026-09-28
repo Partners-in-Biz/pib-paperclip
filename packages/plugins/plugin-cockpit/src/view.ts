@@ -5,6 +5,7 @@
 import type { ModuleKey } from "@partnersinbiz/pib-plugin-kit/setup";
 import { askWaitingItem, type AskView } from "./ask-model.js";
 import { BACKUP_STALE_HOURS, PLUGIN_KEY } from "./constants.js";
+import { buildFlows, type FlowsView } from "./flows.js";
 import {
   activityGroups,
   agentRows,
@@ -89,6 +90,8 @@ export interface ViewInput {
   setupMissing?: number | null;
   /** The open Finish setup issue, so it is listed once (as the setup item). */
   setupIssueId?: string | null;
+  /** The setup statuses the Setup plugin stored (by plugin), for "settings not saved" on the Flows tab. */
+  setupStatuses?: Record<string, unknown> | null;
   agents?: AgentLite[];
   hostActivity?: HostActivityLite[];
   runs?: RunLite[];
@@ -109,6 +112,20 @@ export interface CockpitView {
   healthGroups: HealthGroup[];
   backup: BackupInfo | null;
   problems: number;
+  /** The company graph: every flow's stages, numbers, what is stuck and what is switched off. */
+  flows: FlowsView;
+}
+
+/**
+ * The stored setup statuses by plugin: the Cockpit's own copy, else the
+ * Setup plugin's. Null while no plugin has reported at all (a fresh install):
+ * then the Flows tab cannot tell whose settings are missing, so it does not say.
+ */
+export function knownSetupStatuses(load: Pick<LoadResult, "setupStatuses">, fromSetup: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  const valid = (source: Record<string, unknown> | null | undefined) =>
+    Object.entries(source ?? {}).filter(([, status]) => !!status && typeof status === "object" && Array.isArray((status as { items?: unknown }).items));
+  const merged = Object.fromEntries([...valid(fromSetup), ...valid(load.setupStatuses)]);
+  return Object.keys(merged).length > 0 ? merged : null;
 }
 
 const INACTIVE = new Set(["terminated", "archived", "deleted"]);
@@ -201,6 +218,15 @@ export function buildView(input: ViewInput): CockpitView {
   const activity = activityGroups({ snapshots, host: input.hostActivity, runs: input.runs, agents: input.agents, now: input.now, windowMs: input.windowMs });
   const health = worstOf(groups.map((g) => g.status));
   const problems = groups.reduce((sum, g) => sum + g.checks.filter((c) => c.status === "bad").length, 0);
+  const flows = buildFlows({
+    snapshots,
+    modules: input.modules,
+    installed: input.installed,
+    setupStatuses: knownSetupStatuses(input.load, input.setupStatuses),
+    cockpitSettingsSaved: typeof input.load.settingsSaved === "boolean" ? input.load.settingsSaved : null,
+    roles: input.load.roles,
+    agents: input.agents,
+  });
   return {
     snapshots,
     today: todayLine({
@@ -219,5 +245,6 @@ export function buildView(input: ViewInput): CockpitView {
     healthGroups: groups,
     backup,
     problems,
+    flows,
   };
 }

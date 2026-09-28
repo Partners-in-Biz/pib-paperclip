@@ -69,8 +69,10 @@ const ROUTES: Route[] = [
         id: q.id, name: q.name, email_approval_issue_id: q.email_approval_issue_id, created_at: i!.created_at, assignee_agent_id: i!.assignee_agent_id ?? null,
         due: String((s.enrollments ?? []).filter((e) => e.sequence_id === q.id && e.status === "running" && e.next_due_at && e.next_due_at <= new Date().toISOString()).length),
       }))],
-  [/origin_id LIKE 'reply:%'/, (p, s) =>
-    (s.issues ?? []).filter((i) => i.company_id === p[0] && i.origin_kind === p[1] && /^(reply|lead|handoff|quote|won):/.test(i.origin_id) && !["done", "cancelled"].includes(i.status) && !i.assignee_agent_id)],
+  // Waiting: open lead, reply and hand-off work no agent holds (the origin pattern is the query's $3).
+  // The flow queries (make_interval) hit the route above and count nothing here; flows.spec.ts covers them.
+  [/origin_id ~ \$3/, (p, s) =>
+    (s.issues ?? []).filter((i) => i.company_id === p[0] && i.origin_kind === p[1] && new RegExp(String(p[2])).test(i.origin_id) && !["done", "cancelled"].includes(i.status) && !i.assignee_agent_id)],
   [/min\(held_at\)::text AS oldest/, (p, s) => {
     const rows = (s.held_leads ?? []).filter((row) => row.company_id === p[0] && !row.processed_at);
     return [{ count: String(rows.length), oldest: rows.map((row) => row.held_at).sort()[0] ?? null }];
@@ -353,7 +355,7 @@ describe("Sequence email approval: Reviewer routing", () => {
     harness.seed({ issues: [{ ...approval, status: "cancelled" }] });
     await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "user", actorId: "user-peet" });
     expect(store.sequences![0]).toMatchObject({ delivery: "issue", email_approval_issue_id: null });
-    const handoff = (await issues(harness)).find((row) => row.originId === `handoff:sequence-refused:${approval.id}`)!;
+    const handoff = (await issues(harness)).find((row) => row.originId === `crm:sequence-refused:${approval.id}`)!;
     expect(handoff).toMatchObject({ title: 'Hand-off: email sending refused for sequence "Intro"', assigneeAgentId: "am-1" });
   });
 
@@ -380,7 +382,7 @@ describe("lead.captured intake", () => {
     expect(nina.custom).toMatchObject({ leadSource: "email" });
     expect(nina.lead_fit).toBe(3);
     expect(store.activities!.filter((a) => a.kind === "lead_captured")).toEqual([expect.objectContaining({ record_id: nina.id, source_key: "lead:mail:g-1" })]);
-    const followUps = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-1");
+    const followUps = (await issues(harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-1");
     expect(followUps).toHaveLength(1);
     expect(followUps[0]).toMatchObject({ title: "Follow up new lead: Nina New", assigneeUserId: "user-peet" });
     expect(followUps[0]!.description).toContain("Lead score: hot");
@@ -396,7 +398,7 @@ describe("lead.captured intake", () => {
     emit.mockClear();
     await harness.emit(MAILBOX_LEAD, mailLead(), { companyId: CO });
     expect(store.contacts!.filter((c) => c.name === "Nina New")).toHaveLength(1);
-    expect((await issues(harness)).filter((i) => i.originId === "lead:mail:g-1")).toHaveLength(1);
+    expect((await issues(harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-1")).toHaveLength(1);
     expect(store.inbox!.map((row) => row.key)).toContain("lead:mail:g-1");
     expect(emit).toHaveBeenCalledWith("lead.captured.result", CO, { key: "mail:g-1", status: "stored", contactId: nina.id });
   });
@@ -405,7 +407,7 @@ describe("lead.captured intake", () => {
     const { harness } = await boot({ config: { timezone: "Africa/Johannesburg" } });
     await setRoles(harness, { ownerUserId: "user-peet", team: { "account-manager": { agentId: "am-1", status: "idle" } } });
     await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-am" }), { companyId: CO });
-    const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-am");
+    const [issue] = (await issues(harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-am");
     expect(issue).toMatchObject({ assigneeAgentId: "am-1", status: "todo" });
   });
 
@@ -416,13 +418,13 @@ describe("lead.captured intake", () => {
     await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-2", email: "ada@acme.test", name: "Ada" }), { companyId: CO });
     expect(store.contacts).toHaveLength(2);
     expect(store.contacts!.find((c) => c.id === "ada")!.lifecycle).toBe("customer");
-    const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-2");
+    const [issue] = (await issues(harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-2");
     expect(issue).toMatchObject({ title: "Follow up lead: Ada Lovelace", assigneeAgentId: "agent-ada" });
 
     // A paused own agent does not hold the work up: the Account Manager gets it.
     harness.seed({ agents: [{ id: "agent-ada", companyId: CO, name: "Ada's agent", status: "paused" } as never] });
     await harness.emit(MAILBOX_LEAD, mailLead({ key: "mail:g-2b", email: "ada@acme.test", name: "Ada" }), { companyId: CO });
-    const [second] = (await issues(harness)).filter((i) => i.originId === "lead:mail:g-2b");
+    const [second] = (await issues(harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-2b");
     expect(second).toMatchObject({ assigneeAgentId: "am-1" });
   });
 
@@ -435,7 +437,7 @@ describe("lead.captured intake", () => {
     await harness.emit(SOCIAL_LEAD, { key: "social:inbox:2", source: "social", name: "Sam", handle: "sam_s", platform: "x", text: "DM me prices", url: "https://x.com/sam_s/status/1" }, { companyId: CO });
     const sam = store.contacts!.find((c) => c.name === "Sam")!;
     expect(sam.custom).toMatchObject({ handles: ["x:sam_s"], leadSource: "social", leadPlatform: "x" });
-    const [issue] = (await issues(harness)).filter((i) => i.originId === "lead:social:inbox:2");
+    const [issue] = (await issues(harness)).filter((i) => i.originId === "crm:lead-followup:social:inbox:2");
     expect(issue!.description).toContain("X: @sam_s");
     expect(issue!.description).toContain("- Social inbox item: `2` (/PIB/social?tab=inbox)");
     expect(issue!.description).toContain("- Link: https://x.com/sam_s/status/1");
@@ -503,7 +505,7 @@ describe("lead.captured intake", () => {
     const nina = unsaved.store.contacts!.find((c) => c.name === "Nina New")!;
     expect(nina).toBeTruthy();
     expect(unsaved.store.held_leads![0]!.processed_at).toBeTruthy();
-    expect((await issues(unsaved.harness)).filter((i) => i.originId === "lead:mail:g-1")).toHaveLength(1);
+    expect((await issues(unsaved.harness)).filter((i) => i.originId === "crm:lead-followup:mail:g-1")).toHaveLength(1);
     expect(unsaved.emit).toHaveBeenCalledWith("lead.captured.result", CO, { key: "mail:g-1", status: "stored", contactId: nina.id });
   });
 

@@ -84,7 +84,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.client.query(`UPDATE ${NAMESPACE}.quotes SET accepted_at = now() - interval '2 days' WHERE id = $1`, [acceptedQuote.id]);
 
       await h.runJob("drafts-to-send");
-      const row = (await workIssue(`digest:drafts:${COMPANY}`))!;
+      const row = (await workIssue(`billing:drafts-to-send:${COMPANY}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ assigneeAgentId: "agent-am", title: "Drafts to send: 2 invoices and 2 quotes waiting" });
       expect(issue.description).toContain(`Invoice ${stale.number}`);
@@ -118,7 +118,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.client.query(`UPDATE ${NAMESPACE}.invoices SET pending_action = 'send' WHERE quote_id = $1`, [acceptedQuote.id]);
       await h.runJob("drafts-to-send");
       expect(h.issues.get(row.issue_id)!.status).toBe("done");
-      expect((await workIssue(`digest:drafts:${COMPANY}`))!.status).toBe("closed");
+      expect((await workIssue(`billing:drafts-to-send:${COMPANY}`))!.status).toBe("closed");
       expect(commentsOn(row.issue_id).at(-1)).toContain("Nothing is waiting");
 
       // New drafts later: the same issue opens again.
@@ -126,7 +126,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await age("invoices", later.id, 30);
       await h.runJob("drafts-to-send");
       expect(h.issues.get(row.issue_id)).toMatchObject({ status: "todo", title: "Drafts to send: 1 invoice waiting" });
-      expect((await workIssue(`digest:drafts:${COMPANY}`))).toMatchObject({ issue_id: row.issue_id, status: "open" });
+      expect((await workIssue(`billing:drafts-to-send:${COMPANY}`))).toMatchObject({ issue_id: row.issue_id, status: "open" });
     });
 
     it("never unassigns a person's pick when nobody is available", async () => {
@@ -134,7 +134,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const stale = await draft();
       await age("invoices", stale.id, 30);
       await h.runJob("drafts-to-send");
-      const row = (await workIssue(`digest:drafts:${COMPANY}`))!;
+      const row = (await workIssue(`billing:drafts-to-send:${COMPANY}`))!;
       expect(h.issues.get(row.issue_id)).toMatchObject({ assigneeAgentId: null, assigneeUserId: null });
       h.issues.get(row.issue_id)!.assigneeUserId = "user-5";
       const more = await draft();
@@ -148,7 +148,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const stale = await draft();
       await age("invoices", stale.id, 30);
       await h.runJob("drafts-to-send");
-      const row = (await workIssue(`digest:drafts:${COMPANY}`))!;
+      const row = (await workIssue(`billing:drafts-to-send:${COMPANY}`))!;
       expect(h.issues.get(row.issue_id)).toMatchObject({ assigneeAgentId: null, assigneeUserId: "owner-1" });
       const page = await h.call<{ team: { accountManager: boolean; via: string; setupHref: string } }>("billing.load", {});
       expect(page.team).toEqual({ accountManager: false, via: "owner", setupHref: "/setup?section=team#team-account-manager" });
@@ -168,7 +168,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const b = await overdue(70);
       await h.client.query(`INSERT INTO ${NAMESPACE}.reminders (id, company_id, invoice_id, stage, days_overdue, status) VALUES ('r-b', $1, $2, 2, 14, 'sent')`, [COMPANY, b.id]);
       await h.runJob("overdue-invoices");
-      const row = (await workIssue(`digest:overdue:${COMPANY}`))!;
+      const row = (await workIssue(`billing:overdue-invoices:${COMPANY}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ assigneeAgentId: "agent-am", title: "Overdue invoices: 2 (R 2,300.00)" });
       expect(issue.description).toContain("`request-reminder-send` (reminder 2 is due)");
@@ -215,7 +215,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const first = reply({ key: "mbx:q1", messageId: "gm-q1", replyTo: { plugin: "partnersinbiz.billing", kind: "quote", id: q.id } });
       await h.deliver(MAIL_RECEIVED, COMPANY, first);
       await h.deliver(MAIL_RECEIVED, COMPANY, first);
-      const row = (await workIssue(`quote-reply:${q.id}`))!;
+      const row = (await workIssue(`billing:quote-reply:${q.id}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ title: "Quote reply: Q-LUM-001 (Lumen Digital)", assigneeAgentId: "agent-am" });
       expect(issue.description).toContain("> Looks good, we accept. When can you start?");
@@ -237,7 +237,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.client.query(`UPDATE ${NAMESPACE}.quotes SET status = 'sent', sent_at = now() WHERE id = $1`, [q.id]);
       await h.deliver(MAIL_RECEIVED, COMPANY, reply({ key: "mbx:s", messageId: "gm-s", replyTo: { plugin: "partnersinbiz.billing", kind: "quote", id: q.id }, triage: { category: "spam", urgency: 0, needsReply: 0, phishing: 0.9, confidence: 0.9 } }));
       await h.deliver(MAIL_RECEIVED, COMPANY, reply({ key: "mbx:b", messageId: "gm-b", subject: "Undeliverable: Quote Q-LUM-001", replyTo: { plugin: "partnersinbiz.billing", kind: "quote", id: q.id }, bounce: { recipients: ["ap@lumen.test"], rfcIds: [] }, triage: { category: "notification", urgency: 0, needsReply: 0, phishing: 0, confidence: 0.9 } }));
-      expect(await workIssue(`quote-reply:${q.id}`)).toBeUndefined();
+      expect(await workIssue(`billing:quote-reply:${q.id}`)).toBeUndefined();
     });
   });
 
@@ -260,7 +260,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
     it("opens one drafting issue per won deal for the Account Manager, with links", async () => {
       await h.deliver(DEAL_WON, COMPANY, won());
       await h.deliver(DEAL_WON, COMPANY, won());
-      const row = (await workIssue("deal-won:deal-9"))!;
+      const row = (await workIssue("billing:deal-won:deal-9"))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ title: "Deal won: Website rebuild for Acme Holdings, R 25,000.00: draft the quote, invoice or retainer", assigneeAgentId: "agent-am" });
       expect(issue.description).toContain("dealId `deal-9`");
@@ -274,7 +274,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
     it("points at the accepted quote, skips deals already invoiced, and does nothing with Billing off", async () => {
       const q = await quote("accepted");
       await h.deliver(DEAL_WON, COMPANY, won({ key: "crm:deal:deal-1:won", dealId: "deal-1", clientKind: "contact", clientRef: "ct-lumen", clientName: "Lumen Digital" }));
-      const tailored = h.issues.get((await workIssue("deal-won:deal-1"))!.issue_id)!;
+      const tailored = h.issues.get((await workIssue("billing:deal-won:deal-1"))!.issue_id)!;
       expect(tailored.description).toContain(`Quote ${q.number} (\`${q.id}\`) for this deal is accepted: \`convert-quote\` it`);
       expect(tailored.description).not.toContain("Draft what was sold");
       expect(tailored.title).toBe(`Deal won: Website rebuild for Lumen Digital, R 25,000.00: convert quote ${q.number} and send the invoice`);
@@ -283,11 +283,11 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.call("billing.add-line", { invoiceId: invoice.id, description: "x", quantity: 1, unitAmountMinor: 100 });
       await h.call("billing.mark-sent", { invoiceId: invoice.id });
       await h.deliver(DEAL_WON, COMPANY, won({ key: "crm:deal:deal-2:won", dealId: "deal-2" }));
-      expect(await workIssue("deal-won:deal-2")).toBeUndefined();
+      expect(await workIssue("billing:deal-won:deal-2")).toBeUndefined();
 
       await h.deliver(MODULES, COMPANY, { companyId: COMPANY, modules: { billing: false }, updatedAt: new Date().toISOString() });
       await h.deliver(DEAL_WON, COMPANY, won({ key: "crm:deal:deal-3:won", dealId: "deal-3" }));
-      expect(await workIssue("deal-won:deal-3")).toBeUndefined();
+      expect(await workIssue("billing:deal-won:deal-3")).toBeUndefined();
     });
   });
 

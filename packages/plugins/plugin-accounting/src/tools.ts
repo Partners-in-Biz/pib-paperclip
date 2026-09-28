@@ -43,6 +43,18 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
       url: { type: "string", pattern: "^https://", description: "An https download link to the file, e.g. the url from partnersinbiz.mailbox:get-attachment. Give this or content." },
       fileName: { type: "string", description: "The file's name, e.g. the email attachment's filename (shown on the statement list)." },
       format: { type: "string", enum: ["auto", "csv", "ofx", "mt940"], description: "File format (default auto: detected from the content).", default: "auto" },
+      messageId: { type: "string", description: "The statement email's message id from the \"Bank statement received\" issue. Links the import to that email, so it shows as imported." },
+    }),
+  },
+  {
+    name: "mark-statement-email",
+    displayName: "Mark statement email",
+    description:
+      "Record that a \"Bank statement received\" email needs no import: it holds no statement (not_statement), or its statement was already imported another way (duplicate). Use import-statement with messageId for a real statement instead.",
+    parametersSchema: schema(["messageId", "outcome", "reason"], {
+      messageId: { type: "string", description: "The email's message id from the \"Bank statement received\" issue." },
+      outcome: { type: "string", enum: ["not_statement", "duplicate"], description: "not_statement: the email has no bank statement. duplicate: its statement was already imported." },
+      reason: { type: "string", minLength: 5, maxLength: 300, description: "Why, in one line (shown on the Bank page), e.g. \"Marketing email from FNB, no statement\"." },
     }),
   },
   {
@@ -166,6 +178,18 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
       openingMinor: cents("Opening balance on the statement, when it cannot be read from the imported statement."),
       closingMinor: cents("Closing balance on the statement, when it cannot be read from the imported statement."),
       requestApproval,
+    }),
+  },
+  {
+    name: "mark-not-needed",
+    displayName: "Mark month-end step not needed",
+    description:
+      "Month-end close: record that a bank account's reconciliation, or the VAT201, is not needed for a month, with the reason (for example no statement because the account had no activity). The checklist shows the reason and the month-end close check accepts it.",
+    parametersSchema: schema(["month", "step", "reason"], {
+      month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "The month being closed, YYYY-MM." },
+      step: { type: "string", enum: ["reconciliation", "vat201"], description: "reconciliation (one bank account; give bankAccountId) or vat201 (the VAT period that ends in the month)." },
+      bankAccountId,
+      reason: { type: "string", minLength: 5, maxLength: 300, description: "Why it is not needed, in one line (shown to the person who closes the month)." },
     }),
   },
   {

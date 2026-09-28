@@ -31,7 +31,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { costPerRun, costSplit, daysUntil, emp201Month, periodText, plural, todoSteps } from "./series.js";
 import { Muted, rand, RunStatus, small } from "./shared.js";
-import type { Emp201View, Snapshot, TabId } from "./types.js";
+import type { Emp201FilingView, Emp201View, Snapshot, TabId } from "./types.js";
 
 export function OverviewTab({ s, openRun, go }: { s: Snapshot; openRun: (id: string) => void; go: (tab: TabId) => void }) {
   const last = s.lastLocked;
@@ -158,19 +158,25 @@ export function OverviewTab({ s, openRun, go }: { s: Snapshot; openRun: (id: str
 function Emp201Card({ s, go }: { s: Snapshot; go: (tab: TabId) => void }) {
   const loadEmp201 = usePluginAction("payroll.emp201");
   const [e201, setE201] = useState<Emp201View | null>(null);
+  const [filing, setFiling] = useState<Emp201FilingView | null>(null);
   const [failed, setFailed] = useState(false);
   const month = emp201Month(s.today);
   useEffect(() => {
     let live = true;
     setFailed(false);
     loadEmp201({ month })
-      .then((r) => { if (live) setE201((r as { emp201: Emp201View }).emp201); })
+      .then((r) => {
+        if (!live) return;
+        setE201((r as { emp201: Emp201View }).emp201);
+        setFiling((r as { filing?: Emp201FilingView | null }).filing ?? null);
+      })
       .catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
   }, [month]);
 
   const days = e201 ? daysUntil(s.today, e201.dueDate) : null;
-  const ringTone = e201 && e201.totalPayableMinor > 0 && days != null ? (days < 0 ? "neutral" : days <= 7 ? "warn" : "info") : "neutral";
+  // Filed and paid: nothing is due any more.
+  const ringTone = !filing && e201 && e201.totalPayableMinor > 0 && days != null ? (days < 0 ? "neutral" : days <= 7 ? "warn" : "info") : "neutral";
   const monthStart = `${month}-01`;
   const elapsed = e201 ? Math.min(1, Math.max(0, daysUntil(monthStart, s.today) / Math.max(1, daysUntil(monthStart, e201.dueDate)))) : 0;
 
@@ -195,9 +201,13 @@ function Emp201Card({ s, go }: { s: Snapshot; go: (tab: TabId) => void }) {
           <div style={{ display: "grid", gap: 4, flex: "1 1 150px", minWidth: 0 }}>
             <span style={{ fontSize: 12, color: tokens.muted }}>To pay SARS</span>
             <strong style={{ fontSize: 20, fontVariantNumeric: "tabular-nums", color: e201.totalPayableMinor > 0 ? tone("warn").fg : tokens.fg }}>{rand(e201.totalPayableMinor)}</strong>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: ringTone === "neutral" ? tokens.muted : tone(ringTone).fg }}>
-              Due {formatDate(e201.dueDate)}{days != null && days >= 0 ? ` · in ${plural(days, "day", "days")}` : ""}
-            </span>
+            {filing ? (
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: tone("ok").fg }}>Filed {formatDate(filing.filedOn)}</span>
+            ) : (
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: ringTone === "neutral" ? tokens.muted : tone(ringTone).fg }}>
+                Due {formatDate(e201.dueDate)}{days != null && days >= 0 ? ` · in ${plural(days, "day", "days")}` : ""}
+              </span>
+            )}
             <span style={{ fontSize: 11.5, color: tokens.muted }}>From {e201.runs.join(", ")}</span>
           </div>
         </div>

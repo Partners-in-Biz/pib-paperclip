@@ -20,7 +20,7 @@ const OTHER = "22222222-2222-2222-2222-222222222222";
 describe("manifest", () => {
   it("declares the cockpit route", () => {
     expect(manifest.apiRoutes).toContainEqual(COCKPIT_ROUTE);
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.5.0");
   });
 });
 

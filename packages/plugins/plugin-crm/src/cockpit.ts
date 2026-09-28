@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   decisionStats,
   emptySnapshot,
   formatMoneyMinor,
@@ -17,6 +18,7 @@ import {
   type ActivityItem,
   type CockpitKpi,
   type CockpitSnapshot,
+  type FlowStageReport,
   type HealthCheck,
   type QualityMetric,
   type TeamMemberReport,
@@ -25,6 +27,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamReport } from "./agent.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { isLeadFollowUp, isReplyWork } from "./origins.js";
 import { knownCompanies } from "./setup-status.js";
 import { heldLeadStats } from "./store.js";
 
@@ -81,26 +84,150 @@ interface MoneyRow {
 }
 
 /** Pipeline money per currency → one display value: the default currency first, others named after it. */
-export function pipelineValue(rows: MoneyRow[], defaultCurrency: string): { value: string; raw: number; delta: string | null; deals: number } {
+export function pipelineValue(rows: MoneyRow[], defaultCurrency: string): { value: string; raw: number; currency: string; delta: string | null; deals: number } {
   const open = rows.filter((row) => n(row.open_minor) !== 0 || n(row.open_deals) > 0);
   const deals = open.reduce((sum, row) => sum + n(row.open_deals), 0);
-  if (open.length === 0) return { value: formatMoneyMinor(0, defaultCurrency), raw: 0, delta: null, deals: 0 };
+  if (open.length === 0) return { value: formatMoneyMinor(0, defaultCurrency), raw: 0, currency: defaultCurrency, delta: null, deals: 0 };
   const sorted = [...open].sort((a, b) => (a.currency === defaultCurrency ? -1 : b.currency === defaultCurrency ? 1 : n(b.open_minor) - n(a.open_minor)));
   const [first, ...rest] = sorted;
   const others = rest.map((row) => formatMoneyMinor(n(row.open_minor), row.currency));
   return {
     value: formatMoneyMinor(n(first!.open_minor), first!.currency),
     raw: n(first!.open_minor),
+    currency: first!.currency,
     delta: `${plural(deals, "open deal")}${others.length ? ` · plus ${others.join(", ")}` : ""}`,
     deals,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Company graph stages (kit FLOWS): lead.in and deal.open
+// ---------------------------------------------------------------------------
+
+/** A lead follow-up open longer than this is stuck (the Account Manager answers within a working day). */
+export const LEAD_STUCK_DAYS = 2;
+/** An open deal with nothing logged on it, its contact or its company, and no change to it, for this long is stuck. */
+export const DEAL_IDLE_DAYS = 14;
+
+/** Work issues the waiting list shows while no agent holds them (origin ids before and after 0.5.0). */
+export const FOLLOW_UP_ORIGINS = "^(reply|lead|handoff|quote|won|crm:(reply|lead-followup|sequence-refused|quote-deal|won-client)):";
+/** Lead follow-up issues (origin ids before and after 0.5.0). */
+export const LEAD_FOLLOW_UP_ORIGINS = "^(lead|crm:lead-followup):";
+
+const DAY_MS = 86_400_000;
+
+function ageDays(iso: string | null | undefined, now: number): number | null {
+  const time = iso ? Date.parse(iso) : Number.NaN;
+  return Number.isFinite(time) ? Math.max(0, Math.floor((now - time) / DAY_MS)) : null;
+}
+
+function oldest(...days: Array<number | null>): number | null {
+  const known = days.filter((day): day is number => day != null);
+  return known.length ? Math.max(...known) : null;
+}
+
+interface LeadFlowRow {
+  open: string;
+  stuck: string;
+  late: string;
+  blocked: string;
+  unowned: string;
+  oldest: string | null;
+}
+
+/**
+ * `lead.in`: leads waiting for a first follow-up, meaning open follow-up issues plus
+ * own leads held while the CRM is off or unsaved. Stuck: follow-ups open over
+ * 2 days, blocked or with nobody assigned, and every held lead.
+ */
+export async function leadInReport(ctx: PluginContext, companyId: string, ready: { enabled: boolean; saved: boolean }, now = Date.now()): Promise<FlowStageReport> {
+  const rows = await ctx.db.query<LeadFlowRow>(
+    `SELECT count(*)::text AS open,
+            count(*) FILTER (WHERE i.created_at < now() - make_interval(days => $4::int) OR i.status = 'blocked'
+                               OR (i.assignee_agent_id IS NULL AND i.assignee_user_id IS NULL))::text AS stuck,
+            count(*) FILTER (WHERE i.created_at < now() - make_interval(days => $4::int))::text AS late,
+            count(*) FILTER (WHERE i.status = 'blocked')::text AS blocked,
+            count(*) FILTER (WHERE i.assignee_agent_id IS NULL AND i.assignee_user_id IS NULL)::text AS unowned,
+            min(i.created_at)::text AS oldest
+       FROM public.issues i
+      WHERE i.company_id::text = $1 AND i.origin_kind = $2 AND i.origin_id ~ $3 AND i.status NOT IN ('done', 'cancelled')`,
+    [companyId, ORIGIN, LEAD_FOLLOW_UP_ORIGINS, LEAD_STUCK_DAYS],
+  );
+  const row = rows[0];
+  const held = await heldLeadStats(ctx, companyId);
+  const late = n(row?.late);
+  const unowned = n(row?.unowned);
+  const blocked = n(row?.blocked);
+  const why: string[] = [];
+  if (late) why.push(`${late} open over ${LEAD_STUCK_DAYS} days`);
+  if (unowned) why.push(`${unowned} with nobody assigned`);
+  if (blocked) why.push(`${blocked} blocked`);
+  if (held.count) {
+    why.push(`${held.count} held until ${!ready.enabled ? "the CRM is switched on" : !ready.saved ? "the CRM settings are saved" : "the next run adds them"}`);
+  }
+  return {
+    stage: "lead.in",
+    count: n(row?.open) + held.count,
+    stuck: n(row?.stuck) + held.count,
+    stuckReason: why.length ? why.join(", ") : null,
+    oldestDays: oldest(ageDays(row?.oldest, now), ageDays(held.oldest, now)),
+  };
+}
+
+interface DealFlowRow {
+  open: string;
+  idle: string;
+  oldest: string | null;
+}
+
+/**
+ * `deal.open`: deals in an open stage and their value, the same numbers as the
+ * "Open pipeline" KPI (default currency first). Stuck: nothing logged on the
+ * deal, its contact or its company, and no change to the deal, for 14 days.
+ */
+export async function dealOpenReport(
+  ctx: PluginContext,
+  companyId: string,
+  pipeline: { raw: number; currency: string; deals: number } | null,
+  now = Date.now(),
+): Promise<FlowStageReport> {
+  const rows = await ctx.db.query<DealFlowRow>(
+    `SELECT count(*)::text AS open,
+            count(*) FILTER (WHERE GREATEST(d.updated_at, COALESCE(a.last_at, d.updated_at)) < now() - make_interval(days => $2::int))::text AS idle,
+            min(d.created_at)::text AS oldest
+       FROM ${t(ctx, "deals")} d
+       JOIN ${t(ctx, "pipeline_stages")} s ON s.id = d.stage_id
+       LEFT JOIN LATERAL (
+         SELECT max(x.created_at) AS last_at
+           FROM ${t(ctx, "activities")} x
+          WHERE x.company_id = d.company_id
+            AND ((x.record_type = 'deal' AND x.record_id = d.id)
+              OR (x.record_type = 'contact' AND x.record_id = d.contact_id)
+              OR (x.record_type = 'company' AND x.record_id = d.account_id))
+       ) a ON true
+      WHERE d.company_id = $1 AND s.kind = 'open'`,
+    [companyId, DEAL_IDLE_DAYS],
+  );
+  const row = rows[0];
+  const idle = n(row?.idle);
+  return {
+    stage: "deal.open",
+    count: pipeline ? pipeline.deals : n(row?.open),
+    stuck: idle,
+    stuckReason: idle ? `${idle} with no activity for ${DEAL_IDLE_DAYS} days` : null,
+    amountMinor: pipeline ? pipeline.raw : null,
+    currency: pipeline ? pipeline.currency : null,
+    oldestDays: ageDays(row?.oldest, now),
   };
 }
 
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
   const snap = emptySnapshot(PLUGIN_ID, "CRM");
   let defaultCurrency = "ZAR";
+  let saved = false;
   try {
     const config = await readConfig(ctx, companyId);
+    saved = Object.keys(config).length > 0;
     if (typeof config.defaultCurrency === "string" && /^[A-Z]{3}$/.test(config.defaultCurrency)) defaultCurrency = config.defaultCurrency;
   } catch {
     // default
@@ -132,8 +259,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     return rows[0] ?? null;
   }, null as Counts | null);
 
-  if (money) {
-    const pipeline = pipelineValue(money, defaultCurrency);
+  const pipeline = money ? pipelineValue(money, defaultCurrency) : null;
+  if (pipeline) {
     snap.kpis.push({ key: "pipeline", label: "Open pipeline", value: pipeline.value, raw: pipeline.raw, tone: "neutral", delta: pipeline.delta, href: HREF, group: "pipeline" });
   }
   if (counts) {
@@ -160,6 +287,12 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, counts), [] as QualityMetric[]);
+
+  // Live numbers for the stages this plugin owns in the company graph (kit FLOWS). A stage that cannot be counted reports nothing.
+  const enabled = await isModuleEnabled(ctx, companyId, PLUGIN_ID).catch(() => true);
+  const leadIn = await part(ctx, "flow:lead.in", () => leadInReport(ctx, companyId, { enabled, saved }), null as FlowStageReport | null);
+  const dealOpen = await part(ctx, "flow:deal.open", () => dealOpenReport(ctx, companyId, pipeline), null as FlowStageReport | null);
+  snap.flows = cleanFlowReports(PLUGIN_ID, [leadIn, dealOpen].filter((report): report is FlowStageReport => report != null));
   return snap;
 }
 
@@ -206,21 +339,21 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       since: row.created_at,
     };
   });
-  // Lead and reply work that no agent holds (no Account Manager or Operator yet).
+  // Lead, reply and hand-off work that no agent holds (no Account Manager or Operator yet); origin ids before and after 0.5.0.
   const followUps = await ctx.db.query<{ id: string; title: string; origin_id: string; created_at: string | null; assignee_user_id: string | null }>(
     `SELECT i.id::text AS id, i.title, i.origin_id, i.created_at::text AS created_at, i.assignee_user_id::text AS assignee_user_id
        FROM public.issues i
-      WHERE i.company_id::text = $1 AND i.origin_kind = $2 AND (i.origin_id LIKE 'reply:%' OR i.origin_id LIKE 'lead:%' OR i.origin_id LIKE 'handoff:%' OR i.origin_id LIKE 'quote:%' OR i.origin_id LIKE 'won:%')
+      WHERE i.company_id::text = $1 AND i.origin_kind = $2 AND i.origin_id ~ $3
         AND i.status NOT IN ('done', 'cancelled') AND i.assignee_agent_id IS NULL
       ORDER BY i.created_at LIMIT 20`,
-    [companyId, ORIGIN],
+    [companyId, ORIGIN, FOLLOW_UP_ORIGINS],
   );
   for (const row of followUps) {
-    const lead = row.origin_id.startsWith("lead:");
+    const lead = isLeadFollowUp(row.origin_id);
     items.push({
       key: `followup:${row.id}`,
       title: row.title,
-      why: `${lead ? "A lead is waiting for a reply" : row.origin_id.startsWith("reply:") ? "A contact replied" : "CRM work is waiting"} and no agent holds it${row.assignee_user_id ? "" : " (nobody is assigned)"}. Hire the Account Manager in Setup → Team so agents do this.`,
+      why: `${lead ? "A lead is waiting for a reply" : isReplyWork(row.origin_id) ? "A contact replied" : "CRM work is waiting"} and no agent holds it${row.assignee_user_id ? "" : " (nobody is assigned)"}. Hire the Account Manager in Setup → Team so agents do this.`,
       href: `/issues/${row.id}`,
       issueId: row.id,
       kind: "judgement",

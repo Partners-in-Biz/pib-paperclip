@@ -1,6 +1,6 @@
 # Billing
 
-Paperclip plugin `partnersinbiz.billing` (0.4). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
+Paperclip plugin `partnersinbiz.billing` (0.5). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
 Agents draft and ask. A person approves every send, every money change and voids. Billing has no agent role of its own: the Account Manager (CRM plugin) carries the `pib-invoice-draft` skill, and Billing's work goes to it (else the Bookkeeper, the Operator, the owner).
 
@@ -34,6 +34,13 @@ Asking twice returns the open issue; two requests at the same moment leave one a
 - **Overdue invoices** (Mondays 06:45 SAST, kept current daily): one issue with the next step for each overdue invoice (reminder, payment check, ask the owner).
 - **Quote replies**: a reply to a quote email (the Mailbox's reply context, or a sent quote's number in the subject) opens one issue per quote with the reply and next steps.
 - **Deal won** (`plugin.partnersinbiz.crm.deal.won`): one drafting issue per deal ("Deal won: … draft the quote, invoice or retainer"), idempotent by the event key; skipped when the deal is already invoiced.
+
+## Flows and done checks (0.5)
+
+- **Stages.** The Cockpit snapshot (`GET /cockpit`, hourly `cockpit.snapshot`) carries `flows` for Billing's lead-to-cash stages, each from the same query as its KPI: `quote.draft` and `invoice.draft` (drafts nobody asked to send; stuck = over a day old), `quote.approval` and `invoice.approval` (a send approval is open), `quote.sent` (sent, still valid, not being re-sent; stuck = no answer after 14 days), `invoice.open` (owed as at today; stuck = overdue, with `oldestDays`). Money is given when a stage is in one currency.
+- **Origin ids.** Every issue Billing opens has `billing:<kind>:<id>`: work for agents `billing:drafts-to-send:<company>`, `billing:overdue-invoices:<company>`, `billing:quote-reply:<quote>`, `billing:deal-won:<deal>`, `billing:bill-from-email:<bill>`; person-only decisions `billing:invoice-send:`, `quote-send:`, `invoice-pay:`, `record-payment:`, `credit-note:`, `reminder:`, `payment-check:`, `bank-match:`, `bill-approval:`. Standing issues opened before 0.5 get the new id from the daily job (migration `011` renames their keys).
+- **Done checks** (kit `registerDoneChecks`): when an agent closes one of the five kinds of work, Billing checks the outcome and reopens it with what is missing (after three early closes it goes to the Operator). Drafts: no draft over a day old without a send request. Overdue: every listed invoice that needs a step has a reminder request, a payment check, a note or is paid. Quote reply: the status changed, a new quote for the deal, or a logged answer. Deal won: a quote, invoice or retainer for the deal or its client since the issue opened. Complete the bill: lines and an approval request. Approvals are never checked.
+- **`log-follow-up`** (`invoiceId` | `quoteId` | `billId` | `dealId`, `note`, `mailDraftId`): an internal note for what leaves no other trace (a reply drafted in the Mailbox, what the owner decided). The checks count it; `invoice-detail` and `quote-detail` show it as `followUps`. Migration `011_billing.sql` adds `follow_ups` and `work_issues.opened_at` / `detail`.
 
 ## Hand-offs
 

@@ -53,9 +53,11 @@ import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
 import { findClient, scopeParam } from "./service/scope.js";
 import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
-import { displayTitle, sprintOverviews } from "./service/overview.js";
+import { displayTitle, sprintOverviews, withRunFailures } from "./service/overview.js";
+import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated } from "./service/tasks.js";
+import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
 import { setupChecklist } from "./service/setup.js";
@@ -86,10 +88,14 @@ const plugin = definePlugin({
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
     });
+    // One subscription for every issue event (a second one, e.g. kit registerDoneChecks, would deliver each event twice).
     ctx.events.on("issue.updated", async (event) => {
       if (!event.entityId || !event.companyId) return;
       try {
         if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
+        // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
+        // so an early close never marks the task done, tells Social or opens a merge task.
+        if (await checkAgentClose(ctx, event)) return;
         await onIssueUpdated(e, event.companyId, event.entityId);
       } catch (error) {
         ctx.logger.info("SEO issue sync failed", { issueId: event.entityId, error: errorMessage(error) });
@@ -331,12 +337,14 @@ function registerActions(e: Env) {
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
-    const [needsYou, setup, projects, playbook, overviews] = await Promise.all([
+    const [needsYou, setup, projects, playbook, overviews, timed] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
       siteProjectOptions(e, companyId, sprint.siteUrl).catch(() => []),
       playbookSummary(e, sprint).catch(() => null),
       sprintOverviews(ctx.db, companyId, [sprint], info.today, agent),
+      // Tasks whose runs stop at the workspace check show as stuck, with the fix (engine/due.ts).
+      withRunFailures(ctx.db, companyId, tasks),
     ]);
     const byKeyword: Record<string, Array<{ on: string | null; position: number | null; source: string }>> = {};
     for (const row of history) (byKeyword[row.keywordId] ??= []).push({ on: row.recordedOn, position: row.position, source: row.source });
@@ -346,7 +354,7 @@ function registerActions(e: Env) {
       scoreboard: sprint.scoreboard,
       today: sprint.today,
       // Template tasks read in their plan's current (plain) words.
-      tasks: tasks.map((task) => ({ ...task, title: displayTitle(task, sprint.templateId) })),
+      tasks: timed.map((task) => ({ ...task, runsFailing: isRunning(sprint.status) && task.runsFailing, title: displayTitle(task, sprint.templateId) })),
       keywords: keywords.map((k) => ({ ...k, history: (byKeyword[k.id] ?? []).slice(-60) })),
       backlinks,
       content,

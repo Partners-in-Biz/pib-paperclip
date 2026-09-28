@@ -34,6 +34,7 @@ import { createContact, linkContact, normalizeEmail, type ContactDraft } from ".
 import { leadBand } from "./lead-levels.js";
 import { openIssueOnce, scoreLead } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { LEGACY_ORIGINS, originFor } from "./origins.js";
 import { companyPrefix, crmLink, pagePath, refOf, type ClientKind } from "./refs.js";
 import { recordAssignee } from "./routing.js";
 import { heldLeadCompanies, holdLead, insertClientLead, markHeldLeadDone, markHeldLeadFailed, pendingHeldLeads } from "./store.js";
@@ -309,7 +310,8 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
   const prefix = await companyPrefix(ctx, companyId);
   const issueId = await openIssueOnce(ctx, {
     companyId,
-    originId: `lead:${lead.key}`,
+    originId: originFor.leadFollowUp(lead.key),
+    legacyOriginId: LEGACY_ORIGINS.leadFollowUp(lead.key),
     title: `Follow up ${created ? "new lead" : "lead"}: ${fresh.name}`.slice(0, 200),
     description: leadIssueDescription(fresh, lead, { created, score: score ? leadBand(score) : null, prefix, linkedCompany }),
     assignee: await recordAssignee(ctx, companyId, created ? null : fresh),
@@ -368,7 +370,9 @@ export function leadIssueDescription(
     "",
     whoReplies(lead),
     "",
-    "**Your part, within one working day:** qualify them (fit, need, budget, timing), log what you learn (`log-activity`), set the next step (`update-contact` with nextActionKind and nextActionDueAt), and create a deal (`create-deal`) when they want a quote. Qualified: set lifecycle prospect.",
+    "**Your part, within one working day:** qualify them (fit, need, budget, timing), log what you learn (`log-activity`), set the next step (`update-contact` with nextActionKind and nextActionDueAt), and create a deal (`create-deal`) when they want a quote. Qualified: set lifecycle prospect. Not a fit: log why and set lifecycle churned.",
+    "",
+    "**Done when** something is logged on them since the lead came in, and they have a next action, a deal, or a lifecycle decision. Closing checks it.",
     "",
     `Contact: \`${refOf("contact", contact.id)}\` · ${crmLink(prefix, "contact", contact.id)}`,
   ].join("\n");

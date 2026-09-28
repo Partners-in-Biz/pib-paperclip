@@ -12,7 +12,7 @@ import { reviewerAgentId, reviewerBrief, wakeIssue } from "@partnersinbiz/pib-pl
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { destinationsForPost, getAccountsByIds, postMedia, table, type PostRow } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, SOCIAL_ORIGINS, socialProjectId } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
 import { isSocialPlatform, PLATFORM_LABELS, type PostStatus } from "./platforms.js";
 
@@ -117,7 +117,7 @@ export async function routePostReview(ctx: PluginContext, actor: ReviewActor, po
       }),
       priority: "medium",
       originKind: ORIGIN_KIND,
-      originId: `review:${post.id}`,
+      originId: `${SOCIAL_ORIGINS.review}${post.id}`,
       assigneeAgentId: reviewer,
       wakeReason: "Social post needs a review",
     });

@@ -80,10 +80,10 @@ export const COMPANY_FLOWS = `## Main flows
 Each step names the role that owns it. If that role is not staffed, the Operator gets the work.
 
 ### Lead to cash
-1. **Lead in** (Social DMs and comments, the Mailbox) → the CRM stores it and opens a follow-up for the **Account Manager**. Leads from a *client's* channels stay with that client; they never become our contacts.
+1. **Lead in** (Social DMs and comments, the Mailbox) → the CRM stores it and opens a follow-up for the **Account Manager** (done: work logged plus a next action, a deal, or a lifecycle call; churned when not a fit). Leads from a *client's* channels stay with that client; they never become our contacts.
 2. **Qualify** (Account Manager): \`find-records\` / \`get-company\` before creating anything, then the deal. Replies: the Social agent answers social DMs; email replies are Mailbox drafts.
 3. **Quote** (Account Manager): \`create-quote\` with the \`dealId\` → \`request-quote-send\` → a person approves → the Mailbox sends it. When the customer replies, Billing opens an issue for the Account Manager.
-4. **Won**: quote accepted or deal moved to won → the CRM makes the client a customer, Billing opens a drafting task, and on a first win the Cockpit opens onboarding.
+4. **Won**: quote accepted or deal moved to won (a pick-the-deal issue: \`move-deal\` to won with the \`quoteId\`) → the CRM makes the client a customer, Billing opens a drafting task, and on a first win the Cockpit opens onboarding.
 5. **Invoice** (Account Manager): \`convert-quote\` or \`create-invoice\` → \`request-invoice-send\` → a person approves → sent. Accounting posts the journal.
 6. **Paid**: the Bookkeeper matches the bank line, or a proof of payment goes through \`request-payment-check\` → Billing settles it and tells the CRM.
 7. **Overdue** (Account Manager): Billing's weekly "Overdue invoices" issue → reminders through approval.
@@ -97,16 +97,16 @@ On a first win the Cockpit opens one onboarding issue for the **Operator**, who 
 - **Every month** the Account Manager sends the client a report built from each module's client workspace. **Offboarding:** lifecycle churned, stop sequences and campaigns, a hand-off to each module to stop work, and keep the records.
 
 ### Content
-SEO publishes a page (merged and returning 200) → the Social agent gets a repurpose task → drafts with proposed times (a LinkedIn post, an X post with a first-comment reply, an Instagram post) → the Reviewer checks → a person approves and each post is scheduled at its time → published → the posts are linked back to the SEO content (\`link-social-post\`) → metrics at 1 hour, 1 day, 7 and 30 days → the Growth Lab learns and proposes playbook changes.
+SEO publishes a page (merged and returning 200) → the Social agent gets a repurpose task → drafts (\`create-post\` with the task's \`handoffKey\`) with proposed times (a LinkedIn post, an X post with a first-comment reply, an Instagram post) → the Reviewer checks → a person approves and each post is scheduled at its time → published → the posts are linked back to the SEO content (\`link-social-post\`) → metrics at 1 hour, 1 day, 7 and 30 days → the Growth Lab learns and proposes playbook changes.
 
 ### Campaigns and sequences
 The Account Manager builds the campaign (audience by tags; "all contacts" needs a person's explicit OK) → \`request-campaign-approval\` → a person approves and it launches (any edit after approval cancels the approval) → the Mailbox sends each step as marketing mail → replies stop, suppress or come back as issues. CRM sequences are one-to-one follow-ups with their own approval. **Opt-outs** (\`set-email-status\` in the CRM, \`suppress-address\` in Campaigns, or a reply "STOP") are shared, and every module honours them.
 
 ### The books (Bookkeeper)
-Bank statement by email (the issue gives the message and attachment ids) or upload → Mailbox \`get-attachment\` → Accounting \`import-statement\` → match lines to invoices and bills → reconcile → month-end: \`prepare-reconciliation\` and \`prepare-vat201\` → a person approves each.
+Bank statement by email (the issue gives the message and attachment ids) or upload → Mailbox \`get-attachment\` → Accounting \`import-statement\` (or \`mark-statement-email\` when it is no statement or a duplicate) → match lines to invoices and bills → reconcile → month-end: \`prepare-reconciliation\` and \`prepare-vat201\` → a person approves each (\`mark-not-needed\`, with a reason, for a step the month does not need).
 
 ### Payroll (Payroll Clerk)
-Five days before pay day Payroll opens "Prepare pay run" → create, calculate and adjust → \`request-pay-run-approval\` → a person approves, which locks the run → payslips emailed → journals posted → an "EMP201 due" issue for the Bookkeeper (else the Clerk): export it, then one \`ask-owner\` for the owner to file and pay by the 7th.
+Five days before pay day Payroll opens "Prepare pay run" → create, calculate and adjust → \`request-pay-run-approval\` → a person approves, which locks the run → payslips emailed → journals posted → an "EMP201 due" issue for the Bookkeeper (else the Clerk): export it, then one \`ask-owner\` for the owner to file and pay by the 7th; their answer → \`mark-emp201-filed\`.
 
 ### Every day (Operator)
 07:00: review every module → unblock agents, route unassigned work, check routines are on, roles are staffed and asks are answered → one daily brief to the owner with everything waiting on them. Mondays: the retro and the memory review.
@@ -147,6 +147,7 @@ Roles are staffed in **Setup → Team** (hire, pick an existing agent, change). 
 - **People are asked only for** money, legal, one-time grants (a login consent, a key, a DNS record) and real judgement: through the module's approval step, or \`ask-owner\` for everything else (see "Asking a person" and "Who decides what"). Never ask a person to do what an agent can do.
 - **Outward-facing work** (posts, emails, invoices, quotes, pull requests) goes through its module's approval step; when the company has a Reviewer, it checks first. Never send, publish, pay or merge outside those steps.
 - **The Operator** reviews the company every morning, unblocks agents and sends the owner one daily brief. If you are stuck, say exactly what you need on the issue; the Operator routes it.
+- **Done-checks**: closing an issue a module opened runs its done-check. If the issue reopens, it lists what is missing: finish those items, then close it. Work that leaves no other trace is recorded with the module's log tool (Billing \`log-follow-up\`, Campaigns \`log-reply\`, SEO \`complete-task\`). **Cockpit → Flows** shows every flow stage by stage: what is stuck, who it waits on, and what is switched off.
 
 ## Where knowledge lives
 | Kind | Where | Who keeps it |

@@ -30,7 +30,7 @@ import { clientPrefix } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { iso, table, type InboxItemRow } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, scopeLine, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
 import { socialOn } from "./modules.js";
 
 export const CONTENT_PUBLISHED_EVENT = pluginEvent(PIB_PLUGINS.seo, HANDOFF_EVENTS.contentPublished);
@@ -97,10 +97,10 @@ export function repurposeDescription(content: ContentPublished, row: { client_ki
     "3. An Instagram post: the visual, the caption and where the link goes (bio link or story), as a draft post.",
     "",
     "Rules:",
-    "- Drafts with a proposed time: `create-post` with `scheduledAt`, `validate-post`, then `request-review`. Never approve; a person approves every post, and approval schedules it at its proposed time.",
+    `- Drafts with a proposed time: \`create-post\` with \`handoffKey: "${content.key}"\` (links the draft to this page) and \`scheduledAt\`, \`validate-post\`, then \`request-review\`. Never approve; a person approves every post, and approval schedules it at its proposed time.`,
     "- Use only facts from the page. No new claims or numbers.",
     "- Use only this scope's accounts and media. Attach an account only when the scope has one for that platform.",
-    "- Close this issue with the post ids you drafted: the SEO agent links them to the page (`link-social-post`).",
+    "- Close this issue with the post ids you drafted: the SEO agent links them to the page (`link-social-post`). The close is checked: at least one draft for this page must exist in this scope.",
     "",
     `Hand-off key: \`${content.key}\``,
   ].filter((line): line is string => line !== null).join("\n");
@@ -143,7 +143,7 @@ export async function openRepurposeTask(ctx: PluginContext, companyId: string, c
     description: repurposeDescription(content, row),
     priority: "medium",
     originKind: ORIGIN_KIND,
-    originId: `repurpose:${content.key}`,
+    originId: `${SOCIAL_ORIGINS.repurpose}${content.key}`,
     assigneeAgentId: assignee.assigneeAgentId,
     assigneeUserId: assignee.assigneeUserId,
     wakeReason: "New SEO page to repurpose",

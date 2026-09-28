@@ -22,6 +22,7 @@ import {
   pluginEvent,
   publishCockpitSnapshot,
   readConfig,
+  checkDoneOnUpdate,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -163,7 +164,10 @@ import {
   reemitHandoffs,
   setEmailStatus,
   SUPPRESSION_EVENTS,
+  withQuote,
 } from "./handoffs.js";
+import { closeStands, CRM_DONE_CHECKS, doneCheckIssue } from "./done-checks.js";
+import { originFor } from "./origins.js";
 import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
 import {
   findRecords,
@@ -342,7 +346,12 @@ const plugin = definePlugin({
       if (event.companyId) await afterMutation(ctx, event.companyId, "invoice.paid", {});
     });
     for (const eventType of SUPPRESSION_EVENTS) ctx.events.on(eventType, (event) => onContactSuppressed(ctx, event));
-    ctx.events.on("issue.updated", (event) => onIssueUpdated(ctx, event));
+    // One subscription (a second would run both twice). Done-checks first, so an agent's
+    // early close is reopened before the step handler would move the contact on.
+    ctx.events.on("issue.updated", async (event) => {
+      await checkDoneOnUpdate(ctx, CRM_DONE_CHECKS, event);
+      await onIssueUpdated(ctx, event);
+    });
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
@@ -1313,7 +1322,10 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
 async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, how = "in the CRM") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
   const stage = await resolveStage(ctx, deal, requiredString(params, "stageId"));
-  const moved = await moveDealTo(ctx, deal, stage, how);
+  // The accepted quote this move closes (a "pick the deal" hand-off): the deal records it.
+  const quoteId = optionalString(params, "quoteId");
+  if (quoteId && stageKind(stage.kind) !== "won") throw new CrmError("quoteId goes with stageId won: an accepted quote closes the deal.");
+  const moved = await moveDealTo(ctx, quoteId ? await withQuote(ctx, deal, quoteId.slice(0, 200)) : deal, stage, how);
   return {
     ...moved.deal,
     stageName: stage.name,
@@ -1572,7 +1584,7 @@ async function openDueSteps(ctx: PluginContext) {
           title: copy.title,
           description: note ? `${note}\n\n${copy.description}` : copy.description,
           originKind: "plugin:partnersinbiz.crm",
-          originId: enrollment.id,
+          originId: originFor.step(enrollment.id, enrollment.stepPosition),
           ...(await contactAssignee(ctx, enrollment.companyId, contact)),
           wakeReason: "CRM sequence step is due",
         });
@@ -1700,6 +1712,8 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   // Marking a step's issue done moves the contact on, whatever the delivery: a
   // manual step is done, a sent step's message went out (its issue says to mark
   // it done only then), and an email step that could not be sent was handled by hand.
+  // An agent's close counts only when the step's done-check passes (else it is reopened).
+  if (event.actorType === "agent" && !(await closeStands(ctx, doneCheckIssue(issue, event.companyId)))) return;
   const steps = await listSteps(ctx, enrollment.sequenceId);
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }

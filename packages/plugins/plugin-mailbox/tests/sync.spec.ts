@@ -139,7 +139,7 @@ describe("sync-mailbox", () => {
     await syncAccount(env, await loaded(), { ...store.accounts.get("acc-1")! }, await run());
     const issues = [...host.issues.values()];
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ assigneeAgentId: "agent-42", status: "todo", originKind: "plugin:partnersinbiz.mailbox", originId: "thread:acc-1:th-1" });
+    expect(issues[0]).toMatchObject({ assigneeAgentId: "agent-42", status: "todo", originKind: "plugin:partnersinbiz.mailbox", originId: "mailbox:reply:acc-1:th-1" });
     expect(host.wakeups).toEqual([issues[0]!.id]);
   });
 });

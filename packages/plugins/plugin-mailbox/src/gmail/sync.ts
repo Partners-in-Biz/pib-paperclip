@@ -48,6 +48,7 @@ import { withGmail } from "./tokens.js";
 import { REPLY_ISSUE_CATEGORIES, triageMessage, type TriageRunContext } from "./triage.js";
 import type { AccountRow, AttachmentMeta, BounceInfo, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
 import { suppressFromInbound } from "../suppression.js";
+import { replyOrigin } from "../done-checks.js";
 
 export { SYNC_JOB_KEY } from "../constants.js";
 export const RESYNC_QUERY = "newer_than:7d -in:chats -in:drafts -in:spam -in:trash";
@@ -529,7 +530,7 @@ async function openReplyIssues(env: Env, loaded: LoadedConfig, account: AccountR
         description: replyIssueDescription(row, account.address),
         ...assignee,
         originKind: `plugin:${PLUGIN_ID}`,
-        originId: `thread:${account.id}:${threadId}`,
+        originId: replyOrigin(account.id, threadId),
         priority: (triage.urgency ?? 0) >= 2.5 ? "high" : "medium",
         wakeReason: "Mail needs a reply",
       });
@@ -557,7 +558,9 @@ export function replyIssueDescription(row: MessageRow, accountAddress: string): 
     "",
     `1. Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${row.id}\`)${(row.attachments ?? []).length ? `; open an attachment with \`get-attachment\`` : ""}.`,
     `2. Draft the answer with \`create-draft\` (accountId \`${row.account_id}\`, replyToMessageId \`${row.id}\`) and send it with \`send-draft\` when your delegation allows sending. Log it on the client in the CRM${row.client_ref ? ` (\`${row.client_kind ?? "company"}:${row.client_ref}\`)` : ""}.`,
-    "3. Mark this issue done with what you sent. Never answer phishing or legal threats: ask the owner instead.",
+    "3. Mark this issue done with what you drafted or sent. Never answer phishing or legal threats: ask the owner instead (`partnersinbiz.cockpit:ask-owner`).",
+    "",
+    "**Done when** the thread has your reply draft or a sent reply, or `correct-triage` says no reply is needed (needsReply false). Closing checks it.",
     "",
     `No access to this mailbox? \`list-mailboxes\` shows your delegation. Ask the owner once (\`partnersinbiz.cockpit:ask-owner\`) to give you access in Mailbox → Mailboxes → Give an agent access.`,
   ].join("\n");

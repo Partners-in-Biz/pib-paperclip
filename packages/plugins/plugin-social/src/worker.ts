@@ -17,6 +17,7 @@ import {
   trackJob,
   registerCrmProjection,
   registerHireWatch,
+  registerDoneChecks,
   registerModuleWatch,
   rememberPluginUiBase,
   SETUP_STATUS_ROUTE,
@@ -31,6 +32,7 @@ import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
 import { cockpitSnapshot, publishCockpitSnapshots } from "./cockpit.js";
 import { registerHandoffs } from "./handoff.js";
+import { SOCIAL_DONE_CHECKS } from "./done-checks.js";
 import { SOCIAL_HIRE_ROLE, SOCIAL_MATCH_ROLE } from "./hire.js";
 import { pollInboxJob } from "./inbox.js";
 import {
@@ -515,6 +517,10 @@ const plugin = definePlugin({
     // Cockpit roles (Operator, Reviewer) and hand-offs (SEO content → repurpose task; the CRM's answers to leads).
     registerRoleWatch(ctx);
     registerHandoffs(ctx);
+    // An agent's close of Social's work issues is checked against Social's own data (repurpose drafts, approved posts
+    // with no time, reconnects, the reply queue, failed posts); unfinished work is reopened with what is missing.
+    // This is the plugin's only issue.updated subscription (a second one would deliver each event twice).
+    registerDoneChecks(ctx, SOCIAL_DONE_CHECKS);
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await ensure(event.companyId);
     });

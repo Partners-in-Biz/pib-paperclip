@@ -176,7 +176,7 @@ describe("launch on approval", () => {
     await issueUpdated(harness, issueId, PERSON);
     expect(store.campaigns![0]!.approval_issue_id).toBeNull();
     const revise = (await harness.ctx.issues.list({ companyId: CO })).find((row) => row.title.startsWith("Revise campaign"));
-    expect(revise).toMatchObject({ assigneeAgentId: "agent-camp", originId: `revise:${issueId}` });
+    expect(revise).toMatchObject({ assigneeAgentId: "agent-camp", originId: `campaigns:revise:${store.campaigns![0]!.id}:${issueId}` });
     expect(revise!.description).toContain("request-campaign-approval");
   });
 

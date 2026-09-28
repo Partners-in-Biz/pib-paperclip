@@ -12,7 +12,7 @@ import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { createWorkIssue, isModuleEnabled, parseClientParam, PIB_PLUGINS, type ClientKind, type DealWon, type InvoicePaid, type RolesPayload, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
 import { formatAmount, recordActivity } from "./activity.js";
 import { crmClient } from "./clients.js";
-import { ORIGIN } from "./constants.js";
+import { ORIGIN, ORIGIN_ID } from "./constants.js";
 import { message, type Env } from "./env.js";
 import { linkFor } from "./health.js";
 import { NAMESPACE } from "./namespace.js";
@@ -130,7 +130,7 @@ export async function openOnboarding(env: Env, companyId: string, deal: { key: s
       description: content.description,
       priority: "high",
       originKind: ORIGIN.onboarding as `plugin:${string}`,
-      originId: `onboarding:${deal.clientRef}`,
+      originId: `${ORIGIN_ID.onboarding}${deal.clientRef}`,
       ...(route.assigneeAgentId ? { assigneeAgentId: route.assigneeAgentId } : route.assigneeUserId ? { assigneeUserId: route.assigneeUserId } : {}),
       wakeReason: `New client won: onboard ${deal.clientName}`,
     });

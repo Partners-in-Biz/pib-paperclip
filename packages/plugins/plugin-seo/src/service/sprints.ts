@@ -22,7 +22,8 @@ import { addDays } from "../engine/time.js";
 import { dueDayFor, PHASE_NAMES, TEMPLATE_VERSION, type SprintPhase } from "../templates/outrank-90.js";
 import { BUSINESS_TYPES, businessTypeOf, defaultBusinessType, planFor, planOf, type BusinessType, type PlanVariant } from "../templates/plans.js";
 import { ensureProject, resolveAgent } from "./agent.js";
-import { sprintOverviews, type SprintOverview } from "./overview.js";
+import { sprintOverviews, withRunFailures, type SprintOverview } from "./overview.js";
+import { RUNS_TROUBLE } from "../engine/due.js";
 import { plural } from "../engine/plain.js";
 import {
   actorLabel,
@@ -347,7 +348,8 @@ export async function todayTool(env: Env, companyId: string, params: Params) {
 
 export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint) {
   const clock = clockFor(sprint, info.today);
-  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: OPEN_TASK_STATUSES });
+  // Tasks whose runs stop at the workspace check are stuck, not blocked on a person (engine/due.ts).
+  const tasks = await withRunFailures(env.ctx.db, sprint.companyId, await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: OPEN_TASK_STATUSES }));
   const due = tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day);
   const brief = (t: db.SprintTask) => ({
     taskId: t.id,
@@ -370,8 +372,9 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const notStarted = due.filter((t) => t.status === "not_started");
   const agentWork = notStarted.filter((t) => t.owner === "agent");
   // Person tasks listed on Needs you are not the agent's work in progress.
-  const inProgress = due.filter((t) => t.status === "in_progress" && t.assigneeKind !== "needs_you");
-  const blocked = due.filter((t) => t.status === "blocked");
+  const inProgress = due.filter((t) => t.status === "in_progress" && t.assigneeKind !== "needs_you" && !t.runsFailing);
+  const blocked = due.filter((t) => t.status === "blocked" && !t.runsFailing);
+  const runsFailing = isRunning(sprint.status) ? due.filter((t) => t.runsFailing) : [];
   const gsc = integrations.find((i) => i.provider === "gsc");
   const sa = await loadServiceAccount(info);
   const needsYou = await needsYouView(env, info, sprint).catch(() => null);
@@ -394,6 +397,11 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (sprint.siteAccess === "unlinked") {
     const waiting = notStarted.filter((t) => t.owner === "agent" && !t.issueId && isCodeTask(t)).length;
     if (waiting > 0) next.push(`${plural(waiting, "code task")} ${waiting === 1 ? "waits" : "wait"} for the site repo link (on Needs you). If you know the repo's project, link it with link-site.`);
+  }
+  if (runsFailing.length > 0) {
+    next.push(
+      `${plural(runsFailing.length, "task issue")} (${runsFailing.slice(0, 3).map((t) => t.issueIdentifier ?? t.title).join(", ")}) can't start: ${RUNS_TROUBLE}. Nothing you do there runs until a person fixes the project's Codebase; the Cockpit's System health shows it to them. Do not retry them; work the other tasks.`,
+    );
   }
   if (inProgress.length > 0) next.push(`Finish the ${plural(inProgress.length, "task")} in progress first.`);
   if (agentWork.length > 0) next.push(`Work the ${plural(agentWork.length, "due agent task")}, oldest week first; complete each with complete-task and evidence.`);

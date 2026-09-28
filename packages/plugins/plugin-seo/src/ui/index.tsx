@@ -174,7 +174,11 @@ export function SeoPage({ context }: PluginPageProps) {
   const settings = data?.settings;
   const client = scope ? data?.client ?? null : null;
   const sprints = data?.sprints ?? [];
-  const stuck = sprints.filter((s) => !s.legacy && RUNNING.includes(s.status)).reduce((n, s) => n + (s.tasks?.stuck ?? 0), 0);
+  // Stuck work: the agent cannot work (the agent box says why), or runs stop at the workspace check (its own banner).
+  const running = sprints.filter((s) => !s.legacy && RUNNING.includes(s.status));
+  const stuck = running.reduce((n, s) => n + (s.tasks?.stuck ?? 0), 0);
+  const stuckRuns = running.reduce((n, s) => n + (s.tasks?.stuckRuns ?? 0), 0);
+  const runsProjectIds = [...new Set(running.flatMap((s) => s.tasks?.runsProjectIds ?? []))];
   const hasSprints = sprints.length > 0;
   const newSprint = !sprintId && data && hasSprints ? (
     <Button type="button" disabled={Boolean(client && !client.known)} onClick={() => setCreating(true)}>+ New sprint</Button>
@@ -183,8 +187,9 @@ export function SeoPage({ context }: PluginPageProps) {
   const body = off ? <ModuleOffBanner /> : (
     <>
       {/* What is wrong with the agent comes first: its work stops until it is fixed. */}
-      {!scope && !sprintId ? <SeoAgentBox hire={data?.hire ?? null} stuck={stuck} refresh={refresh} onMessage={setMessage} /> : null}
-      {scope && !sprintId ? <StuckBanner stuck={stuck} agent={data?.agent ?? null} /> : null}
+      {!scope && !sprintId ? <SeoAgentBox hire={data?.hire ?? null} stuck={stuck - stuckRuns} refresh={refresh} onMessage={setMessage} /> : null}
+      {!scope && !sprintId ? <StuckBanner stuck={stuckRuns} stuckRuns={stuckRuns} runsProjectIds={runsProjectIds} agent={data?.agent ?? null} /> : null}
+      {scope && !sprintId ? <StuckBanner stuck={stuck} stuckRuns={stuckRuns} runsProjectIds={runsProjectIds} agent={data?.agent ?? null} /> : null}
       {!scope && !sprintId ? <GetStarted status={setupStatus} linkFor={(href) => ({ ...nav.linkProps(href) })} moduleName="SEO" hasData={hasSprints} /> : null}
       {/* On the SEO home the setup card already lists this step. */}
       {settings && !settings.saved && (scope || sprintId || !setupStatus) ? (

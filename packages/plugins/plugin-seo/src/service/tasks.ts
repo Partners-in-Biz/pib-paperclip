@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
-import { ORIGIN } from "../constants.js";
+import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
 import { blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
 import { branchFor, isCodeTask } from "../engine/site-change.js";
@@ -132,7 +132,7 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
       title: taskIssueTitle(task, sprint),
       description,
       originKind: ORIGIN.task,
-      originId: task.id,
+      originId: taskOriginId(task.id),
       projectId,
       parentId: sprint.rootIssueId,
       assigneeAgentId: assignment.kind === "agent" ? assignment.agentId : null,
@@ -263,6 +263,16 @@ async function followUpApprovedPr(env: Env, task: db.SprintTask): Promise<string
   }
 }
 
+/**
+ * An open task issue from before 0.9.0 carries the bare task id as its origin
+ * id: move it to `seo:task:<id>` so the done-check covers it. Returns true
+ * when the host took the change.
+ */
+export async function upgradeTaskOrigin(env: Env, task: Pick<db.SprintTask, "id" | "companyId">, issue: { id: string; status: unknown; originKind?: string | null; originId?: string | null }): Promise<boolean> {
+  if (!OPEN_ISSUE_STATUSES.has(String(issue.status)) || issue.originKind !== ORIGIN.task || issue.originId === taskOriginId(task.id)) return false;
+  return Boolean(await patchIssue(env, task.companyId, issue.id, { originId: taskOriginId(task.id) }));
+}
+
 /** Daily heal for missed events: re-read open tasks' issues. Bounded. */
 export async function healTasks(env: Env, sprint: db.Sprint, limit = 80): Promise<number> {
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked", "done", "skipped"] });
@@ -274,6 +284,7 @@ export async function healTasks(env: Env, sprint: db.Sprint, limit = 80): Promis
   for (const task of candidates) {
     const issue = await getIssue(env, sprint.companyId, task.issueId!);
     if (!issue) continue;
+    await upgradeTaskOrigin(env, task, issue as { id: string; status: unknown; originKind?: string | null; originId?: string | null });
     const result = await syncTaskFromIssue(env, task, { id: issue.id, status: String(issue.status), identifier: issue.identifier ?? null });
     if (result.changed) changed += 1;
   }

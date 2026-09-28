@@ -38,7 +38,7 @@ describe("manifest", () => {
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.2.0");
+    expect(manifest.version).toBe("0.3.0");
   });
 
   it("schedules redeliver, month-end and FX jobs", () => {
@@ -65,7 +65,7 @@ describe("manifest", () => {
     expect(ACCOUNTING_TOOLS.map((t) => t.name).sort()).toEqual(
       [
         "accept-categorisation", "balance-sheet", "create-manual-journal", "gl", "import-statement", "list-accounts", "list-bank-accounts", "list-bank-lines",
-        "period-close-checklist", "pnl", "prepare-reconciliation", "prepare-vat201", "suggest-categorisation", "trial-balance", "vat-summary",
+        "mark-not-needed", "mark-statement-email", "period-close-checklist", "pnl", "prepare-reconciliation", "prepare-vat201", "suggest-categorisation", "trial-balance", "vat-summary",
       ].sort(),
     );
     for (const tool of ACCOUNTING_TOOLS) expect(manifest.tools?.some((t) => t.name === tool.name)).toBe(true);

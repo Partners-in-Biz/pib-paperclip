@@ -41,6 +41,9 @@ New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a pl
 
 Never answer a legal threat or a money question you cannot check: ask the owner.
 
+## Closing a "Reply needed" issue
+When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those. Done means the thread's newest mail that needs a reply has your reply draft (\`create-draft\` with \`replyToMessageId\`) or a sent reply after it, or \`correct-triage\` set needsReply false because no reply is needed.
+
 ## Do-not-email list
 - A message whose subject or first line is "unsubscribe" or "stop" (the unsubscribe header sends one) puts the sender on the list for marketing mail.
 - A hard bounce puts the address on the list for all mail; a delay notice does not.

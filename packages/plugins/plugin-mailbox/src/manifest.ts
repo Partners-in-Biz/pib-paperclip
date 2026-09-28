@@ -22,6 +22,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.create",
     "issues.update",
     "issues.wakeup",
+    // The done-check comments on a reply issue it reopens (what is still missing).
+    "issue.comments.create",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",

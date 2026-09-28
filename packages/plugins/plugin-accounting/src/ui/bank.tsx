@@ -95,12 +95,36 @@ interface Statement {
   createdAt: string | null;
 }
 
+/** A statement email from the Mailbox that is still waiting to be imported. */
+interface StatementEmail {
+  messageId: string;
+  subject: string;
+  sender: string;
+  receivedAt: string | null;
+  createdAt: string | null;
+  issueId: string | null;
+}
+
 interface BankSnapshot {
   bankAccounts: BankAccount[];
   statements: Statement[];
   rules: Rule[];
   reconciliations: Reconciliation[];
   counts: Record<string, number>;
+  statementEmails?: StatementEmail[];
+}
+
+/** Whole days since an ISO time (0 for today or an unreadable time). */
+function daysSince(value: string | null): number {
+  const t = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 86_400_000)) : 0;
+}
+
+/** "Your September statement · FNB · 3 days ago", for the email picker and the waiting list. */
+function emailLabel(e: StatementEmail): string {
+  const age = daysSince(e.receivedAt ?? e.createdAt);
+  const sender = e.sender.replace(/\s*<[^>]*>\s*$/, "") || e.sender;
+  return [e.subject || "(no subject)", sender || null, age === 0 ? "today" : age === 1 ? "yesterday" : `${age} days ago`].filter(Boolean).join(" · ");
 }
 
 interface Summary {
@@ -165,6 +189,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const [accountForm, setAccountForm] = useState({ name: "", bankName: "", numberLast4: "", accountCode: "" });
   const [format, setFormat] = useState("auto");
   const [file, setFile] = useState<File | null>(null);
+  /** The statement email the file came from (links the import to it), or "". */
+  const [fromEmail, setFromEmail] = useState("");
   const [ruleForm, setRuleForm] = useState<Record<string, string> | null>(null);
   const [recForm, setRecForm] = useState({ ...lastMonth(), opening: "", closing: "" });
   const [prepared, setPrepared] = useState<{ reconciliation: Reconciliation; summary: Summary } | null>(null);
@@ -212,29 +238,33 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
 
   async function doImport() {
     if (!file || !bankId) return;
+    const messageId = fromEmail || undefined;
     await run("import", async () => {
       let result: Record<string, unknown>;
       if (file.size <= 900_000) {
-        result = (await importStatement({ bankAccountId: bankId, content: await file.text(), fileName: file.name, format })) as Record<string, unknown>;
+        result = (await importStatement({ bankAccountId: bankId, content: await file.text(), fileName: file.name, format, messageId })) as Record<string, unknown>;
       } else {
         const target = (await uploadUrl({ fileName: file.name, bytes: file.size })) as { uploadUrl: string; objectKey: string };
         const put = await fetch(target.uploadUrl, { method: "PUT", body: file });
         if (!put.ok) throw new Error(`Upload to the private bucket failed (HTTP ${put.status}). Check the bucket's CORS settings.`);
-        result = (await importStatement({ bankAccountId: bankId, objectKey: target.objectKey, fileName: file.name, format })) as Record<string, unknown>;
+        result = (await importStatement({ bankAccountId: bankId, objectKey: target.objectKey, fileName: file.name, format, messageId })) as Record<string, unknown>;
       }
       setFile(null);
+      setFromEmail("");
       await refreshAll();
       return result;
     }, (r) =>
-      r.duplicateFile
+      (r.duplicateFile
         ? "This file was imported before; nothing new was added."
-        : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (smart matching looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}${Number(r.futureLines) ? ` ${r.futureLines} line(s) are dated after today (first ${formatShortDate(String(r.firstFutureDate))}): check those dates on the statement. They count in no balance until then.` : ""}`,
+        : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (smart matching looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}${Number(r.futureLines) ? ` ${r.futureLines} line(s) are dated after today (first ${formatShortDate(String(r.firstFutureDate))}): check those dates on the statement. They count in no balance until then.` : ""}`)
+      + (r.statementEmail ? " The statement email no longer waits to be imported." : ""),
     );
   }
 
   const bank = snap?.bankAccounts.find((b) => b.id === bankId) ?? null;
   const recs = (snap?.reconciliations ?? []).filter((r) => r.bankAccountId === bankId);
   const statements = (snap?.statements ?? []).filter((s) => s.bankAccountId === bankId).slice(0, 5);
+  const waitingEmails = snap?.statementEmails ?? [];
   const matchable = useMemo(() => {
     if (!selected) return [];
     const kind = selected.amountMinor > 0 ? "receivable" : "payable";
@@ -362,6 +392,22 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
       </Section>
 
       <Section title="Import statement">
+        {waitingEmails.length ? (
+          <Banner tone={waitingEmails.some((e) => daysSince(e.receivedAt ?? e.createdAt) > 2) ? "warn" : "info"}>
+            <strong>
+              {waitingEmails.length === 1 ? "1 statement email is" : `${waitingEmails.length} statement emails are`} waiting to be imported
+            </strong>
+            {waitingEmails.slice(0, 5).map((e) => (
+              <span key={e.messageId} style={{ display: "flex", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{emailLabel(e)}</span>
+                {e.issueId ? <IssueLink id={e.issueId} label="Open its issue" /> : null}
+              </span>
+            ))}
+            <span style={{ color: tokens.muted }}>
+              The Bookkeeper imports these. Doing it yourself: pick the email below with the file from it. Nothing to import? Close its issue.
+            </span>
+          </Banner>
+        ) : null}
         <Row>
           <Field label="File (CSV, OFX or MT940)">
             <input type="file" accept=".csv,.txt,.ofx,.qfx,.sta,.mt940,.940" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ fontSize: 13 }} />
@@ -374,6 +420,14 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
               <option value="mt940">MT940</option>
             </Select>
           </Field>
+          {waitingEmails.length ? (
+            <Field label="From email">
+              <Select value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} style={{ maxWidth: 280 }}>
+                <option value="">Not from a waiting email</option>
+                {waitingEmails.map((e) => <option key={e.messageId} value={e.messageId}>{emailLabel(e)}</option>)}
+              </Select>
+            </Field>
+          ) : null}
           <Button type="button" disabled={!file || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : "Import"}</Button>
         </Row>
         <Muted>

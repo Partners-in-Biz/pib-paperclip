@@ -80,8 +80,8 @@ describe("due, overdue, stuck and waiting: one definition", () => {
       task({ dueDay: 3, status: "blocked", assigneeKind: "agent", issueId: "c" }),
       task({ dueDay: 50 }),
     ];
-    expect(tallyTasks(tasks, 20)).toEqual({ total: 6, done: 1, skipped: 1, open: 4, due: 2, overdue: 1, stuck: 0, waiting: 1, upcoming: 1 });
-    expect(tallyTasks(tasks, 20, false)).toMatchObject({ due: 2, overdue: 1, stuck: 2, waiting: 1 });
+    expect(tallyTasks(tasks, 20)).toEqual({ total: 6, done: 1, skipped: 1, open: 4, due: 2, overdue: 1, stuck: 0, stuckRuns: 0, attention: 1, mostDaysLate: 19, waiting: 1, upcoming: 1 });
+    expect(tallyTasks(tasks, 20, false)).toMatchObject({ due: 2, overdue: 1, stuck: 2, stuckRuns: 0, attention: 2, waiting: 1 });
   });
 
   it("knows when the SEO agent can work, and says why not", () => {
@@ -151,9 +151,9 @@ describe("sprint overviews (service/overview.ts)", () => {
 
   it("sums only active sprints (running, with a plan): the SEO home, Setup and the Cockpit agree", () => {
     const sprints = [sprint({ id: "a" }), sprint({ id: "b", seededAt: null }), sprint({ id: "c", status: "paused" })];
-    const n = (due: number) => ({ numbers: { total: 0, done: 0, skipped: 0, open: due, due, overdue: 1, stuck: 0, waiting: 0, upcoming: 0, openIssues: 0, proposals: 0, needsYou: 0, waitingOnYou: 2 }, next: null });
+    const n = (due: number) => ({ numbers: { total: 0, done: 0, skipped: 0, open: due, due, overdue: 1, stuck: 0, stuckRuns: 0, attention: 1, mostDaysLate: 8, waiting: 0, upcoming: 0, openIssues: 0, proposals: 0, needsYou: 0, waitingOnYou: 2, runsProjectIds: [] }, next: null });
     const overviews = new Map([["a", n(5)], ["b", n(7)], ["c", n(9)]]);
-    expect(activeTotals(sprints, overviews)).toEqual({ active: 1, due: 5, overdue: 1, stuck: 0, waitingOnYou: 2 });
+    expect(activeTotals(sprints, overviews)).toEqual({ active: 1, due: 5, overdue: 1, stuck: 0, stuckRuns: 0, attention: 1, mostDaysLate: 8, waitingOnYou: 2, runsProjectIds: [] });
     expect(isActiveSprint(sprints[1]!)).toBe(false);
   });
 

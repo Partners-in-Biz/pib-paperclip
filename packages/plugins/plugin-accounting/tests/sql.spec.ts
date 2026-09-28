@@ -119,6 +119,13 @@ describe("runtime SQL", () => {
     await db.statementByDigest(d, "b", "x");
     await db.listStatements(d, c, "b");
     await db.listStatements(d, c);
+    await db.insertStatementEmail(d, c, { messageId: "m", subject: "Statement", sender: "FNB <x@fnb.co.za>", receivedAt: "2026-09-01T06:00:00Z", issueId: "i" });
+    await db.getStatementEmail(d, c, "m");
+    await db.listStatementEmails(d, c, ["received"], 20);
+    await db.listStatementEmails(d, c);
+    await db.saveStatementEmailOutcome(d, c, "m", { status: "imported", statementIds: ["s"], note: null, resolvedBy: { kind: "agent", agentId: "a" } });
+    await db.saveCloseSkip(d, c, { month: "2026-09", step: "vat201", reason: "Nil period", recordedBy: { kind: "agent", agentId: "a" } });
+    await db.listCloseSkips(d, c, "2026-09");
     await db.insertBankLines(d, c, [{ id: "l" }]);
     await db.listBankLines(d, c, { bankAccountId: "b", statuses: ["unreconciled"], statementId: "s", from: "2026-01-01", to: "2026-12-31", ids: ["l"], limit: 10 });
     await db.getBankLine(d, c, "l");

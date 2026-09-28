@@ -48,9 +48,11 @@ import {
   r2Url,
   readSettings,
   safeFileName,
+  WORK_ORIGINS,
   type Actor,
 } from "./common.js";
 import { postJournal, reverseJournal } from "./journals.js";
+import { linkImportToEmail } from "./statement-emails.js";
 
 const MAX_STATEMENT_BYTES = 10 * 1024 * 1024;
 const MAX_JEV_LINES = 150;
@@ -190,6 +192,8 @@ async function statementText(ctx: PluginContext, companyId: string, input: { con
 
 export interface ImportResult {
   statementId: string | null;
+  /** The statement email this import was linked to (`messageId`), and what it now says. */
+  statementEmail: { messageId: string; status: db.StatementEmailStatus } | null;
   duplicateFile: boolean;
   format: StatementFormat;
   lines: number;
@@ -228,12 +232,13 @@ export async function importStatement(
   ctx: PluginContext,
   companyId: string,
   actor: Actor,
-  input: { bankAccountId?: unknown; content?: unknown; objectKey?: unknown; url?: unknown; fileName?: unknown; format?: unknown },
+  input: { bankAccountId?: unknown; content?: unknown; objectKey?: unknown; url?: unknown; fileName?: unknown; format?: unknown; messageId?: unknown },
 ): Promise<ImportResult> {
   await ensureBook(ctx, companyId);
   const bankAccountId = typeof input.bankAccountId === "string" ? input.bankAccountId : "";
   const bank = bankAccountId ? await db.getBankAccount(ctx.db, companyId, bankAccountId) : null;
   if (!bank) throw new AccountingError("Choose the bank account this statement belongs to", "not_found");
+  const messageId = typeof input.messageId === "string" && input.messageId.trim() ? input.messageId.trim().slice(0, 300) : null;
   const { text, objectKey } = await statementText(ctx, companyId, input);
   assertNotPdf(text, input.fileName);
   const format = ["csv", "ofx", "mt940"].includes(String(input.format)) ? (String(input.format) as StatementFormat) : "auto";
@@ -242,6 +247,7 @@ export async function importStatement(
   if (seen) {
     return {
       statementId: seen.id,
+      statementEmail: messageId ? { messageId, status: await linkImportToEmail(ctx, companyId, messageId, seen.id, 0, actor) } : null,
       duplicateFile: true,
       format: parsed.format,
       lines: parsed.lines.length,
@@ -298,9 +304,10 @@ export async function importStatement(
   const refreshed = added > 0 ? await refreshSuggestions(ctx, companyId, { statementId }) : { lines: 0, suggested: 0, jevAsked: 0 };
   const future = linesDatedAfter(rows, todayIso());
   let issueId: string | null = null;
-  if (added > 0) issueId = await openReconcileIssue(ctx, companyId, bank, added, parsed.periodStart, parsed.periodEnd, future);
+  if (added > 0) issueId = await openReconcileIssue(ctx, companyId, bank, statementId, added, parsed.periodStart, parsed.periodEnd, future);
   return {
     statementId,
+    statementEmail: messageId ? { messageId, status: await linkImportToEmail(ctx, companyId, messageId, statementId, added, actor) } : null,
     duplicateFile: false,
     format: parsed.format,
     lines: rows.length,
@@ -356,10 +363,10 @@ export async function importStatementTool(
   ctx: PluginContext,
   companyId: string,
   actor: Actor,
-  p: { bankAccountId?: unknown; content?: unknown; url?: unknown; fileName?: unknown; format?: unknown },
+  p: { bankAccountId?: unknown; content?: unknown; url?: unknown; fileName?: unknown; format?: unknown; messageId?: unknown },
 ) {
   const bank = await resolveBankAccount(ctx, companyId, p.bankAccountId);
-  const r = await importStatement(ctx, companyId, actor, { bankAccountId: bank.id, content: p.content, url: p.url, fileName: p.fileName, format: p.format });
+  const r = await importStatement(ctx, companyId, actor, { bankAccountId: bank.id, content: p.content, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId });
   const next: string[] = [];
   if (r.futureLines > 0) next.push(`${r.futureLines} line(s) are dated after today (first ${dayText(r.firstFutureDate)}). A bank statement only has money that already moved, so the date is probably wrong: don't reconcile those lines. Ask a person to check them (${ASK_OWNER_TOOL}); they count in no balance until that day.`);
   if (r.duplicateFile) next.push("This exact file was imported before, so nothing new was added.");
@@ -373,9 +380,14 @@ export async function importStatementTool(
         : `When no line is open, prepare-reconciliation with bankAccountId "${bank.id}", periodStart ${r.periodStart} and periodEnd ${r.periodEnd}.`,
     );
   }
-  next.push("Then mark the statement issue done with this result.");
+  next.push(
+    r.statementEmail
+      ? `The statement email ${r.statementEmail.messageId} is now marked ${r.statementEmail.status === "imported" ? "imported" : "already imported"}. Then mark the statement issue done with this result.`
+      : "Then mark the statement issue done with this result. (From a statement email? Pass its messageId so the email shows as imported.)",
+  );
   return {
     statementId: r.statementId,
+    statementEmail: r.statementEmail,
     bankAccount: { id: bank.id, name: bank.name },
     format: r.format,
     periodStart: r.periodStart,
@@ -407,12 +419,12 @@ export function reconcileIssueText(bank: { id: string; name: string }, added: nu
     "2. Accept the safe ones with `accept-categorisation`: a journal match, an exact invoice or bill match, a bank-rule category, or an obviously right Jev category. Categorise a clear line to an account (`accountCode`, `taxCode`). `suggest-categorisation` asks again for lines with no suggestion.",
     `3. Lines you cannot place from the bank line and the books: never guess. Ask once with \`${ASK_OWNER_TOOL}\`, every unclear line in one list (date, amount, description, your best guess). If accepting is switched off for agents, put your proposed categories in the same ask.`,
     `4. When no line is open for the period, \`prepare-reconciliation\` with \`bankAccountId: "${bank.id}"\` ${period}. It opens the approval issue for a person once the difference is zero.`,
-    "5. Mark this issue done with what you did (lines matched, categorised and asked about, the approval issue).",
+    `5. Mark this issue done with what you did (lines matched, categorised and asked about, the approval issue). Closing it checks that every line from this statement is matched, categorised or excluded${future.count > 0 ? " (except the future-dated ones, which wait for a person)" : ""}; while a person still has to answer about a line, leave the issue with them instead.`,
   ].join("\n");
 }
 
 /** A statement added lines: one issue for the Bookkeeper (else the Operator or the owner), so nothing waits silently. */
-async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: db.BankAccountRow, added: number, start: string | null, end: string | null, future: { count: number; first: string | null } = { count: 0, first: null }): Promise<string | null> {
+async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: db.BankAccountRow, statementId: string, added: number, start: string | null, end: string | null, future: { count: number; first: string | null } = { count: 0, first: null }): Promise<string | null> {
   try {
     const route = await routeBookkeeping(ctx, companyId);
     const issue = await openIssue(ctx, {
@@ -420,7 +432,8 @@ async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: d
       title: `Reconcile ${added} new bank line${added === 1 ? "" : "s"} (${bank.name})`,
       description: reconcileIssueText(bank, added, start, end, future),
       originKind: ORIGIN,
-      originId: `reconcile:${bank.id}:${end ?? "?"}`,
+      // The statement's own lines are what its done-check looks at.
+      originId: `${WORK_ORIGINS.reconcile}${statementId}`,
       wakeReason: "New bank lines to reconcile",
     }, route);
     return issue.id;

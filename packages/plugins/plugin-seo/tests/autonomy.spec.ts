@@ -423,7 +423,7 @@ describe("code tasks in the site project", () => {
     const task = (await db.getTask(host.env.ctx.db, "co-1", "t-1"))!;
     const issueId = await createTaskIssue(host.env, mc(host, info, sprint), task);
     expect(issueId).toBe("new-1");
-    expect(host.issuesCreated[0]).toMatchObject({ projectId: "site-proj", parentId: "root-1", assigneeAgentId: "agent-1" });
+    expect(host.issuesCreated[0]).toMatchObject({ projectId: "site-proj", parentId: "root-1", assigneeAgentId: "agent-1", originKind: "plugin:partnersinbiz.seo:task", originId: "seo:task:t-1" });
     expect(String(host.issuesCreated[0]!.description)).toContain("seo/w0-meta-tags");
     expect(String(host.issuesCreated[0]!.description)).toContain("check-change-scope");
     expect(host.tasks.get("t-1")).toMatchObject({ issue_id: "new-1", issue_project_id: "site-proj" });

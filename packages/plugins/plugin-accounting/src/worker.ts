@@ -24,6 +24,7 @@ import {
   PIB_PLUGINS,
   pluginEvent,
   redeliver,
+  checkDoneOnUpdate,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -68,8 +69,10 @@ import {
   undoLine,
 } from "./service/bank.js";
 import { booksStartFor, ensureBook, loadChart, mapRole, roleGaps, saveAccount, setPeriod } from "./service/books.js";
-import { closeChecklist } from "./service/close.js";
-import { commentOn, errorMessage, issueStatus, ORIGIN, privateR2, readSettings, requireUser, newId, type Actor } from "./service/common.js";
+import { closeChecklist, markNotNeeded } from "./service/close.js";
+import { accountingDoneChecks } from "./service/done-checks.js";
+import { closeStatementEmailByPerson, markStatementEmail } from "./service/statement-emails.js";
+import { commentOn, errorMessage, issueStatus, ORIGIN, privateR2, readSettings, requireUser, newId, WORK_ORIGINS, type Actor } from "./service/common.js";
 import { postCutover, previewCutover, skipCutover, undoSkipCutover } from "./service/cutover.js";
 import { fetchRates, revalueMonth } from "./service/fx.js";
 import {
@@ -249,14 +252,16 @@ const ACTIONS: Record<string, Handler> = {
   // Bank
   "accounting.bank": async (ctx, companyId) => {
     await ensureBook(ctx, companyId);
-    const [bankAccounts, statements, rules, reconciliations, counts] = await Promise.all([
+    const [bankAccounts, statements, rules, reconciliations, counts, statementEmails] = await Promise.all([
       db.listBankAccounts(ctx.db, companyId),
       db.listStatements(ctx.db, companyId),
       db.listRules(ctx.db, companyId),
       db.listReconciliations(ctx.db, companyId),
       db.lineCounts(ctx.db, companyId),
+      // Statement emails from the Mailbox still waiting to be imported (the Cockpit's "Statements to import").
+      db.listStatementEmails(ctx.db, companyId, ["received"], 20),
     ]);
-    return { bankAccounts, statements, rules, reconciliations, counts };
+    return { bankAccounts, statements, rules, reconciliations, counts, statementEmails };
   },
   "accounting.save-bank-account": (ctx, companyId, actor, p) => {
     requireUser(actor, "add or change a bank account");
@@ -264,7 +269,7 @@ const ACTIONS: Record<string, Handler> = {
   },
   "accounting.statement-upload-url": (ctx, companyId, _a, p) => statementUploadUrl(ctx, companyId, { fileName: p.fileName, bytes: p.bytes }),
   "accounting.import-statement": (ctx, companyId, actor, p) =>
-    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format }),
+    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId }),
   "accounting.bank-lines": async (ctx, companyId, _a, p) => {
     const statuses = Array.isArray(p.statuses) ? p.statuses.map(String) : optStr(p, "status") ? [optStr(p, "status")!] : null;
     const lines = await db.listBankLines(ctx.db, companyId, { bankAccountId: optStr(p, "bankAccountId"), statuses, from: optStr(p, "from"), to: optStr(p, "to"), limit: Number(p.limit ?? 300) });
@@ -442,7 +447,11 @@ async function dispatchTool(ctx: PluginContext, name: string, p: Record<string, 
     case "list-bank-accounts":
       return bankAccountsView(ctx, companyId, p.includeInactive === true);
     case "import-statement":
-      return importStatementTool(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, url: p.url, fileName: p.fileName, format: p.format });
+      return importStatementTool(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId });
+    case "mark-statement-email":
+      return markStatementEmail(ctx, companyId, actor, { messageId: p.messageId, outcome: p.outcome, reason: p.reason });
+    case "mark-not-needed":
+      return markNotNeeded(ctx, companyId, actor, { month: p.month, step: p.step, bankAccountId: p.bankAccountId, reason: p.reason });
     case "prepare-reconciliation":
       return prepareReconciliationTool(ctx, companyId, actor, p);
     case "prepare-vat201":
@@ -559,6 +568,11 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   const status = String(issue.status);
   if (status !== "done" && status !== "cancelled") return;
   const actor = { type: event.actorType, id: event.actorId };
+  // A person closing a statement email's issue decides it: the email stops counting as a statement to import.
+  if (issue.originId.startsWith(WORK_ORIGINS.statement)) {
+    if (actor.type === "user") await closeStatementEmailByPerson(ctx, event.companyId, issue.originId.slice(WORK_ORIGINS.statement.length), status, actor.id ?? null);
+    return;
+  }
   const colon = issue.originId.indexOf(":");
   if (colon < 0) return;
   const kind = issue.originId.slice(0, colon);
@@ -694,7 +708,13 @@ const plugin = definePlugin({
       pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received),
       safely(ctx, "Statement email", async (e) => ((await isModuleEnabled(ctx, e.companyId, PLUGIN_ID)) ? receiveMail(ctx, e.companyId, e.eventType, e.payload) : false)),
     );
-    ctx.events.on("issue.updated", safely(ctx, "Approval issue", (e) => onIssueUpdated(ctx, e)));
+    // One subscription (a second would run both twice). After the approval handler, an agent closing
+    // Accounting's work (statement, reconcile, month-end, rejected postings) is checked; unfinished work opens again.
+    const doneChecks = accountingDoneChecks();
+    ctx.events.on("issue.updated", safely(ctx, "Approval issue", async (e) => {
+      await onIssueUpdated(ctx, e);
+      await checkDoneOnUpdate(ctx, doneChecks, e);
+    }));
     ctx.events.on("company.created", safely(ctx, "Skill sync", (e) => skillSync!.ensure(e.companyId)));
     registerHireWatch(ctx, [{ role: BOOKKEEPER_ROLE, onLinked: onBookkeeperLinked(ctx, syncSkills) }]);
     registerModuleWatch(ctx);

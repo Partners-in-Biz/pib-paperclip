@@ -7,6 +7,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   configSaved,
   decisionStats,
   emptySnapshot,
@@ -17,6 +18,7 @@ import {
   type ActivityItem,
   type CockpitKpi,
   type CockpitSnapshot,
+  type FlowStageReport,
   type HealthCheck,
   type QualityMetric,
   type Tone,
@@ -28,7 +30,7 @@ import { AGENT_KEY, DAILY_JOB_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
 import { t } from "./db.js";
 import { PLAYBOOK_ITEM_KEY } from "./engine/items.js";
-import { agentTrouble } from "./engine/due.js";
+import { agentTrouble, projectFixPath, RUNS_FIX, RUNS_TROUBLE, stuckText } from "./engine/due.js";
 import { plainError } from "./engine/plain.js";
 import { sprintClock } from "./engine/sprint.js";
 import { localDate } from "./engine/time.js";
@@ -38,7 +40,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import type { Env } from "./service/common.js";
 import { announcementLine, processAnnouncements } from "./service/handoff.js";
 import { SEO_ROLE } from "./service/hire.js";
-import { activeTotals, isActiveSprint, sprintOverviews, type SprintOverview } from "./service/overview.js";
+import { activeTotals, isActiveSprint, sprintOverviews, type ActiveTotals, type SprintOverview } from "./service/overview.js";
 import { seoOn } from "./service/setup-status.js";
 
 type Scoped = { sprint_id: string; site_name: string; client_kind: string | null; client_ref: string | null; client_name: string | null };
@@ -168,14 +170,16 @@ async function kpis(
     },
   ];
   if (totals.stuck > 0) {
+    // Agent trouble is fixed in Setup → Team; runs that stop at the workspace check on the site's project.
+    const agentStuck = totals.stuck > totals.stuckRuns;
     out.push({
       key: "seo_stuck_tasks",
       label: "Stuck SEO tasks",
       value: String(totals.stuck),
       raw: totals.stuck,
       tone: "bad",
-      delta: `${agentTrouble(input.agent)}: fix in Setup → Team`,
-      href: teamSetupPath("seo-specialist"),
+      delta: `${stuckText(totals, input.agent)}: ${agentStuck ? "fix in Setup → Team" : "fix the project's Codebase"}`,
+      href: agentStuck ? teamSetupPath("seo-specialist") : projectFixPath(totals.runsProjectIds),
       group: "marketing",
     });
   }
@@ -265,6 +269,31 @@ export function integrationChecks(rows: IntegrationRow[]): HealthCheck[] {
   return checks;
 }
 
+/**
+ * Task runs that stop at the host's workspace check
+ * (`workspace_validation_failed`: the project has no checkout of the site repo
+ * on the server). Nothing the SEO agent does on those tasks runs. Pure.
+ */
+export function runsChecks(sprints: db.Sprint[], overviews: Map<string, SprintOverview>): HealthCheck[] {
+  const failing = sprints
+    .map((sprint) => ({ sprint, numbers: overviews.get(sprint.id)?.numbers }))
+    .filter((row) => (row.numbers?.stuckRuns ?? 0) > 0);
+  if (failing.length === 0) return [{ key: "seo-runs", title: "SEO task runs", status: "ok" }];
+  const total = failing.reduce((sum, row) => sum + (row.numbers?.stuckRuns ?? 0), 0);
+  const where = failing
+    .slice(0, 3)
+    .map(({ sprint, numbers }) => `${sprint.clientRef ? `[${sprint.clientName ?? sprint.clientRef}] ` : ""}${sprint.siteName}${sprint.repoUrl ? ` (${sprint.repoUrl})` : ""}: ${plural(numbers?.stuckRuns ?? 0, "task")}`)
+    .join("; ");
+  return [{
+    key: "seo-runs",
+    title: "SEO tasks can't start: no checkout of the site repo on the server",
+    status: "bad",
+    detail: `${plural(total, "task")} stopped at the workspace check before the agent started (workspace_validation_failed). ${where}.`,
+    href: projectFixPath(failing.flatMap((row) => row.numbers?.runsProjectIds ?? [])),
+    fix: RUNS_FIX,
+  }];
+}
+
 /** Open Needs you items waiting longer than a week, per sprint. Pure. */
 export function staleNeedsYou(digests: Array<Scoped & { items: unknown }>, now: Date): HealthCheck[] {
   const cutoff = now.getTime() - STALE_NEEDS_YOU_DAYS * 24 * 3600_000;
@@ -286,12 +315,13 @@ export function staleNeedsYou(digests: Array<Scoped & { items: unknown }>, now: 
   return out;
 }
 
-async function healthChecks(ctx: PluginContext, companyId: string, sprints: db.Sprint[]): Promise<HealthCheck[]> {
+async function healthChecks(ctx: PluginContext, companyId: string, sprints: db.Sprint[], overviews: Map<string, SprintOverview>): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [
     await part(ctx, "job:daily", () => jobHealth(ctx, DAILY_JOB_KEY, "Daily SEO run", 60), { key: `job:${DAILY_JOB_KEY}`, title: "Daily SEO run", status: "ok" as const }),
     await part(ctx, "job:weekly", () => jobHealth(ctx, WEEKLY_JOB_KEY, "Weekly SEO review", 7 * 24 * 60), { key: `job:${WEEKLY_JOB_KEY}`, title: "Weekly SEO review", status: "ok" as const }),
   ];
   if (sprints.length === 0) return checks;
+  checks.push(...runsChecks(sprints, overviews));
   const integrations = await part(
     ctx,
     "integrations",
@@ -401,16 +431,27 @@ const KIND: Record<NeedsYouItem["kind"], WaitingItem["kind"]> = {
   indexing: "other",
 };
 
-async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
-  const items: WaitingItem[] = [];
-  const digests = await ctx.db.query<Scoped & { items: unknown; issue_id: string | null }>(
+type DigestRow = Scoped & { items: unknown; issue_id: string | null };
+type ProposalRow = Scoped & { id: string; subject: string; proposed_action: string; approval_issue_id: string | null; created_at: string | null };
+
+/** What waits on a person: open, required Needs you items (deduped per sprint) and optimization proposals to approve. */
+export interface WaitingData {
+  pending: Array<{ item: NeedsYouItem; digest: DigestRow }>;
+  proposals: ProposalRow[];
+}
+
+/** Needs you item kinds that are a sign-off of a site change or content (the rest are grants, messages and tasks). */
+export const SIGNOFF_KINDS = new Set<NeedsYouItem["kind"]>(["review", "pr"]);
+
+async function loadWaiting(ctx: PluginContext, companyId: string): Promise<WaitingData> {
+  const digests = await ctx.db.query<DigestRow>(
     `SELECT n.items, n.issue_id, s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
        FROM ${t("needs_you")} n JOIN ${t("sprints")} s ON s.id = n.sprint_id
       WHERE n.company_id = $1 AND n.status = 'open' AND s.status <> 'archived' ORDER BY n.week_start DESC LIMIT 30`,
     [companyId],
   );
   const seen = new Set<string>();
-  const pending: Array<{ item: NeedsYouItem; digest: (typeof digests)[number] }> = [];
+  const pending: WaitingData["pending"] = [];
   for (const digest of digests) {
     for (const item of json<NeedsYouItem[]>(digest.items, [])) {
       const key = `seo:needs-you:${digest.sprint_id}:${item.key}`;
@@ -419,6 +460,21 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       pending.push({ item, digest });
     }
   }
+  // In safe (and off) autopilot the owner approves each optimization.
+  const proposals = await ctx.db.query<ProposalRow>(
+    `SELECT o.id, o.subject, o.proposed_action, o.approval_issue_id, o.created_at::text AS created_at,
+            s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
+       FROM ${t("optimizations")} o JOIN ${t("sprints")} s ON s.id = o.sprint_id
+      WHERE o.company_id = $1 AND o.status = 'proposed' AND s.autopilot_mode <> 'full' AND s.status IN ${RUNNING}
+      ORDER BY o.created_at LIMIT 20`,
+    [companyId],
+  );
+  return { pending, proposals };
+}
+
+async function waitingItems(ctx: PluginContext, companyId: string, data: WaitingData): Promise<WaitingItem[]> {
+  const items: WaitingItem[] = [];
+  const { pending, proposals } = data;
   // Sign-offs are approved on the task's own issue (the owner marks it done).
   const reviewTaskIds = pending.filter((p) => p.item.kind === "review" && p.item.taskIds?.length === 1).map((p) => p.item.taskIds![0]!);
   const taskIssues = new Map<string, string>();
@@ -441,14 +497,6 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       since: item.addedAt ?? null,
     });
   }
-  const proposals = await ctx.db.query<Scoped & { id: string; subject: string; proposed_action: string; approval_issue_id: string | null; created_at: string | null }>(
-    `SELECT o.id, o.subject, o.proposed_action, o.approval_issue_id, o.created_at::text AS created_at,
-            s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
-       FROM ${t("optimizations")} o JOIN ${t("sprints")} s ON s.id = o.sprint_id
-      WHERE o.company_id = $1 AND o.status = 'proposed' AND s.autopilot_mode <> 'full' AND s.status IN ${RUNNING}
-      ORDER BY o.created_at LIMIT 20`,
-    [companyId],
-  );
   for (const p of proposals) {
     items.push({
       key: `seo:optimization:${p.id}`,
@@ -549,6 +597,57 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
   return out;
 }
 
+// ── flows (kit FLOWS: seo.tasks, seo.signoff) ───────────────────────────────
+
+const DAY_MS = 24 * 3600_000;
+
+function ageMs(value: string | null | undefined, now: Date): number | null {
+  const at = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(at) ? Math.max(0, now.getTime() - at) : null;
+}
+
+/**
+ * `seo.tasks`: due agent work in active sprints, the same "due now" as the SEO
+ * page and the overdue KPI (engine/due.ts). Stuck: stuck (the agent cannot
+ * work, or the task's runs stop at the workspace check) or overdue, each task
+ * once, with the reason in plain words. Pure.
+ */
+export function tasksFlow(totals: ActiveTotals, agent: AgentView | null): FlowStageReport {
+  const reasons: string[] = [];
+  const byAgent = totals.stuck - totals.stuckRuns;
+  if (byAgent > 0) reasons.push(`${agentTrouble(agent)}: ${plural(byAgent, "task")} can't move`);
+  if (totals.stuckRuns > 0) reasons.push(`${plural(totals.stuckRuns, "task")} can't start: ${RUNS_TROUBLE}`);
+  const overdueOnly = totals.attention - totals.stuck;
+  if (overdueOnly > 0) reasons.push(`${plural(overdueOnly, "task")} open a week or more past ${overdueOnly === 1 ? "its" : "their"} day`);
+  return {
+    stage: "seo.tasks",
+    count: totals.due,
+    stuck: totals.attention,
+    stuckReason: reasons.length ? reasons.join("; ") : null,
+    oldestDays: totals.due > 0 ? totals.mostDaysLate : null,
+  };
+}
+
+/**
+ * `seo.signoff`: what waits for a person's sign-off, the same items the
+ * Cockpit's waiting list shows: sign-off and PR items on the Needs you issues
+ * (review, pr) and optimization proposals to approve. Stuck: waiting over a
+ * week (the same week as the stale Needs you check). Pure.
+ */
+export function signoffFlow(data: WaitingData, now: Date): FlowStageReport {
+  const ages: number[] = [];
+  for (const { item } of data.pending) if (SIGNOFF_KINDS.has(item.kind)) ages.push(ageMs(item.addedAt, now) ?? 0);
+  for (const proposal of data.proposals) ages.push(ageMs(proposal.created_at, now) ?? 0);
+  const stuck = ages.filter((ms) => ms > STALE_NEEDS_YOU_DAYS * DAY_MS).length;
+  return {
+    stage: "seo.signoff",
+    count: ages.length,
+    stuck,
+    stuckReason: stuck > 0 ? `${plural(stuck, "sign-off")} waiting over a week` : null,
+    oldestDays: ages.length > 0 ? Math.floor(Math.max(...ages) / DAY_MS) : null,
+  };
+}
+
 // ── snapshot ────────────────────────────────────────────────────────────────
 
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
@@ -556,7 +655,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   // Sprint days follow the company's timezone, exactly as on the SEO page.
   const config = await part(ctx, "config", () => readConfig(ctx, companyId), {} as Record<string, unknown>);
   const today = localDate(new Date(), parseSeoConfig(config).timezone);
-  const sprints = await part(ctx, "sprints", () => activeSprints(ctx, companyId), [] as db.Sprint[]);
+  const listed = await part(ctx, "sprints", () => activeSprints(ctx, companyId), null as db.Sprint[] | null);
+  const sprints = listed ?? [];
   // The linked agent, or one the host created before hiring moved to tasks.
   const legacy = async (id: string) => {
     const resolved = await ctx.agents.managed.get(AGENT_KEY, id);
@@ -573,13 +673,20 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     },
     null,
   );
-  const overviews = await part(ctx, "overviews", () => sprintOverviews(ctx.db, companyId, sprints, today, agent), new Map<string, SprintOverview>());
+  const loaded = await part(ctx, "overviews", () => sprintOverviews(ctx.db, companyId, sprints, today, agent), null as Map<string, SprintOverview> | null);
+  const overviews = loaded ?? new Map<string, SprintOverview>();
   snap.kpis = await part(ctx, "kpis", () => kpis(ctx, companyId, sprints, { today, overviews, agent }), [] as CockpitKpi[]);
-  snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId, sprints), [] as HealthCheck[]);
-  snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
+  snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId, sprints, overviews), [] as HealthCheck[]);
+  const waiting = await part(ctx, "waiting-data", () => loadWaiting(ctx, companyId), null as WaitingData | null);
+  snap.waiting = waiting ? await part(ctx, "waiting", () => waitingItems(ctx, companyId, waiting), [] as WaitingItem[]) : [];
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, agentId), [] as QualityMetric[]);
   snap.team = [{ role: "seo-specialist", agentId, status: agent?.status ?? null }];
+  // The company graph (kit FLOWS): a stage whose numbers failed to load reports nothing rather than a false zero.
+  snap.flows = cleanFlowReports(PLUGIN_ID, [
+    ...(listed && loaded ? [tasksFlow(activeTotals(sprints, overviews), agent)] : []),
+    ...(waiting ? [signoffFlow(waiting, new Date())] : []),
+  ]);
   return snap;
 }
 

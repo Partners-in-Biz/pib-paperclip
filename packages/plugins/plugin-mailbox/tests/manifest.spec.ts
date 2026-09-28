@@ -5,8 +5,8 @@ import { parseMailboxConfig, parseTriageAssignee, validateMailboxConfig, DEFAULT
 
 describe("manifest", () => {
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.3.0");
-    for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "ui.page.register"]) {
+    expect(manifest.version).toBe("0.4.0");
+    for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "issue.comments.create", "ui.page.register"]) {
       expect(manifest.capabilities).toContain(cap);
     }
     expect(manifest.jobs).toEqual([

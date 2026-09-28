@@ -12,6 +12,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   configSaved,
   decisionStats,
   emptySnapshot,
@@ -21,6 +22,7 @@ import {
   outboxHealth,
   publishCockpitSnapshot,
   type CockpitSnapshot,
+  type FlowStageReport,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
@@ -88,6 +90,78 @@ async function lastChainCheck(ctx: PluginContext, companyId: string): Promise<Ch
   } catch {
     return null;
   }
+}
+
+// ── Flows (kit FLOWS: bank.match, books.statements, books.approval) ───────
+
+/** Bank lines waiting longer than this since they were imported are stuck. */
+export const BANK_LINE_STUCK_DAYS = 7;
+/** Statement emails not imported after this long are stuck. */
+export const STATEMENT_STUCK_DAYS = 2;
+/** Approvals waiting longer than this for a person are stuck. */
+export const APPROVAL_STUCK_DAYS = 3;
+
+const wholeDaysSince = (value: unknown, now = Date.now()): number | null => {
+  const at = iso(value);
+  return at ? Math.max(0, Math.floor((now - Date.parse(at)) / 86_400_000)) : null;
+};
+
+/**
+ * One report per stage Accounting owns. The same definitions as the rest of
+ * the snapshot and the Bank page:
+ * - `bank.match`: open bank lines (unreconciled, or sent to Billing and not
+ *   settled yet), the "Bank lines to reconcile" KPI. Stuck: waiting more
+ *   than 7 days since import, or dated after today (a person checks the date).
+ * - `books.statements`: statement emails from the Mailbox not imported yet
+ *   (nor recorded as a duplicate or not a statement). Stuck: over 2 days old.
+ * - `books.approval`: manual journals, bank reconciliations and VAT201
+ *   returns waiting for a person's approval (the "waiting" items). Stuck:
+ *   waiting more than 3 days.
+ */
+export async function flowReports(ctx: PluginContext, companyId: string, today = todayIso()): Promise<FlowStageReport[]> {
+  const reports: FlowStageReport[] = [];
+
+  const lines = await ctx.db.query<{ open: string; future: string; waiting: string; oldest: unknown }>(
+    `SELECT count(*)::text AS open,
+            count(*) FILTER (WHERE date > $2::date)::text AS future,
+            count(*) FILTER (WHERE date <= $2::date AND created_at < now() - interval '${BANK_LINE_STUCK_DAYS} days')::text AS waiting,
+            min(created_at) FILTER (WHERE date <= $2::date) AS oldest
+       FROM ${N}.bank_lines WHERE company_id = $1 AND status IN ('unreconciled', 'matching')`,
+    [companyId, today],
+  );
+  const open = n(lines[0]?.open);
+  const future = n(lines[0]?.future);
+  const waiting = n(lines[0]?.waiting);
+  const why = [waiting ? `${waiting} waiting over ${BANK_LINE_STUCK_DAYS} days` : "", future ? `${future} dated in the future (check the date)` : ""].filter(Boolean).join(", ");
+  reports.push({ stage: "bank.match", count: open, stuck: waiting + future, stuckReason: why || null, oldestDays: wholeDaysSince(lines[0]?.oldest) });
+
+  const emails = await ctx.db.query<{ n: string; old: string; oldest: unknown }>(
+    `SELECT count(*)::text AS n,
+            count(*) FILTER (WHERE COALESCE(received_at, created_at) < now() - interval '${STATEMENT_STUCK_DAYS} days')::text AS old,
+            min(COALESCE(received_at, created_at)) AS oldest
+       FROM ${N}.statement_emails WHERE company_id = $1 AND status = 'received'`,
+    [companyId],
+  );
+  const old = n(emails[0]?.old);
+  reports.push({ stage: "books.statements", count: n(emails[0]?.n), stuck: old, stuckReason: old ? `${old} over ${STATEMENT_STUCK_DAYS} days old` : null, oldestDays: wholeDaysSince(emails[0]?.oldest) });
+
+  const approvals = await ctx.db.query<{ n: string; old: string; oldest: unknown }>(
+    `SELECT count(*)::text AS n,
+            count(*) FILTER (WHERE since < now() - interval '${APPROVAL_STUCK_DAYS} days')::text AS old,
+            min(since) AS oldest
+       FROM (
+         SELECT d.updated_at AS since FROM ${N}.journal_drafts d WHERE d.company_id = $1 AND d.status = 'pending_approval' AND d.approval_issue_id IS NOT NULL
+         UNION ALL
+         SELECT r.updated_at AS since FROM ${N}.reconciliations r WHERE r.company_id = $1 AND r.status = 'pending_approval' AND r.approval_issue_id IS NOT NULL
+         UNION ALL
+         SELECT v.updated_at AS since FROM ${N}.vat_returns v WHERE v.company_id = $1 AND v.status = 'pending_approval' AND v.approval_issue_id IS NOT NULL
+       ) w`,
+    [companyId],
+  );
+  const late = n(approvals[0]?.old);
+  reports.push({ stage: "books.approval", count: n(approvals[0]?.n), stuck: late, stuckReason: late ? `${late} waiting over ${APPROVAL_STUCK_DAYS} days` : null, oldestDays: wholeDaysSince(approvals[0]?.oldest) });
+
+  return reports;
 }
 
 // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -307,6 +381,11 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   await part("team", async () => {
     const agent = await bookkeeper(ctx, companyId);
     snap.team = [{ role: "bookkeeper", agentId: agent?.id ?? null, status: agent?.status ?? null }];
+  });
+
+  // ── Flows: live numbers for the company-graph stages Accounting owns ──
+  await part("flows", async () => {
+    snap.flows = cleanFlowReports(PLUGIN_ID, await flowReports(ctx, companyId, today));
   });
 
   if (failed.length) {

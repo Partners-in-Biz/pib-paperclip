@@ -35,3 +35,17 @@ Agents use the managed skills `crm-records` (finding clients, records, the clien
 - **Hand-offs.** Emits `deal.won` (client becomes customer; `firstWin`), `contact.suppressed` (unsubscribe reply, bounce, `set-email-status`) and `company.deleted` (a person deletes a company), each re-sent hourly for a day. Consumes Billing `quote.accepted` and `invoice.paid`, and Campaigns/Mailbox `contact.suppressed`. Sequence email sets `marketing: true`.
 - **Approvals.** A sequence approval an agent closes is reopened for the approver; a person's cancel refuses it (back to issues, with a hand-off). The Cockpit lists open approvals even while the Reviewer holds them.
 - Migration `006_crm.sql`: `client_profiles`, `client_leads`, `held_leads`, `handoffs`, and `deals.won_at`.
+
+## Flows and done-checks (0.5.0)
+
+- **Company graph.** The Cockpit snapshot's `flows` reports the two kit `FLOWS` stages the CRM owns. `lead.in`: open lead follow-ups plus held leads; stuck = follow-ups open over 2 days, blocked or unassigned, plus every held lead (the reason says why). `deal.open`: open deals with the Open pipeline KPI's value (default currency first); stuck = nothing logged on the deal, its contact or its company, and no change to the deal, for 14 days.
+- **Origin ids.** Every CRM issue's id now starts with `crm:`: `crm:lead-followup:<lead key>`, `crm:reply:<message id>`, `crm:step:<enrollment>:<step>`, `crm:send-failed:<enrollment>:<step>`, `crm:won-client:<deal id>`, `crm:quote-deal:<quote id>`, `crm:sequence-refused:<approval issue id>`, `crm:sequence-email:<sequence id>`. Done-checks match by prefix only, and Campaigns opens `reply:` and `send-failed:` issues too. Older ids are still deduped, adopted and listed, but never checked.
+- **Done-checks** (kit `registerDoneChecks`, `src/done-checks.ts`). When an agent closes one of these issues, the CRM checks its own data and reopens unfinished work with what is missing:
+  - lead follow-up: work logged since the lead came in, plus a next action, a deal or a lifecycle decision;
+  - contact reply: a logged answer, or a next action, lifecycle, deal move or opt-out since;
+  - sequence step: the step logged on the contact (only then does the close move the contact on);
+  - email not sent: the address fixed, the contact reached and logged, or the address marked bounced;
+  - won deal without a client: the deal linked to one;
+  - accepted quote: a deal carries the quote, or one of the client's deals was won since.
+  An opt-out, a stopped or finished sequence, a deleted record or no open deal left also counts as finished. Approvals and the refused-sequence hand-off have no check.
+- **`move-deal` `quoteId`.** Moving a deal to won with the accepted quote's id records it on the deal (custom `quoteId`, `quoteNumber`) and logs it on the deal's timeline.

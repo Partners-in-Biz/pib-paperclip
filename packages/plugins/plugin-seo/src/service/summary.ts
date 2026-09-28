@@ -39,6 +39,12 @@ function healthTone(score: number): "ok" | "warn" | "bad" {
   return score >= 70 ? "ok" : score >= 40 ? "warn" : "bad";
 }
 
+/** Why the client's SEO work is stuck, for the CRM card (engine/due.ts): the agent, the repo checkout, or both. */
+export function stuckLabel(n: { stuck: number; stuckRuns: number }): string {
+  if (n.stuckRuns <= 0) return "Stuck (agent needs attention)";
+  return n.stuckRuns >= n.stuck ? "Stuck (no repo checkout on the server)" : "Stuck (agent and repo checkout)";
+}
+
 export async function clientSummary(env: Env, companyId: string, client: ClientRef): Promise<ClientSummary> {
   const sprints = (await db.listSprints(env.ctx.db, companyId, { scope: client })).filter((s) => s.status !== "archived");
   if (sprints.length === 0) return { headline: "No SEO sprint", stats: [] };
@@ -50,7 +56,7 @@ export async function clientSummary(env: Env, companyId: string, client: ClientR
   const info = await companyInfo(env, companyId);
   // The same numbers as the SEO page and the Cockpit (engine/due.ts).
   const overviews = await sprintOverviews(env.ctx.db, companyId, shown, info.today, await resolveAgent(env, companyId));
-  const sum = { due: 0, overdue: 0, stuck: 0, waitingOnYou: 0 };
+  const sum = { due: 0, overdue: 0, stuck: 0, stuckRuns: 0, waitingOnYou: 0 };
   let keywords = 0;
   const scores: number[] = [];
   for (const sprint of shown) {
@@ -59,6 +65,7 @@ export async function clientSummary(env: Env, companyId: string, client: ClientR
       sum.due += n.due;
       sum.overdue += n.overdue;
       sum.stuck += n.stuck;
+      sum.stuckRuns += n.stuckRuns;
       sum.waitingOnYou += n.waitingOnYou;
     }
     keywords += (await db.listKeywords(env.ctx.db, companyId, sprint.id)).length;
@@ -73,7 +80,7 @@ export async function clientSummary(env: Env, companyId: string, client: ClientR
   const stats: ClientSummary["stats"] = [
     { label: "Due now", value: sum.due },
     { label: "Overdue", value: sum.overdue, tone: sum.overdue > 0 ? "warn" : "ok" },
-    ...(sum.stuck > 0 ? [{ label: "Stuck (agent needs attention)", value: sum.stuck, tone: "bad" as const }] : []),
+    ...(sum.stuck > 0 ? [{ label: stuckLabel(sum), value: sum.stuck, tone: "bad" as const }] : []),
     { label: "Needs you", value: sum.waitingOnYou, tone: sum.waitingOnYou > 0 ? "warn" : "ok" },
     health == null ? { label: "Health", value: "—" } : { label: "Health", value: `${Math.round(health)}/100`, tone: healthTone(health) },
     { label: "Keywords tracked", value: keywords },

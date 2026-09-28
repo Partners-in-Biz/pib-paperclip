@@ -105,7 +105,7 @@ describe("onboarding on a first won deal", () => {
     const issues = [...s.issues.values()].filter((i) => i.originKind === "plugin:partnersinbiz.cockpit:onboarding");
     expect(issues).toHaveLength(1);
     const issue = issues[0]!;
-    expect(issue).toMatchObject({ title: "Onboard new client: Northwind Traders (company:nw)", assigneeAgentId: "op", status: "todo", priority: "high", originId: "onboarding:company:nw" });
+    expect(issue).toMatchObject({ title: "Onboard new client: Northwind Traders (company:nw)", assigneeAgentId: "op", status: "todo", priority: "high", originId: "cockpit:onboarding:company:nw" });
     expect(s.wakeups).toContain(issue.id);
     for (const text of [
       "deal **Website retainer** (R 12,000.00) was won on 2026-09-26",

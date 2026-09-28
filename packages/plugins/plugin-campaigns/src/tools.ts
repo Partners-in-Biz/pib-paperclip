@@ -147,6 +147,18 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "log-reply",
+    displayName: "Log what was done about a reply",
+    description:
+      "Record what you did about a campaign reply: answered (you drafted or sent an answer in the Mailbox) or no-reply-needed (an automatic reply, or nothing to answer). The reply issue's check counts it when you close the issue.",
+    parametersSchema: schema(["messageId", "outcome", "note"], {
+      messageId: str("The reply's Mailbox message id (in the reply issue)."),
+      outcome: { type: "string", enum: ["answered", "no-reply-needed"], description: "answered: you drafted or sent an answer. no-reply-needed: an automatic reply or nothing to answer." },
+      note: str("One or two plain sentences: what you answered or decided (max 1,000 characters)."),
+      mailDraftId: str("The Mailbox draft id when you drafted an answer."),
+    }),
+  },
+  {
     name: "request-campaign-approval",
     displayName: "Request campaign approval",
     description:

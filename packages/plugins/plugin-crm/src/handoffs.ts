@@ -60,6 +60,7 @@ import {
 } from "./db.js";
 import { LOCAL_BOARD_USER_ID, stageStopsEnrollments, type AccountDraft, type ContactDraft, type DealDraft, type EmailStatus } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { LEGACY_ORIGINS, originFor } from "./origins.js";
 import { companyPrefix, crmLink, pagePath, refOf, type ClientKind } from "./refs.js";
 import { teamAssignee } from "./routing.js";
 import { recentHandoffs, recordHandoff } from "./store.js";
@@ -126,8 +127,10 @@ export async function onDealWon(ctx: PluginContext, deal: DealDraft, how: string
   const value = deal.amountMinor > 0 ? formatMoneyMinor(deal.amountMinor, deal.currency) : "no amount";
   if (!found) {
     const prefix = await companyPrefix(ctx, deal.companyId);
-    const open = await ctx.issues.list({ companyId: deal.companyId, originKind: ORIGIN, originId: `won:${deal.id}`, limit: 1 }).catch(() => []);
-    if (open[0] && open[0].status !== "done" && open[0].status !== "cancelled") return { firstWin: false, emitted: false, issueId: open[0].id };
+    for (const originId of [originFor.wonClient(deal.id), LEGACY_ORIGINS.wonClient(deal.id)]) {
+      const open = await ctx.issues.list({ companyId: deal.companyId, originKind: ORIGIN, originId, limit: 1 }).catch(() => []);
+      if (open[0] && open[0].status !== "done" && open[0].status !== "cancelled") return { firstWin: false, emitted: false, issueId: open[0].id };
+    }
     const issue = await createWorkIssue(ctx, {
       companyId: deal.companyId,
       title: `Hand-off: link the won deal "${deal.title}" to its client`.slice(0, 200),
@@ -137,10 +140,12 @@ export async function onDealWon(ctx: PluginContext, deal: DealDraft, how: string
         "1. Find the client with `find-records` (create it only when nothing matches).",
         `2. Link this deal to it: \`update-deal\` with dealId \`${deal.id}\` and \`companyRecordId\` or \`contactId\`. The CRM then makes them a customer and tells Billing and the Cockpit.`,
         "3. Mark this issue done with the client's ref.",
+        "",
+        "**Done when** the deal has a company or contact (or is no longer won). Closing checks it.",
         `Pipeline: ${pagePath(prefix, "/crm?tab=deals")}`,
       ].join("\n"),
       originKind: ORIGIN,
-      originId: `won:${deal.id}`,
+      originId: originFor.wonClient(deal.id),
       ...(await teamAssignee(ctx, deal.companyId)),
       wakeReason: "A won deal needs its client",
     });
@@ -226,6 +231,31 @@ export async function moveDealTo(
   return { deal: next, stageKind: kind, won };
 }
 
+/**
+ * An agent picked the deal an accepted quote closes (`move-deal` with
+ * `quoteId`): the deal records the quote in custom `quoteId` and
+ * `quoteNumber` (as a deal the CRM creates for a quote does), and its
+ * timeline says so. Returns the deal to save.
+ */
+export async function withQuote(ctx: PluginContext, deal: DealDraft, quoteRef: string): Promise<DealDraft> {
+  const rows = await ctx.db.query<{ meta: unknown }>(
+    `SELECT meta FROM ${table(ctx, "activities")} WHERE company_id = $1 AND kind = 'quote_accepted'`,
+    [deal.companyId],
+  );
+  const pick = rows.map((row) => asRecord(row.meta)).find((meta) => meta.quoteId === quoteRef);
+  const number = typeof pick?.number === "string" && pick.number ? pick.number : null;
+  await insertActivityOnce(ctx, {
+    companyId: deal.companyId,
+    recordType: "deal",
+    recordId: deal.id,
+    kind: "quote_accepted",
+    body: `Quote ${number ?? quoteRef} accepted: it closes this deal.`,
+    meta: { quoteId: quoteRef, number },
+    sourceKey: `quote-deal:${quoteRef}`,
+  }).catch(() => undefined);
+  return { ...deal, custom: { ...deal.custom, quoteId: quoteRef, ...(number ? { quoteNumber: number } : {}) } };
+}
+
 /** Moves a deal to won (quote acceptance). */
 export type MoveToWon = (deal: DealDraft, stageId: string, how: string) => Promise<void>;
 
@@ -268,7 +298,7 @@ async function clientRecord(ctx: PluginContext, companyId: string, kind: ClientK
 }
 
 /** The client's deals (a company's include its people's deals with no company set). */
-async function clientDeals(ctx: PluginContext, companyId: string, kind: ClientKind, id: string): Promise<DealDraft[]> {
+export async function clientDeals(ctx: PluginContext, companyId: string, kind: ClientKind, id: string): Promise<DealDraft[]> {
   const deals = await listDeals(ctx, companyId);
   if (kind === "contact") return deals.filter((deal) => deal.companyId === companyId && deal.contactId === id);
   const people = new Set((await listLinks(ctx, companyId)).filter((link) => link.accountId === id).map((link) => link.contactId));
@@ -341,6 +371,7 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
   }
   const prefix = await companyPrefix(ctx, companyId);
   const ref = refOf(quote.clientKind, quote.clientRef);
+  const quoteRef = quote.quoteId || quote.key;
   const issue = await createWorkIssue(ctx, {
     companyId,
     title: `Hand-off: pick the deal for accepted quote ${quote.number} (${ref})`.slice(0, 200),
@@ -349,11 +380,13 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
       "",
       ...open.map((deal) => `- \`${deal.id}\` ${deal.title} (${deal.amountMinor > 0 ? formatMoneyMinor(deal.amountMinor, deal.currency) : "no amount"})`),
       "",
-      "Move the deal this quote closes to won with `move-deal` (stageId `won`). That makes the client a customer and tells Billing and the Cockpit. Then comment which deal you picked and mark this issue done.",
+      `Move the deal this quote closes to won with \`move-deal\` (dealId, stageId \`won\`, quoteId \`${quoteRef}\`): the deal records the quote, the client becomes a customer, and Billing and the Cockpit are told. Then mark this issue done.`,
+      "",
+      "**Done when** a deal carries this quote, or one of the client's deals was won since the quote came in. Closing checks it.",
       `Client: ${crmLink(prefix, quote.clientKind, quote.clientRef)}`,
     ].join("\n"),
     originKind: ORIGIN,
-    originId: `quote:${quote.quoteId || quote.key}`,
+    originId: originFor.quoteDeal(quoteRef),
     ...(await teamAssignee(ctx, companyId)),
     wakeReason: "An accepted quote needs its deal",
   });
@@ -363,6 +396,7 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
     recordId: quote.clientRef,
     kind: "quote_accepted",
     body: `Quote ${quote.number} accepted (${formatMoneyMinor(quote.totalMinor, quote.currency)}). Several deals are open: the Account Manager picks the one it closes.`,
+    meta: { quoteId: quoteRef, number: quote.number, key: quote.key },
     sourceKey: `quote:${quote.key}`,
     issueId: issue.id,
   });

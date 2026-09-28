@@ -8,6 +8,9 @@
  *   next step for each.
  * - A quote reply (from the Mailbox): one issue per quote with the reply.
  * - A won deal (CRM `deal.won`): one drafting issue per deal.
+ *
+ * Each issue's origin id is `billing:<kind>:<id>` (`WORK_ORIGINS`); when an
+ * agent closes one, its done check (`donechecks.ts`) looks at the outcome.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, HANDOFF_EVENTS, PIB_PLUGINS, pluginEvent, receiveOnce, type DealWon, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
@@ -16,6 +19,7 @@ import { billingSettings, dunningStages, type BillingSettings } from "./config.j
 import { asObject, getQuote, table } from "./db.js";
 import { daysPastDue } from "./domain.js";
 import { optedOutClients, requestStage, sentStages } from "./dunning.js";
+import { WORK_ORIGINS } from "./origins.js";
 import { billingPath, companyPrefix, pagePath, workRoute } from "./routing.js";
 import { billingOn } from "./setup.js";
 import { closeStandingIssue, getWorkIssue, upsertStandingIssue } from "./workissues.js";
@@ -51,6 +55,8 @@ function cell(value: string): string {
 
 export interface DraftItem {
   kind: "invoice" | "quote";
+  /** draft: nobody asked to send it; accepted: an accepted quote not turned into an invoice yet. */
+  stage: "draft" | "accepted";
   id: string;
   number: string;
   customerName: string;
@@ -98,6 +104,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
   return [
     ...invoices.map((row) => ({
       kind: "invoice" as const,
+      stage: "draft" as const,
       id: row.id,
       number: row.number,
       customerName: nameOf(row.customer, row.customer_ref),
@@ -109,6 +116,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
     })),
     ...quotes.map((row) => ({
       kind: "quote" as const,
+      stage: "draft" as const,
       id: row.id,
       number: row.number,
       customerName: nameOf(row.customer, row.customer_ref),
@@ -120,6 +128,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
     })),
     ...accepted.map((row) => ({
       kind: "quote" as const,
+      stage: "accepted" as const,
       id: row.id,
       number: row.number,
       customerName: nameOf(row.customer, row.customer_ref),
@@ -151,13 +160,15 @@ export function draftsDigest(items: DraftItem[], prefix: string | null, now = ne
     ...rows,
     "",
     `Billing: ${billingPath(prefix, { tab: "invoices" })} · Quotes: ${billingPath(prefix, { tab: "quotes" })}`,
-    "This issue is updated every morning and closes itself when nothing is waiting. Mark it done when every draft above has a send request; it reopens when new drafts wait.",
+    "This issue is updated every morning and closes itself when nothing is waiting. Mark it done when every draft above has a send request (or is cancelled); Billing checks that when you close it, and it reopens when new drafts wait. If only a person can finish one (the owner must cancel it), leave this issue blocked and say who must do what.",
   ].join("\n");
   return { title: `Drafts to send: ${parts} waiting`, description };
 }
 
-export const draftsKey = (companyId: string) => `digest:drafts:${companyId}`;
-export const overdueKey = (companyId: string) => `digest:overdue:${companyId}`;
+export const draftsKey = (companyId: string) => `${WORK_ORIGINS.drafts}${companyId}`;
+export const overdueKey = (companyId: string) => `${WORK_ORIGINS.overdue}${companyId}`;
+export const quoteReplyKey = (quoteId: string) => `${WORK_ORIGINS.quoteReply}${quoteId}`;
+export const dealWonKey = (dealId: string) => `${WORK_ORIGINS.dealWon}${dealId}`;
 
 /** Daily: open, update, reopen or close the company's "Drafts to send" issue. */
 export async function syncDraftsDigest(ctx: PluginContext, companyId: string, now = new Date()): Promise<{ items: number; issueId: string | null }> {
@@ -199,6 +210,13 @@ export interface OverdueItem {
   daysOverdue: number;
   remindersSent: number;
   step: string;
+  /**
+   * What the agent must do now: ask for the due reminder, or ask the owner
+   * (opted out, every reminder sent, over 60 days). Null when nothing is due
+   * from the agent (a proof of payment is being checked, reminders go out by
+   * themselves, or the next one is not due yet).
+   */
+  needs: "reminder" | "owner" | null;
 }
 
 export async function overdueInvoices(ctx: PluginContext, companyId: string, settings: BillingSettings, now = new Date()): Promise<OverdueItem[]> {
@@ -215,12 +233,22 @@ export async function overdueInvoices(ctx: PluginContext, companyId: string, set
     const done = sent.get(b.invoice.id) ?? [];
     const pick = requestStage(stages, days, done);
     let step: string;
+    let needs: OverdueItem["needs"] = null;
     if (b.invoice.status === "payment_pending_verification") step = "Wait: a person is checking a proof of payment";
-    else if (optedOut.has(`${b.invoice.customer_kind}:${b.invoice.customer_ref}`)) step = "No reminders (opted out): ask the owner how to chase";
-    else if (pick.stage != null) step = automatic ? `Reminder ${pick.stage + 1} goes out automatically` : `\`request-reminder-send\` (reminder ${pick.stage + 1} is due)`;
-    else if (pick.reason === "all_sent") step = "All reminders sent: ask the owner (call, payment plan or write-off)";
-    else step = `Reminder ${pick.nextStage + 1} is due in ${plural(pick.dueInDays, "day")}${automatic ? " (automatic)" : ""}`;
-    if (days > 60 && !step.startsWith("Wait")) step = `${step}; over 60 days: ask the owner`;
+    else if (optedOut.has(`${b.invoice.customer_kind}:${b.invoice.customer_ref}`)) {
+      step = "No reminders (opted out): ask the owner how to chase";
+      needs = "owner";
+    } else if (pick.stage != null) {
+      step = automatic ? `Reminder ${pick.stage + 1} goes out automatically` : `\`request-reminder-send\` (reminder ${pick.stage + 1} is due)`;
+      if (!automatic) needs = "reminder";
+    } else if (pick.reason === "all_sent") {
+      step = "All reminders sent: ask the owner (call, payment plan or write-off)";
+      needs = "owner";
+    } else step = `Reminder ${pick.nextStage + 1} is due in ${plural(pick.dueInDays, "day")}${automatic ? " (automatic)" : ""}`;
+    if (days > 60 && !step.startsWith("Wait")) {
+      step = `${step}; over 60 days: ask the owner`;
+      needs ??= "owner";
+    }
     items.push({
       id: b.invoice.id,
       number: b.invoice.number,
@@ -232,6 +260,7 @@ export async function overdueInvoices(ctx: PluginContext, companyId: string, set
       daysOverdue: days,
       remindersSent: new Set(done).size,
       step,
+      needs,
     });
   }
   return items.sort((a, b) => b.daysOverdue - a.daysOverdue);
@@ -259,13 +288,14 @@ export function overdueDigest(items: OverdueItem[], settings: BillingSettings, p
     "- The customer says they paid, or sent proof (email, WhatsApp, a call): `request-payment-check` with what they said. Never mark an invoice paid yourself.",
     "- The customer replied with a question or a problem: answer with a Mailbox draft (`partnersinbiz.mailbox:create-draft`); a person sends it.",
     "- All reminders sent, or over 60 days: ask the owner with `partnersinbiz.cockpit:ask-owner` (call them, agree a payment plan, a credit note or a write-off). Credit notes go through `create-credit-note` (a person approves); only a person writes off.",
+    "- Anything that leaves no other trace in Billing (what you asked the owner, what they decided, a promise to pay, a reply you drafted): log it on the invoice with `partnersinbiz.billing:log-follow-up` (invoiceId, note).",
     "",
     "| Invoice | Client | Owed | Days overdue | Reminders | Next step |",
     "|---|---|---|---|---|---|",
     ...rows,
     "",
     `Overdue list: ${billingPath(prefix, { tab: "invoices" })} · Reminders: ${billingPath(prefix, { tab: "reminders" })}`,
-    "Updated every Monday (and kept current daily); it closes itself when nothing is overdue. Mark it done when every invoice above has its next step.",
+    "Updated every Monday (and kept current daily); it closes itself when nothing is overdue. Mark it done when every invoice above that needs a step has one: a reminder request, a payment check, a follow-up note, or it is paid. Billing checks that when you close it.",
   ].join("\n");
   return { title: `Overdue invoices: ${items.length} (${total})`, description };
 }
@@ -340,14 +370,14 @@ export async function openQuoteReplyIssue(ctx: PluginContext, companyId: string,
     "Next steps:",
     `- They accept: \`partnersinbiz.billing:set-quote-status\` (quoteId \`${quote.id}\`, status \`accepted\`), then \`convert-quote\` to draft the invoice, check it and \`request-invoice-send\`. Accepting tells the CRM, which marks the deal won.`,
     "- They decline: `set-quote-status` with `declined`, and log why on the client in the CRM.",
-    `- A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with replyToMessageId \`${mail.messageId}\`); a person sends it. For a changed price or scope, draft a new quote (with the same dealId) and \`request-quote-send\`.`,
-    "- Not sure what they mean, or they ask for a discount: ask the owner with `partnersinbiz.cockpit:ask-owner`.",
+    `- A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with replyToMessageId \`${mail.messageId}\`); a person sends it. Then log it with \`partnersinbiz.billing:log-follow-up\` (quoteId \`${quote.id}\`, a note, mailDraftId). For a changed price or scope, draft a new quote (with the same dealId) and \`request-quote-send\`.`,
+    "- Not sure what they mean, or they ask for a discount: ask the owner with `partnersinbiz.cockpit:ask-owner`, and leave this issue blocked until they answer.",
     "",
     `Quote: ${billingPath(prefix, { tab: "quotes", client })}`,
-    "Done when the quote is accepted and converted, declined, or the reply is answered.",
+    "Done when the quote's status changed (accepted, declined, expired), a new quote for the deal is drafted, or the answer is drafted and logged. Billing checks that when you close it.",
   ].join("\n");
   const result = await upsertStandingIssue(ctx, {
-    key: `quote-reply:${quote.id}`,
+    key: quoteReplyKey(quote.id),
     companyId,
     kind: "quote_reply",
     subjectId: quote.id,
@@ -358,6 +388,8 @@ export async function openQuoteReplyIssue(ctx: PluginContext, companyId: string,
     wake: true,
     comment: `New reply from ${from}: "${snippet.slice(0, 300)}"`,
     wakeReason: "A customer replied to a quote",
+    // The status when this reply came in: the done check looks for a change since.
+    detail: { quoteStatus: quote.status, messageId: mail.messageId, repliedAt: mail.receivedAt || new Date().toISOString() },
   });
   return { quoteId: quote.id, issueId: result.issueId };
 }
@@ -401,7 +433,7 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
       ? `Invoice ${draft.number} (\`${draft.id}\`) is already drafted for this deal: check it with \`partnersinbiz.billing:invoice-detail\` and ask for approval with \`request-invoice-send\`. Do not draft another invoice for this deal.`
       : `Quote ${accepted!.number} (\`${accepted!.id}\`) for this deal is accepted: \`convert-quote\` it, check the draft invoice and \`request-invoice-send\`. Do not draft another invoice for this deal.`;
     title = draft ? `${prefixTitle}: send invoice ${draft.number}` : `${prefixTitle}: convert quote ${accepted!.number} and send the invoice`;
-    lines = [head, "", step, "", links, "Done when the invoice is waiting for approval."];
+    lines = [head, "", step, "", links, "Done when the invoice is waiting for approval. Billing checks that when you close it."];
   } else {
     title = `${prefixTitle}: draft the quote, invoice or retainer`;
     lines = [
@@ -412,15 +444,16 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
       `- Once-off work: \`partnersinbiz.billing:create-invoice\` (customerKind \`${deal.clientKind}\`, customerRef \`${deal.clientRef}\`, currency, dealId \`${deal.dealId}\`), \`add-line\` per item (cents, VAT code), then \`request-invoice-send\`.`,
       `- Not agreed in writing yet: \`create-quote\` with dealId \`${deal.dealId}\`, \`add-quote-line\`, then \`request-quote-send\`.`,
       `- A monthly retainer: \`create-subscription\` (client \`${client}\`, priceMinor or planId, period, startAt). Each period's invoice is drafted for you to send.`,
-      "Take the items and prices from the deal in the CRM (`partnersinbiz.crm:list-deal-products`). Never invent prices: if the amount or scope is unclear, ask the owner with `partnersinbiz.cockpit:ask-owner`.",
+      "Take the items and prices from the deal in the CRM (`partnersinbiz.crm:list-deal-products`). Never invent prices: if the amount or scope is unclear, ask the owner with `partnersinbiz.cockpit:ask-owner` and leave this issue blocked until they answer.",
+      `If the owner says this deal is not billed (or billed elsewhere), record that with \`partnersinbiz.billing:log-follow-up\` (dealId \`${deal.dealId}\`, note).`,
       "",
       links,
-      "Done when the invoice or quote is waiting for approval, or the retainer is set up.",
+      "Done when the invoice or quote is waiting for approval, or the retainer is set up. Billing checks that when you close it.",
     ];
   }
   const description = lines.join("\n");
   const result = await upsertStandingIssue(ctx, {
-    key: `deal-won:${deal.dealId}`,
+    key: dealWonKey(deal.dealId),
     companyId,
     kind: "deal_won",
     subjectId: deal.dealId,
@@ -431,6 +464,8 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
     wake: true,
     comment: null,
     wakeReason: "A deal was won",
+    // The client, so the done check also finds a quote, invoice or retainer drafted without the deal id.
+    detail: { clientKind: deal.clientKind === "contact" ? "contact" : "company", clientRef: deal.clientRef, title: deal.title, clientName: deal.clientName },
   });
   return { dealId: deal.dealId, issueId: result.issueId };
 }

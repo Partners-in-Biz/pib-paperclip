@@ -60,7 +60,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.8.0",
+  version: "0.9.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -189,6 +189,8 @@ const manifest: PaperclipPluginManifestV1 = {
       triggers: [
         { kind: "schedule", label: "Daily 06:30 SAST", enabled: true, cronExpression: "30 6 * * *", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
+      // A stable origin id per kind of work (the host uses the routine's own id otherwise).
+      issueTemplate: { originId: `routine:${DAILY_ROUTINE_KEY}` },
     },
     {
       routineKey: WEEKLY_ROUTINE_KEY,
@@ -203,6 +205,7 @@ const manifest: PaperclipPluginManifestV1 = {
       triggers: [
         { kind: "schedule", label: "Mondays 07:00 SAST", enabled: true, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
+      issueTemplate: { originId: `routine:${WEEKLY_ROUTINE_KEY}` },
     },
   ],
   skills: SKILLS,

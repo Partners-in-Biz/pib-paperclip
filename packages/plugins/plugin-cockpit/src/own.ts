@@ -22,6 +22,7 @@ import { getRoles } from "./db.js";
 import { message, type Env } from "./env.js";
 import { memoryJevConfig } from "./memory/jev.js";
 import { memoryStats } from "./memory/store.js";
+import { cockpitFlowReports } from "./own-flows.js";
 import { profileSetupItem, readProfile } from "./profile.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
@@ -272,6 +273,8 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
   } catch (error) {
     env.ctx.logger.info("Cockpit activity read failed", { error: message(error) });
   }
+  // The Cockpit's own stages of the company graph (onboarding), like every plugin reports its own.
+  snapshot.flows = await cockpitFlowReports(env, companyId);
   snapshot.health = health;
   return snapshot;
 }

@@ -244,7 +244,7 @@ describe("replies from the Mailbox", () => {
     expect(store.enrollments!.filter((row) => row.contact_id === "ada").map((row) => row.status)).toEqual(["stopped", "stopped"]);
     expect(store.enrollments!.find((row) => row.id === "e-bob")!.status).toBe("running");
     const [issue] = await issues(harness);
-    expect(issue).toMatchObject({ title: "Reply from Ada Lovelace: Re: Hi Ada", assigneeAgentId: "agent-ada", status: "todo", originId: "reply:m-1" });
+    expect(issue).toMatchObject({ title: "Reply from Ada Lovelace: Re: Hi Ada", assigneeAgentId: "agent-ada", status: "todo", originId: "crm:reply:m-1" });
     expect(store.decisions).toHaveLength(1);
     expect(store.decisions![0]).toMatchObject({ purpose: "crm.reply", question_key: "reply_kind", value_text: "interested", acted: true });
     expect(jev.calls[0]!.state).toBe("Subject: Re: Hi Ada\n\nYes please, can we talk on Tuesday?");

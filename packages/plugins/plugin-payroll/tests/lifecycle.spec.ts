@@ -31,6 +31,7 @@ function makeHost() {
   const emitted: Array<{ name: string; payload: Record<string, unknown> }> = [];
   const issues = new Map<string, Record<string, unknown>>();
   const outbox = new Map<string, Record<string, unknown>>();
+  const state = new Map<string, unknown>();
   let seq = 0;
   const raw = {
     employer: { legalName: "Partners in Biz (Pty) Ltd", payeReference: "7123456789", uifReference: "U1", sdlReference: "L1", address: "Ballito" },
@@ -73,6 +74,10 @@ function makeHost() {
       update: async (id: string, patch: Record<string, unknown>) => { issues.set(id, { ...issues.get(id), ...patch }); return issues.get(id); },
       createComment: async (id: string, body: string) => { const issue = issues.get(id)!; issue.comments = [...((issue.comments as string[]) ?? []), body]; },
       requestWakeup: async () => ({}),
+    },
+    state: {
+      get: async (k: Record<string, unknown>) => state.get(`${k.namespace}|${k.stateKey}`) ?? null,
+      set: async (k: Record<string, unknown>, value: unknown) => { state.set(`${k.namespace}|${k.stateKey}`, value); },
     },
     secrets: { resolve: async () => undefined },
     logger: { info: () => undefined, error: () => undefined },
@@ -294,6 +299,8 @@ describe("agent tools", () => {
       "leave-balances": {},
       "emp201-summary": { month: "2026-09" },
       "emp501-summary": { period: "interim" },
+      // The owner's reference is saved but never echoed (tool output carries no long numbers).
+      "mark-emp201-filed": { month: "2026-08", reference: "7123456789LC08" },
     };
     expect(Object.keys(calls).sort()).toEqual([...PAYROLL_TOOL_NAMES].sort());
     for (const [name, params] of Object.entries(calls)) {

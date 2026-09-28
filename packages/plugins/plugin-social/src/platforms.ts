@@ -7,6 +7,8 @@ export const PLUGIN_ID = "partnersinbiz.social";
 export const SOCIAL_AGENT_KEY = "social-media-manager";
 export const SOCIAL_PROJECT_KEY = "social";
 export const PLAN_ROUTINE_KEY = "plan-next-week";
+/** Origin id of the weekly plan routine's issues (the manifest's issueTemplate). */
+export const PLAN_ROUTINE_ORIGIN_ID = "routine:plan-next-week";
 
 export type SocialPlatform =
   | "facebook"

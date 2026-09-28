@@ -11,7 +11,7 @@ export const STATE_LABEL: Record<TaskState, string> = {
   done: "Done",
   skipped: "Not needed",
   waiting: "Waiting on you",
-  stuck: "Stuck: agent needs attention",
+  stuck: "Stuck: nothing moves until it is fixed",
   overdue: "Overdue",
   in_progress: "In progress",
   due: "Due",

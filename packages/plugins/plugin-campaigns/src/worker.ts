@@ -32,12 +32,16 @@ import {
   insertCampaign,
   insertCampaignTemplate,
   insertEnrollment,
+  insertReplyLog,
   insertStep,
   insertStepEvent,
   isSuppressed,
   listCampaigns,
   listCampaignTemplates,
   listSteps,
+  markEdited,
+  REPLY_OUTCOMES,
+  replyEvent,
   saveCampaign,
   saveEnrollment,
   setLaunchError,
@@ -91,6 +95,7 @@ import {
   createWorkIssue,
   getCrmContact as projectedContact,
   isModuleEnabled,
+  checkDoneOnUpdate,
   registerModuleWatch,
   registerRoleWatch,
   rememberPluginUiBase,
@@ -117,7 +122,9 @@ import { eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
+import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
 import { approverUserId, assigneeFields, workOwner } from "./owner.js";
+import { approvalOrigin, reviseOrigin, stepOrigin } from "./origins.js";
 import { announceSuppression, onContactSuppressed, reannounceSuppressions, suppressAddress, suppressionEvents, suppressionPayload } from "./suppress.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
@@ -187,12 +194,14 @@ const plugin = definePlugin({
     for (const eventType of suppressionEvents()) {
       ctx.events.on(eventType as `plugin.${string}`, (event) => onContactSuppressed(ctx, event));
     }
+    // One subscription (a second would run both twice). A closed step issue moves its contact on before its done check looks.
     ctx.events.on("issue.updated", async (event) => {
       try {
         await onIssueUpdated(ctx, event);
       } catch (error) {
         ctx.logger.error("Campaign issue update failed", { issueId: event.entityId, error: error instanceof Error ? error.message : String(error) });
       }
+      await checkDoneOnUpdate(ctx, CAMPAIGN_DONE_CHECKS, event);
     });
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
@@ -236,6 +245,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "launch-campaign") return launch(ctx, companyId, body);
   if (name === "stop-enrollment") return stopEnrollmentTool(ctx, companyId, body);
   if (name === "suppress-address") return suppressAddressTool(ctx, companyId, body);
+  if (name === "log-reply") return logReplyTool(ctx, companyId, body, run.agentId ?? null);
   if (name === "pause-campaign") return setStatus(ctx, companyId, body, "paused");
   if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active");
   if (name === "complete-campaign") return setStatus(ctx, companyId, body, "completed");
@@ -439,6 +449,7 @@ async function updateCampaignRecord(ctx: PluginContext, companyId: string, param
     ? await invalidateApproval(ctx, companyId, next, "the campaign's audience, sender, delivery or dates changed")
     : false;
   await saveCampaign(ctx, next);
+  if (approvalFields(next) !== approvalFields(original) || next.description !== original.description) await markEdited(ctx, next.id);
   return { ...publicCampaign(next), approvalReset };
 }
 
@@ -464,6 +475,7 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
     variant: "a",
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
+  await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `step ${step.position} was added`);
   return { campaignId: campaign.id, step, approvalReset };
 }
@@ -615,7 +627,7 @@ async function onApprovalRefused(ctx: PluginContext, companyId: string, campaign
   const owner = await workOwner(ctx, companyId, campaign);
   await openIssueOnce(ctx, {
     companyId,
-    originId: `revise:${issueId}`,
+    originId: reviseOrigin(campaign.id, issueId),
     title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}Revise campaign ${campaign.name}: not approved`,
     description: [
       `A person cancelled the launch approval of campaign **${campaign.name}** (\`${campaign.id}\`), so it did not launch.`,
@@ -624,6 +636,7 @@ async function onApprovalRefused(ctx: PluginContext, companyId: string, campaign
       "2. Fix the draft: update-campaign, add-campaign-step, create-ab-variant or set-step-html.",
       "3. Call request-campaign-approval again, then mark this issue done.",
       "",
+      "When you close it, Campaigns checks the draft changed after the refusal and a new approval is open; if it reopens, finish what it lists.",
       "If the comments say to drop the campaign, mark this issue cancelled and leave the draft.",
     ].join("\n"),
     assignee: assigneeFields(owner),
@@ -680,6 +693,19 @@ async function suppressAddressTool(ctx: PluginContext, companyId: string, params
   const outcome = await suppressAddress(ctx, { companyId, email, reason: raw, scope: "marketing", source: PLUGIN_ID });
   const announced = await announceSuppression(ctx, companyId, suppressionPayload({ email, reason: raw, scope: "marketing" }));
   return { email, reason: raw, scope: "marketing", added: outcome.created, stoppedContacts: outcome.stoppedContacts, cancelledStepIssues: outcome.cancelledIssues, announced };
+}
+
+/** An agent records what it did about a reply (answered, or nothing to answer); the reply issue's done check counts it. */
+async function logReplyTool(ctx: PluginContext, companyId: string, params: Record<string, unknown>, agentId: string | null) {
+  const messageId = requiredString(params, "messageId");
+  const outcome = requiredString(params, "outcome");
+  if (!(REPLY_OUTCOMES as string[]).includes(outcome)) throw new CampaignError("outcome must be answered or no-reply-needed");
+  const note = requiredString(params, "note").slice(0, 1000);
+  const mailDraftId = optionalString(params, "mailDraftId")?.slice(0, 200) ?? null;
+  const reply = await replyEvent(ctx, companyId, messageId);
+  if (!reply) throw new CampaignError(`No campaign reply has Mailbox message id ${messageId}. Use the messageId from the reply issue.`);
+  const id = await insertReplyLog(ctx, { companyId, messageId, campaignId: reply.campaignId, enrollmentId: reply.enrollmentId, outcome: outcome as (typeof REPLY_OUTCOMES)[number], note, mailDraftId, createdBy: agentId ? `agent:${agentId}` : null });
+  return { logged: true, id, messageId, outcome, campaignId: reply.campaignId, enrollmentId: reply.enrollmentId, next: "Mark the reply issue done." };
 }
 
 async function setStatus(ctx: PluginContext, companyId: string, params: Record<string, unknown>, to: "paused" | "active" | "completed") {
@@ -759,7 +785,7 @@ async function openDueSteps(ctx: PluginContext) {
           title: copy.title,
           description: `${note ? `${note}\n\n` : ""}${copy.description}${to}${how}`,
           originKind: "plugin:partnersinbiz.campaigns",
-          originId: enrollment.id,
+          originId: stepOrigin(enrollment.id, step.position),
           ...(await campaignAssignee(ctx, enrollment.companyId, campaign)),
           wakeReason: "A campaign step is due",
         });
@@ -909,7 +935,7 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
     title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}Approve campaign ${campaign.name}`,
     description: reviewer ? `${description}\n${launchReviewBrief(campaign, approver)}` : description,
     originKind: "plugin:partnersinbiz.campaigns",
-    originId: campaign.id,
+    originId: approvalOrigin(campaign.id),
     ...(reviewer
       ? { assigneeAgentId: reviewer, wakeReason: "Review a campaign launch before a person approves it" }
       : approver ? { assigneeUserId: approver } : {}),
@@ -975,6 +1001,7 @@ async function createAbVariant(ctx: PluginContext, companyId: string, params: Re
     variant: "b",
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
+  await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `a B version of step ${position} was added`);
   return { campaignId: campaign.id, step, approvalReset };
 }
@@ -1016,6 +1043,7 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   const steps = await listSteps(ctx, campaign.id);
   if (!steps.some((step) => step.position === position && step.variant === variant)) throw new CampaignError("No step found at that position and variant");
   await setStepHtml(ctx, { companyId, campaignId: campaign.id, position, variant, html });
+  await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
   return { campaignId: campaign.id, position, variant, htmlSet: true, approvalReset };
 }

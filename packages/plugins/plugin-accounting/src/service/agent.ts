@@ -26,7 +26,7 @@ import { addMonths, lastDayOfMonth, monthOf, todayIso } from "../domain/util.js"
 import { PLUGIN_ID } from "../namespace.js";
 import { AGENT_KEY, SKILL_CANONICAL_KEY, SKILL_SLUG } from "../skills.js";
 import { booksStartFor } from "./books.js";
-import { errorMessage, openIssue, ORIGIN } from "./common.js";
+import { errorMessage, openIssue, ORIGIN, WORK_ORIGINS } from "./common.js";
 
 export const TOOLS_GRANT = { permissionKey: "tools:use" as const, scope: { providerType: "paperclip_plugin" } };
 
@@ -224,9 +224,10 @@ export function monthEndCloseText(month: string): string {
     `2. **Bank lines:** \`list-bank-lines\` with \`status: "unreconciled"\` and \`to: "${end}"\`; match or categorise them (the reconcile issues say how).`,
     `3. **Reconciliations:** for each bank account from \`list-bank-accounts\`, \`prepare-reconciliation\` with \`month: "${month}"\`. It opens the approval issue for a person once the difference is zero and no line is open. If it needs the statement's opening or closing balance and you cannot read it from the statement, ask with \`${ASK_OWNER_TOOL}\`.`,
     `4. **VAT:** if the checklist has a VAT201 item (a VAT period ended on ${end}), check \`vat-summary\` for that period, then \`prepare-vat201\` for it. It opens the approval issue for a person.`,
+    `   A reconciliation or VAT201 that is truly not needed for ${month} (say, an account with no statement for the month): record it with \`mark-not-needed\` (\`month: "${month}"\`, the \`step\` and the \`reason\`).`,
     `5. **Rejected postings, depreciation, FX:** these post or unlock the books, so a person does them. List what is missing and ask once with \`${ASK_OWNER_TOOL}\`, with the Accounting links.`,
     "6. **Trial balance or audit chain not ok:** stop and ask at once; post nothing.",
-    `7. Comment the checklist result here with the approval issues you opened, then mark this issue done. The approvals wait for a person in the Cockpit; a person closes ${month} under Accounting → Journals once they are approved.`,
+    `7. Comment the checklist result here with the approval issues you opened, then mark this issue done. Closing it checks that every bank account has a reconciliation for ${month} and the VAT201 is prepared (or recorded as not needed); if not, it opens again with what is missing. The approvals wait for a person in the Cockpit; a person closes ${month} under Accounting → Journals once they are approved.`,
   ].join("\n");
 }
 
@@ -246,7 +247,7 @@ export async function monthEndCloseIssue(ctx: PluginContext, companyId: string, 
       title: `Month-end close: ${monthYearLabel(month) || month}`,
       description: monthEndCloseText(month),
       originKind: ORIGIN,
-      originId: `close:${month}`,
+      originId: `${WORK_ORIGINS.close}${month}`,
       wakeReason: "Month-end close",
     }, route);
     return issue.id;

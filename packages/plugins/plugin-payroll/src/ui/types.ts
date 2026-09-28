@@ -224,6 +224,15 @@ export interface LeaveData {
   balances: Array<{ employeeId: string; name: string; balances: Array<{ type: string; label: string; balanceCenti: number; takenCenti: number; pendingCenti: number; note: string | null }> }>;
 }
 
+/** A month's EMP201 marked filed and paid on eFiling (`payroll.emp201` → `filing`). */
+export interface Emp201FilingView {
+  month: string;
+  filedOn: string;
+  reference: string | null;
+  recordedBy: { userId: string | null; agentId: string | null };
+  at: string;
+}
+
 export interface Emp201View {
   month: string;
   payeMinor: number;

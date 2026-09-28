@@ -39,7 +39,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.brief,
     displayName: "Company brief",
     description:
-      "Everything on the Cockpit in compact JSON: what waits on the owner (questions agents asked first, then money and legal, with links and why), asks (each open question with its age), unassigned (open issues nobody holds, older than a day), team (the agent in each role), system health (worst first, with fixes), KPIs by group, recent activity per agent, and every agent with status, last run, spend vs budget and quality metrics. Start every operations review here.",
+      "Everything on the Cockpit in compact JSON: what waits on the owner (questions agents asked first, then money and legal, with links and why), asks (each open question with its age), stuckFlows (the 5 stages of the company graph where work is stuck, with who it waits on), unassigned (open issues nobody holds, older than a day), team (the agent in each role), system health (worst first, with fixes), KPIs by group, recent activity per agent, and every agent with status, last run, spend vs budget and quality metrics. Start every operations review here.",
     parametersSchema: schema([], {
       windowHours: { type: "integer", description: "Activity window in hours (default 24; 168 for the weekly retro)", minimum: 1, maximum: 720 },
     }),

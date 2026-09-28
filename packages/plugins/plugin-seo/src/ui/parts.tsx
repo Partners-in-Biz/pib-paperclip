@@ -5,7 +5,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { CircleAlert, Info, Pill, TriangleAlert, breakAnywhere, tokens, tone, useIsNarrow, type LucideIcon, type ToneName } from "@partnersinbiz/pib-plugin-ui";
-import { agentTrouble } from "../engine/due.js";
+import { agentTrouble, projectFixPath, RUNS_FIX, RUNS_TROUBLE } from "../engine/due.js";
 import { plural, type PlainError } from "../engine/plain.js";
 import { TEAM_SETUP_HREF } from "./role-skills.js";
 import type { AgentState } from "./types.js";
@@ -138,17 +138,34 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
   );
 }
 
-/** One line when due work is stuck because the SEO agent cannot work, with the fix in Setup → Team. */
-export function StuckBanner({ stuck, agent }: { stuck: number; agent: AgentState }) {
+/**
+ * One line per cause when due work is stuck: the SEO agent cannot work (fix
+ * in Setup → Team), or the tasks' runs stop at the workspace check because the
+ * project has no checkout of the site repo on the server (fix the project's
+ * Codebase). `stuck` counts both; `stuckRuns` the second.
+ */
+export function StuckBanner({ stuck, stuckRuns = 0, runsProjectIds = [], agent }: { stuck: number; stuckRuns?: number; runsProjectIds?: string[]; agent: AgentState }) {
   const nav = useHostNavigation();
   const narrow = useIsNarrow();
-  if (stuck <= 0) return null;
+  const byAgent = stuck - stuckRuns;
+  if (byAgent <= 0 && stuckRuns <= 0) return null;
   return (
-    <Banner tone="bad" action={<a {...nav.linkProps(TEAM_SETUP_HREF)} style={narrow ? compactLink : linkButton}>{narrow ? "Fix" : "Fix in Setup → Team"}</a>}>
-      <span>
-        <strong>{plural(stuck, "task")} stuck:</strong> {agentTrouble(agent)}{narrow ? "." : ", so nothing moves until it is fixed."}
-      </span>
-    </Banner>
+    <>
+      {byAgent > 0 ? (
+        <Banner tone="bad" action={<a {...nav.linkProps(TEAM_SETUP_HREF)} style={narrow ? compactLink : linkButton}>{narrow ? "Fix" : "Fix in Setup → Team"}</a>}>
+          <span>
+            <strong>{plural(byAgent, "task")} stuck:</strong> {agentTrouble(agent)}{narrow ? "." : ", so nothing moves until it is fixed."}
+          </span>
+        </Banner>
+      ) : null}
+      {stuckRuns > 0 ? (
+        <Banner tone="bad" action={<a {...nav.linkProps(projectFixPath(runsProjectIds))} style={narrow ? compactLink : linkButton}>{narrow ? "Fix" : "Open the project"}</a>}>
+          <span>
+            <strong>{plural(stuckRuns, "task")} can't start:</strong> {RUNS_TROUBLE}.{narrow ? "" : ` ${RUNS_FIX}`}
+          </span>
+        </Banner>
+      ) : null}
+    </>
   );
 }
 

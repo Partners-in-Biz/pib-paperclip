@@ -985,6 +985,122 @@ export async function listStatements(db: Db, companyId: string, bankAccountId?: 
   return rows.map(mapStatement);
 }
 
+// ---------------------------------------------------------------------------
+// Statement emails from the Mailbox, and what became of each one
+// ---------------------------------------------------------------------------
+
+/**
+ * received = waiting to be imported; imported = its lines are in the books; duplicate = imported before;
+ * not_statement = no statement in it; closed = a person closed its issue without an import linked to it.
+ */
+export type StatementEmailStatus = "received" | "imported" | "duplicate" | "not_statement" | "closed";
+
+export interface StatementEmailRow {
+  messageId: string;
+  subject: string;
+  sender: string;
+  receivedAt: string | null;
+  issueId: string | null;
+  status: StatementEmailStatus;
+  statementIds: string[];
+  note: string | null;
+  resolvedBy: Record<string, unknown> | null;
+  resolvedAt: string | null;
+  createdAt: string | null;
+}
+
+const EMAIL_COLUMNS = "message_id, subject, sender, received_at, issue_id, status, statement_ids, note, resolved_by, resolved_at, created_at";
+
+function mapStatementEmail(r: Record<string, unknown>): StatementEmailRow {
+  return {
+    messageId: String(r.message_id),
+    subject: String(r.subject ?? ""),
+    sender: String(r.sender ?? ""),
+    receivedAt: iso(r.received_at),
+    issueId: str(r.issue_id),
+    status: String(r.status) as StatementEmailStatus,
+    statementIds: Array.isArray(r.statement_ids) ? r.statement_ids.map(String) : [],
+    note: str(r.note),
+    resolvedBy: (r.resolved_by ?? null) as Record<string, unknown> | null,
+    resolvedAt: iso(r.resolved_at),
+    createdAt: iso(r.created_at),
+  };
+}
+
+/** A statement email arrived. A repeat keeps the first row (true only the first time). */
+export async function insertStatementEmail(db: Db, companyId: string, e: { messageId: string; subject: string; sender: string; receivedAt: string | null; issueId: string | null }): Promise<boolean> {
+  const res = await db.execute(
+    `INSERT INTO ${N}.statement_emails (company_id, message_id, subject, sender, received_at, issue_id)
+     VALUES ($1, $2, $3, $4, $5::timestamptz, $6) ON CONFLICT (company_id, message_id) DO NOTHING`,
+    [companyId, e.messageId, e.subject.slice(0, 200), e.sender.slice(0, 200), e.receivedAt, e.issueId],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+export async function getStatementEmail(db: Db, companyId: string, messageId: string): Promise<StatementEmailRow | null> {
+  const rows = await db.query<Record<string, unknown>>(`SELECT ${EMAIL_COLUMNS} FROM ${N}.statement_emails WHERE company_id = $1 AND message_id = $2`, [companyId, messageId]);
+  return rows[0] ? mapStatementEmail(rows[0]) : null;
+}
+
+/** Statement emails, newest first (only these statuses when given). */
+export async function listStatementEmails(db: Db, companyId: string, statuses: StatementEmailStatus[] | null = null, limit = 50): Promise<StatementEmailRow[]> {
+  const params: unknown[] = [companyId];
+  let where = "company_id = $1";
+  if (statuses?.length) {
+    params.push(json(statuses));
+    where += " AND status IN (SELECT jsonb_array_elements_text($2::jsonb))";
+  }
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT ${EMAIL_COLUMNS} FROM ${N}.statement_emails WHERE ${where} ORDER BY COALESCE(received_at, created_at) DESC LIMIT ${Math.max(1, Math.min(limit, 500))}`,
+    params,
+  );
+  return rows.map(mapStatementEmail);
+}
+
+/** Record what became of a statement email (a row is added when the email was never recorded). */
+export async function saveStatementEmailOutcome(
+  db: Db,
+  companyId: string,
+  messageId: string,
+  o: { status: Exclude<StatementEmailStatus, "received">; statementIds: string[]; note: string | null; resolvedBy: unknown },
+): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${N}.statement_emails (company_id, message_id, status, statement_ids, note, resolved_by, resolved_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, now())
+     ON CONFLICT (company_id, message_id) DO UPDATE SET status = EXCLUDED.status, statement_ids = EXCLUDED.statement_ids, note = EXCLUDED.note,
+       resolved_by = EXCLUDED.resolved_by, resolved_at = now(), updated_at = now()`,
+    [companyId, messageId, o.status, json(o.statementIds), o.note, json(o.resolvedBy)],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Month-end steps recorded as not needed (step: vat201 or reconciliation:<bankAccountId>)
+// ---------------------------------------------------------------------------
+
+export interface CloseSkipRow {
+  month: string;
+  step: string;
+  reason: string;
+  recordedBy: Record<string, unknown>;
+  createdAt: string | null;
+}
+
+export async function saveCloseSkip(db: Db, companyId: string, s: { month: string; step: string; reason: string; recordedBy: unknown }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${N}.close_skips (company_id, month, step, reason, recorded_by) VALUES ($1, $2, $3, $4, $5::jsonb)
+     ON CONFLICT (company_id, month, step) DO UPDATE SET reason = EXCLUDED.reason, recorded_by = EXCLUDED.recorded_by, created_at = now()`,
+    [companyId, s.month, s.step, s.reason, json(s.recordedBy)],
+  );
+}
+
+export async function listCloseSkips(db: Db, companyId: string, month: string): Promise<CloseSkipRow[]> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT month, step, reason, recorded_by, created_at FROM ${N}.close_skips WHERE company_id = $1 AND month = $2 ORDER BY step`,
+    [companyId, month],
+  );
+  return rows.map((r) => ({ month: String(r.month), step: String(r.step), reason: String(r.reason ?? ""), recordedBy: (r.recorded_by ?? {}) as Record<string, unknown>, createdAt: iso(r.created_at) }));
+}
+
 export interface BankLineRow {
   id: string;
   bankAccountId: string;

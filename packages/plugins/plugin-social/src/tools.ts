@@ -117,10 +117,11 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
+      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
     parametersSchema: schema(["body"], {
       body: text("Main post text (used by every platform without a text override)"),
       ...scope,
+      handoffKey: text("Repurpose issue's hand-off key (seo:content:<id>): links the draft to that page"),
       visibility: choice(["org", "personal"], "org (default): a company or client page. personal: a person's own profile, only that person's accounts."),
       ...post,
       ...experimentTag,

@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -43,8 +43,24 @@ export const ORIGIN = {
   onboarding: `plugin:${COCKPIT_PLUGIN}:onboarding`,
 } as const;
 
+/**
+ * Origin id prefixes of the issues the Cockpit opens for agents, one per kind
+ * (`cockpit:onboarding:company:<id>`, `cockpit:health:<companyId>`). The
+ * done-checks match on them.
+ */
+export const ORIGIN_ID = {
+  onboarding: "cockpit:onboarding:",
+  health: "cockpit:health:",
+} as const;
+
+/** The same kinds before 0.4.0 (no plugin part), still checked for issues opened then. */
+export const LEGACY_ORIGIN_ID = {
+  onboarding: "onboarding:",
+  health: "health:",
+} as const;
+
 /** The Cockpit page tabs (`?tab=`). */
-export const COCKPIT_TABS = { overview: "overview", profile: "profile", memory: "memory" } as const;
+export const COCKPIT_TABS = { overview: "overview", flows: "flows", profile: "profile", memory: "memory" } as const;
 export const PROFILE_PATH = "/cockpit?tab=profile";
 
 /** Budget use at or above this share of the monthly budget raises an alert. */

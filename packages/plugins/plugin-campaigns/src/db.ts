@@ -927,3 +927,66 @@ export async function eventDays(
     [companyId, sinceIso],
   );
 }
+
+// ---------------------------------------------------------------------------
+// Done checks: edits, replies handled
+// ---------------------------------------------------------------------------
+
+/** A draft's content changed (steps, HTML, audience, sender, dates, description): a refused campaign must change before it is asked again. */
+export async function markEdited(ctx: PluginContext, campaignId: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "campaigns")} SET edited_at = now() WHERE id = $1`, [campaignId]);
+}
+
+/** When the draft's content last changed (null when never since 0.5). */
+export async function campaignEditedAt(ctx: PluginContext, campaignId: string): Promise<string | null> {
+  const rows = await ctx.db.query<{ edited_at: unknown }>(`SELECT edited_at FROM ${table(ctx, "campaigns")} WHERE id = $1 LIMIT 1`, [campaignId]);
+  return isoTime(rows[0]?.edited_at);
+}
+
+/** One enrollment's state with when it last changed (for the reply check). */
+export async function enrollmentState(ctx: PluginContext, id: string): Promise<{ id: string; companyId: string; campaignId: string; contactId: string; status: string; updatedAt: string | null } | null> {
+  const rows = await ctx.db.query<{ id: string; company_id: string; campaign_id: string; contact_id: string; status: string; updated_at: unknown }>(
+    `SELECT id, company_id, campaign_id, contact_id, status, updated_at FROM ${table(ctx, "campaign_enrollments")} WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  const row = rows[0];
+  return row ? { id: row.id, companyId: row.company_id, campaignId: row.campaign_id, contactId: row.contact_id, status: row.status, updatedAt: isoTime(row.updated_at) } : null;
+}
+
+/** The reply event a Mailbox message recorded (its enrollment and campaign), or null. */
+export async function replyEvent(ctx: PluginContext, companyId: string, messageId: string): Promise<{ enrollmentId: string; campaignId: string } | null> {
+  const rows = await ctx.db.query<{ enrollment_id: string; campaign_id: string }>(
+    `SELECT enrollment_id, campaign_id FROM ${table(ctx, "campaign_step_events")} WHERE company_id = $1 AND source_key = $2 LIMIT 1`,
+    [companyId, `reply:${messageId}`],
+  );
+  return rows[0] ? { enrollmentId: rows[0].enrollment_id, campaignId: rows[0].campaign_id } : null;
+}
+
+export type ReplyOutcome = "answered" | "no-reply-needed";
+export const REPLY_OUTCOMES: ReplyOutcome[] = ["answered", "no-reply-needed"];
+
+export async function insertReplyLog(
+  ctx: PluginContext,
+  input: { companyId: string; messageId: string; campaignId: string | null; enrollmentId: string | null; outcome: ReplyOutcome; note: string; mailDraftId: string | null; createdBy: string | null },
+): Promise<string> {
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "reply_log")} (id, company_id, message_id, campaign_id, enrollment_id, outcome, note, mail_draft_id, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, input.companyId, input.messageId, input.campaignId, input.enrollmentId, input.outcome, input.note, input.mailDraftId, input.createdBy],
+  );
+  return id;
+}
+
+/** True when an agent or person logged what was done about this reply. */
+export async function replyLogged(ctx: PluginContext, companyId: string, messageId: string): Promise<boolean> {
+  const rows = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "reply_log")} WHERE company_id = $1 AND message_id = $2 LIMIT 1`, [companyId, messageId]);
+  return rows.length > 0;
+}
+
+/** True when this contact (or one of these addresses) is on the do-not-email list. */
+export async function contactSuppressed(ctx: PluginContext, companyId: string, contactId: string, emails: string[]): Promise<boolean> {
+  const byContact = await ctx.db.query<{ email: string }>(`SELECT email FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND contact_id = $2 LIMIT 1`, [companyId, contactId]);
+  if (byContact.length > 0) return true;
+  return (await suppressedEmails(ctx, companyId, emails)).size > 0;
+}

@@ -13,6 +13,29 @@ import { PLATFORM_LABELS, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY, isSoc
 export { SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY };
 export const ORIGIN_KIND = `plugin:${PLUGIN_ID}` as const;
 
+/**
+ * Origin id prefix of each kind of issue Social opens (stable; the done-checks
+ * match on them): `<prefix><id>`.
+ */
+export const SOCIAL_ORIGINS = {
+  /** Repurpose an SEO page: `repurpose:<hand-off key>` (Social agent). */
+  repurpose: "repurpose:",
+  /** Pick times for approved posts: `schedule:<own|company:<id>|contact:<id>>:<postId>` (Social agent). */
+  schedule: "schedule:",
+  /** Reconnect an account: `account:<accountId>` (a person). */
+  reconnect: "account:",
+  /** The day's reply queue: `inbox:<accountId>:<day>` (Social agent). */
+  replyQueue: "inbox:",
+  /** A post that failed to publish: `post-failed:<postId>` (Social agent). Before 0.7.0 the bare post id. */
+  publishFailed: "post-failed:",
+  /** A risky comment for a person: `inbox-escalate:<itemId>`. */
+  escalation: "inbox-escalate:",
+  /** The Reviewer's check of a post: `review:<postId>`. */
+  review: "review:",
+  /** A Growth Lab week's decisions for a person: `growth:<programId>:<week>`. */
+  growth: "growth:",
+} as const;
+
 /** The company's default person, then the Cockpit owner: who gets person-only work nobody else owns. */
 export async function fallbackPerson(ctx: PluginContext, companyId: string): Promise<string | undefined> {
   try {
@@ -141,9 +164,9 @@ export async function openPublishFailureIssue(
     "What to do:",
     "1. Read the error with `get-post`.",
     "2. Token or permission errors: the account needs a person to sign in again (a one-time grant). The hourly token job opens a \"Reconnect …\" issue for them; check `list-connected-accounts` shows it as needs_reconnect. If no reconnect issue exists, ask once with `" + ASK_OWNER_TOOL + "` and the Social → Accounts link. Retry with `retry-post` once it is connected again.",
-    "3. Content errors (too long, missing media, wrong format): move the post back to draft, fix the per-platform override, and send it for review again; approval schedules it at its proposed time.",
+    "3. Content errors (too long, missing media, wrong format): draft a corrected post for only the failed accounts and send it for review (approval schedules it at its proposed time), then `detach-destination` those accounts from this post.",
     "4. Transient errors (timeouts, rate limits, 5xx): `retry-post`.",
-    "Destinations that already published are never published again. Close this issue with what you did.",
+    "Destinations that already published are never published again. Close this issue with what you did; it is checked: no destination of this post may still be failed.",
   ].join("\n");
   try {
     const issue = await createWorkIssue(ctx, {
@@ -153,7 +176,7 @@ export async function openPublishFailureIssue(
       description,
       priority: "high",
       originKind: ORIGIN_KIND,
-      originId: post.id,
+      originId: `${SOCIAL_ORIGINS.publishFailed}${post.id}`,
       assigneeAgentId: assignee.assigneeAgentId,
       assigneeUserId: assignee.assigneeUserId,
       wakeReason: "Social post failed to publish",
@@ -186,7 +209,7 @@ export async function openReconnectIssue(ctx: PluginContext, companyId: string, 
       ].join("\n"),
       priority: "high",
       originKind: ORIGIN_KIND,
-      originId: `account:${account.id}`,
+      originId: `${SOCIAL_ORIGINS.reconnect}${account.id}`,
       assigneeUserId,
       wake: false,
     });

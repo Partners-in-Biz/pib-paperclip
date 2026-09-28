@@ -77,6 +77,7 @@ import {
 } from "./domain.js";
 import { jevConfigFor, REPLY_QUESTIONS, replyState } from "./jev.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { replyOrigin, sendFailedOrigin } from "./origins.js";
 import { assigneeFields, workOwner } from "./owner.js";
 import { announceSuppression, suppressAddress, suppressionPayload } from "./suppress.js";
 
@@ -308,7 +309,7 @@ async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, steps: 
   const to = contact?.emails?.[0] ? `\n\nSend to: ${name} <${contact.emails[0]}>` : "";
   const issueId = await openIssueOnce(ctx, {
     companyId: enrollment.companyId,
-    originId: `send-failed:${enrollment.sendingKey ?? enrollment.id}`,
+    originId: sendFailedOrigin(enrollment.id, enrollment.stepPosition),
     title: `${clientPrefix(campaign?.clientRef ? campaign.clientName : null)}Email not sent: ${step?.subject ?? "Campaign step"}: ${name}`,
     description: [
       `The Mailbox could not send this campaign email to \`contact:${enrollment.contactId}\`: ${error}`,
@@ -490,25 +491,28 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
             ? `Smart sorting read it as ${REPLY_KIND_LABELS[kind]}.`
             : "Smart sorting could not tell what kind of reply it is.";
     const draft = `\`partnersinbiz.mailbox:create-draft\` (replyToMessageId \`${mail.messageId}\`), then \`send-draft\` if your delegation allows sending`;
+    const logged = `\`partnersinbiz.campaigns:log-reply\` (messageId \`${mail.messageId}\``;
     const lines = followUp
       ? [
         `${name} (\`contact:${enrollment.contactId}\`) replied to campaign "${campaign.name}" (step ${stepPosition}, variant ${variant.toUpperCase()}). Smart sorting read it as **${REPLY_KIND_LABELS[kind!]}** (${pct(confidence)} sure), so the campaign is stopped for this contact.`,
         "",
-        `Answer them: read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${mail.messageId}\`), draft the reply with ${draft}. Log the next step on the contact in the CRM, then mark this issue done.`,
+        `Answer them: read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${mail.messageId}\`), draft the reply with ${draft}, and log it with ${logged}, outcome \`answered\`, mailDraftId). Log the next step on the contact in the CRM, then mark this issue done.`,
+        "When you close it, Campaigns checks the reply was answered or a decision was logged; if it reopens, finish what it lists.",
       ]
       : [
         `${name} (\`contact:${enrollment.contactId}\`) replied to campaign "${campaign.name}". ${reason}`,
         "",
         `Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${mail.messageId}\`), then do one of these and mark this issue done:`,
         `- They ask to stop getting these emails: \`partnersinbiz.campaigns:suppress-address\` (email \`${mail.from.email}\`, reason \`unsubscribe\`). Every campaign stops for them and the CRM and Mailbox are told.`,
-        `- Not interested now, or they want a person: \`partnersinbiz.campaigns:stop-enrollment\` (enrollmentId \`${enrollment.id}\`), and answer them with ${draft} when they asked something.`,
-        "- An automatic reply (out of office): leave it running.",
+        `- Not interested now, or they want a person: \`partnersinbiz.campaigns:stop-enrollment\` (enrollmentId \`${enrollment.id}\`), and answer them with ${draft} when they asked something, then ${logged}, outcome \`answered\`).`,
+        `- An automatic reply (out of office): leave it running and say so with ${logged}, outcome \`no-reply-needed\`).`,
+        "When you close it, Campaigns checks the reply was answered or a decision was logged; if it reopens, finish what it lists.",
       ];
     lines.push("", `**Subject:** ${subject}`, "", `> ${mail.snippet.replace(/\n+/g, " ").slice(0, 500)}`);
     if (mail.from.email) lines.push("", `From: ${mail.from.email}`);
     issueId = await openIssueOnce(ctx, {
       companyId,
-      originId: `reply:${mail.messageId}`,
+      originId: replyOrigin(enrollment.id, mail.messageId),
       title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}${followUp ? "Reply from" : "Check reply from"} ${name}: ${subject}`,
       description: lines.join("\n"),
       assignee: await campaignAssignee(ctx, companyId, campaign),

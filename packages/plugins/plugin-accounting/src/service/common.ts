@@ -12,6 +12,22 @@ import { PLUGIN_ID } from "../namespace.js";
 export const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 export const BOOK_CURRENCY = "ZAR";
 
+/**
+ * Origin ids of the work Accounting hands to agents, one prefix per kind
+ * (the done-checks match on them). Approval issues for people keep
+ * `draft:`, `reconciliation:` and `vat:` ids.
+ * - statement: `accounting:statement:<Mailbox message id>` ("Bank statement received")
+ * - reconcile: `accounting:reconcile:<statement id>` ("Reconcile N new bank lines")
+ * - close: `accounting:close:<YYYY-MM>` ("Month-end close")
+ * - rejections: `accounting:rejections` ("Accounting: postings were rejected", one open at a time)
+ */
+export const WORK_ORIGINS = {
+  statement: "accounting:statement:",
+  reconcile: "accounting:reconcile:",
+  close: "accounting:close:",
+  rejections: "accounting:rejections",
+} as const;
+
 /** Money in issue text and messages, the way every PiB page shows it: `R 12,345.67`. */
 export function money(minor: number): string {
   return formatMoneyMinor(minor, BOOK_CURRENCY);

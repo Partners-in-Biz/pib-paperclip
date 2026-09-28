@@ -21,6 +21,18 @@ import { assignableUser, errorMessage, today, type Env } from "./env.js";
 
 export const TRIGGER_ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
+/**
+ * Origin ids of the work Payroll hands to agents, one prefix per kind (the
+ * done-checks match on them): `payroll:prepare:<YYYY-MM>` ("Prepare pay run
+ * for <month>") and `payroll:emp201:<YYYY-MM>` ("EMP201 for <month> due by
+ * <date>", the month the staff were paid). Approval issues for people keep
+ * their own origin kinds (pay run and leave approvals).
+ */
+export const WORK_ORIGINS = {
+  prepare: "payroll:prepare:",
+  emp201: "payroll:emp201:",
+} as const;
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /** "2026-09" → "September 2026". */
@@ -85,7 +97,8 @@ async function release(ctx: PluginContext, companyId: string, key: string): Prom
   await ctx.state.set(MARK(companyId, key), null).catch(() => undefined);
 }
 
-async function openOnce(env: Env, companyId: string, key: string, route: WorkRoute, input: { title: string; description: string; wakeReason: string }): Promise<string | null> {
+/** `key` is the once-a-month mark (`prepare:<month>`, kept as it was so a month already opened never opens twice); `originId` is the issue's. */
+async function openOnce(env: Env, companyId: string, key: string, originId: string, route: WorkRoute, input: { title: string; description: string; wakeReason: string }): Promise<string | null> {
   if (!(await claim(env.ctx, companyId, key))) return null;
   try {
     const issue = await createWorkIssue(env.ctx, {
@@ -95,7 +108,7 @@ async function openOnce(env: Env, companyId: string, key: string, route: WorkRou
       priority: "high",
       ...(route.assigneeAgentId ? { assigneeAgentId: route.assigneeAgentId } : route.assigneeUserId ? { assigneeUserId: route.assigneeUserId } : {}),
       originKind: TRIGGER_ORIGIN,
-      originId: key,
+      originId,
       wakeReason: input.wakeReason,
     });
     return issue.id;
@@ -122,7 +135,7 @@ export function prepareRunText(input: { month: string; payDate: string; draft: s
     "4. `calculate-pay-run`, then `get-pay-run`: fix every employee with an error. Missing terms or details are added by a person on the Payroll page: ask once with `" + ASK_OWNER_TOOL + "`.",
     "5. `pay-run-variances`: explain every change of 10% or more against last month.",
     "6. `request-pay-run-approval` (the default approver; never whoever calculated it), with your variance notes.",
-    "7. Mark this issue done with the run number and its approval issue.",
+    "7. Mark this issue done with the run number and its approval issue. Closing it checks that the month's run is with the approver (or further); if not, it opens again with what is missing.",
     "",
     input.lockOnApproval
       ? `A person approves; approving also locks the run: it posts to Accounting and the payslips are made${input.sendOnLock ? " and emailed" : ""}. Nobody is paid by Payroll: a person uploads the net pay file to the bank.`
@@ -154,7 +167,7 @@ export async function prepareRunTrigger(env: Env, companyId: string): Promise<st
   if (monthRuns.some((r) => ["pending_approval", "approved", "locked", "reversed"].includes(r.status))) return null;
   const draft = monthRuns.find((r) => r.status === "draft" || r.status === "calculated")?.number ?? null;
   const route = await routePayroll(ctx, companyId, ["payroll-clerk"]);
-  return openOnce(env, companyId, `prepare:${month}`, route, {
+  return openOnce(env, companyId, `prepare:${month}`, `${WORK_ORIGINS.prepare}${month}`, route, {
     title: `Prepare pay run for ${monthName(month)}`,
     description: prepareRunText({ month, payDate, draft, lockOnApproval: config.lockOnApproval, sendOnLock: config.payslipEmail.sendOnLock }),
     wakeReason: "Prepare this month's pay run",
@@ -175,7 +188,9 @@ export function emp201Text(input: { month: string; due: string; runs: string[]; 
     `1. \`partnersinbiz.payroll:emp201-summary\` with \`month: "${input.month}"\`: check the runs included and the totals (PAYE, SDL, UIF, ETI used, total payable).`,
     "2. Bookkeeper: compare them with the books. `partnersinbiz.accounting:list-accounts` shows the PAYE, UIF and SDL payable accounts; `gl` on each to the month end should hold the same amounts from the pay run journals.",
     `3. Ask the owner once with \`${ASK_OWNER_TOOL}\` to file and pay: open **Payroll → Statutory → EMP201 (monthly)**, pick ${monthName(input.month)}, click **Download CSV** for the figures, submit the EMP201 on eFiling and pay the total by ${dayName(input.due)}. Put the totals and anything that looks wrong in the ask.`,
-    "4. When the owner confirms it is filed and paid, mark this issue done with their payment reference.",
+    `4. When the owner confirms it is filed and paid, record it with \`partnersinbiz.payroll:mark-emp201-filed\` (\`month: "${input.month}"\` and their payment reference), then mark this issue done.`,
+    "",
+    "Closing this issue checks that the EMP201 is marked filed, or that the figures were downloaded and the owner was asked (or answered) here; if not, it opens again with what is missing.",
   ].join("\n");
 }
 
@@ -192,7 +207,7 @@ export async function emp201Trigger(env: Env, companyId: string): Promise<string
   const unlocked = inMonth.filter((r) => ["draft", "calculated", "pending_approval", "approved"].includes(r.status)).map((r) => r.number);
   if (!locked.length && !employees.length) return null;
   const route = await routePayroll(ctx, companyId, ["bookkeeper", "payroll-clerk"]);
-  return openOnce(env, companyId, `emp201:${month}`, route, {
+  return openOnce(env, companyId, `emp201:${month}`, `${WORK_ORIGINS.emp201}${month}`, route, {
     title: `EMP201 for ${monthName(month)} due by ${dayName(due)}`,
     description: emp201Text({ month, due, runs: locked, open: unlocked }),
     wakeReason: "EMP201 due",

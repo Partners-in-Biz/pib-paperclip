@@ -21,6 +21,7 @@ import { assertPaymentAmount, BillingError, daysPastDue, isOpenStatus } from "./
 import { DUNNABLE, optedOutClients, queueReminderStage, reminderVars, requestStage, sentStages } from "./dunning.js";
 import { recipientsFor, requireOwnInvoice, requireQuote } from "./invoices.js";
 import { parseAddresses, renderTemplate } from "./mail.js";
+import { APPROVAL_ORIGINS } from "./origins.js";
 import { closePopIssues, getPop, listPops, recordDecisionIssue, recordPop } from "./pop.js";
 import { billingPath, companyPrefix, issuePath, personAssignee, sendApprovalRoute } from "./routing.js";
 import { creditedOnInvoice, paymentBySourceKey, settle } from "./settle.js";
@@ -182,7 +183,7 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     title: sendApprovalTitle("invoice", name, amount),
     description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`the invoice to ${name} (${amount}) before it is emailed`, recipients.length > 0, route.approver)}` : lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
+    originId: `${APPROVAL_ORIGINS.invoiceSend}${invoice.id}`,
     ...route.assignee,
   });
   // Claim the invoice for this approval only if nothing changed meanwhile (never a whole-row save).
@@ -235,7 +236,7 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
     title: sendApprovalTitle("quote", name, amount),
     description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`quote ${quote.number} before it is emailed`, recipients.length > 0, route.approver)}` : lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: quote.id,
+    originId: `${APPROVAL_ORIGINS.quoteSend}${quote.id}`,
     ...route.assignee,
   });
   const claim = await ctx.db.execute(
@@ -265,7 +266,7 @@ export async function requestPayApproval(ctx: PluginContext, context: PluginPerf
     title: `Approve payment of ${invoice.number} (${customerName(invoice)}, ${money})`,
     description: `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
+    originId: `${APPROVAL_ORIGINS.invoicePay}${invoice.id}`,
     ...(await personAssignee(ctx, companyId, settings)),
   });
   const claim = await ctx.db.execute(
@@ -350,7 +351,7 @@ export async function requestPaymentDecision(ctx: PluginContext, context: Plugin
     title: `Record payment of ${money} on ${invoice.number} (${name})?`,
     description: lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
+    originId: `${APPROVAL_ORIGINS.recordPayment}${invoice.id}`,
     ...(await personAssignee(ctx, companyId, settings)),
   });
   await recordDecisionIssue(ctx, {
@@ -393,7 +394,7 @@ export async function requestCreditDecision(ctx: PluginContext, context: PluginP
     title: `Issue credit note of ${money} on ${invoice.number} (${customerName(invoice)})?`,
     description: lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
+    originId: `${APPROVAL_ORIGINS.creditNote}${invoice.id}`,
     ...(await personAssignee(ctx, companyId, settings)),
   });
   await recordDecisionIssue(ctx, {
@@ -507,7 +508,7 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
     title: `Approve payment reminder ${pick.stage + 1} for ${invoice.number} (${name}, ${formatMoneyMinor(balance.outstandingMinor, invoice.currency)})`,
     description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`payment reminder ${pick.stage + 1} for invoice ${invoice.number} before it is emailed`, true, route.approver)}` : lines.join("\n"),
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: invoice.id,
+    originId: `${APPROVAL_ORIGINS.reminder}${invoice.id}`,
     ...route.assignee,
   });
   await recordDecisionIssue(ctx, {

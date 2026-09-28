@@ -55,7 +55,7 @@ describe("manifest and migration", () => {
   it("uses the kit key, the host namespace and declares what the Cockpit uses", () => {
     expect(PLUGIN_ID).toBe(COCKPIT_PLUGIN);
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.4.0");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs"] });
     for (const capability of [
@@ -389,7 +389,7 @@ describe("Operator tools", () => {
     const olive = brief.agents.find((a) => a.id === "op")!;
     expect(olive).toMatchObject({ spentCents: 100, budgetCents: 3000, budgetUsedPct: 3, runs7d: { total: 2, failed: 1 }, quality: [{ label: "Rejected", value: "0%", tone: "neutral" }] });
     expect(brief.today).toMatch(/^3 things wait on you · 1 problem to fix/);
-    expect(brief.links).toEqual({ cockpit: "/PIB/cockpit", setup: "/PIB/setup" });
+    expect(brief.links).toEqual({ cockpit: "/PIB/cockpit", flows: "/PIB/cockpit?tab=flows", setup: "/PIB/setup" });
   });
 
   it("every tool returns an object and fails softly", async () => {

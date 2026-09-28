@@ -1,13 +1,17 @@
 /**
  * Campaigns snapshot for the Company Cockpit (`GET /cockpit` and the hourly
  * `cockpit.snapshot` event). Read-only and cheap: a few SELECTs on our own
- * tables (plus `public.issues` for open launch approvals). Each part is
- * wrapped so one failing query never breaks the whole snapshot.
+ * tables (plus `public.issues` for open launch approvals and reply issues).
+ * Each part is wrapped so one failing query never breaks the whole snapshot.
+ * `flows` carries live numbers for the stages of the campaigns flow (kit
+ * `FLOWS`), with the same definitions as the KPIs and the waiting list.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   decisionStats,
   emptySnapshot,
+  flowStagesFor,
   isModuleEnabled,
   jobHealth,
   outboxHealth,
@@ -15,6 +19,7 @@ import {
   readConfig,
   type ActivityItem,
   type CockpitSnapshot,
+  type FlowStageReport,
   type HealthCheck,
   type QualityMetric,
   type Tone,
@@ -23,6 +28,7 @@ import {
 import { clientPrefix } from "./domain.js";
 import { abSuggestionFor } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { CAMPAIGN_ORIGINS } from "./origins.js";
 import { knownCompanies } from "./setup-status.js";
 
 const HREF = "/campaigns";
@@ -116,9 +122,99 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   if (counts) snap.health.push(sendHealth(counts));
 
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
+  snap.flows = await campaignFlows(ctx, companyId);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId), [] as QualityMetric[]);
   return snap;
+}
+
+const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
+function daysSince(at: unknown, now = Date.now()): number {
+  const time = at instanceof Date ? at.getTime() : Date.parse(String(at ?? ""));
+  return Number.isFinite(time) ? Math.max(0, Math.floor((now - time) / 86_400_000)) : 0;
+}
+
+/** Sends waiting on one active campaign: failed (the Mailbox gave up) or due over a day ago and still not done. */
+export interface RunningSends {
+  campaign_id: string;
+  failed: string;
+  waiting: string;
+  oldest: unknown;
+}
+
+/** `campaign.running` from the active campaigns and their stuck sends. */
+export function runningReport(active: number, rows: RunningSends[]): FlowStageReport {
+  let failed = 0;
+  let waiting = 0;
+  let stuck = 0;
+  let oldest: unknown = null;
+  for (const row of rows) {
+    const f = n(row.failed);
+    const w = n(row.waiting);
+    failed += f;
+    waiting += w;
+    if (f + w > 0) stuck += 1;
+    if (row.oldest && (!oldest || Date.parse(String(row.oldest)) < Date.parse(String(oldest)))) oldest = row.oldest;
+  }
+  const reason = [failed ? `${plural(failed, "failed send")}` : null, waiting ? `${plural(waiting, "send")} waiting over a day` : null].filter(Boolean).join(", ");
+  return { stage: "campaign.running", count: active, stuck, stuckReason: reason || null, oldestDays: stuck ? daysSince(oldest) : null };
+}
+
+/**
+ * Live numbers for the campaigns flow:
+ * - `campaign.draft`: drafts without a launch approval (none asked, or it was refused);
+ * - `campaign.approval`: drafts whose launch approval is open, or done and launching
+ *   (the rows the Cockpit's waiting list is built from);
+ * - `campaign.running`: active campaigns (the KPI); stuck = campaigns with a failed
+ *   send or a send due over a day ago;
+ * - `campaign.replies`: open reply issues; stuck = open over 2 days.
+ * A stage whose query fails is left out.
+ */
+export async function campaignFlows(ctx: PluginContext, companyId: string): Promise<FlowStageReport[]> {
+  const reports: FlowStageReport[] = [];
+  const counts = await part(ctx, "flow counts", async () => {
+    const rows = await ctx.db.query<{ drafts: string; approval: string; active: string }>(
+      `SELECT count(*) FILTER (WHERE c.status = 'draft' AND (i.id IS NULL OR i.status = 'cancelled'))::text AS drafts,
+              count(*) FILTER (WHERE c.status = 'draft' AND i.id IS NOT NULL AND i.status <> 'cancelled')::text AS approval,
+              count(*) FILTER (WHERE c.status = 'active')::text AS active
+         FROM ${t(ctx, "campaigns")} c LEFT JOIN public.issues i ON i.id::text = c.approval_issue_id
+        WHERE c.company_id = $1`,
+      [companyId],
+    );
+    return rows[0] ?? null;
+  }, null as { drafts: string; approval: string; active: string } | null);
+  if (counts) {
+    reports.push({ stage: "campaign.draft", count: n(counts.drafts) }, { stage: "campaign.approval", count: n(counts.approval) });
+    const sends = await part(ctx, "flow sends", () => ctx.db.query<RunningSends>(
+      `SELECT e.campaign_id,
+              count(*) FILTER (WHERE o.status = 'failed')::text AS failed,
+              count(*) FILTER (WHERE o.status IS DISTINCT FROM 'failed' AND e.next_due_at < now() - interval '1 day')::text AS waiting,
+              min(e.next_due_at) FILTER (WHERE o.status = 'failed' OR e.next_due_at < now() - interval '1 day') AS oldest
+         FROM ${t(ctx, "campaign_enrollments")} e
+         JOIN ${t(ctx, "campaigns")} c ON c.id = e.campaign_id
+         LEFT JOIN ${t(ctx, "outbox")} o ON o.key = 'campaigns:step:' || e.id || ':' || e.step_position
+        WHERE e.company_id = $1 AND e.status = 'running' AND c.status = 'active'
+        GROUP BY e.campaign_id`,
+      [companyId],
+    ), null as RunningSends[] | null);
+    if (sends) reports.push(runningReport(n(counts.active), sends));
+  }
+  const replies = await part(ctx, "flow replies", async () => {
+    const rows = await ctx.db.query<{ open: string; stuck: string; oldest: unknown }>(
+      `SELECT count(*)::text AS open, count(*) FILTER (WHERE i.created_at < now() - interval '2 days')::text AS stuck, min(i.created_at) AS oldest
+         FROM public.issues i
+        WHERE i.company_id = $1::uuid AND i.origin_kind = $2 AND (i.origin_id LIKE $3 OR i.origin_id LIKE $4) AND i.status NOT IN ('done', 'cancelled')`,
+      [companyId, `plugin:${PLUGIN_ID}`, `${CAMPAIGN_ORIGINS.reply}%`, "reply:%"],
+    );
+    return rows[0] ?? null;
+  }, null as { open: string; stuck: string; oldest: unknown } | null);
+  if (replies) {
+    const stuck = n(replies.stuck);
+    reports.push({ stage: "campaign.replies", count: n(replies.open), stuck, stuckReason: stuck ? `${stuck} open over 2 days` : null, oldestDays: stuck ? daysSince(replies.oldest) : null });
+  }
+  const order = flowStagesFor(PLUGIN_ID).map((stage) => stage.key);
+  return cleanFlowReports(PLUGIN_ID, reports).sort((a, b) => order.indexOf(a.stage) - order.indexOf(b.stage));
 }
 
 function sendHealth(counts: Counts): HealthCheck {

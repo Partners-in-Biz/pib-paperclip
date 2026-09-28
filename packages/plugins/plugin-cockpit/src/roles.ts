@@ -131,9 +131,31 @@ export function routeFromRoles(roles: RolesPayload | null, wanted: TeamRoleKey[]
   return owner ? { assigneeAgentId: null, assigneeUserId: owner, via: "owner" } : { assigneeAgentId: null, assigneeUserId: null, via: "none" };
 }
 
+/**
+ * Where kit `registerRoleWatch` keeps a plugin's copy of the roles. The
+ * Cockpit keeps its own copy there too, so the kit helpers it runs that route
+ * work (a done-check handing an issue to the Operator) see the same team.
+ */
+export const KIT_ROLES_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "pib-cockpit", stateKey: "roles" });
+
+export async function keepKitRoles(env: Env, payload: RolesPayload): Promise<void> {
+  try {
+    await env.ctx.state.set(KIT_ROLES_STATE(payload.companyId), payload);
+  } catch (error) {
+    env.ctx.logger.info("Roles copy for the kit not saved", { companyId: payload.companyId, error: message(error) });
+  }
+}
+
+/** Refreshes the kit's copy from the saved roles (before a done-check may hand an issue on). */
+export async function refreshKitRoles(env: Env, companyId: string): Promise<void> {
+  const roles = await currentRoles(env, companyId);
+  if (roles) await keepKitRoles(env, roles);
+}
+
 export async function emitRoles(env: Env, row: RolesRow): Promise<boolean> {
   try {
     const payload = await fullRolesPayload(env, row);
+    await keepKitRoles(env, payload);
     await env.ctx.events.emit(COCKPIT_EVENTS.rolesUpdated, row.companyId, payload as unknown as Record<string, unknown>);
     return true;
   } catch (error) {

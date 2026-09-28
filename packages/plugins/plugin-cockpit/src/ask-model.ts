@@ -10,6 +10,7 @@
  * back to the agent and wakes it.
  */
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { ASK_OWNER_COMMENT_MARK } from "@partnersinbiz/pib-plugin-kit/asking";
 import type { WaitingItem } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import type { WaitingAskInfo } from "./merge.js";
 
@@ -170,7 +171,7 @@ export function askComment(input: {
 }): string {
   const { ask } = input;
   const meta = [ASK_KIND_LABEL[ask.kind], input.clientLabel ? `for ${input.clientLabel}` : null, ask.dueBy ? `needed by ${ask.dueBy}` : null].filter(Boolean).join(" · ");
-  const lines = [`**${input.again ? "Question for the owner (updated)" : "Question for the owner"}** · ${meta}`, "", ask.question, ""];
+  const lines = [`${ASK_OWNER_COMMENT_MARK}${input.again ? " (updated)" : ""}** · ${meta}`, "", ask.question, ""];
   if (ask.options.length) {
     lines.push("**Options** (recommended first)");
     ask.options.forEach((option, index) => lines.push(`${index + 1}. ${index === 0 ? `**${option}** (recommended)` : option}`));

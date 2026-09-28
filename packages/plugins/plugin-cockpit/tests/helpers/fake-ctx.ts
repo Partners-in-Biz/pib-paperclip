@@ -55,6 +55,12 @@ export function fakeCtx(options: {
     coreReadTables: ["issues", "heartbeat_runs"],
     routes: [
       [/FROM public\.issues/i, (params, s, sql) => {
+        if (/origin_kind = \$2/i.test(sql)) {
+          // Open issues of one origin kind (backlog counts as open), oldest first.
+          return (s.core_issues ?? [])
+            .filter((row) => row.company_id === params[0] && row.origin_kind === params[1] && ["backlog", ...OPEN].includes(row.status) && !row.hidden_at)
+            .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+        }
         const rows = (s.core_issues ?? []).filter((row) => row.company_id === params[0] && OPEN.includes(row.status) && !row.hidden_at);
         if (/assignee_user_id IS NULL/i.test(sql)) {
           // Open, nobody assigned, created more than a day ago.

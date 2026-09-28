@@ -138,7 +138,7 @@ describe("Prepare pay run", () => {
     await addEmployee(host);
     const id = await triggers.prepareRunTrigger(host.env, C);
     const issue = host.issues.get(id!)!;
-    expect(issue).toMatchObject({ title: "Prepare pay run for September 2026", assigneeAgentId: "agent-op", status: "todo", originId: "prepare:2026-09" });
+    expect(issue).toMatchObject({ title: "Prepare pay run for September 2026", assigneeAgentId: "agent-op", status: "todo", originId: "payroll:prepare:2026-09" });
     for (const text of ["25 September 2026", "`create-pay-run`", "`calculate-pay-run`", "`pay-run-variances`", "`request-pay-run-approval`", "partnersinbiz.cockpit:ask-owner", "approving also locks the run"]) {
       expect(String(issue.description), text).toContain(text);
     }
@@ -203,7 +203,7 @@ describe("EMP201 due by the 7th", () => {
     host.clock.now = new Date("2026-10-02T06:00:00Z");
     const id = await triggers.emp201Trigger(host.env, C);
     const issue = host.issues.get(id!)!;
-    expect(issue).toMatchObject({ title: "EMP201 for September 2026 due by 7 October 2026", assigneeAgentId: "agent-books", originId: "emp201:2026-09" });
+    expect(issue).toMatchObject({ title: "EMP201 for September 2026 due by 7 October 2026", assigneeAgentId: "agent-books", originId: "payroll:emp201:2026-09" });
     for (const text of [`Locked runs in it: ${number}.`, "`partnersinbiz.payroll:emp201-summary` with `month: \"2026-09\"`", "Payroll → Statutory → EMP201 (monthly)", "pick September 2026", "**Download CSV**", "partnersinbiz.cockpit:ask-owner"]) {
       expect(String(issue.description), text).toContain(text);
     }

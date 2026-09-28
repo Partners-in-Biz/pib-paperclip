@@ -125,7 +125,8 @@ export function seed(): Store {
   };
 }
 
-export async function boot(options: { store?: Store; config?: Record<string, unknown> } = {}) {
+/** `routes` are tried before the shared ones (e.g. the Cockpit's aggregate queries). */
+export async function boot(options: { store?: Store; config?: Record<string, unknown>; routes?: Route[] } = {}) {
   clearJevCache();
   const store = options.store ?? seed();
   const harness = createTestHarness({ manifest, config: options.config ?? { timezone: "Africa/Johannesburg" } });
@@ -133,7 +134,7 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
     coreReadTables: ["heartbeat_runs", "issues"],
-    routes: ROUTES,
+    routes: [...(options.routes ?? []), ...ROUTES],
     defaults: {
       outbox: { status: "pending", attempts: 0, last_error: null, result: null },
       handoffs: { created_at: new Date(NOW).toISOString() },

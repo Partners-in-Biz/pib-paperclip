@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   decisionStats,
   emptySnapshot,
   jobHealth,
@@ -16,6 +17,7 @@ import {
   type ActivityItem,
   type CockpitKpi,
   type CockpitSnapshot,
+  type FlowStageReport,
   type HealthCheck,
   type QualityMetric,
   type TeamMemberReport,
@@ -24,12 +26,13 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
-import { table } from "./db.js";
+import { iso, table } from "./db.js";
 import { clip } from "./domain.js";
+import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { knownCompanies, socialOn } from "./modules.js";
-import { isSocialPlatform, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
+import { isSocialPlatform, PLAN_ROUTINE_ORIGIN_ID, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
 import { TRIAGE_PURPOSE } from "./triage.js";
 
 /** Scheduled jobs and their interval in minutes (manifest schedules). */
@@ -96,9 +99,7 @@ async function kpis(ctx: PluginContext, companyId: string): Promise<CockpitKpi[]
     `SELECT
        (SELECT count(*) FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status IN ('published', 'partially_published') AND published_at >= now() - interval '7 days')::text AS published,
        (SELECT count(*) FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'scheduled' AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days')::text AS scheduled,
-       (SELECT count(*) FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 AND status = 'new'
-          AND COALESCE(triage->>'action', '') NOT IN ('spam_read', 'escalated')
-          AND (triage IS NULL OR COALESCE(triage->'corrected'->>'needs_reply', CASE WHEN triage->'needsReply'->>'yes' = 'true' THEN 'yes' ELSE 'no' END) = 'yes'))::text AS inbox,
+       (SELECT count(*) FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 AND ${needsReplySql()})::text AS inbox,
        (SELECT count(*) FROM ${table(ctx, "growth_experiments")} WHERE company_id = $1 AND status = 'running')::text AS experiments,
        (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY lift) FROM ${table(ctx, "post_scores")}
           WHERE company_id = $1 AND metric_window = '7d' AND lift IS NOT NULL AND published_at >= now() - interval '30 days')::text AS lift,
@@ -462,6 +463,149 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
   return out;
 }
 
+// ── flows (kit FLOWS: social.drafts, social.approval, social.scheduled) ─────
+
+const DAY_MS = 24 * 3600_000;
+const OPEN_ISSUE = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
+
+/** A repurpose task or the weekly plan with no draft yet is stuck after this many days. */
+export const DRAFT_STUCK_DAYS = 2;
+
+function ageMs(value: string | null | undefined, now: Date): number | null {
+  const at = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(at) ? Math.max(0, now.getTime() - at) : null;
+}
+
+function days(ms: number): number {
+  return Math.floor(ms / DAY_MS);
+}
+
+/** Work that should produce drafts but has none yet: a repurpose task or the weekly plan. */
+export interface DraftWork {
+  kind: "repurpose" | "plan";
+  createdAt: string | null;
+}
+
+/**
+ * `social.drafts`: posts in draft, plus open work that should make drafts
+ * and has none yet (a repurpose task with no draft for its page, by the same
+ * rule as its done-check; the open weekly plan with no post drafted since it
+ * opened). Stuck: that work over two days old. Pure.
+ */
+export function draftsFlow(input: { drafts: number; work: DraftWork[] }, now: Date): FlowStageReport {
+  const late = input.work.map((w) => ({ ...w, age: ageMs(w.createdAt, now) ?? 0 })).filter((w) => w.age > DRAFT_STUCK_DAYS * DAY_MS);
+  const repurpose = late.filter((w) => w.kind === "repurpose").length;
+  const plans = late.filter((w) => w.kind === "plan").length;
+  const what = [repurpose ? plural(repurpose, "repurpose task") : null, plans ? (plans === 1 ? "the weekly plan" : plural(plans, "weekly plan")) : null].filter(Boolean).join(" and ");
+  return {
+    stage: "social.drafts",
+    count: input.drafts + input.work.length,
+    stuck: late.length,
+    stuckReason: late.length ? `${what} over ${DRAFT_STUCK_DAYS} days old with no draft` : null,
+    oldestDays: late.length ? days(Math.max(...late.map((w) => w.age))) : null,
+  };
+}
+
+/** Is the repurpose task's issue still open? A failed lookup counts as open (never hide work); a deleted issue does not. */
+async function issueStillOpen(ctx: PluginContext, companyId: string, issueId: string): Promise<boolean> {
+  try {
+    const issue = await ctx.issues.get(issueId, companyId);
+    return Boolean(issue) && OPEN_ISSUE.has(String(issue!.status));
+  } catch {
+    return true;
+  }
+}
+
+async function draftWork(ctx: PluginContext, companyId: string): Promise<{ drafts: number; work: DraftWork[] }> {
+  const posts = table(ctx, "posts");
+  const counted = await ctx.db.query<{ drafts: string }>(`SELECT count(*)::text AS drafts FROM ${posts} WHERE company_id = $1 AND status = 'draft'`, [companyId]);
+  const handoffs = await ctx.db.query<{ key: string; issue_id: string; payload: unknown; created_at: string | null }>(
+    `SELECT key, issue_id, payload, created_at::text AS created_at FROM ${table(ctx, "handoffs")}
+      WHERE company_id = $1 AND kind = 'repurpose' AND issue_id IS NOT NULL AND created_at >= now() - interval '30 days'
+      ORDER BY created_at LIMIT 50`,
+    [companyId],
+  );
+  const drafted = await repurposeDraftCounts(ctx, companyId, handoffs.map((h) => repurposeRef(h.key, handoffPayload(h.payload))));
+  const work: DraftWork[] = [];
+  for (const h of handoffs) {
+    if ((drafted.get(h.key) ?? 0) > 0 || !(await issueStillOpen(ctx, companyId, h.issue_id))) continue;
+    work.push({ kind: "repurpose", createdAt: iso(h.created_at) });
+  }
+  // The weekly review & plan routine's open issue, with no post drafted since it opened (RSS and reply drafts do not count).
+  const plans = await part(ctx, "plan-issues", async () => (await ctx.issues.list({ companyId, originId: PLAN_ROUTINE_ORIGIN_ID, limit: 10 })).filter((i) => OPEN_ISSUE.has(String(i.status))), []);
+  for (const plan of plans) {
+    const since = iso(plan.createdAt);
+    if (!since) continue;
+    const made = await ctx.db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${posts} WHERE company_id = $1 AND created_at >= $2::timestamptz AND source NOT IN ('rss', 'inbox_reply')`,
+      [companyId, since],
+    );
+    if (count(made[0]?.n) === 0) work.push({ kind: "plan", createdAt: since });
+  }
+  return { drafts: count(counted[0]?.drafts), work };
+}
+
+/** `social.approval`: posts in review. Stuck: their proposed time passed while they waited. */
+async function approvalFlow(ctx: PluginContext, companyId: string, now: Date): Promise<FlowStageReport> {
+  const rows = await ctx.db.query<{ n: string; late: string; oldest: string | null }>(
+    `SELECT count(*)::text AS n, count(*) FILTER (WHERE scheduled_at IS NOT NULL AND scheduled_at < now())::text AS late, min(updated_at)::text AS oldest
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review'`,
+    [companyId],
+  );
+  const n = count(rows[0]?.n);
+  const late = count(rows[0]?.late);
+  const oldest = ageMs(rows[0]?.oldest, now);
+  return {
+    stage: "social.approval",
+    count: n,
+    stuck: late,
+    stuckReason: late ? `${plural(late, "post")} past ${late === 1 ? "its" : "their"} proposed time` : null,
+    oldestDays: n && oldest != null ? days(oldest) : null,
+  };
+}
+
+/**
+ * `social.scheduled`: posts scheduled or publishing, approved posts still
+ * without a time, and failed publishes. Stuck: a failed publish (not retried,
+ * detached or back in draft: the same rule as the failed-post done-check),
+ * or an approved post with no time for over a day.
+ */
+async function scheduledFlow(ctx: PluginContext, companyId: string, now: Date): Promise<FlowStageReport> {
+  const failed = failedPublishSql(table(ctx, "destinations"));
+  const lateApproval = "p.status = 'approved' AND p.updated_at < now() - interval '1 day'";
+  const rows = await ctx.db.query<{ scheduled: string; approved: string; approved_late: string; failed: string; oldest: string | null }>(
+    `SELECT count(*) FILTER (WHERE p.status IN ('scheduled', 'publishing'))::text AS scheduled,
+            count(*) FILTER (WHERE p.status = 'approved')::text AS approved,
+            count(*) FILTER (WHERE ${lateApproval})::text AS approved_late,
+            count(*) FILTER (WHERE ${failed})::text AS failed,
+            min(p.updated_at) FILTER (WHERE (${lateApproval}) OR (${failed}))::text AS oldest
+       FROM ${table(ctx, "posts")} p WHERE p.company_id = $1`,
+    [companyId],
+  );
+  const r = rows[0];
+  const scheduled = count(r?.scheduled);
+  const approved = count(r?.approved);
+  const approvedLate = count(r?.approved_late);
+  const failedPosts = count(r?.failed);
+  const reasons = [failedPosts ? `${plural(failedPosts, "post")} failed to publish` : null, approvedLate ? `${plural(approvedLate, "approved post")} with no time for over a day` : null].filter(Boolean);
+  const oldest = ageMs(r?.oldest, now);
+  return {
+    stage: "social.scheduled",
+    count: scheduled + approved + failedPosts,
+    stuck: failedPosts + approvedLate,
+    stuckReason: reasons.length ? reasons.join("; ") : null,
+    oldestDays: failedPosts + approvedLate > 0 && oldest != null ? days(oldest) : null,
+  };
+}
+
+/** The Social stages of the company graph; a stage whose numbers failed to load reports nothing. */
+export async function socialFlows(ctx: PluginContext, companyId: string, now = new Date()): Promise<FlowStageReport[]> {
+  const drafts = await part(ctx, "flow:drafts", async () => draftsFlow(await draftWork(ctx, companyId), now), null as FlowStageReport | null);
+  const approval = await part(ctx, "flow:approval", () => approvalFlow(ctx, companyId, now), null as FlowStageReport | null);
+  const scheduled = await part(ctx, "flow:scheduled", () => scheduledFlow(ctx, companyId, now), null as FlowStageReport | null);
+  return cleanFlowReports(PLUGIN_ID, [drafts, approval, scheduled].filter((f): f is FlowStageReport => f !== null));
+}
+
 // ── snapshot ────────────────────────────────────────────────────────────────
 
 /** The Social agent role for the Cockpit's team (the Cockpit shares it in `roles.updated`). */
@@ -486,6 +630,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, agentId), [] as QualityMetric[]);
   snap.team = await part(ctx, "team", () => teamReport(ctx, companyId, agentId), [{ role: "social" as const, agentId, status: null }]);
+  snap.flows = await socialFlows(ctx, companyId);
   return snap;
 }
 

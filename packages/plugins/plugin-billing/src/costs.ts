@@ -19,6 +19,7 @@ import { BillingError, createExpense } from "./domain.js";
 import { billJournal, postJournal, reverseJournal } from "./ledger.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue } from "./money.js";
 import { emitBillItem } from "./openitems.js";
+import { APPROVAL_ORIGINS, WORK_ORIGINS } from "./origins.js";
 import { postBill, postExpense, type ExpenseForPosting } from "./posting.js";
 import { assigneeOf, personAssignee, workRoute } from "./routing.js";
 import { decideExpense, expenseState, extractReceipt, ruleVatClaimable, type ReceiptFields } from "./receipts.js";
@@ -240,7 +241,7 @@ export async function requestBillApproval(ctx: PluginContext, context: PluginPer
     title: `Approve bill from ${bill.supplier_name}${bill.supplier_reference ? ` (${bill.supplier_reference})` : ""}`,
     description: `Open Billing → Costs → Bills, check the bill's lines and VAT against the supplier's invoice, then mark this issue done. The plugin then approves the bill and posts it to the books. Cancel this issue to leave it as a draft.`,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
-    originId: bill.id,
+    originId: `${APPROVAL_ORIGINS.billApproval}${bill.id}`,
     // Money: a person approves (the Billing approver, else the owner).
     ...(await personAssignee(ctx, companyId, settings)),
   });
@@ -415,10 +416,10 @@ export async function draftBillFromEmail(
         `2. Add each line with \`partnersinbiz.billing:add-bill-line\` (billId ${id}): amounts in cents, the VAT code and the expense category.`,
         `3. Ask a person to approve it with \`partnersinbiz.billing:request-bill-approval\`. Never pay a bill yourself.`,
         "",
-        "Done when the bill has its lines and an approval issue is open. If the email is not a bill, say so here and close this issue.",
+        `Done when the bill has its lines and an approval issue is open; Billing checks that when you close it. If the email is not a bill, record that with \`partnersinbiz.billing:log-follow-up\` (billId ${id}, note), then close this issue.`,
       ].join("\n"),
       originKind: `plugin:${PIB_PLUGINS.billing}`,
-      originId: id,
+      originId: `${WORK_ORIGINS.billFromEmail}${id}`,
       ...assigneeOf(await workRoute(ctx, companyId)),
     });
   } catch (error) {

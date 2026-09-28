@@ -5,11 +5,13 @@
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { formatAmount } from "./activity.js";
 import { askWaitingItem, type AskView } from "./ask-model.js";
 import { openAskViews } from "./asks.js";
 import { assignableUser, ORIGIN } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
 import { message, type Env } from "./env.js";
+import { buildFlows, type FlowStageView } from "./flows.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
 import {
   activityGroups,
@@ -281,6 +283,25 @@ function pct(ratio: number | null): number | null {
   return ratio === null ? null : Math.round(ratio * 100);
 }
 
+/** How many stuck stages the brief lists (worst first). */
+export const BRIEF_STUCK_STAGES = 5;
+
+/** One stuck stage of the company graph, for the Operator (the same numbers as Cockpit → Flows). */
+export function stuckFlowItem(stage: FlowStageView, link: (href: string) => string | null) {
+  return {
+    flow: stage.flowTitle,
+    stage: stage.label,
+    stuck: stage.stuck,
+    of: stage.count,
+    why: stage.stuckReason,
+    waitsOn: stage.waitingOn,
+    ...(stage.waits.kind === "agent" ? { agent: stage.waits.label } : {}),
+    ...(stage.amountMinor !== null ? { amount: formatAmount(stage.amountMinor, stage.currency ?? "ZAR") } : {}),
+    ...(stage.oldestDays !== null ? { oldestDays: stage.oldestDays } : {}),
+    href: link(stage.href),
+  };
+}
+
 /** Compact JSON for the Operator: waiting, health, KPIs, activity, agents incl. spend/budget. */
 export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number } = {}) {
   const windowHours = Math.min(Math.max(Math.round(options.windowHours ?? 24), 1), 720);
@@ -302,6 +323,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;
   const roles = await currentRoles(env, companyId).catch(() => null);
   const names = new Map(data.agents.map((a) => [a.id, a.name]));
+  const graph = buildFlows({ snapshots: data.snapshots, roles, agents: data.agents });
 
   return {
     company: { id: companyId, name: company?.name ?? null, prefix },
@@ -338,6 +360,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       dueBy: a.dueBy,
       client: a.clientRef,
     })),
+    /** Stuck in the flows: the stages of the company graph where work waits longest (top 5, worst first), with who it waits on. */
+    stuckFlows: graph.stuck.slice(0, BRIEF_STUCK_STAGES).map((stage) => stuckFlowItem(stage, link)),
     /** Open issues with nobody assigned (older than a day): route each to the agent that owns the work. */
     unassigned: {
       count: data.unassigned.count,
@@ -382,7 +406,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       quality: a.quality.map((q) => ({ label: q.label, value: q.value, tone: q.tone ?? "neutral" })),
     })),
     setupMissing: data.setupMissing,
-    links: { cockpit: link("/cockpit"), setup: link("/setup") },
+    links: { cockpit: link("/cockpit"), flows: link("/cockpit?tab=flows"), setup: link("/setup") },
   };
 }
 
@@ -466,7 +490,8 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
   try {
     if (name === TOOL_NAMES.brief) {
       const brief = await companyBrief(env, companyId, { windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined });
-      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${brief.health.status}, ${brief.agents.length} agents.`, brief);
+      const stuck = brief.stuckFlows.length ? ` ${brief.stuckFlows.length} stuck ${brief.stuckFlows.length === 1 ? "stage" : "stages"} in the flows.` : "";
+      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${brief.health.status}, ${brief.agents.length} agents.${stuck}`, brief);
     }
     if (name === TOOL_NAMES.health) {
       const brief = await companyBrief(env, companyId);

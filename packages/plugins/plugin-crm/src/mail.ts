@@ -79,6 +79,7 @@ import { jevConfigFor, LEAD_QUESTIONS, leadScoreState, REPLY_QUESTIONS, replySta
 import type { LeadScore } from "./lead-levels.js";
 import { emitSuppressed } from "./handoffs.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { LEGACY_ORIGINS, originFor } from "./origins.js";
 import { companyPrefix, crmLink, refOf } from "./refs.js";
 import { approvalAssignee, recordAssignee, teamAssignee, type Assignee } from "./routing.js";
 
@@ -109,16 +110,21 @@ export async function contactAssignee(
   return recordAssignee(ctx, companyId, contact);
 }
 
-/** Opens an issue once per origin id (a retried event must not open a second one). */
+/**
+ * Opens an issue once per origin id (a retried event must not open a second
+ * one). `legacyOriginId` is the id the same work had before 0.5.0.
+ */
 export async function openIssueOnce(
   ctx: PluginContext,
-  input: { companyId: string; originId: string; title: string; description: string; assignee: Assignee; wakeReason: string },
+  input: { companyId: string; originId: string; legacyOriginId?: string | null; title: string; description: string; assignee: Assignee; wakeReason: string },
 ): Promise<string> {
-  try {
-    const existing = await ctx.issues.list({ companyId: input.companyId, originKind: ORIGIN, originId: input.originId, limit: 1 });
-    if (existing[0]) return existing[0].id;
-  } catch {
-    // Listing is a best-effort guard; create below.
+  for (const originId of [input.originId, input.legacyOriginId].filter((id): id is string => Boolean(id))) {
+    try {
+      const existing = await ctx.issues.list({ companyId: input.companyId, originKind: ORIGIN, originId, limit: 1 });
+      if (existing[0]) return existing[0].id;
+    } catch {
+      // Listing is a best-effort guard; create below.
+    }
   }
   const issue = await createWorkIssue(ctx, {
     companyId: input.companyId,
@@ -271,14 +277,16 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       : [
         `${name} replied while in a running sequence. ${reason}`,
         "",
-        "Decide what to do: stop the sequence (a lost deal or `set-email-status` when they opted out), set a next action, or let it carry on. Comment what you decided.",
+        "Decide what to do: stop the sequence (a lost deal or `set-email-status` when they opted out), set a next action, or let it carry on. Log what you decided on the contact (`log-activity`).",
       ];
     lines.push("", `**Subject:** ${subject}`, "", `> ${mail.snippet.replace(/\n+/g, " ").slice(0, 500)}`);
     lines.push("", `- Mailbox message: \`${mail.messageId}\`${mail.threadId ? `, thread \`${mail.threadId}\`` : ""}`);
     lines.push(`- Contact: \`${refOf("contact", contact.id)}\` · ${crmLink(prefix, "contact", contact.id)}`);
+    lines.push("", "**Done when** the contact shows what happened since this reply: a logged activity, a next action, a deal move, or an opt-out. Closing checks it.");
     issueId = await openIssueOnce(ctx, {
       companyId,
-      originId: `reply:${mail.messageId}`,
+      originId: originFor.reply(mail.messageId),
+      legacyOriginId: LEGACY_ORIGINS.reply(mail.messageId),
       title: `${followUp ? "Reply from" : "Check reply from"} ${name}: ${subject}`.slice(0, 200),
       description: lines.join("\n"),
       assignee: await contactAssignee(ctx, companyId, contact),
@@ -448,7 +456,7 @@ export async function setDelivery(
         title: `Approve email sending: ${sequence.name}`,
         description: reviewer ? `${description}\n${sequenceReviewBrief(sequence.name, sender, approverUserId)}` : description,
         originKind: ORIGIN,
-        originId: `sequence-email:${sequence.id}`,
+        originId: originFor.sequenceEmail(sequence.id),
         ...(reviewer
           ? { assigneeAgentId: reviewer, wake: true, wakeReason: "Review a sequence before it switches to email" }
           : approverUserId
@@ -518,7 +526,8 @@ async function refuseSequenceEmail(ctx: PluginContext, companyId: string, sequen
   const prefix = await companyPrefix(ctx, companyId);
   await openIssueOnce(ctx, {
     companyId,
-    originId: `handoff:sequence-refused:${approvalIssueId}`,
+    originId: originFor.sequenceRefused(approvalIssueId),
+    legacyOriginId: LEGACY_ORIGINS.sequenceRefused(approvalIssueId),
     title: `Hand-off: email sending refused for sequence "${sequence.name}"`.slice(0, 200),
     description: [
       `A person refused email sending for sequence "${sequence.name}" (\`${sequence.id}\`). Its due steps now open an issue for you again, so no contact is left waiting.`,
@@ -689,12 +698,14 @@ async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, error: 
   const name = contact?.name ?? "contact";
   const issueId = await openIssueOnce(ctx, {
     companyId: enrollment.companyId,
-    originId: `send-failed:${enrollment.sendingKey ?? enrollment.id}`,
+    originId: originFor.sendFailed(enrollment.id, enrollment.stepPosition),
+    legacyOriginId: LEGACY_ORIGINS.sendFailed(enrollment.sendingKey ?? enrollment.id),
     title: `Email not sent: ${step?.title ?? "Sequence step"}: ${name}`.slice(0, 200),
     description: [
       `The Mailbox could not send this sequence email to ${contact ? `\`${refOf("contact", contact.id)}\`` : "the contact"}: ${error}`,
       "",
-      "Fix the address (`update-contact`) or reach them another way, then mark this issue done to move the contact to the next step. A bounced address: `set-email-status` bounced instead.",
+      "Fix the address (`update-contact` emails) or reach them another way and log it (`log-activity`), then mark this issue done to move the contact to the next step. A bounced address: `set-email-status` bounced instead.",
+      "**Done when** the address was fixed, the contact was reached and logged, or the address is marked bounced. Closing checks it.",
       "",
       step?.body ?? "",
     ].join("\n"),

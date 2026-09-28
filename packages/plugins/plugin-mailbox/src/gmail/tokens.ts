@@ -152,7 +152,7 @@ export async function markNeedsReconnect(env: Env, loaded: LoadedConfig, account
       // Only the Google account's owner can reconnect it; else the company owner finds out who.
       assigneeUserId: account.connected_by_user_id ?? account.owner_user_id ?? (await companyRoles(env.ctx, loaded.companyId).catch(() => null))?.ownerUserId ?? undefined,
       originKind: `plugin:${PLUGIN_ID}`,
-      originId: `reconnect:${account.id}`,
+      originId: `mailbox:reconnect:${account.id}`,
       priority: "high",
       wake: false,
     });

@@ -15,7 +15,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig } from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, socialProjectId } from "../issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, SOCIAL_ORIGINS, socialProjectId } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
@@ -204,7 +204,7 @@ async function announce(env: GrowthEnv, config: SocialConfig, program: Program, 
       description: approvalIssueDescription(program, lines, await socialPath(env.ctx, companyId, { tab: "growth" }, scope)),
       priority: "medium",
       originKind: ORIGIN_KIND,
-      originId: `growth:${program.id}:${week}`,
+      originId: `${SOCIAL_ORIGINS.growth}${program.id}:${week}`,
       // A person decides experiments and playbook changes: the program owner, else the default person or the Cockpit owner.
       assigneeUserId: await personAssignee(env.ctx, companyId, program.ownerUserId),
       wake: false,

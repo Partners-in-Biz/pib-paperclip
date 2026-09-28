@@ -41,8 +41,9 @@ import { PLUGIN_ID } from "../namespace.js";
 import { routeBookkeeping } from "./agent.js";
 import { refreshSuggestions } from "./bank.js";
 import { ensureBook } from "./books.js";
-import { closeIssue, commentOn, errorMessage, issueStatus, openIssue, ORIGIN, withLock } from "./common.js";
+import { closeIssue, commentOn, errorMessage, issueStatus, openIssue, ORIGIN, withLock, WORK_ORIGINS } from "./common.js";
 import { postJournal, reverseJournal } from "./journals.js";
+import { recordStatementEmail } from "./statement-emails.js";
 
 const REJECTION_TITLE = "Accounting: postings were rejected";
 export const MODULE_OFF_ERROR = "Accounting is switched off for this company";
@@ -183,7 +184,7 @@ export async function noteRejection(ctx: PluginContext, companyId: string, r: { 
         ].join("\n"),
         priority: "high",
         originKind: ORIGIN,
-        originId: "rejections",
+        originId: WORK_ORIGINS.rejections,
         wakeReason: "Postings were rejected",
       }, route);
       await db.setRejectionIssue(ctx.db, companyId, issue.id);
@@ -347,9 +348,11 @@ export function statementIssueText(mail: MailReceived): string {
     "",
     "## Steps (Bookkeeper)",
     `1. Get each CSV, OFX or MT940 file with \`partnersinbiz.mailbox:get-attachment\` (message id \`${mail.messageId}\` and the attachment id above).`,
-    "2. Import it with `partnersinbiz.accounting:import-statement`: the file text as `content` (or the link it returned as `url`), the `fileName`, and the `bankAccountId` from `list-bank-accounts`. Importing the same file again is safe: duplicates are skipped.",
+    `2. Import it with \`partnersinbiz.accounting:import-statement\`: the file text as \`content\` (or the link it returned as \`url\`), the \`fileName\`, the \`bankAccountId\` from \`list-bank-accounts\` and \`messageId: "${mail.messageId}"\` (this links the import to this email). Importing the same file again is safe: duplicates are skipped.`,
     "3. Reconcile: the import opens a \"Reconcile N new bank lines\" issue for the new lines. Work it with `list-bank-lines` and `accept-categorisation`.",
     "4. Mark this issue done with the result (lines imported, duplicates skipped, the reconcile issue).",
+    "",
+    `No statement in this email, or its statement was already imported? Record it with \`partnersinbiz.accounting:mark-statement-email\` (\`messageId: "${mail.messageId}"\`, \`outcome\` \`not_statement\` or \`duplicate\`, and the \`reason\`), then close this issue.`,
     "",
     `Only a PDF? It cannot be imported. Ask the owner once with \`${ASK_OWNER_TOOL}\` for the CSV or OFX export from online banking (they can import it under Accounting → Bank → Import statement).`,
     "",
@@ -368,9 +371,11 @@ export async function receiveMail(ctx: PluginContext, companyId: string, eventTy
       title: `Bank statement received: ${(mail.subject || "(no subject)").slice(0, 120)}`,
       description: statementIssueText(mail),
       originKind: ORIGIN,
-      originId: `mail:${mail.messageId}`,
+      originId: `${WORK_ORIGINS.statement}${mail.messageId}`,
       wakeReason: "Bank statement to import",
     }, route);
+    // What became of the email (the "Statements to import" stage and the issue's done-check read it).
+    await recordStatementEmail(ctx, companyId, mail, issue.id);
     return { issueId: issue.id, via: route.via };
   });
   return !repeat;

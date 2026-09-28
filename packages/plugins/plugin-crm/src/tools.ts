@@ -32,7 +32,7 @@ const P = {
   client: text("The client: company:<id> or contact:<id> (from find-records)."),
   name: text("Name as the client writes it."),
   domain: text("Website domain without https, e.g. acme.co.za. Email leads from this domain are linked to the company."),
-  lifecycle: oneOf(LIFECYCLES, "lead: new, not qualified. prospect: qualified, talking about work. customer: has bought (set for you when a deal is won or an invoice is paid). churned: stopped buying (stops their sequences)."),
+  lifecycle: oneOf(LIFECYCLES, "lead: new, not qualified. prospect: qualified, talking about work. customer: has bought (set for you when a deal is won or an invoice is paid). churned: stopped buying, or a lead that is not a fit (stops their sequences)."),
   currency: text("3-letter currency code, e.g. ZAR (the default)."),
   tagsNew: textList("Labels, e.g. retainer or priority."),
   tagsReplace: textList("The full tag list: it replaces the current tags."),
@@ -356,6 +356,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["dealId", "stageId"], {
       dealId: P.dealId,
       stageId: text("Stage id from list-stages. A stage name (e.g. Proposal) or the word won or lost also works."),
+      quoteId: text("Only with stageId won: the accepted quote this deal closes (from a pick-the-deal hand-off). The deal records it."),
     }),
   },
   {

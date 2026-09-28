@@ -261,6 +261,12 @@ export class MemoryStore implements GmailStore {
       .sort((a, b) => Date.parse(b.received_at ?? b.created_at) - Date.parse(a.received_at ?? a.created_at));
     return list[0] ? { ...list[0] } : null;
   }
+  async replyThread(companyId: string, threadId: string) {
+    return [...this.messages.values()]
+      .filter((m) => m.company_id === companyId && (m.gmail_thread_id === threadId || m.draft?.threadId === threadId))
+      .sort((a, b) => Date.parse(b.received_at ?? b.created_at) - Date.parse(a.received_at ?? a.created_at))
+      .map((m) => ({ ...m }));
+  }
   async listInbox(companyId: string, filter: InboxFilter) {
     return [...this.messages.values()]
       .filter((m) => m.company_id === companyId && m.direction === "inbound")

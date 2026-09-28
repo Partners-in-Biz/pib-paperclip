@@ -17,7 +17,7 @@ import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { getPost, iso, setPostScheduleIssue, setPostStatus, type PostRow } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, scopeLine, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
 
 /** A proposed time must be at least this far ahead to be kept on approval. */
@@ -131,7 +131,7 @@ export async function openScheduleTask(ctx: PluginContext, companyId: string, po
       description: scheduleTaskDescription(post, line, await socialPath(ctx, companyId, { tab: "posts" }, scopeOfRow(post)).catch(() => null)),
       priority: "medium",
       originKind: ORIGIN_KIND,
-      originId: `schedule:${scopeKey(post)}:${post.id}`,
+      originId: `${SOCIAL_ORIGINS.schedule}${scopeKey(post)}:${post.id}`,
       assigneeAgentId: assignee.assigneeAgentId,
       assigneeUserId: assignee.assigneeUserId,
       wakeReason: "Approved social posts need a time",

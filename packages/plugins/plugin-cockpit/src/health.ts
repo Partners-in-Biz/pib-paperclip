@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { reconcileAsks } from "./asks.js";
-import { ORIGIN, PLUGIN_KEY } from "./constants.js";
+import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
 import { clearHealthIssue, getHealthIssue, getRoles, listRoles, listSnapshots, saveHealthIssue } from "./db.js";
 import { message, readInstalled, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
@@ -283,7 +283,7 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
     description: content.description,
     priority: found.entries.some((entry) => entry.status === "bad") ? "high" : "medium",
     originKind: ORIGIN.health as `plugin:${string}`,
-    originId: `health:${companyId}`,
+    originId: `${ORIGIN_ID.health}${companyId}`,
     ...(operator ? { assigneeAgentId: operator } : owner ? { assigneeUserId: owner } : {}),
     wakeReason: "System health problems",
   });

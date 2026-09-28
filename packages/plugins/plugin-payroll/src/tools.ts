@@ -151,6 +151,17 @@ export const PAYROLL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["month"], { month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "The month the staff were paid, YYYY-MM." } }),
   },
   {
+    name: "mark-emp201-filed",
+    displayName: "Mark EMP201 filed",
+    description:
+      "Record that a person filed and paid the EMP201 for a month on SARS eFiling. Only after the owner confirms it (their reply on the EMP201 issue). Payroll itself never files or pays. Clears the month from the Cockpit's \"EMP201 to file\".",
+    parametersSchema: schema(["month"], {
+      month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "The month the staff were paid, YYYY-MM (the EMP201 issue's month). It must have ended." },
+      reference: { type: "string", maxLength: 60, description: "The SARS payment reference (PRN) or bank reference the owner gave, as they wrote it." },
+      filedOn: date("The day the owner filed and paid (default today; not in the future)"),
+    }),
+  },
+  {
     name: "emp501-summary",
     displayName: "EMP501 summary",
     description:

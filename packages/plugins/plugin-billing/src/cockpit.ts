@@ -1,27 +1,32 @@
 /**
  * Company Cockpit snapshot for Billing (`GET /cockpit`, pushed hourly as
  * `cockpit.snapshot`): the money a founder checks, job and delivery health,
- * the approvals and checks waiting on a person, recent activity and quality.
+ * the approvals and checks waiting on a person, recent activity and quality,
+ * and live numbers for Billing's stages of the lead-to-cash flow (`flows`),
+ * each from the same query as its KPI.
  *
  * Read-only and cheap: a handful of SELECTs, no external calls. Each part is
  * wrapped so one failing query never breaks the whole snapshot.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  cleanFlowReports,
   configSaved,
   decisionStats,
   emptySnapshot,
+  flowStagesFor,
   formatMoneyMinor,
   jobHealth,
   outboxHealth,
   publishCockpitSnapshot,
   type CockpitSnapshot,
+  type FlowStageReport,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import { AS_AT_CUTOFF_SQL, asAtDate, invoiceBalances, iso, statusAsAtToday } from "./balances.js";
 import { billingSettings } from "./config.js";
 import { asObject, table } from "./db.js";
-import { shortDayText } from "./domain.js";
+import { daysPastDue, shortDayText } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { billingOn, knownCompanyIds } from "./setup.js";
 
@@ -65,8 +70,30 @@ export function monthToDate(today: string): string {
 }
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
+/** A stage's money: the sum when every item is in one currency (0 in the main currency when empty), else none. */
+export function stageMoney(sums: Sums, main: string): { amountMinor: number | null; currency: string | null } {
+  const entries = [...sums.entries()].filter(([, minor]) => minor !== 0);
+  if (entries.length === 0) return { amountMinor: 0, currency: main };
+  if (entries.length === 1) return { amountMinor: entries[0]![1], currency: entries[0]![0] };
+  return { amountMinor: null, currency: null };
+}
+
+/** Whole days from `at` to now (0 when unknown). */
+function daysSince(at: unknown, now = Date.now()): number {
+  const time = Date.parse(String(iso(at) ?? ""));
+  return Number.isFinite(time) ? Math.max(0, Math.floor((now - time) / 86_400_000)) : 0;
+}
+
+/** Keeps the stage order of the company graph (kit `FLOWS`). */
+function inFlowOrder(reports: FlowStageReport[]): FlowStageReport[] {
+  const order = flowStagesFor(PLUGIN_ID).map((stage) => stage.key);
+  return [...reports].sort((a, b) => order.indexOf(a.stage) - order.indexOf(b.stage));
+}
+
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
   const snap = emptySnapshot(PLUGIN_ID, "Billing");
+  // Live numbers for the stages Billing owns in the company graph (kit FLOWS), from the same queries as the KPIs.
+  const flows: FlowStageReport[] = [];
   const failed: string[] = [];
   const part = async (label: string, fn: () => Promise<void>) => {
     try {
@@ -100,6 +127,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     const overdue: Sums = new Map();
     let overdueCount = 0;
     let openCount = 0;
+    let oldestOverdue = 0;
     const now = Date.now();
     for (const b of open) {
       if (b.outstandingMinor <= 0) continue;
@@ -109,8 +137,18 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
       if (statusAsAtToday(b) === "overdue" || (due && Date.parse(due) < now)) {
         overdueCount += 1;
         addTo(overdue, b.invoice.currency, b.outstandingMinor);
+        oldestOverdue = Math.max(oldestOverdue, daysPastDue(due, new Date(now)));
       }
     }
+    // invoice.open: owed as at today (the Outstanding KPI); stuck = overdue (the Overdue KPI).
+    flows.push({
+      stage: "invoice.open",
+      count: openCount,
+      stuck: overdueCount,
+      stuckReason: overdueCount ? `${overdueCount} overdue (${sumsText(overdue, main)}), ${asAt}` : null,
+      ...stageMoney(outstanding, main),
+      oldestDays: overdueCount ? oldestOverdue : null,
+    });
     snap.kpis.push({ key: "outstanding", label: "Outstanding", value: sumsText(outstanding, main), raw: outstanding.get(main) ?? 0, tone: "neutral", delta: openCount ? `${plural(openCount, "invoice")}, ${asAt}` : asAt, href: `${PAGE}?tab=invoices`, group: "money" });
     snap.kpis.push({
       key: "overdue",
@@ -184,35 +222,97 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   await part("drafts", async () => {
     // Drafts nobody asked to send yet (the Account Manager's daily "Drafts to send" issue lists the ones over a day old).
-    const rows = await ctx.db.query<{ currency: string; count: string; stale: string; total: string }>(
-      `SELECT currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day')::text AS stale, COALESCE(sum(total_minor), 0)::text AS total FROM (
-         SELECT i.currency, i.created_at, i.total_minor FROM ${table(ctx, "invoices")} i
+    const rows = await ctx.db.query<{ kind: "invoice" | "quote"; currency: string; count: string; stale: string; total: string; oldest_stale: unknown }>(
+      `SELECT kind, currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day')::text AS stale,
+              COALESCE(sum(total_minor), 0)::text AS total, min(created_at) FILTER (WHERE created_at < now() - interval '1 day') AS oldest_stale FROM (
+         SELECT 'invoice' AS kind, i.currency, i.created_at, i.total_minor FROM ${table(ctx, "invoices")} i
           WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
             AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "recurring_invoices")} r WHERE r.template_invoice_id = i.id AND r.is_active = true)
          UNION ALL
-         SELECT currency, created_at, total_minor FROM ${table(ctx, "quotes")}
+         SELECT 'quote' AS kind, currency, created_at, total_minor FROM ${table(ctx, "quotes")}
           WHERE company_id = $1 AND status = 'draft' AND pending_action IS NULL AND COALESCE(delivery_status, '') <> 'queued'
-       ) d GROUP BY currency`,
+       ) d GROUP BY kind, currency`,
       [companyId],
     );
     const sums: Sums = new Map();
     let count = 0;
     let stale = 0;
+    const byKind = { invoice: { count: 0, stale: 0, sums: new Map() as Sums, oldest: null as unknown }, quote: { count: 0, stale: 0, sums: new Map() as Sums, oldest: null as unknown } };
     for (const r of rows) {
+      const kind = byKind[r.kind === "quote" ? "quote" : "invoice"];
       count += n(r.count);
       stale += n(r.stale);
       addTo(sums, r.currency.toUpperCase(), n(r.total));
+      kind.count += n(r.count);
+      kind.stale += n(r.stale);
+      addTo(kind.sums, r.currency.toUpperCase(), n(r.total));
+      if (r.oldest_stale && (!kind.oldest || Date.parse(String(iso(r.oldest_stale))) < Date.parse(String(iso(kind.oldest))))) kind.oldest = r.oldest_stale;
     }
+    const what = [byKind.invoice.count ? plural(byKind.invoice.count, "invoice") : null, byKind.quote.count ? plural(byKind.quote.count, "quote") : null].filter(Boolean).join(" and ");
     snap.kpis.push({
       key: "drafts",
       label: "Drafts to send",
       value: count ? sumsText(sums, main) : "None",
-      hint: count ? `${count} ${count === 1 ? "invoice" : "invoices"}${stale ? (stale >= count ? (count === 1 ? ", over a day old" : ", all over a day old") : `, ${stale} over a day old`) : ""}` : null,
+      hint: count ? `${what}${stale ? (stale >= count ? (count === 1 ? ", over a day old" : ", all over a day old") : `, ${stale} over a day old`) : ""}` : null,
       raw: count,
       tone: stale > 0 ? "warn" : "neutral",
       href: `${PAGE}?tab=invoices`,
       group: "pipeline",
     });
+    // quote.draft / invoice.draft: the same drafts split by kind; stuck = over a day old (on the Drafts to send issue).
+    for (const [stage, kind] of [["quote.draft", byKind.quote], ["invoice.draft", byKind.invoice]] as const) {
+      flows.push({
+        stage,
+        count: kind.count,
+        stuck: kind.stale,
+        stuckReason: kind.stale ? `${kind.stale} over a day old` : null,
+        ...stageMoney(kind.sums, main),
+        oldestDays: kind.stale ? daysSince(kind.oldest) : null,
+      });
+    }
+  });
+
+  await part("stages", async () => {
+    // quote.approval / invoice.approval: a send approval is open (as in Waiting on you).
+    // quote.sent: sent, not being re-sent and still valid (the Open quotes KPI without drafts); stuck = no answer after 14 days.
+    const rows = await ctx.db.query<{ stage: string; currency: string; count: string; total: string; stuck: string; oldest: unknown }>(
+      `SELECT stage, currency, count(*)::text AS count, COALESCE(sum(total_minor), 0)::text AS total,
+              count(*) FILTER (WHERE stuck)::text AS stuck, min(since) FILTER (WHERE stuck) AS oldest FROM (
+         SELECT 'quote.approval' AS stage, q.currency, q.total_minor, false AS stuck, NULL::timestamptz AS since FROM ${table(ctx, "quotes")} q
+          WHERE q.company_id = $1 AND q.pending_action = 'send' AND q.approval_issue_id IS NOT NULL
+         UNION ALL
+         SELECT 'invoice.approval' AS stage, i.currency, i.total_minor, false AS stuck, NULL::timestamptz AS since FROM ${table(ctx, "invoices")} i
+          WHERE i.company_id = $1 AND i.pending_action = 'send' AND i.approval_issue_id IS NOT NULL
+         UNION ALL
+         SELECT 'quote.sent' AS stage, q.currency, q.total_minor,
+                (COALESCE(q.sent_at, q.updated_at) < now() - interval '14 days'
+                  AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "work_issues")} w WHERE w.company_id = q.company_id AND w.kind = 'quote_reply' AND w.subject_id = q.id)) AS stuck,
+                COALESCE(q.sent_at, q.updated_at) AS since FROM ${table(ctx, "quotes")} q
+          WHERE q.company_id = $1 AND q.status = 'sent' AND q.pending_action IS NULL AND (q.valid_until IS NULL OR q.valid_until >= now())
+       ) s GROUP BY stage, currency`,
+      [companyId],
+    );
+    for (const stage of ["quote.approval", "quote.sent", "invoice.approval"] as const) {
+      const mine = rows.filter((r) => r.stage === stage);
+      const sums: Sums = new Map();
+      let count = 0;
+      let stuck = 0;
+      let oldest: unknown = null;
+      for (const r of mine) {
+        count += n(r.count);
+        stuck += n(r.stuck);
+        addTo(sums, r.currency.toUpperCase(), n(r.total));
+        if (r.oldest && (!oldest || Date.parse(String(iso(r.oldest))) < Date.parse(String(iso(oldest))))) oldest = r.oldest;
+      }
+      flows.push({
+        stage,
+        count,
+        stuck,
+        stuckReason: stuck ? `${stuck} with no answer after 14 days` : null,
+        ...stageMoney(sums, main),
+        oldestDays: stuck ? daysSince(oldest) : null,
+      });
+    }
   });
 
   await part("bills", async () => {
@@ -425,6 +525,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   if (failed.length) {
     snap.health.push({ key: "snapshot", title: "Cockpit numbers", status: "warn", detail: `Some numbers could not be read: ${failed.join("; ").slice(0, 400)}` });
   }
+  // A stage whose numbers could not be read is left out rather than shown as zero.
+  snap.flows = inFlowOrder(cleanFlowReports(PLUGIN_ID, flows));
   snap.checkedAt = new Date().toISOString();
   return snap;
 }

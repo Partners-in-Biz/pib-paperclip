@@ -19,6 +19,7 @@ import {
   parseClientParam,
   redeliver,
   registerCrmProjection,
+  checkDoneOnUpdate,
   registerModuleWatch,
   registerRoleWatch,
   rememberPluginUiBase,
@@ -93,6 +94,7 @@ import {
   type InvoiceRow,
 } from "./db.js";
 import { clientBillingSummary, assertFrequency, assertTaxRate, BillingError, buildInvoiceHtml, canSeeInvoice, QUOTE_STATUSES, type ClientSummary } from "./domain.js";
+import { BILLING_DONE_CHECKS } from "./donechecks.js";
 import { plannedReminders, runDunningFor } from "./dunning.js";
 import { DEAL_WON_EVENT, onDealWon, syncDraftsDigest, syncOverdueDigest } from "./followups.js";
 import { refreshDailyRates } from "./fx.js";
@@ -132,6 +134,7 @@ import {
   updateQuoteLine,
 } from "./invoices.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
+import { followUpsFor, logFollowUp } from "./notes.js";
 import { nextDocumentNumber } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
@@ -156,7 +159,7 @@ import { SKILLS } from "./skills.js";
 import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
-import { openWorkIssues } from "./workissues.js";
+import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
 import {
   actorLabel,
   errorMessage,
@@ -207,6 +210,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.list-quotes": (ctx, context, params) => listQuotesAction(ctx, context, params),
   "billing.request-payment-check": requestPaymentCheck,
   "billing.request-reminder-send": (ctx, context, params) => requestReminderSend(ctx, context, params),
+  "billing.log-follow-up": logFollowUp,
   "billing.convert-quote": convertQuote,
   "billing.create-expense": createExpenseAction,
   "billing.update-expense": updateExpense,
@@ -373,7 +377,11 @@ const plugin = definePlugin({
         throw error;
       }
     };
-    ctx.events.on("issue.updated", guard("issue update", (event) => onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType, event.actorId)));
+    // One subscription (a second would run both twice). The issue's own handlers (approvals, decisions) run before its done check.
+    ctx.events.on("issue.updated", guard("issue update", async (event) => {
+      await onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType, event.actorId);
+      await checkDoneOnUpdate(ctx, BILLING_DONE_CHECKS, event);
+    }));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
     ctx.events.on(MAIL_RESULT_EVENT, guard("mail result", (event) => onMailResult(ctx, event)));
     ctx.events.on(MAIL_RECEIVED_EVENT, guard("inbound mail", (event) => onMailReceived(ctx, event)));
@@ -435,6 +443,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "customer-credit": { action: "billing.customer-credit", message: "Customer credit listed" },
   "list-proofs-of-payment": { action: "billing.pops", message: "Proofs of payment listed" },
   "request-reminder-send": { action: "billing.request-reminder-send", message: (d) => (d.already ? "A reminder approval is already open for this invoice" : "Reminder approval issue opened for a person") },
+  "log-follow-up": { action: "billing.log-follow-up", message: (d) => `Follow-up logged on ${String(d.on ?? "it")}` },
   "create-recurring-invoice": { action: "billing.create-recurring", message: "Recurring invoice scheduled" },
   "list-recurring-invoices": { action: "billing.list-recurring", message: "Recurring invoices listed" },
   "pause-recurring-invoice": { action: "billing.pause-recurring", message: "Recurring invoice paused" },
@@ -688,6 +697,7 @@ async function invoiceDetail(ctx: PluginContext, context: PluginPerformActionCon
     reminders: reminders.map((r) => ({ stage: Number(r.stage) + 1, status: r.status, createdAt: iso(r.created_at), error: r.error })),
     recipients,
     customerCredit: await customerCredit(ctx, invoice.company_id, invoice.customer_kind, invoice.customer_ref),
+    followUps: invoice.company_id === companyId ? await followUpsFor(ctx, companyId, "invoice", invoice.id) : [],
     ledgerKey: `billing:invoice:${invoice.id}:issue`,
   };
 }
@@ -708,6 +718,7 @@ async function quoteDetail(ctx: PluginContext, context: PluginPerformActionConte
     legacyVat: view.legacy,
     deliveries: (await deliveriesFor(ctx, companyId, "quote", quote.id)).map((d) => ({ key: d.key, status: d.status, error: d.error, subject: d.subject, sentAt: iso(d.sent_at), createdAt: iso(d.created_at) })),
     recipients: await recipientsFor(ctx, companyId, quote),
+    followUps: await followUpsFor(ctx, companyId, "quote", quote.id),
   };
 }
 
@@ -1078,6 +1089,8 @@ async function draftsJob(ctx: PluginContext) {
     try {
       await syncDraftsDigest(ctx, companyId);
       await syncOverdueDigest(ctx, companyId, { weekly: false });
+      // Standing issues opened before 0.5 get their billing:<kind>:<id> origin id, so their done check runs.
+      await refreshWorkIssueOrigins(ctx, companyId);
     } catch (error) {
       ctx.logger.info("Drafts to send skipped", { companyId, error: errorMessage(error) });
     }

@@ -734,10 +734,11 @@ export async function customerLastPaidAt(ctx: PluginContext, companyId: string, 
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-/** Company ids that have billing rows (jobs have no company scope). */
+/** Company ids that have billing rows (jobs have no company scope). Quotes count: a company that only quoted still gets its "Drafts to send". */
 export async function billingCompanyIds(ctx: PluginContext): Promise<string[]> {
   const rows = await ctx.db.query<{ company_id: string }>(
     `SELECT company_id FROM ${table(ctx, "invoices")}
+      UNION SELECT company_id FROM ${table(ctx, "quotes")}
       UNION SELECT company_id FROM ${table(ctx, "bills")}
       UNION SELECT company_id FROM ${table(ctx, "expenses")}
       UNION SELECT company_id FROM ${table(ctx, "subscriptions")}`,
