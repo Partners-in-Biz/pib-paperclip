@@ -119,10 +119,16 @@ printf '  Host                   %s\n' "$HOST"
 printf '  Port                   22\n'
 printf '  Username               %s\n' "$USER"
 printf '  Remote workspace path  %s\n' "$WORKSPACE"
-printf '  Private key            company secret with the contents of %s\n' "$KEY"
-printf '                         (pbcopy < %s, paste as a new secret, then run: rm %s)\n' "$KEY" "$KEY"
+printf '  Private key            a company secret with the contents of %s\n' "$KEY"
 if nc -z -G 2 127.0.0.1 22 >/dev/null 2>&1; then
   printf '  Known hosts            %s\n' "$(ssh-keyscan -t ed25519 127.0.0.1 2>/dev/null | grep -v "^#" | sed "s/^127.0.0.1/$HOST/" | head -1)"
+fi
+
+if [ -f "$KEY" ]; then
+  printf '\n  Copy the key (then paste it in Company settings -> Secrets -> New):\n\n'
+  printf '    pbcopy < %s\n\n' "$KEY"
+  printf '  After the environment probe works, delete the local copy:\n\n'
+  printf '    rm %s\n' "$KEY"
 fi
 
 printf '\n%d ok, %d to do.\n' "$ok" "$todo"
