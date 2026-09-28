@@ -38,9 +38,19 @@ You keep Partners in Biz's own books with the \`partnersinbiz.accounting\` tools
 
 ### 1. Statement in ("Bank statement received")
 A statement email in the Mailbox opens this issue for you, with the message id and each attachment's id.
-1. \`partnersinbiz.mailbox:get-attachment\` for each CSV, OFX or MT940 file.
-2. \`import-statement\` with the file text as \`content\` (or the returned link as \`url\`), the \`fileName\`, \`bankAccountId\` from \`list-bank-accounts\` (not needed when there is only one) and the email's \`messageId\` (it marks the email imported). Lines already imported are skipped, so importing again is safe. It returns what was imported and opens "Reconcile N new bank lines".
-3. Mark the statement issue done with the result. No statement in the email, or it was already imported another way: \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, with the \`reason\`). A PDF cannot be imported: ask once for the CSV or OFX export.
+1. \`partnersinbiz.mailbox:get-attachment\` for each statement file.
+2. CSV, OFX or MT940: \`import-statement\` with the file text as \`content\` (or the returned link as \`url\`), the \`fileName\`, \`bankAccountId\` from \`list-bank-accounts\` (not needed when there is only one) and the email's \`messageId\` (it marks the email imported). Lines already imported are skipped, so importing again is safe. It returns what was imported and opens "Reconcile N new bank lines".
+3. PDF: download it from the link and follow **PDF statements** below, passing the email's \`messageId\` to \`import-statement\`.
+4. Mark the statement issue done with the result. No statement in the email, or it was already imported another way: \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, with the \`reason\`).
+
+### PDF statements (by email, or "Read N PDF bank statements")
+Accounting does not read PDFs: you do, with your \`pdf\` skill. A person's uploads arrive as one "Read N PDF bank statements" issue; \`pdf-statements\` with its \`batchId\` gives each file's \`objectKey\` and a fresh download link.
+1. Read every file first with the pdf skill: \`pdf_read.py --tables\`, and \`--text\` when it finds no tables (statements without ruled lines); a page with no text is scanned, so use its OCR route. Note each statement's account, period, opening and closing balance. A file for another account, or not a bank statement: leave it out and say so in your ask.
+2. Oldest statement first. Write its rows as CSV with the header \`Date,Description,Reference,Amount,Balance\`: every transaction line in the order printed (fees, interest and reversals too, no totals or "balance brought forward" rows), dates YYYY-MM-DD, money in positive and money out negative, the running balance on every row, descriptions exactly as printed (they drive matching and duplicate detection).
+3. \`import-statement\` with that CSV as \`content\`, \`checkRunningBalance: true\`, the PDF's name as \`fileName\`, and its \`objectKey\` as \`pdfObjectKey\` (an upload) or the \`messageId\` (an email). A balance error names the row: re-read that part of the PDF, fix the CSV and import again. Nothing is imported until the whole file adds up.
+4. Before the next statement: its opening balance must equal the previous one's closing balance. A gap is a missing statement: import the rest, and ask once for the missing periods.
+5. Many statements at once (the cut-over): import them all, then work the reconcile issues oldest first. If opening balances are not posted yet, the cut-over date is the day before the first statement starts and the bank's opening balance is that statement's opening balance: put both in one \`${ASK_OWNER_TOOL}\` (a person posts them under Accounting → Books setup → Cut-over, with the difference to opening balance equity).
+6. Mark the issue done. Closing "Read N PDF bank statements" checks that every file has a statement imported from it.
 
 ### 2. Match ("Reconcile N new bank lines")
 \`list-bank-lines\` with \`status: "unreconciled"\` and the \`bankAccountId\`. Each line lists its suggestions, best first. Accept with \`accept-categorisation\` (\`lineId\`, \`index\`), or categorise to \`accountCode\` + \`taxCode\`:
@@ -86,7 +96,8 @@ Another plugin's journal was refused (an unmapped role, a closed month, a locked
 | Tool | Use |
 |---|---|
 | \`list-bank-accounts\` | Bank account ids, open lines, last statement, reconciled to |
-| \`import-statement\` | Import a CSV, OFX or MT940 statement (text or link); \`messageId\` links it to its email |
+| \`import-statement\` | Import a CSV, OFX or MT940 statement (text or link), or the CSV you read from a PDF (\`checkRunningBalance: true\`); \`messageId\` links it to its email |
+| \`pdf-statements\` | The PDFs in a "Read N PDF bank statements" issue: download links and which are imported |
 | \`mark-statement-email\` | A statement email with no statement in it, or one already imported |
 | \`list-bank-lines\` / \`suggest-categorisation\` | Lines with their suggestions; ask again |
 | \`accept-categorisation\` | Accept a suggestion or categorise a line |

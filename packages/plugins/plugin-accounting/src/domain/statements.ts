@@ -352,6 +352,25 @@ export function parseStatement(text: string, format: StatementFormat | "auto" = 
   };
 }
 
+/**
+ * The first line whose running balance does not follow from the one before it
+ * (previous balance + this amount), in file order, oldest-first or newest-first.
+ * For a CSV an agent wrote out of a PDF: a misread amount or a skipped line
+ * breaks the chain, so it is refused before anything is imported.
+ * Every line needs a balance.
+ */
+export function runningBalanceBreak(lines: ParsedLine[]): { row: number; date: string; expectedMinor: number; foundMinor: number } | "missing" | null {
+  if (lines.some((l) => l.balanceMinor == null)) return "missing";
+  const ascending = lines.length < 2 || lines[0]!.date <= lines[lines.length - 1]!.date;
+  for (let i = 1; i < lines.length; i += 1) {
+    const prev = lines[i - 1]!;
+    const cur = lines[i]!;
+    const expected = ascending ? prev.balanceMinor! + cur.amountMinor : prev.balanceMinor! - prev.amountMinor;
+    if (cur.balanceMinor !== expected) return { row: i + 1, date: cur.date, expectedMinor: expected, foundMinor: cur.balanceMinor! };
+  }
+  return null;
+}
+
 /** Fingerprints for dedupe (see the file comment). */
 export function fingerprintLines(bankAccountId: string, lines: ParsedLine[]): string[] {
   const seen = new Map<string, number>();

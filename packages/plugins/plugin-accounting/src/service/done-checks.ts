@@ -22,6 +22,7 @@ import * as db from "../db.js";
 import { monthYearLabel, periodLabel } from "../domain/dates.js";
 import { dayText, todayIso } from "../domain/util.js";
 import { closeNeeds } from "./close.js";
+import { readPdfBatch } from "./bank.js";
 import { money, readSettings, WORK_ORIGINS } from "./common.js";
 
 const SHOWN = 5;
@@ -43,8 +44,24 @@ export async function checkStatementEmail(ctx: PluginContext, companyId: string,
     done: false,
     missing: [
       `Nothing from statement email \`${messageId}\` is imported yet: import each CSV, OFX or MT940 file with \`import-statement\` and \`messageId: "${messageId}"\` (a file you already imported is linked, not added twice).`,
+      `A PDF: read it with your pdf skill, then \`import-statement\` with the rows as CSV \`content\`, \`checkRunningBalance: true\` and \`messageId: "${messageId}"\`.`,
       `No statement in it, or already imported another way? Record that with \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, and the \`reason\`).`,
-      `Only a PDF? Ask once with \`${ASK_OWNER_TOOL}\` for the CSV or OFX export; the issue waits with the owner until they answer.`,
+    ],
+  };
+}
+
+/** "Read N PDF bank statements": every uploaded PDF has a statement imported from it. */
+export async function checkPdfBatch(ctx: PluginContext, companyId: string, batchId: string): Promise<DoneCheckResult> {
+  const batch = await readPdfBatch(ctx, companyId, batchId);
+  if (!batch) return { done: true };
+  const imported = await db.importedObjectKeys(ctx.db, companyId, batch.files.map((f) => f.objectKey));
+  const left = batch.files.filter((f) => !imported.has(f.objectKey));
+  if (left.length === 0) return { done: true };
+  return {
+    done: false,
+    missing: [
+      ...listSome(left, (f) => `Not imported yet: ${f.fileName}`, (n) => `…and ${n} more (\`pdf-statements\` with \`batchId: "${batchId}"\`).`),
+      `Read each with your pdf skill and import it with \`import-statement\` (\`content\` = the CSV, \`pdfObjectKey\` = its objectKey, \`checkRunningBalance: true\`). A file that is not a bank statement, or cannot be read: ask once with \`${ASK_OWNER_TOOL}\`; the issue waits with the owner until they answer.`,
     ],
   };
 }
@@ -105,6 +122,14 @@ export function accountingDoneChecks(): DoneCheckRule[] {
       check: async (issue, ctx) => {
         const messageId = rest(issue.originId, WORK_ORIGINS.statement);
         return messageId ? checkStatementEmail(ctx, issue.companyId, messageId) : unreadable;
+      },
+    },
+    {
+      originPrefix: WORK_ORIGINS.pdf,
+      label: "Read PDF bank statements",
+      check: async (issue, ctx) => {
+        const batchId = rest(issue.originId, WORK_ORIGINS.pdf);
+        return batchId ? checkPdfBatch(ctx, issue.companyId, batchId) : unreadable;
       },
     },
     {

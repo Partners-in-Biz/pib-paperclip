@@ -974,6 +974,21 @@ export async function statementByDigest(db: Db, bankAccountId: string, digest: s
   return rows[0] ? mapStatement(rows[0]) : null;
 }
 
+/** Link a statement imported earlier to the uploaded file it came from, when it has none yet. */
+export async function linkStatementObjectKey(db: Db, companyId: string, statementId: string, objectKey: string): Promise<void> {
+  await db.execute(`UPDATE ${N}.statements SET object_key = $3 WHERE company_id = $1 AND id = $2 AND object_key IS NULL`, [companyId, statementId, objectKey]);
+}
+
+/** Which of these uploaded files already have an imported statement (a PDF links to the CSV rows read from it). */
+export async function importedObjectKeys(db: Db, companyId: string, keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await db.query<{ object_key: string }>(
+    `SELECT DISTINCT object_key FROM ${N}.statements WHERE company_id = $1 AND object_key IN (SELECT jsonb_array_elements_text($2::jsonb))`,
+    [companyId, JSON.stringify(keys)],
+  );
+  return new Set(rows.map((r) => String(r.object_key)));
+}
+
 export async function listStatements(db: Db, companyId: string, bankAccountId?: string | null): Promise<StatementRow[]> {
   const params: unknown[] = [companyId];
   let where = "company_id = $1";

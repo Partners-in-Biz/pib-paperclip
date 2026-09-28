@@ -354,7 +354,7 @@ export function statementIssueText(mail: MailReceived): string {
     "",
     `No statement in this email, or its statement was already imported? Record it with \`partnersinbiz.accounting:mark-statement-email\` (\`messageId: "${mail.messageId}"\`, \`outcome\` \`not_statement\` or \`duplicate\`, and the \`reason\`), then close this issue.`,
     "",
-    `Only a PDF? It cannot be imported. Ask the owner once with \`${ASK_OWNER_TOOL}\` for the CSV or OFX export from online banking (they can import it under Accounting → Bank → Import statement).`,
+    `A PDF? Read it with your pdf skill, write the rows as CSV (\`Date,Description,Reference,Amount,Balance\`, a balance on every row), then \`import-statement\` with that CSV as \`content\`, \`checkRunningBalance: true\` and this \`messageId\`. Several PDFs: oldest first, and each opening balance must equal the previous closing balance. A PDF you cannot read (a scan the OCR route cannot read either): ask once with \`${ASK_OWNER_TOOL}\` for a clearer copy.`,
     "",
     "A person doing this by hand: download the file from the email and import it under **Accounting → Bank → Import statement**.",
   ].join("\n");

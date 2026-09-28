@@ -27,7 +27,7 @@ import {
   type JournalLine,
 } from "../src/domain/journal.js";
 import { financialYear, parseVatCategory, previousRange, sameRangeLastYear, vatPeriodFor, vatPeriodsBetween } from "../src/domain/periods.js";
-import { fingerprintLines, normalizeDate, parseAmount, parseStatement } from "../src/domain/statements.js";
+import { fingerprintLines, normalizeDate, parseAmount, parseStatement, runningBalanceBreak } from "../src/domain/statements.js";
 import { firstMatchingRule, matchJournals, matchOpenItems, splitVat, suggestFor, validateRule, type BankRule, type OpenItemLike } from "../src/domain/matching.js";
 import { reconciliationSummary } from "../src/domain/reconcile.js";
 import { computeVatReturn, type VatSourceLine } from "../src/domain/vat.js";
@@ -246,6 +246,20 @@ describe("periods", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("running balance check (CSV read from a PDF)", () => {
+  const csv = (rows: string[]) => parseStatement(["Date,Description,Reference,Amount,Balance", ...rows].join("\n")).lines;
+  it("passes a chain that adds up, oldest-first or newest-first", () => {
+    expect(runningBalanceBreak(csv(["2026-08-01,A,,100.00,100.00", "2026-08-02,B,,-30.00,70.00", "2026-08-03,C,,5.50,75.50"]))).toBeNull();
+    expect(runningBalanceBreak(csv(["2026-08-03,C,,5.50,75.50", "2026-08-02,B,,-30.00,70.00", "2026-08-01,A,,100.00,100.00"]))).toBeNull();
+  });
+  it("names the first row that does not follow, and asks for missing balances", () => {
+    expect(runningBalanceBreak(csv(["2026-08-01,A,,100.00,100.00", "2026-08-02,B,,-30.00,60.00", "2026-08-03,C,,5.00,65.00"]))).toEqual({ row: 2, date: "2026-08-02", expectedMinor: 7000, foundMinor: 6000 });
+    // A skipped line (the -30.00) breaks the chain at the next row.
+    expect(runningBalanceBreak(csv(["2026-08-01,A,,100.00,100.00", "2026-08-03,C,,5.00,75.00"]))).toMatchObject({ row: 2, expectedMinor: 10500 });
+    expect(runningBalanceBreak(csv(["2026-08-01,A,,100.00,", "2026-08-02,B,,-30.00,70.00"]))).toBe("missing");
+  });
+});
 
 describe("statement parsers", () => {
   it("CSV with title rows, signed amounts and a balance column", () => {

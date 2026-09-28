@@ -711,6 +711,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     for (const tool of ACCOUNTING_TOOLS) {
       const result = await harness.executeTool<{ error?: string; data?: unknown }>(tool.name, toolParams[tool.name] ?? {}, run);
       if (tool.name === "accept-categorisation") expect(result.error).toMatch(/not found/);
+      else if (tool.name === "pdf-statements") expect(result.error).toMatch(/No PDF batch with that id/);
       else expect(result.error, tool.name).toBeUndefined();
     }
     const tb = await harness.executeTool<{ data: { balanced: boolean } }>("trial-balance", {}, run);
@@ -1027,13 +1028,62 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
 
       await expect(importStatementTool(ctx, Y, agent, { url: "http://mail.pib.test/sep.ofx" })).rejects.toThrow(/https/);
       await expect(importStatementTool(ctx, Y, agent, { url: "https://mail.pib.test/expired" })).rejects.toThrow(/HTTP 403.*fresh one/);
-      await expect(importStatementTool(ctx, Y, agent, { content: "%PDF-1.4 binary", fileName: "sep.pdf" })).rejects.toThrow(/PDF statements cannot be imported/);
+      // Accounting does not read PDFs: the answer tells the agent to read it with its pdf skill and import the rows as CSV.
+      await expect(importStatementTool(ctx, Y, agent, { content: "%PDF-1.4 binary", fileName: "sep.pdf" })).rejects.toThrow(/Read it with your pdf skill/);
+      const httpFetch = ctx.http.fetch;
+      ctx.http.fetch = async () => new Response("%PDF-1.4 binary", { status: 200, headers: { "content-type": "application/pdf" } });
+      await expect(importStatementTool(ctx, Y, agent, { url: "https://files.pib.test/sep.pdf", fileName: "sep.pdf" })).rejects.toThrow(/Read it with your pdf skill/);
+      ctx.http.fetch = httpFetch;
 
       const second = await saveBankAccount(ctx, Y, { name: "Savings" });
       await expect(importStatementTool(ctx, Y, agent, { content: fixture("fnb.csv") })).rejects.toThrow(new RegExp(`Give bankAccountId, one of: .*${bank.id} \\(Tools bank ••9876\\)`));
       const view = await bankAccountsView(ctx, Y);
       expect(view.bankAccounts.map((b) => b.id).sort()).toEqual([bank.id, second.id].sort());
       expect(view.bankAccounts.find((b) => b.id === bank.id)).toMatchObject({ openLines: 2, lastStatement: { fileName: "sep.ofx", periodStart: "2026-09-01", periodEnd: "2026-09-30" }, reconciledTo: null });
+    });
+
+    it("PDF statements a person uploads: one Bookkeeper issue; each CSV read from a PDF must add up and links to its PDF", async () => {
+      const P = "co-pdf";
+      configs.set(P, { legalName: "Pdf Co", vatNumber: "4555555555", vatCategory: "B", financialYearEndMonth: 2, r2: { accountId: "acc", bucket: "books-private", accessKeyId: "AK", secretAccessKey: "secret-ref-1" } });
+      state.set("roles", ROLES(P));
+      const { importStatementTool, pdfStatementsTool, queuePdfStatements } = await import("../src/service/bank.js");
+      const { checkPdfBatch } = await import("../src/service/done-checks.js");
+      await ensureBook(ctx, P);
+      const bank = await saveBankAccount(ctx, P, { name: "Cheque" });
+      const aug = { objectKey: `accounting/${P}/statements/2026-10/a-aug.pdf`, fileName: "aug.pdf" };
+      const sep = { objectKey: `accounting/${P}/statements/2026-10/b-sep.pdf`, fileName: "sep.pdf" };
+
+      await expect(queuePdfStatements(ctx, P, agent, { bankAccountId: bank.id, files: [aug] })).rejects.toThrow(/board user/);
+      await expect(queuePdfStatements(ctx, P, user, { bankAccountId: bank.id, files: [{ objectKey: "accounting/other-co/statements/x.pdf" }] })).rejects.toThrow(/does not belong/);
+      const q = await queuePdfStatements(ctx, P, user, { bankAccountId: bank.id, files: [sep, aug] });
+      expect(q).toMatchObject({ files: 2 });
+      expect(q.issueId).toBeTruthy();
+
+      const before = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
+      expect(before.files.map((f) => [f.fileName, f.imported])).toEqual([["sep.pdf", false], ["aug.pdf", false]]);
+      expect(before.files[0]!.url).toContain("books-private");
+      expect((await checkPdfBatch(ctx, P, q.batchId)).done).toBe(false);
+
+      const header = "Date,Description,Reference,Amount,Balance";
+      const augRows = ["2026-08-01,Opening deposit,DEP,1000.00,1000.00", "2026-08-15,Bank fee,FEE,-50.00,950.00", "2026-08-31,Client payment,INV-1,500.00,1450.00"];
+      // A misread amount breaks the running balance: refused, nothing imported.
+      const misread = [header, augRows[0], augRows[1], "2026-08-31,Client payment,INV-1,500.00,1400.00"].join("\n");
+      await expect(importStatementTool(ctx, P, agent, { content: misread, fileName: "aug.pdf", checkRunningBalance: true, pdfObjectKey: aug.objectKey })).rejects.toThrow(/Row 3 \(2026-08-31\).*misread or skipped/);
+      await expect(importStatementTool(ctx, P, agent, { content: [header, "2026-08-01,Deposit,DEP,1000.00,"].join("\n"), checkRunningBalance: true })).rejects.toThrow(/Balance on every line/);
+      expect(await db.listStatements(ctx.db, P, bank.id)).toHaveLength(0);
+
+      const first = await importStatementTool(ctx, P, agent, { content: [header, ...augRows].join("\n"), fileName: "aug.pdf", checkRunningBalance: true, pdfObjectKey: aug.objectKey });
+      expect(first).toMatchObject({ imported: 3, openingMinor: 0, closingMinor: 1450_00, periodStart: "2026-08-01", periodEnd: "2026-08-31" });
+
+      // Newest-first files are checked too. Imported once without the PDF link, then again with it: the link is added.
+      const sepCsv = [header, "2026-09-30,Interest,INT,10.00,1260.00", "2026-09-02,Card purchase,CARD,-200.00,1250.00"].join("\n");
+      await importStatementTool(ctx, P, agent, { content: sepCsv, fileName: "sep.pdf", checkRunningBalance: true });
+      expect((await checkPdfBatch(ctx, P, q.batchId)).missing?.join(" ")).toContain("sep.pdf");
+      expect(await importStatementTool(ctx, P, agent, { content: sepCsv, fileName: "sep.pdf", checkRunningBalance: true, pdfObjectKey: sep.objectKey })).toMatchObject({ duplicateFile: true });
+
+      expect(await checkPdfBatch(ctx, P, q.batchId)).toEqual({ done: true });
+      const after = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
+      expect(after.files.every((f) => f.imported && f.url === null)).toBe(true);
     });
 
     it("month-end tools: prepare-reconciliation and prepare-vat201 open approval issues for a person; an agent cannot close them", async () => {

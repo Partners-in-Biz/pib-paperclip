@@ -160,12 +160,20 @@ function lastMonth(): { start: string; end: string } {
   return { start: first.toISOString().slice(0, 10), end: last.toISOString().slice(0, 10) };
 }
 
+function importMessage(r: Record<string, unknown>): string {
+  return (r.duplicateFile
+    ? "This file was imported before; nothing new was added."
+    : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (smart matching looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}${Number(r.futureLines) ? ` ${r.futureLines} line(s) are dated after today (first ${formatShortDate(String(r.firstFutureDate))}): check those dates on the statement. They count in no balance until then.` : ""}`)
+    + (r.statementEmail ? " The statement email no longer waits to be imported." : "");
+}
+
 export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
   const loadBank = usePluginAction("accounting.bank");
   const loadLines = usePluginAction("accounting.bank-lines");
   const saveBankAccount = usePluginAction("accounting.save-bank-account");
   const uploadUrl = usePluginAction("accounting.statement-upload-url");
   const importStatement = usePluginAction("accounting.import-statement");
+  const queuePdfStatements = usePluginAction("accounting.queue-pdf-statements");
   const refreshSuggestions = usePluginAction("accounting.refresh-suggestions");
   const accept = usePluginAction("accounting.accept-suggestion");
   const categorise = usePluginAction("accounting.categorise");
@@ -188,7 +196,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const [newAccount, setNewAccount] = useState(false);
   const [accountForm, setAccountForm] = useState({ name: "", bankName: "", numberLast4: "", accountCode: "" });
   const [format, setFormat] = useState("auto");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   /** The statement email the file came from (links the import to it), or "". */
   const [fromEmail, setFromEmail] = useState("");
   const [ruleForm, setRuleForm] = useState<Record<string, string> | null>(null);
@@ -236,29 +244,41 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
     onMessage(message);
   }
 
+  async function upload(f: File): Promise<string> {
+    const target = (await uploadUrl({ fileName: f.name, bytes: f.size })) as { uploadUrl: string; objectKey: string };
+    const put = await fetch(target.uploadUrl, { method: "PUT", body: f });
+    if (!put.ok) throw new Error(`Upload of ${f.name} to the private bucket failed (HTTP ${put.status}). Check the bucket's CORS settings.`);
+    return target.objectKey;
+  }
+
   async function doImport() {
-    if (!file || !bankId) return;
+    if (!files.length || !bankId) return;
     const messageId = fromEmail || undefined;
+    // PDFs go to the Bookkeeper, who reads them with its pdf skill. They always upload as bytes:
+    // file.text() would decode a PDF as UTF-8 and corrupt it.
+    const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    const others = files.filter((f) => !pdfs.includes(f));
     await run("import", async () => {
-      let result: Record<string, unknown>;
-      if (file.size <= 900_000) {
-        result = (await importStatement({ bankAccountId: bankId, content: await file.text(), fileName: file.name, format, messageId })) as Record<string, unknown>;
-      } else {
-        const target = (await uploadUrl({ fileName: file.name, bytes: file.size })) as { uploadUrl: string; objectKey: string };
-        const put = await fetch(target.uploadUrl, { method: "PUT", body: file });
-        if (!put.ok) throw new Error(`Upload to the private bucket failed (HTTP ${put.status}). Check the bucket's CORS settings.`);
-        result = (await importStatement({ bankAccountId: bankId, objectKey: target.objectKey, fileName: file.name, format, messageId })) as Record<string, unknown>;
+      const messages: string[] = [];
+      for (const f of others) {
+        const r = (f.size <= 900_000
+          ? await importStatement({ bankAccountId: bankId, content: await f.text(), fileName: f.name, format, messageId })
+          : await importStatement({ bankAccountId: bankId, objectKey: await upload(f), fileName: f.name, format, messageId })) as Record<string, unknown>;
+        messages.push(`${others.length > 1 ? `${f.name}: ` : ""}${importMessage(r)}`);
       }
-      setFile(null);
+      if (pdfs.length) {
+        const uploaded: Array<{ objectKey: string; fileName: string }> = [];
+        for (const f of pdfs) uploaded.push({ objectKey: await upload(f), fileName: f.name });
+        const q = (await queuePdfStatements({ bankAccountId: bankId, files: uploaded })) as { files: number; assignedTo: string };
+        messages.push(
+          `${q.files} PDF statement${q.files === 1 ? "" : "s"} handed to ${q.assignedTo === "bookkeeper" ? "the Bookkeeper" : "the team"} to read and import. They appear here as each one is imported.`,
+        );
+      }
+      setFiles([]);
       setFromEmail("");
       await refreshAll();
-      return result;
-    }, (r) =>
-      (r.duplicateFile
-        ? "This file was imported before; nothing new was added."
-        : `Imported ${r.lines} line(s): ${r.added} new, ${r.duplicates} already in the books. ${r.suggested} have suggestions${Number(r.jevAsked) ? ` (smart matching looked at ${r.jevAsked})` : ""}.${r.issueId ? " The Bookkeeper has an issue to reconcile them." : ""}${Number(r.futureLines) ? ` ${r.futureLines} line(s) are dated after today (first ${formatShortDate(String(r.firstFutureDate))}): check those dates on the statement. They count in no balance until then.` : ""}`)
-      + (r.statementEmail ? " The statement email no longer waits to be imported." : ""),
-    );
+      return { text: messages.join(" ") };
+    }, (r) => r.text);
   }
 
   const bank = snap?.bankAccounts.find((b) => b.id === bankId) ?? null;
@@ -409,8 +429,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
           </Banner>
         ) : null}
         <Row>
-          <Field label="File (CSV, OFX or MT940)">
-            <input type="file" accept=".csv,.txt,.ofx,.qfx,.sta,.mt940,.940" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ fontSize: 13 }} />
+          <Field label="Files (CSV, OFX, MT940 or PDF; several at once)">
+            <input type="file" multiple accept=".csv,.txt,.ofx,.qfx,.sta,.mt940,.940,.pdf" onChange={(e) => setFiles(Array.from(e.target.files ?? []))} style={{ fontSize: 13 }} />
           </Field>
           <Field label="Format">
             <Select value={format} onChange={(e) => setFormat(e.target.value)}>
@@ -428,10 +448,10 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
               </Select>
             </Field>
           ) : null}
-          <Button type="button" disabled={!file || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : "Import"}</Button>
+          <Button type="button" disabled={!files.length || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : files.length > 1 ? `Import  files` : "Import"}</Button>
         </Row>
         <Muted>
-          Lines already in the books are skipped, so overlapping statements are safe. {data.settings.r2Configured ? "Files over 1 MB go to the private bucket first." : "Files over 1 MB need the private R2 bucket (Accounting settings)."}
+          Lines already in the books are skipped, so overlapping statements are safe. PDFs go to the Bookkeeper, who reads them and imports the lines. {data.settings.r2Configured ? "Files over 1 MB go to the private bucket first." : "Files over 1 MB need the private R2 bucket (Accounting settings)."}
         </Muted>
         {statements.length ? (
           <Muted>Recent: {statements.map((s) => `${s.fileName || s.format.toUpperCase()} (${s.periodStart ? formatShortDate(s.periodStart) : "?"} to ${s.periodEnd ? formatShortDate(s.periodEnd) : "?"}, ${s.newCount} new)`).join(" · ")}</Muted>

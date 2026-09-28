@@ -17,12 +17,14 @@ export const BOOK_CURRENCY = "ZAR";
  * (the done-checks match on them). Approval issues for people keep
  * `draft:`, `reconciliation:` and `vat:` ids.
  * - statement: `accounting:statement:<Mailbox message id>` ("Bank statement received")
+ * - pdf: `accounting:pdf:<batch id>` ("Read N PDF bank statements", PDFs a person uploaded)
  * - reconcile: `accounting:reconcile:<statement id>` ("Reconcile N new bank lines")
  * - close: `accounting:close:<YYYY-MM>` ("Month-end close")
  * - rejections: `accounting:rejections` ("Accounting: postings were rejected", one open at a time)
  */
 export const WORK_ORIGINS = {
   statement: "accounting:statement:",
+  pdf: "accounting:pdf:",
   reconcile: "accounting:reconcile:",
   close: "accounting:close:",
   rejections: "accounting:rejections",

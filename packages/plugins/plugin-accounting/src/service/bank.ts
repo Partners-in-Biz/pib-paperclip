@@ -31,7 +31,7 @@ import {
 import * as db from "../db.js";
 import type { Account } from "../domain/chart.js";
 import { splitVat, suggestFor, validateRule, type BankRule, type Suggestion } from "../domain/matching.js";
-import { fingerprintLines, linesDatedAfter, parseStatement, type StatementFormat } from "../domain/statements.js";
+import { fingerprintLines, linesDatedAfter, parseStatement, runningBalanceBreak, type ParsedLine, type StatementFormat } from "../domain/statements.js";
 import { AccountingError, addDays, dayText, todayIso } from "../domain/util.js";
 import { routeBookkeeping } from "./agent.js";
 import { ensureBook, loadChart, type Chart } from "./books.js";
@@ -47,6 +47,7 @@ import {
   privateR2,
   r2Url,
   readSettings,
+  requireUser,
   safeFileName,
   WORK_ORIGINS,
   type Actor,
@@ -133,9 +134,11 @@ export async function statementUploadUrl(ctx: PluginContext, companyId: string, 
 /**
  * Download a statement from a link (e.g. the Mailbox `get-attachment` tool's
  * `url`). Only https, through the host's SSRF-guarded fetch, following a few
- * redirects (each hop checked again).
+ * redirects (each hop checked again). Bytes, not text: a PDF's bytes must
+ * survive intact for Claude to read (decoding as UTF-8 text would corrupt
+ * them, see `decodeText`/`isPdfBytes` below).
  */
-export async function fetchStatementUrl(ctx: PluginContext, raw: string): Promise<string> {
+async function fetchStatementUrlBytes(ctx: PluginContext, raw: string): Promise<Uint8Array> {
   let current: URL;
   try {
     current = new URL(raw.trim());
@@ -146,7 +149,7 @@ export async function fetchStatementUrl(ctx: PluginContext, raw: string): Promis
     if (current.protocol !== "https:") throw new AccountingError("url must be an https link");
     let res: Response;
     try {
-      res = await ctx.http.fetch(current.toString(), { method: "GET", headers: { Accept: "text/csv, application/x-ofx, text/plain, */*" } });
+      res = await ctx.http.fetch(current.toString(), { method: "GET", headers: { Accept: "application/pdf, text/csv, application/x-ofx, text/plain, */*" } });
     } catch (error) {
       throw new AccountingError(`Could not download the statement: ${errorMessage(error)}`);
     }
@@ -156,26 +159,68 @@ export async function fetchStatementUrl(ctx: PluginContext, raw: string): Promis
       continue;
     }
     if (!res.ok) throw new AccountingError(`Could not download the statement (HTTP ${res.status}). Links from get-attachment expire: get a fresh one and try again.`);
-    const text = await res.text();
-    if (text.length > MAX_STATEMENT_BYTES) throw new AccountingError("Statement files can be at most 10 MB");
-    return text;
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    if (buffer.byteLength > MAX_STATEMENT_BYTES) throw new AccountingError("Statement files can be at most 10 MB");
+    return buffer;
   }
   throw new AccountingError("Too many redirects downloading the statement");
 }
 
-/** A PDF cannot be imported: say so plainly instead of a parse error. */
-function assertNotPdf(text: string, fileName: unknown): void {
-  if (text.startsWith("%PDF") || (typeof fileName === "string" && /\.pdf$/i.test(fileName.trim()))) {
-    throw new AccountingError("PDF statements cannot be imported. Get the CSV or OFX (or MT940) export of the statement from online banking.");
+/** Magic-byte sniff: `%PDF` at the start of the file. */
+function isPdfBytes(bytes: Uint8Array): boolean {
+  return bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+}
+
+function decodeText(bytes: Uint8Array): string {
+  let text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  if (text.includes("�")) text = new TextDecoder("latin1").decode(bytes);
+  return text;
+}
+
+/** The plugin does not read PDFs itself: the Bookkeeper reads them with its `pdf` skill and imports the rows as CSV. */
+const PDF_NEEDS_READING =
+  "This is a PDF statement. Read it with your pdf skill, write the rows as CSV (Date, Description, Reference, Amount, Balance on every line), " +
+  "then call import-statement again with that CSV as content, checkRunningBalance: true and the same fileName and messageId. " +
+  "A person with a PDF uploads it on Accounting → Bank, which hands it to the Bookkeeper.";
+
+function assertRunningBalance(lines: ParsedLine[]): void {
+  const broken = runningBalanceBreak(lines);
+  if (broken === "missing") throw new AccountingError("checkRunningBalance needs a Balance on every line: read the running balance column from the statement for each row.");
+  if (broken) {
+    throw new AccountingError(
+      `Row ${broken.row} (${broken.date}): the balance should be ${money(broken.expectedMinor)} from the row before it, but the CSV says ${money(broken.foundMinor)}. ` +
+        "A row was misread or skipped near there: check it against the PDF, fix the CSV and import again. Nothing was imported.",
+    );
   }
 }
 
-async function statementText(ctx: PluginContext, companyId: string, input: { content?: unknown; objectKey?: unknown; url?: unknown }): Promise<{ text: string; objectKey: string | null }> {
+async function ownObjectKey(ctx: PluginContext, companyId: string, raw: unknown): Promise<string | null> {
+  const key = typeof raw === "string" ? raw.trim() : "";
+  if (!key) return null;
+  const cfg = await privateR2(ctx, companyId);
+  if (!cfg) throw new AccountingError("The private R2 bucket is not set up", "not_configured");
+  assertOwnKey(cfg, companyId, key);
+  return key;
+}
+
+interface StatementSource {
+  bytes: Uint8Array;
+  isPdf: boolean;
+  objectKey: string | null;
+}
+
+async function statementSource(ctx: PluginContext, companyId: string, input: { content?: unknown; objectKey?: unknown; url?: unknown; fileName?: unknown }): Promise<StatementSource> {
   if (typeof input.content === "string" && input.content.trim()) {
+    // `content` is plain text (pasted or read client-side with file.text()), so it can only ever carry CSV/OFX/MT940:
+    // a PDF's bytes are already corrupted by the time they reach here as a JSON string. PDFs must use url or objectKey.
     if (input.content.length > 1_000_000) throw new AccountingError("Files over 1 MB must be uploaded to the private bucket first (or passed as a link in url)");
-    return { text: input.content, objectKey: null };
+    if (input.content.startsWith("%PDF")) throw new AccountingError(PDF_NEEDS_READING);
+    return { bytes: new TextEncoder().encode(input.content), isPdf: false, objectKey: null };
   }
-  if (typeof input.url === "string" && input.url.trim()) return { text: await fetchStatementUrl(ctx, input.url), objectKey: null };
+  if (typeof input.url === "string" && input.url.trim()) {
+    const bytes = await fetchStatementUrlBytes(ctx, input.url);
+    return { bytes, isPdf: isPdfBytes(bytes), objectKey: null };
+  }
   const key = typeof input.objectKey === "string" ? input.objectKey : "";
   if (!key) throw new AccountingError("Give the statement text (content), a download link (url) or the uploaded file's key");
   const cfg = await privateR2(ctx, companyId);
@@ -185,9 +230,7 @@ async function statementText(ctx: PluginContext, companyId: string, input: { con
   if (!res.ok) throw new AccountingError(`Could not read the uploaded file (HTTP ${res.status})`);
   const buffer = new Uint8Array(await res.arrayBuffer());
   if (buffer.byteLength > MAX_STATEMENT_BYTES) throw new AccountingError("Statement files can be at most 10 MB");
-  let text = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
-  if (text.includes("�")) text = new TextDecoder("latin1").decode(buffer);
-  return { text, objectKey: key };
+  return { bytes: buffer, isPdf: isPdfBytes(buffer), objectKey: key };
 }
 
 export interface ImportResult {
@@ -232,19 +275,33 @@ export async function importStatement(
   ctx: PluginContext,
   companyId: string,
   actor: Actor,
-  input: { bankAccountId?: unknown; content?: unknown; objectKey?: unknown; url?: unknown; fileName?: unknown; format?: unknown; messageId?: unknown },
+  input: {
+    bankAccountId?: unknown;
+    content?: unknown;
+    objectKey?: unknown;
+    url?: unknown;
+    fileName?: unknown;
+    format?: unknown;
+    messageId?: unknown;
+    checkRunningBalance?: unknown;
+    pdfObjectKey?: unknown;
+  },
 ): Promise<ImportResult> {
   await ensureBook(ctx, companyId);
   const bankAccountId = typeof input.bankAccountId === "string" ? input.bankAccountId : "";
   const bank = bankAccountId ? await db.getBankAccount(ctx.db, companyId, bankAccountId) : null;
   if (!bank) throw new AccountingError("Choose the bank account this statement belongs to", "not_found");
   const messageId = typeof input.messageId === "string" && input.messageId.trim() ? input.messageId.trim().slice(0, 300) : null;
-  const { text, objectKey } = await statementText(ctx, companyId, input);
-  assertNotPdf(text, input.fileName);
+  const source = await statementSource(ctx, companyId, input);
+  if (source.isPdf) throw new AccountingError(PDF_NEEDS_READING);
+  // A CSV read from an uploaded PDF keeps the PDF as its file (audit trail, and the PDF batch's done-check).
+  const objectKey = source.objectKey ?? (await ownObjectKey(ctx, companyId, input.pdfObjectKey));
   const format = ["csv", "ofx", "mt940"].includes(String(input.format)) ? (String(input.format) as StatementFormat) : "auto";
-  const parsed = parseStatement(text, format);
+  const parsed = parseStatement(decodeText(source.bytes), format);
+  if (input.checkRunningBalance === true) assertRunningBalance(parsed.lines);
   const seen = await db.statementByDigest(ctx.db, bank.id, parsed.digest);
   if (seen) {
+    if (objectKey && !seen.objectKey) await db.linkStatementObjectKey(ctx.db, companyId, seen.id, objectKey);
     return {
       statementId: seen.id,
       statementEmail: messageId ? { messageId, status: await linkImportToEmail(ctx, companyId, messageId, seen.id, 0, actor) } : null,
@@ -363,10 +420,19 @@ export async function importStatementTool(
   ctx: PluginContext,
   companyId: string,
   actor: Actor,
-  p: { bankAccountId?: unknown; content?: unknown; url?: unknown; fileName?: unknown; format?: unknown; messageId?: unknown },
+  p: { bankAccountId?: unknown; content?: unknown; url?: unknown; fileName?: unknown; format?: unknown; messageId?: unknown; checkRunningBalance?: unknown; pdfObjectKey?: unknown },
 ) {
   const bank = await resolveBankAccount(ctx, companyId, p.bankAccountId);
-  const r = await importStatement(ctx, companyId, actor, { bankAccountId: bank.id, content: p.content, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId });
+  const r = await importStatement(ctx, companyId, actor, {
+    bankAccountId: bank.id,
+    content: p.content,
+    url: p.url,
+    fileName: p.fileName,
+    format: p.format,
+    messageId: p.messageId,
+    checkRunningBalance: p.checkRunningBalance,
+    pdfObjectKey: p.pdfObjectKey,
+  });
   const next: string[] = [];
   if (r.futureLines > 0) next.push(`${r.futureLines} line(s) are dated after today (first ${dayText(r.firstFutureDate)}). A bank statement only has money that already moved, so the date is probably wrong: don't reconcile those lines. Ask a person to check them (${ASK_OWNER_TOOL}); they count in no balance until that day.`);
   if (r.duplicateFile) next.push("This exact file was imported before, so nothing new was added.");
@@ -441,6 +507,107 @@ async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: d
     ctx.logger.warn("Reconcile issue could not be opened", { companyId, error: errorMessage(error) });
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// PDF statements a person uploaded: the Bookkeeper reads them (its pdf skill)
+// ---------------------------------------------------------------------------
+
+const MAX_PDF_BATCH = 60;
+const PDF_LINK_SECONDS = 24 * 3600;
+
+interface PdfBatch {
+  bankAccountId: string;
+  files: Array<{ objectKey: string; fileName: string }>;
+}
+
+const pdfBatchMark = (batchId: string) => `pdf-batch:${batchId}`;
+
+export async function readPdfBatch(ctx: PluginContext, companyId: string, batchId: string): Promise<PdfBatch | null> {
+  const raw = await db.getMark(ctx.db, companyId, pdfBatchMark(batchId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PdfBatch;
+  } catch {
+    return null;
+  }
+}
+
+/** The "Read N PDF bank statements" issue body. */
+export function pdfBatchIssueText(bank: { id: string; name: string }, batchId: string, fileNames: string[]): string {
+  return [
+    `${fileNames.length === 1 ? "A PDF bank statement was" : `${fileNames.length} PDF bank statements were`} uploaded for **${bank.name}**. Follow the PDF statements section of the \`pib-bookkeeping\` skill:`,
+    "",
+    ...fileNames.slice(0, 20).map((n) => `- ${n}`),
+    ...(fileNames.length > 20 ? [`- …and ${fileNames.length - 20} more`] : []),
+    "",
+    `1. \`pdf-statements\` with \`batchId: "${batchId}"\`: a fresh download link per file, and which are imported already.`,
+    "2. Download each file and read it with your `pdf` skill (`pdf_read.py --tables`, or `--text` when it finds no tables; a page with no text is scanned, so use the OCR route). Note each statement's period, opening and closing balance.",
+    "3. Oldest statement first. Write its rows as CSV with the header `Date,Description,Reference,Amount,Balance`: every transaction line in statement order, dates YYYY-MM-DD, money in positive and money out negative, the running balance on every row, descriptions exactly as printed.",
+    `4. \`import-statement\` with that CSV as \`content\`, \`bankAccountId: "${bank.id}"\`, the file's \`fileName\`, its \`objectKey\` as \`pdfObjectKey\` and \`checkRunningBalance: true\`. A balance error names the row: fix the CSV against the PDF and import again (nothing was imported).`,
+    "5. Before the next file: its opening balance must equal the previous statement's closing balance. A gap means a missing statement: ask for it once with the list of gaps, and import the rest.",
+    "6. When every file is imported, work the reconcile issues each import opened. If opening balances are not posted yet (the Cockpit warns), put the cut-over in one ask: the day before the first statement starts, and the bank opening balance from that statement.",
+    "7. Mark this issue done. Closing it checks that every file has an imported statement.",
+  ].join("\n");
+}
+
+/**
+ * A person uploaded PDF statements on the Bank page (to the private bucket):
+ * one issue for the Bookkeeper to read them all, however many there are.
+ */
+export async function queuePdfStatements(ctx: PluginContext, companyId: string, actor: Actor, input: { bankAccountId?: unknown; files?: unknown }) {
+  requireUser(actor, "hand PDF statements to the Bookkeeper");
+  await ensureBook(ctx, companyId);
+  const bank = await resolveBankAccount(ctx, companyId, input.bankAccountId);
+  const list = Array.isArray(input.files) ? input.files : [];
+  if (list.length === 0) throw new AccountingError("Upload at least one PDF statement");
+  if (list.length > MAX_PDF_BATCH) throw new AccountingError(`At most ${MAX_PDF_BATCH} statements at a time`);
+  const cfg = await privateR2(ctx, companyId);
+  if (!cfg) throw new AccountingError("Set up the private R2 bucket in the Accounting settings to upload PDF statements.", "not_configured");
+  const files = list.map((f) => {
+    const item = (f ?? {}) as Record<string, unknown>;
+    const objectKey = typeof item.objectKey === "string" ? item.objectKey.trim() : "";
+    if (!objectKey) throw new AccountingError("Each file needs the objectKey from its upload");
+    assertOwnKey(cfg, companyId, objectKey);
+    const fileName = typeof item.fileName === "string" && item.fileName.trim() ? item.fileName.trim().slice(0, 200) : "statement.pdf";
+    return { objectKey, fileName };
+  });
+  const batchId = newId();
+  await db.setMark(ctx.db, companyId, pdfBatchMark(batchId), JSON.stringify({ bankAccountId: bank.id, files } satisfies PdfBatch));
+  const route = await routeBookkeeping(ctx, companyId);
+  const issue = await openIssue(ctx, {
+    companyId,
+    title: `Read ${files.length} PDF bank statement${files.length === 1 ? "" : "s"} (${bank.name})`,
+    description: pdfBatchIssueText(bank, batchId, files.map((f) => f.fileName)),
+    originKind: ORIGIN,
+    originId: `${WORK_ORIGINS.pdf}${batchId}`,
+    wakeReason: "PDF bank statements to read",
+  }, route);
+  return { batchId, issueId: issue.id, files: files.length, assignedTo: route.via };
+}
+
+/** Agent tool: the batch's files with fresh download links, and which are imported already. */
+export async function pdfStatementsTool(ctx: PluginContext, companyId: string, input: { batchId?: unknown }) {
+  const batchId = typeof input.batchId === "string" ? input.batchId.trim() : "";
+  const batch = batchId ? await readPdfBatch(ctx, companyId, batchId) : null;
+  if (!batch) throw new AccountingError("No PDF batch with that id. The id is in the \"Read N PDF bank statements\" issue.", "not_found");
+  const cfg = await privateR2(ctx, companyId);
+  if (!cfg) throw new AccountingError("The private R2 bucket is not set up", "not_configured");
+  const bank = await db.getBankAccount(ctx.db, companyId, batch.bankAccountId);
+  const imported = await db.importedObjectKeys(ctx.db, companyId, batch.files.map((f) => f.objectKey));
+  return {
+    bankAccount: bank ? { id: bank.id, name: bank.name } : { id: batch.bankAccountId, name: null },
+    files: batch.files.map((f) => ({
+      fileName: f.fileName,
+      objectKey: f.objectKey,
+      imported: imported.has(f.objectKey),
+      url: imported.has(f.objectKey) ? null : r2Url(cfg, "GET", f.objectKey, PDF_LINK_SECONDS),
+    })),
+    linksExpireInHours: PDF_LINK_SECONDS / 3600,
+    next: imported.size === batch.files.length
+      ? ["Every file is imported. Work the reconcile issues, then mark the PDF issue done."]
+      : ["Read each file still to import with your pdf skill, oldest statement first, and import it with import-statement (content = the CSV, pdfObjectKey = its objectKey, checkRunningBalance: true)."],
+  };
 }
 
 // ---------------------------------------------------------------------------

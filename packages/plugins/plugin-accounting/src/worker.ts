@@ -62,6 +62,8 @@ import {
   importStatementTool,
   matchToJournal,
   matchToOpenItem,
+  pdfStatementsTool,
+  queuePdfStatements,
   refreshSuggestions,
   saveBankAccount,
   saveRule,
@@ -270,6 +272,7 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.statement-upload-url": (ctx, companyId, _a, p) => statementUploadUrl(ctx, companyId, { fileName: p.fileName, bytes: p.bytes }),
   "accounting.import-statement": (ctx, companyId, actor, p) =>
     importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId }),
+  "accounting.queue-pdf-statements": (ctx, companyId, actor, p) => queuePdfStatements(ctx, companyId, actor, { bankAccountId: p.bankAccountId, files: p.files }),
   "accounting.bank-lines": async (ctx, companyId, _a, p) => {
     const statuses = Array.isArray(p.statuses) ? p.statuses.map(String) : optStr(p, "status") ? [optStr(p, "status")!] : null;
     const lines = await db.listBankLines(ctx.db, companyId, { bankAccountId: optStr(p, "bankAccountId"), statuses, from: optStr(p, "from"), to: optStr(p, "to"), limit: Number(p.limit ?? 300) });
@@ -447,7 +450,18 @@ async function dispatchTool(ctx: PluginContext, name: string, p: Record<string, 
     case "list-bank-accounts":
       return bankAccountsView(ctx, companyId, p.includeInactive === true);
     case "import-statement":
-      return importStatementTool(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId });
+      return importStatementTool(ctx, companyId, actor, {
+        bankAccountId: p.bankAccountId,
+        content: p.content,
+        url: p.url,
+        fileName: p.fileName,
+        format: p.format,
+        messageId: p.messageId,
+        checkRunningBalance: p.checkRunningBalance,
+        pdfObjectKey: p.pdfObjectKey,
+      });
+    case "pdf-statements":
+      return pdfStatementsTool(ctx, companyId, { batchId: p.batchId });
     case "mark-statement-email":
       return markStatementEmail(ctx, companyId, actor, { messageId: p.messageId, outcome: p.outcome, reason: p.reason });
     case "mark-not-needed":

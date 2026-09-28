@@ -36,15 +36,28 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
     name: "import-statement",
     displayName: "Import bank statement",
     description:
-      "Import a bank statement (CSV, OFX or MT940) for one bank account: pass the file text as content, or the https link the Mailbox get-attachment tool returned as url. Lines already imported are skipped, so importing again is safe. Suggests a match or category per new line and opens a \"Reconcile N new bank lines\" issue. Returns the lines imported, duplicates skipped and the next steps. PDFs cannot be imported.",
+      "Import a bank statement (CSV, OFX or MT940) for one bank account: pass the file text as content, or the https link the Mailbox get-attachment tool returned as url. Lines already imported are skipped, so importing again is safe. Suggests a match or category per new line and opens a \"Reconcile N new bank lines\" issue. Returns the lines imported, duplicates skipped and the next steps. A PDF is not read here: read it with your pdf skill, then pass its rows as CSV content (Date,Description,Reference,Amount,Balance) with checkRunningBalance: true.",
     parametersSchema: schema([], {
       bankAccountId,
-      content: { type: "string", description: "The statement file's text (CSV, OFX or MT940), at most 1 MB. Give this or url." },
-      url: { type: "string", pattern: "^https://", description: "An https download link to the file, e.g. the url from partnersinbiz.mailbox:get-attachment. Give this or content." },
-      fileName: { type: "string", description: "The file's name, e.g. the email attachment's filename (shown on the statement list)." },
+      content: { type: "string", description: "The statement file's text (CSV, OFX or MT940), at most 1 MB; for a PDF, the CSV you wrote from it. Give this or url." },
+      url: { type: "string", pattern: "^https://", description: "An https download link to a CSV, OFX or MT940 file, e.g. the url from partnersinbiz.mailbox:get-attachment. Give this or content." },
+      fileName: { type: "string", description: "The file's name, e.g. the email attachment's filename (shown on the statement list). For a PDF, the PDF's name." },
       format: { type: "string", enum: ["auto", "csv", "ofx", "mt940"], description: "File format (default auto: detected from the content).", default: "auto" },
       messageId: { type: "string", description: "The statement email's message id from the \"Bank statement received\" issue. Links the import to that email, so it shows as imported." },
+      checkRunningBalance: {
+        type: "boolean",
+        description: "Refuse the import unless every row's Balance equals the previous row's balance plus its amount. Always true for a CSV you wrote from a PDF: it catches a misread or skipped row.",
+        default: false,
+      },
+      pdfObjectKey: { type: "string", description: "For a PDF from a \"Read N PDF bank statements\" issue: the file's objectKey from pdf-statements. Links the statement to its PDF, which that issue's done-check looks for." },
     }),
+  },
+  {
+    name: "pdf-statements",
+    displayName: "PDF statements to read",
+    description:
+      "The PDF bank statements a person uploaded (one \"Read N PDF bank statements\" issue): each file's name, objectKey, a fresh download link (24 hours) and whether it is imported already.",
+    parametersSchema: schema(["batchId"], { batchId: { type: "string", description: "The batch id from the \"Read N PDF bank statements\" issue." } }),
   },
   {
     name: "mark-statement-email",
