@@ -36,6 +36,31 @@ const TOOL_GATEWAY_WINDOWS: Record<string, number | null> = {
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * The MCP `tools/call` result for one gateway execution result.
+ * Plugin tools arrive wrapped by the plugin dispatcher (`{ pluginId, toolName, result }`),
+ * so their `content`, `data` and `error` are read from the inner result. `structuredContent`
+ * is sent only when it is an object: MCP clients that validate reject `null` or arrays.
+ */
+export function mcpToolCallResult(executionResult: unknown) {
+  const outer = plainObject(executionResult);
+  const pluginResult = outer && typeof outer.pluginId === "string" ? plainObject(outer.result) : null;
+  const record = pluginResult ?? outer;
+  const contentText = typeof record?.content === "string"
+    ? record.content
+    : JSON.stringify(record?.data ?? executionResult ?? null);
+  const structuredContent = plainObject(record?.data);
+  return {
+    content: [{ type: "text" as const, text: contentText }],
+    ...(structuredContent ? { structuredContent } : {}),
+    isError: Boolean(pluginResult && typeof pluginResult.error === "string" && pluginResult.error),
+  };
+}
+
 function gatewayToken(req: { header(name: string): string | undefined }) {
   return req.header("x-paperclip-tool-gateway-token")?.trim() || null;
 }
@@ -172,21 +197,7 @@ async function handleMcpGatewayProtocol(
         parameters: params.arguments ?? {},
         callerHeaders: req.headers,
       });
-      const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
-        ? result.result as Record<string, unknown>
-        : null;
-      const contentText = typeof resultRecord?.content === "string"
-        ? resultRecord.content
-        : JSON.stringify(resultRecord?.data ?? result.result ?? null);
-      res.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: contentText }],
-          structuredContent: resultRecord?.data ?? null,
-          isError: false,
-        },
-      });
+      res.json({ jsonrpc: "2.0", id, result: mcpToolCallResult(result.result) });
       return;
     }
     if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
