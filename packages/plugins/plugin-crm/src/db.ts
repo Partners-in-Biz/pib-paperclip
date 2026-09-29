@@ -1123,11 +1123,64 @@ export async function findDuplicateContacts(ctx: PluginContext, companyId: strin
   return rows.map((row) => ({ id: row.id, name: row.name, emails: asStringList(row.emails) }));
 }
 
+/**
+ * Company links, record grants and running enrollments are uniquely indexed per
+ * contact, so a row the primary already holds cannot simply be moved onto it.
+ * Clear the duplicate's copies first: the primary already carries the same link
+ * or grant, and a second run of the same sequence is stopped rather than lost.
+ */
+async function clearRowsThePrimaryAlreadyHas(
+  ctx: PluginContext,
+  input: { companyId: string; primaryId: string; duplicateId: string },
+): Promise<void> {
+  const { companyId, primaryId, duplicateId } = input;
+
+  const linksOf = (contactId: string) =>
+    ctx.db.query<{ id: string; account_id: string }>(
+      `SELECT id, account_id FROM ${table(ctx, "contact_companies")} WHERE company_id = $1 AND contact_id = $2`,
+      [companyId, contactId],
+    );
+  const primaryAccounts = new Set((await linksOf(primaryId)).map((row) => row.account_id));
+  for (const link of await linksOf(duplicateId)) {
+    if (!primaryAccounts.has(link.account_id)) continue;
+    await ctx.db.execute(`DELETE FROM ${table(ctx, "contact_companies")} WHERE id = $1`, [link.id]);
+  }
+
+  const grantsOf = (contactId: string) =>
+    ctx.db.query<{ id: string; principal_type: string; principal_id: string }>(
+      `SELECT id, principal_type, principal_id FROM ${table(ctx, "record_grants")}
+        WHERE company_id = $1 AND record_type = 'contact' AND record_id = $2`,
+      [companyId, contactId],
+    );
+  const principalKey = (row: { principal_type: string; principal_id: string }) => `${row.principal_type}:${row.principal_id}`;
+  const primaryPrincipals = new Set((await grantsOf(primaryId)).map(principalKey));
+  for (const grant of await grantsOf(duplicateId)) {
+    if (!primaryPrincipals.has(principalKey(grant))) continue;
+    await ctx.db.execute(`DELETE FROM ${table(ctx, "record_grants")} WHERE id = $1`, [grant.id]);
+  }
+
+  const runningOf = (contactId: string) =>
+    ctx.db.query<{ id: string; sequence_id: string }>(
+      `SELECT id, sequence_id FROM ${table(ctx, "enrollments")}
+        WHERE company_id = $1 AND contact_id = $2 AND status = 'running'`,
+      [companyId, contactId],
+    );
+  const primarySequences = new Set((await runningOf(primaryId)).map((row) => row.sequence_id));
+  for (const enrollment of await runningOf(duplicateId)) {
+    if (!primarySequences.has(enrollment.sequence_id)) continue;
+    await ctx.db.execute(
+      `UPDATE ${table(ctx, "enrollments")} SET status = 'stopped', updated_at = now() WHERE id = $1`,
+      [enrollment.id],
+    );
+  }
+}
+
 export async function mergeContacts(
   ctx: PluginContext,
   input: { companyId: string; primaryId: string; duplicateId: string },
 ): Promise<void> {
   const { companyId, primaryId, duplicateId } = input;
+  await clearRowsThePrimaryAlreadyHas(ctx, input);
   // Move links, deals, activities, facts, and enrollments to the primary.
   await ctx.db.execute(
     `UPDATE ${table(ctx, "contact_companies")} SET contact_id = $1 WHERE company_id = $2 AND contact_id = $3`,

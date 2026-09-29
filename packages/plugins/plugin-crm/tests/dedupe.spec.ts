@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fillContact, normalizeDomain, phoneMatchKey, type ContactDraft } from "../src/domain.js";
-import { boot, CO, setRoles, tool } from "./helpers/crm.js";
+import { boot, CO, contact, seed, setRoles, tool } from "./helpers/crm.js";
 
 describe("matching keys", () => {
   it("phones match on their last 9 digits, however they are written", () => {
@@ -92,6 +92,39 @@ describe("one record per person and company", () => {
     expect(store.companies!.filter((row) => row.company_id === CO)).toHaveLength(2);
     const fresh = await tool(harness, "create-company", { name: "Initech", domain: "initech.test" });
     expect(fresh.matched).toBeUndefined();
+  });
+});
+
+describe("merging two records of the same person", () => {
+  /** Both Adas work at Acme and both are running the intro sequence. */
+  const twoAdas = () => {
+    const store = seed();
+    store.contacts!.push(contact("ada-dup", "Ada L.", { emails: ["ada@acme.co.za"] }));
+    store.contact_companies!.push({ id: "l3", company_id: CO, contact_id: "ada-dup", account_id: "acme", role_label: "staff", created_at: "2026-02-01T00:00:00Z" });
+    store.contact_companies!.push({ id: "l4", company_id: CO, contact_id: "ada-dup", account_id: "globex", role_label: "buyer", created_at: "2026-02-01T00:00:00Z" });
+    store.enrollments!.push(
+      { id: "e-ada", company_id: CO, sequence_id: "seq-intro", contact_id: "ada", status: "running", step_position: 1, next_due_at: null, open_issue_id: null },
+      { id: "e-dup", company_id: CO, sequence_id: "seq-intro", contact_id: "ada-dup", status: "running", step_position: 1, next_due_at: null, open_issue_id: null },
+    );
+    return store;
+  };
+
+  it("merges when both contacts work at the same company, keeping one link each", async () => {
+    const { harness, store } = await boot({ store: twoAdas() });
+    expect(await tool(harness, "merge-contacts", { primaryContactId: "ada", duplicateContactId: "ada-dup" })).toMatchObject({ merged: true });
+    const links = store.contact_companies!.filter((row) => row.contact_id === "ada");
+    expect(links.map((row) => row.account_id).sort()).toEqual(["acme", "globex"]);
+    expect(store.contact_companies!.some((row) => row.contact_id === "ada-dup")).toBe(false);
+    expect(store.contacts!.some((row) => row.id === "ada-dup")).toBe(false);
+  });
+
+  it("keeps the primary's run of a sequence and stops the duplicate's", async () => {
+    const { harness, store } = await boot({ store: twoAdas() });
+    await tool(harness, "merge-contacts", { primaryContactId: "ada", duplicateContactId: "ada-dup" });
+    const runs = store.enrollments!.filter((row) => row.contact_id === "ada");
+    expect(runs).toHaveLength(2);
+    expect(runs.filter((row) => row.status === "running").map((row) => row.id)).toEqual(["e-ada"]);
+    expect(runs.find((row) => row.id === "e-dup")!.status).toBe("stopped");
   });
 });
 
