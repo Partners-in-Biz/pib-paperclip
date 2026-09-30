@@ -31,6 +31,7 @@ import {
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  applyPaperclipWorkspaceEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -510,8 +511,32 @@ export async function execute(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  // Start in the execution workspace Paperclip realized for this run, as the
+  // other local adapters do. A configured cwd only wins when the run has no
+  // project workspace (source "agent_home").
+  const workspaceContext: Record<string, unknown> =
+    ctxContext.paperclipWorkspace && typeof ctxContext.paperclipWorkspace === "object"
+      ? ctxContext.paperclipWorkspace
+      : {};
+  const workspaceSource = cfgString(workspaceContext.source);
+  const configuredCwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir);
+  const workspaceCwd =
+    workspaceSource === "agent_home" && configuredCwd ? undefined : cfgString(workspaceContext.cwd);
+  const cwd = workspaceCwd || configuredCwd || ".";
+  applyPaperclipWorkspaceEnv(env, {
+    workspaceCwd,
+    workspaceSource,
+    workspaceStrategy: cfgString(workspaceContext.strategy),
+    workspaceId: cfgString(workspaceContext.workspaceId),
+    workspaceRepoUrl: cfgString(workspaceContext.repoUrl),
+    workspaceRepoRef: cfgString(workspaceContext.repoRef),
+    workspaceBranch: cfgString(workspaceContext.branchName),
+    workspaceWorktreePath: cfgString(workspaceContext.worktreePath),
+    agentHome: cfgString(workspaceContext.agentHome),
+  });
+  if (Array.isArray(ctxContext.paperclipWorkspaces) && ctxContext.paperclipWorkspaces.length > 0) {
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(ctxContext.paperclipWorkspaces);
+  }
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
