@@ -371,6 +371,22 @@ export function runningBalanceBreak(lines: ParsedLine[]): { row: number; date: s
   return null;
 }
 
+/**
+ * Things no real bank statement looks like, so the file was mis-read (a PDF
+ * turned into CSV with the sign lost or the columns shifted): every line on
+ * the same side of the ledger, or most descriptions missing. Null when fine.
+ */
+export function statementSanityProblem(lines: ParsedLine[]): string | null {
+  if (lines.length >= 10) {
+    const moneyIn = lines.filter((l) => l.amountMinor > 0).length;
+    if (moneyIn === lines.length) return `All ${lines.length} lines are money in and none is a payment. A real account has both, so the sign of the amounts was lost: money out must be negative.`;
+    if (moneyIn === 0) return `All ${lines.length} lines are money out and none is a deposit. A real account has both, so the sign of the amounts was lost: money in must be positive.`;
+  }
+  const blank = lines.filter((l) => l.description === "Statement line").length;
+  if (lines.length >= 5 && blank / lines.length > 0.2) return `${blank} of ${lines.length} lines have no description, so the Description column was not read. Every line needs its description exactly as printed.`;
+  return null;
+}
+
 /** Fingerprints for dedupe (see the file comment). */
 export function fingerprintLines(bankAccountId: string, lines: ParsedLine[]): string[] {
   const seen = new Map<string, number>();

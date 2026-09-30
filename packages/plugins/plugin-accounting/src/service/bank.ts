@@ -31,7 +31,7 @@ import {
 import * as db from "../db.js";
 import type { Account } from "../domain/chart.js";
 import { splitVat, suggestFor, validateRule, type BankRule, type Suggestion } from "../domain/matching.js";
-import { fingerprintLines, linesDatedAfter, parseStatement, runningBalanceBreak, type ParsedLine, type StatementFormat } from "../domain/statements.js";
+import { fingerprintLines, linesDatedAfter, parseStatement, runningBalanceBreak, statementSanityProblem, type ParsedLine, type ParsedStatement, type StatementFormat } from "../domain/statements.js";
 import { AccountingError, addDays, dayText, todayIso } from "../domain/util.js";
 import { routeBookkeeping } from "./agent.js";
 import { ensureBook, loadChart, type Chart } from "./books.js";
@@ -180,18 +180,35 @@ function decodeText(bytes: Uint8Array): string {
 /** The plugin does not read PDFs itself: the Bookkeeper reads them with its `pdf` skill and imports the rows as CSV. */
 const PDF_NEEDS_READING =
   "This is a PDF statement. Read it with your pdf skill, write the rows as CSV (Date, Description, Reference, Amount, Balance on every line), " +
-  "then call import-statement again with that CSV as content, checkRunningBalance: true and the same fileName and messageId. " +
+  "then call import-statement again with that CSV as content and the same fileName and messageId. The import refuses a CSV whose balances do not add up. " +
   "A person with a PDF uploads it on Accounting → Bank, which hands it to the Bookkeeper.";
 
 function assertRunningBalance(lines: ParsedLine[]): void {
   const broken = runningBalanceBreak(lines);
-  if (broken === "missing") throw new AccountingError("checkRunningBalance needs a Balance on every line: read the running balance column from the statement for each row.");
+  if (broken === "missing") throw new AccountingError("A Balance is needed on every line: read the running balance column from the statement for each row.");
   if (broken) {
     throw new AccountingError(
       `Row ${broken.row} (${broken.date}): the balance should be ${money(broken.expectedMinor)} from the row before it, but the CSV says ${money(broken.foundMinor)}. ` +
-        "A row was misread or skipped near there: check it against the PDF, fix the CSV and import again. Nothing was imported.",
+        "A row was misread or skipped near there, or an amount has the wrong sign (an amount's sign is the direction its balance moved): check it against the PDF, fix the CSV and import again. Nothing was imported.",
     );
   }
+}
+
+/**
+ * Every import is checked before anything is saved: no real statement is all
+ * one side of the ledger or without descriptions, and when every row has a
+ * balance the balances must add up. An agent's CSV always needs the balance
+ * column (it is typed from a PDF, which is where amounts and columns slip).
+ * `checkRunningBalance: true` also demands the balances.
+ */
+function assertStatementReadable(parsed: ParsedStatement, actor: Actor, demandBalances: boolean): void {
+  const problem = statementSanityProblem(parsed.lines);
+  if (problem) throw new AccountingError(`${problem} Nothing was imported.`);
+  const balanced = parsed.lines.every((l) => l.balanceMinor != null);
+  if (!balanced && parsed.format === "csv" && (actor.kind === "agent" || demandBalances)) {
+    throw new AccountingError("This CSV has no Balance on every row. Add the running balance column from the statement so the import can check the rows add up. Nothing was imported.");
+  }
+  if (balanced) assertRunningBalance(parsed.lines);
 }
 
 async function ownObjectKey(ctx: PluginContext, companyId: string, raw: unknown): Promise<string | null> {
@@ -285,6 +302,7 @@ export async function importStatement(
     messageId?: unknown;
     checkRunningBalance?: unknown;
     pdfObjectKey?: unknown;
+    skipChecks?: unknown;
   },
 ): Promise<ImportResult> {
   await ensureBook(ctx, companyId);
@@ -298,7 +316,8 @@ export async function importStatement(
   const objectKey = source.objectKey ?? (await ownObjectKey(ctx, companyId, input.pdfObjectKey));
   const format = ["csv", "ofx", "mt940"].includes(String(input.format)) ? (String(input.format) as StatementFormat) : "auto";
   const parsed = parseStatement(decodeText(source.bytes), format);
-  if (input.checkRunningBalance === true) assertRunningBalance(parsed.lines);
+  if (input.skipChecks === true) requireUser(actor, "import a file that fails the statement checks");
+  else assertStatementReadable(parsed, actor, input.checkRunningBalance === true);
   const seen = await db.statementByDigest(ctx.db, bank.id, parsed.digest);
   if (seen) {
     if (objectKey && !seen.objectKey) await db.linkStatementObjectKey(ctx.db, companyId, seen.id, objectKey);
@@ -416,6 +435,30 @@ export async function bankAccountsView(ctx: PluginContext, companyId: string, in
 }
 
 /** The `import-statement` tool: import, then say exactly what comes next. */
+/**
+ * Does this statement join up with its neighbours? A statement's opening
+ * balance is the previous one's closing balance, so a difference means a
+ * statement (or lines) in between are missing. Warnings, not refusals: the
+ * agent imports oldest first and asks a person about the gaps.
+ */
+export async function continuityWarnings(ctx: PluginContext, companyId: string, bankAccountId: string, statementId: string | null): Promise<string[]> {
+  if (!statementId) return [];
+  const all = await db.listStatements(ctx.db, companyId, bankAccountId);
+  const me = all.find((x) => x.id === statementId);
+  if (!me || !me.periodStart || !me.periodEnd) return [];
+  const others = all.filter((x) => x.id !== me.id && x.periodStart && x.periodEnd);
+  const previous = others.filter((x) => x.periodEnd! < me.periodStart!).sort((a, b) => b.periodEnd!.localeCompare(a.periodEnd!))[0];
+  const following = others.filter((x) => x.periodStart! > me.periodEnd!).sort((a, b) => a.periodStart!.localeCompare(b.periodStart!))[0];
+  const out: string[] = [];
+  if (previous && previous.closingMinor != null && me.openingMinor != null && previous.closingMinor !== me.openingMinor) {
+    out.push(`Opens at ${money(me.openingMinor)} but the previous statement (${dayText(previous.periodStart)} to ${dayText(previous.periodEnd)}) closed at ${money(previous.closingMinor)}: ${money(me.openingMinor - previous.closingMinor)} is missing between them (a statement, or lines).`);
+  }
+  if (following && following.openingMinor != null && me.closingMinor != null && following.openingMinor !== me.closingMinor) {
+    out.push(`Closes at ${money(me.closingMinor)} but the next statement (${dayText(following.periodStart)} to ${dayText(following.periodEnd)}) opens at ${money(following.openingMinor)}: ${money(following.openingMinor - me.closingMinor)} is missing between them (a statement, or lines).`);
+  }
+  return out;
+}
+
 export async function importStatementTool(
   ctx: PluginContext,
   companyId: string,
@@ -433,7 +476,9 @@ export async function importStatementTool(
     checkRunningBalance: p.checkRunningBalance,
     pdfObjectKey: p.pdfObjectKey,
   });
+  const warnings = r.duplicateFile ? [] : await continuityWarnings(ctx, companyId, bank.id, r.statementId);
   const next: string[] = [];
+  if (warnings.length) next.push(`This statement does not join up with its neighbour: ${warnings.join(" ")} Import the missing statement first if you have it; otherwise list the gap in your one ask to the owner (${ASK_OWNER_TOOL}).`);
   if (r.futureLines > 0) next.push(`${r.futureLines} line(s) are dated after today (first ${dayText(r.firstFutureDate)}). A bank statement only has money that already moved, so the date is probably wrong: don't reconcile those lines. Ask a person to check them (${ASK_OWNER_TOOL}); they count in no balance until that day.`);
   if (r.duplicateFile) next.push("This exact file was imported before, so nothing new was added.");
   else if (r.added === 0) next.push("Every line in the file was already imported (duplicates skipped). Nothing new to reconcile.");
@@ -468,6 +513,7 @@ export async function importStatementTool(
     reconcileIssueId: r.issueId,
     futureLines: r.futureLines,
     firstFutureDate: r.firstFutureDate,
+    warnings,
     next,
   };
 }
@@ -542,12 +588,13 @@ export function pdfBatchIssueText(bank: { id: string; name: string }, batchId: s
     ...(fileNames.length > 20 ? [`- …and ${fileNames.length - 20} more`] : []),
     "",
     `1. \`pdf-statements\` with \`batchId: "${batchId}"\`: a fresh download link per file, and which are imported already.`,
-    "2. Download each file and read it with your `pdf` skill (`pdf_read.py --tables`, or `--text` when it finds no tables; a page with no text is scanned, so use the OCR route). Note each statement's period, opening and closing balance.",
-    "3. Oldest statement first. Write its rows as CSV with the header `Date,Description,Reference,Amount,Balance`: every transaction line in statement order, dates YYYY-MM-DD, money in positive and money out negative, the running balance on every row, descriptions exactly as printed.",
-    `4. \`import-statement\` with that CSV as \`content\`, \`bankAccountId: "${bank.id}"\`, the file's \`fileName\`, its \`objectKey\` as \`pdfObjectKey\` and \`checkRunningBalance: true\`. A balance error names the row: fix the CSV against the PDF and import again (nothing was imported).`,
-    "5. Before the next file: its opening balance must equal the previous statement's closing balance. A gap means a missing statement: ask for it once with the list of gaps, and import the rest.",
-    "6. When every file is imported, work the reconcile issues each import opened. If opening balances are not posted yet (the Cockpit warns), put the cut-over in one ask: the day before the first statement starts, and the bank opening balance from that statement.",
-    "7. Mark this issue done. Closing it checks that every file has an imported statement.",
+    "2. Read each page as a picture (Claude: read the PDF pages; Hermes: `pdf_page_image.py`), not as extracted text, which runs columns together and loses the sign. Cross-check numbers with `pdf_read.py --text`. A page with no text is a scan: use the OCR route.",
+    "3. Know the columns first. FNB: Description, Amount, Balance, Accrued Bank Charges. Only Amount moves the balance; the charges column is not an amount and stays out. An amount followed by `Cr` is money in, an amount without it is money out. The sign of an amount is the direction its balance moved.",
+    "4. Write the CSV: header `Date,Description,Reference,Amount,Balance`, every line in the order printed, dates YYYY-MM-DD, money in positive and money out negative, the running Balance on every row, the Description exactly as printed without the amount.",
+    `5. **Oldest statement only, first.** \`import-statement\` with that CSV as \`content\`, \`bankAccountId: "${bank.id}"\`, the file's \`fileName\` and its \`objectKey\` as \`pdfObjectKey\`. The import is refused, with nothing saved, when balances do not add up, every line is on one side or descriptions are missing: fix the CSV, never work around it. Then stop and ask once (\`${ASK_OWNER_TOOL}\`) with its period, opening and closing balance and its first and last three lines, and "please compare these with your bank app". Carry on only when the owner says they match.`,
+    "6. The rest, oldest first. A result `warnings` entry means a statement does not join up with its neighbour (its opening is not the previous closing): a missing statement or lines. Import what you can and put every gap in one ask.",
+    "7. When every file is imported, work the reconcile issues. If opening balances are not posted yet (the Cockpit warns), put the cut-over in one ask: the day before the first statement starts, and that statement's opening balance.",
+    "8. Mark this issue done. Closing it checks that every file has an imported statement.",
   ].join("\n");
 }
 
@@ -606,7 +653,7 @@ export async function pdfStatementsTool(ctx: PluginContext, companyId: string, i
     linksExpireInHours: PDF_LINK_SECONDS / 3600,
     next: imported.size === batch.files.length
       ? ["Every file is imported. Work the reconcile issues, then mark the PDF issue done."]
-      : ["Read each file still to import with your pdf skill, oldest statement first, and import it with import-statement (content = the CSV, pdfObjectKey = its objectKey, checkRunningBalance: true)."],
+      : ["Read each file still to import with your pdf skill, oldest statement first, and import it with import-statement (content = the CSV, pdfObjectKey = its objectKey)."],
   };
 }
 

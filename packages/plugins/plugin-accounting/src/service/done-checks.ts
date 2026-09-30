@@ -44,7 +44,7 @@ export async function checkStatementEmail(ctx: PluginContext, companyId: string,
     done: false,
     missing: [
       `Nothing from statement email \`${messageId}\` is imported yet: import each CSV, OFX or MT940 file with \`import-statement\` and \`messageId: "${messageId}"\` (a file you already imported is linked, not added twice).`,
-      `A PDF: read it with your pdf skill, then \`import-statement\` with the rows as CSV \`content\`, \`checkRunningBalance: true\` and \`messageId: "${messageId}"\`.`,
+      `A PDF: read it with your pdf skill, then \`import-statement\` with the rows as CSV \`content\` and \`messageId: "${messageId}"\`.`,
       `No statement in it, or already imported another way? Record that with \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, and the \`reason\`).`,
     ],
   };
@@ -61,7 +61,7 @@ export async function checkPdfBatch(ctx: PluginContext, companyId: string, batch
     done: false,
     missing: [
       ...listSome(left, (f) => `Not imported yet: ${f.fileName}`, (n) => `…and ${n} more (\`pdf-statements\` with \`batchId: "${batchId}"\`).`),
-      `Read each with your pdf skill and import it with \`import-statement\` (\`content\` = the CSV, \`pdfObjectKey\` = its objectKey, \`checkRunningBalance: true\`). A file that is not a bank statement, or cannot be read: ask once with \`${ASK_OWNER_TOOL}\`; the issue waits with the owner until they answer.`,
+      `Read each with your pdf skill and import it with \`import-statement\` (\`content\` = the CSV, \`pdfObjectKey\` = its objectKey). A file that is not a bank statement, or cannot be read: ask once with \`${ASK_OWNER_TOOL}\`; the issue waits with the owner until they answer.`,
     ],
   };
 }

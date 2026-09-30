@@ -757,7 +757,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.2" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.3" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -1069,7 +1069,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       // A misread amount breaks the running balance: refused, nothing imported.
       const misread = [header, augRows[0], augRows[1], "2026-08-31,Client payment,INV-1,500.00,1400.00"].join("\n");
       await expect(importStatementTool(ctx, P, agent, { content: misread, fileName: "aug.pdf", checkRunningBalance: true, pdfObjectKey: aug.objectKey })).rejects.toThrow(/Row 3 \(2026-08-31\).*misread or skipped/);
-      await expect(importStatementTool(ctx, P, agent, { content: [header, "2026-08-01,Deposit,DEP,1000.00,"].join("\n"), checkRunningBalance: true })).rejects.toThrow(/Balance on every line/);
+      await expect(importStatementTool(ctx, P, agent, { content: [header, "2026-08-01,Deposit,DEP,1000.00,"].join("\n"), checkRunningBalance: true })).rejects.toThrow(/no Balance on every row/);
       expect(await db.listStatements(ctx.db, P, bank.id)).toHaveLength(0);
 
       const first = await importStatementTool(ctx, P, agent, { content: [header, ...augRows].join("\n"), fileName: "aug.pdf", checkRunningBalance: true, pdfObjectKey: aug.objectKey });
@@ -1084,6 +1084,52 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       expect(await checkPdfBatch(ctx, P, q.batchId)).toEqual({ done: true });
       const after = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
       expect(after.files.every((f) => f.imported && f.url === null)).toBe(true);
+    });
+
+    it("the checks that stop a misread PDF: sign lost, columns shifted, no balances, override for a person only, gaps between statements", async () => {
+      const Q = "co-guard";
+      configs.set(Q, { legalName: "Guard Co", vatNumber: "4666666666", vatCategory: "B", financialYearEndMonth: 2 });
+      state.set("roles", ROLES(Q));
+      const { importStatementTool } = await import("../src/service/bank.js");
+      await ensureBook(ctx, Q);
+      const bank = await saveBankAccount(ctx, Q, { name: "Guarded" });
+      const header = "Date,Description,Reference,Amount,Balance";
+
+      // What actually happened on 2026-09-30: payments came out as money in, the balance column held the bank-charge figures.
+      const shifted = [header];
+      for (let i = 0; i < 12; i += 1) shifted.push(`2026-08-${String(i + 1).padStart(2, "0")},Payment ${i},,${(45240.91 + i).toFixed(2)},8.00`);
+      await expect(importStatementTool(ctx, Q, agent, { content: shifted.join("\n"), fileName: "August_2026.csv" })).rejects.toThrow(/money in and none is a payment.*Nothing was imported/);
+      await expect(importStatementTool(ctx, Q, user, { content: shifted.join("\n"), fileName: "August_2026.csv" })).rejects.toThrow(/money in and none is a payment/);
+      // The same rows with the sign lost are also caught by the balance chain when there are fewer than ten rows.
+      const few = [header, "2026-08-01,A,,45240.91,8.00", "2026-08-02,B,,9025.66,3.68"].join("\n");
+      await expect(importStatementTool(ctx, Q, agent, { content: few })).rejects.toThrow(/Row 2.*balance should be/);
+      // Missing descriptions.
+      const blank = [header, ...Array.from({ length: 6 }, (_, i) => `2026-08-0${i + 1},,,${i % 2 ? "-" : ""}10.00,${i % 2 ? 90 - i * 10 : 110}.00`)];
+      await expect(importStatementTool(ctx, Q, agent, { content: blank.join("\n") })).rejects.toThrow(/have no description/);
+      // An agent's CSV needs balances; a person's plain export without them is still fine.
+      const noBalance = "Date,Description,Amount\n2026-08-01,Salary,1000.00\n2026-08-02,Rent,-400.00";
+      await expect(importStatementTool(ctx, Q, agent, { content: noBalance })).rejects.toThrow(/no Balance on every row/);
+      expect((await importStatement(ctx, Q, user, { bankAccountId: bank.id, content: noBalance, fileName: "export.csv" })).added).toBe(2);
+      expect(await db.listStatements(ctx.db, Q, bank.id)).toHaveLength(1);
+
+      // Only a person may override, and only a real export that does not add up gets through.
+      const chained = (rows: string[]) => [header, ...rows].join("\n");
+      const oddExport = chained(["2026-09-01,Opening deposit,,1000.00,1000.00", "2026-09-02,Fee,,-50.00,900.00"]);
+      await expect(importStatement(ctx, Q, agent, { bankAccountId: bank.id, content: oddExport, skipChecks: true })).rejects.toThrow(/board user/);
+      await expect(importStatement(ctx, Q, user, { bankAccountId: bank.id, content: oddExport })).rejects.toThrow(/Row 2.*should be/);
+      expect((await importStatement(ctx, Q, user, { bankAccountId: bank.id, content: oddExport, fileName: "odd.csv", skipChecks: true })).added).toBe(2);
+
+      // Statements that do not join up produce warnings on the second one, and a joined one does not.
+      const q1 = await saveBankAccount(ctx, Q, { name: "Second account" });
+      const jul = chained(["2026-07-01,Start,,500.00,1500.00", "2026-07-31,Fee,,-100.00,1400.00"]);
+      const sep = chained(["2026-09-01,Deposit,,100.00,1600.00", "2026-09-30,Fee,,-100.00,1500.00"]);
+      const aug = chained(["2026-08-01,Deposit,,50.00,1450.00", "2026-08-31,Deposit,,50.00,1500.00"]);
+      expect((await importStatementTool(ctx, Q, agent, { bankAccountId: q1.id, content: jul, fileName: "jul.pdf" })).warnings).toEqual([]);
+      const gap = await importStatementTool(ctx, Q, agent, { bankAccountId: q1.id, content: sep, fileName: "sep.pdf" });
+      expect(gap.warnings.join(" ")).toMatch(/Opens at .*previous statement.*closed at .*is missing between them/);
+      expect(gap.next.join(" ")).toMatch(/does not join up/);
+      const joined = await importStatementTool(ctx, Q, agent, { bankAccountId: q1.id, content: aug, fileName: "aug.pdf" });
+      expect(joined.warnings).toEqual([]);
     });
 
     it("month-end tools: prepare-reconciliation and prepare-vat201 open approval issues for a person; an agent cannot close them", async () => {

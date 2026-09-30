@@ -271,7 +271,7 @@ const ACTIONS: Record<string, Handler> = {
   },
   "accounting.statement-upload-url": (ctx, companyId, _a, p) => statementUploadUrl(ctx, companyId, { fileName: p.fileName, bytes: p.bytes }),
   "accounting.import-statement": (ctx, companyId, actor, p) =>
-    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId }),
+    importStatement(ctx, companyId, actor, { bankAccountId: p.bankAccountId, content: p.content, objectKey: p.objectKey, url: p.url, fileName: p.fileName, format: p.format, messageId: p.messageId, skipChecks: p.skipChecks }),
   "accounting.queue-pdf-statements": (ctx, companyId, actor, p) => queuePdfStatements(ctx, companyId, actor, { bankAccountId: p.bankAccountId, files: p.files }),
   "accounting.bank-lines": async (ctx, companyId, _a, p) => {
     const statuses = Array.isArray(p.statuses) ? p.statuses.map(String) : optStr(p, "status") ? [optStr(p, "status")!] : null;

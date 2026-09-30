@@ -27,7 +27,7 @@ import {
   type JournalLine,
 } from "../src/domain/journal.js";
 import { financialYear, parseVatCategory, previousRange, sameRangeLastYear, vatPeriodFor, vatPeriodsBetween } from "../src/domain/periods.js";
-import { fingerprintLines, normalizeDate, parseAmount, parseStatement, runningBalanceBreak } from "../src/domain/statements.js";
+import { fingerprintLines, normalizeDate, parseAmount, parseStatement, runningBalanceBreak, statementSanityProblem } from "../src/domain/statements.js";
 import { firstMatchingRule, matchJournals, matchOpenItems, splitVat, suggestFor, validateRule, type BankRule, type OpenItemLike } from "../src/domain/matching.js";
 import { reconciliationSummary } from "../src/domain/reconcile.js";
 import { computeVatReturn, type VatSourceLine } from "../src/domain/vat.js";
@@ -246,6 +246,21 @@ describe("periods", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("statement sanity check", () => {
+  const rows = (amounts: string[], description = "Card purchase") => parseStatement(["Date,Description,Amount", ...amounts.map((a, i) => `2026-08-${String(i + 1).padStart(2, "0")},${description},${a}`)].join("\n")).lines;
+  it("refuses ten or more lines that are all on one side, and passes a normal mix", () => {
+    expect(statementSanityProblem(rows(Array.from({ length: 10 }, () => "10.00")))).toMatch(/money in and none is a payment/);
+    expect(statementSanityProblem(rows(Array.from({ length: 10 }, () => "-10.00")))).toMatch(/money out and none is a deposit/);
+    expect(statementSanityProblem(rows(["10.00", "-4.00", ...Array.from({ length: 8 }, () => "5.00")]))).toBeNull();
+    // A short statement can legitimately be one-sided.
+    expect(statementSanityProblem(rows(["10.00", "20.00", "30.00"]))).toBeNull();
+  });
+  it("refuses statements whose descriptions were not read", () => {
+    const lines = parseStatement("Date,Description,Amount\n" + Array.from({ length: 6 }, (_, i) => `2026-08-0${i + 1},,${i % 2 ? "-" : ""}5.00`).join("\n")).lines;
+    expect(statementSanityProblem(lines)).toMatch(/have no description/);
+  });
+});
 
 describe("running balance check (CSV read from a PDF)", () => {
   const csv = (rows: string[]) => parseStatement(["Date,Description,Reference,Amount,Balance", ...rows].join("\n")).lines;

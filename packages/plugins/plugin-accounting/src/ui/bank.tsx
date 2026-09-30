@@ -197,6 +197,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const [accountForm, setAccountForm] = useState({ name: "", bankName: "", numberLast4: "", accountCode: "" });
   const [format, setFormat] = useState("auto");
   const [files, setFiles] = useState<File[]>([]);
+  /** Import even when the statement checks fail (a real export that does not add up). */
+  const [skipChecks, setSkipChecks] = useState(false);
   /** The statement email the file came from (links the import to it), or "". */
   const [fromEmail, setFromEmail] = useState("");
   const [ruleForm, setRuleForm] = useState<Record<string, string> | null>(null);
@@ -262,8 +264,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
       const messages: string[] = [];
       for (const f of others) {
         const r = (f.size <= 900_000
-          ? await importStatement({ bankAccountId: bankId, content: await f.text(), fileName: f.name, format, messageId })
-          : await importStatement({ bankAccountId: bankId, objectKey: await upload(f), fileName: f.name, format, messageId })) as Record<string, unknown>;
+          ? await importStatement({ bankAccountId: bankId, content: await f.text(), fileName: f.name, format, messageId, skipChecks })
+          : await importStatement({ bankAccountId: bankId, objectKey: await upload(f), fileName: f.name, format, messageId, skipChecks })) as Record<string, unknown>;
         messages.push(`${others.length > 1 ? `${f.name}: ` : ""}${importMessage(r)}`);
       }
       if (pdfs.length) {
@@ -275,6 +277,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
         );
       }
       setFiles([]);
+      setSkipChecks(false);
       setFromEmail("");
       await refreshAll();
       return { text: messages.join(" ") };
@@ -448,6 +451,10 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
               </Select>
             </Field>
           ) : null}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: tokens.muted }} title="Imports are refused when the balances do not add up, every line is on one side, or descriptions are missing. Tick this only for a genuine bank export you have checked.">
+            <input type="checkbox" checked={skipChecks} onChange={(e) => setSkipChecks(e.target.checked)} />
+            Import even if the checks fail
+          </label>
           <Button type="button" disabled={!files.length || !bankId || busy === "import"} onClick={() => void doImport()}>{busy === "import" ? "Importing…" : files.length > 1 ? `Import  files` : "Import"}</Button>
         </Row>
         <Muted>

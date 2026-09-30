@@ -354,7 +354,7 @@ export function statementIssueText(mail: MailReceived): string {
     "",
     `No statement in this email, or its statement was already imported? Record it with \`partnersinbiz.accounting:mark-statement-email\` (\`messageId: "${mail.messageId}"\`, \`outcome\` \`not_statement\` or \`duplicate\`, and the \`reason\`), then close this issue.`,
     "",
-    `A PDF? Read it with your pdf skill, write the rows as CSV (\`Date,Description,Reference,Amount,Balance\`, a balance on every row), then \`import-statement\` with that CSV as \`content\`, \`checkRunningBalance: true\` and this \`messageId\`. Several PDFs: oldest first, and each opening balance must equal the previous closing balance. A PDF you cannot read (a scan the OCR route cannot read either): ask once with \`${ASK_OWNER_TOOL}\` for a clearer copy.`,
+    `A PDF? Follow the **PDF statements** section of the \`pib-bookkeeping\` skill: read the pages as pictures, write the rows as CSV (\`Date,Description,Reference,Amount,Balance\`, a balance on every row, money out negative), then \`import-statement\` with that CSV as \`content\` and this \`messageId\`. The import is refused when the balances do not add up. Several PDFs: the oldest first, then ask the owner to check it against their bank app before you import the rest. A PDF you cannot read (a scan the OCR route cannot read either): ask once with \`${ASK_OWNER_TOOL}\` for a clearer copy.`,
     "",
     "A person doing this by hand: download the file from the email and import it under **Accounting → Bank → Import statement**.",
   ].join("\n");

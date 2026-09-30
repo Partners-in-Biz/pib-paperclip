@@ -36,7 +36,7 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
     name: "import-statement",
     displayName: "Import bank statement",
     description:
-      "Import a bank statement (CSV, OFX or MT940) for one bank account: pass the file text as content, or the https link the Mailbox get-attachment tool returned as url. Lines already imported are skipped, so importing again is safe. Suggests a match or category per new line and opens a \"Reconcile N new bank lines\" issue. Returns the lines imported, duplicates skipped and the next steps. A PDF is not read here: read it with your pdf skill, then pass its rows as CSV content (Date,Description,Reference,Amount,Balance) with checkRunningBalance: true.",
+      "Import a bank statement (CSV, OFX or MT940) for one bank account: pass the file text as content, or the https link the Mailbox get-attachment tool returned as url. Lines already imported are skipped, so importing again is safe. Suggests a match or category per new line and opens a \"Reconcile N new bank lines\" issue. Returns the lines imported, duplicates skipped and the next steps. A PDF is not read here: read it with your pdf skill, then pass its rows as CSV content (Date,Description,Reference,Amount,Balance). Every import is checked first and refused, with the reason and nothing saved, when the balances do not add up row by row (an agent's CSV needs a Balance on every row), when every line is on one side (the sign was lost), or when descriptions are missing. The result lists warnings when the statement does not join up with its neighbours (a missing month).",
     parametersSchema: schema([], {
       bankAccountId,
       content: { type: "string", description: "The statement file's text (CSV, OFX or MT940), at most 1 MB; for a PDF, the CSV you wrote from it. Give this or url." },
@@ -46,7 +46,7 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
       messageId: { type: "string", description: "The statement email's message id from the \"Bank statement received\" issue. Links the import to that email, so it shows as imported." },
       checkRunningBalance: {
         type: "boolean",
-        description: "Refuse the import unless every row's Balance equals the previous row's balance plus its amount. Always true for a CSV you wrote from a PDF: it catches a misread or skipped row.",
+        description: "Demand a Balance on every row (the balances are always checked when present). Send true for a CSV you wrote from a PDF.",
         default: false,
       },
       pdfObjectKey: { type: "string", description: "For a PDF from a \"Read N PDF bank statements\" issue: the file's objectKey from pdf-statements. Links the statement to its PDF, which that issue's done-check looks for." },
