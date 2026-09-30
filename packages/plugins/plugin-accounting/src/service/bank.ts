@@ -343,6 +343,45 @@ export async function importStatement(
       firstFutureDate: null,
     };
   }
+  // Fingerprints include the description, so the same statement read a second time with slightly different wording would not be caught by
+  // them. A line with the same date, amount and running balance as one already stored is the same line however it is worded.
+  const fingerprints = fingerprintLines(bank.id, parsed.lines);
+  const known = await db.existingFingerprints(ctx.db, bank.id, fingerprints);
+  const stored = parsed.periodStart && parsed.periodEnd ? await db.listBankLines(ctx.db, companyId, { bankAccountId: bank.id, from: parsed.periodStart, to: parsed.periodEnd, limit: 5000 }) : [];
+  const balanceKey = (date: string, amount: number, balance: number | null) => (balance == null ? null : `${date}|${amount}|${balance}`);
+  const storedKeys = new Map<string, number>();
+  for (const l of stored) {
+    const k = balanceKey(l.date, l.amountMinor, l.balanceMinor);
+    if (k) storedKeys.set(k, (storedKeys.get(k) ?? 0) + 1);
+  }
+  const isRepeat = parsed.lines.map((line, i) => {
+    if (known.has(fingerprints[i]!)) return true;
+    const k = balanceKey(line.date, line.amountMinor, line.balanceMinor);
+    const left = k ? storedKeys.get(k) ?? 0 : 0;
+    if (!k || left === 0) return false;
+    storedKeys.set(k, left - 1);
+    return true;
+  });
+  if (isRepeat.every(Boolean)) {
+    return {
+      statementId: null,
+      statementEmail: messageId ? { messageId, status: await linkImportToEmail(ctx, companyId, messageId, null, 0, actor) } : null,
+      duplicateFile: true,
+      format: parsed.format,
+      lines: parsed.lines.length,
+      added: 0,
+      duplicates: parsed.lines.length,
+      periodStart: parsed.periodStart,
+      periodEnd: parsed.periodEnd,
+      openingMinor: parsed.openingMinor,
+      closingMinor: parsed.closingMinor,
+      suggested: 0,
+      jevAsked: 0,
+      issueId: null,
+      futureLines: 0,
+      firstFutureDate: null,
+    };
+  }
   const statementId = newId();
   await db.insertStatement(
     ctx.db,
@@ -365,8 +404,7 @@ export async function importStatement(
     },
     actorRecord(actor),
   );
-  const fingerprints = fingerprintLines(bank.id, parsed.lines);
-  const rows = parsed.lines.map((line, i) => ({
+  const rows = parsed.lines.filter((_, i) => !isRepeat[i]).map((line) => ({
     id: newId(),
     bank_account_id: bank.id,
     statement_id: statementId,
@@ -376,10 +414,10 @@ export async function importStatement(
     reference: line.reference,
     counterparty: line.counterparty,
     balance_minor: line.balanceMinor,
-    fingerprint: fingerprints[i]!,
+    fingerprint: fingerprints[parsed.lines.indexOf(line)]!,
   }));
   const added = await db.insertBankLines(ctx.db, companyId, rows);
-  await db.updateStatementCounts(ctx.db, companyId, statementId, added, rows.length - added);
+  await db.updateStatementCounts(ctx.db, companyId, statementId, added, parsed.lines.length - added);
   const refreshed = added > 0 ? await refreshSuggestions(ctx, companyId, { statementId }) : { lines: 0, suggested: 0, jevAsked: 0 };
   const future = linesDatedAfter(rows, todayIso());
   let issueId: string | null = null;
@@ -389,9 +427,9 @@ export async function importStatement(
     statementEmail: messageId ? { messageId, status: await linkImportToEmail(ctx, companyId, messageId, statementId, added, actor) } : null,
     duplicateFile: false,
     format: parsed.format,
-    lines: rows.length,
+    lines: parsed.lines.length,
     added,
-    duplicates: rows.length - added,
+    duplicates: parsed.lines.length - added,
     periodStart: parsed.periodStart,
     periodEnd: parsed.periodEnd,
     openingMinor: parsed.openingMinor,
@@ -595,7 +633,7 @@ export function pdfBatchIssueText(bank: { id: string; name: string }, batchId: s
     "4. Write the CSV: header `Date,Description,Reference,Amount,Balance`, every line in the order printed, dates YYYY-MM-DD, money in positive and money out negative, the running Balance on every row, the Description exactly as printed without the amount.",
     `5. **Oldest statement only, first.** \`import-statement\` with that CSV as \`content\`, \`bankAccountId: "${bank.id}"\`, the file's \`fileName\` and its \`objectKey\` as \`pdfObjectKey\`. The import is refused, with nothing saved, when balances do not add up, every line is on one side or descriptions are missing: fix the CSV, never work around it. Then stop and ask once (\`${ASK_OWNER_TOOL}\`) with its period, opening and closing balance and its first and last three lines, and "please compare these with your bank app". Carry on only when the owner says they match.`,
     "6. The rest, oldest first. A result `warnings` entry means a statement does not join up with its neighbour (its opening is not the previous closing): a missing statement or lines. Import what you can and put every gap in one ask.",
-    "7. When every file is imported, work the reconcile issues. If opening balances are not posted yet (the Cockpit warns), put the cut-over in one ask: the day before the first statement starts, and that statement's opening balance.",
+    "7. When every file is imported, work the reconcile issues. If opening balances are not posted yet (the Cockpit warns), put the cut-over in one ask: the date is the start date in the oldest statement's \"Statement Period\" line and the amount is its printed Opening Balance; the difference goes to opening balance equity.",
     "8. Mark this issue done. Closing it checks that every file has an imported statement.",
   ].join("\n");
 }
@@ -812,6 +850,7 @@ export async function refreshSuggestions(
       });
     }
   }
+  const vatRegistered = (await readSettings(ctx, companyId)).vatCategory !== "none";
   const updates: Array<{ id: string; suggestions: Suggestion[]; jev?: unknown }> = [];
   for (const line of lines) {
     const suggestions = computed.get(line.id) ?? [];
@@ -822,7 +861,7 @@ export async function refreshSuggestions(
         kind: "category",
         source: "jev",
         accountCode: jev.accountCode,
-        taxCode: vatApplies != null && vatApplies >= 0.5 ? "za_std_15" : null,
+        taxCode: vatRegistered && vatApplies != null && vatApplies >= 0.5 ? "za_std_15" : null,
         counterparty: line.counterparty,
         confidence: Math.min(0.8, Number(jev.confidence ?? 0)),
         vatApplies,
@@ -1017,8 +1056,14 @@ export async function categorise(
   const account = chart.byCode.get(accountCode);
   if (!account) throw new AccountingError(`Unknown account ${accountCode}`, "unknown_account");
   if (account.code === bank.accountCode) throw new AccountingError("Choose an account other than this bank's own account");
-  const taxCode = typeof input.taxCode === "string" && input.taxCode ? input.taxCode : null;
+  let taxCode = typeof input.taxCode === "string" && input.taxCode ? input.taxCode : null;
   if (taxCode && !(taxCode in TAX_CODES)) throw new AccountingError(`Unknown tax code ${taxCode}`);
+  // A business that is not VAT-registered neither claims nor charges VAT: a VAT code would post a VAT input/output line that goes on a VAT201 nobody files.
+  if (taxCode && (TAX_CODES[taxCode as keyof typeof TAX_CODES]?.rate ?? 0) > 0 && (await readSettings(ctx, companyId)).vatCategory === "none") {
+    // A suggestion that came from Jev or a rule is accepted without its VAT; a code someone typed is refused, so the mistake is seen.
+    if (!alreadyChecked) throw new AccountingError(`This business is not VAT-registered, so no VAT is claimed or charged: leave the tax code empty (${taxCode} refused). Post the full amount to the expense account.`);
+    taxCode = null;
+  }
   const rates = await db.listTaxRates(ctx.db, companyId);
   const rate = taxCode ? rates.filter((r) => r.code === taxCode && r.effectiveFrom <= line.date && (!r.effectiveTo || r.effectiveTo >= line.date)).sort((a, b) => b.version - a.version)[0] : null;
   const rateBps = taxCode ? rate?.rateBps ?? Math.round((TAX_CODES[taxCode as keyof typeof TAX_CODES]?.rate ?? 0) * 10_000) : 0;

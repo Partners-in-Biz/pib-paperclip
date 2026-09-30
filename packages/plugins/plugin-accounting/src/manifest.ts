@@ -48,7 +48,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.5",
+  version: "0.3.6",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",

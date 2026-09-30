@@ -89,7 +89,7 @@ import {
 import { dismissRejection, receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection, senderOf } from "./service/ledger.js";
 import { buildPack } from "./service/pack.js";
 import { publishStatusThrottled, setupStatus } from "./service/setup.js";
-import { approveReconciliation, onReconciliationIssue, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval } from "./service/reconcile.js";
+import { approveReconciliation, discardReconciliation, onReconciliationIssue, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval } from "./service/reconcile.js";
 import { forecast, overview, runReport, trends } from "./service/reports.js";
 import { approveVatReturn, computeForPeriod, onVatIssue, prepareVat201Tool, prepareVatReturn, requestVatApproval, vatCsv, vatPeriods } from "./service/vat.js";
 import { SKILLS } from "./skills.js";
@@ -292,6 +292,7 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.prepare-reconciliation": (ctx, companyId, actor, p) => prepareReconciliation(ctx, companyId, actor, p),
   "accounting.request-reconciliation-approval": (ctx, companyId, actor, p) => requestReconciliationApproval(ctx, companyId, actor, str(p, "reconciliationId")),
   "accounting.approve-reconciliation": (ctx, companyId, actor, p) => approveReconciliation(ctx, companyId, actor, str(p, "reconciliationId")),
+  "accounting.discard-reconciliation": (ctx, companyId, actor, p) => discardReconciliation(ctx, companyId, actor, str(p, "reconciliationId")),
 
   // VAT
   "accounting.vat": async (ctx, companyId) => {

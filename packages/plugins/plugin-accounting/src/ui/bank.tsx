@@ -185,6 +185,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const prepareRec = usePluginAction("accounting.prepare-reconciliation");
   const requestRec = usePluginAction("accounting.request-reconciliation-approval");
   const approveRec = usePluginAction("accounting.approve-reconciliation");
+  const discardRec = usePluginAction("accounting.discard-reconciliation");
   const { busy, run } = useRunner(onMessage);
 
   const [snap, setSnap] = useState<BankSnapshot | null>(null);
@@ -523,6 +524,16 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                       setRecForm({ start: r.periodStart, end: r.periodEnd, opening: centsToInput(r.openingMinor), closing: centsToInput(r.closingMinor) });
                       void run("rec", async () => setPrepared((await prepareRec({ bankAccountId: r.bankAccountId, periodStart: r.periodStart, periodEnd: r.periodEnd, openingMinor: r.openingMinor, closingMinor: r.closingMinor })) as { reconciliation: Reconciliation; summary: Summary }));
                     }}>Open</Button>
+                  ) : null}
+                  {r.status !== "locked" ? (
+                    <Button type="button" variant="secondary" style={{ ...small, marginLeft: 6 }} disabled={busy !== ""} onClick={() => {
+                      if (!window.confirm(`Discard the reconciliation ${r.periodStart} to ${r.periodEnd}? Its lines stay as they are; only this reconciliation (and its approval request) goes.`)) return;
+                      void run("rec", async () => {
+                        await discardRec({ reconciliationId: r.id });
+                        setPrepared(null);
+                        await refreshAll();
+                      }, "Reconciliation discarded.");
+                    }}>Discard</Button>
                   ) : null}
                 </Td>
               </tr>

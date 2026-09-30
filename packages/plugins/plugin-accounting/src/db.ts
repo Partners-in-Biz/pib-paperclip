@@ -1496,6 +1496,34 @@ export async function lockedReconciliationOverlaps(db: Db, companyId: string, ba
   return num(rows[0]?.n) > 0;
 }
 
+/** Another reconciliation (any status) whose period overlaps this one without being the same period. */
+export async function overlappingReconciliation(db: Db, companyId: string, bankAccountId: string, start: string, end: string): Promise<ReconciliationRow | null> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT ${REC_COLUMNS} FROM ${N}.reconciliations
+      WHERE company_id = $1 AND bank_account_id = $2 AND period_start <= $4::date AND period_end >= $3::date
+        AND NOT (period_start = $3::date AND period_end = $4::date)
+      ORDER BY period_start LIMIT 1`,
+    [companyId, bankAccountId, start, end],
+  );
+  return rows[0] ? mapRec(rows[0]) : null;
+}
+
+/** Remove a reconciliation that is not locked. True when a row went. */
+export async function deleteReconciliation(db: Db, companyId: string, id: string): Promise<boolean> {
+  const res = await db.execute(`DELETE FROM ${N}.reconciliations WHERE company_id = $1 AND id = $2 AND status <> 'locked'`, [companyId, id]);
+  return (res.rowCount ?? 0) > 0;
+}
+
+/** Which of these line fingerprints are already stored for the bank account. */
+export async function existingFingerprints(db: Db, bankAccountId: string, fingerprints: string[]): Promise<Set<string>> {
+  if (fingerprints.length === 0) return new Set();
+  const rows = await db.query<{ fingerprint: string }>(
+    `SELECT fingerprint FROM ${N}.bank_lines WHERE bank_account_id = $1 AND fingerprint IN (SELECT jsonb_array_elements_text($2::jsonb))`,
+    [bankAccountId, JSON.stringify(fingerprints)],
+  );
+  return new Set(rows.map((r) => String(r.fingerprint)));
+}
+
 // ---------------------------------------------------------------------------
 // VAT returns
 // ---------------------------------------------------------------------------

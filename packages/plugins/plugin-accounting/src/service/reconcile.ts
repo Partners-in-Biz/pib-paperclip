@@ -61,6 +61,14 @@ export async function prepareReconciliation(
   const existing = await db.reconciliationByPeriod(ctx.db, companyId, bank.id, start, end);
   if (existing && existing.status !== "draft") throw new AccountingError(`This period is already ${existing.status === "locked" ? "locked" : "waiting for approval"}`, "conflict");
   if (await db.lockedReconciliationOverlaps(ctx.db, companyId, bank.id, start, end)) throw new AccountingError("This period overlaps a locked reconciliation", "conflict");
+  // A line belongs to one reconciliation: an overlapping period would count it twice and leave two approvals for the same money.
+  const overlap = await db.overlappingReconciliation(ctx.db, companyId, bank.id, start, end);
+  if (overlap) {
+    throw new AccountingError(
+      `This period overlaps the reconciliation ${overlap.periodStart} to ${overlap.periodEnd} (${overlap.status.replace("_", " ")}). Use that one, or ask a person to discard it under Accounting → Bank → Reconcile first. Do not prepare a second one for the same lines.`,
+      "conflict",
+    );
+  }
   const defaults = await defaultBalances(ctx, companyId, bank.id, start, end);
   const opening = input.openingMinor == null || input.openingMinor === "" ? defaults.opening : Number(input.openingMinor);
   const closing = input.closingMinor == null || input.closingMinor === "" ? defaults.closing : Number(input.closingMinor);
@@ -150,6 +158,38 @@ export async function approveReconciliation(ctx: PluginContext, companyId: strin
  * reconciliation for a calendar month (or an exact statement period) and,
  * when it is ready, open its approval issue for a person.
  */
+/**
+ * FNB statements run from the last day of the previous month ("31 July to 31 August"), so a line dated 31 July can sit on the August
+ * statement. A calendar-month reconciliation then misses it and does not match the statement. When that is why the difference is not
+ * zero, say which period to use instead.
+ */
+async function boundaryHint(ctx: PluginContext, companyId: string, bankAccountId: string, start: string, end: string): Promise<string | null> {
+  const [statements, lines] = await Promise.all([
+    db.listStatements(ctx.db, companyId, bankAccountId),
+    db.listBankLines(ctx.db, companyId, { bankAccountId, from: start, to: end, limit: 5000 }),
+  ]);
+  const byId = new Map(statements.map((st) => [st.id, st]));
+  const late = new Map<string, number>();
+  for (const l of lines) {
+    const st = l.statementId ? byId.get(l.statementId) : undefined;
+    if (st && st.periodEnd && st.periodEnd > end) late.set(st.id, (late.get(st.id) ?? 0) + 1);
+  }
+  const top = [...late.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!top) return null;
+  const st = byId.get(top[0])!;
+  return `${top[1]} line(s) dated within ${start} to ${end} are on the statement for ${st.periodStart} to ${st.periodEnd}, so this period cannot tie to a statement. Reconcile ${start} to ${st.periodEnd} instead (openingMinor from the first statement, closingMinor from the last).`;
+}
+
+/** Remove a reconciliation that is not locked (a person only): its approval issue is cancelled and the lines stay as they are. */
+export async function discardReconciliation(ctx: PluginContext, companyId: string, actor: Actor, id: string): Promise<{ discarded: boolean }> {
+  requireUser(actor, "discard a reconciliation");
+  const rec = await db.getReconciliation(ctx.db, companyId, id);
+  if (!rec) throw new AccountingError("Reconciliation not found", "not_found");
+  if (rec.status === "locked") throw new AccountingError("A locked reconciliation cannot be discarded", "conflict");
+  if (rec.approvalIssueId) await closeIssue(ctx, companyId, rec.approvalIssueId, "cancelled", "Discarded: this reconciliation was replaced.");
+  return { discarded: await db.deleteReconciliation(ctx.db, companyId, id) };
+}
+
 export async function prepareReconciliationTool(
   ctx: PluginContext,
   companyId: string,
@@ -182,6 +222,7 @@ export async function prepareReconciliationTool(
   const prepared = await prepareReconciliation(ctx, companyId, actor, { bankAccountId: bank.id, periodStart: start, periodEnd: end, openingMinor: input.openingMinor, closingMinor: input.closingMinor });
   let rec = prepared.reconciliation;
   const s = prepared.summary;
+  const hint = !s.ready && s.unreconciledCount === 0 && s.differenceMinor !== 0 ? await boundaryHint(ctx, companyId, bank.id, start, end) : null;
   const wantApproval = input.requestApproval !== false;
   if (wantApproval && s.ready) rec = await requestReconciliationApproval(ctx, companyId, actor, rec.id);
   const next = rec.status === "pending_approval"
@@ -190,7 +231,9 @@ export async function prepareReconciliationTool(
       ? "Ready. Run again without requestApproval: false to open the approval issue."
       : s.unreconciledCount > 0
         ? `Reconcile the ${s.unreconciledCount} open line(s) first (list-bank-lines with bankAccountId and to: ${end}), then run this again.`
-        : `The statement does not add up (difference ${money(s.differenceMinor)}): check the opening and closing balance on the statement (pass openingMinor and closingMinor), or a line may be missing. If you cannot tell, ask with the ask-owner tool.`;
+        : hint
+          ? hint
+          : `The statement does not add up (difference ${money(s.differenceMinor)}): check the opening and closing balance on the statement (pass openingMinor and closingMinor), or a line may be missing. If you cannot tell, ask with the ask-owner tool.`;
   return {
     reconciliationId: rec.id,
     bankAccount: { id: bank.id, name: bank.name },

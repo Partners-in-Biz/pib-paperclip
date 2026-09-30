@@ -25,7 +25,7 @@ import { approveDraft, onDraftIssue, postJournal, requestDraftApproval, saveDraf
 import { receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection } from "../src/service/ledger.js";
 import { buildPack } from "../src/service/pack.js";
 import { setupStatus } from "../src/service/setup.js";
-import { approveReconciliation, prepareReconciliation, requestReconciliationApproval } from "../src/service/reconcile.js";
+import { approveReconciliation, discardReconciliation, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval } from "../src/service/reconcile.js";
 import { runReport, trends } from "../src/service/reports.js";
 import { approveVatReturn, prepareVatReturn, requestVatApproval } from "../src/service/vat.js";
 import * as guard from "./helpers/sql-guard.js";
@@ -757,7 +757,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.5" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.6" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -1101,6 +1101,54 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       expect(existsSync(before.files[1]!.path!)).toBe(false);
       rmSync(workDir, { recursive: true, force: true });
       delete process.env.PIB_ACCOUNTING_WORKDIR;
+    });
+
+    it("safeguards for the books: no VAT when not registered, no overlapping or duplicate reconciliations, no double import, statement-boundary hint", async () => {
+      const G = "co-safe";
+      configs.set(G, { legalName: "Safe Co", vatCategory: "none", financialYearEndMonth: 2, agentsMayAcceptCategorisation: true });
+      state.set("roles", ROLES(G));
+      await ensureBook(ctx, G);
+      const bank = await saveBankAccount(ctx, G, { name: "Safe bank" });
+      const header = "Date,Description,Reference,Amount,Balance";
+      const csv = (rows: string[]) => [header, ...rows].join("\n");
+      const linesOf = async () => db.listBankLines(ctx.db, G, { bankAccountId: bank.id, limit: 500 });
+
+      // 1. Not VAT-registered: a VAT code someone types is refused; a suggestion that carries one is accepted without the VAT.
+      await importStatement(ctx, G, user, { bankAccountId: bank.id, content: csv(["2026-07-01,Deposit,,1000.00,2000.00", "2026-07-02,Diesel Engen,,-500.00,1500.00", "2026-07-03,Fuel BP,,-100.00,1400.00"]), fileName: "a.csv" });
+      const [deposit, diesel, fuel] = (await linesOf()).sort((x, y) => x.date.localeCompare(y.date));
+      await expect(categorise(ctx, G, user, { lineId: diesel!.id, accountCode: "6190", taxCode: "za_std_15" })).rejects.toThrow(/not VAT-registered/);
+      await saveRule(ctx, G, { name: "Fuel", field: "description", operator: "contains", value: "Fuel BP", accountCode: "6190", taxCode: "za_std_15", direction: "out" });
+      await refreshSuggestions(ctx, G, { bankAccountId: bank.id, useJev: false });
+      await acceptSuggestion(ctx, G, user, { lineId: fuel!.id });
+      await categorise(ctx, G, user, { lineId: diesel!.id, accountCode: "6190" });
+      await categorise(ctx, G, user, { lineId: deposit!.id, accountCode: "4000" });
+      const { journals } = await db.listJournals(ctx.db, G, {});
+      expect(journals.length).toBe(3);
+      expect(JSON.stringify(journals.map((j) => j.lines))).not.toMatch(/za_std_15|"1400"/);
+
+      // 2. The same statement read again with different wording is recognised by date, amount and balance: nothing added, no second statement.
+      const reworded = csv(["2026-07-01,DEPOSIT REF 991,,1000.00,2000.00", "2026-07-02,DIESEL ENGEN SIMARLO,,-500.00,1500.00", "2026-07-03,FUEL BP 4411,,-100.00,1400.00"]);
+      const again = await importStatement(ctx, G, user, { bankAccountId: bank.id, content: reworded, fileName: "a-again.csv" });
+      expect(again).toMatchObject({ duplicateFile: true, added: 0, statementId: null });
+      expect(await db.listStatements(ctx.db, G, bank.id)).toHaveLength(1);
+      expect(await linesOf()).toHaveLength(3);
+
+      // 3. A second statement joins on; a reconciliation must not overlap another, and only a person can discard one.
+      await importStatement(ctx, G, user, { bankAccountId: bank.id, content: csv(["2026-07-31,Card one,,-50.00,1350.00", "2026-07-31,Card two,,-20.00,1330.00", "2026-08-03,Deposit,,70.00,1400.00"]), fileName: "b.csv" });
+      for (const l of (await linesOf()).filter((x) => x.status === "unreconciled")) await categorise(ctx, G, user, { lineId: l.id, accountCode: l.amountMinor > 0 ? "4000" : "6500" });
+
+      // Calendar July does not tie to statement A because two 31 July lines sit on statement B: the answer says which period to use.
+      const july = await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-07-31", openingMinor: 1_000_00, closingMinor: 1_400_00 });
+      expect(july.ready).toBe(false);
+      expect(july.next).toMatch(/2 line\(s\) dated within 2026-07-01 to 2026-07-31 are on the statement for 2026-07-31 to 2026-08-03.*Reconcile 2026-07-01 to 2026-08-03 instead/);
+      await expect(prepareReconciliation(ctx, G, user, { bankAccountId: bank.id, periodStart: "2026-07-15", periodEnd: "2026-08-03", openingMinor: 1_000_00, closingMinor: 1_400_00 })).rejects.toThrow(/overlaps the reconciliation 2026-07-01 to 2026-07-31 \(draft\)/);
+      await expect(discardReconciliation(ctx, G, agent, july.reconciliationId)).rejects.toThrow(/board user/);
+      expect(await discardReconciliation(ctx, G, user, july.reconciliationId)).toEqual({ discarded: true });
+      const whole = await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-03", openingMinor: 1_000_00, closingMinor: 1_400_00 });
+      expect(whole).toMatchObject({ ready: true, differenceMinor: 0, status: "pending_approval" });
+      // The same period again is the same reconciliation, not a second one.
+      expect((await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-03" })).reconciliationId).toBe(whole.reconciliationId);
+      expect((await db.listReconciliations(ctx.db, G, bank.id)).length).toBe(1);
     });
 
     it("the checks that stop a misread PDF: sign lost, columns shifted, no balances, override for a person only, gaps between statements", async () => {
