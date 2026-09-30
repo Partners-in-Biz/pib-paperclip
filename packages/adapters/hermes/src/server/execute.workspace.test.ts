@@ -197,4 +197,51 @@ describe("hermes-local adapter workspace", () => {
 
     expect(JSON.parse(opts.env.PAPERCLIP_WORKSPACES_JSON)).toEqual(hints);
   });
+
+  it("keeps the workspace list below the environment size limit", async () => {
+    const hints = Array.from({ length: 2000 }, (_, index) => ({
+      workspaceId: `workspace-${index}`,
+      cwd: `/srv/paperclip/projects/demo/workspaces/${"nested/".repeat(10)}workspace-${index}`,
+    }));
+    const opts = await runOptions({
+      paperclipWorkspace: { cwd: WORKTREE, source: "task_session" },
+      paperclipWorkspaces: hints,
+    });
+
+    const exported = JSON.parse(opts.env.PAPERCLIP_WORKSPACES_JSON);
+    expect(opts.env.PAPERCLIP_WORKSPACES_JSON.length).toBeLessThanOrEqual(32 * 1024);
+    expect(exported.length).toBeGreaterThan(0);
+    expect(exported.length).toBeLessThan(hints.length);
+    expect(exported).toEqual(hints.slice(0, exported.length));
+  });
+
+  it("drops workspace variables inherited from another run", async () => {
+    vi.stubEnv("PAPERCLIP_WORKSPACE_CWD", "/srv/other-run/workspace");
+    vi.stubEnv("PAPERCLIP_WORKSPACE_BRANCH", "other-run-branch");
+    vi.stubEnv("PAPERCLIP_WORKSPACES_JSON", '[{"cwd":"/srv/other-run/workspace"}]');
+
+    const opts = await runOptions(
+      { paperclipWorkspace: { cwd: AGENT_HOME, source: "agent_home", agentHome: AGENT_HOME } },
+      { cwd: "/srv/static-checkout" },
+    );
+
+    expect(opts.cwd).toBe("/srv/static-checkout");
+    expect(opts.env.PAPERCLIP_WORKSPACE_CWD).toBeUndefined();
+    expect(opts.env.PAPERCLIP_WORKSPACE_BRANCH).toBeUndefined();
+    expect(opts.env.PAPERCLIP_WORKSPACES_JSON).toBeUndefined();
+  });
+
+  it("replaces inherited workspace variables with the values of this run", async () => {
+    vi.stubEnv("PAPERCLIP_WORKSPACE_CWD", "/srv/other-run/workspace");
+
+    const opts = await runOptions({ paperclipWorkspace: { cwd: WORKTREE, source: "task_session" } });
+
+    expect(opts.env.PAPERCLIP_WORKSPACE_CWD).toBe(WORKTREE);
+  });
+
+  it("keeps workspace variables that the adapter configuration sets", async () => {
+    const opts = await runOptions({}, { env: { PAPERCLIP_WORKSPACE_CWD: "/srv/configured-checkout" } });
+
+    expect(opts.env.PAPERCLIP_WORKSPACE_CWD).toBe("/srv/configured-checkout");
+  });
 });

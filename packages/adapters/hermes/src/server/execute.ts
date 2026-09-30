@@ -79,6 +79,24 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+// Variables that describe the workspace of one run. The server process can
+// inherit copies from another run, so they are cleared before this run sets its own.
+const WORKSPACE_ENV_KEYS = [
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_STRATEGY",
+  "PAPERCLIP_WORKSPACE_ID",
+  "PAPERCLIP_WORKSPACE_REPO_URL",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
+
+// One environment string must stay well below the operating system limit
+// (128 KiB on Linux), or the agent process cannot start.
+const MAX_WORKSPACES_JSON_CHARS = 32 * 1024;
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -523,6 +541,10 @@ export async function execute(
   const workspaceCwd =
     workspaceSource === "agent_home" && configuredCwd ? undefined : cfgString(workspaceContext.cwd);
   const cwd = workspaceCwd || configuredCwd || ".";
+  // Keep configured copies, drop inherited ones, then set this run's values.
+  for (const key of WORKSPACE_ENV_KEYS) {
+    if (!userEnv || !(key in userEnv)) delete env[key];
+  }
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd,
     workspaceSource,
@@ -534,8 +556,12 @@ export async function execute(
     workspaceWorktreePath: cfgString(workspaceContext.worktreePath),
     agentHome: cfgString(workspaceContext.agentHome),
   });
-  if (Array.isArray(ctxContext.paperclipWorkspaces) && ctxContext.paperclipWorkspaces.length > 0) {
-    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(ctxContext.paperclipWorkspaces);
+  if (Array.isArray(ctxContext.paperclipWorkspaces)) {
+    const workspaceHints: unknown[] = [...ctxContext.paperclipWorkspaces];
+    while (workspaceHints.length > 0 && JSON.stringify(workspaceHints).length > MAX_WORKSPACES_JSON_CHARS) {
+      workspaceHints.pop();
+    }
+    if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
   try {
     await ensureAbsoluteDirectory(cwd);
