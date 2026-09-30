@@ -757,7 +757,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.6" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.7" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -1105,6 +1105,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
 
     it("safeguards for the books: no VAT when not registered, no overlapping or duplicate reconciliations, no double import, statement-boundary hint", async () => {
       const G = "co-safe";
+      const { importStatementTool } = await import("../src/service/bank.js");
       configs.set(G, { legalName: "Safe Co", vatCategory: "none", financialYearEndMonth: 2, agentsMayAcceptCategorisation: true });
       state.set("roles", ROLES(G));
       await ensureBook(ctx, G);
@@ -1141,7 +1142,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       const july = await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-07-31", openingMinor: 1_000_00, closingMinor: 1_400_00 });
       expect(july.ready).toBe(false);
       expect(july.next).toMatch(/2 line\(s\) dated within 2026-07-01 to 2026-07-31 are on the statement for 2026-07-31 to 2026-08-03.*Reconcile 2026-07-01 to 2026-08-03 instead/);
-      await expect(prepareReconciliation(ctx, G, user, { bankAccountId: bank.id, periodStart: "2026-07-15", periodEnd: "2026-08-03", openingMinor: 1_000_00, closingMinor: 1_400_00 })).rejects.toThrow(/overlaps the reconciliation 2026-07-01 to 2026-07-31 \(draft\)/);
+      await expect(prepareReconciliation(ctx, G, user, { bankAccountId: bank.id, periodStart: "2026-07-15", periodEnd: "2026-08-03", openingMinor: 1_000_00, closingMinor: 1_400_00 })).rejects.toThrow(/overlaps the reconciliation 2026-07-01 to 2026-07-31 \(draft\) without containing it/);
       await expect(discardReconciliation(ctx, G, agent, july.reconciliationId)).rejects.toThrow(/board user/);
       expect(await discardReconciliation(ctx, G, user, july.reconciliationId)).toEqual({ discarded: true });
       const whole = await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-03", openingMinor: 1_000_00, closingMinor: 1_400_00 });
@@ -1149,6 +1150,20 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       // The same period again is the same reconciliation, not a second one.
       expect((await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-03" })).reconciliationId).toBe(whole.reconciliationId);
       expect((await db.listReconciliations(ctx.db, G, bank.id)).length).toBe(1);
+      // A later statement can hold lines dated inside the last period: the longer period replaces the unlocked one it contains.
+      const longer = await prepareReconciliationTool(ctx, G, agent, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-10", openingMinor: 1_000_00, closingMinor: 1_400_00 });
+      expect(longer.reconciliationId).not.toBe(whole.reconciliationId);
+      expect(await db.getReconciliation(ctx.db, G, whole.reconciliationId)).toBeNull();
+      expect((await db.listReconciliations(ctx.db, G, bank.id)).map((r) => `${r.periodStart}..${r.periodEnd}`)).toEqual(["2026-07-01..2026-08-10"]);
+
+      // 4. Once the books are cut over, an older statement is refused (its money is already in the opening balance); only a person can override.
+      await postCutover(ctx, G, user, { csv: "code,name,debit,credit\n1000,Bank,1000.00,\n", date: "2026-06-30", balanceToEquity: true });
+      const older = csv(["2026-06-01,Old deposit,,100.00,600.00", "2026-06-15,Old fee,,-10.00,590.00"]);
+      await expect(importStatement(ctx, G, user, { bankAccountId: bank.id, content: older, fileName: "june.csv" })).rejects.toThrow(/ends on 15 Jun 2026, on or before the cut-over date \(30 Jun 2026\).*Nothing was imported/);
+      await expect(importStatementTool(ctx, G, agent, { bankAccountId: bank.id, content: older, fileName: "june.csv" })).rejects.toThrow(/cut-over date/);
+      const later = csv(["2026-09-01,New deposit,,100.00,1500.00", "2026-09-02,New fee,,-10.00,1490.00"]);
+      expect((await importStatement(ctx, G, user, { bankAccountId: bank.id, content: later, fileName: "sep.csv" })).added).toBe(2);
+      expect((await importStatement(ctx, G, user, { bankAccountId: bank.id, content: older, fileName: "june.csv", skipChecks: true })).added).toBe(2);
     });
 
     it("the checks that stop a misread PDF: sign lost, columns shifted, no balances, override for a person only, gaps between statements", async () => {

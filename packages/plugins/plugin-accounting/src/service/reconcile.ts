@@ -62,10 +62,18 @@ export async function prepareReconciliation(
   if (existing && existing.status !== "draft") throw new AccountingError(`This period is already ${existing.status === "locked" ? "locked" : "waiting for approval"}`, "conflict");
   if (await db.lockedReconciliationOverlaps(ctx.db, companyId, bank.id, start, end)) throw new AccountingError("This period overlaps a locked reconciliation", "conflict");
   // A line belongs to one reconciliation: an overlapping period would count it twice and leave two approvals for the same money.
-  const overlap = await db.overlappingReconciliation(ctx.db, companyId, bank.id, start, end);
-  if (overlap) {
+  // A longer period that fully contains an unlocked one replaces it (a later statement can hold lines dated inside the last period,
+  // so the period has to grow); anything else that overlaps is refused.
+  for (let guard = 0; guard < 12; guard += 1) {
+    const overlap = await db.overlappingReconciliation(ctx.db, companyId, bank.id, start, end);
+    if (!overlap) break;
+    if (overlap.status !== "locked" && overlap.periodStart >= start && overlap.periodEnd <= end) {
+      if (overlap.approvalIssueId) await closeIssue(ctx, companyId, overlap.approvalIssueId, "cancelled", `Replaced by the longer reconciliation ${start} to ${end}.`);
+      await db.deleteReconciliation(ctx.db, companyId, overlap.id);
+      continue;
+    }
     throw new AccountingError(
-      `This period overlaps the reconciliation ${overlap.periodStart} to ${overlap.periodEnd} (${overlap.status.replace("_", " ")}). Use that one, or ask a person to discard it under Accounting → Bank → Reconcile first. Do not prepare a second one for the same lines.`,
+      `This period overlaps the reconciliation ${overlap.periodStart} to ${overlap.periodEnd} (${overlap.status.replace("_", " ")}) without containing it. Use that one, or ask a person to discard it under Accounting → Bank → Reconcile first. Do not prepare a second one for the same lines.`,
       "conflict",
     );
   }

@@ -320,7 +320,17 @@ export async function importStatement(
   const format = ["csv", "ofx", "mt940"].includes(String(input.format)) ? (String(input.format) as StatementFormat) : "auto";
   const parsed = parseStatement(decodeText(source.bytes), format);
   if (input.skipChecks === true) requireUser(actor, "import a file that fails the statement checks");
-  else assertStatementReadable(parsed, actor, input.checkRunningBalance === true);
+  else {
+    assertStatementReadable(parsed, actor, input.checkRunningBalance === true);
+    // The opening balances already contain everything up to the cut-over date: an older statement would count that money twice.
+    const cutover = (await db.getBook(ctx.db, companyId))?.cutoverDate ?? null;
+    if (cutover && parsed.periodEnd && parsed.periodEnd <= cutover) {
+      throw new AccountingError(
+        `This statement ends on ${dayText(parsed.periodEnd)}, on or before the cut-over date (${dayText(cutover)}). The books start after that date and the opening balance already includes everything before it, so it is not imported. Nothing was imported. To move the cut-over earlier, a person reverses the opening balances first and posts them again from the earlier date.`,
+        "conflict",
+      );
+    }
+  }
   const seen = await db.statementByDigest(ctx.db, bank.id, parsed.digest);
   if (seen) {
     if (objectKey && !seen.objectKey) await db.linkStatementObjectKey(ctx.db, companyId, seen.id, objectKey);
