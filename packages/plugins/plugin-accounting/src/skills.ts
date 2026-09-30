@@ -44,7 +44,7 @@ A statement email in the Mailbox opens this issue for you, with the message id a
 4. Mark the statement issue done with the result. No statement in the email, or it was already imported another way: \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, with the \`reason\`).
 
 ### PDF statements (by email, or "Read N PDF bank statements")
-Accounting does not read PDFs: you do. A person's uploads arrive as one "Read N PDF bank statements" issue; \`pdf-statements\` with its \`batchId\` gives each file's \`objectKey\` and a fresh download link. **Every import is checked and refused, with nothing saved, when the rows are wrong** (balances that do not add up, every line on one side, missing descriptions). Never try to get around a refusal: fix the CSV.
+Accounting does not read PDFs: you do. A person's uploads arrive as one "Read N PDF bank statements" issue; \`pdf-statements\` with its \`batchId\` gives each file's \`objectKey\` and the local path of the PDF, already downloaded for you (open the path; there is no link to fetch). **Every import is checked and refused, with nothing saved, when the rows are wrong** (balances that do not add up, every line on one side, missing descriptions). Never try to get around a refusal: fix the CSV.
 1. **Read the pages as pictures, not as extracted text.** Text extraction runs columns together and drops the sign, which is how a whole statement can come out wrong. Look at each page (Claude: read the PDF pages; Hermes: \`pdf_page_image.py\` then view the image) and use \`pdf_read.py --text\` only to cross-check numbers. A page with no text is a scan: use the OCR route. A file for another account, or not a bank statement: leave it out and say so in your ask.
 2. **Know the columns before you type a row.** FNB: Description, Amount, Balance and Accrued Bank Charges. Only **Amount** moves the balance. The Accrued Bank Charges column is not an amount and never goes in the CSV (the fee shows later as its own "Monthly account fee" line). An amount followed by \`Cr\` is money in; an amount with no \`Cr\` is money out. The amount is never part of the Description. If a statement looks different, work out which column moves the balance before you start.
 3. **The sign of an amount is the direction its balance moved.** Row balance minus the row above's balance is the amount, positive or negative. Use it to settle any doubt about Cr or Dr.
@@ -99,7 +99,7 @@ Another plugin's journal was refused (an unmapped role, a closed month, a locked
 |---|---|
 | \`list-bank-accounts\` | Bank account ids, open lines, last statement, reconciled to |
 | \`import-statement\` | Import a CSV, OFX or MT940 statement (text or link), or the CSV you read from a PDF (checked row by row; refused when it does not add up); \`messageId\` links it to its email |
-| \`pdf-statements\` | The PDFs in a "Read N PDF bank statements" issue: download links and which are imported |
+| \`pdf-statements\` | The PDFs in a "Read N PDF bank statements" issue: local file paths and which are imported |
 | \`mark-statement-email\` | A statement email with no statement in it, or one already imported |
 | \`list-bank-lines\` / \`suggest-categorisation\` | Lines with their suggestions; ask again |
 | \`accept-categorisation\` | Accept a suggestion or categorise a line |

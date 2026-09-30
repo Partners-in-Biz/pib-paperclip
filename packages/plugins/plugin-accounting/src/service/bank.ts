@@ -9,6 +9,9 @@
  * - journal → the line is reconciled against a journal already on the bank;
  * - category → a bank journal is posted here (bank vs account, VAT split).
  */
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   amountBucket,
@@ -560,7 +563,6 @@ async function openReconcileIssue(ctx: PluginContext, companyId: string, bank: d
 // ---------------------------------------------------------------------------
 
 const MAX_PDF_BATCH = 60;
-const PDF_LINK_SECONDS = 24 * 3600;
 
 interface PdfBatch {
   bankAccountId: string;
@@ -587,7 +589,7 @@ export function pdfBatchIssueText(bank: { id: string; name: string }, batchId: s
     ...fileNames.slice(0, 20).map((n) => `- ${n}`),
     ...(fileNames.length > 20 ? [`- …and ${fileNames.length - 20} more`] : []),
     "",
-    `1. \`pdf-statements\` with \`batchId: "${batchId}"\`: a fresh download link per file, and which are imported already.`,
+    `1. \`pdf-statements\` with \`batchId: "${batchId}"\`: each PDF already downloaded to a local path you can open, and which are imported already.`,
     "2. Read each page as a picture (Claude: read the PDF pages; Hermes: `pdf_page_image.py`), not as extracted text, which runs columns together and loses the sign. Cross-check numbers with `pdf_read.py --text`. A page with no text is a scan: use the OCR route.",
     "3. Know the columns first. FNB: Description, Amount, Balance, Accrued Bank Charges. Only Amount moves the balance; the charges column is not an amount and stays out. An amount followed by `Cr` is money in, an amount without it is money out. The sign of an amount is the direction its balance moved.",
     "4. Write the CSV: header `Date,Description,Reference,Amount,Balance`, every line in the order printed, dates YYYY-MM-DD, money in positive and money out negative, the running Balance on every row, the Description exactly as printed without the amount.",
@@ -633,7 +635,33 @@ export async function queuePdfStatements(ctx: PluginContext, companyId: string, 
   return { batchId, issueId: issue.id, files: files.length, assignedTo: route.via };
 }
 
-/** Agent tool: the batch's files with fresh download links, and which are imported already. */
+/**
+ * Where a batch's PDFs are put for the agent to read: a private folder on the
+ * server the agent runs on. The agent gets a path, never a link: a signed
+ * link carries a credential, and the platform blanks credentials in what an
+ * agent sees, so a link arrives broken.
+ */
+function statementWorkDir(companyId: string, batchId: string): string {
+  const root =
+    process.env.PIB_ACCOUNTING_WORKDIR ||
+    path.join(process.env.PAPERCLIP_HOME || path.join(homedir(), ".paperclip"), "instances", process.env.PAPERCLIP_INSTANCE_ID || "default", "data", "accounting-statements");
+  return path.join(root, companyId, batchId);
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Agent tool: the batch's PDFs, each already downloaded to a local path the
+ * agent can open, and whether it is imported. A file that is imported is
+ * removed from disk again.
+ */
 export async function pdfStatementsTool(ctx: PluginContext, companyId: string, input: { batchId?: unknown }) {
   const batchId = typeof input.batchId === "string" ? input.batchId.trim() : "";
   const batch = batchId ? await readPdfBatch(ctx, companyId, batchId) : null;
@@ -642,18 +670,32 @@ export async function pdfStatementsTool(ctx: PluginContext, companyId: string, i
   if (!cfg) throw new AccountingError("The private R2 bucket is not set up", "not_configured");
   const bank = await db.getBankAccount(ctx.db, companyId, batch.bankAccountId);
   const imported = await db.importedObjectKeys(ctx.db, companyId, batch.files.map((f) => f.objectKey));
+  const dir = statementWorkDir(companyId, batchId);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const files: Array<{ fileName: string; objectKey: string; imported: boolean; path: string | null }> = [];
+  for (const [i, f] of batch.files.entries()) {
+    const local = path.join(dir, `${String(i + 1).padStart(2, "0")}-${safeFileName(f.fileName)}`);
+    if (imported.has(f.objectKey)) {
+      await rm(local, { force: true });
+      files.push({ fileName: f.fileName, objectKey: f.objectKey, imported: true, path: null });
+      continue;
+    }
+    if (!(await fileExists(local))) {
+      assertOwnKey(cfg, companyId, f.objectKey);
+      const res = await fetch(r2Url(cfg, "GET", f.objectKey, 300));
+      if (!res.ok) throw new AccountingError(`Could not read ${f.fileName} from storage (HTTP ${res.status})`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.byteLength > MAX_STATEMENT_BYTES) throw new AccountingError("Statement files can be at most 10 MB");
+      await writeFile(local, bytes, { mode: 0o600 });
+    }
+    files.push({ fileName: f.fileName, objectKey: f.objectKey, imported: false, path: local });
+  }
   return {
     bankAccount: bank ? { id: bank.id, name: bank.name } : { id: batch.bankAccountId, name: null },
-    files: batch.files.map((f) => ({
-      fileName: f.fileName,
-      objectKey: f.objectKey,
-      imported: imported.has(f.objectKey),
-      url: imported.has(f.objectKey) ? null : r2Url(cfg, "GET", f.objectKey, PDF_LINK_SECONDS),
-    })),
-    linksExpireInHours: PDF_LINK_SECONDS / 3600,
-    next: imported.size === batch.files.length
+    files,
+    next: files.every((f) => f.imported)
       ? ["Every file is imported. Work the reconcile issues, then mark the PDF issue done."]
-      : ["Read each file still to import with your pdf skill, oldest statement first, and import it with import-statement (content = the CSV, pdfObjectKey = its objectKey)."],
+      : ["Open each file at its path and read its pages as pictures, oldest statement first, then import it with import-statement (content = the CSV, pdfObjectKey = its objectKey). The path is a local file on this server."],
   };
 }
 

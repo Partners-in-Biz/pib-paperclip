@@ -56,7 +56,7 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
     name: "pdf-statements",
     displayName: "PDF statements to read",
     description:
-      "The PDF bank statements a person uploaded (one \"Read N PDF bank statements\" issue): each file's name, objectKey, a fresh download link (24 hours) and whether it is imported already.",
+      "The PDF bank statements a person uploaded (one \"Read N PDF bank statements\" issue): each file's name, objectKey, the local path of the PDF (already downloaded to this server, open it there) and whether it is imported already.",
     parametersSchema: schema(["batchId"], { batchId: { type: "string", description: "The batch id from the \"Read N PDF bank statements\" issue." } }),
   },
   {

@@ -757,7 +757,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.3" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.4" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -1059,9 +1059,21 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       expect(q).toMatchObject({ files: 2 });
       expect(q.issueId).toBeTruthy();
 
-      const before = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
+      // The tool downloads each PDF itself and hands over a local path: a signed link would reach the agent with its credential blanked.
+      const workDir = mkdtempSync(path.join(tmpdir(), "acct-pdf-"));
+      process.env.PIB_ACCOUNTING_WORKDIR = workDir;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string | URL | Request) => (String(url).includes("books-private") ? new Response("%PDF-1.4 statement bytes", { status: 200 }) : realFetch(url as never))) as typeof fetch;
+      let before: Awaited<ReturnType<typeof pdfStatementsTool>>;
+      try {
+        before = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
+      } finally {
+        globalThis.fetch = realFetch;
+      }
       expect(before.files.map((f) => [f.fileName, f.imported])).toEqual([["sep.pdf", false], ["aug.pdf", false]]);
-      expect(before.files[0]!.url).toContain("books-private");
+      expect(JSON.stringify(before)).not.toMatch(/X-Amz|Credential|Signature|https?:\/\//i);
+      expect(readFileSync(before.files[0]!.path!, "utf8")).toBe("%PDF-1.4 statement bytes");
+      expect(before.files[0]!.path!.startsWith(workDir)).toBe(true);
       expect((await checkPdfBatch(ctx, P, q.batchId)).done).toBe(false);
 
       const header = "Date,Description,Reference,Amount,Balance";
@@ -1083,7 +1095,12 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
 
       expect(await checkPdfBatch(ctx, P, q.batchId)).toEqual({ done: true });
       const after = await pdfStatementsTool(ctx, P, { batchId: q.batchId });
-      expect(after.files.every((f) => f.imported && f.url === null)).toBe(true);
+      expect(after.files.every((f) => f.imported && f.path === null)).toBe(true);
+      // Once imported, the local copies are removed again.
+      expect(existsSync(before.files[0]!.path!)).toBe(false);
+      expect(existsSync(before.files[1]!.path!)).toBe(false);
+      rmSync(workDir, { recursive: true, force: true });
+      delete process.env.PIB_ACCOUNTING_WORKDIR;
     });
 
     it("the checks that stop a misread PDF: sign lost, columns shifted, no balances, override for a person only, gaps between statements", async () => {
