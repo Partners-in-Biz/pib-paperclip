@@ -186,6 +186,7 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const requestRec = usePluginAction("accounting.request-reconciliation-approval");
   const approveRec = usePluginAction("accounting.approve-reconciliation");
   const discardRec = usePluginAction("accounting.discard-reconciliation");
+  const openRec = usePluginAction("accounting.open-reconciliation");
   const { busy, run } = useRunner(onMessage);
 
   const [snap, setSnap] = useState<BankSnapshot | null>(null);
@@ -519,10 +520,23 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                 <Td right>{formatMoney(r.differenceMinor)}</Td>
                 <Td><StatusPill status={r.status} /></Td>
                 <Td>
+                  {r.status === "pending_approval" ? (
+                    <Button type="button" style={{ ...small, marginRight: 6 }} disabled={busy !== ""} onClick={() => {
+                      if (!window.confirm(`Approve and lock ${r.periodStart} to ${r.periodEnd}? Its lines can no longer change.`)) return;
+                      void run("rec", async () => {
+                        await approveRec({ reconciliationId: r.id });
+                        setPrepared(null);
+                        await refreshAll();
+                      }, "Approved and locked.");
+                    }}>Approve</Button>
+                  ) : null}
                   {r.status !== "locked" ? (
                     <Button type="button" variant="secondary" style={small} onClick={() => {
                       setRecForm({ start: r.periodStart, end: r.periodEnd, opening: centsToInput(r.openingMinor), closing: centsToInput(r.closingMinor) });
-                      void run("rec", async () => setPrepared((await prepareRec({ bankAccountId: r.bankAccountId, periodStart: r.periodStart, periodEnd: r.periodEnd, openingMinor: r.openingMinor, closingMinor: r.closingMinor })) as { reconciliation: Reconciliation; summary: Summary }));
+                      // A draft is prepared again (it may have changed); one already waiting for approval is only looked at.
+                      void run("rec", async () => setPrepared((r.status === "draft"
+                        ? await prepareRec({ bankAccountId: r.bankAccountId, periodStart: r.periodStart, periodEnd: r.periodEnd, openingMinor: r.openingMinor, closingMinor: r.closingMinor })
+                        : await openRec({ reconciliationId: r.id })) as { reconciliation: Reconciliation; summary: Summary }));
                     }}>Open</Button>
                   ) : null}
                   {r.status !== "locked" ? (

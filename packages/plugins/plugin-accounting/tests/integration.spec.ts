@@ -25,7 +25,7 @@ import { approveDraft, onDraftIssue, postJournal, requestDraftApproval, saveDraf
 import { receiveMail, receiveMatchResult, receiveOpenItem, receivePostRequest, retryRejection } from "../src/service/ledger.js";
 import { buildPack } from "../src/service/pack.js";
 import { setupStatus } from "../src/service/setup.js";
-import { approveReconciliation, discardReconciliation, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval } from "../src/service/reconcile.js";
+import { approveReconciliation, discardReconciliation, prepareReconciliation, prepareReconciliationTool, requestReconciliationApproval, viewReconciliation } from "../src/service/reconcile.js";
 import { runReport, trends } from "../src/service/reports.js";
 import { approveVatReturn, prepareVatReturn, requestVatApproval } from "../src/service/vat.js";
 import * as guard from "./helpers/sql-guard.js";
@@ -757,7 +757,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.7" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.8" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
@@ -1155,6 +1155,12 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       expect(longer.reconciliationId).not.toBe(whole.reconciliationId);
       expect(await db.getReconciliation(ctx.db, G, whole.reconciliationId)).toBeNull();
       expect((await db.listReconciliations(ctx.db, G, bank.id)).map((r) => `${r.periodStart}..${r.periodEnd}`)).toEqual(["2026-07-01..2026-08-10"]);
+      // A reconciliation waiting for approval can be looked at (preparing it again is refused) and then approved from the page.
+      await expect(prepareReconciliation(ctx, G, user, { bankAccountId: bank.id, periodStart: "2026-07-01", periodEnd: "2026-08-10" })).rejects.toThrow(/already waiting for approval/);
+      const seen = await viewReconciliation(ctx, G, longer.reconciliationId);
+      expect(seen).toMatchObject({ reconciliation: { status: "pending_approval" }, summary: { ready: true, differenceMinor: 0 } });
+      await expect(approveReconciliation(ctx, G, agent, longer.reconciliationId)).rejects.toThrow(/board user/);
+      expect((await approveReconciliation(ctx, G, user, longer.reconciliationId)).status).toBe("locked");
 
       // 4. Once the books are cut over, an older statement is refused (its money is already in the opening balance); only a person can override.
       await postCutover(ctx, G, user, { csv: "code,name,debit,credit\n1000,Bank,1000.00,\n", date: "2026-06-30", balanceToEquity: true });

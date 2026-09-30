@@ -105,6 +105,17 @@ export async function prepareReconciliation(
   return { reconciliation, summary, bank };
 }
 
+/** A reconciliation as it stands, in any status, without preparing it again (preparing refuses one that is already waiting or locked). */
+export async function viewReconciliation(ctx: PluginContext, companyId: string, id: string): Promise<PreparedReconciliation> {
+  const rec = await db.getReconciliation(ctx.db, companyId, id);
+  if (!rec) throw new AccountingError("Reconciliation not found", "not_found");
+  const bank = await db.getBankAccount(ctx.db, companyId, rec.bankAccountId);
+  if (!bank) throw new AccountingError("Bank account not found", "not_found");
+  const lines = await db.listBankLines(ctx.db, companyId, { bankAccountId: bank.id, from: rec.periodStart, to: rec.periodEnd, limit: 5000 });
+  const summary = reconciliationSummary({ openingMinor: rec.openingMinor, closingMinor: rec.closingMinor, lines, glBalanceMinor: await glBalance(ctx, companyId, bank.accountCode, rec.periodEnd) });
+  return { reconciliation: rec, summary, bank };
+}
+
 export async function requestReconciliationApproval(ctx: PluginContext, companyId: string, actor: Actor, id: string): Promise<db.ReconciliationRow> {
   const rec = await db.getReconciliation(ctx.db, companyId, id);
   if (!rec) throw new AccountingError("Reconciliation not found", "not_found");
