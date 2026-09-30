@@ -97,6 +97,41 @@ const WORKSPACE_ENV_KEYS = [
 // (128 KiB on Linux), or the agent process cannot start.
 const MAX_WORKSPACES_JSON_CHARS = 32 * 1024;
 
+/**
+ * Serialize the workspace hints of a run to at most `maxChars` characters.
+ * Hints of referenced projects (they carry a projectId other than the anchor
+ * project's) are kept first, because the server prepared them for this run.
+ * Each hint is serialized once, and the order of the kept hints does not change.
+ */
+function serializeWorkspaceHints(
+  hints: unknown[],
+  anchorProjectId: string | undefined,
+  maxChars: number,
+): string | undefined {
+  const entries: Array<{ json: string; referenced: boolean }> = [];
+  for (const hint of hints) {
+    const json = JSON.stringify(hint);
+    if (json === undefined) continue;
+    const projectId =
+      hint && typeof hint === "object" ? cfgString((hint as Record<string, unknown>).projectId) : undefined;
+    entries.push({ json, referenced: projectId !== undefined && projectId !== anchorProjectId });
+  }
+
+  const kept = new Set<number>();
+  let length = 2; // the brackets of the JSON array
+  for (const pickReferenced of [true, false]) {
+    entries.forEach((entry, index) => {
+      if (entry.referenced !== pickReferenced) return;
+      const next = length + entry.json.length + (kept.size > 0 ? 1 : 0); // one comma
+      if (next > maxChars) return;
+      kept.add(index);
+      length = next;
+    });
+  }
+  if (kept.size === 0) return undefined;
+  return `[${entries.filter((_, index) => kept.has(index)).map((entry) => entry.json).join(",")}]`;
+}
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -557,11 +592,12 @@ export async function execute(
     agentHome: cfgString(workspaceContext.agentHome),
   });
   if (Array.isArray(ctxContext.paperclipWorkspaces)) {
-    const workspaceHints: unknown[] = [...ctxContext.paperclipWorkspaces];
-    while (workspaceHints.length > 0 && JSON.stringify(workspaceHints).length > MAX_WORKSPACES_JSON_CHARS) {
-      workspaceHints.pop();
-    }
-    if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+    const workspacesJson = serializeWorkspaceHints(
+      ctxContext.paperclipWorkspaces,
+      cfgString(workspaceContext.projectId),
+      MAX_WORKSPACES_JSON_CHARS,
+    );
+    if (workspacesJson) env.PAPERCLIP_WORKSPACES_JSON = workspacesJson;
   }
   try {
     await ensureAbsoluteDirectory(cwd);

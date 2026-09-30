@@ -215,6 +215,59 @@ describe("hermes-local adapter workspace", () => {
     expect(exported).toEqual(hints.slice(0, exported.length));
   });
 
+  it("keeps the workspaces of referenced projects when the list is too long", async () => {
+    const own = Array.from({ length: 2000 }, (_, index) => ({
+      workspaceId: `workspace-${index}`,
+      cwd: `/srv/paperclip/projects/demo/workspaces/${"nested/".repeat(10)}workspace-${index}`,
+    }));
+    const referenced = [
+      { workspaceId: "ref-1", cwd: "/srv/paperclip/projects/other/ref-1", projectId: "project-2" },
+      { workspaceId: "ref-2", cwd: "/srv/paperclip/projects/other/ref-2", projectId: "project-3" },
+    ];
+    const opts = await runOptions({
+      paperclipWorkspace: { cwd: WORKTREE, source: "task_session", projectId: "project-1" },
+      paperclipWorkspaces: [...own, ...referenced],
+    });
+
+    const exported = JSON.parse(opts.env.PAPERCLIP_WORKSPACES_JSON) as Array<{ workspaceId: string }>;
+    expect(opts.env.PAPERCLIP_WORKSPACES_JSON.length).toBeLessThanOrEqual(32 * 1024);
+    expect(exported.slice(-2).map((hint) => hint.workspaceId)).toEqual(["ref-1", "ref-2"]);
+    expect(exported.length).toBeGreaterThan(2);
+    expect(exported.length).toBeLessThan(own.length + referenced.length);
+    expect(exported.slice(0, -2)).toEqual(own.slice(0, exported.length - 2));
+  });
+
+  it("treats a hint of the anchor project as a hint of the project itself", async () => {
+    const own = Array.from({ length: 2000 }, (_, index) => ({
+      workspaceId: `workspace-${index}`,
+      cwd: `/srv/paperclip/projects/demo/workspaces/${"nested/".repeat(10)}workspace-${index}`,
+      projectId: "project-1",
+    }));
+    const opts = await runOptions({
+      paperclipWorkspace: { cwd: WORKTREE, source: "task_session", projectId: "project-1" },
+      paperclipWorkspaces: own,
+    });
+
+    const exported = JSON.parse(opts.env.PAPERCLIP_WORKSPACES_JSON);
+    expect(exported).toEqual(own.slice(0, exported.length));
+  });
+
+  it("trims a very long workspace list in one pass", async () => {
+    const hints = Array.from({ length: 20000 }, (_, index) => ({
+      workspaceId: `workspace-${index}`,
+      cwd: `/srv/paperclip/projects/demo/workspaces/workspace-${index}`,
+    }));
+    const started = Date.now();
+    const opts = await runOptions({
+      paperclipWorkspace: { cwd: WORKTREE, source: "task_session" },
+      paperclipWorkspaces: hints,
+    });
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(opts.env.PAPERCLIP_WORKSPACES_JSON.length).toBeLessThanOrEqual(32 * 1024);
+    expect(JSON.parse(opts.env.PAPERCLIP_WORKSPACES_JSON).length).toBeGreaterThan(0);
+  });
+
   it("drops workspace variables inherited from another run", async () => {
     vi.stubEnv("PAPERCLIP_WORKSPACE_CWD", "/srv/other-run/workspace");
     vi.stubEnv("PAPERCLIP_WORKSPACE_BRANCH", "other-run-branch");
