@@ -162,14 +162,63 @@ describe("ranking and selection", () => {
   });
 
   it("packs within the fact and token caps, pinned first", () => {
-    const many = Array.from({ length: 40 }, (_, i) => ({ fact: fact({ id: `f${i}`, text: `Fact number ${i} about the Northwind blog and its many pages. `.repeat(3).slice(0, 290) }), score: 1, lexical: 1, clientMatch: true, areaMatch: true }));
-    const pinned = { fact: fact({ id: "p", text: "Pinned rule", pinned: true, kind: "rule" }), score: 0, lexical: 0, clientMatch: false, areaMatch: false };
+    const many = Array.from({ length: 40 }, (_, i) => ({ fact: fact({ id: `f${i}`, text: `Fact number ${i} about the Northwind blog and its many pages. `.repeat(3).slice(0, 290) }), score: 1, lexical: 1, clientMatch: true, areaMatch: true, pinApplies: false }));
+    const pinned = { fact: fact({ id: "p", text: "Pinned rule", pinned: true, kind: "rule" }), score: 0, lexical: 0, clientMatch: false, areaMatch: false, pinApplies: true };
     const packed = pack([...many, pinned]);
     expect(packed.facts[0]!.fact.id).toBe("p");
     expect(packed.facts.length).toBeLessThanOrEqual(12);
     expect(packed.tokens).toBeLessThanOrEqual(1500);
     const tight = pack([...many], { maxFacts: 50, maxTokens: 300 });
     expect(tight.tokens).toBeLessThanOrEqual(300);
+  });
+
+  describe("pinned rules from another area", () => {
+    const mixed = [
+      fact({ id: "books", text: "Books start on 1 March: never import earlier bank statements.", kind: "rule", pinned: true, area: "accounting" }),
+      fact({ id: "everywhere", text: "Always call the tools as MCP tools.", kind: "rule", pinned: true, area: "general" }),
+      fact({ id: "clientpin", text: "Northwind never wants comparisons with other suppliers.", kind: "rule", pinned: true, clientRef: "company:nw", clientName: "Northwind", area: "billing" }),
+      fact({ id: "blog", text: "Northwind blog posts use British spelling and a friendly tone.", clientRef: "company:nw", clientName: "Northwind", area: "seo" }),
+    ];
+    const applies = (ranked: ReturnType<typeof rankFacts>, id: string) => ranked.find((r) => r.fact.id === id)!.pinApplies;
+
+    it("forces a pin only when it applies: the client's own, company-wide general, or the task's area", () => {
+      const seo = rankFacts(mixed, task(), NOW);
+      expect(applies(seo, "books")).toBe(false);
+      expect(applies(seo, "everywhere")).toBe(true);
+      expect(applies(seo, "clientpin")).toBe(true);
+      expect(applies(seo, "blog")).toBe(false); // not pinned
+      const accounting = rankFacts(mixed, task({ area: "accounting", title: "Reconcile the bank", clientRefs: [], clientNames: [] }), NOW);
+      expect(applies(accounting, "books")).toBe(true);
+      const unknownArea = rankFacts(mixed, task({ area: null }), NOW);
+      expect(applies(unknownArea, "books")).toBe(false);
+      expect(applies(unknownArea, "everywhere")).toBe(true);
+    });
+
+    it("Jev selection leaves another area's pin out unless Jev says the task needs it", () => {
+      const ranked = rankFacts(mixed, task(), NOW);
+      const without = jevSelect(ranked, { blog: 0.9, books: 0.1 }).map((r) => r.fact.id);
+      expect(without).toContain("everywhere");
+      expect(without).toContain("clientpin");
+      expect(without).toContain("blog");
+      expect(without).not.toContain("books");
+      const needed = jevSelect(ranked, { blog: 0.9, books: 0.8 }).map((r) => r.fact.id);
+      expect(needed).toContain("books");
+      expect(needed.indexOf("books")).toBeGreaterThan(needed.indexOf("clientpin")); // a normal pick, after the forced pins
+    });
+
+    it("baseline keeps another area's pin only when the task shares words with it", () => {
+      const quiet = baselineSelect(rankFacts(mixed, task(), NOW)).map((r) => r.fact.id);
+      expect(quiet).not.toContain("books");
+      const related = baselineSelect(rankFacts(mixed, task({ title: "Import the bank statements for the Northwind blog" }), NOW)).map((r) => r.fact.id);
+      expect(related).toContain("books");
+    });
+
+    it("packs the pins that apply first and lets the others compete for the remaining slots", () => {
+      const ranked = rankFacts(mixed, task(), NOW);
+      const packed = pack(ranked).facts.map((r) => r.fact.id);
+      expect(packed.slice(0, 2).sort()).toEqual(["clientpin", "everywhere"]);
+      expect(packed).toContain("books"); // room is left, so it still follows as a normal fact
+    });
   });
 
   it("skips expired and inactive facts", () => {
@@ -205,7 +254,7 @@ describe("rendering and upkeep value", () => {
   it("renders a compact brief with ids and sources", () => {
     const f = fact({ id: "m1", text: "Uses WordPress.", clientName: "Northwind", clientRef: "company:nw", area: "seo", sourceIdentifier: "PIB-9" });
     expect(factLine(f)).toBe("- [m1] (Northwind · seo) Uses WordPress. — PIB-9, 2026-09-20");
-    const body = renderBrief({ task: task(), selection: { method: "jev", selected: [{ fact: f, score: 1, lexical: 1, clientMatch: true, areaMatch: true }], baselineIds: [], scores: {}, tokens: 10, candidateCount: 1 }, totalFacts: 7, briefId: "b1" });
+    const body = renderBrief({ task: task(), selection: { method: "jev", selected: [{ fact: f, score: 1, lexical: 1, clientMatch: true, areaMatch: true, pinApplies: false }], baselineIds: [], scores: {}, tokens: 10, candidateCount: 1 }, totalFacts: 7, briefId: "b1" });
     expect(body.split("\n")[0]).toBe("Memory brief for PIB-1 (1 of 7 facts, picked by Jev; brief b1):");
     expect(renderBrief({ task: task(), selection: { method: "empty", selected: [], baselineIds: [], scores: {}, tokens: 0, candidateCount: 0 }, totalFacts: 0, briefId: "b2" })).toContain("no stored facts yet");
   });

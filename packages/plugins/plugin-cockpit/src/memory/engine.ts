@@ -104,6 +104,12 @@ export interface RankedFact {
   lexical: number;
   clientMatch: boolean;
   areaMatch: boolean;
+  /**
+   * Pinned and applies to this task, so it is always in the brief: a client's own pinned rule, a company-wide rule
+   * with area "general", or a company-wide rule for the task's area. Another area's company-wide rule (bookkeeping,
+   * mailbox) is left to the normal pick, so it stops taking brief slots from client work.
+   */
+  pinApplies: boolean;
 }
 
 export type SelectionMethod = "jev" | "baseline" | "empty";
@@ -301,6 +307,7 @@ export function rankFacts(facts: MemoryFact[], task: TaskContext, now: Date): Ra
     lexical = tokens.length ? lexical / Math.sqrt(tokens.length) : 0;
     const clientMatch = fact.clientRef !== null && task.clientRefs.includes(fact.clientRef);
     const areaMatch = task.area !== null && (fact.area === task.area || fact.area === "general");
+    const pinApplies = fact.pinned && (fact.clientRef !== null || fact.area === "general" || areaMatch);
     const recency = Math.max(0, 1 - daysBetween(fact.updatedAt || fact.createdAt, now) / 180);
     const score =
       (fact.pinned ? 3 : 0) +
@@ -311,7 +318,7 @@ export function rankFacts(facts: MemoryFact[], task: TaskContext, now: Date): Ra
       0.3 * Math.log1p(fact.helpfulCount) -
       0.6 * Math.log1p(fact.noiseCount) +
       (fact.kind === "rule" || fact.kind === "warning" ? 0.3 : 0);
-    return { fact, score, lexical, clientMatch, areaMatch };
+    return { fact, score, lexical, clientMatch, areaMatch, pinApplies };
   });
   return ranked.sort((a, b) => b.score - a.score || b.fact.updatedAt.localeCompare(a.fact.updatedAt) || a.fact.id.localeCompare(b.fact.id));
 }
@@ -334,8 +341,8 @@ export function pack(ordered: RankedFact[], limits: { maxFacts: number; maxToken
   const out: RankedFact[] = [];
   let tokens = 0;
   const seen = new Set<string>();
-  const pinned = ordered.filter((r) => r.fact.pinned).slice(0, MEMORY_LIMITS.pinnedMaxPerScope * 2);
-  for (const r of [...pinned, ...ordered.filter((x) => !x.fact.pinned)]) {
+  const pinned = ordered.filter((r) => r.pinApplies).slice(0, MEMORY_LIMITS.pinnedMaxPerScope * 2);
+  for (const r of [...pinned, ...ordered.filter((x) => !x.pinApplies)]) {
     if (seen.has(r.fact.id)) continue;
     if (out.length >= limits.maxFacts) break;
     const cost = estimateTokens(factLine(r.fact)) + 1;
@@ -352,14 +359,14 @@ export function pack(ordered: RankedFact[], limits: { maxFacts: number; maxToken
  * task or belong to the task's client and area, best rank first.
  */
 export function baselineSelect(ranked: RankedFact[]): RankedFact[] {
-  return ranked.filter((r) => r.fact.pinned || r.lexical > 0 || (r.clientMatch && r.areaMatch));
+  return ranked.filter((r) => r.pinApplies || r.lexical > 0 || (r.clientMatch && r.areaMatch));
 }
 
-/** Jev's picks: pinned rules always, then facts at or above the threshold, most likely first. */
+/** Jev's picks: the pinned rules that apply always, then facts at or above the threshold, most likely first. */
 export function jevSelect(ranked: RankedFact[], scores: Record<string, number>, threshold: number = SELECTION.jevThreshold): RankedFact[] {
-  const pinned = ranked.filter((r) => r.fact.pinned);
+  const pinned = ranked.filter((r) => r.pinApplies);
   const picked = ranked
-    .filter((r) => !r.fact.pinned && typeof scores[r.fact.id] === "number" && scores[r.fact.id]! >= threshold)
+    .filter((r) => !r.pinApplies && typeof scores[r.fact.id] === "number" && scores[r.fact.id]! >= threshold)
     .sort((a, b) => scores[b.fact.id]! - scores[a.fact.id]! || b.score - a.score);
   return [...pinned, ...picked];
 }
