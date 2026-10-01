@@ -77,7 +77,7 @@ function planRevision(source: TaskChatPlanPreviewSource): number | null {
 
 export function TaskChatPlanPreviewCard({
   source,
-  href = source.kind === "saved" ? "#document-plan" : null,
+  href = source.kind === "saved" ? "#document-plan&viewer=full" : null,
   ariaLabel,
   testId = "task-chat-plan-preview",
   className,
@@ -147,6 +147,7 @@ export function TaskChatPlanPreviewCard({
       <a
         href={href}
         data-testid={testId}
+        data-request-maximize=""
         aria-label={ariaLabel ?? `Open Plan${revision == null ? "" : ` revision ${revision}`}`}
         className={sharedClassName}
       >

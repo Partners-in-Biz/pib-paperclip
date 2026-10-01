@@ -1677,7 +1677,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
-              planHref: savedPlan ? "#document-plan" : undefined,
+              planHref: savedPlan ? "#document-plan&viewer=full" : undefined,
             } : {}),
             tone: source.status === "cancelled" ? "neutral" : "error",
             detail,

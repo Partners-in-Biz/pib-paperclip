@@ -180,7 +180,7 @@ describe("TaskChatInteractionCard", () => {
     const preview = container.querySelector(
       '[data-testid="plan-review-preview"]',
     );
-    expect(preview?.getAttribute("href")).toBe("#document-plan");
+    expect(preview?.getAttribute("href")).toBe("#document-plan&viewer=full");
     expect(preview?.getAttribute("aria-label")).toBe("Open Plan revision 3");
     expect(container.textContent).toContain("Health-check endpoint");
     expect(container.textContent).toContain(

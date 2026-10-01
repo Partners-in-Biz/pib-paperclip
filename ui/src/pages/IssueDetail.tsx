@@ -5970,6 +5970,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         (targetUrl.pathname === location.pathname &&
           targetUrl.search === location.search);
       if (!sameIssue || targetUrl.hash !== location.hash) return;
+      // Links that carry an explicit maximize affordance (the plan card)
+      // re-arm so a pane the user restored maximizes again; plain links
+      // reopen without overriding that choice.
+      if (anchor.hasAttribute("data-request-maximize")) {
+        lastMaximizeRequestKeyRef.current = null;
+      }
       routeIssueDocumentDeepLink(targetUrl.hash);
     };
 

@@ -340,7 +340,7 @@ function PlanReviewPreview({
         revision: targetRevision,
         fallbackTitle: target.label,
       }}
-      href="#document-plan"
+      href="#document-plan&viewer=full"
       testId="plan-review-preview"
       ariaLabel={`Open ${target.label ?? (targetRevision == null ? "plan" : `plan revision ${targetRevision}`)}`}
     />

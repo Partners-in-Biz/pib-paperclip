@@ -80,7 +80,7 @@ describe("TaskChatPlanPreviewCard", () => {
     ));
 
     const preview = container.querySelector('[data-testid="task-chat-plan-preview"]');
-    expect(preview?.getAttribute("href")).toBe("#document-plan");
+    expect(preview?.getAttribute("href")).toBe("#document-plan&viewer=full");
     expect(preview?.getAttribute("aria-label")).toBe("Open Plan revision 4");
     expect(preview?.textContent).toContain("Plan· rev 4");
     expect(preview?.textContent).toContain("Streaming task UX");
