@@ -4,7 +4,7 @@
  * for query, namespace-only writes, scalar params bound per placeholder).
  * Tests that need it skip when embedded-postgres is not installed.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,21 @@ function bindLikeHost(statement: string, params: readonly unknown[]): { sql: str
     return `$${values.length}`;
   });
   return { sql, values };
+}
+
+/**
+ * With COCKPIT_SQL_DUMP=<file>, every runtime statement the tests run is
+ * appended there (one JSON line each), so the host's REAL guard can be run over
+ * them outside the test run (the guard here is a replica).
+ */
+function dumpSql(kind: "query" | "execute", sql: string): void {
+  const file = process.env.COCKPIT_SQL_DUMP;
+  if (!file) return;
+  try {
+    appendFileSync(file, `${JSON.stringify({ kind, sql })}\n`);
+  } catch {
+    // diagnostics only
+  }
 }
 
 export interface FakeIssueRow {
@@ -92,12 +107,13 @@ export async function startPg(): Promise<PgHarness> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // Stand-in for the host's core table the Cockpit may read.
   await client.query(
-    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid)`,
+    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
   );
   // The core issue columns the operations watch reads (watch.ts), and the blocker relations.
   await client.query(
-    `CREATE TABLE public.issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT '', status text NOT NULL, hidden_at timestamptz, assignee_agent_id uuid, assignee_user_id text, blocked_transition_at timestamptz, unblock_descriptor jsonb, priority text, origin_kind text, origin_id text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
+    `CREATE TABLE public.issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT '', description text, status text NOT NULL, hidden_at timestamptz, assignee_agent_id uuid, assignee_user_id text, blocked_transition_at timestamptz, unblock_descriptor jsonb, priority text, origin_kind text, origin_id text, project_id uuid, parent_id uuid, completed_at timestamptz, started_at timestamptz, execution_policy jsonb, execution_state jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   );
+  await client.query(`CREATE TABLE public.projects (id uuid PRIMARY KEY, company_id uuid NOT NULL, name text NOT NULL, status text NOT NULL DEFAULT 'backlog', archived_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
   await client.query(`CREATE TABLE public.issue_relations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, issue_id uuid NOT NULL, related_issue_id uuid NOT NULL, type text NOT NULL DEFAULT 'blocks')`);
   for (const file of readdirSync(join(PLUGIN_ROOT, "migrations")).sort()) {
     const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
@@ -125,10 +141,12 @@ export async function startPg(): Promise<PgHarness> {
     db: {
       namespace: NAMESPACE,
       query: async (sql: string, params: unknown[] = []) => {
-        validateRuntimeQuery(sql, NAMESPACE, ["issues", "heartbeat_runs", "issue_relations"]);
+        dumpSql("query", sql);
+        validateRuntimeQuery(sql, NAMESPACE, ["issues", "heartbeat_runs", "issue_relations", "projects"]);
         return JSON.parse(JSON.stringify((await run(sql, params)).rows));
       },
       execute: async (sql: string, params: unknown[] = []) => {
+        dumpSql("execute", sql);
         validateRuntimeExecute(sql, NAMESPACE);
         return { rowCount: (await run(sql, params)).rowCount ?? 0 };
       },
@@ -187,10 +205,11 @@ export async function startPg(): Promise<PgHarness> {
       return full;
     },
     async reset() {
-      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
+      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile", "attestations", "client_revenue", "closeout_reviews", "improvements", "goals", "goal_values", "business_reviews", "credentials", "roles", "health_issues", "brief_issues", "snapshots", "acceptance_runs", "acceptance_requests", "plugin_versions", "eval_results"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
       await client.query("DELETE FROM public.heartbeat_runs");
       await client.query("DELETE FROM public.issue_relations");
       await client.query("DELETE FROM public.issues");
+      await client.query("DELETE FROM public.projects");
       issues.clear();
       comments.length = 0;
       config.clear();

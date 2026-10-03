@@ -4,7 +4,7 @@
  * with stable keys, the Operator is woken once per new problem, and nothing is
  * commented again and again.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { companyBrief } from "../src/brief.js";
 import { ROUTINES } from "../src/constants.js";
 import { collectProblems, refreshHealthIssue, WARN_ESCALATE_MS } from "../src/health.js";
@@ -14,6 +14,9 @@ import { createEnv } from "../src/register.js";
 import { saveTeam } from "../src/roles.js";
 import { fakeCtx, fixedClock, type FakeAgent } from "./helpers/fake-ctx.js";
 import type { Row } from "./helpers/fake-db.js";
+
+// The extra checks (checks.ts) have their own specs; here the Cockpit's other behaviour is tested on a quiet baseline.
+vi.mock("../src/checks.js", async (original) => ({ ...(await original<typeof import("../src/checks.js")>()), extraChecks: async () => ({ health: [], kpis: [], quality: [], waiting: [] }) }));
 
 const A = "company-a";
 const NOW = "2026-09-26T10:00:00.000Z";

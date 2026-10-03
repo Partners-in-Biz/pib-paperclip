@@ -290,6 +290,83 @@ d("company memory (Postgres)", () => {
     expect(review.content).toContain("2 active facts");
   });
 
+  describe("feedback signal (Q2-7): silence is not good news", () => {
+    async function briefsFor(count: number) {
+      await seedNorthwind();
+      const ids: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        h.addIssue({ id: `i-sig-${i}`, identifier: `PIB-${300 + i}`, title: "[Northwind] Blog post", originKind: "plugin:partnersinbiz.seo" });
+        ids.push((await recall({ issueId: `PIB-${300 + i}` }, { ...RUN, runId: `run-sig-${i}` })).data.briefId);
+      }
+      return ids;
+    }
+
+    it("says NO SIGNAL, and names no comparison, when no brief got any feedback", async () => {
+      await briefsFor(12);
+      const review = await tool("memory-review", {});
+      expect(review.data.feedbackSignal).toMatchObject({ briefs: 12, withFeedback: 0, coverage: 0, level: "none" });
+      expect(review.data.verdict).toContain("NO SIGNAL");
+      expect(review.data.verdict).toContain("do not count it under what worked");
+      expect(review.data.verdict).not.toContain("No missing-fact reports");
+      expect(review.content).toContain("NO SIGNAL");
+      const stats = await store.memoryStats(h.ctx, COMPANY);
+      expect(stats.briefs30d.total).toBe(12);
+      expect(stats.feedback30d.briefsWithFeedback).toBe(0);
+    });
+
+    it("counts a brief that fully helped as feedback, bumps the helped facts, and can say all", async () => {
+      const ids = await briefsFor(12);
+      const brief = await store.getBrief(h.ctx, COMPANY, ids[0]!);
+      const helped = brief!.factIds[0]!;
+      const one = await tool("memory-feedback", { briefId: ids[0], helpful: [helped] });
+      expect(one.error).toBeUndefined();
+      expect(one.data.recorded).toBe(1);
+      expect((await store.getFact(h.ctx, COMPANY, helped))!.helpfulCount).toBe(1);
+      const all = await tool("memory-feedback", { briefId: ids[1], helpful: ["all"] });
+      const second = await store.getBrief(h.ctx, COMPANY, ids[1]!);
+      expect(all.data.recorded).toBe(second!.factIds.length);
+      // a fact that was not in the brief cannot be marked as helping it
+      const outside = (await store.listFacts(h.ctx, COMPANY, { status: "active", limit: 50, offset: 0 })).facts.find((f) => !brief!.factIds.includes(f.id))!;
+      expect((await tool("memory-feedback", { briefId: ids[2], helpful: [outside.id] })).error).toContain("Say what was missing");
+      const stats = await store.memoryStats(h.ctx, COMPANY);
+      expect(stats.feedback30d.helpful).toBe(1 + second!.factIds.length);
+      expect(stats.feedback30d.briefsWithFeedback).toBe(2);
+      const review = await tool("memory-review", {});
+      // 2 of 12 is real but thin: most briefs went unreviewed
+      expect(review.data.feedbackSignal).toMatchObject({ briefs: 12, withFeedback: 2, level: "thin" });
+      expect(review.data.verdict).toContain("Thin signal: 2 of 12 briefs (17%)");
+    });
+
+    it("a fact reported helpful and noise in one call counts as noise", async () => {
+      const [id] = await briefsFor(1);
+      const brief = await store.getBrief(h.ctx, COMPANY, id!);
+      const fact = brief!.factIds[0]!;
+      await tool("memory-feedback", { briefId: id, helpful: [fact], noise: [fact] });
+      const after = await store.getFact(h.ctx, COMPANY, fact);
+      expect(after!.noiseCount).toBe(1);
+      expect(after!.helpfulCount).toBe(0);
+    });
+
+    it("every brief ends by asking for a report, helpful included", async () => {
+      await seedNorthwind();
+      h.addIssue({ id: "i-p", identifier: "PIB-399", title: "[Northwind] Blog post" });
+      const brief = await recall({ issueId: "PIB-399" });
+      expect(brief.content).toContain("call memory-feedback once with this brief id: helpful (ids that helped, or [\"all\"])");
+      expect(brief.content).toContain("No report tells us nothing.");
+    });
+  });
+
+  it("flags pinned company-wide facts that describe how a tool behaves, for folding into the skill (Q2-12)", async () => {
+    await add({ text: "Call partnersinbiz.* tools as MCP tools, never over curl to /api/plugins/tools/execute.", client: "own", kind: "rule", pinned: true, area: "general" });
+    await add({ text: "Northwind prefers posts on Tuesdays.", client: "own", kind: "preference", pinned: false, area: "social" });
+    await add({ text: "Hunt and Gun call themselves H&G in emails; never use the full name.", client: "company:hg", clientName: "Hunt and Gun", kind: "rule" });
+    const review = await tool("memory-review", {});
+    expect(review.data.skillCandidates).toHaveLength(1);
+    expect(review.data.skillCandidates[0]).toMatchObject({ pinned: true, module: null });
+    expect(review.data.skillCandidates[0].text).toContain("MCP tools");
+    expect(review.content).toContain("belongs in its skill");
+  });
+
   it("gives a clear message when there is nothing to recall, and validates input", async () => {
     h.addIssue({ id: "i-e", identifier: "PIB-60", title: "Anything" });
     const empty = await recall({ issueId: "PIB-60" });

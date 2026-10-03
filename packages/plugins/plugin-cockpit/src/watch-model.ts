@@ -85,6 +85,20 @@ export interface BlockedIssue {
   title: string;
   /** When it became blocked. */
   since: string;
+  /** Blocker issues it had that are all done or cancelled now: nothing keeps it blocked, so it only has to be moved on. */
+  closedBlockers?: number;
+}
+
+/** A blocked issue that does name who unblocks it, but that agent cannot act (gone, paused, in error). */
+export interface DeadOwnerBlock {
+  id: string;
+  identifier: string | null;
+  title: string;
+  since: string;
+  ownerAgentId: string;
+  ownerName: string | null;
+  /** Why it cannot act: `removed`, `paused`, `error`, `pending approval`. */
+  why: string;
 }
 
 export interface StalledIssue {
@@ -253,7 +267,10 @@ export function retryStormChecks(rows: StormRow[], agents: Map<string, WatchAgen
 export function blockedCheck(items: BlockedIssue[], total: number, now: Date): HealthCheck | null {
   if (items.length === 0) return null;
   const shown = [...items].sort((a, b) => Date.parse(a.since) - Date.parse(b.since)).slice(0, WATCH.named);
-  const list = shown.map((i) => `${issueRef(i)} "${i.title.slice(0, 50)}" (${ageLabel(i.since, now)})`).join(", ");
+  // What exactly is missing: all of them lack an owner, a blocker issue and a question; one whose blockers are all closed also says so (it only needs moving on).
+  const list = shown
+    .map((i) => `${issueRef(i)} "${i.title.slice(0, 50)}" (${ageLabel(i.since, now)}${i.closedBlockers ? `; its ${i.closedBlockers === 1 ? "blocker is" : `${i.closedBlockers} blockers are`} done, so nothing keeps it blocked` : ""})`)
+    .join(", ");
   return {
     key: "blocked-no-way-out",
     title: `${total} ${total === 1 ? "issue is" : "issues are"} blocked with no way out`,
@@ -261,6 +278,22 @@ export function blockedCheck(items: BlockedIssue[], total: number, now: Date): H
     detail: `Blocked for more than ${WATCH.blockedHours} hours with no unblock owner, no blocker issue and no question to the owner, so nothing will wake them: ${list}${more(total, shown.length)}.`,
     href: issueHref(shown[0]!),
     fix: "Give each one a way out: an unblock owner and action on the issue, a blocker issue, or a question to the owner. If nothing is left to wait for, set it back to todo or cancel it with a reason.",
+    since: shown[0]!.since,
+  };
+}
+
+/** Blocked for more than a day on an agent that cannot act: the issue names a way out, but nobody is there to take it. */
+export function blockedOwnerCheck(items: DeadOwnerBlock[], total: number, now: Date): HealthCheck | null {
+  if (items.length === 0) return null;
+  const shown = [...items].sort((a, b) => Date.parse(a.since) - Date.parse(b.since)).slice(0, WATCH.named);
+  const list = shown.map((i) => `${issueRef(i)} "${i.title.slice(0, 50)}" (${ageLabel(i.since, now)}, waits on ${i.ownerName ?? "an agent"}, ${i.why})`).join(", ");
+  return {
+    key: "blocked-owner-cannot-act",
+    title: `${total} ${total === 1 ? "blocked issue waits" : "blocked issues wait"} on an agent that cannot act`,
+    status: "warn",
+    detail: `Each names who must unblock it, but that agent is removed, paused or in error, so the way out leads nowhere: ${list}${more(total, shown.length)}.`,
+    href: issueHref(shown[0]!),
+    fix: "Give each a new owner in its unblock descriptor (PATCH /api/issues/{id} with unblockDescriptor), or fix the agent (Setup → Team) and wake it.",
     since: shown[0]!.since,
   };
 }

@@ -5,8 +5,10 @@
  * else the owner. Updated as problems change; closed when all is ok.
  */
 import { createHash } from "node:crypto";
-import { configSaved, createWorkIssue, isModuleEnabled, readConfig, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
-import { reconcileAsks } from "./asks.js";
+import { configSaved, createWorkIssue, isModuleEnabled, readConfig, repairUnroutedApprovals, syncAllCompanies, wakeIssue, type SkillSyncer as KitSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+import { reannounceEffects, reconcileAsks } from "./asks.js";
+import { forgetChecks } from "./checks.js";
+import { ensureCockpitAsks } from "./effects.js";
 import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
 import { clearHealthIssue, getHealthIssue, getRoles, listRoles, listSnapshots, saveHealthIssue } from "./db.js";
 import { message, readInstalled, type Env } from "./env.js";
@@ -298,10 +300,17 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
   return { action: "created", issueId: created.id, problems: found.entries.length };
 }
 
-/** Hourly job: every company with saved Cockpit settings. Also settles questions whose reply or close event was missed. */
+/**
+ * Hourly job: every company with saved Cockpit settings. Also settles
+ * questions whose reply or close event was missed, re-announces answers whose
+ * effect has no result yet, opens the questions the Cockpit asks on its own
+ * account (a grant, goals), hands approvals nobody was assigned to the
+ * approver, and brings every company's managed skills up to date.
+ */
 export async function healthAlerts(env: Env): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
-  for (const row of await listRoles(env.ctx)) {
+  const rows = await listRoles(env.ctx);
+  for (const row of rows) {
     let key: string;
     if (!(await configSaved(env.ctx, row.companyId))) key = "skipped";
     else {
@@ -312,6 +321,27 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         env.ctx.logger.info("Question check failed", { companyId: row.companyId, error: message(error) });
       }
       try {
+        const effects = await reannounceEffects(env, row.companyId);
+        counts.effectsResent = (counts.effectsResent ?? 0) + effects.resent;
+        counts.effectsTimedOut = (counts.effectsTimedOut ?? 0) + effects.timedOut;
+      } catch (error) {
+        env.ctx.logger.info("Answered-ask effects check failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        const asked = await ensureCockpitAsks(env, row.companyId);
+        for (const [name, action] of Object.entries(asked)) if (action === "opened") counts[`asked_${name}`] = (counts[`asked_${name}`] ?? 0) + 1;
+      } catch (error) {
+        env.ctx.logger.info("Cockpit questions failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        const repaired = await repairUnroutedApprovals(env.ctx, row.companyId, { now: env.now().getTime() });
+        if (repaired.repaired.length) counts.approvalsRouted = (counts.approvalsRouted ?? 0) + repaired.repaired.length;
+      } catch (error) {
+        env.ctx.logger.info("Approval repair failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // The hourly issue is built from fresh checks, not the page's ten-minute copy.
+        forgetChecks(env, row.companyId);
         key = (await refreshHealthIssue(env, row.companyId)).action;
       } catch (error) {
         key = "failed";
@@ -320,6 +350,19 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
     }
     counts[key] = (counts[key] ?? 0) + 1;
   }
+  // Every company's skills, not only the ones a call happened to reach (Q7-2, Q3-9). A company with no saved settings cannot be synced from a job: the sweep says so.
+  if (typeof env.skills.check === "function") {
+    try {
+      const sweep = await syncAllCompanies(env.ctx, env.skills as unknown as KitSkillSyncer, {
+        companyIds: rows.map((r) => r.companyId),
+        isEnabled: (companyId) => isModuleEnabled(env.ctx, companyId, PLUGIN_KEY),
+        plugin: "Cockpit",
+      });
+      counts.skillsSynced = sweep.outcomes.filter((o) => o.status === "synced").length;
+      counts.skillsNeedSettings = sweep.outcomes.filter((o) => o.status === "needs_settings").length;
+    } catch (error) {
+      env.ctx.logger.info("Skill sweep failed", { error: message(error) });
+    }
+  }
   return counts;
 }
-

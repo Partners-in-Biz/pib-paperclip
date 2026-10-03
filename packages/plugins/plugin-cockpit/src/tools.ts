@@ -6,8 +6,11 @@
  * fields only).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
 import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
+import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
+import { OPS_TOOLS } from "./ops-tool-declarations.js";
 import { BANNED_WORDS_MAX, PROFILE_FIELDS } from "./profile-model.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
@@ -39,7 +42,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.brief,
     displayName: "Company brief",
     description:
-      "Everything on the Cockpit in compact JSON: what waits on the owner (questions agents asked first, then money and legal, with links and why), asks (each open question with its age), stuckFlows (the 5 stages of the company graph where work is stuck, with who it waits on), unassigned (open issues nobody holds, older than a day), team (the agent in each role), system health (worst first, with fixes), KPIs by group, recent activity per agent, and every agent with status, last run, spend vs budget and quality metrics. Start every operations review here.",
+      "Everything on the Cockpit in compact JSON: what waits on the owner (questions agents asked first, then money and legal, with links and why), asks (each open question with its age), stuckFlows (the 5 stages of the company graph where work is stuck, with who it waits on), unassigned (open issues nobody holds, older than a day), team (the agent in each role), improvements (open and overdue changes with the number each should move), goals (each company goal with where its number stands), system health (worst first, with fixes), KPIs by group, recent activity per agent, and every agent with status, last run, spend vs budget, notional spend, run time, retries, cost per finished issue and quality metrics. Start every operations review here.",
     parametersSchema: schema([], {
       windowHours: { type: "integer", description: "Activity window in hours (default 24; 168 for the weekly retro)", minimum: 1, maximum: 720 },
     }),
@@ -64,7 +67,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.scorecards,
     displayName: "Agent scorecards",
     description:
-      "One scorecard per agent: status, last run, runs and failed runs in the last 7 days, spend vs monthly budget, and quality metrics the plugins report (rejections, corrections, failures). Use it for the weekly retro.",
+      "One scorecard per agent: status, last run, runs and failed runs in the last 7 days, spend vs monthly budget (billed cents: always 0 on the flat Claude plan, so read the notional spend instead), and for the window the measures: notional USD, tokens, typical and slowest run time, retries, continuation wakes, why runs were cancelled, failures by code, finished issues and cost per finished issue; plus quality metrics the plugins report (rejections, corrections, failures). Use it for the weekly retro.",
     parametersSchema: schema([], {}),
   },
   {
@@ -80,7 +83,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.askOwner,
     displayName: "Ask the owner",
     description:
-      "Ask the owner for a decision, a one-time grant (a login consent, a key, a DNS record), money, legal or information you cannot get elsewhere. Once per issue; asking again updates the question. The issue goes to the owner (in review), shows first in the Cockpit's Waiting on you and the daily brief, and comes back to you with the answer (you are woken on it). Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next.",
+      "Ask the owner for a decision, a one-time grant (a login consent, a key, a DNS record), money, legal or information you cannot get elsewhere. Once per issue; asking again updates the question. The issue goes to the owner (in review), shows first in the Cockpit's Waiting on you and the daily brief, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next.",
     parametersSchema: schema(["issueId", "question", "why", "kind"], {
       issueId: { type: "string", description: "The issue you are working on, which waits for the answer (id or identifier, e.g. PIB-23)." },
       question: { type: "string", maxLength: ASK_LIMITS.question, description: `One clear question (at most ${ASK_LIMITS.question} characters).` },
@@ -104,6 +107,16 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       steps: { type: "array", items: { type: "string", maxLength: ASK_LIMITS.stepChars }, maxItems: ASK_LIMITS.steps, description: `Exact steps for anything they must do themselves, in order (up to ${ASK_LIMITS.steps}).` },
       client: { type: "string", pattern: "^(company|contact):[A-Za-z0-9_-]{1,128}$", description: "The client it is about: \"company:<crm id>\" or \"contact:<crm id>\". Omit for own work." },
       dueBy: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "When you need the answer by, YYYY-MM-DD." },
+      effect: {
+        type: "object",
+        description: "What the system does when the owner says yes to your FIRST option, so a grant takes effect and is checked (not just answered). Only for kind grant or decision, and only an effect a skill or the Setup checklist names (for example mailbox.delegate, cockpit.grant-memory-tools). The owner sees exactly what it will do. After the answer you are woken with what happened: do not ask again.",
+        required: ["key"],
+        additionalProperties: false,
+        properties: {
+          key: { type: "string", maxLength: 60, description: "The effect: \"<plugin>.<action>\", e.g. mailbox.delegate." },
+          params: { type: "object", description: "Plain values the effect needs (text, numbers, true/false), e.g. {\"accountId\": \"...\", \"scope\": \"read+draft\"}. The handler re-checks them: anything it does not accept is refused." },
+        },
+      },
     }),
   },
   {
@@ -124,4 +137,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   ...MEMORY_TOOL_DECLARATIONS,
+  ...OPS_TOOLS,
+  ...ACCEPTANCE_TOOLS,
+  ...EVAL_TOOLS,
 ];

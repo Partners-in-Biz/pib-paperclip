@@ -11,12 +11,24 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, RETRO_REFERENCE } from "../src/skill-references.js";
+import { skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
 import { routineFailedCheck } from "@partnersinbiz/pib-plugin-kit";
-import { blockedCheck, retryStormChecks, runRateChecks, runStreakChecks, stalledCheck } from "../src/watch-model.js";
+import { blockedCheck, blockedOwnerCheck, retryStormChecks, runRateChecks, runStreakChecks, stalledCheck } from "../src/watch-model.js";
+import { DAILY_ROUTINE_DESCRIPTION, WEEKLY_ROUTINE_DESCRIPTION } from "../src/manifest.js";
+import { limitFailureChecks, reviewCoverageCheck, spendChecks, emptyAggregate } from "../src/measure-model.js";
+import { backlogCheck, unhandledAsksCheck } from "../src/backlog-model.js";
+import { credentialChecks, EXPIRY_BAD_DAYS, EXPIRY_WARN_DAYS } from "../src/credentials-model.js";
+import { ATTEST_VALID_DAYS, ATTESTATIONS, attestationChecks, singleAdminCheck } from "../src/security.js";
+import { clientEffortChecks } from "../src/client-cost-model.js";
+import { closeoutContent } from "../src/closeout-model.js";
+import { businessReviewContent } from "../src/goals-model.js";
 
 const skill = (slug: string) => SKILLS.find((s) => s.slug === slug)!;
+/** The Operator's whole text: the skill and its reference files (an agent reads a reference when a check or an issue calls for it). */
+const OPERATOR_TEXT = [OPERATOR_SKILL_BODY, ...OPERATOR_FILES.map((f) => f.content)].join("\n\n");
 
 describe("the company operating manual (company-os)", () => {
   const os = skill(COMPANY_SKILL_SLUG);
@@ -68,7 +80,7 @@ describe("the company operating manual (company-os)", () => {
 
 describe("the Operator skill", () => {
   it("speaks of the owner, never a name, in the skill, the hire and the routines", () => {
-    for (const s of SKILLS) expect(s.markdown, s.slug).not.toMatch(/\bPeet\b/);
+    for (const s of SKILLS) expect([s.markdown, ...((s as { files?: Array<{ content: string }> }).files ?? []).map((f) => f.content)].join("\n"), s.slug).not.toMatch(/\bPeet\b/);
     expect(JSON.stringify(manifest.routines)).not.toMatch(/\bPeet\b/);
   });
 
@@ -112,15 +124,14 @@ describe("the Operator knows how to act on each watch problem", () => {
     expect(storm).toContain("keeps failing");
     expect(blocked).toContain("blocked with no way out");
     expect(stalled).toContain("in progress with nobody working on");
-    for (const text of ["failed its last run", "% of its runs", "times in a row with", "keeps failing", "blocked with no way out", "in progress with nobody working on"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+    // The daily loop names the two it works itself (step 5); the reference says what to do for every one.
+    for (const text of ["blocked with no way out", "in progress with nobody working on"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+    for (const text of ["failed its last run", "% of its runs", "times in a row with", "keeps failing", "blocked with no way out", "in progress with nobody working on"]) expect(HEALTH_REFERENCE, text).toContain(text);
   });
 
   it("says what to do: never just retry, give a blocked issue a way out, wake a stalled assignee", () => {
+    for (const text of ["never just retry", "spawn E2BIG", "continuation issue", "workspace_validation_failed"]) expect(HEALTH_REFERENCE, text).toContain(text);
     for (const text of [
-      "never just retry",
-      "spawn E2BIG",
-      "continuation issue",
-      "workspace_validation_failed",
       "`blockedByIssueIds`",
       "`unblockDescriptor`",
       "PATCH /api/issues/{id}",
@@ -130,7 +141,7 @@ describe("the Operator knows how to act on each watch problem", () => {
   });
 
   it("tells the Operator only what the host lets it do about a failed routine: read the runs, hand the run to the assignee", () => {
-    const line = OPERATOR_SKILL_BODY.split("\n").find((l) => l.includes("failed its last run"))!;
+    const line = HEALTH_REFERENCE.split("\n").find((l) => l.includes("failed its last run"))!;
     // Reading a routine's runs is open to every agent; running one is not (the host answers 403 unless the agent is its assignee).
     expect(line).toContain("`GET /api/routines/{id}/runs` (any agent");
     expect(line).toContain("only its assignee may `POST /api/routines/{id}/run`");
@@ -139,7 +150,7 @@ describe("the Operator knows how to act on each watch problem", () => {
     expect(line).toContain("or at the next schedule");
     // No role this plugin cannot name for every company, and no button the Operator may not press.
     expect(line).toContain("the role that owns code, or the owner if none");
-    for (const text of ["Developer", "Run now"]) expect(OPERATOR_SKILL_BODY, text).not.toContain(text);
+    for (const text of ["Developer", "Run now"]) expect(OPERATOR_TEXT, text).not.toContain(text);
     // The same promise in the check's own fix text, so the skill and the check cannot drift apart.
     const fix = routineFailedCheck({ routineKey: "k", title: "Run today's SEO", pluginTitle: "SEO", routineId: "r-1", at: demo.toISOString() }).fix!;
     expect(fix).toContain("only the routine's assignee (or the owner) may POST /api/routines/r-1/run");
@@ -149,6 +160,8 @@ describe("the Operator knows how to act on each watch problem", () => {
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
     expect(operator.markdown!.length).toBeLessThan(17_950);
+    // The references are read on demand, each on its own: none is a wall of text.
+    for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
     expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(18_000);
     expect(companySkillBody().length).toBeLessThan(16_000);
   });
@@ -181,5 +194,140 @@ describe("the Reviewer skill", () => {
     }
     // The SEO checks named without the prefix exist too.
     for (const name of ["check-meta", "check-canonical", "validate-schema", "crawler-sim"]) expect(declared("seo").has(name), name).toBe(true);
+  });
+});
+
+describe("the Operator's references (Wave 3)", () => {
+  const operator = skill("pib-operator") as { markdown: string; files?: Array<{ path: string; content: string }> };
+
+  it("the skill ships eight reference files, and the body names every one of them", () => {
+    expect(operator.files?.map((f) => f.path)).toEqual([
+      "references/health-checks.md",
+      "references/closeout-review.md",
+      "references/retro-and-improvements.md",
+      "references/goals-and-business-review.md",
+      "references/credentials-and-custody.md",
+      "references/asking-with-an-effect.md",
+      "references/quality-gates.md",
+      "references/skill-coach.md",
+    ]);
+    for (const path of Object.values(OPERATOR_REFERENCE_PATHS)) {
+      expect(operator.files!.some((f) => f.path === path), path).toBe(true);
+      expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
+    }
+    // The Reviewer stays one file; the manual carries one reference (how to look at a page) for every role, and the Acceptance skill its own two.
+    expect(skill("pib-reviewer")).not.toHaveProperty("files");
+    expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md"]);
+    expect(companySkillBody()).toContain("`references/screenshots.md`");
+  });
+
+  it("a re-run of acceptance is asked for through an issue to the Acceptance agent: the Cockpit has no Run button to point at", () => {
+    const gates = operator.files!.find((f) => f.path === "references/quality-gates.md")!.content;
+    expect(gates).not.toMatch(/Run acceptance now/i);
+    expect(gates).toContain("open an issue for the Acceptance agent");
+    expect(gates).toContain("The Cockpit has no Run button");
+  });
+
+  it("a change to a reference changes the skill's version, so every company's copy is brought up to date", () => {
+    const base = skillVersion(operator as never);
+    const edited = { ...operator, files: operator.files!.map((f, i) => (i === 0 ? { ...f, content: `${f.content}\nNew rule.` } : f)) };
+    expect(skillVersion(edited as never)).not.toBe(base);
+    expect(skillVersion({ ...operator, files: [] } as never)).not.toBe(base);
+    expect(skillVersion(operator as never)).toBe(base);
+  });
+
+  it("the daily loop and the retro list the steps the routines list, in the same order", () => {
+    for (const text of ["1. **Read.**", "2. **Health first.**", "3. **Check the team", "4. **Route unassigned work.**", "5. **Unblock agents.**", "6. **Stuck in the flows.**", "7. **Check what waits on the owner.**", "8. **Plan today.**", "9. **Improvements and reviews.**", "10. **Post the brief**", "11. Close the routine issue"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+    expect(DAILY_ROUTINE_DESCRIPTION).toContain("9. Look at `improvements`");
+    expect(DAILY_ROUTINE_DESCRIPTION).toContain("11. Close this issue");
+    for (const text of ["1. ", "2. ", "3. ", "4. ", "5. ", "6. Carry out the proposals that do not need the owner"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+    for (const tool of [`${PLUGIN_KEY}:measure-report`, `${PLUGIN_KEY}:improvement-list`, `${PLUGIN_KEY}:improvement-propose`, `${PLUGIN_KEY}:memory-review`]) {
+      expect(OPERATOR_SKILL_BODY, tool).toContain(tool);
+      expect(WEEKLY_ROUTINE_DESCRIPTION, tool).toContain(tool);
+    }
+    expect(WEEKLY_ROUTINE_DESCRIPTION).toContain("NO SIGNAL");
+    expect(OPERATOR_SKILL_BODY).toContain("**NO SIGNAL**");
+  });
+
+  it("quotes the words every new check is titled with, so a renamed check cannot orphan its instructions", () => {
+    const now = new Date("2026-10-03T12:00:00.000Z");
+    const titles: string[] = [];
+    const add = (...checks: Array<{ title: string } | null | undefined>) => titles.push(...checks.filter((c): c is { title: string } => !!c).map((c) => c.title));
+    add(...spendChecks({ usd24h: 120, usd7d: 600, usdBaseline7d: 140, daysWithData: 10 }, { dailyUsd: 50, weeklyUsd: 400 }));
+    add(...limitFailureChecks({ total: 7, byAgent: [{ agentId: "a", count: 7 }], since: now.toISOString() }, new Map(), 24));
+    add(reviewCoverageCheck({ done: 20, reviewed: 5, byPolicy: 3, byIssue: 2, coverage: 0.25, latencyP50Hours: 4, latencyP90Hours: 9, latencySamples: 5, unreviewed: [{ id: "x", identifier: "PAR-1" }], rule: "" } as never));
+    add(backlogCheck(Array.from({ length: 12 }, (_, i) => ({ id: `i${i}`, kind: "issue" as const, since: "2026-09-20T00:00:00.000Z" })), now), unhandledAsksCheck([{ identifier: "PAR-1", issueId: "i", askedAt: "2026-09-20T00:00:00.000Z" }, { identifier: "PAR-2", issueId: "j", askedAt: "2026-09-21T00:00:00.000Z" }]));
+    add(...credentialChecks([{ id: "c", companyId: "x", seedKey: null, name: "GitHub token", system: "GitHub", livesIn: null, owner: null, expiresAt: "2026-10-10", expiryNote: null, rotateHow: null, rotateHref: null, verifyWith: null, lastVerifiedAt: null, lastVerifyStatus: "invalid", lastVerifyDetail: null, status: "active", notes: null, createdAt: "", updatedAt: "" }, { id: "b", companyId: "x", seedKey: null, name: "Old", system: "X", livesIn: null, owner: null, expiresAt: null, expiryNote: null, rotateHow: null, rotateHref: null, verifyWith: null, lastVerifiedAt: null, lastVerifyStatus: null, lastVerifyDetail: null, status: "burned", notes: null, createdAt: "", updatedAt: "" }], now));
+    add(...attestationChecks(new Map(), now), singleAdminCheck(1, false));
+    add(...clientEffortChecks([{ clientRef: "company:a", name: "Brightside", lifecycle: "customer", matchedBy: "name", projects: [], usd: 200, runs: 1, doneIssues: 1, paidZar: 1000, skippedCurrencies: [], ratio: 0.9 }, { clientRef: "company:b", name: "Northwind", lifecycle: "customer", matchedBy: "name", projects: [], usd: 200, runs: 1, doneIssues: 1, paidZar: 0, skippedCurrencies: [], ratio: null }]));
+    add(blockedOwnerCheck([{ id: "b", identifier: "PAR-2", title: "t", since: "2026-09-28T00:00:00.000Z", ownerAgentId: "x", ownerName: "Dev", why: "paused" }], 1, now));
+    expect(titles.length).toBeGreaterThanOrEqual(14);
+    // The wording each title is built from, without the numbers and names that change.
+    const fragments = [
+      "Notional AI spend is", "in 24 hours", "this week", "times the usual", "failed on the subscription limit", "of finished code work was reviewed",
+      "wait on the owner", "have gone unhandled for 3 days", "expires in", "refused", "exposed and not yet replaced", "Confirm board sign-up is closed", "Confirm the backup key is stored outside your Mac",
+      "Confirm a second break-glass admin", "Confirm the Mac that holds the keys is backed up", "Only one person can administer this company", "agent effort is", "nothing paid in 30 days",
+      "on an agent that cannot act",
+    ];
+    for (const fragment of fragments) {
+      expect(titles.some((t) => t.includes(fragment.replace(/^N /, ""))), `a check titled with "${fragment}"`).toBe(true);
+      expect(OPERATOR_TEXT, `the Operator's references say what to do for "${fragment}"`).toContain(fragment);
+    }
+    // And the kit's checks and the improvements check, named by the words they carry.
+    for (const text of ["Agents with no run profile", "Agents that cannot use company memory", "Approvals with nobody to decide them", "lacks skill", "has no plugin tool access", "improvements past the re-check date", "skills not synced"]) expect(HEALTH_REFERENCE, text).toContain(text);
+  });
+
+  it("names only tools that exist, and only parameters those tools declare", () => {
+    const tools = new Map(COCKPIT_TOOLS.map((t) => [t.name, new Set(Object.keys(((t.parametersSchema ?? {}) as { properties?: Record<string, unknown> }).properties ?? {}))]));
+    for (const file of OPERATOR_FILES) {
+      for (const m of file.content.matchAll(/`partnersinbiz\.cockpit:([a-z0-9-]+)`/g)) expect(tools.has(m[1]!), `${file.path}: ${m[1]}`).toBe(true);
+    }
+    // Bare tool names inside prose (improvement-propose, goal-set, credential-record...) are real too.
+    for (const file of OPERATOR_FILES) {
+      for (const m of file.content.matchAll(/(?<![.\w-])(improvement-(?:propose|list|resolve)|goal-(?:set|list)|credential-(?:list|record)|measure-report|open-closeout-review|memory-[a-z]+|ask-owner)(?![\w-])/g)) expect(tools.has(m[1]!), `${file.path}: ${m[1]}`).toBe(true);
+    }
+    // The parameters the references tell the Operator to pass.
+    const expectParams: Array<[string, string[]]> = [
+      ["measure-report", ["windowHours", "parts"]],
+      ["open-closeout-review", ["projectId", "issueId"]],
+      ["improvement-propose", ["sourceFactId"]],
+      ["improvement-resolve", ["resultValue", "drop", "archiveFact"]],
+      ["goal-list", ["sources"]],
+      ["goal-set", ["metricKey", "targetValue", "period", "unit", "id", "value"]],
+      ["credential-list", ["verify"]],
+      ["credential-record", ["id", "expiresAt", "markVerified", "status"]],
+      ["ask-owner", ["effect"]],
+    ];
+    for (const [tool, params] of expectParams) for (const param of params) expect(tools.get(tool)!.has(param), `${tool}.${param}`).toBe(true);
+    // The values the references name are values the tools accept.
+    const parts = ((COCKPIT_TOOLS.find((t) => t.name === "measure-report")!.parametersSchema as { properties: { parts: { items: { enum: string[] } } } }).properties.parts.items.enum);
+    expect(parts).toEqual(["agents", "projects", "trees", "review", "limits", "clients"]);
+    expect(RETRO_REFERENCE).toContain('parts: ["clients"]');
+  });
+
+  it("each reference says what its own issue or check carries, in the words the code writes", () => {
+    // The close-out review's checklist.
+    const closeout = closeoutContent({ kind: "final", scopeLabel: "Launch", scopeName: "Launch", fromLabel: "x", reason: "r", projectId: "p", total: { ...emptyAggregate(), runs: 3 }, issues: { total: 3, done: 3, cancelled: 0, blocked: 0, blockedDays: 0 }, agents: [], closedPerDay: null, reopenWakes: 0, unblockWakes: 0 } as never).description;
+    for (const line of ["Read the evidence.", "Decide what to change.", "Record what was learned.", "Close the project in Paperclip.", "Close this issue"]) {
+      expect(closeout, line).toContain(line);
+      expect(CLOSEOUT_REFERENCE.toLowerCase(), line).toContain(line.toLowerCase().replace(/\.$/, "").replace("close the project in paperclip", "close the project"));
+    }
+    // The business review.
+    const review = businessReviewContent({ weekLabel: "5 Oct", rows: [{ goal: { id: "g", title: "Leads", metricKey: "manual", metricLabel: null, unit: null, direction: "higher", targetValue: 30, period: "week" }, progress: { state: "behind", current: 10, progress: 0.3, change: null }, note: null }] as never, proposedWaiting: 0, cockpitHref: "/cockpit" });
+    expect(review.title).toContain("Business review: week of");
+    expect(GOALS_REFERENCE).toContain("**Business review: week of <date>**");
+    expect(OPERATOR_SKILL_BODY).toContain("**Business review**");
+    // The credentials and confirmations: the four confirmations the register names, and the 30 and 7 day rule.
+    for (const a of ATTESTATIONS) expect(a.title.length).toBeGreaterThan(10);
+    expect(CREDENTIALS_REFERENCE).toContain("**30 days** (warn) and **7 days**");
+    expect(`${EXPIRY_WARN_DAYS} ${EXPIRY_BAD_DAYS}`).toBe("30 7");
+    expect(CREDENTIALS_REFERENCE).toContain("180 days");
+    expect(ATTEST_VALID_DAYS).toBe(180);
+    // The ledger's rules: the default re-check, the tolerance and the overdue grace.
+    expect(RETRO_REFERENCE).toContain("(default 14 days)");
+    expect(RETRO_REFERENCE).toContain("within 5%");
+    expect(RETRO_REFERENCE).toContain("more than 3 days past its date");
+    // Asking with an effect: the three keys that exist.
+    for (const key of ["mailbox.delegate", "social.connect-account", "cockpit.grant-memory-tools"]) expect(ASKING_REFERENCE, key).toContain(key);
   });
 });

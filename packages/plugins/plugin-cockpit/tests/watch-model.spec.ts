@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   ageLabel,
   blockedCheck,
+  blockedOwnerCheck,
   FINISHED_RUN,
   redactSecrets,
   retryStormChecks,
@@ -222,6 +223,45 @@ describe("blocked with no way out", () => {
   it("names at most five issues", () => {
     const items = Array.from({ length: 8 }, (_, i) => issue(i + 1, i + 2));
     expect((blockedCheck(items, 8, NOW)!.detail!.match(/PAR-\d+/g) ?? []).length).toBe(WATCH.named);
+  });
+
+  it("says exactly what is missing, and that an issue whose blockers are all done only has to be moved on", () => {
+    const one = blockedCheck([{ ...issue(5, 3), closedBlockers: 1 }], 1, NOW)!;
+    expect(one.detail).toContain("(3 days; its blocker is done, so nothing keeps it blocked)");
+    const two = blockedCheck([{ ...issue(5, 3), closedBlockers: 2 }, issue(6, 4)], 2, NOW)!;
+    expect(two.detail).toContain("PAR-6 \"Blocked thing 6\" (4 days), PAR-5 \"Blocked thing 5\" (3 days; its 2 blockers are done, so nothing keeps it blocked)");
+    // the line is about the three ways out the host honours: an unblock descriptor, a blocker issue, or a question to the owner
+    expect(one.detail).toContain("no unblock owner, no blocker issue and no question to the owner");
+    expect(one.fix).toBe("Give each one a way out: an unblock owner and action on the issue, a blocker issue, or a question to the owner. If nothing is left to wait for, set it back to todo or cancel it with a reason.");
+    // zero closed blockers adds nothing to the line
+    expect(blockedCheck([{ ...issue(7, 3), closedBlockers: 0 }], 1, NOW)!.detail).not.toContain("blocker is done");
+  });
+});
+
+describe("blocked on an agent that cannot act", () => {
+  const dead = (n: number, daysAgo: number, why: string, name: string | null = "Developer") => ({
+    id: `d-${n}`,
+    identifier: `PAR-${n}`,
+    title: `Waiting thing ${n}`,
+    since: new Date(NOW.getTime() - daysAgo * 86_400_000).toISOString(),
+    ownerAgentId: `agent-${n}`,
+    ownerName: name,
+    why,
+  });
+
+  it("is nothing when every named owner can act", () => {
+    expect(blockedOwnerCheck([], 0, NOW)).toBeNull();
+  });
+
+  it("names each issue, how long, who it waits on and why that agent cannot act, oldest first", () => {
+    const check = blockedOwnerCheck([dead(8, 2, "paused"), dead(3, 6, "removed", null), dead(9, 1.5, "in error", "Writer")], 7, NOW)!;
+    expect(check).toMatchObject({ key: "blocked-owner-cannot-act", title: "7 blocked issues wait on an agent that cannot act", status: "warn", href: "/issues/PAR-3", since: dead(3, 6, "removed").since });
+    expect(check.detail).toBe('Each names who must unblock it, but that agent is removed, paused or in error, so the way out leads nowhere: PAR-3 "Waiting thing 3" (6 days, waits on an agent, removed), PAR-8 "Waiting thing 8" (2 days, waits on Developer, paused), PAR-9 "Waiting thing 9" (36 h, waits on Writer, in error) and 4 more.');
+    expect(check.fix).toContain("unblockDescriptor");
+  });
+
+  it("says issue in the singular", () => {
+    expect(blockedOwnerCheck([dead(1, 2, "paused")], 1, NOW)!.title).toBe("1 blocked issue waits on an agent that cannot act");
   });
 });
 

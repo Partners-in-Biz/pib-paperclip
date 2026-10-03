@@ -11,7 +11,9 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { createWorkIssue, isModuleEnabled, parseClientParam, PIB_PLUGINS, type ClientKind, type DealWon, type InvoicePaid, type RolesPayload, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
 import { formatAmount, recordActivity } from "./activity.js";
+import { isCanaryClientRef } from "./acceptance-model.js";
 import { crmClient } from "./clients.js";
+import { recordPayment } from "./client-cost.js";
 import { ORIGIN, ORIGIN_ID } from "./constants.js";
 import { message, type Env } from "./env.js";
 import { linkFor } from "./health.js";
@@ -159,6 +161,11 @@ export async function onDealWon(env: Env, event: Pick<PluginEvent, "companyId" |
   const clientRef = clientRefOf(p.clientKind as ClientKind, p.clientRef);
   const key = text(p.key, 200);
   if (!companyId || !key || !clientRef) return { recorded: false, onboarding: null };
+  // The canary client's win is a rehearsal (the acceptance journeys): no onboarding issue, no line in the owner's feed.
+  if (isCanaryClientRef(clientRef)) {
+    env.ctx.logger.info("A won deal on the canary client was left out of onboarding and activity", { companyId });
+    return { recorded: false, onboarding: null };
+  }
   const known = await crmClient(env.ctx, companyId, clientRef).catch(() => null);
   const clientName = text(p.clientName, 200) ?? known?.name ?? clientRef;
   const title = text(p.title, 200) ?? "a deal";
@@ -189,10 +196,18 @@ export async function onInvoicePaid(env: Env, event: Pick<PluginEvent, "companyI
   const key = text(p.key, 200);
   if (!companyId || !key) return false;
   const clientRef = clientRefOf(p.clientKind, p.clientRef);
+  // A test payment on the canary client is no revenue: it would count as what a customer paid.
+  if (isCanaryClientRef(clientRef)) return false;
   const client = clientRef ? await crmClient(env.ctx, companyId, clientRef).catch(() => null) : null;
   const number = text(p.number, 60) ?? "An invoice";
   const total = typeof p.totalMinor === "number" && Number.isFinite(p.totalMinor) ? formatAmount(Math.round(p.totalMinor), text(p.currency, 3)?.toUpperCase() ?? "ZAR") : null;
   const paidAt = text(p.paidAt, 40) && Number.isFinite(Date.parse(String(p.paidAt))) ? new Date(Date.parse(String(p.paidAt))).toISOString() : env.now().toISOString();
+  // What each client paid, kept for the effort-against-revenue check (one row per event key, so a re-sent event adds nothing).
+  if (typeof p.totalMinor === "number" && Number.isFinite(p.totalMinor)) {
+    await recordPayment(env.ctx, companyId, { key, clientRef, number: text(p.number, 60), totalMinor: Math.round(p.totalMinor), currency: text(p.currency, 3)?.toUpperCase() ?? "ZAR", paidAt }).catch((error) => {
+      env.ctx.logger.info("Paid invoice not kept for client effort", { error: message(error) });
+    });
+  }
   return recordActivity(env.ctx, companyId, {
     key: `invoice.paid:${key}`,
     kind: "invoice_paid",

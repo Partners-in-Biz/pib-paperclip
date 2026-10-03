@@ -1,6 +1,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../../src/namespace.js";
 import { createFakeDb, type Row, type Store } from "./fake-db.js";
+import { canonicalSkillKey, declarationOf, hostDefaultDrift, type InstalledCopy } from "./host-skills.js";
 
 export interface FakeIssue {
   id: string;
@@ -14,6 +15,10 @@ export interface FakeIssue {
   originKind?: string;
   originId?: string | null;
   identifier?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  projectId?: string | null;
+  parentId?: string | null;
 }
 
 export interface FakeAgent {
@@ -68,19 +73,33 @@ export function fakeCtx(options: {
   approvals?: Array<Record<string, unknown>>;
   coreIssues?: Row[];
   runs?: Row[];
+  /** What `ctx.access.members.list` answers; omit and the capability is missing (the call throws). */
+  members?: Array<{ principalType: string; status: string; membershipRole: string | null }>;
+  /** Company secrets by id, for `ctx.secrets.resolve`. */
+  secrets?: Record<string, string>;
+  /** `ctx.goals`: present when true (the capability granted). */
+  goals?: boolean;
+  /**
+   * What `ctx.skills.managed.get` resolves, by skill key: the company's copy as the host stores it (see
+   * helpers/host-skills.ts: `installedLikeHost` gives the host-shaped, unedited copy). The resolution carries the
+   * host's own `defaultDrift` verdict, computed the way the host computes it. Not listed: "missing".
+   */
+  installedSkills?: Record<string, InstalledCopy>;
 } = {}) {
   const store: Store = { core_issues: options.coreIssues ?? [], core_runs: options.runs ?? [] };
   const OPEN = ["todo", "in_progress", "in_review", "blocked"];
   const PRIORITY: Record<string, number> = { critical: 0, high: 1, medium: 2 };
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
-    coreReadTables: ["issues", "heartbeat_runs", "issue_relations"],
+    coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"],
     routes: [
       // The operations watch (watch.ts): rows a test seeds in `store.watch_<rule>` (an Error there makes that read fail); none by default.
       // They come before the generic routes below.
       [/row_number\(\) OVER/i, (_params, s) => seeded(s.watch_streak)],
       [/GROUP BY context_snapshot/i, (_params, s) => seeded(s.watch_storm)],
       [/GROUP BY agent_id, status, error_code/i, (_params, s) => seeded(s.watch_rate)],
+      // Blocked issues that name an agent owner (the owner check), before the generic blocked read, which shares the same function name.
+      [/unblock_descriptor -> 'owner' ->> 'agentId' IS NOT NULL/i, (_params, s) => seeded(s.watch_blocked_owned)],
       [/jsonb_typeof\(i\.unblock_descriptor\)/i, (_params, s) => seeded(s.watch_blocked)],
       [/i\.status = 'in_progress'/i, (_params, s) => seeded(s.watch_stalled)],
       [/FROM public\.issues/i, (params, s, sql) => {
@@ -125,6 +144,9 @@ export function fakeCtx(options: {
   const routines = new Map<string, FakeRoutine>();
   const grants = new Map<string, Array<{ permissionKey: string; scope: unknown }>>();
   const skillCalls: string[] = [];
+  /** Issue documents by `issueId:key` (what `ctx.issues.documents.get` reads). */
+  const documents = new Map<string, string>();
+  const hostGoals = new Map<string, { id: string; companyId: string; title: string; status: string; level?: string }>();
   let seq = 0;
   const stateKey = (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
   const routineRes = (key: string, companyId: string, status: string) => {
@@ -188,6 +210,13 @@ export function fakeCtx(options: {
     },
     skills: {
       managed: {
+        get: async (key: string) => {
+          const found = options.installedSkills?.[key];
+          if (!found) return { status: "missing", skillId: null, skill: null, defaultDrift: null, missingRefs: [] };
+          const resolution = { status: "resolved", skillId: found.skillId, skill: found.markdown === null ? null : { id: found.skillId, key: canonicalSkillKey(key), markdown: found.markdown }, missingRefs: [] };
+          // Like the host: the verdict is always present (null: nothing differs), unless the test models a server that does not report it.
+          return found.hostReportsDrift === false ? resolution : { ...resolution, defaultDrift: hostDefaultDrift(declarationOf(key), found) };
+        },
         reconcile: async (key: string) => {
           skillCalls.push(`reconcile:${key}`);
           return {};
@@ -207,10 +236,46 @@ export function fakeCtx(options: {
         },
       },
     },
+    ...(options.members
+      ? { access: { members: { list: async () => options.members } } }
+      : { access: { members: { list: async () => { throw new Error("access.members.read is not granted"); } } } }),
+    secrets: { resolve: async (ref: { secretId?: string } | string) => {
+      const id = typeof ref === "string" ? ref : String(ref.secretId);
+      if (!(id in (options.secrets ?? {}))) throw new Error(`secret ${id} not found`);
+      return options.secrets![id]!;
+    } },
+    ...(options.goals
+      ? {
+          goals: {
+            create: async (input: { companyId: string; title: string; level?: string; status?: string }) => {
+              seq += 1;
+              const goal = { id: `host-goal-${seq}`, companyId: input.companyId, title: input.title, status: input.status ?? "planned", level: input.level };
+              hostGoals.set(goal.id, goal);
+              return { ...goal };
+            },
+            update: async (id: string, patch: { status?: string }) => {
+              const goal = hostGoals.get(id);
+              if (!goal) throw new Error("goal not found");
+              Object.assign(goal, patch);
+              return { ...goal };
+            },
+          },
+        }
+      : {}),
     issues: {
+      list: async (input: { companyId: string; projectId?: string; assigneeAgentId?: string; originKind?: string; originKindPrefix?: string; originId?: string; status?: string; limit?: number }) =>
+        [...issues.values()]
+          .filter((i) => i.companyId === input.companyId)
+          .filter((i) => (input.originKind ? i.originKind === input.originKind : true))
+          .filter((i) => (input.originKindPrefix ? (i.originKind ?? "").startsWith(input.originKindPrefix) : true))
+          .filter((i) => (input.originId ? i.originId === input.originId : true))
+          .filter((i) => (input.status ? i.status === input.status : true))
+          .filter((i) => (input.assigneeAgentId ? i.assigneeAgentId === input.assigneeAgentId : true))
+          .slice(0, input.limit ?? 100)
+          .map((i) => ({ ...i })),
       create: async (input: Omit<FakeIssue, "id" | "status"> & { status?: string }) => {
         seq += 1;
-        const issue: FakeIssue = { ...input, id: `issue-${seq}`, identifier: `PIB-${seq}`, status: input.status ?? "backlog", description: input.description ?? "" };
+        const issue: FakeIssue = { ...input, id: `issue-${seq}`, identifier: `PIB-${seq}`, status: input.status ?? "backlog", description: input.description ?? "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
         issues.set(issue.id, issue);
         return { ...issue };
       },
@@ -233,6 +298,12 @@ export function fakeCtx(options: {
       },
       listComments: async (issueId: string, companyId: string) =>
         comments.filter((c) => c.issueId === issueId && c.companyId === companyId).map((c) => ({ authorAgentId: null, authorUserId: null, ...c })),
+      documents: {
+        get: async (issueId: string, key: string) => {
+          const body = documents.get(`${issueId}:${key}`);
+          return body === undefined ? null : { id: `doc-${issueId}-${key}`, key, body, title: key, format: "markdown" };
+        },
+      },
       requestWakeup: async (issueId: string, _companyId: string, options?: { reason?: string }) => {
         wakeups.push(issueId);
         wakeReasons.push({ issueId, reason: options?.reason });
@@ -253,7 +324,7 @@ export function fakeCtx(options: {
     return id;
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, routines, grants, skillCalls, fire, userComment };
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, routines, grants, skillCalls, documents, hostGoals, fire, userComment };
 }
 
 export function fixedClock(iso: string) {

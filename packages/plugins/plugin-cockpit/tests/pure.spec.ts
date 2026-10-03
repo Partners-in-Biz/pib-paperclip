@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CockpitSnapshot, WaitingItem } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { PLUGIN_KEY } from "../src/constants.js";
+import { throwIfEveryCompanyFailed } from "../src/env.js";
 import {
   activityGroups,
   agentAlert,
@@ -281,5 +282,15 @@ describe("page view", () => {
     expect(view.today).toContain("2 things wait on you");
     expect(backupInfo({ mtime: null, ageHours: 0.5 }, NOW)).toMatchObject({ status: "ok", text: "Less than an hour ago." });
     expect(backupInfo(null, NOW)).toBeNull();
+  });
+});
+
+describe("a job that works for several companies", () => {
+  it("fails only when it failed for every company it tried, so one broken company never hides the rest and a dead job is never reported healthy", () => {
+    expect(() => throwIfEveryCompanyFailed("The credentials check", 0, 0)).not.toThrow(); // nothing to do is fine
+    expect(() => throwIfEveryCompanyFailed("The credentials check", 3, 0)).not.toThrow();
+    expect(() => throwIfEveryCompanyFailed("The credentials check", 3, 2)).not.toThrow();
+    expect(() => throwIfEveryCompanyFailed("The credentials check", 3, 3)).toThrow("The credentials check failed for all 3 companies.");
+    expect(() => throwIfEveryCompanyFailed("The close-out sweep", 1, 1)).toThrow("The close-out sweep failed for its company.");
   });
 });

@@ -29,6 +29,7 @@ import {
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
 import { Card, Details, Muted, grid, type LinkPropsFor } from "./components.js";
+import { feedbackSignal } from "../memory/signal.js";
 import {
   LEARNED_HINT,
   METHOD_HELP,
@@ -176,6 +177,8 @@ export function MemoryHeader({ overview, agents, linkFor, settingsHref }: { over
   const b = stats.briefs7d;
   const fb = stats.feedback30d;
   const share = jevShare(stats);
+  // Zero reports is silence, not good news: say "no signal" and how many briefs were reviewed at all.
+  const signal = feedbackSignal(stats.briefs30d?.total ?? 0, fb.briefsWithFeedback ?? 0);
   return (
     <Card title="Company memory" icon={Lightbulb} subtitle="What the agents learned, and what each task gets from it.">
       <div style={{ display: "grid", gap: 6, maxWidth: 780 }}>
@@ -200,9 +203,13 @@ export function MemoryHeader({ overview, agents, linkFor, settingsHref }: { over
         <KpiCard
           size="sm"
           label="Feedback, 30 days"
-          value={formatCount(fb.missing + fb.noise)}
-          tone={fb.missing ? "warn" : "neutral"}
-          hint={`${formatCount(fb.missing)} missing · ${formatCount(fb.noise)} not helpful${fb.wrong ? ` · ${formatCount(fb.wrong)} wrong` : ""}`}
+          value={signal.level === "none" ? "No signal" : formatCount(fb.missing + fb.noise)}
+          tone={signal.level === "none" || fb.missing ? "warn" : "neutral"}
+          hint={
+            signal.level === "none"
+              ? `None of ${formatCount(signal.briefs)} briefs got feedback`
+              : `${formatCount(fb.missing)} missing · ${formatCount(fb.noise)} not helpful${fb.wrong ? ` · ${formatCount(fb.wrong)} wrong` : ""}${signal.coverage === null || signal.briefs === 0 ? "" : ` · ${Math.round(signal.coverage * 100)}% of briefs reviewed`}`
+          }
           icon={MessageSquare}
         />
       </div>

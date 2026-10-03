@@ -1,0 +1,232 @@
+{
+  "key": "lead-capture",
+  "version": 1,
+  "title": "Lead captured and qualified",
+  "summary": "A visitor sends an enquiry to the client's lead form; it reaches the CRM and is qualified. The first leg of lead to cash, on the canary client. Runs every night: it creates no quote, invoice or approval.",
+  "schedule": [
+    "nightly",
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
+  "ownerRole": "account-manager",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {},
+      "note": "Asking again returns the same client. An empty leadForm.embed means the CRM page was never opened (the plugin does not know its public address yet): that is a failure to report, not something to fix by hand.",
+      "expect": [
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        },
+        {
+          "path": "leadForm.embed.curl",
+          "notEmpty": true
+        },
+        {
+          "path": "rules",
+          "notEmpty": true
+        },
+        {
+          "path": "leadForm.embed.example",
+          "notEmpty": true
+        }
+      ],
+      "capture": {
+        "contactId": {
+          "path": "contact.ref",
+          "strip": "contact:"
+        },
+        "leadCurl": {
+          "path": "leadForm.embed.curl"
+        },
+        "formUrl": {
+          "path": "leadForm.embed.example"
+        }
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "look-at-the-form",
+      "title": "Look at the lead form page",
+      "kind": "ui",
+      "input": {
+        "url": "{{formUrl}}"
+      },
+      "note": "This is the page a client's visitor sees. Take a desktop screenshot with pib-shot (references/screenshots.md: pib-shot <url> --json) and again with --viewport mobile. Report pib-shot's JSON line as output and attach each PNG path as screenshot evidence. If the page does not load, report pib-shot's own error as the error: it is a finding.",
+      "expect": [
+        {
+          "path": "ok",
+          "equals": true
+        },
+        {
+          "path": "bytes",
+          "gte": 2000
+        }
+      ],
+      "evidence": [
+        "screenshot"
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "count-leads-before",
+      "title": "Read how many enquiries the canary form has taken",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:list-lead-sources",
+      "input": {
+        "client": "{{client}}"
+      },
+      "expect": [
+        {
+          "path": "sources[0].canary",
+          "equals": true
+        },
+        {
+          "path": "sources[0].accepted",
+          "gte": 0
+        }
+      ],
+      "capture": {
+        "acceptedBefore": {
+          "path": "sources[0].accepted"
+        }
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "send-test-enquiry",
+      "title": "Send one test enquiry to the form",
+      "kind": "http",
+      "input": {
+        "curl": "{{leadCurl}}"
+      },
+      "note": "Run the curl once, but replace the example name and address first: use the email canary@canary.invalid and the message Acceptance run {{runId}}. Report the command you ran as input.curl and the answer as output {status, body}. Never use a real address.",
+      "expect": [
+        {
+          "path": "status",
+          "oneOf": [
+            200,
+            201,
+            202
+          ]
+        }
+      ],
+      "evidence": [
+        "curl"
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "confirm-lead-arrived",
+      "title": "The form counts the enquiry",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:list-lead-sources",
+      "input": {
+        "client": "{{client}}"
+      },
+      "note": "Allow a few seconds after the enquiry; ask again once if the number has not moved.",
+      "expect": [
+        {
+          "path": "sources[0].accepted",
+          "gtCapture": "acceptedBefore"
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "qualify-note",
+      "title": "Log what was found",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:log-activity",
+      "input": {
+        "recordType": "contact",
+        "recordId": "{{contactId}}",
+        "kind": "note",
+        "body": "Acceptance run {{runId}} (canary): enquiry read, need and budget confirmed."
+      },
+      "expect": [
+        {
+          "path": "recordId",
+          "equals": "{{contactId}}"
+        },
+        {
+          "path": "id",
+          "notEmpty": true
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "mark-prospect",
+      "title": "Set the contact to prospect",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:update-contact",
+      "input": {
+        "contactId": "{{contactId}}",
+        "lifecycle": "prospect"
+      },
+      "expect": [
+        {
+          "path": "lifecycle",
+          "equals": "prospect"
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "close-lead-issue",
+      "title": "Close the lead issue the enquiry opened",
+      "kind": "check",
+      "input": {},
+      "note": "The enquiry opens a lead issue for the Account Manager that mentions the canary. Find it with the Paperclip API (open issues whose text mentions canary or Acceptance run {{runId}}), comment 'Closed by acceptance run {{runId}}: canary', set it done, and report {issueId}. If there is none, report error: no lead issue (the CRM promises one).",
+      "expect": [
+        {
+          "path": "issueId",
+          "notEmpty": true
+        }
+      ],
+      "probe": {
+        "kind": "issue",
+        "idPath": "issueId",
+        "status": [
+          "done",
+          "cancelled"
+        ],
+        "matches": "canary"
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": {
+        "confirm": true
+      },
+      "expect": [
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}

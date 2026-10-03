@@ -1,0 +1,75 @@
+{
+  "key": "social-draft-review",
+  "version": 1,
+  "title": "Social draft sent for review",
+  "summary": "A post is drafted for the canary client, validated against the platform rules and sent for review. Nothing is scheduled or published: the canary client has no connected account, and the run never connects one.",
+  "schedule": ["release", "on-demand"],
+  "plugins": ["partnersinbiz.social"],
+  "ownerRole": "social",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {},
+      "expect": [{ "path": "client", "equals": "{{client}}" }],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "draft-post",
+      "title": "Draft a post",
+      "kind": "tool",
+      "tool": "partnersinbiz.social:create-post",
+      "input": { "body": "Acceptance run {{runId}}: a rehearsal draft for PiB Canary Co. Never publish.", "client": "{{client}}" },
+      "note": "Do not attach or connect an account and do not set a time. If the tool refuses because the client has no connected account, report that as the error: it is a finding for the Social agent, not something to work around.",
+      "expect": [
+        { "path": "id", "notEmpty": true },
+        { "path": "status", "equals": "draft" }
+      ],
+      "capture": { "postId": { "path": "id" } },
+      "ownerRole": "social"
+    },
+    {
+      "id": "validate-post",
+      "title": "Validate the post",
+      "kind": "tool",
+      "tool": "partnersinbiz.social:validate-post",
+      "input": { "postId": "{{postId}}" },
+      "expect": [{ "path": "$", "notEmpty": true }],
+      "ownerRole": "social"
+    },
+    {
+      "id": "request-review",
+      "title": "Send the post for review",
+      "kind": "tool",
+      "tool": "partnersinbiz.social:request-review",
+      "input": { "postId": "{{postId}}" },
+      "note": "Do not approve it. The review asks the Reviewer first when the company has one.",
+      "expect": [{ "path": "status", "equals": "review" }],
+      "ownerRole": "social"
+    },
+    {
+      "id": "approval-status",
+      "title": "The approval status shows who must sign off",
+      "kind": "tool",
+      "tool": "partnersinbiz.social:get-approval-status",
+      "input": { "postId": "{{postId}}" },
+      "expect": [{ "path": "$", "notEmpty": true }],
+      "ownerRole": "social"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": { "confirm": true },
+      "expect": [
+        { "path": "cleaned", "equals": true },
+        { "path": "company", "equals": "{{client}}" }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
 import {
   blockedCheck,
+  blockedOwnerCheck,
   FINISHED_RUN,
   retryStormChecks,
   runRateChecks,
@@ -120,7 +121,9 @@ export async function readStorms(ctx: PluginContext, companyId: string, now: Dat
  */
 export async function readBlocked(ctx: PluginContext, companyId: string, now: Date): Promise<{ total: number; items: BlockedIssue[] }> {
   const rows = await ctx.db.query<Raw>(
-    `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total
+    `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total,
+            (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+              WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status IN ('done', 'cancelled'))::text AS closed_blockers
        FROM public.issues i
       WHERE i.company_id = $1 AND i.status = 'blocked' AND i.hidden_at IS NULL AND i.assignee_user_id IS NULL
         AND jsonb_typeof(i.unblock_descriptor) IS DISTINCT FROM 'object'
@@ -134,8 +137,28 @@ export async function readBlocked(ctx: PluginContext, companyId: string, now: Da
   );
   return {
     total: rows.length ? num(rows[0]!.total) : 0,
-    items: rows.map((r) => ({ id: String(r.id), identifier: text(r.identifier), title: String(r.title ?? ""), since: iso(r.since) ?? now.toISOString() })),
+    items: rows.map((r) => ({ id: String(r.id), identifier: text(r.identifier), title: String(r.title ?? ""), since: iso(r.since) ?? now.toISOString(), closedBlockers: num(r.closed_blockers) })),
   };
+}
+
+/**
+ * Blocked for more than a day WITH an unblock descriptor naming an agent owner:
+ * the caller checks that agent can act (a removed, paused or errored agent
+ * leaves the issue exactly as stuck as no descriptor). The oldest `named` come
+ * back with the full count.
+ */
+export async function readBlockedOwned(ctx: PluginContext, companyId: string, now: Date): Promise<Array<{ id: string; identifier: string | null; title: string; since: string; ownerAgentId: string }>> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, i.unblock_descriptor -> 'owner' ->> 'agentId' AS owner_agent_id
+       FROM public.issues i
+      WHERE i.company_id = $1 AND i.status = 'blocked' AND i.hidden_at IS NULL AND i.assignee_user_id IS NULL
+        AND jsonb_typeof(i.unblock_descriptor) = 'object' AND i.unblock_descriptor -> 'owner' ->> 'agentId' IS NOT NULL
+        AND coalesce(i.blocked_transition_at, i.updated_at) < $2::timestamptz
+      ORDER BY coalesce(i.blocked_transition_at, i.updated_at), i.id
+      LIMIT 200`,
+    [companyId, ago(now, WATCH.blockedHours)],
+  );
+  return rows.map((r) => ({ id: String(r.id), identifier: text(r.identifier), title: String(r.title ?? ""), since: iso(r.since) ?? now.toISOString(), ownerAgentId: String(r.owner_agent_id) }));
 }
 
 /**
@@ -201,6 +224,21 @@ export async function watchChecks(env: Env, companyId: string): Promise<HealthCh
   await rule("blocked", "blocked issues", async () => {
     const { total, items } = await readBlocked(env.ctx, companyId, now);
     const check = blockedCheck(items, total, now);
+    return check ? [check] : [];
+  });
+  // A way out that leads to an agent that cannot act is no way out (the descriptor names it, but nobody is there).
+  await rule("blocked-owner", "who unblocks blocked issues", async () => {
+    const owned = await readBlockedOwned(env.ctx, companyId, now);
+    if (agents.size === 0) return [];
+    const dead = owned
+      .map((o) => {
+        const agent = agents.get(o.ownerAgentId);
+        const status = agent?.status ?? null;
+        const why = !agent || GONE_STATUSES.has(status ?? "") ? "removed" : status === "paused" ? "paused" : status === "error" ? "in error" : status === "pending_approval" ? "not approved yet" : null;
+        return why ? { ...o, ownerName: agent?.name ?? null, why } : null;
+      })
+      .filter((d): d is NonNullable<typeof d> => !!d);
+    const check = blockedOwnerCheck(dead.slice(0, WATCH.named), dead.length, now);
     return check ? [check] : [];
   });
   await rule("stalled", "issues in progress", async () => {

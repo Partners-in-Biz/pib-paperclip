@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "enforce": false,
+  "minPassRate": 0.8,
+  "skills": {}
+}

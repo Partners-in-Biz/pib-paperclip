@@ -454,6 +454,14 @@ export function clientChoice(task: TaskContext, known: Array<{ clientRef: string
 // Rendering
 // ---------------------------------------------------------------------------
 
+/**
+ * The last line of every brief. Feedback is the only way to learn whether a
+ * brief helped, and it was zero for 199 briefs: so it asks for a report even
+ * when everything helped ("helpful"), which an empty report cannot say.
+ */
+export const FEEDBACK_PROMPT =
+  'Follow these unless the task or a person says otherwise. When you close the task, call memory-feedback once with this brief id: helpful (ids that helped, or ["all"]), noise (ids that did not), missing or wrong. No report tells us nothing.';
+
 export function renderBrief(input: { task: TaskContext; selection: Selection; totalFacts: number; briefId: string }): string {
   const { task, selection } = input;
   const label = task.identifier ?? task.title.slice(0, 60);
@@ -467,7 +475,7 @@ export function renderBrief(input: { task: TaskContext; selection: Selection; to
   return [
     `Memory brief for ${label} (${selection.selected.length} of ${input.totalFacts} facts, ${how}; brief ${input.briefId}):`,
     ...lines,
-    "Follow these unless the task or a person says otherwise. Missing something or got noise? memory-feedback with the brief id.",
+    FEEDBACK_PROMPT,
   ].join("\n");
 }
 

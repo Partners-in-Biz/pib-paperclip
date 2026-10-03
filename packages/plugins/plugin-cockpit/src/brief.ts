@@ -12,7 +12,10 @@ import { assignableUser, ORIGIN } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
 import { message, type Env } from "./env.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
+import { goalViews, goalViewsBrief } from "./goals.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
+import { improvementsBrief } from "./improvements.js";
+import { agentMeasureBriefs, type AgentMeasureBrief } from "./measure.js";
 import {
   activityGroups,
   agentRows,
@@ -36,6 +39,7 @@ import {
 import { ownSnapshot } from "./own.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
+import { mondayLabel, weekKey } from "./week.js";
 
 /** ISO time from a Date or a core-read text timestamp (`2026-09-25 17:09:53.8+02`: Safari cannot parse that form). */
 const iso = (value: unknown): string | null => {
@@ -333,6 +337,11 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const problems = await collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince });
   const waiting = waitingFrom(data);
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
+  // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue). Unreadable gives none, not zeros.
+  const measures = await agentMeasureBriefs(env, companyId, windowHours).catch((error) => {
+    env.ctx.logger.info("Brief: agent measures unreadable", { companyId, error: message(error) });
+    return new Map<string, AgentMeasureBrief>();
+  });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
@@ -340,6 +349,17 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const roles = await currentRoles(env, companyId).catch(() => null);
   const names = new Map(data.agents.map((a) => [a.id, a.name]));
   const graph = buildFlows({ snapshots: data.snapshots, roles, agents: data.agents });
+  // Changes recorded with a number to move (overdue first) and the company's goals against their numbers: what the weekly retro walks through. Unreadable gives null, not a guess.
+  const improvements = await improvementsBrief(env, companyId).catch((error) => {
+    env.ctx.logger.info("Brief: improvements unreadable", { companyId, error: message(error) });
+    return null;
+  });
+  const goals = await goalViews(env, companyId, ["active", "proposed"])
+    .then((views) => goalViewsBrief(views))
+    .catch((error) => {
+      env.ctx.logger.info("Brief: goals unreadable", { companyId, error: message(error) });
+      return null;
+    });
 
   return {
     company: { id: companyId, name: company?.name ?? null, prefix },
@@ -420,8 +440,14 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       error: a.alertRaw,
       lastFailedRun: a.lastFailedRunId ? link(`/agents/${a.urlKey || a.id}/runs/${a.lastFailedRunId}`) : null,
       runs7d: a.runs,
+      /** Over the window: notional spend (list price, not a bill), tokens, run time, retries, why runs were cancelled or failed, finished issues and cost per finished issue. Null when the agent had no runs. */
+      measures: measures.get(a.id) ?? null,
       quality: a.quality.map((q) => ({ label: q.label, value: q.value, tone: q.tone ?? "neutral" })),
     })),
+    /** Improvements the team recorded: `overdue` and `due` first (record the number or drop it), then the open ones, and what the last re-checks found. */
+    improvements,
+    /** Goals the owner confirmed or an agent proposed, each with its number now, progress and the change since last week. Null when they could not be read. */
+    goals,
     setupMissing: data.setupMissing,
     links: { cockpit: link("/cockpit"), flows: link("/cockpit?tab=flows"), setup: link("/setup") },
   };
@@ -433,23 +459,7 @@ export type CompanyBrief = Awaited<ReturnType<typeof companyBrief>>;
 // Daily brief issue
 // ---------------------------------------------------------------------------
 
-/** ISO week key, e.g. `2026-W39`, in SAST (UTC+2). */
-export function weekKey(date: Date): string {
-  const sast = new Date(date.getTime() + 2 * 3_600_000);
-  const d = new Date(Date.UTC(sast.getUTCFullYear(), sast.getUTCMonth(), sast.getUTCDate()));
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
-}
-
-function mondayLabel(date: Date): string {
-  const sast = new Date(date.getTime() + 2 * 3_600_000);
-  const day = sast.getUTCDay() || 7;
-  const monday = new Date(Date.UTC(sast.getUTCFullYear(), sast.getUTCMonth(), sast.getUTCDate() - day + 1));
-  return monday.toISOString().slice(0, 10);
-}
+export { weekKey, mondayLabel };
 
 /** This week's pinned Daily brief issue (created on first use, assigned to the owner). */
 export async function ensureBriefIssue(env: Env, companyId: string): Promise<{ issueId: string; created: boolean }> {

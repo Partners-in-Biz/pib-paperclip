@@ -4,6 +4,8 @@ import type { SkillSyncResult } from "@partnersinbiz/pib-plugin-kit";
 export interface SkillSyncer {
   ensure(companyId: string): Promise<SkillSyncResult[]>;
   force(companyId: string): Promise<SkillSyncResult[]>;
+  /** Syncs only what changed, every call (the kit's sweep uses it). Present on the real syncer. */
+  check?(companyId: string): Promise<SkillSyncResult[]>;
 }
 
 /** What every worker-side function needs. `now` is injectable for tests. */
@@ -11,14 +13,28 @@ export interface Env {
   ctx: PluginContext;
   skills: SkillSyncer;
   now: () => Date;
-  /** Jev calls go through this when set (tests). */
+  /** Jev calls and credential checks go through this when set (tests). */
   fetchImpl?: typeof fetch;
+  /** Waits (a company's first setup issue lets another plugin's win first). Tests pass an immediate one. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Looks a file up on disk (acceptance screenshots, the Acceptance script). Tests pass a fake; null when it is not there. */
+  statFile?: (path: string) => Promise<{ size: number } | null>;
 }
 
 export class CockpitError extends Error {}
 
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A job that acts for several companies catches each company's failure so one
+ * cannot stop the rest. When it failed for EVERY company it tried it must still
+ * say so: `trackJob` records only a thrown error and the job health check reads
+ * that, so a job that does nothing at all would otherwise look healthy.
+ */
+export function throwIfEveryCompanyFailed(job: string, tried: number, failed: number): void {
+  if (tried > 0 && failed >= tried) throw new Error(`${job} failed for ${tried === 1 ? "its company" : `all ${tried} companies`}.`);
 }
 
 export const INSTALLED_STATE = { scopeKind: "instance" as const, namespace: "cockpit", stateKey: "installed-plugins" };

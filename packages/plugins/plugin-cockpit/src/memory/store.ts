@@ -518,7 +518,7 @@ export interface FeedbackRow {
   issueId: string | null;
   agentId: string | null;
   userId: string | null;
-  kind: "missing" | "noise" | "wrong";
+  kind: "missing" | "noise" | "wrong" | "helpful";
   factId: string | null;
   text: string | null;
   inBaseline: boolean | null;
@@ -539,14 +539,16 @@ export interface MemoryStats {
   facts: { active: number; pinned: number; superseded: number; archived: number; clients: number };
   byArea: Record<string, number>;
   briefs7d: { total: number; jev: number; baseline: number; empty: number; avgFacts: number; avgTokens: number; avgLatencyMs: number; issues: number };
-  feedback30d: { missing: number; noise: number; wrong: number; missingInBaseline: number; missingNotInBaseline: number; briefsWithFeedback: number };
+  /** Briefs made in the last 30 days (searches are not briefs): what feedback coverage is measured against. */
+  briefs30d: { total: number };
+  feedback30d: { missing: number; noise: number; wrong: number; helpful: number; missingInBaseline: number; missingNotInBaseline: number; briefsWithFeedback: number };
   added7d: number;
   /** Of those, saved from **Learned:** lines in comments. */
   harvested7d: number;
 }
 
 export async function memoryStats(ctx: PluginContext, companyId: string): Promise<MemoryStats> {
-  const [facts, areas, briefs, feedback, added] = await Promise.all([
+  const [facts, areas, briefs, feedback, added, briefs30] = await Promise.all([
     ctx.db.query<Raw>(
       `SELECT count(*) FILTER (WHERE status = 'active')::text AS active,
               count(*) FILTER (WHERE status = 'active' AND pinned = true)::text AS pinned,
@@ -573,6 +575,7 @@ export async function memoryStats(ctx: PluginContext, companyId: string): Promis
       `SELECT count(*) FILTER (WHERE kind = 'missing')::text AS missing,
               count(*) FILTER (WHERE kind = 'noise')::text AS noise,
               count(*) FILTER (WHERE kind = 'wrong')::text AS wrong,
+              count(*) FILTER (WHERE kind = 'helpful')::text AS helpful,
               count(*) FILTER (WHERE kind = 'missing' AND in_baseline = true)::text AS missing_in_baseline,
               count(*) FILTER (WHERE kind = 'missing' AND in_baseline = false)::text AS missing_not_in_baseline,
               count(DISTINCT brief_id)::text AS briefs
@@ -583,6 +586,7 @@ export async function memoryStats(ctx: PluginContext, companyId: string): Promis
       `SELECT count(*)::text AS n, count(*) FILTER (WHERE origin = 'harvest')::text AS harvested FROM ${T.facts} WHERE company_id = $1 AND created_at > now() - interval '7 days'`,
       [companyId],
     ),
+    ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${T.briefs} WHERE company_id = $1 AND method <> 'search' AND created_at > now() - interval '30 days'`, [companyId]),
   ]);
   const f = facts[0] ?? {};
   const b = briefs[0] ?? {};
@@ -600,10 +604,12 @@ export async function memoryStats(ctx: PluginContext, companyId: string): Promis
       avgLatencyMs: num(b.avg_latency),
       issues: num(b.issues),
     },
+    briefs30d: { total: num(briefs30[0]?.n) },
     feedback30d: {
       missing: num(fb.missing),
       noise: num(fb.noise),
       wrong: num(fb.wrong),
+      helpful: num(fb.helpful),
       missingInBaseline: num(fb.missing_in_baseline),
       missingNotInBaseline: num(fb.missing_not_in_baseline),
       briefsWithFeedback: num(fb.briefs),

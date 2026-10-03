@@ -9,7 +9,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { listRuns } from "../src/brief.js";
 import type { Env } from "../src/env.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { readBlocked, readRateRows, readStalled, readStorms, readStreakRuns, watchChecks } from "../src/watch.js";
+import { readBlocked, readBlockedOwned, readRateRows, readStalled, readStorms, readStreakRuns, watchChecks } from "../src/watch.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
@@ -237,8 +237,45 @@ d("operations watch (Postgres)", () => {
       expect(total).toBe(2);
     });
 
+    it("counts the blockers that are already done, so the check can say nothing keeps the issue blocked", async () => {
+      await issue(id(30), "C-1", "blocked", { blockedMinutesAgo: 2 * DAY });
+      await issue(id(31), "C-1-a", "done");
+      await issue(id(32), "C-1-b", "cancelled");
+      await issue(id(33), "C-2", "blocked", { blockedMinutesAgo: 3 * DAY });
+      await issue(id(34), "C-2-a", "done");
+      await issue(id(35), "C-3", "blocked", { blockedMinutesAgo: 4 * DAY });
+      await issue(id(36), "C-3-x", "done", { company: OTHER_COMPANY });
+      for (const [blocker, blocked, company] of [[id(31), id(30), COMPANY], [id(32), id(30), COMPANY], [id(34), id(33), COMPANY], [id(36), id(35), OTHER_COMPANY]] as const) {
+        await h.client.query(`INSERT INTO public.issue_relations (company_id, issue_id, related_issue_id, type) VALUES ($1, $2, $3, 'blocks')`, [company, blocker, blocked]);
+      }
+      const { items } = await readBlocked(h.ctx, COMPANY, h.clock.now);
+      expect(items.map((i) => [i.identifier, i.closedBlockers])).toEqual([["C-3", 0], ["C-2", 1], ["C-1", 2]]); // another company's relation counts for nothing
+    });
+
     it("is empty when nothing is blocked", async () => {
       expect(await readBlocked(h.ctx, COMPANY, h.clock.now)).toEqual({ total: 0, items: [] });
+    });
+  });
+
+  describe("blocked on an agent owner", () => {
+    const id = (n: number) => `dddddddd-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const DAY = 1440;
+    const owned = (agentId: string | null, extra: object = {}) => JSON.stringify({ owner: agentId ? { agentId } : "board", action: "Do the thing", ...extra });
+
+    it("lists issues blocked over a day whose descriptor names an agent, oldest first, and only those", async () => {
+      await issue(id(1), "O-1", "blocked", { blockedMinutesAgo: 3 * DAY, descriptor: owned(AGENT.dev) });
+      await issue(id(2), "O-2", "blocked", { blockedMinutesAgo: 5 * DAY, descriptor: owned(AGENT.paused) });
+      await issue(id(3), "O-3", "blocked", { blockedMinutesAgo: 2 * DAY, descriptor: owned(null) }); // owned by the board: not an agent
+      await issue(id(4), "O-4", "blocked", { blockedMinutesAgo: 2 * DAY }); // no descriptor: the other check's business
+      await issue(id(5), "O-5", "blocked", { blockedMinutesAgo: 60, descriptor: owned(AGENT.dev) }); // not stuck yet
+      await issue(id(6), "O-6", "blocked", { blockedMinutesAgo: 2 * DAY, descriptor: owned(AGENT.dev), user: "user-1" }); // a person holds it
+      await issue(id(7), "O-7", "blocked", { blockedMinutesAgo: 2 * DAY, descriptor: owned(AGENT.dev), company: OTHER_COMPANY });
+      await issue(id(8), "O-8", "blocked", { blockedMinutesAgo: 2 * DAY, descriptor: owned(AGENT.dev), hidden: true });
+      await issue(id(9), "O-9", "in_progress", { blockedMinutesAgo: 2 * DAY, descriptor: owned(AGENT.dev) });
+      await issue(id(10), "O-10", "blocked", { blockedMinutesAgo: 2 * DAY, descriptor: "null" });
+      const rows = await readBlockedOwned(h.ctx, COMPANY, h.clock.now);
+      expect(rows.map((r) => [r.identifier, r.ownerAgentId])).toEqual([["O-2", AGENT.paused], ["O-1", AGENT.dev]]);
+      expect(rows[0]).toMatchObject({ id: id(2), title: "Issue O-2", since: ago(5 * DAY) });
     });
   });
 
@@ -306,6 +343,31 @@ d("operations watch (Postgres)", () => {
       expect(checks[4]!.title).toBe("1 issue is in progress with nobody working on it");
       expect(checks[4]!.detail).toContain("PAR-70");
       expect(checks[4]!.detail).not.toContain("PAR-71");
+    });
+
+    it("names a blocked issue whose way out leads to an agent that is paused, in error, not approved or gone, and not one whose owner can act", async () => {
+      const agents = [
+        { id: AGENT.dev, name: "Developer", status: "idle" },
+        { id: AGENT.paused, name: "Writer", status: "paused" },
+        { id: AGENT.rev, name: "Reviewer", status: "error" },
+        { id: AGENT.seo, name: "SEO Specialist", status: "pending_approval" },
+      ];
+      const owned = (agentId: string) => JSON.stringify({ owner: { agentId }, action: "Do it" });
+      await issue("dddddddd-0000-4000-8000-000000000001", "OK-1", "blocked", { blockedMinutesAgo: 3 * 1440, descriptor: owned(AGENT.dev) });
+      await issue("dddddddd-0000-4000-8000-000000000002", "DEAD-1", "blocked", { blockedMinutesAgo: 5 * 1440, descriptor: owned(AGENT.paused) });
+      await issue("dddddddd-0000-4000-8000-000000000003", "DEAD-2", "blocked", { blockedMinutesAgo: 4 * 1440, descriptor: owned(AGENT.rev) });
+      await issue("dddddddd-0000-4000-8000-000000000004", "DEAD-3", "blocked", { blockedMinutesAgo: 2 * 1440, descriptor: owned(AGENT.seo) });
+      await issue("dddddddd-0000-4000-8000-000000000005", "DEAD-4", "blocked", { blockedMinutesAgo: 2 * 1440, descriptor: owned("aaaaaaaa-0000-4000-8000-0000000000ff") }); // an agent that no longer exists
+      const checks = await watchChecks(envWithAgents(agents), COMPANY);
+      expect(checks.map((c) => c.key)).toEqual(["blocked-owner-cannot-act"]);
+      expect(checks[0]!.title).toBe("4 blocked issues wait on an agent that cannot act");
+      expect(checks[0]!.detail).toContain('DEAD-1 "Issue DEAD-1" (5 days, waits on Writer, paused)');
+      expect(checks[0]!.detail).toContain('DEAD-2 "Issue DEAD-2" (4 days, waits on Reviewer, in error)');
+      expect(checks[0]!.detail).toContain("waits on SEO Specialist, not approved yet");
+      expect(checks[0]!.detail).toContain("waits on an agent, removed");
+      expect(checks[0]!.detail).not.toContain("OK-1");
+      // with the agent list unreadable nobody is vouched for either way: no false alarm
+      expect(await watchChecks(envWithAgents([]), COMPANY)).toEqual([]);
     });
 
     it("ignores the runs of an agent that has been terminated", async () => {

@@ -155,7 +155,7 @@ ${toolNaming()}
 
 - A company can switch modules off in **Setup**. If a tool answers that its module is off, leave that area alone and say so on the issue.
 - The **Cockpit** is the owner's one view: what waits on them, what agents did, the numbers, agent cost and quality, system health, and company memory.
-- The **Company wiki** (LLM Wiki, when switched on) is a readable library distilled from finished work, for people and for deep lookups.
+- The **Company wiki** (LLM Wiki, when switched on) is a readable library distilled from finished work.
 
 ## The team
 ${teamList()}
@@ -177,6 +177,7 @@ Roles are staffed in **Setup → Team** (hire, pick an existing agent, change). 
 - **Outward-facing work** (posts, emails, invoices, quotes, pull requests) goes through its module's approval step; when the company has a Reviewer, it checks first. Never send, publish, pay or merge outside them.
 - **The Operator** reviews the company every morning, unblocks agents and briefs the owner daily. If you are stuck, say exactly what you need on the issue; the Operator routes it.
 - **Done-checks**: closing an issue a module opened runs its done-check. If the issue reopens, it lists what is missing: finish those items, then close it. Work that leaves no other trace goes in the module's log tool (Billing \`log-follow-up\`, Campaigns \`log-reply\`, SEO \`complete-task\`). **Cockpit → Flows** shows every flow stage by stage.
+- **Look at what you built.** UI work is not done until seen: \`pib-shot\` takes a screenshot in a second (\`references/screenshots.md\`).
 
 ## Where knowledge lives
 | Kind | Where | Who keeps it |

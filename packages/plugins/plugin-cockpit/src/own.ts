@@ -7,6 +7,7 @@ import {
   emptySnapshot,
   jobHealth,
   pluginUiBase,
+  readConfig,
   routineHealth,
   settingsItem,
   type CockpitSnapshot,
@@ -14,11 +15,16 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
-import { TEAM_SETUP_PATH, teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
+import { TEAM_SETUP_PATH, teamSetupPath, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
 import { countActivitySince, recentActivity, toActivityItems } from "./activity.js";
+import { acceptanceAgentId } from "./acceptance-role.js";
 import { ASK_STALE_DAYS, staleAsks } from "./ask-model.js";
 import { openAskViews } from "./asks.js";
+import { extraChecks } from "./checks.js";
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, VERSION } from "./constants.js";
+import { goalCounts, listGoals } from "./goals.js";
+import { GOALS_WANTED, goalLine } from "./goals-model.js";
+import { attestationSetupItems, readAttestations } from "./security.js";
 import { getRoles } from "./db.js";
 import { message, type Env } from "./env.js";
 import { memoryJevConfig } from "./memory/jev.js";
@@ -79,6 +85,7 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
   };
   const operator = await agentUsable(env, companyId, roles?.operatorAgentId ?? null);
   const reviewer = await agentUsable(env, companyId, roles?.reviewerAgentId ?? null);
+  const acceptance = await agentUsable(env, companyId, await acceptanceAgentId(env, companyId));
   const routines = operator ? await routineStates(env, companyId) : [];
   const routinesOk = operator && routines.length > 0 && routines.every((r) => r.status === "active" && r.assigneeAgentId === operator.id);
   const items: SetupItem[] = [
@@ -121,6 +128,18 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       agentNext: "Comments PASS or CHANGES NEEDED on approval issues, then hands them to you.",
     },
     {
+      key: "acceptance_agent",
+      title: "Link an Acceptance agent (optional)",
+      status: acceptance ? "done" : "optional",
+      required: false,
+      detail: acceptance
+        ? `${acceptance.name} uses the product like a customer on a test client: every night, after each plugin release and when asked${acceptance.status === "paused" ? " (paused: resume it once its model key works)" : ""}.`
+        : "Optional. The Acceptance agent uses the product the way a customer would (a lead captured, a quote, an invoice, an email sequence, a social draft, an SEO sprint, a client report) on a test client, so a release that passes its tests but does not work is found before a client finds it.",
+      href: teamSetupPath("acceptance" as TeamRoleKey),
+      hrefLabel: TEAM_LABEL,
+      agentNext: "Works the customer journeys every night and after each plugin release and files a pass or fail report; a failure opens an issue for the role that owns the step.",
+    },
+    {
       key: "routines",
       title: "Operator routines active",
       status: !operator ? "blocked" : routinesOk ? "done" : "missing",
@@ -138,6 +157,51 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
   ];
   const profile = await readProfile(env.ctx, companyId).catch(() => null);
   items.push(profileSetupItem(profile?.profile ?? {}));
+  // Business goals (Q10-3): the weekly business review needs them. Optional: they never hold up the Finish setup count.
+  const goals = await goalCounts(env.ctx, companyId).catch(() => null);
+  if (goals) {
+    const enough = goals.active >= GOALS_WANTED;
+    // The button adopts every proposal, so the item lists each one: nothing is confirmed unseen.
+    const proposals = goals.proposed > 0 ? (await listGoals(env.ctx, companyId, ["proposed"]).catch(() => [])).map(goalLine) : [];
+    items.push({
+      key: "goals",
+      title: `Set ${GOALS_WANTED} company goals`,
+      status: enough ? "done" : "optional",
+      required: false,
+      detail: enough
+        ? `${goals.active} goals are active; every Monday the Operator reviews the numbers against them.${goals.proposed ? ` ${goals.proposed} more waiting for your yes: ${proposals.join("; ")}.` : ""}`
+        : `${goals.active} of ${GOALS_WANTED} goals are active${goals.proposed ? `, ${goals.proposed} waiting for your yes: ${proposals.join("; ")}` : ""}. Without goals the weekly review looks at the agents, not the business: how many leads, which rank, how many posts, how much revenue.`,
+      href: "/cockpit",
+      hrefLabel: "Open the Cockpit",
+      steps: enough ? undefined : [goals.proposed ? "Confirm the proposed goals (one question covers them all)." : "The Operator proposes goals from the numbers the modules report; you confirm them once, in one question.", "Or tell the Operator the targets you want."],
+      agentNext: "The Operator proposes goals from the modules' numbers (leads, keyword rank, posts, revenue), the Cockpit asks you once, and every Monday it opens a business review comparing the week to the targets.",
+      action: goals.proposed > 0 ? { plugin: PLUGIN_KEY, key: "goals.confirm", params: {}, label: `Confirm ${goals.proposed === 1 ? "the proposed goal" : `the ${goals.proposed} proposed goals`}` } : null,
+    });
+  }
+  // Owner confirmations the Cockpit cannot see for itself (sign-up closed, backup key custody, a second admin, a backup of the Mac).
+  try {
+    items.push(...attestationSetupItems(await readAttestations(env.ctx, companyId), env.now()));
+  } catch (error) {
+    env.ctx.logger.info("Cockpit confirmations unreadable", { error: message(error) });
+  }
+  // The credentials register works from the recorded expiry dates; a company secret per provider also lets the daily check ask the provider.
+  try {
+    const checks = ((await readConfig(env.ctx, companyId)).credentialChecks ?? {}) as Record<string, unknown>;
+    const set = Object.values(checks).filter(Boolean).length;
+    items.push({
+      key: "credential_checks",
+      title: "Let the Cockpit check credentials daily (optional)",
+      status: set > 0 ? "done" : "optional",
+      required: false,
+      detail: set > 0 ? `${set} ${set === 1 ? "credential check is" : "credential checks are"} set up: the daily job asks each provider whether its credential is still accepted.` : "The register already warns 30 and 7 days before an expiry you recorded. With a company secret per provider (GitHub, Cloudflare, Resend) the daily job also asks the provider whether the credential still works, and learns GitHub's and Cloudflare's own expiry date.",
+      href: id ? `${PLUGINS_PATH}/${id}` : "/cockpit",
+      hrefLabel: id ? "Open settings" : "Open the Cockpit",
+      steps: set > 0 ? undefined : ["Open the Cockpit settings.", "Under Credential checks, pick the company secret that holds each token (the same secrets agents already use).", "Click Save Configuration."],
+      agentNext: "Once a day the Cockpit calls each provider once (never storing or showing the value) and raises a health alert if a credential is refused or about to expire.",
+    });
+  } catch (error) {
+    env.ctx.logger.info("Cockpit credential check settings unreadable", { error: message(error) });
+  }
   const jev = await memoryJevConfig(env.ctx, companyId).catch(() => null);
   items.push({
     key: "memory_jev",
@@ -228,6 +292,12 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
   try {
     health.push(await jobHealth(env.ctx, JOBS.healthAlerts, "Hourly health check", 60));
     health.push(await jobHealth(env.ctx, JOBS.reemitRoles, "Hourly role updates", 60));
+    // The 0.5.0 jobs: one that stops (or fails for every company) leaves reviews unopened, improvements unmeasured, credential expiries unwatched and goals unreviewed, and nothing else would say so.
+    health.push(await jobHealth(env.ctx, JOBS.closeoutSweep, "Daily close-out reviews", 24 * 60));
+    health.push(await jobHealth(env.ctx, JOBS.improvementsRecheck, "Daily improvements re-check", 24 * 60));
+    health.push(await jobHealth(env.ctx, JOBS.credentialsCheck, "Daily credentials check", 24 * 60));
+    health.push(await jobHealth(env.ctx, JOBS.businessReview, "Weekly business review", 7 * 24 * 60));
+    health.push(await jobHealth(env.ctx, JOBS.acceptanceNightly, "Nightly acceptance request", 24 * 60));
   } catch (error) {
     env.ctx.logger.info("Cockpit job health failed", { error: message(error) });
   }
@@ -268,6 +338,9 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     const team = [];
     if (roles?.operatorAgentId) team.push({ role: "operator" as const, agentId: roles.operatorAgentId, status: (await lookupAgent(env, companyId, roles.operatorAgentId))?.status ?? null });
     if (roles?.reviewerAgentId) team.push({ role: "reviewer" as const, agentId: roles.reviewerAgentId, status: reviewer?.status ?? null });
+    // The Acceptance agent is linked in the kit's hire state, not in the roles table; reported like any role (the kit's registry names it once Setup lists it).
+    const acceptanceId = await acceptanceAgentId(env, companyId);
+    if (acceptanceId) team.push({ role: "acceptance" as TeamRoleKey, agentId: acceptanceId, status: (await lookupAgent(env, companyId, acceptanceId))?.status ?? null });
     if (team.length) snapshot.team = team;
   } catch (error) {
     env.ctx.logger.info("Cockpit roles check failed", { error: message(error) });
@@ -277,6 +350,16 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     if (asks) health.push(asks);
   } catch (error) {
     env.ctx.logger.info("Cockpit question check failed", { error: message(error) });
+  }
+  // The kit's drift, grant and approval checks, the measurement alerts, the registers and confirmations, the improvements, goals and what waits on the owner (checks.ts).
+  try {
+    const extra = await extraChecks(env, companyId);
+    health.push(...extra.health);
+    snapshot.kpis.push(...extra.kpis);
+    snapshot.quality.push(...extra.quality);
+    snapshot.waiting.push(...extra.waiting);
+  } catch (error) {
+    env.ctx.logger.info("Cockpit extra checks failed", { error: message(error) });
   }
   try {
     snapshot.activity = toActivityItems(await recentActivity(env.ctx, companyId, 10));

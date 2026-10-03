@@ -66,6 +66,50 @@ export interface AskLink {
   href: string;
 }
 
+/** What the system does once the owner says yes to the first option (kit `registerAskEffect`). Plain data. */
+export interface AskEffect {
+  key: string;
+  params?: Record<string, string | number | boolean | null>;
+}
+
+/** `<plugin>.<action>`, a plugin the Cockpit knows. A plugin that does not handle the key answers nothing, so the ask times out and says so. */
+export const EFFECT_KEY = /^(mailbox|crm|social|seo|billing|accounting|campaigns|payroll|partners|setup|cockpit)\.[a-z][a-z0-9-]{1,40}$/;
+
+/**
+ * Effects only the Cockpit's own questions may carry. An agent could otherwise
+ * ask the owner a leading question and have a yes confirm an outside fact
+ * (that sign-up is closed) or adopt goals the owner never read.
+ * `cockpit.attest` is reserved: nothing handles it today, and it stays closed
+ * to agents should it ever be registered.
+ */
+export const INTERNAL_EFFECTS: ReadonlySet<string> = new Set(["cockpit.activate-goals", "cockpit.attest"]);
+
+/** The one line the card shows, worded exactly like kit `describeAskEffect` (a test keeps them equal; the page cannot import the kit index). */
+export function describeEffect(effect: AskEffect): string {
+  const params = Object.entries(effect.params ?? {}).map(([key, value]) => `${key}=${String(value).slice(0, 80)}`);
+  return `Runs ${effect.key}${params.length ? ` with ${params.join(", ")}` : ""} when you say yes.`;
+}
+
+function parseEffect(value: unknown): AskEffect | null {
+  if (value === undefined || value === null || value === "") return null;
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  const key = typeof record?.key === "string" ? record.key.trim() : "";
+  if (!record || !EFFECT_KEY.test(key)) throw new AskError('effect must be {key, params}: key is "<plugin>.<action>" (for example mailbox.delegate), the name a skill or the Setup checklist gives for what a yes should do.');
+  const params: Record<string, string | number | boolean | null> = {};
+  if (record.params !== undefined && record.params !== null) {
+    if (typeof record.params !== "object" || Array.isArray(record.params)) throw new AskError("effect.params must be an object of plain values (text, number, true/false).");
+    const entries = Object.entries(record.params as Record<string, unknown>);
+    if (entries.length > 8) throw new AskError("effect.params: at most 8 values.");
+    for (const [name, raw] of entries) {
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,30}$/.test(name)) throw new AskError(`effect.params: "${name}" is not a valid name.`);
+      if (raw !== null && typeof raw !== "string" && typeof raw !== "number" && typeof raw !== "boolean") throw new AskError(`effect.params.${name} must be text, a number or true/false.`);
+      if (typeof raw === "string" && raw.length > 300) throw new AskError(`effect.params.${name} is at most 300 characters.`);
+      params[name] = raw as string | number | boolean | null;
+    }
+  }
+  return { key, ...(Object.keys(params).length ? { params } : {}) };
+}
+
 export interface AskInput {
   issueId: string;
   question: string;
@@ -76,6 +120,7 @@ export interface AskInput {
   steps: string[];
   client: string | null;
   dueBy: string | null;
+  effect: AskEffect | null;
 }
 
 export class AskError extends Error {}
@@ -151,7 +196,8 @@ export function parseAskInput(raw: Record<string, unknown>): AskInput {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) throw new AskError("dueBy must be a date as YYYY-MM-DD.");
     dueBy = value;
   }
-  return { issueId, question, options, why, kind, links, steps, client, dueBy };
+  const effect = parseEffect(raw.effect);
+  return { issueId, question, options, why, kind, links, steps, client, dueBy, effect };
 }
 
 /** A Paperclip path with the company prefix (`/issues/X` → `/PIB/issues/X`); links that already have it, and https links, stay. */
@@ -163,7 +209,7 @@ export function prefixed(href: string, prefix: string | null): string {
 
 /** The comment posted on the issue: question, options, why, what to do and links. */
 export function askComment(input: {
-  ask: Pick<AskInput, "question" | "options" | "why" | "kind" | "links" | "steps" | "dueBy">;
+  ask: Pick<AskInput, "question" | "options" | "why" | "kind" | "links" | "steps" | "dueBy"> & { effect?: AskEffect | null };
   agentName: string;
   clientLabel?: string | null;
   prefix: string | null;
@@ -186,6 +232,7 @@ export function askComment(input: {
   if (ask.links.length) {
     lines.push(`**Links:** ${ask.links.map((link) => `[${link.label.replace(/[[\]]/g, "")}](${prefixed(link.href, input.prefix)})`).join(" · ")}`, "");
   }
+  if (ask.effect) lines.push(`**If you say yes to the first option:** ${describeEffect(ask.effect)} It is checked afterwards, and ${input.agentName} is told what happened.`, "");
   lines.push(`Reply here with your answer${ask.options.length ? " (the option number is enough)" : ""}. The issue then goes back to ${input.agentName}, who carries on.`);
   return lines.join("\n");
 }
@@ -199,10 +246,11 @@ export function answerText(answer: string, options: string[]): string {
 }
 
 /** The wake reason for the agent: its question's answer, short. */
-export function wakeReason(input: { identifier: string | null; answer: string; options: string[] }): string {
+export function wakeReason(input: { identifier: string | null; answer: string; options: string[]; effect?: string | null }): string {
   const answer = answerText(input.answer, input.options).replace(/\s+/g, " ");
   const short = answer.length > ASK_LIMITS.wakeAnswerChars ? `${answer.slice(0, ASK_LIMITS.wakeAnswerChars - 1)}…` : answer;
-  return `The owner answered your question${input.identifier ? ` on ${input.identifier}` : ""}: "${short}". Read the reply on the issue and carry on.`;
+  const effect = input.effect ? ` What the answer was meant to do: ${input.effect}` : "";
+  return `The owner answered your question${input.identifier ? ` on ${input.identifier}` : ""}: "${short}".${effect} Read the reply on the issue and carry on.`;
 }
 
 /** An open ask as the Cockpit page and the Operator see it. */
@@ -222,6 +270,8 @@ export interface AskView {
   dueBy: string | null;
   clientRef: string | null;
   clientName: string | null;
+  /** What a yes does, when the ask carries an effect. */
+  effect?: { key: string; description: string } | null;
 }
 
 /** An open ask as a "Waiting on you" item (`ask` set, so it sorts first and renders as a question). */
@@ -229,7 +279,7 @@ export function askWaitingItem(ask: AskView): WaitingItem & { ask: WaitingAskInf
   return {
     key: `ask:${ask.id}`,
     title: ask.question,
-    why: [ask.askedBy ? `${ask.askedBy} asks` : "An agent asks", ask.why].filter(Boolean).join(": "),
+    why: [[ask.askedBy ? `${ask.askedBy} asks` : "An agent asks", ask.why].filter(Boolean).join(": "), ask.effect ? ask.effect.description : null].filter(Boolean).join(" "),
     href: `/issues/${ask.identifier ?? ask.issueId}`,
     issueId: ask.issueId,
     kind: ASK_WAITING_KIND[ask.kind],

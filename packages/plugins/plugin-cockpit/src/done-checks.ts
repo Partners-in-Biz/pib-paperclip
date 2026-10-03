@@ -16,6 +16,9 @@
  * - System health (`cockpit:health:<companyId>`): nothing is left on it. The
  *   Cockpit closes it itself once every check is ok, so an early close reopens.
  *
+ * - Close-out review (`cockpit:closeout:`) and weekly business review
+ *   (`cockpit:business-review:`): the same checklist rule as onboarding.
+ *
  * Issues opened before 0.4.0 carry the same kinds without the plugin part
  * (`onboarding:…`, `health:…`) and are checked the same way.
  */
@@ -162,8 +165,11 @@ export function cockpitDoneRules(env: Env): DoneCheckRule[] {
   };
   const onboarding = guarded((issue, ctx) => onboardingCheck(ctx, issue));
   const health = guarded(async (issue) => healthResult((await collectProblems(env, issue.companyId)).entries));
+  // The close-out and business reviews carry a checklist like onboarding: closed with lines unticked and unexplained, they reopen.
   return [
     { originPrefix: ORIGIN_ID.onboarding, label: "Client onboarding", check: onboarding },
+    { originPrefix: ORIGIN_ID.closeout, label: "Close-out review", check: onboarding },
+    { originPrefix: ORIGIN_ID.businessReview, label: "Weekly business review", check: onboarding },
     { originPrefix: ORIGIN_ID.health, label: "System health", check: health },
     { originPrefix: LEGACY_ORIGIN_ID.onboarding, label: "Client onboarding", check: onboarding },
     { originPrefix: LEGACY_ORIGIN_ID.health, label: "System health", check: health },

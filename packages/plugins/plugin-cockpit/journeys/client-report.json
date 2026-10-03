@@ -1,0 +1,75 @@
+{
+  "key": "client-report",
+  "version": 1,
+  "title": "Monthly client report",
+  "summary": "A module's numbers are recorded for the canary client, the report is built as a dry run (nothing is stored), and, where the CRM accepts a prospect, the narrative is written and the report email is drafted behind an approval that reaches the Reviewer first. The last two steps may be skipped with the CRM's own reason: a first run calibrates them.",
+  "schedule": ["release", "on-demand"],
+  "plugins": ["partnersinbiz.crm"],
+  "ownerRole": "account-manager",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {},
+      "expect": [{ "path": "client", "equals": "{{client}}" }],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "record-signal",
+      "title": "Record a module's numbers for the report",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:record-client-signal",
+      "input": { "client": "{{client}}", "module": "seo", "period": "{{period}}", "headline": [{ "label": "Clicks", "value": "120" }], "bullets": ["Acceptance rehearsal: these numbers are made up."] },
+      "expect": [{ "path": "$", "notEmpty": true }],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "build-report",
+      "title": "Build the report as a dry run",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:build-client-report",
+      "input": { "client": "{{client}}", "period": "{{period}}", "dryRun": true },
+      "note": "A dry run stores nothing. If the CRM refuses a client that is not a customer, report that as the error: it is a finding, not something to work around.",
+      "expect": [{ "path": "$", "notEmpty": true }],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "write-narrative",
+      "title": "Write the report narrative",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:set-report-narrative",
+      "optional": true,
+      "input": { "client": "{{client}}", "period": "{{period}}", "summary": "Acceptance rehearsal for PiB Canary Co: this report goes to no real person and every number in it is made up for the test." },
+      "note": "Skip with the CRM's own reason when it refuses because no report was stored (the dry run stores none).",
+      "expect": [{ "path": "$", "notEmpty": true }],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "send-report-approval",
+      "title": "Draft the report email: the approval reaches the Reviewer first",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:send-client-report",
+      "optional": true,
+      "input": { "client": "{{client}}", "period": "{{period}}", "toEmail": "canary@canary.invalid" },
+      "note": "Do NOT approve the approval it opens: the Cockpit checks where it went and cancels the canary's approval when the run ends. Skip with the CRM's own reason when it needs a stored report.",
+      "expect": [{ "path": "approvalIssueId", "notEmpty": true }],
+      "probe": { "kind": "approval-route", "idPath": "approvalIssueId", "outward": true },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": { "confirm": true },
+      "expect": [
+        { "path": "cleaned", "equals": true },
+        { "path": "company", "equals": "{{client}}" }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}

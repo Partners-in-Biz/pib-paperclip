@@ -326,6 +326,8 @@ describe("memory tab sections", () => {
       staleExamples: [],
       overCap: [{ scope: "*|seo", active: 134 }],
       misfiled: [{ id: "m7", text: "Brightside Dental wants invoices on the 1st.", area: "billing" as const, kind: "fact" as const, clientRef: "company:bs1", clientName: "Brightside Dental", suggestion: "memory-add …" }],
+      skillCandidates: [],
+      feedbackSignal: { briefs: 20, withFeedback: 4, coverage: 0.2, level: "ok" as const, message: "4 of 20 briefs (20%) got feedback in 30 days: enough to read." },
       verdict: "3 missing-fact reports in 30 days: the keyword baseline would have caught 1, missed 2.",
     } as MemoryReview;
     expect(attentionCount(review)).toBe(5);

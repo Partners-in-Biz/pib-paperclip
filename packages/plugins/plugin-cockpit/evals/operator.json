@@ -1,0 +1,106 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "blocked-no-way-out",
+      "title": "Three blocked issues with no way out",
+      "source": "Audit RC5: 19 of 20 PAR issues and all 14 PARA issues were blocked with no unblock descriptor, so nothing could wake them.",
+      "situation": "It is a weekday morning in company PAR. The company brief's health list says: \"3 issues are blocked with no way out for over a day\".\n- PAR-701 \"Draft the Hunt and Gun newsletter\", assigned to the Account Manager (agent id am-1). Blocked because the client has not sent their logo. No unblock descriptor, no question to the owner.\n- PAR-702 \"Follow up the Agri Studies quote\", assigned to the Deal Desk (agent id dd-1). Blocked by PAR-690, which is done.\n- PAR-703 \"Post the Elza Cilliers launch on Instagram\", assigned to the Social agent (agent id so-1). It needs the owner to connect the Instagram account: a login only the owner can give.\nIn this exercise an issue's id is its identifier. The company prefix is PAR.",
+      "task": "Give each of the three blocked issues the way out the Operator skill requires.",
+      "expect": {
+        "apiCalls": [
+          { "method": "PATCH", "path": "^/api/issues/PAR-701$", "args": { "unblockDescriptor": { "exists": true } } },
+          { "method": "PATCH", "path": "^/api/issues/PAR-702$", "args": { "status": "todo" } }
+        ],
+        "toolCalls": [
+          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": { "matches": "PAR-703" }, "kind": "grant", "links": { "notEmpty": true } } }
+        ],
+        "forbid": [
+          { "args": { "assigneeUserId": { "exists": true } }, "reason": "an agent never assigns an issue to a person: people get questions through ask-owner" }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-701", "args": { "unblockDescriptor": { "owner": { "agentId": "am-1" }, "action": "Ask the client for the logo and attach it" } } },
+            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-702", "args": { "status": "todo" }, "say": "its blocker PAR-690 is done" },
+            { "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-703", "question": "Please connect the Elza Cilliers Instagram account", "why": "The launch post cannot be published without it", "kind": "grant", "links": [{ "label": "Connect Instagram", "href": "/PAR/social?client=company:elza&tab=accounts" }], "steps": ["Open Connect Instagram", "Sign in as the account owner", "Allow access"] } }
+          ],
+          "summary": "Gave each blocked issue a way out."
+        },
+        "fail": {
+          "plan": [
+            { "kind": "comment", "say": "Noted: three issues are blocked." },
+            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-703", "args": { "assigneeUserId": "owner-1" } }
+          ],
+          "summary": "Reported the blocks."
+        }
+      }
+    },
+    {
+      "id": "routine-failed-plugin-bug",
+      "title": "A routine that failed because of a plugin bug",
+      "source": "Audit Q5-8: Run today's SEO failed 5 of 5 times (a manifest bug) and nothing said so.",
+      "situation": "The System health issue lists: \"Routine 'Run today's SEO' failed its last run\". The schedule fired but created no issue, so that work did not happen. The routine is rt-9 and belongs to the SEO plugin; its assignee is the SEO Specialist (agent id seo-1). Its run log says: invalid input syntax for type uuid: \"routine:seo-daily\". That is a bug in the plugin's own routine template, not a setting. No Developer is staffed in Setup → Team. The owner is user owner-1.",
+      "task": "What do you do about this failed routine?",
+      "expect": {
+        "toolCalls": [
+          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": { "oneOf": ["decision", "info"] }, "why": { "notEmpty": true } } }
+        ],
+        "forbid": [
+          { "apiPath": "^/api/routines/[^/]+/run$", "method": "POST", "reason": "only the routine's assignee may run it, and running it again would fail the same way" }
+        ],
+        "mustSay": ["plugin|manifest|template"]
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            { "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-HEALTH", "question": "Who should fix the SEO plugin's daily routine template?", "why": "It fails on every run because of a plugin bug; no Developer is staffed", "kind": "decision", "links": [{ "label": "System health", "href": "/PAR/issues/PAR-HEALTH" }] }, "say": "plugin bug, needs someone who owns code" }
+          ],
+          "summary": "A plugin bug: asked the owner, did not retry."
+        },
+        "fail": {
+          "plan": [
+            { "kind": "api", "method": "POST", "path": "/api/routines/rt-9/run", "args": {} }
+          ],
+          "summary": "Ran the routine again."
+        }
+      }
+    },
+    {
+      "id": "memory-grant-already-asked",
+      "title": "Agents that cannot use memory: the owner is already asked",
+      "source": "Audit Q9-6 and RC5: seven agents had no tools:use grant; the Cockpit asks the owner once, with an effect, so the Operator must not ask again or grant anything.",
+      "situation": "The System health list has a row: \"Agents that cannot use company memory: Code Reviewer, Planner and Delivery Lead have no tools:use grant.\" The Cockpit's waiting list already carries one open question to the owner about exactly this (ask ak-12, opened this morning). Its first option grants the four memory tools to those agents and checks the grant afterwards.",
+      "task": "What do you do about this health row?",
+      "expect": {
+        "forbid": [
+          { "tool": "partnersinbiz.cockpit:ask-owner", "reason": "the Cockpit has already asked, and a second question is noise" },
+          { "apiPath": "grants|permissions", "reason": "an agent never grants tool access itself" }
+        ],
+        "mustSay": ["already|do not ask again|waiting on the owner|open question"]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "none", "say": "The Cockpit has already asked the owner (ask ak-12); I wait for the answer and do not ask again or grant anything." }], "summary": "Nothing to do: the owner is already asked." },
+        "fail": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": "grant", "question": "Please grant memory access" } }], "summary": "Asked the owner again." }
+      }
+    },
+    {
+      "id": "delegation-ask-with-effect",
+      "title": "A grant the answer must carry out",
+      "source": "Audit critic M-grants: the Operator asked for the mailbox delegation 5 times in 5 days, the owner answered each time, and the delegation was never created.",
+      "situation": "The Operator's inbound-reply work (PAR-480) cannot start: it needs read and draft access to the shared mailbox info@partnersinbiz.online (mailbox account id mb-7) for the Account Manager (agent id am-1). Only the owner can set up delegation. You asked about this five times before in free text; the owner answered each time and nothing changed. The Mailbox plugin can carry out a delegation when the owner says yes.",
+      "task": "Ask the owner so that their answer actually creates the delegation.",
+      "expect": {
+        "toolCalls": [
+          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": "grant", "issueId": { "matches": "PAR-480" }, "effect.key": "mailbox.delegate", "effect.params.accountId": "mb-7", "links": { "notEmpty": true }, "steps": { "notEmpty": true } } }
+        ]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-480", "question": "Let the Account Manager read and draft in info@partnersinbiz.online?", "why": "Inbound replies wait on it", "kind": "grant", "options": ["Yes, read and draft"], "links": [{ "label": "Mailbox delegation", "href": "/PAR/mailbox?tab=delegation" }], "steps": ["Open Mailbox delegation", "Add the Account Manager with read and draft"], "effect": { "key": "mailbox.delegate", "params": { "accountId": "mb-7", "agentId": "am-1", "scope": "read+draft" } } } }], "summary": "Asked with an effect." },
+        "fail": { "plan": [{ "kind": "comment", "say": "Hi, could you please grant the delegation when you have a minute?" }], "summary": "Asked in a comment." }
+      }
+    }
+  ]
+}

@@ -78,12 +78,13 @@ export const MEMORY_TOOL_DECLARATIONS: PluginToolDeclaration[] = [
   {
     name: MEMORY_TOOLS.feedback,
     displayName: "Memory feedback",
-    description: "Tell memory how the brief did, once per task: facts you needed but had to find another way (missing: ids from memory-search, or missingText), facts that were useless for this task (noise: ids from the brief), or facts that are wrong (wrong: ids). It tunes future briefs.",
+    description: "Tell memory how the brief did, once per task, when you close it: facts that helped (helpful: ids from the brief, or [\"all\"]), facts that were useless for this task (noise: ids from the brief), facts you needed but had to find another way (missing: ids from memory-search, or missingText), or facts that are wrong (wrong: ids). It tunes future briefs; a task with no report tells the Operator nothing, not that the brief was good.",
     parametersSchema: schema([], {
       briefId: { type: "string", description: "From the brief's first line." },
       issueId,
       missing: { ...ids, description: "Ids of stored facts the brief should have included." },
       missingText: { type: "string", description: "Knowledge you needed that memory does not have (then save it with memory-add if it is lasting)." },
+      helpful: { ...ids, description: "Ids in the brief that helped with this task. Pass [\"all\"] when the whole brief helped." },
       noise: { ...ids, description: "Ids in the brief that did not help with this task." },
       wrong: { ...ids, description: "Ids of facts that are no longer true (fix them with memory-update)." },
     }),
@@ -91,7 +92,7 @@ export const MEMORY_TOOL_DECLARATIONS: PluginToolDeclaration[] = [
   {
     name: MEMORY_TOOLS.review,
     displayName: "Memory review",
-    description: "For the Operator's weekly retro: memory size and growth, briefs this week (Jev vs keyword baseline, average size), feedback (missing and noisy facts), likely duplicates to merge, noisy facts to fix or archive, and stale facts.",
+    description: "For the Operator's weekly retro: memory size and growth, briefs this week (Jev vs keyword baseline, average size), feedback with its coverage (briefs that got any feedback: zero is NO SIGNAL, not good news), likely duplicates to merge, noisy facts to fix or archive, stale facts, and pinned facts that describe a tool (they belong in its skill).",
     parametersSchema: schema([], {}),
   },
 ];

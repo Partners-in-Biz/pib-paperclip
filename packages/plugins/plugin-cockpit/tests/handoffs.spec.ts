@@ -3,7 +3,7 @@
  * in roles.updated, onboarding on a first won deal, paid invoices as
  * activity, unassigned work, and warnings that last longer than a day.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { COCKPIT_EVENTS, PIB_PLUGINS, type CockpitSnapshot, type RolesPayload } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief } from "../src/brief.js";
 import { collectProblems, healthIssueContent, refreshHealthIssue, warningAgeMs } from "../src/health.js";
@@ -14,6 +14,9 @@ import { createEnv, onSnapshotEvent, registerCockpit } from "../src/register.js"
 import { fullRolesPayload, reemitRoles, routeFromRoles, saveTeam } from "../src/roles.js";
 import { getRoles } from "../src/db.js";
 import { fakeCtx, fixedClock, type FakeAgent } from "./helpers/fake-ctx.js";
+
+// The extra checks (checks.ts) have their own specs; here the Cockpit's other behaviour is tested on a quiet baseline.
+vi.mock("../src/checks.js", async (original) => ({ ...(await original<typeof import("../src/checks.js")>()), extraChecks: async () => ({ health: [], kpis: [], quality: [], waiting: [] }) }));
 
 const A = "company-a";
 const NOW = "2026-09-26T10:00:00.000Z";
@@ -154,6 +157,29 @@ describe("onboarding on a first won deal", () => {
     const content = onboardingContent({ clientRef: "contact:ct1", clientName: "Thabo", dealTitle: "Logo", dealValue: null, wonAt: NOW, prefix: null, modules: { crm: true, billing: false, social: false, seo: false }, staff: {} });
     expect(content.description).toContain("[Client workspace](/crm?client=contact:ct1)");
     expect(content.description).not.toContain("Billing");
+  });
+
+  it("the canary client's won deal is a rehearsal: no onboarding issue, no activity, and a second client still onboards", async () => {
+    const s = setup();
+    await saveTeam(s.env, A, { operatorAgentId: "op" }, "user-1");
+    const canary = await onDealWon(s.env, won({ clientRef: "company:canary-1a2b3c4d", clientName: "PiB Canary Co" }));
+    expect(canary).toEqual({ recorded: false, onboarding: null });
+    expect([...s.issues.values()].filter((i) => i.originKind === "plugin:partnersinbiz.cockpit:onboarding")).toEqual([]);
+    expect((await ownSnapshot(s.env, A)).activity).toEqual([]);
+    // A real client whose id merely starts the same way is not the canary (the id must be company:canary-<hash>).
+    const real = await onDealWon(s.env, won({ key: "crm:deal:d7:won", clientRef: "company:canary", clientName: "Canary Cages" }));
+    expect(real.onboarding).toMatchObject({ action: "opened" });
+    const spoof = await onDealWon(s.env, won({ key: "crm:deal:d8:won", clientRef: "contact:canary-1a2b3c4d", clientName: "Contact Canary" }));
+    expect(spoof.onboarding).toMatchObject({ action: "opened" });
+  });
+
+  it("a test payment by the canary client is no revenue and no activity, but a real client's payment still counts", async () => {
+    const s = setup();
+    const paid = (key: string, clientRef: string) => ({ companyId: A, payload: { key, invoiceId: key, number: "INV-000099", clientKind: "company", clientRef, totalMinor: 500_000, currency: "ZAR", paidAt: "2026-09-26T08:00:00.000Z" } });
+    expect(await onInvoicePaid(s.env, paid("billing:invoice:c1:paid", "company:canary-1a2b3c4d"))).toBe(false);
+    expect((await ownSnapshot(s.env, A)).activity).toEqual([]);
+    expect(await onInvoicePaid(s.env, paid("billing:invoice:r1:paid", "company:nw"))).toBe(true);
+    expect((await ownSnapshot(s.env, A)).activity.map((a) => a.text)).toEqual(["INV-000099 paid in full (R 5,000.00)"]);
   });
 
   it("records a paid invoice as activity (once)", async () => {

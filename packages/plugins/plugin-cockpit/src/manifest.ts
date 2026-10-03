@@ -1,8 +1,9 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, jevConfigSchema, MEMORY_TOOLS, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, MEMORY_TOOLS, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from "./constants.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
+import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
 
 export { JOBS, VERSION };
 
@@ -11,24 +12,27 @@ const tool = (name: string) => `${PLUGIN_KEY}:${name}`;
 export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${SKILL_SLUGS.operator} skill.
 
 1. Call ${tool(TOOL_NAMES.brief)}.
-2. Health first: follow each problem's fix; hand broken work to the agent that owns it and wake it. Comment what you did on the System health issue.
+2. Health first: follow each problem's fix; hand broken work to the agent that owns it and wake it. Comment what you did on the System health issue. The checks include agent drift (skills, tool access, run profile), spend and the plan limit, review coverage, client effort, credential expiry, owner confirmations and the Needs-you backlog: the skill's references say what to do for each.
 3. Check the team: routines on, roles staffed (Setup → Team), questions to the owner answered (\`asks\`, oldest first on the brief).
 4. Route every unassigned issue (\`unassigned\`) to the agent in the role that owns the work.
 5. Unblock agents: answer from context, reassign, or hand off. Only a real grant or decision goes to the owner, with ${tool(TOOL_NAMES.askOwner)}.
 6. Work the stuck stages (\`stuckFlows\`): wake or hand off to the agent each one waits on; one waiting on a person goes on the brief.
 7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
 8. Make sure today's important work has an agent and is not blocked.
-9. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
-10. Close this issue with one line: fixed, handed off, waiting on the owner.
+9. Look at \`improvements\` (overdue first) and any close-out review or business review issue assigned to you: do them, or hand the change to the agent that owns it.
+10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
+11. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
 
 export const WEEKLY_ROUTINE_DESCRIPTION = `Weekly retro. Follow the ${SKILL_SLUGS.operator} skill.
 
 1. Call ${tool(TOOL_NAMES.brief)} with windowHours 168, and ${tool(TOOL_NAMES.scorecards)}.
-2. Call ${tool(MEMORY_TOOLS.review)}. Merge likely duplicates (keep the better one, mark the other superseded), fix or archive noisy and wrong facts, move company-wide facts that name a client to that client, and note how briefs did.
-3. Post a "Weekly retro" with ${tool(TOOL_NAMES.postBrief)}: what worked, what failed, one scorecard line per agent (runs, failures, spend vs budget, key quality metric), one line on company memory (facts, briefs, feedback), and at most 3 proposals (mark the ones that need the owner's yes).
-4. Carry out the proposals that do not need the owner, then close this issue.`;
+2. Call ${tool(OPS_TOOL_NAMES.measure)} (windowHours 168, parts agents, projects, trees, review, limits, clients): what the work cost (notional USD, tokens), how long runs take, retries and cancellations, cost per finished issue, code-review coverage and latency, runs that hit the plan limit, and each customer's effort against what they paid.
+3. Call ${tool(MEMORY_TOOLS.review)}. Merge likely duplicates (keep the better one, mark the other superseded), fix or archive noisy and wrong facts, move company-wide facts that name a client to that client, record each pinned fact that describes a tool (\`skillCandidates\`) as an improvement, and note how briefs did. Feedback coverage low or zero is NO SIGNAL: say so, never count it as good news.
+4. Call ${tool(OPS_TOOL_NAMES.improvementList)} (open) and the brief's \`improvements\`: for each one past its re-check date record the number or drop it; say which recent ones improved, did not change or got worse.
+5. Post a "Weekly retro" with ${tool(TOOL_NAMES.postBrief)}: what worked, what failed (from the measure report, not only failed runs), one scorecard line per agent (runs, failures, notional spend, cost per finished issue, key quality metric), one line on company memory (facts, briefs, feedback coverage), one line on improvements, one line on goals, and at most 3 proposals (mark the ones that need the owner's yes). Record every proposal with ${tool(OPS_TOOL_NAMES.improvementPropose)}: the number it should move, where it stands, the target, the re-check date.
+6. Carry out the proposals that do not need the owner, then close this issue.`;
 
 const instanceConfigSchema: JsonSchema = {
   type: "object",
@@ -41,6 +45,49 @@ const instanceConfigSchema: JsonSchema = {
       title: "System health issue",
       description: "Keep one open issue listing current problems (bad checks, plugins not reporting, agents in error or at 80% of budget, failing routines and runs, issues blocked or stalled). It closes itself when all is ok.",
       default: true,
+    },
+    notionalDailyUsd: {
+      type: "number",
+      title: "Daily AI spend limit (notional USD, optional)",
+      description:
+        "Claude runs on a flat plan, so agent budgets never fill: they count billed cents and the plan bills none. The Cockpit measures notional USD instead (what the same tokens would cost at list price) and raises a health alert when the last 24 hours reach this number. Leave blank for no daily limit. A sudden jump to more than twice the usual is flagged either way.",
+      minimum: 0,
+    },
+    notionalWeeklyUsd: {
+      type: "number",
+      title: "Weekly AI spend limit (notional USD, optional)",
+      description: "A health alert when the last 7 days of notional spend reach this number. Leave blank for no weekly limit.",
+      minimum: 0,
+    },
+    usdRate: {
+      type: "number",
+      title: "Rand per US dollar",
+      description: "Only used to set the agents' notional spend on a client against what that client paid (invoices are in rand). A planning figure, not a quote. Default 18.",
+      minimum: 0,
+    },
+    effortAlertRatio: {
+      type: "number",
+      title: "Client effort alert (share of what they paid)",
+      description: "Warn when a customer's notional AI spend over 30 days is at least this share of what they paid in the same time (default 0.5, half).",
+      minimum: 0,
+    },
+    credentialSeed: {
+      type: "boolean",
+      title: "Load Partners in Biz's own credentials list (owner company only)",
+      description:
+        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts empty and you or the Operator record only their own credentials.",
+      default: false,
+    },
+    credentialChecks: {
+      type: "object",
+      title: "Credential checks (optional)",
+      description:
+        "Pick a company secret for each provider and the daily check calls it once (one cheap read, never storing or showing the value) to see whether the credential is still accepted and, for GitHub and Cloudflare, when it expires. Without one the register still warns before an expiry date you recorded.",
+      properties: {
+        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user)."),
+        cloudflare: secretField("Cloudflare API token", "A Cloudflare API token (checked with the token verify call)."),
+        resend: secretField("Resend API key", "The Resend key (checked with a read-only call; a sending-only key counts as live)."),
+      },
     },
     jev: {
       ...jevConfigSchema(),
@@ -75,9 +122,16 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed",
     "authorization.grants.read",
     "authorization.grants.write",
+    // Company goals mirrored to the host's goals, and the company's members (the single-admin check).
+    "goals.read",
+    "goals.create",
+    "goals.update",
+    "access.members.read",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
+    // Reads the harness task's `output` document itself when it grades a golden scenario (skill-eval record), so the agent that ran it cannot say what came back.
+    "issue.documents.read",
     "agent.tools.register",
     "jobs.schedule",
     "events.subscribe",
@@ -91,7 +145,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.dashboardWidget.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations"] },
+  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] },
   tools: COCKPIT_TOOLS,
   jobs: [
     {
@@ -111,6 +165,36 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Company memory upkeep",
       description: "Daily: archives facts past their expiry date, and keeps each client and area under its cap by archiving the least useful unpinned facts (never deleted).",
       schedule: "30 1 * * *",
+    },
+    {
+      jobKey: JOBS.closeoutSweep,
+      displayName: "Close-out reviews",
+      description: "Daily: opens one close-out review for the Operator for each finished project (after a quiet spell), closed epic or evergreen milestone the events missed, at most three per company a day. Each review carries the numbers already gathered.",
+      schedule: "20 4 * * *",
+    },
+    {
+      jobKey: JOBS.improvementsRecheck,
+      displayName: "Improvements re-check",
+      description: "Daily: measures again every improvement whose re-check date has come and records improved, no change or worse with both numbers; opens an improvement for a pinned fact that describes how a tool behaves.",
+      schedule: "40 4 * * *",
+    },
+    {
+      jobKey: JOBS.credentialsCheck,
+      displayName: "Credentials check",
+      description: "Daily: calls each provider it has a company secret for (one read-only request, never storing the value) and settles the expiry alerts: 30 days, 7 days, expired, refused. Loads Partners in Biz's own starting entries only for the company that ticked \"Load Partners in Biz's own credentials list\".",
+      schedule: "50 3 * * *",
+    },
+    {
+      jobKey: JOBS.acceptanceNightly,
+      displayName: "Nightly acceptance request",
+      description: "Every night, for each company that staffed an Acceptance agent: opens one request for it to work the nightly journey (a lead captured and qualified on the canary client). Does nothing for a company with no Acceptance agent.",
+      schedule: "40 2 * * *",
+    },
+    {
+      jobKey: JOBS.businessReview,
+      displayName: "Weekly business review",
+      description: "Mondays before the Weekly retro: records each active goal's number and opens one business review issue for the Operator comparing the week's actuals to the targets.",
+      schedule: "30 4 * * 1",
     },
   ],
   apiRoutes: [

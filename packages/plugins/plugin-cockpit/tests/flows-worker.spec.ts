@@ -127,7 +127,7 @@ describe("what the skills say", () => {
 
   it("the Operator works the stuck stages every morning and knows the onboarding check", () => {
     expect(OPERATOR_SKILL_BODY).toContain("6. **Stuck in the flows.** `stuckFlows` lists the 5 stages");
-    expect(OPERATOR_SKILL_BODY).toContain("10. Close the routine issue");
+    expect(OPERATOR_SKILL_BODY).toContain("11. Close the routine issue");
     expect(OPERATOR_SKILL_BODY).toContain("If it reopens, it lists what's missing: finish those.");
     expect(OPERATOR_SKILL_BODY).toContain("closing it yourself reopens it");
     expect(DAILY_ROUTINE_DESCRIPTION).toContain("6. Work the stuck stages (`stuckFlows`)");

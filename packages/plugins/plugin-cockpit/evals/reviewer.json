@@ -1,0 +1,91 @@
+{
+  "skill": "pib-reviewer",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "pass-and-hand-over",
+      "title": "A sequence email that is fine: pass it and hand it to the approver",
+      "source": "The Reviewer's own loop: check the work, say PASS, hand the issue to the person who approves, never approve.",
+      "situation": "You are the Reviewer. Issue PAR-810 \"Approve email sending: Q4 reactivation sequence\" (own work, no client) is assigned to you. Its description ends with the Reviewer section: hand it to the approver, user id usr-owner-1. The sequence has three emails. Each says who we are and ends with \"Reply STOP to stop\". Personalisation tokens have fallbacks. The voice matches the company profile and the claims are ones we can back up. Links work. Nothing is wrong.",
+      "task": "Do the review.",
+      "expect": {
+        "toolCalls": [
+          { "tool": "partnersinbiz.cockpit:company-profile" },
+          { "tool": "partnersinbiz.cockpit:memory-recall" }
+        ],
+        "apiCalls": [
+          { "method": "POST", "path": "^/api/issues/PAR-810/comments$", "args": { "body": { "matches": "\\*\\*PASS\\*\\*" } } },
+          { "method": "PATCH", "path": "^/api/issues/PAR-810$", "args": { "assigneeUserId": "usr-owner-1", "assigneeAgentId": null } }
+        ],
+        "forbid": [
+          { "apiPath": "^/api/issues/PAR-810$", "method": "PATCH", "args": { "status": { "oneOf": ["done", "cancelled"] } }, "reason": "the Reviewer never approves or closes an approval: only a person does" }
+        ]
+      },
+      "examples": {
+        "pass": { "plan": [
+          { "kind": "tool", "tool": "partnersinbiz.cockpit:company-profile", "args": {} },
+          { "kind": "tool", "tool": "partnersinbiz.cockpit:memory-recall", "args": { "issueId": "PAR-810" } },
+          { "kind": "api", "method": "POST", "path": "/api/issues/PAR-810/comments", "args": { "body": "**PASS**\nChecked: opt-out line, token fallbacks, voice, claims, links." } },
+          { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-810", "args": { "assigneeUserId": "usr-owner-1", "assigneeAgentId": null } }
+        ], "summary": "Passed and handed to the approver." },
+        "fail": { "plan": [
+          { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-810", "args": { "status": "done" } }
+        ], "summary": "Approved it." }
+      }
+    },
+    {
+      "id": "changes-needed-with-the-fix",
+      "title": "A social post with a wrong offer and a dead link",
+      "source": "The Reviewer's own loop: CHANGES NEEDED with one line per problem and the corrected copy; never edit the work.",
+      "situation": "You are the Reviewer. Issue PAR-822 \"Approve social post sp-31\" is assigned to you; the post is for the client Hunt and Gun (company:hg-1). Its caption says \"50% off all services this week\" with a link to /pricing. The brief on the issue says the offer is 20% off the first month only. /pricing returns 404; the right page is /services/pricing. Platform checks pass. The approver is user usr-owner-1.",
+      "task": "Do the review.",
+      "expect": {
+        "apiCalls": [
+          { "method": "POST", "path": "^/api/issues/PAR-822/comments$", "args": { "body": { "matches": "CHANGES NEEDED" } } },
+          { "method": "PATCH", "path": "^/api/issues/PAR-822$", "args": { "assigneeUserId": "usr-owner-1" } }
+        ],
+        "forbid": [
+          { "tool": "partnersinbiz.social:update-post", "reason": "the Reviewer suggests the fix in a comment and never changes the work" },
+          { "tool": "partnersinbiz.social:schedule-post", "reason": "the Reviewer never schedules or publishes" }
+        ],
+        "mustSay": ["20% off", "/services/pricing"]
+      },
+      "examples": {
+        "pass": { "plan": [
+          { "kind": "api", "method": "POST", "path": "/api/issues/PAR-822/comments", "args": { "body": "**CHANGES NEEDED**\n- Caption: \"50% off all services\" is wrong, the brief says 20% off the first month. Use: \"20% off your first month\".\n- Link goes to /pricing (404). Use /services/pricing." } },
+          { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-822", "args": { "assigneeUserId": "usr-owner-1", "assigneeAgentId": null } }
+        ], "summary": "Changes needed." },
+        "fail": { "plan": [
+          { "kind": "tool", "tool": "partnersinbiz.social:update-post", "args": { "postId": "sp-31", "body": "20% off your first month" } },
+          { "kind": "tool", "tool": "partnersinbiz.social:schedule-post", "args": { "postId": "sp-31" } }
+        ], "summary": "Fixed and scheduled it myself." }
+      }
+    },
+    {
+      "id": "late-review-of-outward-approval",
+      "title": "An outward approval that reached the owner without a review",
+      "source": "Audit Q5-6: four CRM sequence approvals (cold email) were opened with nobody assigned, so none reached the Reviewer and the owner approved unreviewed outbound mail.",
+      "situation": "You are the Reviewer. The Cockpit health row says \"1 outward approval was never reviewed\": PAR-456 \"Approve email sending: Cold outreach Q4\" (own work) has sat with the owner (user usr-owner-1) for two days with no Reviewer comment, and the owner has not decided it yet. You are asked to review it now. The sequence's third email has no way to opt out.",
+      "task": "Do the review.",
+      "expect": {
+        "apiCalls": [
+          { "method": "POST", "path": "^/api/issues/PAR-456/comments$", "args": { "body": { "matches": "CHANGES NEEDED" } } },
+          { "method": "PATCH", "path": "^/api/issues/PAR-456$", "args": { "assigneeUserId": "usr-owner-1" } }
+        ],
+        "forbid": [
+          { "apiPath": "^/api/issues/PAR-456$", "method": "PATCH", "args": { "status": { "oneOf": ["done", "cancelled"] } }, "reason": "only a person decides an approval" }
+        ],
+        "mustSay": ["late review", "opt.?out|STOP"]
+      },
+      "examples": {
+        "pass": { "plan": [
+          { "kind": "api", "method": "POST", "path": "/api/issues/PAR-456/comments", "args": { "body": "**CHANGES NEEDED: do not approve**\nLate review: this reached you before the Reviewer saw it.\n- Email 3 has no opt-out. Add: \"Reply STOP to stop.\"" } },
+          { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-456", "args": { "assigneeUserId": "usr-owner-1", "assigneeAgentId": null } }
+        ], "summary": "Late review done." },
+        "fail": { "plan": [
+          { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-456", "args": { "status": "cancelled" } }
+        ], "summary": "Cancelled it." }
+      }
+    }
+  ]
+}

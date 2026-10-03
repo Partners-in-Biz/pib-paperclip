@@ -41,6 +41,8 @@ import {
 } from "./engine.js";
 import { jevOnce, memoryJevConfig, runJevBatches } from "./jev.js";
 import * as store from "./store.js";
+import { feedbackSignal } from "./signal.js";
+import { owningModule, skillCandidates } from "../improvements-model.js";
 
 export class MemoryError extends Error {}
 
@@ -759,7 +761,7 @@ function idList(value: unknown, max = 20): string[] {
 export async function feedback(
   env: Env,
   companyId: string,
-  input: { briefId?: unknown; issueId?: unknown; missing?: unknown; noise?: unknown; missingText?: unknown; wrong?: unknown },
+  input: { briefId?: unknown; issueId?: unknown; missing?: unknown; noise?: unknown; missingText?: unknown; wrong?: unknown; helpful?: unknown },
   actor: Actor,
 ): Promise<{ recorded: number; message: string }> {
   const briefId = text(input.briefId, 40);
@@ -774,11 +776,16 @@ export async function feedback(
   const noise = idList(input.noise).filter((id) => brief!.factIds.includes(id));
   const wrong = idList(input.wrong);
   const missingText = text(input.missingText, MEMORY_LIMITS.factMaxChars * 2);
-  if (!missing.length && !noise.length && !wrong.length && !missingText) throw new MemoryError("Say what was missing (missing fact ids or missingText), useless (noise ids), or wrong (wrong ids).");
+  // "all" says the whole brief helped, so an agent whose brief was fine need not list a dozen ids.
+  const wantsAll = Array.isArray(input.helpful) && input.helpful.some((v) => typeof v === "string" && v.trim().toLowerCase() === "all");
+  const helpful = wantsAll ? [...brief.factIds] : idList(input.helpful).filter((id) => brief!.factIds.includes(id));
+  if (!missing.length && !noise.length && !wrong.length && !missingText && !helpful.length) {
+    throw new MemoryError("Say what was missing (missing fact ids or missingText), useless (noise ids), wrong (wrong ids), or what helped (helpful ids from the brief, or [\"all\"]).");
+  }
   const known = await store.getFacts(env.ctx, companyId, [...missing, ...wrong]);
   const knownIds = new Set(known.map((f) => f.id));
   let recorded = 0;
-  const row = (kind: "missing" | "noise" | "wrong", factId: string | null, t: string | null, inBaseline: boolean | null) =>
+  const row = (kind: "missing" | "noise" | "wrong" | "helpful", factId: string | null, t: string | null, inBaseline: boolean | null) =>
     store.insertFeedback(env.ctx, { id: shortId("f"), companyId, briefId: brief!.id, issueId: brief!.issueId, agentId: actor.agentId, userId: actor.userId, kind, factId, text: t, inBaseline });
   for (const id of missing.filter((m) => knownIds.has(m))) {
     await row("missing", id, null, brief.baselineIds.includes(id));
@@ -796,7 +803,13 @@ export async function feedback(
     await row("wrong", id, null, null);
     recorded += 1;
   }
-  await store.bumpFeedback(env.ctx, companyId, missing.filter((m) => knownIds.has(m)), "helpful");
+  // A fact reported both ways in one call counts as noise: the more careful reading.
+  const helpedOnly = helpful.filter((id) => !noise.includes(id));
+  for (const id of helpedOnly) {
+    await row("helpful", id, null, brief.baselineIds.includes(id));
+    recorded += 1;
+  }
+  await store.bumpFeedback(env.ctx, companyId, [...missing.filter((m) => knownIds.has(m)), ...helpedOnly], "helpful");
   await store.bumpFeedback(env.ctx, companyId, noise, "noise");
   const parts = [`Thanks: ${recorded} note${recorded === 1 ? "" : "s"} on brief ${brief.id}.`];
   if (missingText) parts.push("If that missing knowledge is true and lasting, save it with memory-add.");
@@ -956,10 +969,14 @@ export async function review(env: Env, companyId: string) {
   const stale = facts.filter((f) => !f.pinned && (f.lastUsedAt ? now - Date.parse(f.lastUsedAt) : now - Date.parse(f.createdAt)) > staleDays * 86_400_000);
   const overCap = [...groups.entries()].filter(([, list]) => list.length > SELECTION.scopeActiveCap).map(([key, list]) => ({ scope: key, active: list.length }));
   const m = stats.feedback30d;
+  const signal = feedbackSignal(stats.briefs30d.total, m.briefsWithFeedback);
+  // Silence is not a result: with no signal the review says so and states no comparison; with some, the reports are named for what they are.
   const verdict =
-    m.missing === 0
-      ? "No missing-fact reports in 30 days."
-      : `${m.missing} missing-fact reports in 30 days: the keyword baseline would have caught ${m.missingInBaseline}, missed ${m.missingNotInBaseline}.`;
+    signal.level === "none"
+      ? signal.message
+      : m.missing === 0
+        ? `${signal.message} No missing-fact reports among them.`
+        : `${signal.message} ${m.missing} missing-fact reports: the keyword baseline would have caught ${m.missingInBaseline}, missed ${m.missingNotInBaseline}.`;
   const skipping = coverage.filter((c) => c.runs >= 3 && c.withBrief / c.runs < 0.5);
   return {
     stats,
@@ -971,6 +988,9 @@ export async function review(env: Env, companyId: string) {
     staleExamples: stale.slice(0, 5).map((f) => ({ id: f.id, text: f.text, lastUsedAt: f.lastUsedAt })),
     overCap,
     misfiled: misfiledFacts(facts, known),
+    /** Company-wide facts that read like instructions for a tool or skill: each belongs in the skill that owns it (improvement-propose with sourceFactId). */
+    skillCandidates: skillCandidates(facts).slice(0, 10).map((f) => ({ id: f.id, text: f.text, pinned: f.pinned, uses: f.useCount, module: owningModule(f.text) })),
+    feedbackSignal: signal,
     verdict,
   };
 }

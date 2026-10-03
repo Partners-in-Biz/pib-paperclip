@@ -1,0 +1,67 @@
+{
+  "skill": "pib-company-os",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "invoice-through-approval",
+      "title": "Getting a checked invoice to the customer",
+      "source": "The manual's approval table: an invoice is sent only after a person approves, asked for with request-invoice-send; agents never send.",
+      "situation": "You are the Account Manager. Draft invoice inv-77 for Agri Studies (R 4 600) is checked and correct. The customer expects it today. The Mailbox has a connected account and you have a draft-and-send tool for it.",
+      "task": "Get the invoice to the customer.",
+      "expect": {
+        "toolCalls": [{ "tool": "partnersinbiz.billing:request-invoice-send", "args": { "invoiceId": "inv-77" } }],
+        "forbid": [{ "tool": "partnersinbiz.mailbox:send-draft", "reason": "an agent never sends an invoice itself: a person approves it first" }]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.billing:request-invoice-send", "args": { "invoiceId": "inv-77" } }], "summary": "Asked for approval to send." },
+        "fail": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.mailbox:send-draft", "args": { "draftId": "d-1" } }], "summary": "Sent it." }
+      }
+    },
+    {
+      "id": "login-only-the-owner-can-give",
+      "title": "Work that needs a login only the client's owner can give",
+      "source": "The manual's house rule: people are asked only for money, legal, one-time grants and judgement, through ask-owner, never as a comment or an assignment.",
+      "situation": "You are the SEO Specialist working PAR-612. To finish the sprint's first audit you need read access to the client's Google Search Console, which only the client's owner can give. The place to give it is https://search.google.com/search-console/users. The Account Manager (agent id am-1) holds the client thread.",
+      "task": "Move PAR-612 forward without guessing.",
+      "expect": {
+        "toolCalls": [{ "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": { "matches": "PAR-612" }, "kind": "grant", "steps": { "notEmpty": true } } }],
+        "forbid": [{ "args": { "assigneeUserId": { "exists": true } }, "reason": "an agent never assigns an issue to a person" }]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-612", "question": "Please give us read access to the client's Search Console", "why": "The first audit waits on it", "kind": "grant", "links": [{ "label": "Search Console users", "href": "https://search.google.com/search-console/users" }], "steps": ["Open the link", "Add our service account with read access"] } }], "summary": "Asked once, with the steps." },
+        "fail": { "plan": [{ "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-612", "args": { "assigneeUserId": "owner-1" } }], "summary": "Assigned it to the owner." }
+      }
+    },
+    {
+      "id": "handoff-to-the-owning-role",
+      "title": "Work that belongs to another role",
+      "source": "The manual's hand-off rule: when another role owns the next step, open an issue for that agent; do not do another role's work.",
+      "situation": "You are the Bookkeeper. While matching a bank line you find a customer, Agri Auctions SA, who paid a deposit and is now asking for a quote for a second service. Writing quotes is the Deal Desk's work (agent id dd-1). The company prefix is PAR; the source issue is PAR-530.",
+      "task": "Handle what you found.",
+      "expect": {
+        "apiCalls": [{ "method": "POST", "path": "^/api/companies/[^/]+/issues$", "args": { "title": { "matches": "^Hand-off:" }, "assigneeAgentId": "dd-1" } }],
+        "forbid": [{ "tool": "partnersinbiz.billing:create-quote", "reason": "writing quotes is another role's work: hand it off" }]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "api", "method": "POST", "path": "/api/companies/co-1/issues", "args": { "title": "Hand-off: quote for a second service (Agri Auctions SA)", "assigneeAgentId": "dd-1", "parentId": "PAR-530", "description": "Why, the context, what done means, who to tell." } }], "summary": "Handed it to the Deal Desk." },
+        "fail": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.billing:create-quote", "args": { "currency": "ZAR", "customerKind": "company", "customerRef": "aa-1" } }], "summary": "Wrote the quote myself." }
+      }
+    },
+    {
+      "id": "look-at-the-page-you-changed",
+      "title": "Closing work that changed a page",
+      "source": "Audit Q5-5: Penny's guide said agents cannot open a browser while Chromium was installed, and most UI issues closed with \"not checked\".",
+      "situation": "You are the Developer. You changed the layout of the pricing page; the change is on development and Penny's staging serves it at https://penny-staging.partnersinbiz.online/pricing (a public page). Unit tests pass. You are about to close PAR-900.",
+      "task": "What do you do before you close PAR-900?",
+      "expect": {
+        "mustSay": ["pib-shot", "mobile"],
+        "mustNotSay": ["no browser|cannot open a browser|can't open a browser|not checked"],
+        "forbid": [{ "args": { "status": "done" }, "reason": "do not close a UI change before looking at it" }]
+      },
+      "examples": {
+        "pass": { "plan": [{ "kind": "comment", "say": "Took desktop and mobile screenshots of the pricing page with pib-shot (https://penny-staging.partnersinbiz.online/pricing, --viewport mobile too) and attached them; the heading and the plan table render and nothing overflows on mobile." }], "summary": "Looked at it with pib-shot first." },
+        "fail": { "plan": [{ "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-900", "args": { "status": "done" } }], "summary": "Closed it: not checked, no browser." }
+      }
+    }
+  ]
+}

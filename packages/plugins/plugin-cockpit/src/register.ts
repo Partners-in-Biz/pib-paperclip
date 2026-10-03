@@ -5,10 +5,14 @@ import {
   createSkillSyncer,
   HANDOFF_EVENTS,
   hireTaskDraft,
+  linkAgent,
   listCompanyAgents,
   normalizeToolResult,
   PIB_PLUGINS,
   pluginEvent,
+  registerAskEffectResults,
+  registerClientProjectWatch,
+  registerCompanyBootstrap,
   registerCrmProjection,
   registerHireWatch,
   registerModuleWatch,
@@ -16,10 +20,27 @@ import {
   SETUP_EVENTS,
   startHire,
   trackJob,
+  unlinkAgent,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCEPTANCE_MATCH_ROLE, ACCEPTANCE_ROLE, ACCEPTANCE_ROLE_KEY, acceptanceAgentId, linkPendingAcceptance, onAcceptanceLinked } from "./acceptance-role.js";
+import { AcceptanceError } from "./acceptance-model.js";
+import { nightlyAcceptance, onPluginVersion, requestAcceptanceNow } from "./acceptance.js";
+import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
+import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
+import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
-import { onAskComment, onAskIssueUpdated, openAskViews } from "./asks.js";
+import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
+import { ensureSetupIssue } from "./bootstrap.js";
+import { forgetChecks } from "./checks.js";
+import { closeoutSweep, onIssueClosed, onProjectUpdated } from "./closeout.js";
+import { credentialsCheck } from "./credentials.js";
+import { registerCockpitEffects, resolveOpenCockpitAsks } from "./effects.js";
+import { activateGoals, businessReviews } from "./goals.js";
+import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
+import { recheckImprovements } from "./improvements.js";
+import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
+import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listSnapshots, upsertSnapshot } from "./db.js";
@@ -81,6 +102,12 @@ export async function onSetupStatusEvent(env: Env, pluginKey: string, event: Pic
     .map((item) => ({ key: item.key, title: String(item.title ?? item.key), status: item.status, required: item.required === true }));
   const status = { plugin: pluginKey, module: payload.module ?? null, title: String(payload.title ?? pluginKey), items, checkedAt };
   await upsertSnapshot(env.ctx, { companyId, pluginKey, kind: "setup", payload: status, checkedAt, receivedAt: env.now().toISOString() });
+  // A plugin that reports a different version than the one last seen was released: the journeys that exercise it get an acceptance request (it never blocks the projection).
+  try {
+    await onPluginVersion(env, companyId, pluginKey, payload.version);
+  } catch (error) {
+    env.ctx.logger.info("Acceptance release check failed", { companyId, pluginKey, error: message(error) });
+  }
   return true;
 }
 
@@ -111,12 +138,38 @@ export function createEnv(ctx: PluginContext, now: () => Date = () => new Date()
   return { ctx, skills: createSkillSyncer(ctx, SKILLS), now };
 }
 
+/** `goals.confirm` ids: a list of goal ids, or none for every proposed goal. */
+function idList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids = value.filter((v): v is string => typeof v === "string" && /^goal[a-f0-9]{12}$/.test(v));
+  return ids.length ? ids : null;
+}
+
 /** Registers everything; exported for tests. */
 export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): Env {
   registerModuleWatch(ctx);
   // Every CRM client (name, domain) for company memory, asks and onboarding.
   registerCrmProjection(ctx, NAMESPACE);
-  registerHireWatch(ctx, (["operator", "reviewer"] as const).map((kind) => ({ role: HIRE_MATCH_ROLES[kind], onLinked: onLinkedFor(env, kind) })));
+  // Which Paperclip projects the CRM linked to each client, for effort against revenue (Q1b-14).
+  registerClientProjectWatch(ctx);
+  // The effects the Cockpit handles itself, and the results other plugins send back for answered asks (RC5).
+  registerCockpitEffects(env);
+  registerAskEffectResults(ctx, async (companyId, result) => {
+    await onEffectResult(env, companyId, result);
+  });
+  // A new company (Q2-8): remember it, sync the Cockpit's skills, open the owner's "Set up" issue. Replaces a hand-written company.created handler (kit contract: one per plugin).
+  registerCompanyBootstrap(ctx, {
+    syncer: env.skills,
+    ownerIssue: false,
+    onBootstrap: async (companyId, source) => {
+      if (source !== "lazy") await ensureSetupIssue(env, companyId);
+    },
+  });
+  // One registration for every role the Cockpit staffs (the kit's contract: one handler per core event).
+  registerHireWatch(ctx, [
+    ...(["operator", "reviewer"] as const).map((kind) => ({ role: HIRE_MATCH_ROLES[kind], onLinked: onLinkedFor(env, kind) })),
+    { role: ACCEPTANCE_MATCH_ROLE, onLinked: onAcceptanceLinked(env) },
+  ]);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -210,20 +263,21 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.actions.register("cockpit.hire-options", async (params, context) => {
     const companyId = requiredCompany(context);
     requireUser(context);
-    const kind = roleKind(params.role);
     const agents = await listCompanyAgents(ctx, companyId);
-    return { draft: hireTaskDraft(HIRE_ROLES[kind]), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null };
+    const hire = params.role === ACCEPTANCE_ROLE_KEY ? ACCEPTANCE_ROLE : HIRE_ROLES[roleKind(params.role)];
+    return { draft: hireTaskDraft(hire), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null };
   });
 
   ctx.actions.register("cockpit.start-hire", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
-    const kind = roleKind(params.role);
+    const acceptance = params.role === ACCEPTANCE_ROLE_KEY;
+    const kind = acceptance ? null : roleKind(params.role);
     const assigneeAgentId = text(params.assigneeAgentId, 100) ?? null;
     if (assigneeAgentId && !(await ctx.agents.get(assigneeAgentId, companyId).catch(() => null))) throw new CockpitError("That assignee is not an agent in this company");
     // The task lists every skill to attach (HIRE_ROLES); the link itself matches on the role's own skill.
-    const draft = hireTaskDraft(HIRE_ROLES[kind]);
-    const hire = await startHire(ctx, companyId, HIRE_MATCH_ROLES[kind], {
+    const draft = hireTaskDraft(acceptance ? ACCEPTANCE_ROLE : HIRE_ROLES[kind!]);
+    const hire = await startHire(ctx, companyId, acceptance ? ACCEPTANCE_MATCH_ROLE : HIRE_MATCH_ROLES[kind!], {
       title: text(params.title, 250) ?? draft.title,
       description: text(params.description, 50_000) ?? draft.description,
       assigneeAgentId,
@@ -231,6 +285,57 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       actorUserId: userId,
     });
     return { hire };
+  });
+
+  // The Acceptance agent is linked like a plugin role (Setup → Team calls these with role "acceptance"); the Operator and Reviewer are saved with cockpit.save-team.
+  const acceptanceOnly = (params: Record<string, unknown>) => {
+    if (params.role !== ACCEPTANCE_ROLE_KEY) throw new CockpitError("The Operator and the Reviewer are linked with cockpit.save-team; this is for the Acceptance agent (role: acceptance)");
+  };
+  ctx.actions.register("cockpit.link-agent", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    acceptanceOnly(params);
+    const agentId = text(params.agentId, 100);
+    if (!agentId) throw new CockpitError("agentId is required");
+    const { agent, steps } = await linkAgent(ctx, companyId, ACCEPTANCE_MATCH_ROLE, agentId, { by: "manual", userId, onLinked: onAcceptanceLinked(env) });
+    return { agent, steps };
+  });
+  ctx.actions.register("cockpit.unlink-agent", async (params, context) => {
+    const companyId = requiredCompany(context);
+    requireUser(context);
+    acceptanceOnly(params);
+    await unlinkAgent(ctx, companyId, ACCEPTANCE_MATCH_ROLE);
+    return { ok: true };
+  });
+  ctx.actions.register("cockpit.resync-agent", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    acceptanceOnly(params);
+    const agentId = await acceptanceAgentId(env, companyId);
+    if (!agentId) throw new CockpitError("No Acceptance agent is linked yet. Hire one or pick an existing agent in Setup → Team.");
+    return { steps: await onAcceptanceLinked(env)(companyId, agentId, { userId }) };
+  });
+  // A person asks for an acceptance check now (all journeys, or the named ones).
+  ctx.actions.register("acceptance.request", async (params, context) => {
+    const companyId = requiredCompany(context);
+    requireUser(context);
+    const keys = Array.isArray(params.journeys) ? params.journeys.filter((k): k is string => typeof k === "string") : null;
+    try {
+      return await requestAcceptanceNow(env, companyId, keys);
+    } catch (error) {
+      if (error instanceof AcceptanceError) throw new CockpitError(error.message);
+      throw error;
+    }
+  });
+  // The exact skill-policy body for the board to apply (Q2-10): a plugin cannot write the policy itself.
+  ctx.actions.register("cockpit.skill-policy-plan", async (params, context) => {
+    const companyId = requiredCompany(context);
+    requireUser(context);
+    const agents = (await ctx.agents.list({ companyId, limit: 200 })) as unknown as Array<Record<string, unknown>>;
+    const coach = agents.find((a) => isReflectionCoach(a) && !["terminated", "archived", "deleted"].includes(String(a.status)));
+    const keys = Array.isArray(params.managedSkillKeys) ? params.managedSkillKeys.filter((k): k is string => typeof k === "string") : [];
+    const plan = buildSkillPolicy({ expectedRevision: typeof params.expectedRevision === "number" ? params.expectedRevision : 0, operatorAgentId: (await getRoles(ctx, companyId))?.operatorAgentId ?? null, coachAgentId: coach ? String(coach.id) : null, managedSkillKeys: keys });
+    return { ...plan, coach: coach ? { id: String(coach.id), name: String(coach.name ?? "") } : null, apply: `PUT /api/companies/${companyId}/skill-policy with this body (a board action). Read the current revision first: GET /api/companies/${companyId}/skill-policy. Check that the coach id is the agent you provisioned.` };
   });
 
   ctx.actions.register("cockpit.agents", async (_params, context) => {
@@ -254,15 +359,56 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
+  // Things only the owner can confirm (Setup's Confirm buttons call these; an agent never can).
+  ctx.actions.register("cockpit.attest", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new CockpitError("Only a board user can confirm this");
+    const userId = assignableUser(context.actor.userId ?? null) ?? context.actor.userId ?? null;
+    if (!userId) throw new CockpitError("Sign in as a board user to confirm this");
+    const row = await confirmAttestation(env, companyId, text(params.key, 60) ?? "", userId, text(params.note, 300) ?? null);
+    forgetChecks(env, companyId);
+    return { confirmed: row };
+  });
+  ctx.actions.register("goals.confirm", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new CockpitError("Only a board user can confirm goals");
+    const userId = assignableUser(context.actor.userId ?? null) ?? context.actor.userId ?? null;
+    if (!userId) throw new CockpitError("Sign in as a board user to confirm goals");
+    const done = await activateGoals(env, companyId, idList(params.ids), userId);
+    // The owner confirmed here, so the Cockpit's own question about them is done.
+    await resolveOpenCockpitAsks(env, companyId, ACTIVATE_GOALS_EFFECT, "The goals were confirmed in Setup.");
+    forgetChecks(env, companyId);
+    return { activated: done.map((g) => ({ id: g.id, title: g.title })) };
+  });
+
   ctx.jobs.register(JOBS.reemitRoles, async () => {
-    const result = await trackJob(ctx, JOBS.reemitRoles, () => reemitRoles(env));
+    const result = await trackJob(ctx, JOBS.reemitRoles, async () => {
+      const sent = await reemitRoles(env);
+      await linkPendingAcceptance(env);
+      return sent;
+    });
     if (result.emitted || result.failed) ctx.logger.info("Cockpit roles re-sent", result);
+  });
+  ctx.jobs.register(JOBS.acceptanceNightly, async () => {
+    ctx.logger.info("Nightly acceptance request", await trackJob(ctx, JOBS.acceptanceNightly, () => nightlyAcceptance(env)));
   });
   ctx.jobs.register(JOBS.healthAlerts, async () => {
     ctx.logger.info("Cockpit health alerts", await trackJob(ctx, JOBS.healthAlerts, () => healthAlerts(env)));
   });
   ctx.jobs.register(JOBS.memoryUpkeep, async () => {
     ctx.logger.info("Company memory upkeep", await trackJob(ctx, JOBS.memoryUpkeep, () => upkeep(env)));
+  });
+  ctx.jobs.register(JOBS.closeoutSweep, async () => {
+    ctx.logger.info("Close-out sweep", await trackJob(ctx, JOBS.closeoutSweep, () => closeoutSweep(env)));
+  });
+  ctx.jobs.register(JOBS.improvementsRecheck, async () => {
+    ctx.logger.info("Improvements re-check", await trackJob(ctx, JOBS.improvementsRecheck, () => recheckImprovements(env)));
+  });
+  ctx.jobs.register(JOBS.credentialsCheck, async () => {
+    ctx.logger.info("Credentials check", await trackJob(ctx, JOBS.credentialsCheck, () => credentialsCheck(env)));
+  });
+  ctx.jobs.register(JOBS.businessReview, async () => {
+    ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
   });
 
   registerMemoryActions(env);
@@ -290,10 +436,25 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.info("Ask: could not follow an issue update", { issueId: event.entityId, error: message(error) });
     }
+    // An epic whose last issue just closed gets its close-out review (only a close is read: every other update costs nothing).
+    try {
+      await onIssueClosed(env, event);
+    } catch (error) {
+      ctx.logger.info("Close-out: could not read an issue close", { issueId: event.entityId, error: message(error) });
+    }
     try {
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+  });
+
+  // A project set to completed gets its close-out review at once (the one project.updated handler).
+  ctx.events.on("project.updated", async (event) => {
+    try {
+      await onProjectUpdated(env, event);
+    } catch (error) {
+      ctx.logger.info("Close-out: could not read a project update", { projectId: event.entityId, error: message(error) });
     }
   });
 
@@ -304,7 +465,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
         ? await runMemoryTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
-          : await runTool(env, tool.name, params, run);
+          : OPS_TOOL_SET.has(tool.name)
+            ? await runOpsTool(env, tool.name, params, run)
+            : ACCEPTANCE_TOOL_SET.has(tool.name)
+              ? await runAcceptanceTool(env, tool.name, params, run)
+              : EVAL_TOOL_SET.has(tool.name)
+                ? await runEvalTool(env, tool.name, params, run)
+                : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

@@ -1,0 +1,126 @@
+{
+  "key": "email-sequence-dry-run",
+  "version": 1,
+  "title": "Email sequence in dry run",
+  "summary": "A sequence is set to send email, its approval reaches the Reviewer first (the 2026-10-01 cold-email approvals reached nobody), and the canary contact is enrolled: the CRM records a dry run and queues nothing.",
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
+  "ownerRole": "account-manager",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {},
+      "expect": [
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        }
+      ],
+      "capture": {
+        "contactId": {
+          "path": "contact.ref",
+          "strip": "contact:"
+        }
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "create-email-sequence",
+      "title": "Create a sequence that sends email",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-sequence",
+      "input": {
+        "name": "Canary acceptance {{runId}}",
+        "delivery": "email",
+        "steps": [
+          {
+            "position": 1,
+            "delayMinutes": 0,
+            "title": "Canary rehearsal",
+            "body": "Hi {{first_name|there}}, this is an acceptance rehearsal for PiB Canary Co and goes to no real person. Reply STOP to stop."
+          }
+        ]
+      },
+      "note": "Switching a sequence to email opens an approval issue. Do NOT approve it or touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends.",
+      "expect": [
+        {
+          "path": "id",
+          "notEmpty": true
+        },
+        {
+          "path": "delivery",
+          "equals": "email"
+        },
+        {
+          "path": "emailApproved",
+          "equals": false
+        },
+        {
+          "path": "approvalIssueId",
+          "notEmpty": true
+        }
+      ],
+      "capture": {
+        "sequenceId": {
+          "path": "id"
+        }
+      },
+      "probe": {
+        "kind": "approval-route",
+        "idPath": "approvalIssueId",
+        "outward": true
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "enroll-canary-contact",
+      "title": "Enroll the canary contact",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:enroll-contact",
+      "input": {
+        "sequenceId": "{{sequenceId}}",
+        "contactId": "{{contactId}}"
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": {
+        "confirm": true
+      },
+      "expect": [
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}
