@@ -37,15 +37,15 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain(COMPANY_FLOWS);
   });
 
-  it("has valid frontmatter, the memory and asking sections, and stays under 16,000 characters", () => {
+  it("has valid frontmatter, the memory and asking sections, and stays under 19,000 characters", () => {
     const markdown = os.markdown!;
     const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# PiB company operating manual\n/.exec(markdown);
     expect(match, markdown.slice(0, 300)).not.toBeNull();
     expect(match![3]!.length).toBeGreaterThan(80);
     expect(markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(markdown).toContain(ASKING_HEADING);
-    expect(markdown.length).toBeLessThan(16_000);
-    expect(companySkillBody().length).toBeLessThan(13_500);
+    expect(markdown.length).toBeLessThan(19_000);
+    expect(companySkillBody().length).toBeLessThan(16_000);
   });
 
   it("says what is true of the code", () => {
@@ -55,6 +55,10 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain("the Operator gets the owner to fix it in Setup → Team");
     expect(body).toContain("once a person has connected their accounts");
     expect(body).not.toContain("connect their accounts and plan");
+    // Cases: the manual names the API, the stable key rule and the types; the flow uses one.
+    expect(body).toContain("`POST /api/companies/:companyId/cases`");
+    expect(body).toContain("**stable `key`**");
+    expect(body).toContain("writes the client's report as a `client_report` case");
   });
 });
 

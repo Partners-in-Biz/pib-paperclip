@@ -197,6 +197,7 @@ When the work must not go out as it is (wrong client, wrong language, broken), s
 | Campaign email | the issue description (every step and A/B variant) | \`partnersinbiz.campaigns:list-campaigns\` (audience and status) |
 | Invoice or quote email | \`partnersinbiz.billing:invoice-detail\` | \`partnersinbiz.billing:invoice-html\` / \`partnersinbiz.billing:quote-html\` (the document as it goes out) |
 | Sequence email (CRM) | the issue description (every step) | the client's profile (\`partnersinbiz.crm:get-client-profile\`) |
+| Case (report, proposal, audit, dossier) | \`GET /api/cases/<identifier>\` (fields, body document, attachments) | the client's profile (\`partnersinbiz.crm:get-client-profile\`), the module numbers it quotes |
 | SEO pull request | \`partnersinbiz.seo:get-site-link\` (repo and preview) | \`partnersinbiz.seo:check-change-scope\`, \`check-meta\`, \`check-canonical\`, \`validate-schema\`, \`crawler-sim\` |
 | The brand, for all of them | ${T(TOOL_NAMES.profile)} (own work), \`partnersinbiz.crm:get-client-profile\` (a client) | ${T(MEMORY_TOOLS.recall)} with the issue id |
 
@@ -250,6 +251,13 @@ When the work must not go out as it is (wrong client, wrong language, broken), s
 - Checks pass (CI, preview deploy) and the preview shows the change.
 - Content changes: facts right, brand voice, the target keyword used naturally, no duplicate pages.
 - No pricing, legal, terms or privacy text changed; flag anything that could affect the live site's design or function.
+
+### Case (report, proposal, audit, dossier)
+- The \`client\` field and the content are for the same client; nothing from another client or from our own work.
+- Every number, date and claim matches its module or source; nothing invented; gaps say "unknown".
+- The body is complete for its type (a monthly report covers each module the client uses; a proposal has scope, price and terms).
+- Brand voice and language from the profile; no internal notes, tokens or secrets left in.
+- Status and \`fields\` are right (\`in_review\` while you check); comment your verdict on the issue, never change the case yourself.
 
 ## Your comment, example
 

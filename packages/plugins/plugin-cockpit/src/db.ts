@@ -56,7 +56,10 @@ function json<T>(value: unknown, fallback: T): T {
 
 function iso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
-  return value == null ? "" : String(value);
+  if (value == null) return "";
+  // The host can hand back "2026-09-27 18:46:11.052+00"; other plugins compare these as text, so always send ISO.
+  const t = Date.parse(String(value));
+  return Number.isFinite(t) ? new Date(t).toISOString() : String(value);
 }
 
 function text(value: unknown): string | null {
