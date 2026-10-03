@@ -36,12 +36,57 @@ function pibt_reset() {
 			'id'         => 0,
 		),
 		'is_admin'   => false,
+		'termmeta'   => array(),
+		'terms'      => array(),
+		'taxonomies' => array(
+			'category' => array( 'public' => true, 'prefix' => 'category' ),
+			'post_tag' => array( 'public' => true, 'prefix' => 'tag' ),
+			'product_cat' => array( 'public' => true, 'prefix' => 'product-category' ),
+			'nav_menu' => array( 'public' => false, 'prefix' => 'nav' ),
+		),
+		'post_types' => array(
+			'post'    => array( 'public' => true, 'has_archive' => false, 'name' => 'Posts' ),
+			'page'    => array( 'public' => true, 'has_archive' => false, 'name' => 'Pages' ),
+			'product' => array( 'public' => true, 'has_archive' => '/shop/', 'name' => 'Products' ),
+			'book'    => array( 'public' => true, 'has_archive' => false, 'name' => 'Books' ),
+		),
+		'next_id'    => 1000,
+		'downloads'  => array(),
+		'download_calls' => array(),
+		'sideload_fail' => false,
+		'kses_active' => true,
+		'kses_seen'  => array(),
+		'shop_page'  => 0,
+		'scan_plugins' => false,
+		'upgrader_fail' => 0,
+		'upgrader_calls' => array(),
+		'trashed'    => array(),
 	);
+	pibt_clean_fs();
 	if ( class_exists( 'PIB_Connector_Settings' ) ) {
 		PIB_Connector_Settings::reset_file_cache();
 	}
 	if ( defined( 'WP_CONTENT_DIR' ) && is_file( WP_CONTENT_DIR . '/pib-connector-key.php' ) ) {
 		unlink( WP_CONTENT_DIR . '/pib-connector-key.php' );
+	}
+}
+function pibt_rrmdir( $dir ) {
+	if ( ! is_dir( $dir ) ) {
+		return;
+	}
+	$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST );
+	foreach ( $it as $f ) {
+		$f->isDir() && ! $f->isLink() ? rmdir( $f->getPathname() ) : unlink( $f->getPathname() );
+	}
+	rmdir( $dir );
+}
+function pibt_clean_fs() {
+	foreach ( (array) glob( WP_CONTENT_DIR . '/pibdl*' ) as $f ) {
+		unlink( $f );
+	}
+	pibt_rrmdir( WP_CONTENT_DIR . '/pib-connector-backups' );
+	foreach ( (array) glob( WP_PLUGIN_DIR . '/*' ) as $p ) {
+		is_dir( $p ) ? pibt_rrmdir( $p ) : unlink( $p );
 	}
 }
 pibt_reset();
@@ -136,6 +181,43 @@ class WPSEO_Options {
 		$opt[ $key ]  = $value;
 		update_option( $name, $opt );
 		return true;
+	}
+}
+
+/**
+ * Mirrors the real WPSEO_Taxonomy_Meta write API (checked against Yoast 28.6):
+ * set_values( $term_id, $taxonomy, $meta_values ) resets every key missing from
+ * $meta_values to its default, and defaults are not stored.
+ * set_value takes ( $term_id, $taxonomy, $meta_key, $meta_value ) (not used by the Connector).
+ */
+class WPSEO_Taxonomy_Meta {
+	public static $defaults = array(
+		'wpseo_title' => '', 'wpseo_desc' => '', 'wpseo_canonical' => '', 'wpseo_noindex' => 'default',
+		'wpseo_focuskw' => '', 'wpseo_opengraph-title' => '', 'wpseo_opengraph-description' => '',
+		'wpseo_opengraph-image' => '', 'wpseo_opengraph-image-id' => '',
+	);
+	public static function set_values( $term_id, $taxonomy, array $meta_values ) {
+		$clean = self::$defaults;
+		foreach ( $clean as $k => $v ) {
+			if ( isset( $meta_values[ $k ] ) && is_string( $meta_values[ $k ] ) ) {
+				$clean[ $k ] = $meta_values[ $k ];
+			}
+		}
+		$clean = array_diff_assoc( $clean, self::$defaults );
+		$opt   = get_option( 'wpseo_taxonomy_meta', array() );
+		$opt   = is_array( $opt ) ? $opt : array();
+		if ( $clean ) {
+			$opt[ $taxonomy ][ $term_id ] = $clean;
+		} else {
+			unset( $opt[ $taxonomy ][ $term_id ] );
+			if ( isset( $opt[ $taxonomy ] ) && ! $opt[ $taxonomy ] ) {
+				unset( $opt[ $taxonomy ] );
+			}
+		}
+		update_option( 'wpseo_taxonomy_meta', $opt );
+	}
+	public static function set_value( $term_id, $taxonomy, $meta_key, $meta_value ) {
+		self::set_values( $term_id, $taxonomy, array( $meta_key => $meta_value ) );
 	}
 }
 
@@ -271,14 +353,30 @@ function clean_post_cache( $id ) {}
 
 /* ---------- posts / urls ---------- */
 
-function pibt_add_post( $id, $slug, $type = 'page', $status = 'publish', $title = null ) {
-	$GLOBALS['pibt']['posts'][ $id ] = (object) array(
-		'ID'          => $id,
-		'post_type'   => $type,
-		'post_status' => $status,
-		'post_title'  => null === $title ? ucfirst( $slug ) : $title,
-		'slug'        => $slug,
+function pibt_add_post( $id, $slug, $type = 'page', $status = 'publish', $title = null, array $extra = array() ) {
+	$GLOBALS['pibt']['posts'][ $id ] = (object) array_merge(
+		array(
+			'ID'                => $id,
+			'post_type'         => $type,
+			'post_status'       => $status,
+			'post_title'        => null === $title ? ucfirst( $slug ) : $title,
+			'slug'              => $slug,
+			'post_name'         => $slug,
+			'post_content'      => '',
+			'post_excerpt'      => '',
+			'post_parent'       => 0,
+			'post_author'       => 0,
+			'post_mime_type'    => '',
+			'post_modified_gmt' => '2026-03-01 10:00:00',
+		),
+		$extra
 	);
+}
+function pibt_add_attachment( $id, $file, $mime = 'image/jpeg', $parent = 0, array $extra = array() ) {
+	pibt_add_post( $id, $file, 'attachment', 'inherit', $file, array_merge( array( 'post_mime_type' => $mime, 'post_parent' => $parent ), $extra ) );
+}
+function pibt_next_id() {
+	return ++$GLOBALS['pibt']['next_id'];
 }
 function get_post( $id ) {
 	$id = is_object( $id ) ? $id->ID : (int) $id;
@@ -302,7 +400,7 @@ function url_to_postid( $url ) {
 	return 0;
 }
 function is_post_type_viewable( $type ) { return in_array( $type, array( 'post', 'page', 'product' ), true ); }
-function home_url( $path = '' ) { return 'https://example.test' . ( '' === $path ? '' : '/' . ltrim( $path, '/' ) ); }
+function home_url( $path = '' ) { return 'https://example.test' . ( isset( $GLOBALS['pibt']['home_prefix'] ) ? $GLOBALS['pibt']['home_prefix'] : '' ) . ( '' === $path ? '' : '/' . ltrim( $path, '/' ) ); }
 function site_url( $path = '' ) { return home_url( $path ); }
 function admin_url( $path = '' ) { return home_url( '/wp-admin/' . $path ); }
 function add_query_arg( $k, $v, $url ) { return $url . ( false === strpos( $url, '?' ) ? '?' : '&' ) . $k . '=' . rawurlencode( $v ); }
@@ -333,6 +431,19 @@ function do_robots() {
 	echo apply_filters( 'robots_txt', $out, $public );
 }
 function get_plugins() {
+	if ( ! empty( $GLOBALS['pibt']['scan_plugins'] ) ) {
+		$out = array();
+		foreach ( (array) glob( WP_PLUGIN_DIR . '/*', GLOB_ONLYDIR ) as $dir ) {
+			foreach ( (array) glob( $dir . '/*.php' ) as $f ) {
+				$head = (string) file_get_contents( $f, false, null, 0, 4096 );
+				if ( preg_match( '/^[ \t\/*#@]*Plugin Name:\s*(.+)$/mi', $head, $n ) ) {
+					preg_match( '/^[ \t\/*#@]*Version:\s*(\S+)/mi', $head, $v );
+					$out[ basename( $dir ) . '/' . basename( $f ) ] = array( 'Name' => trim( $n[1] ), 'Version' => isset( $v[1] ) ? $v[1] : '' );
+				}
+			}
+		}
+		return $out;
+	}
 	return array(
 		'pib-connector/pib-connector.php' => array( 'Name' => 'PiB Connector', 'Version' => '1.0.0' ),
 		'wordpress-seo/wp-seo.php'        => array( 'Name' => 'Yoast SEO', 'Version' => '27.1' ),
@@ -349,12 +460,297 @@ function register_rest_route( $ns, $route, $args ) {
 	return true;
 }
 
+
+/* ---------- terms, taxonomies, post types ---------- */
+
+function pibt_add_term( $id, $taxonomy, $slug, $name = null ) {
+	$GLOBALS['pibt']['terms'][ $id ] = (object) array(
+		'term_id'  => $id,
+		'taxonomy' => $taxonomy,
+		'slug'     => $slug,
+		'name'     => null === $name ? ucfirst( $slug ) : $name,
+	);
+}
+function taxonomy_exists( $t ) { return isset( $GLOBALS['pibt']['taxonomies'][ $t ] ); }
+function get_taxonomy( $t ) {
+	return isset( $GLOBALS['pibt']['taxonomies'][ $t ] ) ? (object) array( 'public' => $GLOBALS['pibt']['taxonomies'][ $t ]['public'] ) : false;
+}
+function get_taxonomies( $args = array(), $output = 'names' ) {
+	$out = array();
+	foreach ( $GLOBALS['pibt']['taxonomies'] as $name => $def ) {
+		if ( isset( $args['public'] ) && $def['public'] !== $args['public'] ) {
+			continue;
+		}
+		$out[ $name ] = $name;
+	}
+	return $out;
+}
+function get_term( $id, $taxonomy = '' ) {
+	$t = isset( $GLOBALS['pibt']['terms'][ (int) $id ] ) ? $GLOBALS['pibt']['terms'][ (int) $id ] : null;
+	if ( ! $t || ( '' !== $taxonomy && $t->taxonomy !== $taxonomy ) ) {
+		return null;
+	}
+	return $t;
+}
+function get_terms( $args ) {
+	$taxes = (array) $args['taxonomy'];
+	$out   = array();
+	foreach ( $GLOBALS['pibt']['terms'] as $t ) {
+		if ( in_array( $t->taxonomy, $taxes, true ) && ( ! isset( $args['slug'] ) || $t->slug === $args['slug'] ) ) {
+			$out[] = $t;
+		}
+	}
+	return $out;
+}
+function get_term_link( $term ) {
+	return home_url( '/' . $GLOBALS['pibt']['taxonomies'][ $term->taxonomy ]['prefix'] . '/' . $term->slug . '/' );
+}
+function get_term_meta( $id, $key = '', $single = false ) {
+	return isset( $GLOBALS['pibt']['termmeta'][ $id ][ $key ] ) ? $GLOBALS['pibt']['termmeta'][ $id ][ $key ] : ( $single ? '' : array() );
+}
+function update_term_meta( $id, $key, $value ) {
+	$GLOBALS['pibt']['termmeta'][ $id ][ $key ] = pibt_unslash_deep( $value );
+	return true;
+}
+function delete_term_meta( $id, $key ) {
+	unset( $GLOBALS['pibt']['termmeta'][ $id ][ $key ] );
+	return true;
+}
+function post_type_exists( $t ) { return isset( $GLOBALS['pibt']['post_types'][ $t ] ); }
+function post_type_supports( $t, $f ) { return 'attachment' !== $t; }
+function get_post_type_object( $t ) {
+	if ( ! isset( $GLOBALS['pibt']['post_types'][ $t ] ) ) {
+		return null;
+	}
+	$d = $GLOBALS['pibt']['post_types'][ $t ];
+	return (object) array( 'public' => $d['public'], 'has_archive' => $d['has_archive'], 'labels' => (object) array( 'name' => $d['name'] ) );
+}
+function get_post_types( $args = array(), $output = 'names' ) {
+	$out = array();
+	foreach ( $GLOBALS['pibt']['post_types'] as $name => $d ) {
+		$out[ $name ] = $name;
+	}
+	return $out;
+}
+function get_post_type_archive_link( $t ) {
+	$d = isset( $GLOBALS['pibt']['post_types'][ $t ] ) ? $GLOBALS['pibt']['post_types'][ $t ] : null;
+	return ( $d && $d['has_archive'] ) ? home_url( $d['has_archive'] ) : false;
+}
+function is_post_type_archive() { return ! empty( $GLOBALS['pibt']['query']['archive'] ); }
+function is_category() { return ! empty( $GLOBALS['pibt']['query']['term'] ); }
+function is_tag() { return false; }
+function is_tax() { return false; }
+function get_queried_object() {
+	$q = $GLOBALS['pibt']['query'];
+	if ( ! empty( $q['archive'] ) ) {
+		return (object) array( 'name' => $q['archive'] );
+	}
+	if ( ! empty( $q['term'] ) ) {
+		return get_term( $q['term'] );
+	}
+	return null;
+}
+
+/* ---------- WP_Query, posts writes, attachments ---------- */
+
+class WP_Query {
+	public $posts       = array();
+	public $found_posts = 0;
+	public function __construct( $args = array() ) {
+		$match = array();
+		foreach ( $GLOBALS['pibt']['posts'] as $p ) {
+			$types = isset( $args['post_type'] ) ? (array) $args['post_type'] : array( 'post' );
+			if ( ! in_array( $p->post_type, $types, true ) ) {
+				continue;
+			}
+			$status = isset( $args['post_status'] ) ? $args['post_status'] : 'publish';
+			if ( 'any' === $status ? in_array( $p->post_status, array( 'trash', 'auto-draft' ), true ) : $p->post_status !== $status ) {
+				continue;
+			}
+			if ( isset( $args['post_mime_type'] ) && 0 !== strpos( $p->post_mime_type, $args['post_mime_type'] ) ) {
+				continue;
+			}
+			if ( isset( $args['post_parent'] ) && (int) $p->post_parent !== (int) $args['post_parent'] ) {
+				continue;
+			}
+			if ( isset( $args['s'] ) && false === stripos( $p->post_title . ' ' . $p->slug, $args['s'] ) ) {
+				continue;
+			}
+			if ( isset( $args['meta_key'] ) ) {
+				$mv = isset( $GLOBALS['pibt']['meta'][ $p->ID ][ $args['meta_key'] ] ) ? $GLOBALS['pibt']['meta'][ $p->ID ][ $args['meta_key'] ] : null;
+				if ( $mv !== $args['meta_value'] ) {
+					continue;
+				}
+			}
+			$match[] = $p->ID;
+		}
+		sort( $match );
+		$this->found_posts = count( $match );
+		$per               = isset( $args['posts_per_page'] ) ? (int) $args['posts_per_page'] : 10;
+		$page              = isset( $args['paged'] ) ? (int) $args['paged'] : 1;
+		$this->posts       = array_slice( $match, ( $page - 1 ) * $per, $per );
+	}
+}
+function sanitize_title( $s ) { return trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( strip_tags( (string) $s ) ) ), '-' ); }
+function wp_delete_file( $f ) { if ( is_file( $f ) ) { unlink( $f ); } }
+function kses_remove_filters() { $GLOBALS['pibt']['kses_active'] = false; $GLOBALS['pibt']['kses_seen'][] = 'off'; }
+function kses_init() { $GLOBALS['pibt']['kses_active'] = true; $GLOBALS['pibt']['kses_seen'][] = 'on'; }
+function pibt_kses( $post ) {
+	if ( $GLOBALS['pibt']['kses_active'] ) {
+		$post['post_content'] = preg_replace( '#<(iframe|script)\b[^>]*>(.*?</\1>)?#is', '', $post['post_content'] );
+	}
+	return $post;
+}
+function wp_insert_post( $args, $wp_error = false ) {
+	$args = pibt_unslash_deep( $args );
+	$id   = pibt_next_id();
+	$slug = ! empty( $args['post_name'] ) ? $args['post_name'] : sanitize_title( isset( $args['post_title'] ) ? $args['post_title'] : 'post' );
+	pibt_add_post( $id, $slug, isset( $args['post_type'] ) ? $args['post_type'] : 'post', isset( $args['post_status'] ) ? $args['post_status'] : 'draft', isset( $args['post_title'] ) ? $args['post_title'] : '', array(
+		'post_content' => isset( $args['post_content'] ) ? $args['post_content'] : '',
+		'post_excerpt' => isset( $args['post_excerpt'] ) ? $args['post_excerpt'] : '',
+		'post_parent'  => isset( $args['post_parent'] ) ? $args['post_parent'] : 0,
+	) );
+	$GLOBALS['pibt']['posts'][ $id ] = (object) pibt_kses( (array) $GLOBALS['pibt']['posts'][ $id ] );
+	return $id;
+}
+function wp_update_post( $args, $wp_error = false ) {
+	$args = pibt_unslash_deep( $args );
+	$p    = get_post( (int) $args['ID'] );
+	if ( ! $p ) {
+		return $wp_error ? new WP_Error( 'invalid_post', 'Invalid post ID.' ) : 0;
+	}
+	$arr = (array) $p;
+	foreach ( $args as $k => $v ) {
+		if ( 'ID' !== $k ) {
+			$arr[ $k ] = $v;
+		}
+	}
+	if ( isset( $args['post_name'] ) ) {
+		$arr['slug'] = $args['post_name'];
+	}
+	$arr['post_modified_gmt'] = gmdate( 'Y-m-d H:i:s' );
+	$GLOBALS['pibt']['posts'][ $p->ID ] = (object) pibt_kses( $arr );
+	return $p->ID;
+}
+function wp_trash_post( $id ) {
+	$p = get_post( $id );
+	if ( $p ) {
+		$p->post_status = 'trash';
+		$GLOBALS['pibt']['trashed'][] = $id;
+	}
+	return $p;
+}
+function get_post_thumbnail_id( $id ) { return (int) get_post_meta( $id, '_thumbnail_id', true ); }
+function set_post_thumbnail( $id, $att ) { update_post_meta( $id, '_thumbnail_id', (int) $att ); return true; }
+function delete_post_thumbnail( $id ) { delete_post_meta( $id, '_thumbnail_id' ); return true; }
+function get_the_post_thumbnail_url( $id, $size = 'full' ) {
+	$t = get_post_thumbnail_id( $id );
+	return $t ? wp_get_attachment_url( $t ) : false;
+}
+function wp_get_attachment_url( $id ) {
+	$p = get_post( $id );
+	return $p ? home_url( '/wp-content/uploads/' . $p->slug ) : false;
+}
+function attachment_url_to_postid( $url ) {
+	foreach ( $GLOBALS['pibt']['posts'] as $p ) {
+		if ( 'attachment' === $p->post_type && wp_get_attachment_url( $p->ID ) === $url ) {
+			return $p->ID;
+		}
+	}
+	return 0;
+}
+function wp_get_attachment_metadata( $id ) {
+	$m = get_post_meta( $id, '_wp_attachment_metadata', true );
+	return is_array( $m ) ? $m : false;
+}
+function get_attached_file( $id ) { return false; }
+function wp_get_image_mime( $file ) {
+	$i = @getimagesize( $file );
+	return $i && isset( $i['mime'] ) ? $i['mime'] : false;
+}
+function download_url( $url, $timeout = 300 ) {
+	$GLOBALS['pibt']['download_calls'][] = $url;
+	if ( ! isset( $GLOBALS['pibt']['downloads'][ $url ] ) ) {
+		return new WP_Error( 'http_404', 'Not Found' );
+	}
+	$tmp = tempnam( WP_CONTENT_DIR, 'pibdl' );
+	file_put_contents( $tmp, $GLOBALS['pibt']['downloads'][ $url ] );
+	return $tmp;
+}
+function media_handle_sideload( $file, $post_id = 0, $desc = null ) {
+	if ( $GLOBALS['pibt']['sideload_fail'] ) {
+		return new WP_Error( 'upload_error', 'Sorry, you are not allowed to upload this file type.' );
+	}
+	$mime = PIB_Connector_Media::detect_mime( $file['tmp_name'] );
+	$id   = pibt_next_id();
+	pibt_add_attachment( $id, $file['name'], (string) $mime, $post_id, array( 'post_title' => null === $desc ? pathinfo( $file['name'], PATHINFO_FILENAME ) : $desc ) );
+	$GLOBALS['pibt']['sideloaded'][ $id ] = $file['name'];
+	if ( is_file( $file['tmp_name'] ) ) {
+		unlink( $file['tmp_name'] );
+	}
+	return $id;
+}
+function remove_filter( $tag, $cb, $priority = 10 ) { return true; }
+
+/* ---------- upgrader (plugins install / self update) ---------- */
+
+function WP_Filesystem() { return true; }
+function wp_mkdir_p( $dir ) { return is_dir( $dir ) || mkdir( $dir, 0777, true ); }
+function wp_clean_plugins_cache( $clear = true ) {}
+function activate_plugin( $file, $redirect = '', $network = false, $silent = false ) { return null; }
+function show_message( $m ) {}
+function unzip_file( $file, $to ) {
+	$z = new ZipArchive();
+	$z->open( $file );
+	$z->extractTo( $to );
+	$z->close();
+	return true;
+}
+class WP_Ajax_Upgrader_Skin {
+	public function get_errors() { return new WP_Error(); }
+	public function get_error_messages() { return ''; }
+}
+class Plugin_Upgrader {
+	public function __construct( $skin = null ) {}
+	public function install( $package, $args = array() ) {
+		$GLOBALS['pibt']['upgrader_calls'][] = basename( $package );
+		$z = new ZipArchive();
+		$z->open( $package );
+		$tops = array();
+		for ( $i = 0; $i < $z->numFiles; $i++ ) {
+			$tops[ explode( '/', $z->getNameIndex( $i ) )[0] ] = true;
+		}
+		if ( $GLOBALS['pibt']['upgrader_fail'] > 0 ) {
+			$GLOBALS['pibt']['upgrader_fail']--;
+			// A failed overwrite install can leave the destination cleared.
+			foreach ( array_keys( $tops ) as $t ) {
+				pibt_rrmdir( WP_PLUGIN_DIR . '/' . $t );
+			}
+			$z->close();
+			return new WP_Error( 'copy_failed', 'Could not copy file.' );
+		}
+		foreach ( array_keys( $tops ) as $t ) {
+			pibt_rrmdir( WP_PLUGIN_DIR . '/' . $t );
+		}
+		$z->extractTo( WP_PLUGIN_DIR );
+		$z->close();
+		return true;
+	}
+}
+
 /* ---------- load the plugin ---------- */
 
 add_filter(
 	'pib_connector_seo_plugin',
 	function ( $detected ) {
 		return $GLOBALS['pibt']['adapter'];
+	}
+);
+
+add_filter(
+	'pib_connector_self_dir',
+	function () {
+		return WP_PLUGIN_DIR . '/pib-connector';
 	}
 );
 

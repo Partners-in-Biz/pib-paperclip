@@ -103,4 +103,17 @@ class PIB_Connector_Util {
 		}
 		return null;
 	}
+
+	/**
+	 * `reason` is mandatory for content, media and self-update writes.
+	 *
+	 * @return string|WP_Error The cleaned reason.
+	 */
+	public static function require_reason( array $params ) {
+		$reason = isset( $params['reason'] ) ? PIB_Connector_Log::clean_reason( $params['reason'] ) : null;
+		if ( null === $reason ) {
+			return self::bad_request( 'reason is required (a short sentence saying why).' );
+		}
+		return $reason;
+	}
 }

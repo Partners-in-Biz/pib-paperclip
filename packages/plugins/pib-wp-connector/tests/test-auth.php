@@ -35,7 +35,7 @@ pibt_test(
 	function () {
 		pibt_pair();
 		$data = pibt_ok( pibt_call( 'ping' ), 'ping' );
-		pibt_eq( '1.0.0', $data['connector']['version'], 'version' );
+		pibt_eq( '1.2.0', $data['connector']['version'], 'version' );
 		pibt_eq( 'ff6dfdf7cd7d', $data['keyId'], 'keyId' );
 		pibt_eq( 'Hunt and Gun', $data['site']['name'], 'site name' );
 	}
@@ -176,5 +176,15 @@ pibt_test(
 		pibt_eq( true, $d['site']['blogPublic'], 'blogPublic' );
 		pibt_eq( PHP_VERSION, $d['php']['version'], 'php version' );
 		pibt_assert( is_array( $d['plugins'] ) && count( $d['plugins'] ) === 2, 'plugins list' );
+		pibt_eq( '1.2.0', $d['connector']['version'], 'connector version' );
+		pibt_eq( '1.2', $d['connector']['protocol'], 'protocol' );
+		pibt_eq( array_keys( PIB_Connector_Router::endpoints() ), $d['connector']['endpoints'], 'endpoints list is the router map' );
+		foreach ( array( 'ping', 'seo/list', 'media/list', 'media/sideload', 'media/set-featured', 'media/alt', 'posts/get', 'posts/images', 'posts/img-alt', 'posts/update', 'posts/create', 'posts/publish', 'self/update', 'self/rollback' ) as $ep ) {
+			pibt_assert( in_array( $ep, $d['connector']['endpoints'], true ), "endpoint $ep listed" );
+		}
+		pibt_eq( true, $d['connector']['features']['media'], 'media default on' );
+		pibt_eq( true, $d['connector']['features']['content'], 'content default on' );
+		pibt_eq( true, $d['connector']['features']['selfupdate'], 'selfupdate default on' );
+		pibt_assert( array_key_exists( 'woocommerce', $d ) && array_key_exists( 'active', $d['woocommerce'] ) && array_key_exists( 'shopPageId', $d['woocommerce'] ), 'woocommerce block' );
 	}
 );

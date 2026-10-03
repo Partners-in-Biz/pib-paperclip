@@ -17,6 +17,8 @@ class PIB_Connector_Plugins {
 	const SLUG_RE      = '/^[a-z0-9][a-z0-9_-]{0,99}$/';
 	const BACKUP_RE    = '/^([a-z0-9][a-z0-9_-]{0,99})-([0-9]{14})$/';
 	const SELF_SLUG    = 'pib-connector';
+	// Connector self-update backups: pib-connector-<version>-<UTC yyyymmddHHMMss>.
+	const SELF_BACKUP_RE = '/^pib-connector-([0-9A-Za-z.]{1,20})-([0-9]{14})$/';
 
 	private static function load_admin() {
 		if ( ! function_exists( 'get_plugins' ) ) {
@@ -24,7 +26,7 @@ class PIB_Connector_Plugins {
 		}
 	}
 
-	private static function load_upgrader() {
+	public static function load_upgrader() {
 		self::load_admin();
 		if ( ! function_exists( 'download_url' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -55,7 +57,7 @@ class PIB_Connector_Plugins {
 		return null;
 	}
 
-	private static function version_of( $file ) {
+	public static function version_of( $file ) {
 		if ( null === $file ) {
 			return null;
 		}
@@ -83,6 +85,9 @@ class PIB_Connector_Plugins {
 	public static function endpoint_backups( array $params ) {
 		$out = array();
 		foreach ( self::index() as $id => $meta ) {
+			if ( isset( $meta['slug'] ) && self::SELF_SLUG === $meta['slug'] ) {
+				continue; // Connector backups belong to self/rollback.
+			}
 			$path = self::backup_path( $id );
 			if ( null === $path || ! is_file( $path ) ) {
 				continue;
@@ -282,7 +287,7 @@ class PIB_Connector_Plugins {
 	 *
 	 * @return string|WP_Error installed version
 	 */
-	private static function run_upgrader( $package, $slug, $was_active ) {
+	public static function run_upgrader( $package, $slug, $was_active ) {
 		if ( ! WP_Filesystem() ) {
 			return PIB_Connector_Util::error( 'pib_fs_unavailable', 'WordPress cannot write plugin files directly on this server.', 500 );
 		}
@@ -331,7 +336,7 @@ class PIB_Connector_Plugins {
 	 * @return string|null absolute path for a backup id (validated), or null.
 	 */
 	public static function backup_path( $backup_id ) {
-		if ( ! is_string( $backup_id ) || ! preg_match( self::BACKUP_RE, $backup_id ) ) {
+		if ( ! is_string( $backup_id ) || ( ! preg_match( self::BACKUP_RE, $backup_id ) && ! preg_match( self::SELF_BACKUP_RE, $backup_id ) ) ) {
 			return null;
 		}
 		return self::backup_dir() . '/' . $backup_id . '.zip';
@@ -374,6 +379,14 @@ class PIB_Connector_Plugins {
 	 * @return string|WP_Error backupId
 	 */
 	public static function backup_folder( $slug, $version ) {
+		return self::backup_folder_as( $slug, $version, false );
+	}
+
+	/**
+	 * @param bool $self True for the Connector's own folder: the id carries the version.
+	 * @return string|WP_Error backupId
+	 */
+	public static function backup_folder_as( $slug, $version, $self ) {
 		$plugins_dir = realpath( WP_PLUGIN_DIR );
 		$src         = realpath( WP_PLUGIN_DIR . '/' . $slug );
 		if ( false === $plugins_dir || false === $src || ! is_dir( $src ) || dirname( $src ) !== $plugins_dir ) {
@@ -384,12 +397,16 @@ class PIB_Connector_Plugins {
 			return $ready;
 		}
 
-		$time = time();
-		$id   = $slug . '-' . gmdate( 'YmdHis', $time );
-		for ( $i = 1; $i < 10 && file_exists( self::backup_path( $id ) ); $i++ ) {
-			$id = $slug . '-' . gmdate( 'YmdHis', $time + $i );
+		$time  = time();
+		$stem  = $self ? $slug . '-' . substr( preg_replace( '/[^0-9A-Za-z.]/', '', (string) $version ), 0, 20 ) : $slug;
+		$id    = $stem . '-' . gmdate( 'YmdHis', $time );
+		for ( $i = 1; $i < 10 && null !== self::backup_path( $id ) && file_exists( self::backup_path( $id ) ); $i++ ) {
+			$id = $stem . '-' . gmdate( 'YmdHis', $time + $i );
 		}
 		$dest = self::backup_path( $id );
+		if ( null === $dest ) {
+			return PIB_Connector_Util::error( 'pib_backup_failed', 'Could not name the backup.', 500 );
+		}
 		if ( file_exists( $dest ) ) {
 			return PIB_Connector_Util::error( 'pib_backup_failed', 'Too many backups at once; try again.', 500 );
 		}

@@ -53,6 +53,7 @@ foreach ( array( 'yoast', 'rankmath', 'none' ) as $pibt_adapter ) {
 					'focusKeyword'  => 'hunting shop',
 					'ogTitle'       => 'OG about',
 					'ogDescription' => 'OG desc',
+					'ogImage'       => null,
 				),
 				$get['fields'],
 				'fields after set'

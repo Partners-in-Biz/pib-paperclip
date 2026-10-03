@@ -12,12 +12,42 @@ if ( ! defined( 'ABSPATH' ) ) {
 class PIB_Connector_Target {
 
 	/**
-	 * @param array $params Request params.
-	 * @return array|WP_Error { postId, type, url, postType, title }
+	 * @param array $params         Request params.
+	 * @param bool  $allow_non_post Also accept termId / postTypeArchive and fall back to archive and
+	 *                              term URLs (SEO endpoints only).
+	 * @return array|WP_Error { postId, type, url, postType, title } (+ termId, taxonomy for terms)
 	 */
-	public static function resolve( array $params ) {
+	public static function resolve( array $params, $allow_non_post = false ) {
 		$has_post = array_key_exists( 'postId', $params ) && null !== $params['postId'];
 		$has_url  = array_key_exists( 'url', $params ) && null !== $params['url'] && '' !== $params['url'];
+
+		if ( $allow_non_post ) {
+			$has_term    = array_key_exists( 'termId', $params ) && null !== $params['termId'];
+			$has_archive = array_key_exists( 'postTypeArchive', $params ) && null !== $params['postTypeArchive'] && '' !== $params['postTypeArchive'];
+			if ( ( $has_term ? 1 : 0 ) + ( $has_archive ? 1 : 0 ) + ( $has_post ? 1 : 0 ) > 1 ) {
+				return PIB_Connector_Util::bad_request( 'Send only one of postId, termId or postTypeArchive.' );
+			}
+			if ( $has_term ) {
+				$term_id = PIB_Connector_Util::positive_int( $params['termId'] );
+				if ( null === $term_id ) {
+					return PIB_Connector_Util::bad_request( 'termId must be a positive integer.' );
+				}
+				$taxonomy = null;
+				if ( array_key_exists( 'taxonomy', $params ) && null !== $params['taxonomy'] && '' !== $params['taxonomy'] ) {
+					if ( ! is_string( $params['taxonomy'] ) || ! preg_match( '/^[a-z0-9_-]{1,32}$/', $params['taxonomy'] ) ) {
+						return PIB_Connector_Util::bad_request( 'taxonomy must be a taxonomy name.' );
+					}
+					$taxonomy = $params['taxonomy'];
+				}
+				return self::from_term_id( $term_id, $taxonomy );
+			}
+			if ( $has_archive ) {
+				if ( ! is_string( $params['postTypeArchive'] ) || ! preg_match( '/^[a-z0-9_-]{1,20}$/', $params['postTypeArchive'] ) ) {
+					return PIB_Connector_Util::bad_request( 'postTypeArchive must be a post type name.' );
+				}
+				return self::from_post_type_archive( $params['postTypeArchive'] );
+			}
+		}
 
 		if ( $has_post ) {
 			$post_id = PIB_Connector_Util::positive_int( $params['postId'] );
@@ -31,16 +61,16 @@ class PIB_Connector_Target {
 			if ( ! is_string( $params['url'] ) || strlen( $params['url'] ) > 2048 || preg_match( '/[\x00-\x20\x7F]/', $params['url'] ) ) {
 				return PIB_Connector_Util::bad_request( 'url must be a URL or a site-relative path.' );
 			}
-			return self::from_url( $params['url'] );
+			return self::from_url( $params['url'], $allow_non_post );
 		}
 
-		return PIB_Connector_Util::bad_request( 'Send url or postId.' );
+		return PIB_Connector_Util::bad_request( $allow_non_post ? 'Send url, postId, termId or postTypeArchive.' : 'Send url or postId.' );
 	}
 
 	/**
 	 * @return array|WP_Error
 	 */
-	public static function from_url( $url ) {
+	public static function from_url( $url, $allow_non_post = false ) {
 		$parts = wp_parse_url( $url );
 		if ( false === $parts || ! is_array( $parts ) ) {
 			return PIB_Connector_Util::bad_request( 'url could not be parsed.' );
@@ -72,9 +102,149 @@ class PIB_Connector_Target {
 
 		$post_id = (int) url_to_postid( $absolute );
 		if ( $post_id <= 0 ) {
-			return PIB_Connector_Util::error( 'pib_unsupported_target', 'That URL is not a single page or post (archives and terms are not supported).', 422 );
+			if ( $allow_non_post && '' === $query ) {
+				$found = self::archive_or_term_for_path( $path );
+				if ( null !== $found ) {
+					return $found;
+				}
+			}
+			return PIB_Connector_Util::error( 'pib_unsupported_target', 'That URL is not a single page, post, post type archive or term.', 422 );
 		}
 		return self::from_post_id( $post_id );
+	}
+
+	private static function norm_path( $path ) {
+		return '/' . trim( rawurldecode( (string) $path ), '/' );
+	}
+
+	/**
+	 * Exact path match against post type archive links, then public term links.
+	 *
+	 * @return array|null
+	 */
+	private static function archive_or_term_for_path( $path ) {
+		$want = strtolower( self::norm_path( $path ) );
+
+		if ( function_exists( 'get_post_types' ) && function_exists( 'get_post_type_archive_link' ) ) {
+			foreach ( array_keys( (array) get_post_types( array( 'public' => true ), 'names' ) ) as $type ) {
+				$name = is_string( $type ) ? $type : (string) $type;
+				$link = get_post_type_archive_link( $name );
+				if ( is_string( $link ) && '' !== $link ) {
+					$lp = wp_parse_url( $link, PHP_URL_PATH );
+					if ( strtolower( self::norm_path( is_string( $lp ) ? $lp : '/' ) ) === $want ) {
+						// WooCommerce: the shop page and the `product` archive share one URL and
+						// url_to_postid() cannot see the page. Yoast renders it from the page, so
+						// answer with the page (seo/set mirrors it to the archive settings).
+						if ( 'product' === $name && function_exists( 'wc_get_page_id' ) && (int) wc_get_page_id( 'shop' ) > 0 ) {
+							$page = self::from_post_id( (int) wc_get_page_id( 'shop' ) );
+							if ( ! is_wp_error( $page ) ) {
+								return $page;
+							}
+						}
+						$t = self::from_post_type_archive( $name );
+						if ( ! is_wp_error( $t ) ) {
+							return $t;
+						}
+					}
+				}
+			}
+		}
+
+		if ( function_exists( 'get_taxonomies' ) && function_exists( 'get_terms' ) && function_exists( 'get_term_link' ) ) {
+			$segments = explode( '/', trim( $want, '/' ) );
+			$slug     = end( $segments );
+			if ( is_string( $slug ) && '' !== $slug ) {
+				$taxes = array_values( (array) get_taxonomies( array( 'public' => true ), 'names' ) );
+				if ( ! empty( $taxes ) ) {
+					$terms = get_terms(
+						array(
+							'taxonomy'   => $taxes,
+							'slug'       => $slug,
+							'hide_empty' => false,
+						)
+					);
+					if ( is_array( $terms ) ) {
+						foreach ( $terms as $term ) {
+							if ( ! is_object( $term ) ) {
+								continue;
+							}
+							$link = get_term_link( $term );
+							if ( is_string( $link ) ) {
+								$lp = wp_parse_url( $link, PHP_URL_PATH );
+								if ( strtolower( self::norm_path( is_string( $lp ) ? $lp : '/' ) ) === $want ) {
+									return self::term_target( $term, $link );
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return null;
+	}
+
+	private static function term_target( $term, $link ) {
+		return array(
+			'postId'   => null,
+			'type'     => 'term',
+			'termId'   => (int) $term->term_id,
+			'taxonomy' => (string) $term->taxonomy,
+			'url'      => (string) $link,
+			'title'    => (string) $term->name,
+		);
+	}
+
+	/**
+	 * @return array|WP_Error
+	 */
+	public static function from_term_id( $term_id, $taxonomy = null ) {
+		if ( ! function_exists( 'get_term' ) || ! function_exists( 'get_taxonomies' ) ) {
+			return PIB_Connector_Util::error( 'pib_unsupported_target', 'Terms are not available.', 422 );
+		}
+		if ( null !== $taxonomy ) {
+			$taxes = array( $taxonomy );
+		} else {
+			$taxes = array_values( (array) get_taxonomies( array( 'public' => true ), 'names' ) );
+		}
+		foreach ( $taxes as $tax ) {
+			if ( ! taxonomy_exists( $tax ) ) {
+				continue;
+			}
+			$tax_obj = get_taxonomy( $tax );
+			if ( ! $tax_obj || empty( $tax_obj->public ) ) {
+				continue;
+			}
+			$term = get_term( $term_id, $tax );
+			if ( is_object( $term ) && ! is_wp_error( $term ) && isset( $term->term_id ) ) {
+				$link = get_term_link( $term );
+				if ( ! is_string( $link ) ) {
+					return PIB_Connector_Util::error( 'pib_unsupported_target', 'That term has no public page.', 422 );
+				}
+				return self::term_target( $term, $link );
+			}
+		}
+		return PIB_Connector_Util::error( 'pib_unsupported_target', 'No public term with that id.', 422 );
+	}
+
+	/**
+	 * @return array|WP_Error
+	 */
+	public static function from_post_type_archive( $type ) {
+		$obj = function_exists( 'get_post_type_object' ) ? get_post_type_object( $type ) : null;
+		if ( ! $obj || empty( $obj->public ) || empty( $obj->has_archive ) ) {
+			return PIB_Connector_Util::error( 'pib_unsupported_target', 'That post type has no public archive page.', 422 );
+		}
+		$link = get_post_type_archive_link( $type );
+		if ( ! is_string( $link ) || '' === $link ) {
+			return PIB_Connector_Util::error( 'pib_unsupported_target', 'That post type has no archive link.', 422 );
+		}
+		return array(
+			'postId'   => null,
+			'type'     => 'archive',
+			'postType' => (string) $type,
+			'url'      => $link,
+			'title'    => isset( $obj->labels->name ) ? (string) $obj->labels->name : (string) $type,
+		);
 	}
 
 	private static function is_home_path( $path ) {

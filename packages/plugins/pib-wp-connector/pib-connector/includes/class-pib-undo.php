@@ -22,6 +22,13 @@ class PIB_Connector_Undo {
 			'redirects/delete' => array( 'redirects', array( 'PIB_Connector_Redirects', 'undo' ) ),
 			'robots/set'       => array( 'robots', array( 'PIB_Connector_Robots', 'undo' ) ),
 			'sitemap/set'      => array( 'sitemap', array( 'PIB_Connector_Sitemap', 'undo' ) ),
+			'verify/set'       => array( 'verify', array( 'PIB_Connector_Verify', 'undo' ) ),
+			'media/set-featured' => array( 'media', array( 'PIB_Connector_Media', 'undo_featured' ) ),
+			'media/alt'        => array( 'media', array( 'PIB_Connector_Media', 'undo_alt' ) ),
+			'posts/img-alt'    => array( 'content', array( 'PIB_Connector_Content', 'undo_update' ) ),
+			'posts/update'     => array( 'content', array( 'PIB_Connector_Content', 'undo_update' ) ),
+			'posts/create'     => array( 'content', array( 'PIB_Connector_Content', 'undo_create' ) ),
+			'posts/publish'    => array( 'content', array( 'PIB_Connector_Content', 'undo_publish' ) ),
 		);
 	}
 
@@ -51,6 +58,12 @@ class PIB_Connector_Undo {
 		$endpoint = isset( $entry['endpoint'] ) ? $entry['endpoint'] : '';
 		if ( 0 === strpos( $endpoint, 'plugins/' ) ) {
 			return PIB_Connector_Util::error( 'pib_not_undoable', 'Plugin installs are reverted with plugins/rollback.', 422 );
+		}
+		if ( 0 === strpos( $endpoint, 'self/' ) ) {
+			return PIB_Connector_Util::error( 'pib_not_undoable', 'Connector updates are reverted with self/rollback.', 422 );
+		}
+		if ( 'media/sideload' === $endpoint ) {
+			return PIB_Connector_Util::error( 'pib_not_undoable', 'Uploads are additive and never deleted; undo the change that used the image.', 422 );
 		}
 		$map = self::undoable();
 		if ( ! isset( $map[ $endpoint ] ) ) {

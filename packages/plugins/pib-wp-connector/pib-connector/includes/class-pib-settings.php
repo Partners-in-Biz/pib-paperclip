@@ -28,6 +28,10 @@ class PIB_Connector_Settings {
 			'robots'    => true,
 			'sitemap'   => true,
 			'plugins'   => false,
+			'media'      => true,
+			'content'    => true,
+			'selfupdate' => true,
+			'verify'     => true,
 		);
 	}
 
@@ -39,6 +43,10 @@ class PIB_Connector_Settings {
 			'robots'    => __( 'robots.txt extra lines', 'pib-connector' ),
 			'sitemap'   => __( 'XML sitemap settings', 'pib-connector' ),
 			'plugins'   => __( 'Install and roll back plugins (off by default)', 'pib-connector' ),
+			'media'      => __( 'Media Library: add images, set featured images, image alt text', 'pib-connector' ),
+			'content'    => __( 'Page and post copy: edit existing content, create drafts, publish Connector drafts', 'pib-connector' ),
+			'selfupdate' => __( 'Update the Connector itself from Paperclip (checksummed, backed up first)', 'pib-connector' ),
+			'verify'     => __( 'Site verification: meta tags and root files for Google, Bing and IndexNow (served by the Connector, nothing written to disk)', 'pib-connector' ),
 		);
 	}
 

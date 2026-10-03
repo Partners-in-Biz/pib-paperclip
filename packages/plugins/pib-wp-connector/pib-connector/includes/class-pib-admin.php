@@ -157,6 +157,15 @@ class PIB_Connector_Admin {
 									<input type="checkbox" name="pib_features[<?php echo esc_attr( $feature ); ?>]" value="1" <?php checked( ! empty( $features[ $feature ] ) ); ?> />
 									<?php echo esc_html( $label ); ?>
 								</label>
+								<?php if ( 'content' === $feature ) : ?>
+									<p class="description"><?php esc_html_e( 'Edits go through a safety check (no scripts, iframes, forms or event handlers can be added), the old text is kept, and new pages are created as drafts.', 'pib-connector' ); ?></p>
+								<?php endif; ?>
+								<?php if ( 'verify' === $feature ) : ?>
+									<p class="description"><?php esc_html_e( 'Only fixed shapes are allowed: a handful of verification meta names, an IndexNow key file, a Google HTML file and BingSiteAuth.xml. Turning this off stops printing and serving them.', 'pib-connector' ); ?></p>
+								<?php endif; ?>
+								<?php if ( 'selfupdate' === $feature ) : ?>
+									<p class="description"><?php esc_html_e( 'Only from partnersinbiz.online downloads, checksum-verified, never a downgrade; the current version is backed up and restored if the update fails.', 'pib-connector' ); ?></p>
+								<?php endif; ?>
 								<?php if ( 'plugins' === $feature ) : ?>
 									<p class="description"><?php esc_html_e( 'Only switch this on when Partners in Biz asks. Installs are checksum-verified and the old version is backed up first.', 'pib-connector' ); ?></p>
 								<?php endif; ?>

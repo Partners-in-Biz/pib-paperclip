@@ -25,6 +25,7 @@ class PIB_Connector_Router {
 			'undo'             => array( null, array( 'PIB_Connector_Undo', 'endpoint_undo' ) ),
 			'seo/get'          => array( 'seo', array( 'PIB_Connector_SEO', 'endpoint_get' ) ),
 			'seo/set'          => array( 'seo', array( 'PIB_Connector_SEO', 'endpoint_set' ) ),
+			'seo/list'         => array( 'seo', array( 'PIB_Connector_SEO_List', 'endpoint_list' ) ),
 			'schema/get'       => array( 'schema', array( 'PIB_Connector_Schema', 'endpoint_get' ) ),
 			'schema/set'       => array( 'schema', array( 'PIB_Connector_Schema', 'endpoint_set' ) ),
 			'redirects/list'   => array( 'redirects', array( 'PIB_Connector_Redirects', 'endpoint_list' ) ),
@@ -38,6 +39,20 @@ class PIB_Connector_Router {
 			'plugins/backups'  => array( 'plugins', array( 'PIB_Connector_Plugins', 'endpoint_backups' ) ),
 			'plugins/install'  => array( 'plugins', array( 'PIB_Connector_Plugins', 'endpoint_install' ) ),
 			'plugins/rollback' => array( 'plugins', array( 'PIB_Connector_Plugins', 'endpoint_rollback' ) ),
+			'media/list'       => array( 'media', array( 'PIB_Connector_Media', 'endpoint_list' ) ),
+			'media/sideload'   => array( 'media', array( 'PIB_Connector_Media', 'endpoint_sideload' ) ),
+			'media/set-featured' => array( 'media', array( 'PIB_Connector_Media', 'endpoint_set_featured' ) ),
+			'media/alt'        => array( 'media', array( 'PIB_Connector_Media', 'endpoint_alt' ) ),
+			'posts/get'        => array( 'content', array( 'PIB_Connector_Content', 'endpoint_get' ) ),
+			'posts/images'     => array( 'content', array( 'PIB_Connector_Content', 'endpoint_images' ) ),
+			'posts/img-alt'    => array( 'content', array( 'PIB_Connector_Content', 'endpoint_img_alt' ) ),
+			'posts/update'     => array( 'content', array( 'PIB_Connector_Content', 'endpoint_update' ) ),
+			'posts/create'     => array( 'content', array( 'PIB_Connector_Content', 'endpoint_create' ) ),
+			'posts/publish'    => array( 'content', array( 'PIB_Connector_Content', 'endpoint_publish' ) ),
+			'verify/get'       => array( 'verify', array( 'PIB_Connector_Verify', 'endpoint_get' ) ),
+			'verify/set'       => array( 'verify', array( 'PIB_Connector_Verify', 'endpoint_set' ) ),
+			'self/update'      => array( 'selfupdate', array( 'PIB_Connector_SelfUpdate', 'endpoint_update' ) ),
+			'self/rollback'    => array( 'selfupdate', array( 'PIB_Connector_SelfUpdate', 'endpoint_rollback' ) ),
 		);
 	}
 

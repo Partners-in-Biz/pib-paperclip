@@ -41,6 +41,20 @@ class PIB_Connector_Health {
 		);
 	}
 
+	public static function woocommerce() {
+		$active  = class_exists( 'WooCommerce' ) || function_exists( 'wc_get_page_id' );
+		$shop_id = null;
+		if ( $active && function_exists( 'wc_get_page_id' ) ) {
+			$id      = (int) wc_get_page_id( 'shop' );
+			$shop_id = $id > 0 ? $id : null;
+		}
+		return array(
+			'active'     => $active,
+			'version'    => ( $active && defined( 'WC_VERSION' ) ) ? (string) WC_VERSION : null,
+			'shopPageId' => $shop_id,
+		);
+	}
+
 	public static function endpoint_health( array $params ) {
 		global $wp_version;
 
@@ -92,8 +106,10 @@ class PIB_Connector_Health {
 
 		return array(
 			'connector'         => array(
-				'version'  => PIB_CONNECTOR_VERSION,
-				'features' => PIB_Connector_Settings::features(),
+				'version'   => PIB_CONNECTOR_VERSION,
+				'protocol'  => '1.2',
+				'endpoints' => array_keys( PIB_Connector_Router::endpoints() ),
+				'features'  => PIB_Connector_Settings::features(),
 			),
 			'wordpress'         => array(
 				'version'   => isset( $wp_version ) ? (string) $wp_version : (string) get_bloginfo( 'version' ),
@@ -115,6 +131,7 @@ class PIB_Connector_Health {
 				'parent'  => $parent ? (string) $parent->get( 'Name' ) : null,
 			),
 			'seoPlugin'         => self::seo_plugin(),
+			'woocommerce'       => self::woocommerce(),
 			'sitemap'           => array(
 				'provider' => $sitemap_provider,
 				'url'      => $sitemap_url,
