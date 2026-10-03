@@ -5,6 +5,7 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
+import { chromiumEnv, domArgs, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
 
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
 const { Pool } = require("pg");
@@ -13,6 +14,30 @@ const SCHEMA = "plugin_seo_8099f8879a";
 const PORT = Number(process.env.PORT ?? 3031);
 const CHROME = process.env.CHROME_PATH ?? "/home/paperclip/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome";
 const SHOTS = process.env.SHOTS_DIR ?? "/tmp/pib-preview-shots";
+// One private folder per Chromium run, removed when it ends (sweep.mjs); the service's /tmp is private, so nothing else cleans it.
+const PROFILES = process.env.PROFILES_DIR ?? "/tmp/pib-preview-profiles";
+// A cached screenshot is reused for an hour, minus a margin so the sweep never deletes one while it is being served.
+const SHOT_REUSE_MS = SHOT_MAX_AGE_MS - 300_000;
+
+/** Delete screenshots and leftover profile folders older than an hour. Runs on every call that starts Chromium; never throws. */
+async function housekeeping() {
+  try {
+    const [shots, profiles] = await Promise.all([sweepShots(SHOTS), sweepProfiles(PROFILES)]);
+    if (shots + profiles > 0) console.log(`housekeeping: removed ${shots} screenshot(s) and ${profiles} profile folder(s)`);
+  } catch (error) {
+    console.error("housekeeping failed", error instanceof Error ? error.message : error);
+  }
+}
+
+/** Run Chromium with its own profile folder, which is removed afterwards whatever happens. */
+async function withChromium(run) {
+  const profile = await makeProfile(PROFILES);
+  try {
+    return await run(profile.dir);
+  } finally {
+    await profile.cleanup();
+  }
+}
 const pool = new Pool({ connectionString: process.env.PREVIEW_DATABASE_URL, max: 4 });
 
 const SECURITY = {
@@ -69,15 +94,20 @@ function wordsOf(html) {
 
 /** What a visitor's browser ends up showing (scripts run), as HTML. */
 function renderedDom(url) {
-  const run = () =>
-    new Promise((resolve, reject) => {
-      execFile(
-        CHROME,
-        ["--headless=new", "--no-sandbox", "--disable-gpu", "--virtual-time-budget=9000", "--dump-dom", url],
-        { timeout: 60_000, maxBuffer: 40 * 1024 * 1024, env: { ...process.env, HOME: "/tmp" } },
-        (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
-      );
-    });
+  const run = async () => {
+    await housekeeping();
+    return withChromium(
+      (dir) =>
+        new Promise((resolve, reject) => {
+          execFile(
+            CHROME,
+            domArgs(dir, url),
+            { timeout: 60_000, maxBuffer: 40 * 1024 * 1024, env: chromiumEnv(dir) },
+            (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
+          );
+        }),
+    );
+  };
   const next = shotQueue.then(run, run);
   shotQueue = next.catch(() => undefined);
   return next;
@@ -104,26 +134,32 @@ async function renderedStats(row, token) {
 /** One screenshot at a time: Chromium is heavy and the pages are reviewed one by one. */
 let shotQueue = Promise.resolve();
 function screenshot(url, file, mobile = false) {
-  const run = () =>
-    new Promise((resolve, reject) => {
-      execFile(
-        CHROME,
-        ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", mobile ? "--window-size=390,3000" : "--window-size=1280,3200", ...(mobile ? ["--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"] : []), "--virtual-time-budget=9000", `--screenshot=${file}`, url],
-        { timeout: 60_000, env: { ...process.env, HOME: "/tmp" } },
-        (error) => (error ? reject(error) : resolve()),
-      );
-    });
+  const run = async () => {
+    await housekeeping();
+    return withChromium(
+      (dir) =>
+        new Promise((resolve, reject) => {
+          execFile(
+            CHROME,
+            shotArgs(dir, url, file, mobile),
+            { timeout: 60_000, env: chromiumEnv(dir) },
+            (error) => (error ? reject(error) : resolve()),
+          );
+        }),
+    );
+  };
   const next = shotQueue.then(run, run);
   shotQueue = next.catch(() => undefined);
   return next;
 }
 
 async function shotFor(row, token, which, mobile = false) {
+  await housekeeping();
   await mkdir(SHOTS, { recursive: true });
   const file = `${SHOTS}/${token}-${which}${mobile ? "-m" : ""}.png`;
   try {
     const st = await stat(file);
-    if (Date.now() - st.mtimeMs < 3_600_000) return readFile(file);
+    if (Date.now() - st.mtimeMs < SHOT_REUSE_MS) return readFile(file);
   } catch {}
   const url = which === "live" ? row.page_url : `http://127.0.0.1:${PORT}/p/${token}?key=${encodeURIComponent(row.review_key)}`;
   await screenshot(url, file, mobile);
@@ -230,4 +266,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => console.log(`preview service on 127.0.0.1:${PORT}`));
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`preview service on 127.0.0.1:${PORT}`);
+  void housekeeping();
+});

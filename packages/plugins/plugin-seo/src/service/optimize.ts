@@ -36,6 +36,9 @@ import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from 
 import { draftFromMeasurement, type DraftResult } from "./playbook.js";
 import { materialiseDueTasks } from "./tasks.js";
 
+/** The weekly proposals posted as a comment on an approval issue that is already open (each proposal carries its evidence). */
+const PROPOSALS_COMMENT_MAX = 4_000;
+
 export async function detectorInput(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<DetectorInput> {
   const clock = clockFor(sprint, info.today);
   const [keywords, history, content, backlinks, health, snapshots, integrations] = await Promise.all([
@@ -142,7 +145,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
     const issue = await getIssue(env, sprint.companyId, existingIssueId);
     if (issue && OPEN_ISSUE_STATUSES.has(String(issue.status))) {
       issueId = existingIssueId;
-      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)));
+      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)), { max: PROPOSALS_COMMENT_MAX, pointer: "every proposal is on the SEO page → Optimizations tab" });
     }
   }
   if (!issueId) {
@@ -354,6 +357,7 @@ export async function measureDue(env: Env, info: CompanyInfo, sprint: db.Sprint)
           sprint.companyId,
           sprint.rootIssueId,
           `**Optimization measured: ${outcome.result.replace("_", " ")}** — ${o.hypothesis}\n\n${outcome.reasons.join(" ")}${playbookNote(sprint, o, draft)}`,
+          { pointer: "the full measurement is on the SEO page → Optimizations tab" },
         );
       }
     } catch (error) {

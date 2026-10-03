@@ -1764,6 +1764,41 @@ export async function sprintTotals(db: SeoDb, companyId: string): Promise<Record
   return out;
 }
 
+/**
+ * Tasks whose issue is open and waiting on or with an agent (the issue threads the plugin keeps small), on sprints that
+ * are not paused or archived: moving a thread wakes the agent, and a paused sprint's work stays still.
+ */
+export async function listTasksWithOpenIssues(db: SeoDb, companyId: string): Promise<SprintTask[]> {
+  const rows = await db.query(
+    `SELECT ${TASK_SELECT} FROM ${t("sprint_tasks")}
+      WHERE company_id = $1 AND issue_id IS NOT NULL AND status IN ('not_started', 'in_progress', 'blocked')
+        AND (issue_status IS NULL OR issue_status IN ('todo', 'in_progress', 'blocked', 'backlog'))
+        AND sprint_id IN (SELECT id FROM ${t("sprints")} WHERE company_id = $1 AND status NOT IN ('paused', 'archived'))
+      ORDER BY sprint_id, week, created_at LIMIT 1000`,
+    [companyId],
+  );
+  return rows.map(taskFrom);
+}
+
+export interface TaskPreviewRow {
+  id: string;
+  pageUrl: string;
+  title: string;
+  status: string;
+  reviewStatus: string;
+  reviewNote: string | null;
+}
+
+/** A task's previews, newest first (a continuation issue lists them). */
+export async function previewsForTask(db: SeoDb, companyId: string, taskId: string, limit = 30): Promise<TaskPreviewRow[]> {
+  const rows = await db.query(
+    `SELECT id, page_url, title, status, review_status, review_note FROM ${t("previews")}
+      WHERE company_id = $1 AND task_id = $2 ORDER BY created_at DESC LIMIT $3::int`,
+    [companyId, taskId, Math.max(1, Math.min(100, limit))],
+  );
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), status: String(r.status), reviewStatus: String(r.review_status ?? "pending"), reviewNote: s(r.review_note) }));
+}
+
 /** Every open task (not started, in progress, blocked) of the company's sprints, in plan order. */
 export async function listOpenTasksForCompany(db: SeoDb, companyId: string): Promise<SprintTask[]> {
   const rows = await db.query(
@@ -1795,6 +1830,81 @@ export async function issuesWithFailingRuns(db: SeoDb, companyId: string, issueI
   );
   for (const row of rows) if (row.error_code === code && row.issue_id) out.set(String(row.issue_id), { at: s(row.at) });
   return out;
+}
+
+export interface LatestRun {
+  /** The run's error text, if it failed. */
+  error: string | null;
+  at: string | null;
+  /** Queued or running, and started in the last two hours (an older "running" row is a leftover, not work in flight). */
+  active: boolean;
+}
+
+/**
+ * Each issue's latest run in the last `days` days (the host's `heartbeat_runs`): what it ended with, and whether one
+ * is in flight. The thread guard (service/thread.ts) leaves an issue alone while an agent is working on it and moves
+ * the ones whose latest run failed with `spawn E2BIG`. One statement for all the ids.
+ */
+export async function latestRuns(db: SeoDb, companyId: string, issueIds: string[], days = 3): Promise<Map<string, LatestRun>> {
+  const out = new Map<string, LatestRun>();
+  const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
+  if (ids.length === 0) return out;
+  const rows = await db.query(
+    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error, r.created_at::text AS at,
+            (r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 hours') AS active
+       FROM public.heartbeat_runs r
+      WHERE r.company_id = $1 AND r.created_at >= now() - ($3::int * interval '1 day')
+        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+    [companyId, JSON.stringify(ids), days],
+  );
+  for (const row of rows) if (row.issue_id) out.set(String(row.issue_id), { error: s(row.error), at: s(row.at), active: row.active === true || row.active === "t" || row.active === "true" });
+  return out;
+}
+
+export interface ThreadSize {
+  comments: number;
+  bytes: number;
+}
+
+/**
+ * How big each issue's thread is: comments (not deleted) and their bytes. Reads the core `issue_comments` table,
+ * which the manifest lists in `database.coreReadTables`; throws when the host has not granted it yet.
+ */
+export async function threadSizes(db: SeoDb, companyId: string, issueIds: string[]): Promise<Map<string, ThreadSize>> {
+  const out = new Map<string, ThreadSize>();
+  const ids = [...new Set(issueIds.filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))].slice(0, 500);
+  if (ids.length === 0) return out;
+  const rows = await db.query(
+    `SELECT c.issue_id::text AS issue_id, count(*)::int AS comments, COALESCE(sum(octet_length(c.body)), 0)::bigint AS bytes
+       FROM public.issue_comments c
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL
+        AND c.issue_id IN (SELECT jsonb_array_elements_text($2::jsonb)::uuid)
+      GROUP BY c.issue_id`,
+    [companyId, JSON.stringify(ids)],
+  );
+  for (const row of rows) out.set(String(row.issue_id), { comments: Number(row.comments ?? 0), bytes: Number(row.bytes ?? 0) });
+  return out;
+}
+
+/** The newest comments of one issue (author kind, time, body), newest first. */
+export async function lastComments(db: SeoDb, companyId: string, issueId: string, limit = 3): Promise<Array<{ author: string; at: string; body: string }>> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueId)) return [];
+  const rows = await db.query(
+    `SELECT CASE WHEN c.author_agent_id IS NOT NULL THEN 'agent' WHEN c.author_user_id IS NOT NULL THEN 'person' ELSE 'plugin' END AS author,
+            c.created_at::text AS at, left(c.body, 1200) AS body
+       FROM public.issue_comments c
+      WHERE c.company_id = $1 AND c.issue_id = $2::uuid AND c.deleted_at IS NULL
+      ORDER BY c.created_at DESC LIMIT $3::int`,
+    [companyId, issueId, Math.max(1, Math.min(10, limit))],
+  );
+  return rows.map((r) => ({ author: String(r.author), at: String(r.at), body: String(r.body ?? "") }));
+}
+
+/** A task's issue was replaced by a continuation issue: the previews that point at it follow. */
+export async function repointPreviews(db: SeoDb, companyId: string, fromIssueId: string, toIssueId: string): Promise<number> {
+  const result = await db.execute(`UPDATE ${t("previews")} SET issue_id = $3 WHERE company_id = $1 AND issue_id = $2`, [companyId, fromIssueId, toIssueId]);
+  return result.rowCount;
 }
 
 /**

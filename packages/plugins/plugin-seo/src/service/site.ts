@@ -9,6 +9,7 @@ import { PLUGIN_ID } from "../namespace.js";
 import * as db from "../db.js";
 import type { CrmSiteRow } from "@partnersinbiz/pib-plugin-kit";
 import {
+  branchName,
   CHANGE_POLICIES,
   evaluateChange,
   evaluateWordPressChange,
@@ -18,6 +19,7 @@ import {
   SEO_SCOPE_CATEGORIES,
   WORDPRESS_SCOPE_CATEGORIES,
   type ChangePolicy,
+  workBranchFromPolicy,
   type ChecksState,
   type ProposedChange,
 } from "../engine/site-change.js";
@@ -84,7 +86,7 @@ export async function siteProjectOptions(env: Env, companyId: string, siteUrl: s
       name: String(p.name ?? "Project"),
       urlKey: typeof p.urlKey === "string" ? p.urlKey : null,
       repoUrl,
-      defaultBranch: primary?.defaultRef ?? primary?.repoRef ?? codebase?.defaultRef ?? null,
+      defaultBranch: workBranchFromPolicy(p.executionWorkspacePolicy) ?? (primary?.defaultRef ?? primary?.repoRef ?? codebase?.defaultRef ?? null),
       suggested: Boolean(repoUrl) && tokens.some((t) => haystack.includes(t.toLowerCase())),
     });
   }
@@ -147,12 +149,66 @@ export async function listSiteProjectsTool(env: Env, companyId: string, params: 
   };
 }
 
+/** A person or agent typed this sprint's branch into link-site: the project's policy no longer decides it. */
+function branchMarker(companyId: string, sprintId: string) {
+  return { scopeKind: "company" as const, scopeId: companyId, namespace: "seo-branch", stateKey: sprintId };
+}
+
+async function markBranchManual(env: Env, companyId: string, sprintId: string): Promise<void> {
+  try {
+    await env.ctx.state.set(branchMarker(companyId, sprintId), "manual");
+  } catch {
+    // Without the marker a later heal may re-derive the branch; the typed value is still stored.
+  }
+}
+
+/** A new project's own work branch replaces whatever was typed for the old one (best effort). */
+async function clearBranchMarker(env: Env, companyId: string, sprintId: string): Promise<void> {
+  try {
+    await env.ctx.state.delete(branchMarker(companyId, sprintId));
+  } catch {
+    // A stale marker only stops a later heal from moving a `main` branch.
+  }
+}
+
+/** Was this sprint's branch typed by hand? An unreadable marker counts as typed: the branch is then left alone. */
+async function branchIsManual(env: Env, companyId: string, sprintId: string): Promise<boolean> {
+  try {
+    return (await env.ctx.state.get(branchMarker(companyId, sprintId))) === "manual";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A repo sprint linked before 0.22.0 got the DB default `main` whenever its project's workspace had no default ref,
+ * even for a project whose policy works in `development`. Once per daily run: a sprint still on `main` with no branch
+ * typed by hand takes the project's work branch (workspace policy base ref). A branch set by hand (link-site's
+ * `defaultBranch`, the SEO page field) or any value other than `main` is never touched. Returns the fresh sprint.
+ */
+export async function healWorkBranch(env: Env, sprint: db.Sprint): Promise<db.Sprint> {
+  if (sprint.siteAccess !== "repo" || !sprint.siteProjectId || sprint.defaultBranch !== "main") return sprint;
+  try {
+    if (await branchIsManual(env, sprint.companyId, sprint.id)) return sprint;
+    const project = await env.ctx.projects.get(sprint.siteProjectId, sprint.companyId);
+    const workBranch = workBranchFromPolicy((project as unknown as { executionWorkspacePolicy?: unknown } | null)?.executionWorkspacePolicy);
+    if (!workBranch || workBranch === "main") return sprint;
+    await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { default_branch: workBranch });
+    env.ctx.logger.info("SEO sprint work branch taken from the project's policy", { sprintId: sprint.id, from: "main", to: workBranch });
+    return { ...sprint, defaultBranch: workBranch };
+  } catch (error) {
+    env.ctx.logger.info("SEO work branch check skipped", { sprintId: sprint.id, error: errorMessage(error) });
+    return sprint;
+  }
+}
+
 const POLICY_RANK: Record<ChangePolicy, number> = { pr_only: 0, merge_seo_scope: 1, full: 2 };
 
 export async function linkSiteTool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const patch: Record<string, unknown> = {};
+  let clearMarker = false;
   const projectId = str(params, "projectId", { max: 100 });
   const wordpressSiteId = str(params, "wordpressSiteId", { max: 100 });
   const clientProjectId = str(params, "clientProjectId", { max: 100 });
@@ -184,7 +240,21 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
     repoUrl = repoUrl ?? codebase?.repoUrl ?? null;
     branch = branch ?? codebase?.defaultRef ?? null;
     Object.assign(patch, { site_access: "repo", site_project_id: projectId, site_id: null, repo_url: repoUrl });
-    if (branch && !str(params, "defaultBranch")) patch.default_branch = branch.replace(/^refs\/heads\/|^origin\//, "");
+    // The branch PRs target and work starts from: the project's work branch (its workspace policy base ref, e.g.
+    // origin/development) before the workspace's default branch; a branch typed into link-site wins over both (below).
+    const workBranch = workBranchFromPolicy((project as unknown as { executionWorkspacePolicy?: unknown }).executionWorkspacePolicy);
+    const derived = workBranch ?? (branch ? branchName(branch) : null);
+    if (derived && !str(params, "defaultBranch")) {
+      // Saving the same project again (hosting, change policy) never moves a branch somebody set: one typed by hand
+      // (the marker) or any branch but the default `main`. A newly linked project takes its own work branch, and the
+      // branch typed for the old one stops counting as typed.
+      const sameProject = sprint.siteAccess === "repo" && sprint.siteProjectId === projectId;
+      const keep = sameProject && (sprint.defaultBranch !== "main" || (await branchIsManual(env, companyId, sprint.id)));
+      if (!keep) {
+        patch.default_branch = derived;
+        clearMarker = !sameProject;
+      }
+    }
   }
   if (clientProjectId) {
     const clientProject = await env.ctx.projects.get(clientProjectId, companyId);
@@ -195,7 +265,10 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
     Object.assign(patch, { client_project_id: clientProjectId, project_id: clientProjectId });
   }
   const defaultBranch = str(params, "defaultBranch", { max: 100 });
-  if (defaultBranch) patch.default_branch = defaultBranch;
+  if (defaultBranch) {
+    patch.default_branch = branchName(defaultBranch);
+    await markBranchManual(env, companyId, sprint.id);
+  }
   const framework = str(params, "framework", { max: 40 });
   if (framework) patch.framework = framework;
   const hosting = oneOf(params, "hosting", HOSTINGS);
@@ -209,6 +282,7 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
   }
   if (Object.keys(patch).length === 0) throw new SeoError("Nothing to change: pass projectId, clientProjectId, wordpressSiteId, noRepo, unlink, defaultBranch, framework, hosting or changePolicy");
   await db.updateSprint(env.ctx.db, companyId, sprint.id, patch);
+  if (clearMarker) await clearBranchMarker(env, companyId, sprint.id);
   const fresh = (await db.getSprint(env.ctx.db, companyId, sprint.id))!;
   let moved = { moved: 0, opened: 0 };
   let resolved = false;

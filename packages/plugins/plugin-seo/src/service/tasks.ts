@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
-import { blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
+import { BLOCK_COMMENT_MAX, blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
 import { branchFor, isCodeTask } from "../engine/site-change.js";
 import { completionBlocker } from "../engine/guards.js";
 import {
@@ -399,7 +399,7 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
   });
   let issueClosed = false;
   if (task.issueId) {
-    await commentOn(env, companyId, task.issueId, completionComment({ ...evidence, by: actorLabel(actor) }));
+    await commentOn(env, companyId, task.issueId, completionComment({ ...evidence, by: actorLabel(actor) }), { pointer: "the full summary, links and artifacts are on the task's record (SEO page, the sprint's tasks)" });
     const updated = await patchIssue(env, companyId, task.issueId, { status: "done" });
     if (updated) {
       issueClosed = true;
@@ -452,7 +452,7 @@ export async function blockTask(env: Env, companyId: string, actor: Actor, param
   let reassigned = false;
   let reviewed = false;
   if (task.issueId) {
-    await commentOn(env, companyId, task.issueId, blockComment({ reason, humanAsk, review, links }));
+    await commentOn(env, companyId, task.issueId, blockComment({ reason, humanAsk, review, links }), { max: BLOCK_COMMENT_MAX, pointer: "the full ask is on the sprint's Needs you issue and the task's record" });
     // Sign-off goes to the owner's review queue; a blocked task stays with the agent until the digest item is done.
     // With a Cockpit Reviewer, the Reviewer checks it first and hands it to the owner.
     const owner = review ? assignableUser(sprint.ownerUserId) : null;

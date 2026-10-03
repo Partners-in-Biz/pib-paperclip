@@ -5,6 +5,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, InlineText, Input, ListChecks, Pill, UserRound, ProgressBar, Section, SectionCard, Select, breakAnywhere, fluidColumns, tokens, type ToneName } from "@partnersinbiz/pib-plugin-ui";
+import { shownBranch as branchShown, siteLinkParams, WORDPRESS_PREFIX } from "./site-link.js";
 
 export type UiLink = { label: string; url: string };
 
@@ -205,7 +206,7 @@ const POLICY_TEXT: Record<SiteLink["changePolicy"], string> = {
   full: "Merge any SEO change when checks pass",
 };
 
-const WP = "wp:";
+const WP = WORDPRESS_PREFIX;
 
 function currentChoice(site: SiteLink): string {
   if (site.siteAccess === "none") return "__none";
@@ -220,6 +221,8 @@ function siteHost(url: string): string {
 export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [], prefix, call }: { sprintId: string; site: SiteLink; projects: ProjectOption[]; wordpressSites?: WordPressSite[]; prefix: string | null; call: CallFn }) {
   const [projectId, setProjectId] = useState<string>(currentChoice(site));
   const [branch, setBranch] = useState(site.defaultBranch);
+  // Only a branch typed here is sent: otherwise the server takes the project's work branch (its workspace policy), not the old value shown.
+  const [branchEdited, setBranchEdited] = useState(false);
   const [hosting, setHosting] = useState(site.hosting ?? "");
   const [policy, setPolicy] = useState<SiteLink["changePolicy"]>(site.changePolicy);
   // A stable key: callers may pass a fresh [] each render.
@@ -228,22 +231,19 @@ export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [],
     const suggestedWp = wordpressSites.find((w) => w.suggested && w.connected);
     setProjectId(currentChoice(site) || (suggestedWp ? `${WP}${suggestedWp.siteId}` : projects.find((p) => p.suggested)?.projectId ?? ""));
     setBranch(site.defaultBranch);
+    setBranchEdited(false);
     setHosting(site.hosting ?? "");
     setPolicy(site.changePolicy);
   }, [site.siteAccess, site.siteProjectId, site.siteId, site.defaultBranch, site.hosting, site.changePolicy, projects, wpKey]);
   const wordpressId = projectId.startsWith(WP) ? projectId.slice(WP.length) : null;
   const pickedWp = wordpressId ? wordpressSites.find((w) => w.siteId === wordpressId) ?? (site.site?.siteId === wordpressId ? site.site : null) : null;
   const picked = projects.find((p) => p.projectId === projectId) ?? null;
+  // A newly picked project shows the branch the server will use for it (its work branch) until one is typed.
+  const shownBranch = branchShown({ branchEdited, choice: projectId, currentChoice: currentChoice(site), branch, pickedBranch: picked?.defaultBranch ?? null });
   const save = () =>
     void call(
       "link-site",
-      {
-        sprintId,
-        ...(projectId === "__none" ? { noRepo: true } : wordpressId ? { wordpressSiteId: wordpressId } : projectId ? { projectId } : {}),
-        ...(branch.trim() && !wordpressId ? { defaultBranch: branch.trim() } : {}),
-        ...(hosting ? { hosting } : {}),
-        changePolicy: policy,
-      },
+      siteLinkParams({ sprintId, choice: projectId, branch, branchEdited, hosting, changePolicy: policy }),
       projectId === "__none"
         ? "Saved: no repo access. Change sets go through Needs you."
         : wordpressId
@@ -302,7 +302,7 @@ export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [],
         </Field>
         {wordpressId ? null : (
           <Field label="Default branch">
-            <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={picked?.defaultBranch ?? "main"} />
+            <Input value={shownBranch} onChange={(e) => { setBranch(e.target.value); setBranchEdited(true); }} placeholder={picked?.defaultBranch ?? "main"} />
           </Field>
         )}
         <Field label="Hosting">

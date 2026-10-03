@@ -4,6 +4,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
+import { capComment, commentFingerprint, isRepeatNotice, rememberNotice, type CommentMemory } from "../engine/thread.js";
 import type { Env } from "./common.js";
 import { errorMessage } from "./common.js";
 
@@ -24,6 +25,8 @@ export interface OpenIssueInput {
   priority?: CreateInput["priority"];
   wake?: boolean;
   wakeReason?: string;
+  /** Share this issue's checkout / worktree (a follow-up that carries on the same work). */
+  inheritWorkspaceFromIssueId?: string;
 }
 
 /**
@@ -42,6 +45,7 @@ export async function openIssue(env: Env, input: OpenIssueInput): Promise<{ id: 
     ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.parentId ? { parentId: input.parentId } : {}),
     ...(input.priority ? { priority: input.priority } : {}),
+    ...(input.inheritWorkspaceFromIssueId ? { inheritExecutionWorkspaceFromIssueId: input.inheritWorkspaceFromIssueId } : {}),
     wake: input.wake ?? Boolean(input.assigneeAgentId),
     wakeReason: input.wakeReason,
   };
@@ -84,14 +88,46 @@ export async function patchIssue(env: Env, companyId: string, issueId: string, p
   }
 }
 
-export async function commentOn(env: Env, companyId: string, issueId: string, body: string): Promise<boolean> {
+export interface CommentOptions {
+  /** Longest the comment may be (default COMMENT_MAX). */
+  max?: number;
+  /** Where the full text lives, said in the notice when the comment is cut. */
+  pointer?: string;
+  /** Post this notice once per key on the issue (a round-by-round notice that would otherwise repeat). */
+  dedupeKey?: string;
+}
+
+function memoryKey(companyId: string, issueId: string) {
+  return { scopeKind: "company" as const, scopeId: companyId, namespace: "seo-comments", stateKey: issueId };
+}
+
+/**
+ * Post a comment as the plugin. Every comment is capped (engine/thread.ts: threads that grow past ~80 KB cannot be
+ * handed to an agent) and the same notice is not posted twice in a row on one issue. Returns true when the comment
+ * is on the issue, including when an identical one already was; false when the host refused it.
+ */
+export async function commentOn(env: Env, companyId: string, issueId: string, body: string, opts: CommentOptions = {}): Promise<boolean> {
+  const text = capComment(body, { max: opts.max, pointer: opts.pointer });
+  const hash = commentFingerprint(text);
+  let memory: CommentMemory | null = null;
   try {
-    await env.ctx.issues.createComment(issueId, body, companyId);
-    return true;
+    memory = ((await env.ctx.state.get(memoryKey(companyId, issueId))) as CommentMemory | null) ?? null;
+  } catch {
+    memory = null;
+  }
+  if (isRepeatNotice(memory, { hash, key: opts.dedupeKey, now: env.now().getTime() })) return true;
+  try {
+    await env.ctx.issues.createComment(issueId, text, companyId);
   } catch (error) {
     env.ctx.logger.info("SEO issue comment failed", { issueId, error: errorMessage(error) });
     return false;
   }
+  try {
+    await env.ctx.state.set(memoryKey(companyId, issueId), rememberNotice(memory, { hash, key: opts.dedupeKey, at: env.now().toISOString() }));
+  } catch {
+    // The memory only spares a repeat; the comment is already posted.
+  }
+  return true;
 }
 
 export const OPEN_ISSUE_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);

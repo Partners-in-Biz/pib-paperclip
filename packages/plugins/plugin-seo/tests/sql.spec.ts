@@ -62,7 +62,7 @@ function guardedDb(rows: Record<string, unknown>[] = []) {
   const fake: db.SeoDb = {
     namespace: NAMESPACE,
     async query<T>(sql: string, params: unknown[] = []) {
-      validateRuntimeQuery(sql, NAMESPACE, ["heartbeat_runs"]);
+      validateRuntimeQuery(sql, NAMESPACE, ["heartbeat_runs", "issue_comments"]);
       validateParams(sql, params);
       calls.push({ kind: "query", sql, params });
       return rows as T[];
@@ -154,8 +154,51 @@ describe("runtime SQL passes the host guard", () => {
     await db.sprintTotals(fake, c);
     await db.listOpenTasksForCompany(fake, c);
     await db.openNeedsYouDigests(fake, c);
+    // 0.22.0: the thread guard (reads the host's issue_comments and heartbeat_runs) and the preview lists.
+    await db.listTasksWithOpenIssues(fake, c);
+    await db.previewsForTask(fake, c, "t1");
+    await db.repointPreviews(fake, c, "iss-old", "iss-new");
+    await db.latestRuns(fake, c, ["00000000-0000-4000-8000-000000000528"]);
+    await db.threadSizes(fake, c, ["00000000-0000-4000-8000-000000000528", "not-a-uuid"]);
+    await db.lastComments(fake, c, "00000000-0000-4000-8000-000000000528", 3);
     expect(calls.length).toBeGreaterThan(60);
     expect(calls.every((call) => !/\bundefined\b/.test(call.sql))).toBe(true);
+  });
+
+  it("reads thread sizes only for real issue ids, in one statement", async () => {
+    const { fake, calls } = guardedDb();
+    await db.threadSizes(fake, "co-1", ["not-a-uuid", "00000000-0000-4000-8000-000000000528", "00000000-0000-4000-8000-000000000528"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.sql).toContain("public.issue_comments");
+    expect(calls[0]!.params).toEqual(["co-1", JSON.stringify(["00000000-0000-4000-8000-000000000528"])]);
+    await db.threadSizes(fake, "co-1", ["not-a-uuid"]);
+    expect(calls).toHaveLength(1);
+    expect(await db.lastComments(fake, "co-1", "not-a-uuid")).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads each issue's latest run: its error, and whether one is in flight", async () => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const rows = [
+      { issue_id: "i-1", error: "spawn E2BIG", at: "2026-10-03 05:12:47+00", active: false },
+      { issue_id: "i-2", error: null, at: "2026-10-03 07:55:00+00", active: true },
+      { issue_id: "i-3", error: null, at: "2026-10-03 07:50:00+00", active: "t" },
+      { issue_id: null, error: null, at: null, active: true },
+    ];
+    const fake = { namespace: NAMESPACE, query: async (sql: string, params: unknown[] = []) => (calls.push({ sql, params }), rows), execute: async () => ({ rowCount: 0 }) } as never;
+    const runs = await db.latestRuns(fake, "co-1", ["i-1", "i-2", "i-3", "i-1"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.sql).toContain("public.heartbeat_runs");
+    // A leftover "running" row from long ago is not work in flight.
+    expect(calls[0]!.sql).toMatch(/status IN \('queued', 'running'\) AND r\.created_at >= now\(\) - interval '2 hours'/);
+    expect(calls[0]!.params).toEqual(["co-1", JSON.stringify(["i-1", "i-2", "i-3"]), 3]);
+    expect([...runs.entries()]).toEqual([
+      ["i-1", { error: "spawn E2BIG", at: "2026-10-03 05:12:47+00", active: false }],
+      ["i-2", { error: null, at: "2026-10-03 07:55:00+00", active: true }],
+      ["i-3", { error: null, at: "2026-10-03 07:50:00+00", active: true }],
+    ]);
+    expect((await db.latestRuns(fake, "co-1", [])).size).toBe(0);
+    expect(calls).toHaveLength(1);
   });
 
   it("filters sprints by scope in SQL", async () => {

@@ -2,10 +2,18 @@
  * The SEO routines ("Run today's SEO" daily, "Weekly SEO review" Mondays)
  * ship on: created active with their schedules on when an agent is linked.
  *
- * Two gaps are closed here:
+ * Three gaps are closed here:
  * - Routines created by older versions were paused with their schedule off.
  *   `activateShippedRoutines` sets a paused routine active when nobody has
  *   touched it since the plugin created it (a person's pause is kept).
+ * - Versions up to 0.21.0 declared `issueTemplate.originId = "routine:<key>"`.
+ *   The host copies a managed routine's declaration into its own binding row
+ *   (`plugin_managed_resources.defaults_json`) when the routine is created
+ *   and again on every `reconcile`, and it reads the issue template from that
+ *   row (not from the manifest) when the routine fires. A plugin upgrade
+ *   therefore does not fix a routine that already exists: every dispatch kept
+ *   failing on the non-uuid origin id until `healRoutineTemplates` called
+ *   `reconcile` once per routine (the hourly job does).
  * - The worker can read a routine's status but not its triggers. The SEO page
  *   runs as the signed-in board user, reads the triggers from the host and
  *   reports them (`seo.routine-report`); the setup checklist uses the report.
@@ -95,6 +103,51 @@ export async function routineViews(env: Env, companyId: string): Promise<Routine
     }
   }
   return out;
+}
+
+/**
+ * True when a routine's stored issue template would make the host fail the dispatch: an origin id (the host files
+ * the issue as a routine execution and reads that id back as the routine's uuid) without `surfaceVisibility:
+ * "plugin_operation"` (the one case where a custom origin id is safe). Pure.
+ */
+export function brokenIssueTemplate(template: unknown): boolean {
+  if (!template || typeof template !== "object") return false;
+  const t = template as { originId?: unknown; surfaceVisibility?: unknown };
+  return typeof t.originId === "string" && t.originId.trim() !== "" && t.surfaceVisibility !== "plugin_operation";
+}
+
+/** The issue template the host holds for a managed routine (its binding's defaults), or undefined when it was not returned. */
+function storedTemplate(routine: { managedByPlugin?: { defaultsJson?: Record<string, unknown> | null } | null }): unknown {
+  const defaults = routine.managedByPlugin?.defaultsJson;
+  return defaults ? defaults.issueTemplate ?? null : undefined;
+}
+
+/**
+ * Routines whose stored issue template is broken (see the header) get one `reconcile`: for an existing routine the
+ * host rewrites the binding from the manifest it has loaded and leaves the routine itself (status, assignee,
+ * schedule) alone. `reconcile` answers with the state it read BEFORE that rewrite, so the repair is confirmed by
+ * reading the routine again; a host still holding the old manifest rewrites the same template and is reported, not
+ * counted. Returns the keys it fixed. Idempotent, never throws, and only touches routines that exist.
+ */
+export async function healRoutineTemplates(env: Env, companyId: string): Promise<RoutineKey[]> {
+  const fixed: RoutineKey[] = [];
+  for (const key of ROUTINE_KEYS) {
+    try {
+      const managed = await env.ctx.routines.managed.get(key, companyId);
+      if (!managed.routine || !brokenIssueTemplate(storedTemplate(managed.routine))) continue;
+      await env.ctx.routines.managed.reconcile(key, companyId);
+      const after = await env.ctx.routines.managed.get(key, companyId);
+      if (!after.routine || brokenIssueTemplate(storedTemplate(after.routine))) {
+        env.ctx.logger.warn("SEO routine template still broken after reconcile", { key, companyId });
+        continue;
+      }
+      env.ctx.logger.info("SEO routine issue template repaired", { key, companyId });
+      fixed.push(key);
+    } catch (error) {
+      env.ctx.logger.info("SEO routine template check skipped", { key, companyId, error: errorMessage(error) });
+    }
+  }
+  return fixed;
 }
 
 /** A routine the plugin created and nobody has changed since. */

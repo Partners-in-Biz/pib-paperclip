@@ -61,7 +61,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.21.0",
+  version: "0.22.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -99,7 +99,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.sidebar.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "seo", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
+  database: { namespaceSlug: "seo", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "issue_comments"] },
   tools: SEO_TOOLS,
   jobs: [
     {
@@ -196,8 +196,9 @@ const manifest: PaperclipPluginManifestV1 = {
       triggers: [
         { kind: "schedule", label: "Daily 06:30 SAST", enabled: true, cronExpression: "30 6 * * *", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
-      // A stable origin id per kind of work (the host uses the routine's own id otherwise).
-      issueTemplate: { originId: `routine:${DAILY_ROUTINE_KEY}` },
+      // No issueTemplate.originId on purpose: the host files the run's issue as originKind "routine_execution" and later
+      // looks the routine up by that originId as a uuid, so a string like "routine:seo-run-today" fails every dispatch.
+      // Without it the host uses the routine's own id (as the Cockpit routines do). See service/routines.ts healRoutineTemplates.
     },
     {
       routineKey: WEEKLY_ROUTINE_KEY,
@@ -212,7 +213,6 @@ const manifest: PaperclipPluginManifestV1 = {
       triggers: [
         { kind: "schedule", label: "Mondays 07:00 SAST", enabled: true, cronExpression: "0 7 * * 1", timezone: "Africa/Johannesburg", signingMode: null, replayWindowSec: null },
       ],
-      issueTemplate: { originId: `routine:${WEEKLY_ROUTINE_KEY}` },
     },
   ],
   skills: SKILLS,

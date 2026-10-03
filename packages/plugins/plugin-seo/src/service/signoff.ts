@@ -50,8 +50,11 @@ export async function approveSiteWrites(env: Env, companyId: string, actor: Acto
   if (approved.length === 0) throw new SeoError("No client has approved a preview on this sprint yet. Send the preview link to the client first; their Approve click is what unlocks this.");
   const until = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
   await env.ctx.events.emit(APPROVAL_EVENT, companyId, { siteId: sprint.siteId, until, by: actorId(actor) });
-  const list = approved.map((r) => `- ${String(r.page_url)} (${String(r.title)})`).join("\n");
-  const body = `The owner approved applying the client-approved changes for the next ${hours} hours. Apply only these (the previews with status approved, see list-previews), then verify each on the live site and complete the task with the evidence:\n${list}\n\nAnything not listed still needs the client's sign-off.`;
+  // Page addresses only, at most 15: a long list would make the comment (and the thread) big; list-previews has the rest.
+  const shown = approved.slice(0, 15).map((r) => `- ${String(r.page_url)}`);
+  const more = approved.length > shown.length ? `\n- …and ${approved.length - shown.length} more: partnersinbiz.seo:list-previews with status approved (limit 100) shows all of them.` : "";
+  const list = `${shown.join("\n")}${more}`;
+  const body = `The owner approved applying the client-approved changes for the next ${hours} hours. Apply only these (the previews with status approved, see list-previews), then verify each on the live site and complete the task with the evidence:\n${list}\n\nAnything that is not an approved preview still needs the client's sign-off.`;
   const woken: string[] = [];
   const seen = new Set<string>();
   for (const row of approved) {

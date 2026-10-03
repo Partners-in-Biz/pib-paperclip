@@ -177,16 +177,35 @@ export function taskIssueDescription(
   return lines.filter((line) => line !== null).join("\n");
 }
 
+/** Longest a sign-off or blocked comment is (service/tasks.ts passes it to commentOn): each part is cut so the links and the closing line always show. */
+export const BLOCK_COMMENT_MAX = 3_000;
+
+const BLOCK_REASON_MAX = 450;
+const BLOCK_ASK_MAX = 650;
+const BLOCK_LINKS_MAX = 6;
+const BLOCK_LINK_CHARS = 200;
+
+function clipText(text: string, max: number): string {
+  const t = text.trim();
+  return t.length <= max ? t : `${t.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+/**
+ * The comment on a blocked or sign-off task. Each part is clipped on its own (the full text is on the task's record), so
+ * the links and the line that says how to approve are never the part that gets cut. Under `BLOCK_COMMENT_MAX`.
+ */
 export function blockComment(input: { reason: string; humanAsk: string; review: boolean; links?: string[] }): string {
   const lines = [
     input.review ? "**Ready for your sign-off.**" : "**Blocked — needs a person.** (Also listed in this week's Needs you issue.)",
     "",
-    `**What happened:** ${input.reason}`,
+    `**What happened:** ${clipText(input.reason, BLOCK_REASON_MAX)}`,
     "",
-    `**What I need from you:** ${input.humanAsk}`,
+    `**What I need from you:** ${clipText(input.humanAsk, BLOCK_ASK_MAX)}`,
   ];
-  if (input.links && input.links.length > 0) {
-    lines.push("", "**Links:**", ...input.links.map((link) => `- ${link}`));
+  const links = input.links ?? [];
+  if (links.length > 0) {
+    lines.push("", "**Links:**", ...links.slice(0, BLOCK_LINKS_MAX).map((link) => `- ${clipText(link, BLOCK_LINK_CHARS)}`));
+    if (links.length > BLOCK_LINKS_MAX) lines.push(`- …and ${links.length - BLOCK_LINKS_MAX} more on the task's record`);
   }
   lines.push(
     "",

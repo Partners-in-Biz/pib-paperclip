@@ -127,7 +127,9 @@ type RoutineResolution = Awaited<ReturnType<Env["ctx"]["routines"]["managed"]["r
  * routine that belongs to another agent is reset to this one (reset puts it
  * back to the declared paused status) and its previous status restored. When
  * the host refuses the restore, `lostStatus` holds the status a person has to
- * set again.
+ * set again. The reconcile also rewrites the routine's stored issue template
+ * from the manifest, so a re-sync repairs a routine created by 0.21.0 or older
+ * (service/routines.ts healRoutineTemplates does the same hourly).
  */
 async function assignRoutine(env: Env, companyId: string, key: string, agentId: string, projectId: string | null) {
   const managed = env.ctx.routines.managed;

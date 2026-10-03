@@ -11,7 +11,8 @@ import { checkClaims } from "../engine/claims.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
-import { actorId, assignableUser, bool, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
+import { capComment, commentFingerprint } from "../engine/thread.js";
+import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
 import { companyInfo } from "./common.js";
 import { startPreviewFix } from "./build.js";
@@ -105,28 +106,85 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   };
 }
 
+/** Rows `list-previews` returns by default (agents were handed up to 100 full rows, ~89 KB on average). */
+export const PREVIEW_LIST_DEFAULT = 20;
+const PREVIEW_NOTE_COMPACT = 200;
+
+const cut = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`);
+
+/**
+ * Previews of a sprint, newest first. Short rows by default (notes cut to ~200 characters, no figures, the client
+ * link only on previews the Reviewer passed); `previewId` returns one preview in full, `compact: false` every row in full.
+ */
 export async function listPreviews(env: Env, companyId: string, params: Params) {
   const sprintId = reqStr(params, "sprintId");
+  const previewId = str(params, "previewId", { max: 80 });
+  const where = ["company_id = $1", "sprint_id = $2"];
+  const args: unknown[] = [companyId, sprintId];
+  const filter = (column: string, value: string | undefined) => {
+    if (!value) return;
+    args.push(value);
+    where.push(`${column} = $${args.length}`);
+  };
+  filter("id", previewId);
+  filter("task_id", str(params, "taskId", { max: 80 }));
+  filter("status", oneOf(params, "status", ["pending", "approved", "changes_requested"] as const));
+  filter("review_status", oneOf(params, "reviewStatus", ["pending", "passed", "changes_needed"] as const));
+  const limit = previewId ? 1 : num(params, "limit", { integer: true, min: 1, max: 100 }) ?? PREVIEW_LIST_DEFAULT;
+  const compact = previewId ? false : bool(params, "compact") ?? true;
+  args.push(limit);
   const rows = await env.ctx.db.query(
-    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats FROM ${t("previews")}
-      WHERE company_id = $1 AND sprint_id = $2 ORDER BY created_at DESC LIMIT 100`,
-    [companyId, sprintId],
+    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats, count(*) OVER() AS total FROM ${t("previews")}
+      WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT $${args.length}::int`,
+    args,
   );
-  return {
-    previews: rows.map((r) => ({
+  const total = rows[0] ? Number(rows[0].total ?? rows.length) : 0;
+  const previews = rows.map((r) => {
+    const stats = typeof r.stats === "string" ? JSON.parse(String(r.stats)) : r.stats ?? {};
+    const reviewNote = r.review_note ? String(r.review_note) : null;
+    const note = r.decision_note ? String(r.decision_note) : null;
+    const reviewStatus = String(r.review_status ?? "pending");
+    if (!compact) {
+      return {
+        previewId: String(r.id),
+        url: previewLink(String(r.page_url), String(r.id)),
+        taskId: r.task_id ? String(r.task_id) : null,
+        pageUrl: String(r.page_url),
+        title: String(r.title),
+        status: String(r.status),
+        reviewStatus,
+        ...(reviewNote ? { reviewNote } : {}),
+        stats,
+        ...(note ? { note } : {}),
+        decidedAt: r.decided_at ? String(r.decided_at) : null,
+        expiresAt: String(r.expires_at),
+      };
+    }
+    const keptPct = typeof stats?.rendered?.keptPct === "number" ? stats.rendered.keptPct : typeof stats?.keptPct === "number" ? stats.keptPct : null;
+    return {
       previewId: String(r.id),
-      url: previewLink(String(r.page_url), String(r.id)),
+      // The client link is only for a preview the Reviewer passed; the others are held.
+      ...(reviewStatus === "passed" ? { url: previewLink(String(r.page_url), String(r.id)) } : {}),
       taskId: r.task_id ? String(r.task_id) : null,
       pageUrl: String(r.page_url),
-      title: String(r.title),
+      title: cut(String(r.title), 100),
       status: String(r.status),
-      reviewStatus: String(r.review_status ?? "pending"),
-      ...(r.review_note ? { reviewNote: String(r.review_note) } : {}),
-      stats: typeof r.stats === "string" ? JSON.parse(String(r.stats)) : r.stats ?? {},
-      ...(r.decision_note ? { note: String(r.decision_note) } : {}),
+      reviewStatus,
+      ...(reviewNote ? { reviewNote: cut(reviewNote, PREVIEW_NOTE_COMPACT), ...(reviewNote.length > PREVIEW_NOTE_COMPACT ? { reviewNoteCut: true } : {}) } : {}),
+      ...(note ? { note: cut(note, PREVIEW_NOTE_COMPACT), ...(note.length > PREVIEW_NOTE_COMPACT ? { noteCut: true } : {}) } : {}),
+      ...(keptPct != null ? { keptPct } : {}),
       decidedAt: r.decided_at ? String(r.decided_at) : null,
       expiresAt: String(r.expires_at),
-    })),
+    };
+  });
+  const cutAny = compact && previews.some((p) => "reviewNoteCut" in p || "noteCut" in p);
+  return {
+    previews,
+    returned: previews.length,
+    total,
+    compact,
+    ...(total > previews.length ? { more: `${total - previews.length} older previews not shown: raise limit (at most 100) or narrow with taskId, status or reviewStatus.` } : {}),
+    ...(cutAny ? { detail: "Notes marked cut are shortened: pass previewId for one preview with its whole notes, figures and review link." } : {}),
   };
 }
 
@@ -162,6 +220,13 @@ export async function deliverPreviewAnswers(env: Env): Promise<number> {
     }
   }
   return sent;
+}
+
+/** A Reviewer's note as it reads in an issue comment: the full text stays on the preview record (previews.review_note). */
+const REVIEW_NOTE_COMMENT_MAX = 800;
+
+export function reviewNoteExcerpt(notes: string, sprintId: string, previewId: string): string {
+  return capComment(notes, { max: REVIEW_NOTE_COMMENT_MAX, pointer: `the full note is on the preview: partnersinbiz.seo:list-previews with sprintId ${sprintId} and previewId ${previewId}` });
 }
 
 /** The client asked for changes: a task parked on the sign-off goes back to its agent. */
@@ -280,7 +345,16 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     if (Number(rounds[0]?.n ?? 0) >= MAX_REVIEW_ROUNDS) {
       const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId, pageUrl, String(row.title), notes!, Number(rounds[0]?.n));
       if (escalated) {
-        if (issueId) await commentOn(env, companyId, issueId, `The preview of ${pageUrl} has now been sent back ${rounds[0]?.n} times by the Reviewer. It is on the owner's Needs you list; do not make another preview for this page until it is answered. Last reason:\n\n${notes}`);
+        // Once per page: the Reviewer's last reason is on the owner's Needs you item and in previews.review_note, not repeated here every round.
+        if (issueId) {
+          await commentOn(
+            env,
+            companyId,
+            issueId,
+            `The preview of ${pageUrl} has now been sent back ${rounds[0]?.n} times by the Reviewer. It is on the owner's Needs you list; do not make another preview for this page until it is answered. The Reviewer's last reason is on that item.`,
+            { dedupeKey: `escalated:${taskId}:${commentFingerprint(pageUrl)}` },
+          );
+        }
         return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, escalatedToOwner: true, next: "Set your review issue to done. The owner decides what happens with this page." };
       }
     }
@@ -304,10 +378,10 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
   if (issueId) {
     const text =
       verdict === "pass"
-        ? `The Reviewer passed the preview of ${pageUrl} (${String(row.title)}).${notes ? ` Notes: ${notes}` : ""} It is now open to the client. Put the link on Needs you for the owner.`
+        ? `The Reviewer passed the preview of ${pageUrl} (${String(row.title)}).${notes ? ` Notes: ${reviewNoteExcerpt(notes, sprintId, previewId)}` : ""} It is now open to the client. Put the link on Needs you for the owner.`
         : handedToDeveloper
-          ? `The Reviewer sent the preview of ${pageUrl} (${String(row.title)}) back for a BUILD problem:\n\n${notes}\n\n${(fix as { builder: string }).builder} is fixing it (issue ${(fix as { issueId: string }).issueId}) and makes the corrected preview. This task stays parked; you are woken when the corrected preview passes the Reviewer. Do not make another preview meanwhile.`
-          : `The Reviewer asked for changes to the preview of ${pageUrl} (${String(row.title)}):\n\n${notes}\n\n${fix && "fallback" in fix ? `(It was meant for a developer but ${fix.fallback}.) ` : ""}Fix this and make a new preview; the client has not seen the old one.`;
+          ? `The Reviewer sent the preview of ${pageUrl} (${String(row.title)}) back for a BUILD problem:\n\n${reviewNoteExcerpt(notes!, sprintId, previewId)}\n\n${(fix as { builder: string }).builder} is fixing it (issue ${(fix as { issueId: string }).issueId}) and makes the corrected preview. This task stays parked; you are woken when the corrected preview passes the Reviewer. Do not make another preview meanwhile.`
+          : `The Reviewer asked for changes to the preview of ${pageUrl} (${String(row.title)}):\n\n${reviewNoteExcerpt(notes!, sprintId, previewId)}\n\n${fix && "fallback" in fix ? `(It was meant for a developer but ${fix.fallback}.) ` : ""}Fix this and make a new preview; the client has not seen the old one.`;
     const woke = !handedToDeveloper;
     if ((await commentOn(env, companyId, issueId, text)) && woke) await wakeIssue(env.ctx, issueId, companyId, `Preview ${verdict === "pass" ? "passed" : "needs changes"}`);
   }

@@ -1,0 +1,11 @@
+export const SHOT_MAX_AGE_MS: number;
+export const PROFILE_MAX_AGE_MS: number;
+export const SHOT_NAME: RegExp;
+export const PROFILE_NAME: RegExp;
+export function sweepShots(dir: string, now?: number, maxAgeMs?: number): Promise<number>;
+export function sweepProfiles(root: string, now?: number, maxAgeMs?: number): Promise<number>;
+export function removeProfile(root: string, dir: string): Promise<void>;
+export function makeProfile(root: string): Promise<{ dir: string; cleanup: () => Promise<void> }>;
+export function chromiumEnv(dir: string, base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function domArgs(dir: string, url: string): string[];
+export function shotArgs(dir: string, url: string, file: string, mobile?: boolean): string[];

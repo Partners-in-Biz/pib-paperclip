@@ -564,6 +564,8 @@ export async function updateSprintTool(env: Env, companyId: string, actor: Actor
 
 /** A digest is a short daily note on the sprint issue; long ones made its thread too big to hand an agent. */
 export const DIGEST_MAX = 1000;
+/** The digest comment: its summary, the day header and the waiting list. */
+const DIGEST_COMMENT_MAX = 3_000;
 
 export async function postDigest(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
@@ -587,7 +589,7 @@ export async function postDigest(env: Env, companyId: string, actor: Actor, para
     blocked: today.blocked.map((b) => ({ title: b.title, humanAsk: b.humanAsk ?? null })),
     dueOpen: today.due.length + today.inProgress.length,
   });
-  const ok = await commentOn(env, companyId, sprint.rootIssueId, body);
+  const ok = await commentOn(env, companyId, sprint.rootIssueId, body, { max: DIGEST_COMMENT_MAX, pointer: "task details are on each task's own issue, and the Needs you issue lists what waits on a person" });
   if (!ok) throw new SeoError("The digest comment could not be posted");
   await env.ctx.state.set(mark, new Date().toISOString()).catch(() => undefined);
   return { sprintId: sprint.id, rootIssueId: sprint.rootIssueId, posted: true, by: actorLabel(actor) };

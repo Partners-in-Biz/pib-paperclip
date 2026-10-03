@@ -29,6 +29,7 @@ import {
   cockpitPath,
   companyInfo,
   errorMessage,
+  num,
   reqStr,
   SeoError,
   str,
@@ -126,7 +127,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   await db.upsertNeedsYou(env.ctx.db, next);
   const issueId = await syncDigestIssue(env, info, sprint, next);
   if (merged.added && issueId && digest.issueId) {
-    await commentOn(env, sprint.companyId, issueId, `New item: **${item.title}**. ${item.why}`);
+    await commentOn(env, sprint.companyId, issueId, `New item: **${item.title}**. ${item.why}`, { pointer: "the whole item is in this issue's description" });
   }
   return { issueId, added: merged.added, key: item.key };
 }
@@ -372,10 +373,51 @@ export async function needsYouView(env: Env, info: CompanyInfo, sprint: db.Sprin
 // Tools
 // ---------------------------------------------------------------------------
 
+/** Open items `needs-you` returns by default (the digest was ~35 KB with every item in full). */
+export const NEEDS_YOU_LIST_DEFAULT = 30;
+const DONE_LIST = 20;
+
+const clip = (text: string, max: number) => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
+};
+
+/** An item as a short row: what it is and who it waits for, not the steps, links or copy-ready text (`key` returns those). */
+export function compactItem(item: ReturnType<typeof itemView>) {
+  return { key: item.key, kind: item.kind, title: clip(item.title, 140), why: clip(item.why, 160), status: item.status, optional: item.optional, taskIds: item.taskIds, addedAt: item.addedAt, ...(item.doneAt ? { doneAt: item.doneAt } : {}) };
+}
+
+/**
+ * The week's digest. Short by default: open items as one-line rows (up to 30) and the done ones as keys with their
+ * titles; `key` returns one item in full, `compact: false` every item in full.
+ */
 export async function needsYouTool(env: Env, companyId: string, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
-  return { sprintId: sprint.id, ...(await needsYouView(env, info, sprint)) };
+  const view = await needsYouView(env, info, sprint);
+  const key = str(params, "key", { max: 200 });
+  if (key) {
+    const item = [...view.open, ...view.done].find((i) => i.key === key);
+    if (!item) throw new SeoError(`There is no Needs you item with the key ${key} on this week's digest (needs-you lists the keys).`);
+    return { sprintId: sprint.id, weekStart: view.weekStart, issueId: view.issueId, issueIdentifier: view.issueIdentifier, item };
+  }
+  if (bool(params, "compact") === false) return { sprintId: sprint.id, ...view };
+  const limit = num(params, "limit", { integer: true, min: 1, max: 100 }) ?? NEEDS_YOU_LIST_DEFAULT;
+  const open = view.open.slice(0, limit).map(compactItem);
+  const done = [...view.done].sort((a, b) => String(b.doneAt ?? "").localeCompare(String(a.doneAt ?? ""))).slice(0, DONE_LIST).map((i) => ({ key: i.key, title: clip(i.title, 100), doneAt: i.doneAt }));
+  return {
+    sprintId: sprint.id,
+    weekStart: view.weekStart,
+    issueId: view.issueId,
+    issueIdentifier: view.issueIdentifier,
+    compact: true,
+    open,
+    openTotal: view.open.length,
+    done,
+    doneTotal: view.done.length,
+    ...(view.open.length > open.length ? { more: `${view.open.length - open.length} more open items not shown: raise limit (at most 100).` } : {}),
+    detail: "Rows are short. Pass key for one item in full (steps, links, copy-ready text), or compact false for every item in full.",
+  };
 }
 
 const KINDS = ["grant", "review", "pr", "message", "task", "indexing"] as const;

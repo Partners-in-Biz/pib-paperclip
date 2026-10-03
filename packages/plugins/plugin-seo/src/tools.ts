@@ -182,6 +182,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       links: list("URLs the person needs (PR, draft, preview), max 20; a GitHub PR on a sign-off becomes your merge task once approved"),
     }),
   },
+  {
+    group: "Tasks",
+    name: "compact-task-thread",
+    displayName: "Move a long task thread to a fresh issue",
+    description:
+      "A task issue whose thread has grown past about 60 KB cannot be handed to an agent (the run fails with spawn E2BIG). This moves the task to a continuation issue (same project, parent, assignee and checkout, the task's description plus a summary of where it stands), points the task and its previews at it, closes the old issue with a pointer and wakes the agent there. The plugin does this by itself every few minutes; call it to do it now. It only reports unless dryRun is false.",
+    parametersSchema: schema([], {
+      issueId: text("Move just this task issue: its id or identifier such as PAR-528. Omit to check every open task issue of the company"),
+      taskId: text("Move just this task (from list-tasks)"),
+      dryRun: flag("Default true: only report which issues would move. Pass false to move them"),
+      minBytes: int("Thread size in bytes that counts as too long (default 60000, at least 10000); lower it to move a smaller thread"),
+    }),
+  },
   { group: "Tasks", name: "skip-task", displayName: "Skip sprint task", description: "Mark a task skipped (not relevant for this site) with the reason; cancels its issue.", parametersSchema: schema(["taskId", "reason"], { taskId, reason: text("Why the task does not apply to this site (max 2000 chars)") }) },
   {
     group: "Tasks",
@@ -274,8 +287,17 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Site",
     name: "list-previews",
     displayName: "List client previews",
-    description: "Previews made for a sprint with their status (pending, approved, changes_requested), the client's comment and link. Check it before applying a change: apply only what the owner has confirmed as approved.",
-    parametersSchema: schema(["sprintId"], { sprintId }),
+    description:
+      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link). Check it before applying a change: apply only what the owner has confirmed as approved.",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),
+      taskId: text("Only the previews made for this task"),
+      status: choice(["pending", "approved", "changes_requested"], "Only previews with this client answer: pending, approved or changes_requested"),
+      reviewStatus: choice(["pending", "passed", "changes_needed"], "Only previews with this Reviewer verdict: pending, passed or changes_needed"),
+      limit: int("Rows to return (default 20, at most 100)"),
+      compact: flag("Short rows (default true); false returns every field in full for each row"),
+    }),
   },
   // Keywords
   { group: "Keywords", name: "list-keywords", displayName: "List keywords", description: "Tracked keywords with current position, impressions, clicks, CTR, intent and target URL.", parametersSchema: schema(["sprintId"], { sprintId, includeRetired: flag("Include retired keywords (default false)") }) },
@@ -533,7 +555,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       wordpressSiteId: text("CRM website id of the sprint client's WordPress site (from list-site-projects wordpressSites): wordpress mode, changes through the PiB Connector"),
       noRepo: flag("No repo access: change sets go through Needs you"),
       unlink: flag("Remove the site link, back to unlinked (people only)"),
-      defaultBranch: text("The repo's default branch (default: from the workspace, else main)"),
+      defaultBranch: text("Branch PRs target and work starts from. Default: the project's work branch (its workspace policy base ref, e.g. development), else the workspace default, else main"),
       framework: text("Site framework, e.g. nextjs"),
       hosting: choice(HOSTINGS, "Where the site is hosted"),
       changePolicy: choice(CHANGE_POLICIES, "What you may merge: merge_seo_scope = SEO-scope PRs, pr_only = none, full = any PR; agents may only lower it"),
@@ -564,7 +586,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
 
   // Needs you
-  { group: "Needs you", name: "needs-you", displayName: "Needs you digest", description: "This week's Needs you items for the sprint (open and done) and its issue.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Needs you",
+    name: "needs-you",
+    displayName: "Needs you digest",
+    description:
+      "This week's Needs you items for the sprint and its issue. The default is short: each open item with its key, title, kind, task ids and a one-line why (up to 30), and the keys of the done ones. Pass key for one item in full (steps, links, copy-ready text), or compact false for every item in full.",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      key: text("One item key (from this tool): returns that item in full, open or done"),
+      compact: flag("Short items (default true); false returns every open and done item in full"),
+      limit: int("Open items to return (default 30, at most 100)"),
+    }),
+  },
   {
     group: "Needs you",
     name: "needs-you-add",

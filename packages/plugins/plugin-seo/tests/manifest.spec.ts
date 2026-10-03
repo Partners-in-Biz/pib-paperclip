@@ -20,7 +20,8 @@ describe("manifest", () => {
     ]) {
       expect(manifest.capabilities, cap).toContain(cap);
     }
-    expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs"]);
+    // issue_comments (0.22.0, read-only): the thread guard sizes task threads from it; see service/thread.ts.
+    expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs", "issue_comments"]);
   });
 
   it("schedules the daily, preview-answer and weekly jobs", () => {
@@ -35,7 +36,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.21.0");
+    expect(manifest.version).toBe("0.22.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -109,7 +110,7 @@ describe("skill", () => {
   it("is the pib- prefixed multi-file skill", () => {
     expect(skill).toMatchObject({ skillKey: "seo-sprint", slug: "pib-seo-sprint" });
     expect(skill.markdown).toMatch(/^---\nname: pib-seo-sprint\nslug: pib-seo-sprint\n/);
-    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md"]);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md", "references/clients-and-plans.md", "references/search-console-and-indexing.md"]);
     expect(skill.markdown).toContain("complete-task");
     expect(skill.markdown).toContain("references/wordpress.md");
     const wp = skill.files!.find((f) => f.path === "references/wordpress.md")!.content;
@@ -136,6 +137,28 @@ describe("skill", () => {
     // The SEO Specialist is told to update the Connector before parking a task.
     expect(skill.markdown).toMatch(/do not park the task on Needs you first: run \\?`wp-health\\?` and \\?`wp-connector\\?` update/);
     expect(skill.markdown).toContain("Never invent data");
+  });
+
+  it("stays under the kit's 18,000-character budget with room to spare (0.22.0 moved detail into references, no rule dropped)", () => {
+    expect(skill.markdown!.length).toBeLessThan(17_000);
+    const refs = Object.fromEntries(skill.files!.map((f) => [f.path, f.content]));
+    // What moved is still there, and the body still points at it.
+    for (const path of ["references/clients-and-plans.md", "references/search-console-and-indexing.md", "references/wordpress.md"]) {
+      expect(skill.markdown, path).toContain(path.replace("references/", ""));
+    }
+    expect(refs["references/clients-and-plans.md"]).toContain("Never type a client name in");
+    expect(refs["references/clients-and-plans.md"]).toContain("Never buy, filter or write reviews");
+    expect(refs["references/clients-and-plans.md"]).toContain("Wrong plan?");
+    expect(refs["references/search-console-and-indexing.md"]).toContain("Google has no public \"Request indexing\" API");
+    expect(refs["references/search-console-and-indexing.md"]).toContain("`bing-submit`");
+    // Theme template markup (SFTP) moved out of the body into the WordPress reference.
+    expect(refs["references/wordpress.md"]).toMatch(/## 11\. Template markup in a theme or plugin file \(SFTP\)/);
+    expect(refs["references/wordpress.md"]).toContain("theme_markup");
+    expect(refs["references/wordpress.md"]).toContain("wp_sftp");
+    // New in 0.22.0: the agent knows about the comment cap and continuation issues, and that the branch is not always main.
+    expect(skill.markdown).toContain("compact-task-thread");
+    expect(skill.markdown).toContain("1,500 characters");
+    expect(refs["references/site-changes.md"]).toMatch(/work branch.*never assume `main`/);
   });
 
   it("has a playbook section for all 42 tasks and documents every tool", () => {

@@ -62,6 +62,7 @@ import { displayTitle, sprintOverviews, withRunFailures } from "./service/overvi
 import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
 import { onIssueUpdated, advanceQueuedWeeks } from "./service/tasks.js";
+import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
@@ -96,6 +97,12 @@ const plugin = definePlugin({
       await advanceQueuedWeeks(e).catch((error) => ctx.logger.info("SEO queued week advance failed", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
+      // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
+      const moved = await db.listSprintCompanies(ctx.db).then((companies) => guardTaskThreads(e, companies)).catch((error) => {
+        ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
+        return { checked: 0, rolled: 0 };
+      });
+      if (moved.rolled > 0) ctx.logger.info("SEO task threads moved to continuation issues", { ...moved });
     });
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));

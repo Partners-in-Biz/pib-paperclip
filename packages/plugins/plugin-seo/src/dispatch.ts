@@ -20,6 +20,7 @@ import * as plans from "./service/plans.js";
 import * as snapshots from "./service/snapshots.js";
 import * as sprints from "./service/sprints.js";
 import * as tasks from "./service/tasks.js";
+import * as thread from "./service/thread.js";
 
 type Handler = (env: Env, companyId: string, actor: Actor, params: Params) => Promise<unknown>;
 
@@ -44,6 +45,7 @@ export const HANDLERS: Record<string, Handler> = {
   "skip-task": (env, c, a, p) => tasks.skipTask(env, c, a, p),
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
   "start-tasks-now": (env, c, a, p) => tasks.startTasksNow(env, c, a, p),
+  "compact-task-thread": (env, c, _a, p) => thread.compactTaskThreadTool(env, c, p),
   // Client previews
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),

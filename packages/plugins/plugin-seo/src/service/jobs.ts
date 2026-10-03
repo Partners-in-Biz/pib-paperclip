@@ -7,7 +7,7 @@
  * missed agent events), then once per sprint per local day after the
  * configured hour — clock/status, root issue, GSC/PageSpeed/Bing pulls,
  * scheduled audit snapshots, due-task sub-issues, measurements, issue heal,
- * today's plan.
+ * today's plan; also repairs the routines' stored issue template and moves task threads that grew too long.
  * seo-weekly (Mondays 05:00 UTC = 07:00 SAST): detectors + proposals + one
  * approval issue per sprint.
  */
@@ -26,17 +26,18 @@ import { gscCheckAccess, gscPull, GscUnavailable, settingsPath } from "./gsc.js"
 import { loadServiceAccount } from "./google-access.js";
 import { indexingFollowUp } from "./indexing.js";
 import { addNeedsYou, recheckNeedsYou } from "./needs-you.js";
-import { activateShippedRoutines } from "./routines.js";
+import { activateShippedRoutines, healRoutineTemplates } from "./routines.js";
 import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { isCodeTask } from "../engine/site-change.js";
-import { autoLinkClientProject } from "./site.js";
+import { autoLinkClientProject, healWorkBranch } from "./site.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
 import { publishSetupStatuses, seoCompanies, seoOn } from "./setup-status.js";
 import { publishCockpitSnapshots } from "../cockpit.js";
 import { scheduledSnapshots } from "./snapshots.js";
 import { healTasks, materialiseDueTasks, relocateCodeTasks } from "./tasks.js";
+import { guardTaskThreads } from "./thread.js";
 import { sprintWordPressSite, wpConnectorItemFor } from "./wordpress.js";
 
 const JOB_BUDGET_MS = 200_000;
@@ -186,7 +187,7 @@ export async function runDailyForSprint(
   input: db.Sprint,
   deps: { agent: AgentAvailability; projectId: string | null },
 ): Promise<DailySprintResult> {
-  let sprint = await autoLinkClientProject(env, input);
+  let sprint = await healWorkBranch(env, await autoLinkClientProject(env, input));
   const warnings: string[] = [];
   const clock = clockFor(sprint, info.today);
   const status = nextSprintStatus(sprint.status, clock);
@@ -337,6 +338,8 @@ export async function linkPendingHires(env: Env): Promise<number> {
     if (await linkPendingHire(env, companyId)) linked += 1;
     // Routines an older version created paused go active once an agent works the sprints.
     if (await resolveAgent(env, companyId)) await activateShippedRoutines(env, companyId);
+    // A routine created by 0.21.0 or older still carries the origin id the host cannot dispatch: repair it (no-op once fixed).
+    await healRoutineTemplates(env, companyId);
   }
   return linked;
 }
@@ -348,6 +351,7 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
   hiresLinked: number;
   setupStatus: { published: number; skipped: number };
   cockpit: { published: number; skipped: number; content: number };
+  threads: { checked: number; rolled: number };
 }> {
   const started = Date.now();
   const hiresLinked = await linkPendingHires(env).catch((error: unknown) => {
@@ -400,7 +404,12 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
     env.ctx.logger.info("SEO cockpit publish failed", { error: errorMessage(error) });
     return { published: 0, skipped: 0, content: 0 };
   });
-  return { processed, skipped, errors, hiresLinked, setupStatus, cockpit };
+  // Task threads that passed ~60 KB move to a fresh issue before a wake on them fails (also run every 5 minutes with the previews).
+  const threads = await guardTaskThreads(env, companies).catch((error: unknown) => {
+    env.ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
+    return { checked: 0, rolled: 0 };
+  });
+  return { processed, skipped, errors, hiresLinked, setupStatus, cockpit, threads };
 }
 
 export async function runWeeklyForSprint(env: Env, info: CompanyInfo, sprint: db.Sprint) {

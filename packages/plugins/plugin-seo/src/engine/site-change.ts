@@ -18,6 +18,26 @@ export const SITE_ACCESS = ["unlinked", "repo", "none", "wordpress"] as const;
  */
 export type SiteAccess = (typeof SITE_ACCESS)[number];
 
+/** A git ref as a branch name: `origin/development`, `refs/heads/x` and `refs/remotes/origin/x` become `development` and `x`. */
+export function branchName(ref: string): string {
+  return ref.trim().replace(/^refs\/remotes\/origin\//, "").replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+}
+
+/**
+ * The branch a project's agents work from: the base ref of its execution workspace policy
+ * (`workspaceStrategy.baseRef`, e.g. `origin/development` on the dev-flow projects). Null when the project sets none
+ * (it works on its default branch), or when the ref is not a branch (`HEAD`, a commit). The sprint's PR base, branch
+ * point and scope diff follow it, unless a person set the branch by hand. Pure.
+ */
+export function workBranchFromPolicy(policy: unknown): string | null {
+  const strategy = policy && typeof policy === "object" ? (policy as { workspaceStrategy?: unknown }).workspaceStrategy : null;
+  const baseRef = strategy && typeof strategy === "object" ? (strategy as { baseRef?: unknown }).baseRef : null;
+  if (typeof baseRef !== "string") return null;
+  const branch = branchName(baseRef);
+  if (!branch || branch === "HEAD" || /^[0-9a-f]{40}$/i.test(branch) || /\s/.test(branch)) return null;
+  return branch;
+}
+
 /** What an agent may merge alone under `merge_seo_scope`. */
 export const SEO_SCOPE: Record<string, string> = {
   head_metadata: "`<head>` metadata: title, meta description, canonical, robots meta, Open Graph / Twitter tags (Next.js `metadata` / `generateMetadata`).",
