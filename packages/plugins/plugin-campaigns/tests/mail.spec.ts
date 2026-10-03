@@ -252,10 +252,13 @@ describe("campaign email delivery", () => {
     expect(adaMail.payload).toMatchObject({
       to: [{ email: "ada@acme.test", name: "Ada Lovelace" }],
       subject: ada.variant === "b" ? "Quick question, Ada" : "Hi Ada",
-      text: ada.variant === "b" ? "B copy for Ada Lovelace" : "Hello Ada at Acme Plumbing",
+      text: expect.stringContaining(ada.variant === "b" ? "B copy for Ada Lovelace" : "Hello Ada at Acme Plumbing"),
       context: { plugin: "partnersinbiz.campaigns", kind: "campaign_step", id: ada.id },
       labels: ["PiB/Campaigns"],
     });
+    // The footer says who sent it and how to stop, and nothing is sent as a mailbox that was not set up.
+    expect(adaMail.payload).toMatchObject({ text: expect.stringContaining("You are getting this email from Partners in Biz"), html: expect.stringContaining("reply STOP") });
+    expect((adaMail.payload as Record<string, unknown>).from).toBeUndefined();
     expect(ada.sending_key).toBe(adaMail.key);
     expect(emit).toHaveBeenCalledWith("mail.send.requested", CO, expect.objectContaining({ key: adaMail.key }));
     const issues = await harness.ctx.issues.list({ companyId: CO, originKind: "plugin:partnersinbiz.campaigns" });
@@ -401,7 +404,10 @@ describe("campaign replies", () => {
     stubJev({ choice: "out_of_office", confidence: 0.9 });
     const { harness, store } = await boot({ store: replyStore() });
     await receive(harness, mail({ snippet: "Away until next week" }));
-    expect(store.campaign_enrollments!.find((row) => row.id === "e-ada")).toMatchObject({ status: "running", next_due_at: "2026-10-03T08:00:00.000Z" });
+    // Five days from now (the step was due in the past): the test must not depend on today's date.
+    const due = Date.parse(String(store.campaign_enrollments!.find((row) => row.id === "e-ada")!.next_due_at));
+    expect(store.campaign_enrollments!.find((row) => row.id === "e-ada")).toMatchObject({ status: "running" });
+    expect(Math.abs(due - (Date.now() + 5 * 86_400_000))).toBeLessThan(60_000);
     expect(store.campaign_step_events!.filter((row) => row.event_type !== "sent")).toHaveLength(0);
   });
 

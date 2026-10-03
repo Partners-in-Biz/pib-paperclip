@@ -118,6 +118,7 @@ describe("Campaigns cockpit snapshot", () => {
     expect(snap.health.map((h) => [h.key, h.status])).toEqual([
       ["job:open-due-steps", "ok"],
       ["job:redeliver-mail", "ok"],
+      ["job:poll-messaging", "ok"],
       ["job:setup-status", "ok"],
       ["outbox", "ok"],
       ["campaigns:sends", "ok"],
@@ -211,7 +212,8 @@ describe("Campaign launch approval: Reviewer routing", () => {
     expect(issue?.description).toContain("## Reviewer: check before the person approves");
     expect(issue?.description).toContain("every A/B variant");
     expect(issue?.description).toContain("contacts tagged `newsletter`");
-    expect(issue?.description).toContain("reassign this issue to the approver (user `user-owner`)");
+    // The company owner from the roles decides (kit chain); the campaign's creator is only the fallback.
+    expect(issue?.description).toContain("reassign this issue to the approver (user `user-peet`)");
   });
 
   it("a Reviewer set but outward review off: unchanged", async () => {

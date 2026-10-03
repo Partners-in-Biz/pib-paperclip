@@ -29,17 +29,23 @@ const audienceTags = { type: "array", items: { type: "string" }, description: "C
 
 const delivery = {
   type: "string",
-  enum: ["issue", "email"],
+  enum: ["issue", "email", "auto"],
   description:
-    "issue (default): each due step opens an issue for the campaign's agent, who sends the email. email: the Mailbox sends each due step from Gmail as marketing mail, with the merge tokens filled in.",
+    "issue (default): each due step opens an issue for the campaign's agent, who sends the email. email: the Mailbox sends each due email step as marketing mail, with the merge tokens filled in. auto: every step goes out by itself on its own channel (email through the Mailbox, SMS and WhatsApp through the messaging provider); needed for any SMS or WhatsApp step.",
+} satisfies JsonSchema;
+
+const channelParam = {
+  type: "string",
+  enum: ["email", "sms", "whatsapp"],
+  description: "How the step goes out: email (default), sms or whatsapp. SMS and WhatsApp need the campaign's delivery set to auto, a configured provider, a sender number and a recorded opt-in for each person.",
 } satisfies JsonSchema;
 
 const campaignFields: Record<string, JsonSchema> = {
   name: str("Short internal name, e.g. 'Spring website offer'."),
   description: str("Internal notes: the goal and who it is for. Not sent."),
-  fromName: str("Sender name to show, e.g. 'Peet at Partners in Biz'. The Mailbox's default account sends it."),
-  fromLocal: str("Local part for the sender address (letters, digits, . _ -). Default campaigns."),
-  replyTo: str("Address replies should go to, when not the sending account."),
+  fromName: str("Sender name to show, e.g. 'Peet at Partners in Biz'. Overrides the name on the sender identity (set-sender-identity). A client's campaign must have its own sender identity."),
+  fromLocal: str("Kept for compatibility; it does not choose the sending mailbox. The mailbox comes from the sender identity (set-sender-identity) or, for PiB's own campaigns, the Mailbox's default account."),
+  replyTo: str("Address replies should go to. Overrides the reply-to on the sender identity."),
   audienceTags,
   audienceMode,
   delivery,
@@ -48,8 +54,8 @@ const campaignFields: Record<string, JsonSchema> = {
   endAt: str("ISO date or time the campaign is meant to end. For reporting only."),
 };
 
-const stepBody = str("Plain-text body. Merge tokens: {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}; add a fallback as {{first_name|there}}. Say who we are, why they get it, and how to opt out (reply STOP).");
-const stepSubject = str("Email subject. The same merge tokens work here.");
+const stepBody = str("Plain-text body. Merge tokens: {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}, {{unsubscribe_url}}; add a fallback as {{first_name|there}}. Say who we are and why they get it. A footer with the sender and how to opt out (an unsubscribe link and reply STOP) is added to every email by the plugin (with delivery issue it is already at the end of the step issue: send it whole); an SMS gets 'Reply STOP to opt out.' unless the text already tells the reader to reply STOP.");
+const stepSubject = str("Email subject. The same merge tokens work here. Not used for SMS and WhatsApp steps.");
 
 export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
@@ -75,12 +81,15 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "add-campaign-step",
     displayName: "Add campaign step",
-    description: "Add an email step to a draft campaign. Steps run in the order added. Cancels a pending approval (ask again).",
-    parametersSchema: schema(["campaignId", "subject"], {
+    description: "Add a step to a draft campaign: an email (default), an SMS or a WhatsApp message. Steps run in the order added. Cancels a pending approval (ask again).",
+    parametersSchema: schema(["campaignId"], {
       campaignId,
+      channel: channelParam,
       subject: stepSubject,
       body: stepBody,
       delayDays: int("Days to wait after the previous step (after launch for step 1). Default 0."),
+      templateRef: str("WhatsApp only: the approved Twilio Content template (HX followed by 32 letters and digits) a first message must use. Without it a WhatsApp message only reaches people who wrote to us in the last 24 hours."),
+      templateVars: { type: "array", items: { type: "string" }, description: "WhatsApp template only: the merge tokens that fill the template's numbered variables in order, e.g. [\"{{first_name}}\", \"{{company}}\"]." },
     }),
   },
   {
@@ -140,10 +149,74 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     name: "suppress-address",
     displayName: "Add to do-not-email list",
     description:
-      "Record an opt-out: the address never gets campaigns or sequences again, running campaigns stop, open step issues are cancelled, and the CRM and Mailbox are told (contact.suppressed). Use it for any 'stop', 'remove me' or complaint.",
+      "Record an opt-out: the address never gets campaigns or sequences from that sender again, that sender's running campaigns stop, open step issues are cancelled, and the CRM and Mailbox are told (contact.suppressed). Use it for any 'stop', 'remove me' or complaint. Pass client for the sender they unsubscribed from (a client's list); without client it applies to every sender.",
     parametersSchema: schema(["email"], {
       email: str("The email address that asked to stop."),
       reason: { type: "string", enum: ["unsubscribe", "complaint", "manual"], description: "unsubscribe (default): they asked to stop. complaint: they complained or marked it spam. manual: a person decided." },
+      client: str("Whose list: company:<CRM company id> or contact:<CRM contact id> for a client's campaigns, own for PiB's own. Omit for every sender (the safe default when they asked to stop everything)."),
+    }),
+  },
+  {
+    name: "suppress-phone",
+    displayName: "Add to do-not-message list",
+    description:
+      "Record that someone asked not to get SMS or WhatsApp: the number is never messaged by that sender again, the sender's running campaigns stop for them, and open step issues are cancelled. A 'STOP' text is handled by the plugin itself; use this for an opt-out said in another way (a call, an email, a reply in their own words).",
+    parametersSchema: schema(["phone"], {
+      phone: str("The phone number, e.g. +27821234567 or 082 123 4567."),
+      channel: { type: "string", enum: ["sms", "whatsapp", "both"], description: "Which channel they opted out of. Default both." },
+      client: str("Whose list: company:<CRM company id> or contact:<CRM contact id>, or own. Omit for every sender."),
+    }),
+  },
+  {
+    name: "record-channel-consent",
+    displayName: "Record SMS or WhatsApp opt-in",
+    description:
+      "Record that people agreed to be texted (or messaged on WhatsApp) by a sender: SMS and WhatsApp campaigns reach only people with a recorded opt-in for that sender and channel. Say exactly what they agreed to, where and when in evidence; never record an opt-in you did not see. granted false records an opt-out instead.",
+    parametersSchema: schema(["channel", "evidence"], {
+      channel: { type: "string", enum: ["sms", "whatsapp"], description: "The channel they agreed to." },
+      contactIds: { type: "array", items: { type: "string" }, description: "CRM contact ids; each contact's mobile number is used. Up to 200 people per call together with phones." },
+      phones: { type: "array", items: { type: "string" }, description: "Phone numbers, when they are not CRM contacts." },
+      client: str("Whose list the opt-in is for: company:<CRM company id> or contact:<CRM contact id>, or own (default) for PiB's own marketing."),
+      basis: { type: "string", enum: ["consent", "contract"], description: "consent (default): they agreed. contract: an existing customer being told about similar products with an opt-out in every message (SMS only; WhatsApp always needs consent)." },
+      source: { type: "string", enum: ["form", "import", "manual", "reply", "api"], description: "Where it came from. Default manual." },
+      evidence: str("What they agreed to, where and when, in a sentence (for example: Ticked 'SMS offers' on the Acme sign-up form on 2026-09-14). Kept with the record for POPIA."),
+      granted: { type: "boolean", description: "false records that they opted out. Default true." },
+    }),
+  },
+  {
+    name: "set-sender-identity",
+    displayName: "Set who a sender goes out as",
+    description:
+      "Set the identity a sender's messages go out as: the mailbox (a connected Gmail account in the Mailbox), the display name, the reply-to, and the SMS and WhatsApp numbers. A client's campaign cannot be approved or sent without its own identity: it never goes out from PiB's own Gmail or number. Omitted fields stay; an empty string clears one.",
+    parametersSchema: schema([], {
+      client: str("Whose identity: company:<CRM company id> or contact:<CRM contact id>, or own (default) for PiB's own marketing."),
+      fromAddress: str("The mailbox to send from: an email address connected in the Mailbox. The Mailbox refuses an account that is not connected."),
+      fromName: str("The name recipients see, e.g. 'Acme Plumbing'."),
+      replyTo: str("Where replies go when it is not the sending mailbox."),
+      smsFrom: str("The number SMS goes out from (+27...) or a Twilio Messaging Service SID (MG...)."),
+      whatsappFrom: str("The WhatsApp sender number (+27...) registered with the provider."),
+    }),
+  },
+  {
+    name: "remove-sender-identity",
+    displayName: "Remove a sender identity",
+    description: "Remove the identity of a sender. A client's campaigns can then no longer be approved or sent until a new one is set.",
+    parametersSchema: schema([], { client: str("Whose identity: company:<CRM company id> or contact:<CRM contact id>, or own (default).") }),
+  },
+  {
+    name: "list-sender-identities",
+    displayName: "List sender identities",
+    description: "The identities set so far: who each sender goes out as (mailbox, name, reply-to, SMS and WhatsApp numbers).",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "preflight-campaign",
+    displayName: "Check a campaign before approval",
+    description:
+      "Run the checks an approval request runs, and read what to fix: every step has what it needs, a client campaign has its own sender, the channel is configured, the unsubscribe works, the sender's domain is healthy, every link works, and who can receive each channel. Errors stop the approval request; warnings go to the approver.",
+    parametersSchema: schema(["campaignId"], {
+      campaignId,
+      links: { type: "boolean", description: "Check that each link answers (up to 12). Default true; false skips the web check." },
     }),
   },
   {
@@ -168,8 +241,8 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-ab-variant",
     displayName: "Create A/B variant",
-    description: "Add a B version of a draft's step; contacts are split evenly between A and B. Cancels a pending approval (ask again).",
-    parametersSchema: schema(["campaignId", "position", "subject"], {
+    description: "Add a B version of a draft's step (same channel as its A version); contacts are split evenly between A and B. Cancels a pending approval (ask again).",
+    parametersSchema: schema(["campaignId", "position"], {
       campaignId,
       position: int("Step number to add a B version to (1 is the first step).", 1),
       subject: stepSubject,
@@ -222,11 +295,12 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
         items: {
           type: "object",
           properties: {
+            channel: channelParam,
             subject: stepSubject,
             body: stepBody,
             delayDays: int("Days after the previous step."),
+            templateRef: str("WhatsApp only: the approved Twilio Content template SID (HX...)."),
           },
-          required: ["subject"],
         },
       },
     }),

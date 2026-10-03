@@ -8,6 +8,7 @@ describe("campaign detail wording", () => {
   it("names the delivery in plain words", () => {
     expect(deliveryLabel("issue")).toBe("Task for the agent");
     expect(deliveryLabel("email")).toBe("Email from Gmail");
+    expect(deliveryLabel("auto")).toBe("Automatic: email, SMS, WhatsApp");
     expect(deliveryLabel(undefined)).toBe("Task for the agent");
   });
 
@@ -71,7 +72,7 @@ describe("campaigns.detail", () => {
     seedIssue(harness, store, { id: "iss-1", status: "todo", assigneeUserId: "user-peet", title: "Approve campaign camp-1" });
     const detail = await harness.performAction<Record<string, any>>("campaigns.detail", { campaignId: "camp-1" }, { companyId: CO, actor: BOARD });
     expect(detail.campaign.steps.map((s: { subject: string }) => s.subject)).toEqual(["Hi {{first_name|there}}", "Follow up"]);
-    expect(detail.audience).toEqual({ matching: 3, willGet: 2, leftOut: 1, sample: ["Ada Lovelace", "Bob Builder"] });
+    expect(detail.audience).toEqual({ matching: 3, willGet: 2, leftOut: 1, notReachable: 0, reach: { email: 2, sms: 0, whatsapp: 0 }, sample: ["Ada Lovelace", "Bob Builder"] });
     expect(detail.approval).toMatchObject({ issueId: "iss-1", status: "todo", withPerson: true, withAgent: false });
     expect(detail.enrolled).toMatchObject({ total: 0, running: 0, done: 0, stopped: 0, sample: [] });
     expect(detail.next).toMatchObject({ at: null, waitingOnAgent: 0 });

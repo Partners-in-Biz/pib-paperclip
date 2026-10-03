@@ -1,5 +1,4 @@
 import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
-import { randomUUID } from "node:crypto";
 import {
   definePlugin,
   runWorker,
@@ -12,7 +11,6 @@ import {
 } from "@paperclipai/plugin-sdk";
 import {
   approvedDrafts,
-  audienceContacts,
   campaignByApprovalIssue,
   campaignFunnel,
   campaignStats,
@@ -49,18 +47,22 @@ import {
   stepEventStats,
   stopEnrollment,
   stopEnrollmentsForContact,
-  suppressedEmails,
   suppressionCount,
-  type AudienceContact,
 } from "./db.js";
 import {
   advanceEnrollment,
   ALL_CONTACTS_MARK,
+  assertChannel,
+  assertStepFitsDelivery,
+  assertTemplateRef,
   audienceLine,
   campaignAddress,
+  campaignSenderKey,
   enrollmentStart,
+  isAutomatic,
   isEveryContact,
   pickVariant,
+  stepChannel,
   stepFor,
   assertCanComplete,
   assertCanDeclareWinner,
@@ -87,12 +89,31 @@ import {
 import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { nextSend } from "./detail.js";
+import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
+import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
+import { pollMessaging } from "./inbound.js";
+import { messagingSetup } from "./messaging.js";
+import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
+import { gatherPreflight, preflightLines, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
+import { eraseSubject, onConsentRecorded } from "./privacy.js";
+import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
+import { projectForCampaign } from "./projects.js";
+import { identityChanged, listSenderIdentities, preflightCampaign, recordChannelConsent, removeSenderIdentity, setSenderIdentity, suppressPhone } from "./sender-tools.js";
+import { composeMessage, sendMessagingStep } from "./sms.js";
+import { handleWebhook } from "./webhook.js";
 import {
   clientScopeFromInput,
   COCKPIT_ROUTE,
   configSaved,
   createSkillSyncer,
   createWorkIssue,
+  openApprovalIssue,
+  registerClientProjectWatch,
+  registerCompanyBootstrap,
+  registerConsentReceiver,
+  registerEraseReceiver,
+  senderKeyOf,
+  syncAllCompanies,
   getCrmContact as projectedContact,
   isModuleEnabled,
   checkDoneOnUpdate,
@@ -100,7 +121,6 @@ import {
   registerRoleWatch,
   rememberPluginUiBase,
   reopenApprovalForPerson,
-  reviewerAgentId,
   reviewerBrief,
   SETUP_STATUS_ROUTE,
   trackJob,
@@ -116,11 +136,11 @@ import {
   type ClientScope,
 } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { abSuggestionFor, campaignAssignee, onMailReceived, onSendResult, openIssueOnce, personalStep, personalVars, redeliverMail, sendCampaignStep } from "./mail.js";
+import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSendResult, openIssueOnce, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
-import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
+import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
 import { approverUserId, assigneeFields, workOwner } from "./owner.js";
@@ -128,6 +148,8 @@ import { approvalOrigin, reviseOrigin, stepOrigin } from "./origins.js";
 import { announceSuppression, onContactSuppressed, reannounceSuppressions, suppressAddress, suppressionEvents, suppressionPayload } from "./suppress.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
+
+const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
@@ -139,6 +161,15 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // A client's issues open in the client's own project (the CRM's link), else the managed Campaigns project.
+    registerClientProjectWatch(ctx);
+    // POPIA: erase one approved person, and keep consent records (opt-ins gate SMS and WhatsApp).
+    registerEraseReceiver(ctx, { plugin: PLUGIN_ID, erase: (request, companyId) => eraseSubject(ctx, request, companyId) });
+    registerConsentReceiver(ctx, { plugin: PLUGIN_ID, onConsent: (companyId, consent) => onConsentRecorded(ctx, companyId, consent) });
+    // The Mailbox may report how a sender's domain is set up; the preflight uses it when present.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, SENDER_HEALTH_EVENT), async (event) => {
+      if (event.companyId) await rememberSenderHealth(ctx, event.companyId, event.payload).catch(() => false);
+    });
     for (const tool of CAMPAIGN_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
         await skillSync?.ensure(run.companyId).catch(() => undefined);
@@ -177,11 +208,25 @@ const plugin = definePlugin({
         if (result.emitted || result.failed || result.handedOver) ctx.logger.info("Campaign mail redelivery", result);
       });
     });
+    ctx.jobs.register("poll-messaging", async () => {
+      await trackJob(ctx, "poll-messaging", async () => {
+        const results = await pollMessaging(ctx);
+        const read = results.reduce((sum, r) => sum + r.inbound, 0);
+        const stops = results.reduce((sum, r) => sum + r.stops, 0);
+        if (read || stops) ctx.logger.info("Messaging poll", { companies: results.length, read, stops });
+      });
+    });
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
         await publishAllSetupStatus(ctx);
         await publishAllCockpit(ctx);
         await reannounceSuppressions(ctx);
+        // Every company's managed skills, not only the one a call arrives from (a failure is reported, not fatal).
+        if (skillSync) {
+          await syncAllCompanies(ctx, skillSync, { companyIds: await knownCompanies(ctx), isEnabled: (companyId) => isModuleEnabled(ctx, companyId, PLUGIN_ID), plugin: PLUGIN_ID }).catch((error) => {
+            ctx.logger.info("Skill sweep failed", { error: error instanceof Error ? error.message : String(error) });
+          });
+        }
       });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
@@ -203,13 +248,19 @@ const plugin = definePlugin({
       }
       await checkDoneOnUpdate(ctx, CAMPAIGN_DONE_CHECKS, event);
     });
-    ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await skillSync?.ensure(event.companyId);
+    // The one company.created wiring (kit): remembers the company, syncs the skills, creates the Campaigns project.
+    registerCompanyBootstrap(ctx, {
+      ...(skillSync ? { syncer: skillSync } : {}),
+      ensureResources: (companyId) => ctx.projects.managed.reconcile(CAMPAIGNS_PROJECT_KEY, companyId),
     });
     ctx.logger.info("Campaigns plugin ready");
   },
   async onHealth() {
     return { status: "ok", message: "Campaigns plugin ready" };
+  },
+  async onWebhook(input) {
+    if (!pluginCtx) throw new Error("Campaigns plugin is not ready");
+    await handleWebhook(pluginCtx, input);
   },
   async onApiRequest(input) {
     if (!pluginCtx) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
@@ -236,6 +287,29 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
   }
 }
 
+/** Who recorded something, for the audit trail: `agent:<id>` or `user:<id>`. */
+function actorLabel(run: Pick<ToolRunContext, "agentId"> & { userId?: string | null }): string | null {
+  return run.agentId ? `agent:${run.agentId}` : run.userId ? `user:${run.userId}` : null;
+}
+
+/** A sender's identity changed: the approver saw the old one, so a draft of that sender that waits for approval needs a new request. */
+async function setSenderAndResetApprovals(ctx: PluginContext, companyId: string, body: Record<string, unknown>, actor: string | null) {
+  const scope = readClientScope(body) ?? null;
+  const result = await setSenderIdentity(ctx, companyId, body, actor, async (before, after) => {
+    if (!identityChanged(before, after)) return;
+    // A running or paused campaign was approved as it was: its sender cannot change under it (a new reply-to would redirect real replies unapproved).
+    const live = (await listCampaigns(ctx, companyId, scope)).filter((campaign) => campaign.status === "active" || campaign.status === "paused" || campaign.status === "scheduled");
+    if (live.length > 0) {
+      throw new CampaignError(`This sender has ${live.length === 1 ? "a campaign" : `${live.length} campaigns`} running or paused (${live.slice(0, 3).map((campaign) => campaign.name).join(", ")}), approved as it goes out now. Complete ${live.length === 1 ? "it" : "them"} (complete-campaign) first, then change the sender and ask for approval of a new campaign.`);
+    }
+  });
+  let reset = 0;
+  for (const campaign of await listCampaigns(ctx, companyId, scope)) {
+    if (campaign.status === "draft" && campaign.approvalIssueId && (await invalidateApproval(ctx, companyId, campaign, "the sender it goes out as changed"))) reset += 1;
+  }
+  return { ...result, approvalsReset: reset };
+}
+
 async function dispatch(ctx: PluginContext, name: string, body: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
   if (name === "create-campaign") return createCampaignRecord(ctx, companyId, body, { agentId: run.agentId });
@@ -245,6 +319,12 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "launch-campaign") return launch(ctx, companyId, body);
   if (name === "stop-enrollment") return stopEnrollmentTool(ctx, companyId, body);
   if (name === "suppress-address") return suppressAddressTool(ctx, companyId, body);
+  if (name === "suppress-phone") return suppressPhone(ctx, companyId, body);
+  if (name === "record-channel-consent") return recordChannelConsent(ctx, companyId, body, actorLabel(run));
+  if (name === "set-sender-identity") return setSenderAndResetApprovals(ctx, companyId, body, actorLabel(run));
+  if (name === "remove-sender-identity") return removeSenderIdentity(ctx, companyId, body);
+  if (name === "list-sender-identities") return listSenderIdentities(ctx, companyId);
+  if (name === "preflight-campaign") return preflightCampaign(ctx, companyId, body);
   if (name === "log-reply") return logReplyTool(ctx, companyId, body, run.agentId ?? null);
   if (name === "pause-campaign") return setStatus(ctx, companyId, body, "paused");
   if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active");
@@ -289,12 +369,14 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
     suppressionCount(ctx, companyId).catch(() => 0),
   ]);
+  const setup = await messagingSetup(ctx, companyId).catch(() => null);
   return {
     campaigns: result,
     suppressed,
     series: { weeks: weeklySends(days, now, 12, ids), byCampaign: eventTotals(counts, ids) },
     settingsSaved: Object.keys(config).length > 0,
     client: scope ? await clientDetails(ctx, companyId, scope, campaigns) : null,
+    messaging: setup ? { sms: setup.sms, whatsapp: setup.whatsapp, windows: describeWindows(setup.config.windows) } : null,
   };
 }
 
@@ -322,21 +404,25 @@ async function clientDetails(ctx: PluginContext, companyId: string, scope: NonNu
  */
 async function campaignDetail(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
-  const [steps, stats, enrollments, audience, approval] = await Promise.all([
+  const [steps, stats, enrollments, approval] = await Promise.all([
     listSteps(ctx, campaign.id),
     campaignStats(ctx, campaign.id),
     enrollmentViews(ctx, campaign.id),
-    launchAudience(ctx, companyId, campaign).catch(() => null),
     campaign.approvalIssueId ? ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : Promise.resolve(null),
   ]);
+  const audience = await launchAudience(ctx, companyId, campaign, steps).catch(() => null);
+  // Who it goes out as and what is wrong, without asking the web: the page shows this before anyone approves.
+  const preflight = await gatherPreflight(ctx, companyId, campaign, steps, { network: false, audience: false }).catch(() => null);
   const running = enrollments.filter((row) => row.status === "running");
   return {
     campaign: { ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null },
+    sender: preflight ? { sentAs: preflight.sentAs, channels: preflight.channels } : null,
+    preflight: preflight ? { errors: preflight.errors, warnings: preflight.warnings } : null,
     approval: approval
       ? { issueId: approval.id, identifier: approval.identifier ?? null, status: approval.status, withPerson: Boolean(approval.assigneeUserId), withAgent: Boolean(approval.assigneeAgentId) }
       : null,
     audience: audience
-      ? { matching: audience.contacts.length, willGet: audience.eligible.length, leftOut: audience.suppressedCount, sample: audience.eligible.slice(0, 5).map((contact) => contact.name) }
+      ? { matching: audience.contacts.length, willGet: audience.eligible.length, leftOut: audience.suppressedCount, notReachable: audience.notReachable, reach: audience.reach, sample: audience.eligible.slice(0, 5).map((contact) => contact.name) }
       : null,
     enrolled: {
       total: stats.enrolled,
@@ -443,6 +529,11 @@ async function updateCampaignRecord(ctx: PluginContext, companyId: string, param
     ownerUserId: campaign.ownerUserId,
     ownerAgentId: campaign.ownerAgentId,
   });
+  if (edited.delivery !== "auto") {
+    // SMS and WhatsApp are sent by the plugin itself, so a campaign that has such a step cannot go back to a delivery that cannot send them.
+    const texted = (await listSteps(ctx, campaign.id)).find((row) => stepChannel(row) !== "email");
+    if (texted) throw new CampaignError(`This campaign has a ${stepChannel(texted) === "sms" ? "SMS" : "WhatsApp"} step, so its delivery must be auto.`);
+  }
   const next: CampaignDraft = { ...edited, approvalIssueId: campaign.approvalIssueId, winnerVariant: campaign.winnerVariant };
   // What goes out, to whom and when changed after approval was asked for: that approval no longer counts.
   const approvalReset = approvalFields(next) !== approvalFields(original)
@@ -465,14 +556,23 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   if (campaign.status !== "draft") throw new CampaignError("Steps can only be added to a draft campaign");
   const steps = await listSteps(ctx, campaign.id);
+  const channel = assertChannel(params.channel);
+  assertStepFitsDelivery(campaign.delivery, channel);
+  const body = optionalString(params, "body") ?? "";
+  if (channel !== "email" && !body) throw new CampaignError("An SMS or WhatsApp step needs body text.");
+  const templateRef = channel === "whatsapp" ? assertTemplateRef(params.templateRef) : null;
+  if (channel !== "whatsapp" && (params.templateRef || params.templateVars)) throw new CampaignError("templateRef and templateVars are for WhatsApp steps only.");
   const step: CampaignStepDraft = {
     // After the last step (a B version shares its step's position, so counting rows would skip one).
     position: steps.reduce((last, row) => Math.max(last, row.position), 0) + 1,
     delayDays: params.delayDays == null ? 0 : integer(params.delayDays, "delayDays"),
-    subject: requiredString(params, "subject"),
-    body: optionalString(params, "body") ?? "",
+    subject: channel === "email" ? requiredString(params, "subject") : optionalString(params, "subject") ?? "",
+    body,
     htmlBody: null,
     variant: "a",
+    channel,
+    templateRef,
+    templateVars: templateRef ? stringList(params, "templateVars") : [],
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   await markEdited(ctx, campaign.id);
@@ -506,27 +606,16 @@ export interface LaunchResult {
   campaignId: string;
   status: string;
   enrolled: number;
-  /** Left out because the address is on the do-not-email list. */
+  /** Left out because the address is on the do-not-email (or do-not-message) list. */
   skippedSuppressed: number;
+  /** Left out of a text campaign: no mobile number, or no opt-in on record for this sender. */
+  skippedNotReachable?: number;
   /** Already running in this campaign. */
   skippedRunning: number;
   audience: string;
   /** True when another launch got there first. */
   alreadyLaunched?: boolean;
   firstStepAt: string;
-}
-
-/** Who a launch enrolls, with suppressed addresses left out. */
-async function launchAudience(ctx: PluginContext, companyId: string, campaign: CampaignDraft, contactIds: string[] = []) {
-  const contacts: AudienceContact[] = contactIds.length > 0
-    ? await crmContactsByIds(ctx, companyId, contactIds)
-    : await audienceContacts(ctx, companyId, campaign);
-  const suppressed = await suppressedEmails(ctx, companyId, contacts.map((contact) => campaignAddress(contact.emails) ?? "").filter(Boolean));
-  const eligible = contacts.filter((contact) => {
-    const address = campaignAddress(contact.emails);
-    return !address || !suppressed.has(address);
-  });
-  return { contacts, eligible, suppressedCount: contacts.length - eligible.length };
 }
 
 /**
@@ -544,8 +633,12 @@ async function launchCampaign(
   assertCanLaunch(campaign.status);
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch. Add one with add-campaign-step.");
+  // Things change between approval and launch (a sender removed, a provider switched off): check again, without the web.
+  const checked = await gatherPreflight(ctx, companyId, campaign, steps, { network: false, audience: false });
+  if (!checked.ok) throw new CampaignError(`It cannot launch yet: ${checked.errors.map((finding) => finding.message).join(" ")}`);
   const explicitIds = options.contactIds ?? [];
-  const { contacts, eligible, suppressedCount } = await launchAudience(ctx, companyId, campaign, explicitIds);
+  const setup = await messagingSetup(ctx, companyId);
+  const { contacts, eligible, suppressedCount, notReachable } = await launchAudience(ctx, companyId, campaign, steps, explicitIds, setup.config.defaultCountry);
   if (explicitIds.length > 0 && contacts.length < explicitIds.length) {
     const known = new Set(contacts.map((contact) => contact.id));
     const missing = explicitIds.filter((id) => !known.has(id));
@@ -565,7 +658,7 @@ async function launchCampaign(
   const start = enrollmentStart(new Date(), campaign.startAt);
   if (!(await claimLaunch(ctx, campaign, campaign.status, options.approvedByUserId))) {
     const current = await getCampaign(ctx, campaign.id);
-    return { campaignId: campaign.id, status: current?.status ?? campaign.status, enrolled: 0, skippedSuppressed: 0, skippedRunning: 0, audience, alreadyLaunched: true, firstStepAt: start.toISOString() };
+    return { campaignId: campaign.id, status: current?.status ?? campaign.status, enrolled: 0, skippedSuppressed: 0, skippedNotReachable: 0, skippedRunning: 0, audience, alreadyLaunched: true, firstStepAt: start.toISOString() };
   }
   let enrolled = 0;
   let skippedRunning = 0;
@@ -588,12 +681,13 @@ async function launchCampaign(
       skippedRunning += 1;
     }
   }
-  return { campaignId: campaign.id, status: "active", enrolled, skippedSuppressed: suppressedCount, skippedRunning, audience, firstStepAt: start.toISOString() };
+  return { campaignId: campaign.id, status: "active", enrolled, skippedSuppressed: suppressedCount, skippedNotReachable: notReachable, skippedRunning, audience, firstStepAt: start.toISOString() };
 }
 
 function launchSummary(result: LaunchResult): string {
   const skipped = [
     result.skippedSuppressed ? `${result.skippedSuppressed} left out (unsubscribed or bounced)` : "",
+    result.skippedNotReachable ? `${result.skippedNotReachable} left out (no mobile number or no opt-in on record)` : "",
     result.skippedRunning ? `${result.skippedRunning} already in it` : "",
   ].filter(Boolean).join(", ");
   const first = Date.parse(result.firstStepAt) > Date.now() + 60_000 ? ` The first step is due ${result.firstStepAt.slice(0, 16).replace("T", " ")} UTC.` : "";
@@ -641,6 +735,7 @@ async function onApprovalRefused(ctx: PluginContext, companyId: string, campaign
     ].join("\n"),
     assignee: assigneeFields(owner),
     wakeReason: "A campaign launch was not approved",
+    projectId: await projectForCampaign(ctx, companyId, campaign),
   });
 }
 
@@ -684,15 +779,21 @@ async function stopEnrollmentTool(ctx: PluginContext, companyId: string, params:
   return { enrollmentId: enrollment.id, contactId: enrollment.contactId, stopped: everyCampaign ? "every campaign" : "this campaign" };
 }
 
-/** An agent records an opt-out: every campaign stops and the CRM and Mailbox are told. */
+/**
+ * An agent records an opt-out: the sender's campaigns stop for the address and the
+ * CRM and Mailbox are told. `client` names the sender (a client's list, or `own`);
+ * without it the opt-out is for every sender.
+ */
 async function suppressAddressTool(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const email = requiredString(params, "email").toLowerCase();
   if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) throw new CampaignError("email must be one email address");
   const raw = optionalString(params, "reason") ?? "unsubscribe";
   if (raw !== "unsubscribe" && raw !== "complaint" && raw !== "manual") throw new CampaignError("reason must be unsubscribe, complaint or manual");
-  const outcome = await suppressAddress(ctx, { companyId, email, reason: raw, scope: "marketing", source: PLUGIN_ID });
-  const announced = await announceSuppression(ctx, companyId, suppressionPayload({ email, reason: raw, scope: "marketing" }));
-  return { email, reason: raw, scope: "marketing", added: outcome.created, stoppedContacts: outcome.stoppedContacts, cancelledStepIssues: outcome.cancelledIssues, announced };
+  const scope = readClientScope(params);
+  const senderKey = scope === undefined ? "" : senderKeyOf(scope ? { clientKind: scope.kind, clientRef: scope.id } : null);
+  const outcome = await suppressAddress(ctx, { companyId, email, reason: raw, scope: "marketing", source: PLUGIN_ID, senderKey });
+  const announced = await announceSuppression(ctx, companyId, suppressionPayload({ email, reason: raw, scope: "marketing", senderKey, ...(scope ? { clientKind: scope.kind, clientRef: scope.id } : {}) }));
+  return { email, reason: raw, scope: "marketing", sender: senderKey || "every sender", added: outcome.created, stoppedContacts: outcome.stoppedContacts, cancelledStepIssues: outcome.cancelledIssues, announced };
 }
 
 /** An agent records what it did about a reply (answered, or nothing to answer); the reply issue's done check counts it. */
@@ -736,8 +837,13 @@ async function enroll(ctx: PluginContext, companyId: string, params: Record<stri
   const [contact] = await crmContactsByIds(ctx, companyId, [contactId]);
   if (!contact) throw new CampaignError(`CRM contact ${contactId} was not found. The CRM shares new contacts within 15 minutes; try again after that.`);
   const address = campaignAddress(contact.emails);
-  if (address && (await isSuppressed(ctx, companyId, address))) {
+  if (address && (await isSuppressed(ctx, companyId, address, campaignSenderKey(campaign)))) {
     throw new CampaignError(`${address} unsubscribed or bounced, so it may not get campaigns.`);
+  }
+  if (isMessagingChannel(firstChannel(steps))) {
+    // A text campaign enrolls only people with a mobile number, an opt-in on record for this sender and no block.
+    const reach = await launchAudience(ctx, companyId, campaign, steps, [contactId]);
+    if (reach.eligible.length === 0) throw new CampaignError(`${contact.name} cannot be enrolled in a ${firstChannel(steps) === "sms" ? "SMS" : "WhatsApp"} campaign: they need a mobile number on the contact, a recorded opt-in for this sender (record-channel-consent) and not be on the do-not-message list.`);
   }
   const existing = await enrollmentsForContact(ctx, campaign.id, contactId);
   const enrollment = startEnrollment({
@@ -769,37 +875,42 @@ async function openDueSteps(ctx: PluginContext) {
       const campaign = await campaigns.get(enrollment.campaignId)!;
       const openIssue = async (note?: string) => {
         const contact = await projectedContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
-        // The subject and body with this contact's name and company filled in.
-        const personal = personalStep(step, await personalVars(ctx, enrollment.companyId, campaign, contact));
-        const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, personal, campaign?.clientRef ? campaign.clientName : null);
+        // The subject and body with this contact's name and company filled in, and the footer that says who we
+        // are and how to opt out (with this contact's own unsubscribe link): an email sent by hand carries it too.
+        const email = await handSentEmail(ctx, { companyId: enrollment.companyId, campaign, step, contact });
+        const copy = stepIssueCopy(contact?.name ?? enrollment.contactId, { ...step, subject: email.subject, body: email.text }, campaign?.clientRef ? campaign.clientName : null);
         const to = contact?.emails?.[0] ? `\n\nSend to: ${contact.name} <${contact.emails[0]}>` : "";
         const how = [
           "",
           "---",
-          `Campaign step ${step.position}${step.variant === "b" ? " (variant B)" : ""} for \`contact:${enrollment.contactId}\`. Send this email as written (subject: the issue title before the colon), then mark this issue **done**: that moves them to the next step. Cancel the issue to stop the campaign for this contact.`,
+          `Campaign step ${step.position}${step.variant === "b" ? " (variant B)" : ""} for \`contact:${enrollment.contactId}\`. Send this email as written (subject: the issue title before the colon), including the last lines that say who we are and how to unsubscribe: never cut them. Then mark this issue **done**: that moves them to the next step. Cancel the issue to stop the campaign for this contact.`,
         ].join("\n");
         // Explicit companyId: jobs have no invocation scope; the host allows the
         // call only for a company with saved Campaigns settings.
+        const projectId = await projectForCampaign(ctx, enrollment.companyId, campaign);
         const issue = await createWorkIssue(ctx, {
           companyId: enrollment.companyId,
           title: copy.title,
           description: `${note ? `${note}\n\n` : ""}${copy.description}${to}${how}`,
           originKind: "plugin:partnersinbiz.campaigns",
           originId: stepOrigin(enrollment.id, step.position),
+          ...(projectId ? { projectId } : {}),
           ...(await campaignAssignee(ctx, enrollment.companyId, campaign)),
           wakeReason: "A campaign step is due",
         });
         enrollment.openIssueId = issue.id;
         await saveEnrollment(ctx, enrollment);
       };
-      if (campaign?.delivery === "email") {
-        await sendCampaignStep(ctx, { campaign, enrollment, step, issueFallback: (note) => openIssue(note) });
+      if (campaign && isAutomatic(campaign.delivery)) {
+        // Each step goes out on its own channel: email through the Mailbox, SMS and WhatsApp through the provider.
+        if (stepChannel(step) === "email") await sendCampaignStep(ctx, { campaign, enrollment, step, issueFallback: (note) => openIssue(note) });
+        else await sendMessagingStep(ctx, { campaign, enrollment, step, steps });
         continue;
       }
       // Issue delivery: never ask anyone to email an address that unsubscribed or bounced.
       const contact = await projectedContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
       const address = campaignAddress(contact?.emails);
-      if (address && (await isSuppressed(ctx, enrollment.companyId, address))) {
+      if (address && campaign && (await isSuppressed(ctx, enrollment.companyId, address, campaignSenderKey(campaign)))) {
         await saveEnrollment(ctx, { ...enrollment, status: "stopped", nextDueAt: null });
         continue;
       }
@@ -907,49 +1018,77 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   }
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("Add at least one step (add-campaign-step) before asking for approval.");
-  const { contacts, eligible, suppressedCount } = await launchAudience(ctx, companyId, campaign);
+  // The checks first: a client's campaign without its own sender, a channel that is not set up or a broken link never reaches an approver.
+  const preflight = await gatherPreflight(ctx, companyId, campaign, steps, { network: true });
+  if (!preflight.ok) {
+    throw new CampaignError(`Fix these before asking for approval (preflight-campaign shows them again):\n${preflight.errors.map((finding) => `- ${finding.message}${finding.fix ? ` (${finding.fix})` : ""}`).join("\n")}`);
+  }
+  const setup = await messagingSetup(ctx, companyId);
+  const { contacts, eligible, suppressedCount, notReachable, reach, agentRecorded } = await launchAudience(ctx, companyId, campaign, steps, [], setup.config.defaultCountry);
   const audience = audienceLine(campaign, contacts.length);
   const start = campaign.startAt && Date.parse(campaign.startAt) > Date.now() ? `on ${campaign.startAt.slice(0, 10)}` : "as soon as it is approved";
   const preview = steps
-    .map((step) => `${step.position}${step.variant === "b" ? "B" : ""}. **${step.subject}** (after ${step.delayDays} day${step.delayDays === 1 ? "" : "s"})\n${step.body || "(no body)"}`)
+    .map((step) => {
+      const channel = stepChannel(step);
+      const after = `after ${step.delayDays} day${step.delayDays === 1 ? "" : "s"}`;
+      if (channel === "email") return `${step.position}${step.variant === "b" ? "B" : ""}. **${step.subject}** (${after})\n${step.body || "(no body)"}`;
+      const text = composeMessage(step, { name: "{{first_name}}" }).text;
+      const parts = channel === "sms" ? `, ${smsLength(text).segments} SMS part${smsLength(text).segments === 1 ? "" : "s"}` : step.templateRef ? ", approved template" : ", free-form (only reaches people who wrote in the last 24 hours)";
+      return `${step.position}${step.variant === "b" ? "B" : ""}. **${CHANNEL_LABELS[channel]}** (${after}${parts})\n${text}`;
+    })
     .join("\n\n");
+  const used = channelsUsed(steps);
+  const channelLines = used.filter(isMessagingChannel).map((channel) => {
+    const info = preflight.channels.find((entry) => entry.channel === channel);
+    return `- **${CHANNEL_LABELS[channel]}:** from ${info?.sentFrom ?? "the sender number"}. Only sent ${describeWindows(setup.config.windows)} (${setup.config.timezone}). ${reach[channel]} of ${contacts.length} contacts have a mobile number and a recorded opt-in for this sender; the rest skip these steps.${agentRecorded[channel] ? ` **${agentRecorded[channel]} of those opt-ins were recorded by an agent** (typed-in evidence, not a form or an import): ask to see the evidence before approving.` : ""} Every message says how to opt out (reply STOP).`;
+  });
+  const automatic = isAutomatic(campaign.delivery);
+  const deliveryLine = campaign.delivery === "auto"
+    ? "- **Delivery:** automatic. Each due step goes out on its own channel: email through the Mailbox as marketing mail, SMS and WhatsApp through the messaging provider. {{first_name}} and the other tokens are filled in per contact."
+    : campaign.delivery === "email"
+      ? "- **Delivery:** email. The Mailbox sends each due step as marketing mail (with an unsubscribe header). {{first_name}} and the other tokens are filled in per contact."
+      : "- **Delivery:** issue. Each due step opens an issue and the campaign's agent sends the email.";
   const description = [
     `Mark this issue **done** to approve campaign **${campaign.name}**: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
     "",
     `See every email, who gets it and when on the Campaigns page: [${campaign.name}](${await campaignPageLink(ctx, companyId, campaign)}).`,
     "",
-    `- **Audience:** ${audience}${suppressedCount ? `. ${suppressedCount} unsubscribed or bounced address${suppressedCount === 1 ? " is" : "es are"} left out, so ${eligible.length} get it` : ""}.`,
-    campaign.delivery === "email"
-      ? "- **Delivery:** email. The Mailbox sends each due step from Gmail as marketing mail (with an unsubscribe header). {{first_name}} and the other tokens are filled in per contact."
-      : "- **Delivery:** issue. Each due step opens an issue and the campaign's agent sends the email.",
+    `- **Audience:** ${audience}${suppressedCount ? `. ${suppressedCount} unsubscribed or bounced address${suppressedCount === 1 ? " is" : "es are"} left out, so ${eligible.length} get it` : ""}${notReachable ? `. ${notReachable} ha${notReachable === 1 ? "s" : "ve"} no mobile number or no opt-in on record and ${notReachable === 1 ? "is" : "are"} left out` : ""}.`,
+    deliveryLine,
+    ...(automatic && preflight.sentAs ? [`- **Sent as:** ${preflight.sentAs}.`] : []),
+    ...(automatic && used.includes("email") ? ["- **Added to every email:** who sent it and how to stop (an unsubscribe link and \"reply STOP\"), after the text below."] : []),
+    ...(!automatic && used.includes("email") ? ["- **Added to every step issue:** the same footer (who sent it, the person's own unsubscribe link, \"reply STOP\"), after the text below, for the agent to send whole."] : []),
+    ...(automatic ? channelLines : []),
     `- **Starts:** ${start}.`,
     "- **Rules:** every email says who we are, why they get it, and how to opt out (reply STOP, or the unsubscribe link). Opt-outs are honoured automatically (POPIA).",
+    ...(preflight.warnings.length ? ["", "**Check before approving:**", ...preflightLines({ ...preflight, errors: [] })] : []),
     "",
     preview,
   ].join("\n");
-  // A launch is outward-facing: the Reviewer checks it first when the company has one, then hands it to the person.
-  const reviewer = await reviewerAgentId(ctx, companyId);
-  const approver = await approverUserId(ctx, companyId, campaign);
-  const issue = await createWorkIssue(ctx, {
+  // A launch is outward-facing: the Reviewer checks it first when the company has one, then a person decides; it never opens unassigned.
+  const approval = await openApprovalIssue(ctx, {
     companyId,
     title: `${clientPrefix(campaign.clientRef ? campaign.clientName : null)}Approve campaign ${campaign.name}`,
-    description: reviewer ? `${description}\n${launchReviewBrief(campaign, approver)}` : description,
-    originKind: "plugin:partnersinbiz.campaigns",
+    description,
+    originKind: ORIGIN,
     originId: approvalOrigin(campaign.id),
-    ...(reviewer
-      ? { assigneeAgentId: reviewer, wakeReason: "Review a campaign launch before a person approves it" }
-      : approver ? { assigneeUserId: approver } : {}),
+    projectId: await projectForCampaign(ctx, companyId, campaign),
+    outward: true,
+    actorUserId: campaign.ownerUserId,
+    reviewerBrief: (route) => launchReviewBrief(campaign, route.approverUserId),
+    wakeReason: "Review a campaign launch before a person approves it",
   });
-  campaign.approvalIssueId = issue.id;
+  campaign.approvalIssueId = approval.id;
   await saveCampaign(ctx, campaign);
   await setLaunchError(ctx, campaign.id, null);
   return {
     campaignId: campaign.id,
-    approvalIssueId: issue.id,
+    approvalIssueId: approval.id,
     audience,
     willGet: eligible.length,
     leftOut: suppressedCount,
-    routedTo: reviewer ? "reviewer" : approver ? "approver" : "unassigned",
+    routedTo: approval.assignedTo === "reviewer" ? "reviewer" : approval.assignedTo === "person" ? "approver" : approval.assignedTo === "operator" ? "operator" : "unassigned",
+    warnings: preflight.warnings.map((finding) => finding.message),
     next: "Wait. A person approves on the issue and the campaign then launches by itself. Editing the draft now cancels this approval.",
   };
 }
@@ -975,6 +1114,8 @@ export function launchReviewBrief(campaign: Pick<CampaignDraft, "name" | "delive
       `Audience matches the intent: this campaign goes to ${audience}. Nobody who should not get it (existing clients mid-project, partners, staff).`,
       "Suppressions: unsubscribed and bounced addresses are left out automatically; flag any contact in the audience who asked not to be emailed.",
       "Links: every link works and points to the right page, with no test or staging URLs.",
+      "Sender: the 'Sent as' line is who the recipient sees (a client's campaign goes out as the client, never from PiB's own Gmail or number), and the reply-to is right.",
+      "Texts: an SMS or WhatsApp step only reaches people with a recorded opt-in; check the wording makes sense in a few characters and says who we are.",
       "Compliance (POPIA): says who we are, why they get it, and how to opt out (reply STOP or unsubscribe); makes no claims we cannot back up.",
     ],
     handTo: approverUserId ? { userId: approverUserId, label: `the approver (user \`${approverUserId}\`)` } : { label: "a board member (unassign the agent so the board sees it)" },
@@ -986,19 +1127,27 @@ async function createAbVariant(ctx: PluginContext, companyId: string, params: Re
   if (campaign.status !== "draft") throw new CampaignError("A/B variants can only be added to a draft campaign");
   const position = integer(params.position, "position");
   const existing = await listSteps(ctx, campaign.id);
-  if (!existing.some((step) => step.position === position && step.variant === "a")) {
+  const original = existing.find((step) => step.position === position && step.variant === "a");
+  if (!original) {
     throw new CampaignError("There is no A variant at that position");
   }
   if (existing.some((step) => step.position === position && step.variant === "b")) {
     throw new CampaignError("A B variant already exists at that position");
   }
+  // A B version goes out on the same channel as its A version.
+  const channel = stepChannel(original);
+  const body = optionalString(params, "body") ?? "";
+  if (channel !== "email" && !body) throw new CampaignError("An SMS or WhatsApp step needs body text.");
   const step: CampaignStepDraft = {
     position,
     delayDays: 0,
-    subject: requiredString(params, "subject"),
-    body: optionalString(params, "body") ?? "",
+    subject: channel === "email" ? requiredString(params, "subject") : optionalString(params, "subject") ?? "",
+    body,
     htmlBody: null,
     variant: "b",
+    channel,
+    templateRef: original.templateRef ?? null,
+    templateVars: original.templateVars ?? [],
   };
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   await markEdited(ctx, campaign.id);
@@ -1041,7 +1190,9 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
   const html = requiredString(params, "html");
   const steps = await listSteps(ctx, campaign.id);
-  if (!steps.some((step) => step.position === position && step.variant === variant)) throw new CampaignError("No step found at that position and variant");
+  const target = steps.find((step) => step.position === position && step.variant === variant);
+  if (!target) throw new CampaignError("No step found at that position and variant");
+  if (stepChannel(target) !== "email") throw new CampaignError("Only an email step has an HTML body.");
   await setStepHtml(ctx, { companyId, campaignId: campaign.id, position, variant, html });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
@@ -1084,6 +1235,7 @@ async function createFromTemplate(ctx: PluginContext, companyId: string, params:
     ownerUserId: owner.userId ?? null,
     ownerAgentId: owner.agentId ?? null,
   });
+  for (const step of steps) assertStepFitsDelivery(campaign.delivery, stepChannel(step));
   await insertCampaign(ctx, campaign);
   for (const step of steps) {
     await insertStep(ctx, { companyId, campaignId: campaign.id, step });
@@ -1097,6 +1249,7 @@ function parseSteps(value: unknown): CampaignStepDraft[] {
   for (const item of value) {
     if (!item || typeof item !== "object") continue;
     const step = item as Record<string, unknown>;
+    const channel = step.channel === "sms" || step.channel === "whatsapp" ? step.channel : "email";
     result.push({
       position: result.length + 1,
       delayDays: typeof step.delayDays === "number" ? step.delayDays : 0,
@@ -1104,22 +1257,28 @@ function parseSteps(value: unknown): CampaignStepDraft[] {
       body: typeof step.body === "string" ? step.body : "",
       htmlBody: null,
       variant: "a",
+      channel,
+      templateRef: channel === "whatsapp" && typeof step.templateRef === "string" ? step.templateRef : null,
+      templateVars: [],
     });
   }
   return result;
 }
 
-function templateSteps(params: Record<string, unknown>): Array<{ subject: string; body: string; delayDays: number }> {
+function templateSteps(params: Record<string, unknown>): Array<{ subject: string; body: string; delayDays: number; channel?: ReturnType<typeof assertChannel>; templateRef?: string | null }> {
   if (!Array.isArray(params.steps)) return [];
-  const result: Array<{ subject: string; body: string; delayDays: number }> = [];
+  const result: Array<{ subject: string; body: string; delayDays: number; channel?: ReturnType<typeof assertChannel>; templateRef?: string | null }> = [];
   for (const item of params.steps) {
     if (!item || typeof item !== "object") continue;
     const step = item as Record<string, unknown>;
-    if (typeof step.subject !== "string") continue;
+    const channel = assertChannel(step.channel);
+    if (channel === "email" && typeof step.subject !== "string") continue;
     result.push({
-      subject: step.subject.trim(),
+      subject: typeof step.subject === "string" ? step.subject.trim() : "",
       body: typeof step.body === "string" ? step.body.trim() : "",
       delayDays: typeof step.delayDays === "number" ? step.delayDays : 0,
+      channel,
+      templateRef: channel === "whatsapp" ? assertTemplateRef(step.templateRef) : null,
     });
   }
   return result;
@@ -1224,35 +1383,4 @@ function firstQuery(value: string | string[] | undefined): string {
 function requiredCompany(context: PluginPerformActionContext): string {
   if (!context.companyId) throw new CampaignError("Company is required");
   return context.companyId;
-}
-
-function objectParams(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CampaignError("Parameters must be an object");
-  return value as Record<string, unknown>;
-}
-
-function requiredString(params: Record<string, unknown>, key: string): string {
-  const value = params[key];
-  if (typeof value !== "string" || !value.trim()) throw new CampaignError(`${key} is required`);
-  return value.trim();
-}
-
-function optionalString(params: Record<string, unknown>, key: string): string | undefined {
-  const value = params[key];
-  if (value == null || value === "") return undefined;
-  if (typeof value !== "string") throw new CampaignError(`${key} must be a string`);
-  return value.trim();
-}
-
-function stringList(params: Record<string, unknown>, key: string): string[] {
-  if (params[key] == null) return [];
-  const value = params[key];
-  if (!Array.isArray(value)) throw new CampaignError(`${key} must be a list`);
-  return value.filter((item): item is string => typeof item === "string");
-}
-
-function integer(value: unknown, key: string): number {
-  const amount = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(amount)) throw new CampaignError(`${key} must be an integer`);
-  return amount;
 }

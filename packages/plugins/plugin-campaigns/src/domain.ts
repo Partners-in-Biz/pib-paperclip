@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
-import { experimentVerdict, type SuppressionReason, type Verdict } from "@partnersinbiz/pib-plugin-kit";
+import { experimentVerdict, senderKeyOf, type SuppressionReason, type Verdict } from "@partnersinbiz/pib-plugin-kit";
+import { parseChannel, type Channel } from "./channels.js";
 
 export const CAMPAIGN_STATUSES = ["draft", "scheduled", "active", "paused", "completed"] as const;
 export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number];
@@ -32,7 +33,10 @@ export interface CampaignDraft {
   /** CRM name when the campaign was scoped, for issue titles. */
   clientName: string | null;
   audienceMode: AudienceMode;
-  /** issue: a due step opens an issue (default). email: the Mailbox sends it (after the launch approval). */
+  /**
+   * issue: a due step opens an issue (default). email: the Mailbox sends it (after the launch approval).
+   * auto: every step goes out by itself on its own channel (email, SMS or WhatsApp).
+   */
   delivery: CampaignDelivery;
   /** Who created it: its agent owns the step, reply and failed-send issues (else the Account Manager). */
   ownerUserId: string | null;
@@ -44,13 +48,30 @@ export interface CampaignDraft {
   launchError?: string | null;
 }
 
-export const CAMPAIGN_DELIVERIES = ["issue", "email"] as const;
+export const CAMPAIGN_DELIVERIES = ["issue", "email", "auto"] as const;
 export type CampaignDelivery = (typeof CAMPAIGN_DELIVERIES)[number];
 
 export function assertDelivery(value: unknown): CampaignDelivery {
   if (value == null || value === "") return "issue";
-  if (value !== "issue" && value !== "email") throw new CampaignError("delivery must be issue or email");
+  if (value !== "issue" && value !== "email" && value !== "auto") throw new CampaignError("delivery must be issue, email or auto");
   return value;
+}
+
+/** True when steps go out by themselves (email through the Mailbox; with `auto` also SMS and WhatsApp). */
+export function isAutomatic(delivery: CampaignDelivery): boolean {
+  return delivery !== "issue";
+}
+
+/** SMS and WhatsApp are only ever sent automatically: nobody can send them by hand from an issue. */
+export function assertStepFitsDelivery(delivery: CampaignDelivery, channel: Channel): void {
+  if (channel !== "email" && delivery !== "auto") {
+    throw new CampaignError(`A ${channel === "sms" ? "SMS" : "WhatsApp"} step needs the campaign's delivery set to auto (update-campaign), because the plugin sends it by itself. Email steps work with any delivery.`);
+  }
+}
+
+/** Whose do-not-contact list a campaign's messages are on: `own`, `company:<id>` or `contact:<id>`. */
+export function campaignSenderKey(campaign: Pick<CampaignDraft, "clientKind" | "clientRef">): string {
+  return senderKeyOf(campaign);
 }
 
 /**
@@ -76,6 +97,36 @@ export interface CampaignStepDraft {
   body: string;
   htmlBody: string | null;
   variant: "a" | "b";
+  /** Default email. SMS and WhatsApp steps send through the messaging provider. */
+  channel?: Channel;
+  /** WhatsApp: the approved Twilio Content template (`HX...`) a first message must use. */
+  templateRef?: string | null;
+  /** The merge tokens that fill the template's numbered variables, in order, e.g. `["{{first_name}}"]`. */
+  templateVars?: string[];
+}
+
+export function stepChannel(step: Pick<CampaignStepDraft, "channel">): Channel {
+  return step.channel ?? "email";
+}
+
+/** The step's channel from a tool or template input. */
+export function assertChannel(value: unknown): Channel {
+  try {
+    return parseChannel(value);
+  } catch (error) {
+    throw new CampaignError(error instanceof Error ? error.message : "channel must be email, sms or whatsapp");
+  }
+}
+
+const TEMPLATE_REF = /^HX[0-9a-fA-F]{32}$/;
+
+/** A Twilio Content SID, or an error that says what a WhatsApp template reference looks like. */
+export function assertTemplateRef(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || !TEMPLATE_REF.test(value.trim())) {
+    throw new CampaignError("templateRef must be a Twilio Content template SID (HX followed by 32 letters and digits), from the Content Template Builder in the Twilio console.");
+  }
+  return value.trim();
 }
 
 export interface EnrollmentDraft {
@@ -397,24 +448,27 @@ export interface CampaignTemplateDraft {
   companyId: string;
   name: string;
   description: string;
-  steps: Array<{ subject: string; body: string; delayDays: number }>;
+  steps: Array<{ subject: string; body: string; delayDays: number; channel?: Channel; templateRef?: string | null }>;
 }
 
 export function createCampaignTemplate(input: {
   companyId: string;
   name: string;
   description?: string;
-  steps?: Array<{ subject: string; body?: string; delayDays?: number }>;
+  steps?: Array<{ subject?: string; body?: string; delayDays?: number; channel?: Channel; templateRef?: string | null }>;
   id?: string;
 }): CampaignTemplateDraft {
   const name = input.name.trim();
   if (!name) throw new CampaignError("Template name is required");
   const steps = (input.steps ?? []).map((step) => ({
-    subject: step.subject.trim(),
+    subject: (step.subject ?? "").trim(),
     body: (step.body ?? "").trim(),
     delayDays: step.delayDays ?? 0,
+    ...(step.channel && step.channel !== "email" ? { channel: step.channel } : {}),
+    ...(step.templateRef ? { templateRef: step.templateRef } : {}),
   }));
-  if (steps.some((step) => !step.subject)) throw new CampaignError("Every template step needs a subject");
+  if (steps.some((step) => (step.channel ?? "email") === "email" && !step.subject)) throw new CampaignError("Every email template step needs a subject");
+  if (steps.some((step) => step.channel && !step.body)) throw new CampaignError("Every SMS or WhatsApp template step needs body text");
   return {
     id: input.id ?? randomUUID(),
     companyId: input.companyId,
@@ -477,13 +531,20 @@ export function campaignMailKey(enrollmentId: string, position: number): string 
   return `campaigns:step:${enrollmentId}:${position}`;
 }
 
+/** The key of an SMS or WhatsApp message: one per step per contact, so a step is never sent twice. */
+export function campaignMessageKey(enrollmentId: string, position: number): string {
+  return `campaigns:msg:${enrollmentId}:${position}`;
+}
+
 export interface PersonalVars {
   name: string;
   email?: string | null;
   company?: string | null;
+  /** This contact's unsubscribe link, for {{unsubscribe_url}}. */
+  unsubscribeUrl?: string | null;
 }
 
-/** Fills {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}; `{{first_name|there}}` has a fallback. */
+/** Fills {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}, {{unsubscribe_url}}; `{{first_name|there}}` has a fallback. */
 export function personalize(template: string, vars: PersonalVars): string {
   const parts = vars.name.trim().split(/\s+/).filter(Boolean);
   const values: Record<string, string> = {
@@ -492,6 +553,7 @@ export function personalize(template: string, vars: PersonalVars): string {
     name: vars.name.trim(),
     company: vars.company?.trim() ?? "",
     email: vars.email?.trim() ?? "",
+    unsubscribe_url: vars.unsubscribeUrl?.trim() ?? "",
   };
   return template.replace(/\{\{\s*([a-z_]+)\s*(?:\|([^}]*))?\}\}/gi, (match, rawKey: string, fallback: string | undefined) => {
     const key = rawKey.toLowerCase();

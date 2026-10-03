@@ -5,10 +5,12 @@
  */
 import type { ReactNode } from "react";
 import { Button, CircleAlert, Clock, Mail, Pill, Send, Users, formatDate, formatShortDate, tokens, tone, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
-import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryLabel, orderedSteps, type NextSend } from "../detail.js";
+import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, type NextSend } from "../detail.js";
 import { StatusPill } from "./overview.js";
 
-export interface DetailStep { position: number; delayDays: number; subject: string; body: string; htmlBody?: string | null; variant?: "a" | "b" }
+export interface DetailStep { position: number; delayDays: number; subject: string; body: string; htmlBody?: string | null; variant?: "a" | "b"; channel?: "email" | "sms" | "whatsapp" }
+
+export interface PreflightFindingView { level: "error" | "warning"; code: string; message: string; fix?: string }
 
 export interface CampaignDetailData {
   campaign: {
@@ -16,7 +18,7 @@ export interface CampaignDetailData {
     name: string;
     description: string;
     status: string;
-    delivery?: "issue" | "email";
+    delivery?: "issue" | "email" | "auto";
     audienceTags: string[];
     audienceMode?: "tags" | "client_contacts" | "client_contact";
     client?: { kind: "company" | "contact"; id: string; name: string | null } | null;
@@ -30,7 +32,10 @@ export interface CampaignDetailData {
     stats: { enrolled: number; running: number; done: number };
   };
   approval: { issueId: string; identifier: string | null; status: string; withPerson: boolean; withAgent: boolean } | null;
-  audience: { matching: number; willGet: number; leftOut: number; sample: string[] } | null;
+  /** Who it goes out as, from the checks that run before approval. */
+  sender?: { sentAs: string | null; channels: Array<{ channel: string; sentFrom: string | null; ready: boolean; note: string | null }> } | null;
+  preflight?: { errors: PreflightFindingView[]; warnings: PreflightFindingView[] } | null;
+  audience: { matching: number; willGet: number; leftOut: number; notReachable?: number; sample: string[] } | null;
   enrolled: {
     total: number;
     running: number;
@@ -170,8 +175,14 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
       <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "minmax(86px, auto) minmax(0, 1fr)", gap: "10px 14px", fontSize: 13, lineHeight: 1.45 }}>
         <Fact term="Delivery">
           <strong style={{ fontWeight: 600 }}>{deliveryLabel(campaign.delivery)}</strong>
-          <span style={{ display: "block", color: tokens.muted, fontSize: 12.5 }}>{DELIVERY_DETAIL[campaign.delivery === "email" ? "email" : "issue"]}</span>
+          <span style={{ display: "block", color: tokens.muted, fontSize: 12.5 }}>{DELIVERY_DETAIL[deliveryKey(campaign.delivery)]}</span>
         </Fact>
+        {data.sender?.sentAs ? <Fact term="Sent as">{data.sender.sentAs}</Fact> : null}
+        {(data.sender?.channels ?? []).map((entry) => (
+          <Fact key={entry.channel} term={entry.channel === "sms" ? "SMS from" : "WhatsApp from"}>
+            {entry.sentFrom ?? <span style={{ color: tone("warn").fg }}>{entry.note ?? "not set up"}</span>}
+          </Fact>
+        ))}
         <Fact term="Audience">
           {audienceText(campaign)}
           {audience ? <span style={{ color: tokens.muted }}> · {plural(audience.matching, "contact")} match now</span> : null}
@@ -192,6 +203,7 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
               <p style={{ margin: 0, fontSize: 13 }}>
                 <strong>{plural(audience.willGet, "contact")}</strong> will get it
                 {audience.leftOut ? <span style={{ color: tokens.muted }}> · {audience.leftOut} left out (unsubscribed or bounced)</span> : null}
+                {audience.notReachable ? <span style={{ color: tokens.muted }}> · {audience.notReachable} left out (no mobile number or no opt-in)</span> : null}
               </p>
               {audience.sample.length ? <Names names={audience.sample} total={audience.willGet} /> : <Muted>Nobody matches this audience yet.</Muted>}
             </>
@@ -220,7 +232,20 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
         )}
       </Section>
 
-      <Section icon={Mail} title={`Emails, in order (${steps.length})`}>
+      {data.preflight && (data.preflight.errors.length > 0 || data.preflight.warnings.length > 0) ? (
+        <Section icon={CircleAlert} title="Before it goes out">
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6, fontSize: 13 }}>
+            {data.preflight.errors.map((finding, index) => (
+              <li key={`e${index}`} style={{ color: tone("bad").fg, overflowWrap: "anywhere" }}>Fix: {finding.message}{finding.fix ? ` (${finding.fix})` : ""}</li>
+            ))}
+            {data.preflight.warnings.map((finding, index) => (
+              <li key={`w${index}`} style={{ color: tokens.muted, overflowWrap: "anywhere" }}>Check: {finding.message}</li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
+
+      <Section icon={Mail} title={`Steps, in order (${steps.length})`}>
         {steps.length === 0 ? <Muted>No emails yet. Add the first one; a campaign needs at least one before approval.</Muted> : (
           <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 10 }}>
             {steps.map((step) => (
@@ -230,8 +255,8 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
                   <strong style={{ fontSize: 13 }}>Step {step.number}</strong>
                   <span style={{ fontSize: 12.5, color: tokens.muted, display: "inline-flex", gap: 4, alignItems: "center" }}><Clock size={12} aria-hidden="true" />{step.timing}</span>
                 </div>
-                <Email label={step.b ? "Version A" : null} subject={step.a.subject} body={step.a.body} html={Boolean(step.a.htmlBody)} />
-                {step.b ? <Email label="Version B (A/B test)" subject={step.b.subject} body={step.b.body} html={Boolean(step.b.htmlBody)} /> : null}
+                <Email label={step.b ? "Version A" : null} subject={step.a.subject} body={step.a.body} html={Boolean(step.a.htmlBody)} channel={step.a.channel} />
+                {step.b ? <Email label="Version B (A/B test)" subject={step.b.subject} body={step.b.body} html={Boolean(step.b.htmlBody)} channel={step.b.channel} /> : null}
               </li>
             ))}
           </ol>
@@ -242,12 +267,13 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
   );
 }
 
-function Email({ label, subject, body, html }: { label: string | null; subject: string; body: string; html: boolean }) {
+function Email({ label, subject, body, html, channel }: { label: string | null; subject: string; body: string; html: boolean; channel?: "email" | "sms" | "whatsapp" }) {
   const preview = bodyPreview(body);
+  const texted = channel === "sms" || channel === "whatsapp";
   return (
     <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-      {label ? <span style={{ fontSize: 11.5, fontWeight: 650, letterSpacing: "0.04em", textTransform: "uppercase", color: tokens.muted }}>{label}</span> : null}
-      <span style={{ fontSize: 13.5, fontWeight: 600, overflowWrap: "anywhere" }}>{subject || "(no subject)"}</span>
+      {label || texted ? <span style={{ fontSize: 11.5, fontWeight: 650, letterSpacing: "0.04em", textTransform: "uppercase", color: tokens.muted }}>{[label, texted ? (channel === "sms" ? "SMS" : "WhatsApp") : null].filter(Boolean).join(" · ")}</span> : null}
+      {texted ? null : <span style={{ fontSize: 13.5, fontWeight: 600, overflowWrap: "anywhere" }}>{subject || "(no subject)"}</span>}
       {preview.text ? (
         preview.cut ? (
           <details>

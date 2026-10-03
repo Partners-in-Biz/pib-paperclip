@@ -62,15 +62,15 @@ describe("Campaigns setup status", () => {
     expect(manifest.apiRoutes).toContainEqual(expect.objectContaining({ routeKey: SETUP_STATUS_ROUTE.routeKey, path: "/setup-status" }));
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit"]));
-    expect(manifest.version).toBe("0.5.0");
-    expect(PLUGIN_VERSION).toBe("0.5.0");
+    expect(manifest.version).toBe("0.6.0");
+    expect(PLUGIN_VERSION).toBe("0.6.0");
   });
 
   it("an unconfigured company: settings missing, Jev and Mailbox optional", async () => {
     const { harness } = await boot({ config: {} });
     const status = await setupStatus(harness.ctx, CO);
     expect(status).toMatchObject({ plugin: "partnersinbiz.campaigns", module: "campaigns", title: "Campaigns" });
-    expect(status.items.map((row) => row.key)).toEqual(["settings", "jev", "mailbox"]);
+    expect(status.items.map((row) => row.key)).toEqual(["settings", "jev", "mailbox", "public_url", "one_click", "client_senders", "twilio", "sms_sender", "whatsapp_sender"]);
     expect(item(status, "settings")).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(status, "jev")).toMatchObject({ status: "optional", required: false });
     expect(item(status, "mailbox")).toMatchObject({ status: "optional", required: false, href: "/mailbox?tab=mailboxes&connect=gmail", hrefLabel: "Connect Gmail" });

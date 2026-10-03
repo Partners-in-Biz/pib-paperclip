@@ -5,11 +5,12 @@
  *   created the campaign while it is running, else the Account Manager, else
  *   the Operator, else the owner (kit `routeWork`). Never unassigned when the
  *   company has an owner.
- * - Approvals: only a person. The campaign's creator when a person made it,
- *   else the company owner from the Cockpit roles.
+ * - Approvals: only a person: the company owner (the Cockpit roles, else the host's
+ *   default responsible user, else the person who made the campaign, else the last
+ *   owner seen: kit `ownerUserFor`), so an approval is never opened unassigned.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { companyRoles, roleAgentUsable, routeWork } from "@partnersinbiz/pib-plugin-kit";
+import { ownerUserFor, roleAgentUsable, routeWork } from "@partnersinbiz/pib-plugin-kit";
 import type { CampaignDraft } from "./domain.js";
 
 export const LOCAL_BOARD_USER_ID = "local-board";
@@ -49,8 +50,8 @@ export function assigneeFields(owner: WorkAssignee): { assigneeAgentId?: string;
   return {};
 }
 
-/** The person who approves a launch: the campaign's creator (a person), else the company owner. */
+/** The person who approves a launch: the company owner by the kit's chain; the campaign's creator (a person) is the fallback. */
 export async function approverUserId(ctx: PluginContext, companyId: string, campaign: Pick<CampaignDraft, "ownerUserId">): Promise<string | null> {
-  if (campaign.ownerUserId && campaign.ownerUserId !== LOCAL_BOARD_USER_ID) return campaign.ownerUserId;
-  return (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
+  const creator = campaign.ownerUserId && campaign.ownerUserId !== LOCAL_BOARD_USER_ID ? campaign.ownerUserId : null;
+  return (await ownerUserFor(ctx, companyId, { actorUserId: creator, lastKnown: true })).userId;
 }

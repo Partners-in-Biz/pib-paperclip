@@ -46,7 +46,7 @@ export interface PgHarness {
   stop: () => Promise<void>;
 }
 
-const TABLES = ["reply_log", "campaign_step_events", "campaign_enrollments", "campaign_steps", "campaigns", "suppressions", "outbox", "inbox", "decisions", "crm_contacts", "crm_companies", "campaign_templates"];
+const TABLES = ["channel_messages", "channel_consents", "channel_suppressions", "sender_identities", "reply_log", "campaign_step_events", "campaign_enrollments", "campaign_steps", "campaigns", "suppressions", "outbox", "inbox", "decisions", "crm_contacts", "crm_companies", "campaign_templates"];
 
 export async function startPg(): Promise<PgHarness> {
   const { default: EmbeddedPostgres } = (await import(EMBEDDED)) as { default: new (opts: Record<string, unknown>) => { initialise: () => Promise<void>; start: () => Promise<void>; stop: () => Promise<void>; getPgClient: () => PgClient } };

@@ -5,13 +5,20 @@
  */
 import { vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { rememberPluginUiBase } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../../src/manifest.js";
 import plugin from "../../src/worker.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import { clearJevCache } from "../../src/jev.js";
+import { clearLinkCache } from "../../src/links.js";
+import { clearMessagingCache } from "../../src/messaging.js";
+import { clearProjectCache } from "../../src/projects.js";
 import { createFakeDb, type Route, type Row, type Store } from "./fake-db.js";
 
 export const CO = "co-1";
+/** The plugin's public UI path, as the Campaigns page reports it. Unsubscribe links are built on it. */
+export const UI_BASE = "/_plugins/11111111-1111-4111-8111-111111111111/ui/";
+export const PUBLIC_URL = "https://paperclip.test";
 export const PAST = "2026-09-01T08:00:00.000Z";
 export const FUTURE = "2099-01-01T08:00:00.000Z";
 
@@ -70,6 +77,12 @@ export const ROUTES: Route[] = [
   ...FLOW_ROUTES,
   [/unnest\(emails\)/, (p, s) =>
     (s.crm_contacts ?? []).filter((row) => row.company_id === p[0] && !row.deleted && (row.emails as string[]).some((email) => email.toLowerCase() === p[1]))],
+  // listCampaigns for one client (kit clientWhere uses COALESCE on the kind).
+  [/FROM \S+\.campaigns\s+WHERE company_id = \$1 AND client_ref = \$3 AND COALESCE\(client_kind/, (p, s) =>
+    (s.campaigns ?? []).filter((c) => c.company_id === p[0] && c.client_ref === p[2] && (c.client_kind ?? "company") === p[1])],
+  // crmContactsByPhone: projected contacts whose phone ends in the same nine digits.
+  [/right\(regexp_replace/, (p, s) =>
+    (s.crm_contacts ?? []).filter((row) => row.company_id === p[0] && !row.deleted && ((row.phones ?? []) as string[]).some((phone) => phone.replace(/\D/g, "").slice(-9) === p[1]))],
   [/campaign_id IN \(SELECT id FROM/, (_p, s) => {
     const active = new Set((s.campaigns ?? []).filter((c) => c.status === "active").map((c) => c.id));
     return (s.campaign_enrollments ?? []).filter((e) => e.status === "running" && e.open_issue_id == null && e.sending_key == null && e.next_due_at && Date.parse(e.next_due_at) <= Date.now() && active.has(e.campaign_id));
@@ -150,8 +163,11 @@ export interface BootOptions {
 
 export async function boot(options: BootOptions = {}) {
   clearJevCache();
+  clearLinkCache();
+  clearMessagingCache();
+  clearProjectCache();
   const store = options.store ?? seed();
-  const config = options.config ?? { timezone: "Africa/Johannesburg", ...(options.jev ? { jev: { apiKey: "test-key" } } : {}) };
+  const config = options.config ?? { timezone: "Africa/Johannesburg", publicBaseUrl: PUBLIC_URL, ...(options.jev ? { jev: { apiKey: "test-key" } } : {}) };
   const harness = createTestHarness({ manifest, config });
   harness.seed({
     companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never],
@@ -169,6 +185,7 @@ export async function boot(options: BootOptions = {}) {
   });
   (harness.ctx as unknown as { db: typeof db }).db = db;
   await plugin.definition.setup(harness.ctx);
+  await rememberPluginUiBase(harness.ctx, UI_BASE);
   const emit = vi.spyOn(harness.ctx.events, "emit");
   const comments = vi.spyOn(harness.ctx.issues, "createComment");
   return { harness, store, emit, comments, db };

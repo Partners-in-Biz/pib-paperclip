@@ -1,8 +1,9 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, jevConfigSchema, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
-import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
+import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { CAMPAIGNS_PROJECT_KEY, PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+import { WEBHOOKS } from "./webhook-keys.js";
 
 const instanceConfigSchema: JsonSchema = {
   type: "object",
@@ -10,8 +11,36 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save these settings once for each Paperclip company that runs campaigns. Saving is what lets the scheduled job open due-step issues for the company.",
   properties: {
-    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
+    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg", description: "Also the clock the SMS and WhatsApp send windows use." },
     defaultFromName: { type: "string", title: "Default sender name", default: "Partners in Biz" },
+    publicBaseUrl: {
+      type: "string",
+      title: "Public base URL",
+      description: "The https address people reach Paperclip on, e.g. https://paperclip.partnersinbiz.online. Unsubscribe links in emails are built on it. Open the Campaigns page once after saving so the plugin learns its public path.",
+    },
+    oneClickUnsubscribeUrl: {
+      type: "string",
+      title: "One-click unsubscribe address (optional)",
+      description: "The https address a mail client POSTs to for one-click unsubscribe (RFC 8058), e.g. https://paperclip.partnersinbiz.online/u. It needs the front-door rule from the Campaigns README, which forwards it to the plugin's unsubscribe webhook. Leave empty until that rule is live: the header is only added when this is set.",
+    },
+    messaging: {
+      type: "object",
+      title: "SMS and WhatsApp (Twilio)",
+      description: "Off until the account SID, the auth token secret and a sender number are saved. Setup lists the steps. Nothing is sent from a company that has not saved all three.",
+      properties: {
+        accountSid: { type: "string", title: "Twilio account SID", description: "Starts with AC. Twilio console, Account Info." },
+        authToken: secretField("Twilio auth token", "Twilio console, Account Info, Auth Token. Store it as a Paperclip secret; never paste it in an issue or chat."),
+        smsFrom: { type: "string", title: "SMS sender number", description: "The number SMS goes out from, with country code, e.g. +14155550100. Also the number replies are read from." },
+        messagingServiceSid: { type: "string", title: "Messaging Service SID (optional)", description: "Starts with MG. Sends SMS through a Twilio Messaging Service instead of the number above." },
+        whatsappFrom: { type: "string", title: "WhatsApp sender number", description: "The number registered as a WhatsApp sender in Twilio, with country code." },
+        defaultCountry: { type: "string", title: "Default country code", default: "+27", description: "Used for numbers written with a leading 0, e.g. 082 123 4567." },
+        weekdays: { type: "string", title: "Send window, Monday to Friday", default: "08:00-20:00", description: "SMS and WhatsApp marketing is only sent inside these hours (the company timezone). South African direct marketing rules allow 08:00-20:00." },
+        saturday: { type: "string", title: "Send window, Saturday", default: "09:00-13:00", description: "Or off." },
+        sunday: { type: "string", title: "Send window, Sunday", default: "off", description: "Marketing is not sent on a Sunday unless you set hours here." },
+        blackoutDates: { type: "string", title: "No sending on these dates", description: "Public holidays, as YYYY-MM-DD separated by commas, e.g. 2026-12-25, 2026-12-26." },
+        inboundWebhookSecret: secretField("Reply webhook secret (optional)", "A shared secret of at least 16 characters, for forwarding replies to the plugin's messaging-inbound webhook as JSON. Replies are also read by polling, so this is optional."),
+      },
+    },
     jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };
@@ -21,7 +50,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Campaigns",
-  description: "Themed email programs that enroll contacts and open Paperclip issues for due steps.",
+  description: "Themed email, SMS and WhatsApp programs that enroll contacts and send or open Paperclip issues for due steps, as PiB or as a client.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
@@ -48,6 +77,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
+    // 0.6: the public unsubscribe endpoint, link checks, and the managed Campaigns project (client work opens in the client's own project).
+    "webhooks.receive",
+    "http.outbound",
+    "projects.read",
+    "projects.managed",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -59,6 +93,16 @@ const manifest: PaperclipPluginManifestV1 = {
     coreReadTables: ["heartbeat_runs", "issues"],
   },
   tools: CAMPAIGN_TOOLS,
+  webhooks: WEBHOOKS,
+  projects: [
+    {
+      projectKey: CAMPAIGNS_PROJECT_KEY,
+      displayName: "Campaigns",
+      description: "Campaign work for PiB's own marketing: step issues, replies, failed sends and revisions. A client's campaign work opens in the client's own project.",
+      status: "in_progress",
+      color: "#0891b2",
+    },
+  ],
   jobs: [
     {
       jobKey: "open-due-steps",
@@ -71,6 +115,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Resend campaign email requests",
       description: "Re-sends campaign email requests the Mailbox has not answered yet, and hands failed ones to a person.",
       schedule: "*/5 * * * *",
+    },
+    {
+      jobKey: "poll-messaging",
+      displayName: "Read SMS and WhatsApp replies",
+      description: "Reads replies and delivery results from the messaging provider for each company that has it set up, and honours STOP words.",
+      schedule: "*/10 * * * *",
     },
     {
       jobKey: "setup-status",

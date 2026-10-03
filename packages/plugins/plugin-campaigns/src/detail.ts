@@ -4,22 +4,28 @@
  * state, and when the next email goes out.
  */
 
-export type Delivery = "issue" | "email";
+export type Delivery = "issue" | "email" | "auto";
 
 /** The Delivery column and the new-campaign choice. */
 export const DELIVERY_LABEL: Record<Delivery, string> = {
   issue: "Task for the agent",
   email: "Email from Gmail",
+  auto: "Automatic: email, SMS, WhatsApp",
 };
 
 /** One line on how a due email goes out. */
 export const DELIVERY_DETAIL: Record<Delivery, string> = {
   issue: "Each due email opens a task, and the campaign's agent sends it.",
-  email: "The Mailbox sends each due email from Gmail by itself, with an unsubscribe link.",
+  email: "The Mailbox sends each due email by itself, as the sender below, with an unsubscribe link.",
+  auto: "Each due step goes out by itself on its own channel: email through the Mailbox, SMS and WhatsApp through the messaging provider, inside the send window.",
 };
 
+export function deliveryKey(delivery: string | null | undefined): Delivery {
+  return delivery === "email" ? "email" : delivery === "auto" ? "auto" : "issue";
+}
+
 export function deliveryLabel(delivery: string | null | undefined): string {
-  return DELIVERY_LABEL[delivery === "email" ? "email" : "issue"];
+  return DELIVERY_LABEL[deliveryKey(delivery)];
 }
 
 /**
@@ -41,6 +47,7 @@ export interface StepLike {
   body: string;
   htmlBody?: string | null;
   variant?: "a" | "b";
+  channel?: "email" | "sms" | "whatsapp";
 }
 
 /** Steps in send order, numbered 1, 2, 3… with their A and B versions together. */

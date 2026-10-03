@@ -17,6 +17,7 @@ import {
   outboxHealth,
   publishCockpitSnapshot,
   readConfig,
+  skillSyncCheck,
   type ActivityItem,
   type CockpitSnapshot,
   type FlowStageReport,
@@ -25,8 +26,11 @@ import {
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
+import { getCampaign, listSteps } from "./db.js";
 import { clientPrefix } from "./domain.js";
+import { unsubscribeLinkProblem } from "./links.js";
 import { abSuggestionFor } from "./mail.js";
+import { gatherPreflight } from "./preflight.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { CAMPAIGN_ORIGINS } from "./origins.js";
 import { knownCompanies } from "./setup-status.js";
@@ -38,6 +42,7 @@ export const REPLY_PURPOSE = "campaigns.reply";
 export const CAMPAIGN_JOBS: Array<{ key: string; title: string; every: number }> = [
   { key: "open-due-steps", title: "Open due campaign steps", every: 5 },
   { key: "redeliver-mail", title: "Resend campaign email requests", every: 5 },
+  { key: "poll-messaging", title: "Read SMS and WhatsApp replies", every: 10 },
   { key: "setup-status", title: "Setup and cockpit report", every: 60 },
 ];
 
@@ -120,6 +125,10 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   for (const job of CAMPAIGN_JOBS) snap.health.push(await jobHealth(ctx, job.key, job.title, job.every));
   snap.health.push(await outboxHealth(ctx, companyId));
   if (counts) snap.health.push(sendHealth(counts));
+  snap.health.push(...(await part(ctx, "readiness", () => readinessHealth(ctx, companyId), [] as HealthCheck[])));
+  snap.health.push(...(await part(ctx, "messaging", () => messagingHealth(ctx, companyId), [] as HealthCheck[])));
+  const skills = await part(ctx, "skills", () => skillSyncCheck(ctx, companyId, "Campaigns"), null as HealthCheck | null);
+  if (skills) snap.health.push(skills);
 
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.flows = await campaignFlows(ctx, companyId);
@@ -235,6 +244,84 @@ function sendHealth(counts: Counts): HealthCheck {
     return { key: "campaigns:sends", title: "Campaign emails", status: "warn", detail: `${retrying} campaign email${retrying === 1 ? "" : "s"} retrying after an error from the Mailbox.`, href: "/mailbox" };
   }
   return { key: "campaigns:sends", title: "Campaign emails", status: "ok" };
+}
+
+/**
+ * Active automatic campaigns that cannot send right now, by the same checks the
+ * approval runs (a client without a sender, a channel that lost its provider, the
+ * Mailbox switched off). Such a campaign sends nothing and says nothing else, so
+ * this is where it shows.
+ */
+export async function readinessHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${t(ctx, "campaigns")} WHERE company_id = $1 AND status = 'active' AND delivery <> 'issue' ORDER BY updated_at DESC LIMIT 20`,
+    [companyId],
+  );
+  const stuck: string[] = [];
+  let emailActive = false;
+  for (const row of rows) {
+    const campaign = await getCampaign(ctx, row.id);
+    if (!campaign) continue;
+    const steps = await listSteps(ctx, campaign.id);
+    if (steps.some((step) => (step.channel ?? "email") === "email")) emailActive = true;
+    const result = await gatherPreflight(ctx, companyId, campaign, steps, { network: false, audience: false });
+    if (!result.ok) stuck.push(`${clientPrefix(campaign.clientRef ? campaign.clientName : null)}${campaign.name}: ${result.errors[0]!.message}`);
+  }
+  const out: HealthCheck[] = [];
+  if (stuck.length > 0) {
+    out.push({
+      key: "campaigns:cannot-send",
+      title: "Campaigns that cannot send",
+      status: "bad",
+      detail: `${plural(stuck.length, "active campaign")} cannot send, so nothing is going out: ${stuck.slice(0, 3).join(" | ")}${stuck.length > 3 ? " | ..." : ""}`,
+      fix: "Run preflight-campaign on it; usually a client sender (set-sender-identity), the Mailbox or the SMS and WhatsApp provider needs setting up on the Setup page.",
+      href: "/setup",
+    });
+  }
+  if (emailActive) {
+    const problem = await unsubscribeLinkProblem(ctx, companyId);
+    if (problem) out.push({ key: "campaigns:unsubscribe", title: "Unsubscribe links", status: "warn", detail: problem, fix: "Set the public base URL in the Campaigns settings and open the Campaigns page once.", href: "/setup" });
+  }
+  return out;
+}
+
+/** SMS and WhatsApp that did not go out: the provider refusing the account, unknown results and failures in the last week. */
+export async function messagingHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const rows = await ctx.db.query<{ status: string; error_code: string | null; updated_at: string | null }>(
+    `SELECT status, error_code, updated_at FROM ${t(ctx, "channel_messages")} WHERE company_id = $1 AND updated_at >= $2::timestamptz ORDER BY updated_at DESC LIMIT 500`,
+    [companyId, since],
+  );
+  const refused = rows.filter((row) => row.status === "pending");
+  const unknown = rows.filter((row) => row.status === "unknown");
+  const failed = rows.filter((row) => row.status === "failed");
+  const out: HealthCheck[] = [];
+  if (refused.length > 0) {
+    const code = refused.find((row) => row.error_code)?.error_code;
+    out.push({
+      key: "campaigns:messaging",
+      title: "SMS and WhatsApp provider",
+      status: "bad",
+      detail: `${plural(refused.length, "message")} could not be sent because the provider refused the account or sender${code ? ` (code ${code})` : ""}. They stay due and go out once it is fixed.`,
+      fix: "Check the Twilio account SID, auth token secret and sender number in the Campaigns settings, and that the account is not suspended.",
+      href: "/setup",
+      since: refused[refused.length - 1]?.updated_at ?? null,
+    });
+  }
+  if (unknown.length > 0) {
+    out.push({
+      key: "campaigns:messaging-unknown",
+      title: "Messages with an unknown result",
+      status: "bad",
+      detail: `${plural(unknown.length, "SMS or WhatsApp message")} may or may not have been sent (the provider did not answer). The plugin never sends those again by itself; each was handed to a person.`,
+      fix: "Check each one in the Twilio console (Monitor, Logs, Messaging), then close its issue.",
+      href: "/campaigns",
+    });
+  }
+  if (failed.length > 0) {
+    out.push({ key: "campaigns:messaging-failed", title: "Messages that failed", status: "warn", detail: `${plural(failed.length, "SMS or WhatsApp message")} failed in the last 7 days; each was handed to a person.`, href: "/campaigns" });
+  }
+  return out;
 }
 
 interface ApprovalRow {

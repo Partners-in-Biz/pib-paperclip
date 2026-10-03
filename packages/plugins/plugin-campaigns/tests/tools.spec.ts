@@ -27,7 +27,11 @@ describe("Campaigns tool surface", () => {
   it("uses enums where the values are fixed", () => {
     const enumOf = (tool: string, param: string) => ((CAMPAIGN_TOOLS.find((t) => t.name === tool)!.parametersSchema as Schema).properties![param]!).enum;
     expect(enumOf("create-campaign", "audienceMode")).toEqual(["tags", "client_contacts", "client_contact"]);
-    expect(enumOf("create-campaign", "delivery")).toEqual(["issue", "email"]);
+    expect(enumOf("create-campaign", "delivery")).toEqual(["issue", "email", "auto"]);
+    expect(enumOf("add-campaign-step", "channel")).toEqual(["email", "sms", "whatsapp"]);
+    expect(enumOf("record-channel-consent", "channel")).toEqual(["sms", "whatsapp"]);
+    expect(enumOf("record-channel-consent", "basis")).toEqual(["consent", "contract"]);
+    expect(enumOf("suppress-phone", "channel")).toEqual(["sms", "whatsapp", "both"]);
     expect(enumOf("create-campaign", "clientKind")).toEqual(["company", "contact"]);
     expect(enumOf("record-step-event", "eventType")).toEqual(["open", "click"]);
     expect(enumOf("declare-ab-winner", "winner")).toEqual(["a", "b"]);
@@ -38,12 +42,16 @@ describe("Campaigns tool surface", () => {
   it("drops complete-step (marking the step issue done moves the contact on) and adds the stop and opt-out tools", () => {
     const names = CAMPAIGN_TOOLS.map((tool) => tool.name);
     expect(names).not.toContain("complete-step");
-    expect(names).toEqual(expect.arrayContaining(["stop-enrollment", "suppress-address", "request-campaign-approval", "launch-campaign"]));
+    expect(names).toEqual(expect.arrayContaining(["stop-enrollment", "suppress-address", "request-campaign-approval", "launch-campaign", "set-sender-identity", "remove-sender-identity", "list-sender-identities", "record-channel-consent", "suppress-phone", "preflight-campaign"]));
     expect(manifest.tools).toBe(CAMPAIGN_TOOLS);
   });
 
   it("declares what launch on approval and the shared list need", () => {
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["issues.update", "issue.comments.create", "agents.read", "events.emit", "events.subscribe"]));
+    // 0.6: the public unsubscribe endpoint, link checks, the managed Campaigns project and client project links.
+    expect(manifest.capabilities).toEqual(expect.arrayContaining(["webhooks.receive", "http.outbound", "projects.read", "projects.managed"]));
+    expect(manifest.webhooks?.map((hook) => hook.endpointKey)).toEqual(["unsubscribe", "messaging-inbound"]);
+    expect(manifest.projects?.map((project) => project.projectKey)).toEqual(["campaigns"]);
     expect(manifest.database?.coreReadTables).toContain("issues");
   });
 });

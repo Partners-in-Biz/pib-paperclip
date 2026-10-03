@@ -113,7 +113,8 @@ describe("contact.suppressed from the CRM and the Mailbox", () => {
 
   it("a hard bounce from the Mailbox widens a marketing-only row to all mail; junk is ignored", async () => {
     const s = store();
-    s.suppressions!.push({ company_id: CO, email: "uma@x.test", reason: "unsubscribe", scope: "marketing", source: "partnersinbiz.campaigns", contact_id: null, campaign_id: null });
+    // An empty sender key is how a row from before 0.6 is stored (the column is NOT NULL DEFAULT '').
+    s.suppressions!.push({ company_id: CO, email: "uma@x.test", reason: "unsubscribe", scope: "marketing", source: "partnersinbiz.campaigns", contact_id: null, campaign_id: null, sender_key: "" });
     const { harness } = await boot({ store: s });
     await harness.emit(`${MAILBOX}.${HANDOFF_EVENTS.contactSuppressed}` as `plugin.${string}`, { email: "uma@x.test", reason: "bounced", scope: "all", source: "partnersinbiz.mailbox" }, { companyId: CO });
     expect(s.suppressions).toEqual([expect.objectContaining({ email: "uma@x.test", scope: "all", reason: "unsubscribe" })]);

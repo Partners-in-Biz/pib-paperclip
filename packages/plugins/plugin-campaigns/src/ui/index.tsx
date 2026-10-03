@@ -60,11 +60,11 @@ interface Campaign {
   audienceTags: string[];
   audienceMode?: AudienceMode;
   client?: { kind: ClientKind; id: string; name: string | null } | null;
-  steps: Array<{ position: number; delayDays: number; subject: string; body: string; variant?: "a" | "b" }>;
+  steps: Array<{ position: number; delayDays: number; subject: string; body: string; variant?: "a" | "b"; channel?: "email" | "sms" | "whatsapp" }>;
   stats: { enrolled: number; running: number; done: number };
   approvalIssueId: string | null;
   approvalStatus: string | null;
-  delivery?: "issue" | "email";
+  delivery?: "issue" | "email" | "auto";
   winnerVariant?: "a" | "b" | null;
   launchedAt?: string | null;
   /** Why the last launch on approval failed (the approval went back to the approver). */
@@ -149,7 +149,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const abSuggestion = usePluginAction("campaigns.ab-suggestion");
   const declareWinner = usePluginAction("campaigns.declare-winner");
   const [ab, setAb] = useState<AbSuggestion | null>(null);
-  const [delivery, setDelivery] = useState<"issue" | "email">("issue");
+  const [delivery, setDelivery] = useState<"issue" | "email" | "auto">("issue");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [detail, setDetail] = useState<CampaignDetailData | null>(null);
   const [message, setMessage] = useState("");
@@ -170,6 +170,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [audienceTags, setAudienceTags] = useState("");
   const [audienceMode, setAudienceMode] = useState<AudienceMode>(defaultAudience(scope));
   const [stepSubject, setStepSubject] = useState("");
+  const [stepChannel, setStepChannel] = useState<"email" | "sms" | "whatsapp">("email");
+  const [stepTemplate, setStepTemplate] = useState("");
   const [stepBody, setStepBody] = useState("");
   const [stepDelay, setStepDelay] = useState("0");
 
@@ -433,9 +435,10 @@ export function CampaignsPage({ context }: PluginPageProps) {
         <Field label="Name"><Input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
         <Field label="Description"><TextArea value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
         <Field label="Delivery">
-          <Select value={delivery} onChange={(event) => setDelivery(event.target.value === "email" ? "email" : "issue")}>
+          <Select value={delivery} onChange={(event) => setDelivery(event.target.value === "email" ? "email" : event.target.value === "auto" ? "auto" : "issue")}>
             <option value="issue">{DELIVERY_LABEL.issue}: the agent sends each email</option>
             <option value="email">{DELIVERY_LABEL.email}: sent automatically</option>
+            <option value="auto">{DELIVERY_LABEL.auto}: needed for SMS and WhatsApp steps</option>
           </Select>
         </Field>
         {scope ? (
@@ -464,24 +467,35 @@ export function CampaignsPage({ context }: PluginPageProps) {
         ) : null}
       </Modal>
 
-      <Modal open={create === "step"} title="Add an email" description="It goes out after the campaign's last email. Adding one to a campaign waiting for approval cancels that request." onClose={() => setCreate(null)} footer={(
+      <Modal open={create === "step"} title="Add a step" description="It goes out after the campaign's last step. Adding one to a campaign waiting for approval cancels that request." onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
           <Button type="button" disabled={busy} onClick={() => void run(async () => {
             await addStep({
               campaignId: selectedCampaignId,
-              subject: stepSubject,
+              channel: stepChannel,
+              ...(stepChannel === "email" ? { subject: stepSubject } : {}),
+              ...(stepChannel === "whatsapp" && stepTemplate.trim() ? { templateRef: stepTemplate.trim() } : {}),
               body: stepBody,
               delayDays: Number(stepDelay || 0),
             });
             setStepSubject("");
             setStepBody("");
+            setStepTemplate("");
             setStepDelay("0");
-          }, "Email added")}>Add email</Button>
+          }, "Step added")}>Add step</Button>
         </>
       )}>
-        <Field label="Subject"><Input value={stepSubject} onChange={(event) => setStepSubject(event.target.value)} required /></Field>
-        <Field label="Email text"><TextArea value={stepBody} onChange={(event) => setStepBody(event.target.value)} rows={6} placeholder={"Hi {{first_name|there}},\n\n…\n\nReply STOP and we will not email you again."} /></Field>
+        <Field label="Channel">
+          <Select value={stepChannel} onChange={(event) => setStepChannel(event.target.value === "sms" ? "sms" : event.target.value === "whatsapp" ? "whatsapp" : "email")}>
+            <option value="email">Email</option>
+            <option value="sms">SMS (needs automatic delivery, Twilio set up and each person's opt-in)</option>
+            <option value="whatsapp">WhatsApp (needs automatic delivery, Twilio set up and each person's opt-in)</option>
+          </Select>
+        </Field>
+        {stepChannel === "email" ? <Field label="Subject"><Input value={stepSubject} onChange={(event) => setStepSubject(event.target.value)} required /></Field> : null}
+        <Field label={stepChannel === "email" ? "Email text" : "Message text"}><TextArea value={stepBody} onChange={(event) => setStepBody(event.target.value)} rows={6} placeholder={stepChannel === "email" ? "Hi {{first_name|there}},\n\n…\n\nWe add who sent this and how to unsubscribe for you." : "Hi {{first_name|there}}, …  (We add 'Reply STOP to opt out.' for you.)"} /></Field>
+        {stepChannel === "whatsapp" ? <Field label="WhatsApp template (optional, HX…)"><Input value={stepTemplate} onChange={(event) => setStepTemplate(event.target.value)} placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /></Field> : null}
         <Field label="Days to wait after the previous email (or after launch for the first)"><Input type="number" min={0} value={stepDelay} onChange={(event) => setStepDelay(event.target.value)} /></Field>
       </Modal>
 

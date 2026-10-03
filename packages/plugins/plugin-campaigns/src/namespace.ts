@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
 export const PLUGIN_ID = "partnersinbiz.campaigns";
-export const PLUGIN_VERSION = "0.5.0";
+export const PLUGIN_VERSION = "0.6.0";
 export const NAMESPACE_SLUG = "campaigns";
+/** The managed project this plugin declares for PiB's own campaign work. */
+export const CAMPAIGNS_PROJECT_KEY = "campaigns";
 
 /** Same derivation the Paperclip host uses for a plugin schema. */
 export function pluginNamespace(pluginId = PLUGIN_ID, slug = NAMESPACE_SLUG): string {

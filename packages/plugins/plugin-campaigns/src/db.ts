@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { assertDelivery, audienceSource, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type CampaignSuppressionReason, type EnrollmentDraft } from "./domain.js";
-import { clientWhere, listCrmContacts, listCrmContactsAtCompany, textArrayParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { assertDelivery, audienceSource, campaignSenderKey, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type CampaignSuppressionReason, type EnrollmentDraft } from "./domain.js";
+import { clientWhere, listCrmContacts, listCrmContactsAtCompany, suppressionBlocks, textArrayParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import type { Channel, MessagingChannel } from "./channels.js";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace)) throw new Error("Unsafe namespace");
@@ -48,6 +49,9 @@ export interface StepRow {
   body: string;
   html_body: string | null;
   variant: string;
+  channel?: string | null;
+  template_ref?: string | null;
+  template_vars?: unknown;
 }
 
 export interface EnrollmentRow {
@@ -114,7 +118,7 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     clientRef: row.client_ref ?? null,
     clientName: row.client_name ?? null,
     audienceMode: (row.audience_mode ?? "tags") as AudienceMode,
-    delivery: row.delivery === "email" ? "email" : "issue",
+    delivery: row.delivery === "email" ? "email" : row.delivery === "auto" ? "auto" : "issue",
     ownerUserId: row.owner_user_id ?? null,
     ownerAgentId: row.owner_agent_id ?? null,
     approvedByUserId: row.approved_by_user_id ?? null,
@@ -294,7 +298,7 @@ export async function closedStepIssues(ctx: PluginContext, limit = 200): Promise
 
 export async function listSteps(ctx: PluginContext, campaignId: string): Promise<CampaignStepDraft[]> {
   const rows = await ctx.db.query<StepRow>(
-    `SELECT id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant
+    `SELECT id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant, channel, template_ref, template_vars
        FROM ${table(ctx, "campaign_steps")} WHERE campaign_id = $1 ORDER BY position, variant`,
     [campaignId],
   );
@@ -305,6 +309,9 @@ export async function listSteps(ctx: PluginContext, campaignId: string): Promise
     body: row.body,
     htmlBody: row.html_body,
     variant: row.variant as "a" | "b",
+    channel: row.channel === "sms" || row.channel === "whatsapp" ? row.channel : "email",
+    templateRef: row.template_ref ?? null,
+    templateVars: asStringList(row.template_vars),
   }));
 }
 
@@ -314,9 +321,12 @@ export async function insertStep(
 ): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaign_steps")}
-      (id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body, input.step.htmlBody, input.step.variant],
+      (id, company_id, campaign_id, position, delay_days, subject, body, html_body, variant, channel, template_ref, template_vars)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
+    [
+      randomUUID(), input.companyId, input.campaignId, input.step.position, input.step.delayDays, input.step.subject, input.step.body, input.step.htmlBody, input.step.variant,
+      input.step.channel ?? "email", input.step.templateRef ?? null, JSON.stringify(input.step.templateVars ?? []),
+    ],
   );
 }
 
@@ -490,11 +500,11 @@ export async function crmContactsByTags(
   ctx: PluginContext,
   companyId: string,
   tags: string[],
-): Promise<Array<{ id: string; name: string; tags: string[]; emails: string[] }>> {
+): Promise<AudienceContact[]> {
   const rows = await listCrmContacts(ctx, ctx.db.namespace, companyId);
   const wanted = new Set(tags.map((tag) => tag.toLowerCase()));
   return rows
-    .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }))
+    .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [], phones: row.phones ?? [] }))
     .filter((contact) => wanted.size === 0 || contact.tags.some((tag) => wanted.has(tag.toLowerCase())));
 }
 
@@ -502,9 +512,9 @@ export async function crmContactsByIds(
   ctx: PluginContext,
   companyId: string,
   ids: string[],
-): Promise<Array<{ id: string; name: string; tags: string[]; emails: string[] }>> {
+): Promise<AudienceContact[]> {
   const rows = await listCrmContacts(ctx, ctx.db.namespace, companyId, { ids });
-  return rows.map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }));
+  return rows.map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [], phones: row.phones ?? [] }));
 }
 
 export interface AudienceContact {
@@ -512,6 +522,7 @@ export interface AudienceContact {
   name: string;
   tags: string[];
   emails: string[];
+  phones: string[];
 }
 
 /**
@@ -525,7 +536,7 @@ export async function audienceContacts(ctx: PluginContext, companyId: string, ca
   if (source.kind === "company-contacts") {
     const rows = await listCrmContactsAtCompany(ctx, ctx.db.namespace, companyId, source.crmCompanyId);
     return rows
-      .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [] }))
+      .map((row) => ({ id: row.id, name: row.name, tags: row.tags ?? [], emails: row.emails ?? [], phones: row.phones ?? [] }))
       .filter((contact) => matchesAudience(contact.tags, source.tags));
   }
   return crmContactsByTags(ctx, companyId, source.tags);
@@ -685,7 +696,7 @@ export async function insertStepEventOnce(
     campaignId: string;
     enrollmentId: string;
     stepPosition: number;
-    eventType: "sent" | "reply" | "bounce" | "unsubscribe";
+    eventType: "sent" | "reply" | "bounce" | "unsubscribe" | "skipped" | "delivered" | "failed";
     variant: string;
     sourceKey: string;
     meta?: Record<string, unknown> | null;
@@ -766,23 +777,40 @@ export async function enrollmentsForContacts(ctx: PluginContext, companyId: stri
   return rows.map(mapEnrollment);
 }
 
-export async function isSuppressed(ctx: PluginContext, companyId: string, email: string): Promise<boolean> {
-  const rows = await ctx.db.query<{ reason: string }>(
-    `SELECT reason FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND email = $2 LIMIT 1`,
-    [companyId, email.trim().toLowerCase()],
-  );
-  return rows.length > 0;
+/** A stable stand-in for an address after an erasure: the plain address is gone, the opt-out still holds. */
+export function addressHash(address: string): string {
+  return `sha256:${createHash("sha256").update(address.trim().toLowerCase()).digest("hex")}`;
 }
 
-/** Which of these addresses may not get campaigns (any reason, any scope). */
-export async function suppressedEmails(ctx: PluginContext, companyId: string, emails: string[]): Promise<Set<string>> {
+/**
+ * Which of these addresses may not get a campaign from this sender. A hard bounce
+ * (`all`) stops every sender; an unsubscribe or complaint stops the sender it was
+ * on, and every sender when the row has no sender (a row from before 0.6). An
+ * address erased on request is found by its hash.
+ */
+export async function suppressedEmails(ctx: PluginContext, companyId: string, emails: string[], senderKey: string): Promise<Set<string>> {
   const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
   if (wanted.length === 0) return new Set();
-  const rows = await ctx.db.query<{ email: string }>(
-    `SELECT email FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND email = ANY(${textArrayParam(2)})`,
-    [companyId, JSON.stringify(wanted)],
+  const origin = new Map<string, string>();
+  for (const email of wanted) {
+    origin.set(email, email);
+    origin.set(addressHash(email), email);
+  }
+  const rows = await ctx.db.query<{ email: string; scope: string; sender_key: string | null }>(
+    `SELECT email, scope, sender_key FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND email = ANY(${textArrayParam(2)})`,
+    [companyId, JSON.stringify([...origin.keys()])],
   );
-  return new Set(rows.map((row) => row.email));
+  const blocked = new Set<string>();
+  for (const row of rows) {
+    if (!suppressionBlocks({ scope: row.scope === "all" ? "all" : "marketing", senderKey: row.sender_key || null }, { marketing: true, senderKey })) continue;
+    const email = origin.get(row.email);
+    if (email) blocked.add(email);
+  }
+  return blocked;
+}
+
+export async function isSuppressed(ctx: PluginContext, companyId: string, email: string, senderKey: string): Promise<boolean> {
+  return (await suppressedEmails(ctx, companyId, [email], senderKey)).has(email.trim().toLowerCase());
 }
 
 export interface SuppressionInput {
@@ -795,22 +823,24 @@ export interface SuppressionInput {
   source: string;
   contactId: string | null;
   campaignId: string | null;
+  /** Whose list: `own`, `company:<id>`, `contact:<id>`; empty is every sender (the old company-wide row). */
+  senderKey: string;
 }
 
 /**
- * Stores a suppression once per address. A later hard bounce widens a
- * marketing-only row to all mail. True when the address was new.
+ * Stores a suppression once per address and sender. A later hard bounce widens a
+ * marketing-only row to all mail. True when the address was new for that sender.
  */
 export async function addSuppression(ctx: PluginContext, input: SuppressionInput): Promise<boolean> {
   const email = input.email.trim().toLowerCase();
   const res = await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "suppressions")} (company_id, email, reason, scope, source, contact_id, campaign_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (company_id, email) DO NOTHING`,
-    [input.companyId, email, input.reason, input.scope, input.source, input.contactId, input.campaignId],
+    `INSERT INTO ${table(ctx, "suppressions")} (company_id, email, reason, scope, source, contact_id, campaign_id, sender_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (company_id, email, sender_key) DO NOTHING`,
+    [input.companyId, email, input.reason, input.scope, input.source, input.contactId, input.campaignId, input.senderKey],
   );
   const created = (res?.rowCount ?? 0) > 0;
-  if (!created && input.scope === "all") {
+  if (input.scope === "all") {
     await ctx.db.execute(
       `UPDATE ${table(ctx, "suppressions")} SET scope = 'all', updated_at = now() WHERE company_id = $1 AND email = $2 AND scope = 'marketing'`,
       [input.companyId, email],
@@ -826,13 +856,14 @@ export interface SuppressionRow {
   scope: "marketing" | "all";
   source: string;
   contact_id: string | null;
+  sender_key?: string | null;
   created_at: unknown;
 }
 
 /** Suppressions this plugin found since `sinceIso`, re-announced hourly because events are at-most-once. */
 export async function ownSuppressionsSince(ctx: PluginContext, source: string, sinceIso: string, limit = 200): Promise<SuppressionRow[]> {
   return ctx.db.query<SuppressionRow>(
-    `SELECT company_id, email, reason, scope, source, contact_id, created_at
+    `SELECT company_id, email, reason, scope, source, contact_id, sender_key, created_at
        FROM ${table(ctx, "suppressions")}
       WHERE source = $1 AND created_at >= $2::timestamptz
       ORDER BY created_at
@@ -988,5 +1019,337 @@ export async function replyLogged(ctx: PluginContext, companyId: string, message
 export async function contactSuppressed(ctx: PluginContext, companyId: string, contactId: string, emails: string[]): Promise<boolean> {
   const byContact = await ctx.db.query<{ email: string }>(`SELECT email FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND contact_id = $2 LIMIT 1`, [companyId, contactId]);
   if (byContact.length > 0) return true;
-  return (await suppressedEmails(ctx, companyId, emails)).size > 0;
+  const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+  if (wanted.length === 0) return false;
+  // On any sender's list counts: the person asked not to be emailed, which is what a reply issue wants to know.
+  const rows = await ctx.db.query<{ email: string }>(
+    `SELECT email FROM ${table(ctx, "suppressions")} WHERE company_id = $1 AND email = ANY(${textArrayParam(2)})`,
+    [companyId, JSON.stringify(wanted)],
+  );
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Running enrollments of a contact, by sender
+// ---------------------------------------------------------------------------
+
+/** The campaigns' senders by campaign id (own work is `own`). */
+async function sendersOfCampaigns(ctx: PluginContext, campaignIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const id of new Set(campaignIds)) {
+    const campaign = await getCampaign(ctx, id);
+    if (campaign) out.set(id, campaignSenderKey(campaign));
+  }
+  return out;
+}
+
+/**
+ * Stops the contact's running enrollments in campaigns of this sender (every
+ * campaign when `senderKey` is empty) and returns what it stopped with the step
+ * issue each was waiting on, so the caller can cancel those.
+ */
+export async function stopEnrollmentsForSender(
+  ctx: PluginContext,
+  companyId: string,
+  contactId: string,
+  senderKey: string,
+): Promise<Array<{ id: string; campaign_id: string; open_issue_id: string | null }>> {
+  const rows = await ctx.db.query<{ id: string; campaign_id: string; open_issue_id: string | null }>(
+    `SELECT id, campaign_id, open_issue_id FROM ${table(ctx, "campaign_enrollments")}
+      WHERE company_id = $1 AND contact_id = $2 AND status = 'running'`,
+    [companyId, contactId],
+  );
+  if (rows.length === 0) return [];
+  const senders = senderKey ? await sendersOfCampaigns(ctx, rows.map((row) => row.campaign_id)) : new Map<string, string>();
+  const stopped: typeof rows = [];
+  for (const row of rows) {
+    if (senderKey && senders.get(row.campaign_id) !== senderKey) continue;
+    await stopEnrollment(ctx, row.id);
+    stopped.push(row);
+  }
+  return stopped;
+}
+
+// ---------------------------------------------------------------------------
+// Sender identities
+// ---------------------------------------------------------------------------
+
+export interface SenderIdentityRow {
+  company_id: string;
+  sender_key: string;
+  from_address: string | null;
+  from_name: string | null;
+  reply_to: string | null;
+  sms_from: string | null;
+  whatsapp_from: string | null;
+  updated_by?: string | null;
+  updated_at?: unknown;
+}
+
+export async function listSenderIdentityRows(ctx: PluginContext, companyId: string): Promise<SenderIdentityRow[]> {
+  return ctx.db.query<SenderIdentityRow>(
+    `SELECT company_id, sender_key, from_address, from_name, reply_to, sms_from, whatsapp_from, updated_by, updated_at
+       FROM ${table(ctx, "sender_identities")} WHERE company_id = $1 ORDER BY sender_key`,
+    [companyId],
+  );
+}
+
+export async function upsertSenderIdentity(ctx: PluginContext, row: SenderIdentityRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "sender_identities")} (company_id, sender_key, from_address, from_name, reply_to, sms_from, whatsapp_from, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (company_id, sender_key) DO UPDATE SET from_address = EXCLUDED.from_address, from_name = EXCLUDED.from_name,
+       reply_to = EXCLUDED.reply_to, sms_from = EXCLUDED.sms_from, whatsapp_from = EXCLUDED.whatsapp_from, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [row.company_id, row.sender_key, row.from_address, row.from_name, row.reply_to, row.sms_from, row.whatsapp_from, row.updated_by ?? null],
+  );
+}
+
+export async function deleteSenderIdentity(ctx: PluginContext, companyId: string, senderKey: string): Promise<boolean> {
+  const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "sender_identities")} WHERE company_id = $1 AND sender_key = $2`, [companyId, senderKey]);
+  return (res?.rowCount ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// SMS and WhatsApp: do-not-contact list, consent, messages
+// ---------------------------------------------------------------------------
+
+export type ChannelSuppressionReason = "stop_keyword" | "provider_opt_out" | "manual" | "consent_withdrawn" | "invalid_number";
+
+export interface ChannelSuppressionInput {
+  companyId: string;
+  channel: MessagingChannel;
+  /** E.164. */
+  address: string;
+  senderKey: string;
+  reason: ChannelSuppressionReason;
+  scope: "marketing" | "all";
+  source: string;
+  contactId?: string | null;
+  campaignId?: string | null;
+}
+
+/** Stores an SMS or WhatsApp opt-out once per number and sender. True when it was new. */
+export async function addChannelSuppression(ctx: PluginContext, input: ChannelSuppressionInput): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "channel_suppressions")} (company_id, channel, address, sender_key, reason, scope, source, contact_id, campaign_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (company_id, channel, address, sender_key) DO NOTHING`,
+    [input.companyId, input.channel, input.address, input.senderKey, input.reason, input.scope, input.source, input.contactId ?? null, input.campaignId ?? null],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+/**
+ * Which of these numbers may not be messaged by this sender on this channel. A
+ * `marketing` row blocks its own sender (and every sender when it has none); an
+ * `all` row (a number that cannot be reached at all) blocks every sender.
+ */
+export async function blockedAddresses(ctx: PluginContext, companyId: string, channel: MessagingChannel, addresses: string[], senderKey: string): Promise<Set<string>> {
+  const wanted = [...new Set(addresses.filter(Boolean))];
+  if (wanted.length === 0) return new Set();
+  const origin = new Map<string, string>();
+  for (const address of wanted) {
+    origin.set(address, address);
+    origin.set(addressHash(address), address);
+  }
+  const rows = await ctx.db.query<{ address: string; scope: string; sender_key: string | null }>(
+    `SELECT address, scope, sender_key FROM ${table(ctx, "channel_suppressions")}
+      WHERE company_id = $1 AND channel = $2 AND address = ANY(${textArrayParam(3)})`,
+    [companyId, channel, JSON.stringify([...origin.keys()])],
+  );
+  const blocked = new Set<string>();
+  for (const row of rows) {
+    if (!suppressionBlocks({ scope: row.scope === "all" ? "all" : "marketing", senderKey: row.sender_key || null }, { marketing: true, senderKey })) continue;
+    const address = origin.get(row.address);
+    if (address) blocked.add(address);
+  }
+  return blocked;
+}
+
+/** START or UNSTOP: the person asked to hear from this sender again. Only their own opt-out words are lifted, never one a person added. */
+export async function liftChannelSuppression(ctx: PluginContext, companyId: string, channel: MessagingChannel, address: string, senderKey: string): Promise<number> {
+  const res = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "channel_suppressions")}
+      WHERE company_id = $1 AND channel = $2 AND address = $3 AND sender_key = $4 AND reason = ANY(${textArrayParam(5)})`,
+    [companyId, channel, address, senderKey, JSON.stringify(["stop_keyword", "provider_opt_out"])],
+  );
+  return res?.rowCount ?? 0;
+}
+
+export interface ConsentInput {
+  companyId: string;
+  channel: Channel;
+  address: string;
+  senderKey: string;
+  granted: boolean;
+  basis: string;
+  source: string;
+  evidence?: string | null;
+  contactId?: string | null;
+  recordedAt: string;
+  recordedBy?: string | null;
+}
+
+export interface ConsentRow {
+  company_id: string;
+  channel: string;
+  address: string;
+  sender_key: string;
+  granted: boolean;
+  basis: string;
+  source: string;
+  evidence: string | null;
+  contact_id: string | null;
+  recorded_at: unknown;
+  recorded_by: string | null;
+}
+
+/** Stores a consent record; a record older than the one held is ignored. True when it was stored. */
+export async function upsertConsent(ctx: PluginContext, input: ConsentInput): Promise<boolean> {
+  const held = await ctx.db.query<{ recorded_at: unknown }>(
+    `SELECT recorded_at FROM ${table(ctx, "channel_consents")} WHERE company_id = $1 AND channel = $2 AND address = $3 AND sender_key = $4`,
+    [input.companyId, input.channel, input.address, input.senderKey],
+  );
+  const have = held[0] ? Date.parse(String(held[0].recorded_at instanceof Date ? held[0].recorded_at.toISOString() : held[0].recorded_at)) : Number.NaN;
+  const next = Date.parse(input.recordedAt);
+  if (Number.isFinite(have) && Number.isFinite(next) && next < have) return false;
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "channel_consents")} (company_id, channel, address, sender_key, granted, basis, source, evidence, contact_id, recorded_at, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (company_id, channel, address, sender_key) DO UPDATE SET granted = EXCLUDED.granted, basis = EXCLUDED.basis,
+       source = EXCLUDED.source, evidence = EXCLUDED.evidence, contact_id = EXCLUDED.contact_id, recorded_at = EXCLUDED.recorded_at, recorded_by = EXCLUDED.recorded_by`,
+    [input.companyId, input.channel, input.address, input.senderKey, input.granted, input.basis, input.source, input.evidence?.slice(0, 500) ?? null, input.contactId ?? null, input.recordedAt, input.recordedBy ?? null],
+  );
+  return true;
+}
+
+/** Which of these numbers have a granted opt-in on file for this sender and channel. */
+export async function consentedAddresses(ctx: PluginContext, companyId: string, channel: Channel, addresses: string[], senderKey: string): Promise<Set<string>> {
+  const wanted = [...new Set(addresses.filter(Boolean))];
+  if (wanted.length === 0) return new Set();
+  const rows = await ctx.db.query<{ address: string }>(
+    `SELECT address FROM ${table(ctx, "channel_consents")}
+      WHERE company_id = $1 AND channel = $2 AND sender_key = $3 AND granted = true AND address = ANY(${textArrayParam(4)})`,
+    [companyId, channel, senderKey, JSON.stringify(wanted)],
+  );
+  return new Set(rows.map((row) => row.address));
+}
+
+/** How many of these numbers have their granted opt-in recorded by an agent (`recorded_by` is `agent:<id>`), not from a form, import or the person. */
+export async function agentRecordedConsents(ctx: PluginContext, companyId: string, channel: Channel, addresses: string[], senderKey: string): Promise<number> {
+  const wanted = [...new Set(addresses.filter(Boolean))];
+  if (wanted.length === 0) return 0;
+  const rows = await ctx.db.query<{ address: string; recorded_by: string | null }>(
+    `SELECT address, recorded_by FROM ${table(ctx, "channel_consents")}
+      WHERE company_id = $1 AND channel = $2 AND sender_key = $3 AND granted = true AND address = ANY(${textArrayParam(4)})`,
+    [companyId, channel, senderKey, JSON.stringify(wanted)],
+  );
+  return rows.filter((row) => typeof row.recorded_by === "string" && row.recorded_by.startsWith("agent:")).length;
+}
+
+export type MessageStatusValue = "sending" | "pending" | "sent" | "delivered" | "failed" | "unknown";
+
+export interface ChannelMessageRow {
+  key: string;
+  company_id: string;
+  campaign_id: string;
+  enrollment_id: string;
+  step_position: number;
+  channel: MessagingChannel;
+  to_address: string;
+  contact_id: string | null;
+  sender_key: string;
+  body: string;
+  segments: number | null;
+  status: MessageStatusValue;
+  provider_id: string | null;
+  provider_status: string | null;
+  error_code: string | null;
+  error: string | null;
+  attempts: number;
+  updated_at?: unknown;
+}
+
+const MESSAGE_COLUMNS =
+  "key, company_id, campaign_id, enrollment_id, step_position, channel, to_address, contact_id, sender_key, body, segments, status, provider_id, provider_status, error_code, error, attempts, updated_at";
+
+/** Writes the message row before the provider is called. False when the step was already attempted. */
+export async function claimMessage(
+  ctx: PluginContext,
+  input: Pick<ChannelMessageRow, "key" | "company_id" | "campaign_id" | "enrollment_id" | "step_position" | "channel" | "to_address" | "contact_id" | "sender_key" | "body" | "segments">,
+): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "channel_messages")} (key, company_id, campaign_id, enrollment_id, step_position, channel, to_address, contact_id, sender_key, body, segments, status, attempts)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'sending', 1)
+     ON CONFLICT (key) DO NOTHING`,
+    [input.key, input.company_id, input.campaign_id, input.enrollment_id, input.step_position, input.channel, input.to_address, input.contact_id, input.sender_key, input.body, input.segments],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+export async function getMessage(ctx: PluginContext, key: string): Promise<ChannelMessageRow | null> {
+  const rows = await ctx.db.query<ChannelMessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM ${table(ctx, "channel_messages")} WHERE key = $1`, [key]);
+  return rows[0] ?? null;
+}
+
+/** Changes the fields named in `patch`; the rest stay. */
+export async function updateMessage(
+  ctx: PluginContext,
+  key: string,
+  patch: Partial<Pick<ChannelMessageRow, "status" | "provider_id" | "provider_status" | "error_code" | "error" | "segments" | "attempts">>,
+): Promise<void> {
+  const row = await getMessage(ctx, key);
+  if (!row) return;
+  const next = { ...row, ...patch };
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "channel_messages")}
+        SET status = $2, provider_id = $3, provider_status = $4, error_code = $5, error = $6, segments = $7, attempts = $8, updated_at = now()
+      WHERE key = $1`,
+    [key, next.status, next.provider_id ?? null, next.provider_status ?? null, next.error_code ?? null, next.error ? next.error.slice(0, 500) : null, next.segments ?? null, next.attempts ?? 1],
+  );
+}
+
+/**
+ * Sent messages whose delivery status the provider has not confirmed yet, newest first.
+ * Newest first so messages a carrier never confirms (they stay `sent` until they age out of
+ * the lookback) cannot crowd newer ones out of the batch and delay their delivery results
+ * and the provider's STOP block (21610).
+ */
+export async function messagesAwaitingStatus(ctx: PluginContext, companyId: string, sinceIso: string, limit = 50): Promise<ChannelMessageRow[]> {
+  return ctx.db.query<ChannelMessageRow>(
+    `SELECT ${MESSAGE_COLUMNS} FROM ${table(ctx, "channel_messages")}
+      WHERE company_id = $1 AND status = 'sent' AND provider_id IS NOT NULL AND created_at >= $2::timestamptz
+      ORDER BY created_at DESC
+      LIMIT ${Math.max(1, Math.min(limit, 200))}`,
+    [companyId, sinceIso],
+  );
+}
+
+/** Contacts whose projected phone numbers match an E.164 number (compared on the last nine digits, then exactly). */
+export async function crmContactsByPhone(ctx: PluginContext, companyId: string, tail: string): Promise<Array<{ id: string; name: string; emails: string[]; phones: string[] }>> {
+  return ctx.db.query<{ id: string; name: string; emails: string[]; phones: string[] }>(
+    `SELECT id, name, emails, phones
+       FROM ${table(ctx, "crm_contacts")}
+      WHERE company_id = $1 AND deleted = false
+        AND EXISTS (SELECT 1 FROM unnest(phones) AS p(value) WHERE right(regexp_replace(p.value, '[^0-9]', '', 'g'), 9) = $2)
+      ORDER BY updated_at, id
+      LIMIT 10`,
+    [companyId, tail],
+  );
+}
+
+/**
+ * The newest SMS or WhatsApp message we sent to this number. With a `senderKey` only
+ * messages sent for that sender count: a person who got a client's text and answers PiB's
+ * own number (or the reverse) is not answering the other sender's campaign.
+ */
+export async function latestMessageFor(ctx: PluginContext, companyId: string, toAddress: string, channel: MessagingChannel, senderKey?: string | null): Promise<ChannelMessageRow | null> {
+  const rows = await ctx.db.query<ChannelMessageRow>(
+    `SELECT ${MESSAGE_COLUMNS} FROM ${table(ctx, "channel_messages")}
+      WHERE company_id = $1 AND channel = $2 AND to_address = $3${senderKey ? " AND sender_key = $4" : ""}
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    senderKey ? [companyId, channel, toAddress, senderKey] : [companyId, channel, toAddress],
+  );
+  return rows[0] ?? null;
 }

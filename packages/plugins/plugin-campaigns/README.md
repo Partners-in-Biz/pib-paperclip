@@ -1,6 +1,6 @@
 # Campaigns
 
-Paperclip plugin `partnersinbiz.campaigns`. Themed email programs that enroll contacts and open a Paperclip issue for each due step.
+Paperclip plugin `partnersinbiz.campaigns`. Themed email, SMS and WhatsApp programs that enroll contacts and send each due step by itself or open a Paperclip issue for it, as PiB or as a client.
 
 - A campaign groups email steps that target an audience. `audienceTags` narrows which contacts are enrolled; empty means every CRM contact, which launches only when the approval said "All contacts (N)".
 - A campaign is PiB's own work (no client) or a client's (`client_kind` + `client_ref`, a CRM company or contact). The Campaigns page shows own work; `/campaigns?client=company:<id>` or `?client=contact:<id>` is that client's workspace tab. A company client's campaign enrolls the contacts at that company by default (`audienceMode: client_contacts`); a contact client's enrolls that contact (`client_contact`); `tags` keeps the tag audience.
@@ -37,3 +37,89 @@ The plugin reads contacts from the CRM plugin's namespace to build the audience.
 - **Done checks** (kit `registerDoneChecks`, registered after the plugin's own `issue.updated` handler): an agent closing a step issue or "Email not sent" passes once the contact moved on or was stopped; "Revise campaign" needs the draft changed after the refusal (`campaigns.edited_at`) and a new approval; a reply needs `log-reply`, a stop after the reply, or the address suppressed. Unfinished closes reopen with what is missing; the third goes to the Operator.
 - **New tool** `log-reply` (`messageId`, `outcome` `answered` | `no-reply-needed`, `note`, `mailDraftId`).
 - Migration `012_campaigns.sql`: `campaigns.edited_at` and the `reply_log` table.
+
+## Send as the client, one list per sender, texts and privacy (0.6.0)
+
+Closes the audit findings Q1a-3 (client email), Q10-7 and Q1a-6 (SMS, WhatsApp, unsubscribe), Q1a-12 (client project) and Q10-13 (consent and erasure) on the Campaigns side. Migration `013_campaigns.sql`; stop-first deploy (new capabilities, a new migration). The host's webhook route, one front-door rule and a few Mailbox changes are listed under "Needs elsewhere" at the end.
+
+### Who a campaign goes out as (Q1a-3)
+
+- Before 0.6 a campaign saved `fromName`, `fromLocal` and `replyTo`, showed them to the approver and then discarded them: the mail went out from the Mailbox default account (PiB's Gmail) with no Reply-To. Now each **sender** (`own`, `company:<id>`, `contact:<id>`, the kit `senderKeyOf`) has an identity in `sender_identities`: `fromAddress` (a Mailbox account the client connected), `fromName`, `replyTo`, `smsFrom`, `whatsappFrom`. Tools: `set-sender-identity`, `remove-sender-identity`, `list-sender-identities`.
+- The send request carries `from`, `fromName` and `replyTo` (kit `mailSenderFields`). The campaign's own `fromName` and `replyTo` win over the identity's; `fromLocal` no longer picks anything (kept for compatibility). The Mailbox must honour them and refuse a `from` that is not a connected account (needs elsewhere).
+- Own marketing without an identity still uses the default account. A client's marketing without an identity is refused at `request-campaign-approval`, at launch (the approval goes back to the person with the reason) and at every send (the step is held: nothing goes out, no issue per contact, the Cockpit goes red with `campaigns:cannot-send`). It is never sent from PiB's Gmail or number. A campaign whose delivery is `issue` (an agent sends each email by hand) needs no identity. Its step issues, and the "Email not sent" issue of a failed automatic send, carry the same text an automatic send would: the body for the contact followed by the footer (who sent it, the person's own unsubscribe link, reply STOP), and say to send it whole. The skill tells agents not to write their own opt-out line, so the footer must be in the issue; preflight warns when no link can be built (the footer then says reply STOP only).
+- The approval issue states "Sent as: Name <address>, replies to ...", the audience reachable per channel, the send window, the footer that is added, and the preflight warnings. Changing an identity cancels the open approval of that sender's drafts.
+- Approvals now open through the kit `openApprovalIssue` (Reviewer first, then the owner, then the Operator with a note; never unassigned). The approver is the company owner by the kit chain; the creating person is only the fallback (it used to be first). This is the one behaviour change for existing campaigns.
+
+### One list per sender, and unsubscribing
+
+- `suppressions` is keyed by (company, address, sender). An unsubscribe or complaint is on one sender's list: unsubscribing from a client's emails does not silence PiB's own or another client's, and stops only that sender's running campaigns for the person. A hard bounce is about the address and stops every sender. A row from before 0.6, or an event with no `senderKey`, has an empty sender and keeps blocking every sender (nobody who opted out is emailed because a sender was unknown). `suppress-address` takes `client` for the sender; without it the opt-out is for every sender. A withdrawn consent that arrives as `consent.recorded` (the Mailbox sends one for every unsubscribe, the CRM for a withdrawal) goes on the list of the sender its subject names (`senderKeyOf`: PiB's own list for a subject with no client, that client's otherwise), never on every list.
+- `contact.suppressed` carries `senderKey` both ways (the kit contract); the hourly job re-announces with it. The reply path (Jev "unsubscribe") uses the campaign's own sender.
+- **Footer.** Every marketing email gets who sent it, an unsubscribe link and "reply STOP". `{{unsubscribe_url}}` is a merge token for the same link. The link opens a static page, `/_plugins/<installation uuid>/ui/unsubscribe.html?t=<token>`, that asks the person to confirm (a mail scanner opening it unsubscribes nobody) and posts the token to the plugin's `unsubscribe` webhook. The token is the kit's signed unsubscribe token (company, address, sender) made with a per-company secret the plugin generates and keeps in its own state; the webhook never creates a secret, refuses every bad token with one message, and repeats are harmless. It needs the **Public base URL** setting and the Campaigns page opened once (the plugin learns its UI path then).
+- **One-click (RFC 8058).** `unsubscribeUrl` is put on the send request, and so the Mailbox adds `List-Unsubscribe-Post`, only when the **One-click unsubscribe address** setting is saved. The host's webhook route is public but takes only JSON, drops the query string and answers `{ deliveryId, status }`, so it cannot carry a per-person address by itself. A front-door rule forwards a mail client's POST to `/u?t=<token>` to the webhook with the token in the `X-Unsubscribe-Token` header (the handler reads that header, then the JSON body). The rule for the live Caddyfile (not run against it; check with `caddy validate`):
+
+```
+paperclip.partnersinbiz.online {
+	encode zstd gzip
+	@unsubscribe path /u
+	handle @unsubscribe {
+		@post method POST
+		route @post {
+			request_header X-Unsubscribe-Token {http.request.uri.query.t}
+			rewrite * /api/plugins/partnersinbiz.campaigns/webhooks/unsubscribe
+			reverse_proxy 127.0.0.1:3100 {
+				header_up X-Forwarded-Proto {scheme}
+				header_up X-Real-IP {remote_host}
+			}
+		}
+		respond "Use the unsubscribe link in your email." 405
+	}
+	reverse_proxy 127.0.0.1:3100 { ... the existing block ... }
+}
+```
+
+  Then save `https://paperclip.partnersinbiz.online/u` as the one-click address in the Campaigns settings. Until then the footer link, reply STOP and the Mailbox's mailto header work, and preflight warns.
+- The host keeps the headers and body of every webhook delivery in its own `plugin_webhook_deliveries` table, which a plugin cannot prune: the unsubscribe token (so the address in it), a forwarded reply's JSON and the plain `x-pib-webhook-secret` header of the `messaging-inbound` webhook all land there. Prune it from the VPS janitor (rows older than 30 days), and rotate the inbound secret if that table ever leaks.
+- **Opens and clicks are not captured, on purpose.** A tracking pixel needs a public GET that answers with an image, and click tracking needs a GET that redirects to a checked address; the host's public routes are POST-only JSON and static files, and a redirect page that trusts an unchecked address in the URL would be an open redirect on our domain. Replies, bounces, unsubscribes, SMS delivery results and `record-step-event` for a real report are captured.
+
+### Preflight
+
+`preflight-campaign` (tool) runs the same checks `request-campaign-approval` runs (and the launch re-runs without the web): every step complete and its merge tokens known; a client has its own sender; the Mailbox is on; each text channel is configured and has a number; a client's email can carry an unsubscribe link (error), PiB's own warns; the sender's domain health when the Mailbox has reported it (event `sender.health`: bad blocks, unknown warns); links are https, not test or private addresses, and answer (404 or an unknown host is an error, a site that blocks robots a warning; up to 12 links through the host's SSRF-guarded fetch); SMS parts and characters that force UCS-2; WhatsApp templates; and who can receive each channel (nobody is an error). Errors block the request, warnings go to the approver.
+
+### SMS and WhatsApp (Q10-7, Q1a-6)
+
+- A step has a `channel` (`email` default, `sms`, `whatsapp`); WhatsApp steps may carry `templateRef` (a Twilio Content SID) and `templateVars`. SMS and WhatsApp need the campaign's delivery `auto` (every step goes out by itself on its channel); `email` stays email-only; `issue` stays a task per step. A later step on another channel is skipped for a contact it cannot reach.
+- `MessagingProvider` is the interface (`send`, `inbound`, `statuses`). `TwilioProvider` is the real adapter written against the documented Programmable Messaging REST API; it is **off until the company saves the account SID, an auth token secret and a sender number** in the Campaigns settings (`messaging` block). Setup shows the owner steps with deep links (create the account, find the SID and token, store the token as a Paperclip secret, buy or register a number, register the WhatsApp sender and templates); account creation is a person's job, never the plugin's. Tests use a mock provider; nothing touches the network. A launch refuses a channel that is not configured and the Cockpit shows an active campaign that cannot send.
+- **Opt-in.** SMS and WhatsApp marketing reaches only people with a granted opt-in for that sender and channel (`channel_consents`): `record-channel-consent` (agents, evidence required) or the kit's `consent.recorded` (SMS). Email stays opt-out. An agent's typed-in evidence cannot be checked, so the approval says how many of the reachable opt-ins were recorded by an agent (not a form or an import) and tells the approver to ask to see the evidence.
+- **Opt-out.** STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, OPTOUT and sentences that plainly ask to stop (never a word inside another sentence) put the number on that sender's do-not-message list, stop that sender's running campaigns for the person, cancel their open step issues and announce a withdrawn consent. START and UNSTOP lift only the person's own opt-out and record a new opt-in; a block a person set stays. A STOP to a number the plugin does not know stops every sender. A STOP or START to a client's number is announced to the CRM as that client's consent (the subject carries the client), never as PiB's own. Twilio's own block (error 21610) is recorded the same way. `suppress-phone` covers an opt-out said any other way.
+- **Replies** are read by the `poll-messaging` job every 10 minutes (`GET Messages.json` for the company's numbers; the host's webhook route cannot take Twilio's form posts, so STOP works without a public endpoint). The `messaging-inbound` webhook takes the same message as JSON (Twilio Studio or a Function can forward it) with a shared secret of at least 16 characters in `x-pib-webhook-secret`; without a secret saved nothing is accepted. A reply opens the same "Reply from" issue as an email reply, with the message in it; the plugin cannot answer a text. A reply belongs to the campaign of the number that was texted: someone texted by a client who answers PiB's own number (or the reverse) is not answering the other sender's campaign. The read window only moves forward (five minutes of overlap, repeats skipped); a read that returns as many messages as the provider lets one poll read (500 per number) is logged as possibly incomplete, and Twilio still blocks a recipient who replied STOP. A Messaging Service alone sends but reads no replies (they are read on a number): Setup says so.
+- **Send window.** SMS and WhatsApp marketing is sent only inside Mon-Fri 08:00-20:00 and Sat 09:00-13:00 in the company timezone, never on a Sunday (South African direct marketing rules); the `messaging` settings change the hours and list public holidays. A step outside the window is put back to the next opening.
+- **Length.** GSM-7 160 / 153 per part, UCS-2 70 / 67 (one smart quote or emoji switches the whole message); preflight warns above 3 parts and refuses over 1,600 characters. Every text ends "Reply STOP to opt out." unless the step already tells the reader to send STOP ("Reply STOP to unsubscribe", "Text STOP"); copy that only contains the word ("Stop paying too much", "next to the bus stop") still gets the line, and so does a WhatsApp template check (a template without the instruction is a warning).
+- **At most once.** The `channel_messages` row is written before the provider is called. A send whose outcome is unknown (no answer, a 5xx, a crash between the row and the answer) is recorded `unknown` and handed to a person; only a "not accepted, try later" answer (429, 503) or a request that provably never left (no DNS answer, connection refused, a bad certificate) is retried, five times ten minutes apart. A refused account or sender leaves the step due and turns the Cockpit red (`campaigns:messaging`). After three failures in a row for a company (no answer, a refused account, a rate limit; failures more than ten minutes apart do not add up) the provider is left alone for ten minutes and the due steps wait untouched, so an outage opens at most a few issues and a refused account is not asked for every contact every five minutes. Delivery results are read newest first, so messages a carrier never confirms cannot crowd out newer ones. Delivery results (delivered, undelivered, failed) are read from the provider and recorded as step events; a number the carrier says is unreachable is not tried again.
+- If Twilio's South African coverage does not suit, another gateway is one more `MessagingProvider`.
+
+### Client project routing (Q1a-12, Q9-1 context)
+
+The plugin declares a managed **Campaigns** project (`projects.managed`) and calls `registerClientProjectWatch`; every issue it opens (step, reply, failed send, revision, approval) goes through `resolveClientProjectId`: the project the CRM linked to the client (event `client.projects.updated`, the CRM builder emits it), else the managed Campaigns project; own work uses the managed project. A linked project that no longer exists or is archived is skipped (`projects.read`).
+
+### Consent and erasure (Q10-13, Campaigns side)
+
+- `registerConsentReceiver`: `consent.recorded` stores opt-ins per sender (a client in the subject is that client's list) and ignores an older record; a withdrawal puts the address or number on the list of that same sender (PiB's own for a subject with no client), so a client's unsubscribe does not silence PiB or another client.
+- `registerEraseReceiver`: `contact.erase.requested` (the kit receiver refuses it without an approving person and never runs it twice) removes the person's enrollments, step events, reply log, mail send requests, text messages and consents, blanks the plugin's projected copy of the contact, and clears the name and message text from their step, reply and failed-send issues (cancelled, kept). Their do-not-contact entries stay as a one-way hash (still blocking; an entry that would collide with a hash entry from an earlier erasure folds into it, the wider scope winning) and agents' issue comments stay (a plugin cannot edit them): both are reported as `retained`. `marketing_only` only adds the opt-outs and stops the campaigns.
+
+### Other changes
+
+- `registerCompanyBootstrap` replaces the hand-written `company.created` handler (skills, Campaigns project); the hourly `setup-status` job also runs `syncAllCompanies`; the Cockpit snapshot adds `skillSyncCheck`, `campaigns:cannot-send`, `campaigns:unsubscribe`, `campaigns:messaging*` and the `poll-messaging` job.
+- Setup items: public address, one-click unsubscribe, client senders, Twilio, SMS sender, WhatsApp sender and templates (all optional, none blocks PiB's own email).
+- Campaign detail shows who it goes out as, each step's channel and the checks; the add-step dialog has a channel.
+- Capabilities added: `webhooks.receive`, `http.outbound`, `projects.read`, `projects.managed`. The only core tables read are still `issues` and `heartbeat_runs`.
+- The test `mail.spec.ts` that hard-coded a date (it failed from 2026-10-03) now computes it.
+
+### Settings
+
+`publicBaseUrl`, `oneClickUnsubscribeUrl`, and the `messaging` block: `accountSid`, `authToken` (secret), `smsFrom`, `messagingServiceSid`, `whatsappFrom`, `defaultCountry` (+27), `weekdays`, `saturday`, `sunday`, `blackoutDates`, `inboundWebhookSecret` (secret).
+
+### Needs elsewhere
+
+- **Mailbox:** honour `from` (a connected account only: refuse any other, never fall back for a client), `fromName` and `replyTo` on `mail.send.requested`; add `List-Unsubscribe: <unsubscribeUrl>, <mailto:...>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` when `unsubscribeUrl` is set; apply `suppressionBlocks` with the `senderKey` on `contact.suppressed`; announce `sender.health` (`{ accountAddress, status: ok | warn | bad, detail, checkedAt }`, `default: true` for the default account) from its SPF, DKIM and DMARC check.
+- **CRM:** emit `client.projects.updated`; be the erasure originator and publish `consent.recorded`.
+- **VPS ops:** the Caddy rule above; prune `plugin_webhook_deliveries` older than 30 days.

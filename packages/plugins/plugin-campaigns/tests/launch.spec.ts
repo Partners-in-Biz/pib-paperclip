@@ -131,7 +131,8 @@ describe("launch on approval", () => {
     await setIssueStatus(harness, store, issueId, "done");
     await issueUpdated(harness, issueId, REVIEWER);
     expect(store.campaigns![0]!.status).toBe("draft");
-    expect(await harness.ctx.issues.get(issueId, CO)).toMatchObject({ status: "todo", assigneeAgentId: null, assigneeUserId: "user-peet" });
+    // The company owner (roles) decides; the creating person is only the fallback.
+    expect(await harness.ctx.issues.get(issueId, CO)).toMatchObject({ status: "todo", assigneeAgentId: null, assigneeUserId: "user-owner" });
   });
 
   it("a person approving while the Reviewer still holds the issue still launches", async () => {
@@ -146,6 +147,8 @@ describe("launch on approval", () => {
 
   it("when it cannot launch, the approval goes back to the person with the reason", async () => {
     const store = draftStore({ audience_tags: [], audience_mode: "client_contact", client_kind: "contact", client_ref: "ghost", client_name: "Ghost Person" });
+    // A client's email needs its own sender before anything else is checked.
+    store.sender_identities = [{ company_id: CO, sender_key: "contact:ghost", from_address: "ghost@client.test", from_name: "Ghost Person", reply_to: null, sms_from: null, whatsapp_from: null }];
     const { harness, comments } = await boot({ store });
     const issueId = "appr-x";
     seedIssue(harness, store, { id: issueId, status: "todo", assigneeUserId: "user-peet", description: "approve" });
