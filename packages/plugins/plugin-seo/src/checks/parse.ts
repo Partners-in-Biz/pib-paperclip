@@ -251,6 +251,31 @@ function checkFaq(item: Record<string, unknown>): string[] {
   return issues;
 }
 
+/** Every JSON-LD node on the page (`@graph` flattened), parsed; blocks that are not valid JSON are skipped. */
+export function jsonLdNodes(html: string): Array<Record<string, unknown>> {
+  const scripts = [...stripComments(html).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].filter((m) =>
+    /application\/ld\+json/i.test(parseAttributes(`<script ${m[1]}>`).type ?? ""),
+  );
+  const out: Array<Record<string, unknown>> = [];
+  for (const script of scripts) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(script[2]!.trim().replace(/^<!\[CDATA\[|\]\]>$/g, ""));
+    } catch {
+      continue;
+    }
+    const queue: unknown[] = Array.isArray(parsed) ? [...parsed] : [parsed];
+    while (queue.length > 0) {
+      const node = queue.shift();
+      if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+      const record = node as Record<string, unknown>;
+      if (Array.isArray(record["@graph"])) queue.push(...(record["@graph"] as unknown[]));
+      if (typesOf(record).length > 0) out.push(record);
+    }
+  }
+  return out;
+}
+
 export function extractJsonLd(html: string, url: string | null = null): SchemaResult {
   const scripts = [...stripComments(html).matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].filter((m) =>
     /application\/ld\+json/i.test(parseAttributes(`<script ${m[1]}>`).type ?? ""),
@@ -390,7 +415,7 @@ export function parseRobots(text: string): ParsedRobots {
   return { groups, sitemaps };
 }
 
-function ruleMatches(rulePath: string, path: string): boolean {
+export function ruleMatches(rulePath: string, path: string): boolean {
   if (!rulePath) return false;
   const anchored = rulePath.endsWith("$");
   const pattern = (anchored ? rulePath.slice(0, -1) : rulePath)

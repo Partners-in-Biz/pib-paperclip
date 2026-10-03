@@ -4,6 +4,7 @@
  * longer reports for that URL are resolved).
  */
 import { randomUUID } from "node:crypto";
+import type { CoveredResource } from "../checks/geo.js";
 import type { CheckFinding } from "../checks/parse.js";
 import {
   runCanonicalCheck,
@@ -33,7 +34,7 @@ export async function recordCheckFindings(
   sprint: db.Sprint | null,
   source: string,
   findings: CheckFinding[],
-  covered: Array<{ category: string; url: string | null }>,
+  covered: CoveredResource[],
 ): Promise<{ recorded: number; resolved: number }> {
   if (!sprint) return { recorded: 0, resolved: 0 };
   let recorded = 0;
@@ -52,11 +53,24 @@ export async function recordCheckFindings(
     });
     recorded += 1;
   }
-  const pairs = new Map<string, { category: string; url: string | null }>();
-  for (const c of covered) pairs.set(`${c.category}|${c.url ?? ""}`, c);
-  for (const f of kept) pairs.set(`${f.category}|${f.url ?? ""}`, { category: f.category, url: f.url });
+  const pairs = new Map<string, CoveredResource>();
+  for (const c of covered) {
+    const key = `${c.category}|${c.url ?? ""}`;
+    const earlier = pairs.get(key);
+    // The same resource listed twice: what either run could not judge stays open.
+    const keepOpen = earlier?.keepOpen && c.keepOpen ? (finding: string) => earlier.keepOpen!(finding) || c.keepOpen!(finding) : (earlier?.keepOpen ?? c.keepOpen);
+    pairs.set(key, { category: c.category, url: c.url, ...(keepOpen ? { keepOpen } : {}) });
+  }
+  for (const f of kept) {
+    const key = `${f.category}|${f.url ?? ""}`;
+    if (!pairs.has(key)) pairs.set(key, { category: f.category, url: f.url });
+  }
   for (const pair of pairs.values()) {
     const current = kept.filter((f) => f.category === pair.category && (f.url ?? "") === (pair.url ?? "")).map((f) => f.finding);
+    if (pair.keepOpen) {
+      const open = await db.openFindingTexts(env.ctx.db, { sprintId: sprint.id, category: pair.category, url: pair.url, source });
+      current.push(...open.filter(pair.keepOpen));
+    }
     resolved += await db.resolveStaleFindings(env.ctx.db, { sprintId: sprint.id, category: pair.category, url: pair.url, source, current });
   }
   return { recorded, resolved };

@@ -14,7 +14,15 @@ export interface CompletionFacts {
   latestSnapshotDay: number | null;
   /** Live content rows with at least one linked Social post. */
   liveContentWithSocial?: number;
+  /** Days since the sprint's latest geo-audit (null when none was recorded). */
+  geoAuditAgeDays?: number | null;
+  /** Distinct (question, assistant) answers sampled in the last 14 days. */
+  aiSamplesRecent?: number;
 }
+
+/** A geo-audit must be this recent (days) when a GEO task closes, so its result is on record. */
+export const GEO_AUDIT_MAX_AGE_DAYS = 14;
+export const MIN_AI_SAMPLES = 5;
 
 export const MIN_TRACKED_KEYWORDS = 5;
 
@@ -26,6 +34,13 @@ function count(n: number, one: string, many = `${one}s`): string {
 /** Live content rows with social posts a post-repurpose task needs (w5: post 1, w6: posts 1 and 2). */
 export function socialPostsNeeded(templateKey: string | null | undefined): number {
   return templateKey === "w6-repurpose-2" ? 2 : 1;
+}
+
+function geoAuditBlocker(facts: CompletionFacts): string | null {
+  const age = facts.geoAuditAgeDays;
+  return age == null || age > GEO_AUDIT_MAX_AGE_DAYS
+    ? `No geo-audit was recorded in the last ${GEO_AUDIT_MAX_AGE_DAYS} days. Run geo-audit with the sprintId (after your change is live) so the result is on record, then complete.`
+    : null;
 }
 
 export function completionBlocker(taskType: string, facts: CompletionFacts, templateKey?: string | null): string | null {
@@ -54,6 +69,17 @@ export function completionBlocker(taskType: string, facts: CompletionFacts, temp
       return facts.directoriesNotStarted > 0
         ? `${count(facts.directoriesNotStarted, "directory or citation", "directories or citations")} ${facts.directoriesNotStarted === 1 ? "is" : "are"} still not started. Submit each (update-backlink status submitted with notes) or mark it rejected with a reason.`
         : null;
+    case "geo-mention-check": {
+      const samples = facts.aiSamplesRecent ?? 0;
+      if (samples < MIN_AI_SAMPLES) return `Only ${count(samples, "AI answer")} ${samples === 1 ? "was" : "were"} sampled in the last ${GEO_AUDIT_MAX_AGE_DAYS} days. Ask at least ${MIN_AI_SAMPLES} questions and record each with record-ai-mentions first (if no tool of yours returns an AI assistant's answer, skip-task with that reason instead of guessing).`;
+      return geoAuditBlocker(facts);
+    }
+    case "geo-crawler-access":
+    case "geo-llms-txt":
+    case "geo-entity-schema":
+    case "geo-answer-blocks":
+    case "geo-brand-consistency":
+      return geoAuditBlocker(facts);
     case "audit-snapshot":
       return facts.latestSnapshotDay == null || facts.latestSnapshotDay < 90
         ? "No day-90 (or later) audit snapshot exists yet. Run run-audit-snapshot first."

@@ -19,6 +19,7 @@ import * as db from "../db.js";
 import { completionBlocker } from "../engine/guards.js";
 import { needsSignoff, type AutopilotMode } from "../engine/sprint.js";
 import { playbookFor } from "../templates/playbooks.js";
+import { groupBlockerFor } from "./chunks.js";
 
 export const TASK_CHECK_LABEL = "SEO sprint task";
 
@@ -73,7 +74,8 @@ export async function checkTaskClose(issue: DoneCheckIssue, ctx: PluginContext):
   const open = !FINISHED.has(task.status);
   const sprint = open ? await db.getSprint(ctx.db, issue.companyId, task.sprintId) : null;
   // The same completion rules `complete-task` applies (w5/w6: social posts linked; keywords; directories; day-90 snapshot).
-  const blocker = open ? completionBlocker(task.taskType, await db.completionFacts(ctx.db, task.sprintId), task.templateKey) : null;
+  // A task split into page groups is complete only after the last group (service/chunks.ts).
+  const blocker = open ? (completionBlocker(task.taskType, await db.completionFacts(ctx.db, task.sprintId), task.templateKey) ?? (await groupBlockerFor(ctx.db, issue.companyId, task))) : null;
   return taskCloseResult(task, issue.id, { mode: sprint?.autopilotMode ?? "safe", blocker });
 }
 

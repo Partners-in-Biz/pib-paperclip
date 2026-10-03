@@ -7,6 +7,10 @@
  * idempotent on it), an `owner` (who does the work) and a playbook key (the
  * skill's `references/outrank-90.md` section and the issue description).
  *
+ * Version 5 (plugin 0.23.0): every plan carries the GEO (AI search) workstream, eight tasks defined in `geo.ts`. This
+ * list stays the software plan's original 42 tasks; `plans.ts` adds the GEO tasks to all four plans, and the daily
+ * run adds them to sprints seeded on an older version (`service/upgrade.ts`).
+ *
  * Version 4 (plugin 0.8.0): the Social agent owns repurposing. Tasks w5/w6
  * no longer draft social posts; they make sure the post is marked live (which
  * hands it to Social once it answers 200) and link the Social drafts to the
@@ -31,7 +35,7 @@
  */
 
 export const TEMPLATE_ID = "outrank-90";
-export const TEMPLATE_VERSION = 4;
+export const TEMPLATE_VERSION = 5;
 export const TEMPLATE_NAME = "Outrank 90-Day SEO Sprint";
 
 export type TaskOwner = "agent" | "human";

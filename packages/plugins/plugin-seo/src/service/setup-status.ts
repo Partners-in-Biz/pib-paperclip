@@ -129,7 +129,7 @@ function sprintAggregate(
   const open = rows.filter((r) => r.status !== "done");
   const first = open[0] ?? rows[0]!;
   const href = sprintPagePath("/seo", first.sprint.id, sprintScope(first.sprint), input.tab ? { tab: input.tab } : {});
-  let status: SetupItemStatus = open.length === 0 ? "done" : open.some((r) => r.status === "missing") ? "missing" : "unknown";
+  let status: SetupItemStatus = open.length === 0 ? "done" : open.some((r) => r.status === "missing") ? "missing" : open.every((r) => r.status === "optional") ? "optional" : "unknown";
   if (!input.required && status === "missing") status = "optional";
   const detail = open.length === 0
     ? rows.length === 1 ? `${rows[0]!.sprint.siteName}: ${rows[0]!.item.detail}` : `All ${rows.length} active sprints are set.`
@@ -232,6 +232,8 @@ export async function seoSetupStatus(env: Env, companyId: string): Promise<Setup
   if (running.length) {
     items.push(sprintAggregate("gsc_property", pick("gsc_property"), { title: "Search Console property connected", required: false, tab: "integrations" }));
     items.push(sprintAggregate("bing_site", pick("bing_site"), { title: "Bing site verified", required: false, tab: "integrations" }));
+    // Google Analytics (GA4, read only): optional; the property owner adds the service account as a Viewer once per client.
+    items.push(sprintAggregate("ga4_property", pick("ga4_property"), { title: "Google Analytics (GA4) connected", required: false, warnIs: "optional", tab: "integrations" }));
   }
 
   return { plugin: PLUGIN_ID, module: "seo", title: "SEO", version: manifest.version, items, checkedAt: env.now().toISOString() };

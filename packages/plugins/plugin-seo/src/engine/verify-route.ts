@@ -47,7 +47,7 @@ export interface VerifyFailure {
 /** Which verification a Needs you item is about, from its key and title; null when it is about something else. */
 export function verificationKindOf(item: { key: string; title: string }): VerifyKind | null {
   // Standard grants are not verification work: an API key, an OAuth reconnect, DNS, the Connector itself, the repo.
-  if (/^(bing_key|service_account|github_token|site_project|wp_connector|gsc_dns|gsc_reconnect|playbook_changes|indexing_followup|pr:)/.test(item.key)) return null;
+  if (/^(bing_key|service_account|github_token|site_project|wp_connector|gsc_dns|gsc_reconnect|playbook_changes|indexing_followup|ga4_|geo_firewall|chunk:|pr:)/.test(item.key)) return null;
   const text = `${item.key} ${item.title}`.toLowerCase();
   if (/indexnow/.test(text)) return "indexnow";
   if (/msvalidate|bingsiteauth|bing[\s_-]*(site|verif|meta|webmaster)/.test(text)) return "bing";

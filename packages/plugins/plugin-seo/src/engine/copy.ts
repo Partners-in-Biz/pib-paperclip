@@ -134,7 +134,7 @@ export function siteSection(site: SiteCopy): string[] {
 export function taskIssueDescription(
   task: TaskCopy,
   sprint: SprintCopy,
-  input: { assignment: Assignment; context?: string | null; cockpitPath?: string | null; site?: SiteCopy | null },
+  input: { assignment: Assignment; context?: string | null; cockpitPath?: string | null; site?: SiteCopy | null; /** Extra sections after the evidence (a split task's page groups). */ extra?: string[] },
 ): string {
   const playbook = playbookFor(task.playbookKey);
   const phase = PHASE_NAMES[(Math.min(Math.max(task.phase, 0), 4) as SprintPhase)];
@@ -161,6 +161,7 @@ export function taskIssueDescription(
   lines.push("", "## Tools");
   for (const tool of playbook.tools) lines.push(toolLine(tool));
   lines.push("", "## Definition of done", playbook.done, "", "## Evidence to record", playbook.evidence, "");
+  if (input.extra && input.extra.length > 0) lines.push(...input.extra);
   if (input.site) lines.push(...siteSection(input.site));
   if (sprint.notes && sprint.notes.trim()) lines.push("## Sprint notes (site access, constraints)", sprint.notes.trim(), "");
   lines.push("## Close it");
@@ -249,11 +250,13 @@ export function approvalIssueTitle(sprint: Pick<SprintCopy, "siteName" | "client
   return capTitle(withClientPrefix(`Approve SEO optimizations: ${sprintLabel(sprint)} (${weekLabel})`, sprint.clientName));
 }
 
-export function approvalIssueDescription(sprint: SprintCopy, proposals: ProposalCopy[], cockpitPath: string | null): string {
+export function approvalIssueDescription(sprint: SprintCopy, proposals: ProposalCopy[], cockpitPath: string | null, numbers: string[] = []): string {
   const lines = [
     `The weekly SEO review found ${proposals.length} optimization${proposals.length === 1 ? "" : "s"} worth testing on **${sprint.siteName}**. Each one becomes tasks for this week once approved; the result is measured 14 days later (win: position +2 or impressions +20%).`,
     "",
   ];
+  // What the week looked like beyond rankings: organic traffic and key events (GA4) and AI-search readiness, when there are numbers.
+  if (numbers.length > 0) lines.push("**This week's numbers**", ...numbers.map((n) => `- ${n}`), "");
   for (const p of proposals) {
     lines.push(
       `### ${p.hypothesis}`,

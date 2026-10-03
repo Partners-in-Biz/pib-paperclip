@@ -1,7 +1,9 @@
 /**
  * One dispatcher for agent tools and the UI's generic `seo.call` action.
  */
+import * as analytics from "./service/analytics.js";
 import * as checks from "./service/checks.js";
+import * as chunks from "./service/chunks.js";
 import { asParams, SeoError, type Actor, type Env, type Params } from "./service/common.js";
 import * as data from "./service/data.js";
 import * as gsc from "./service/gsc.js";
@@ -11,6 +13,7 @@ import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
 import * as facts from "./service/facts.js";
+import * as geo from "./service/geo.js";
 import * as redesign from "./service/redesign.js";
 import * as build from "./service/build.js";
 import * as signoff from "./service/signoff.js";
@@ -46,6 +49,7 @@ export const HANDLERS: Record<string, Handler> = {
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
   "start-tasks-now": (env, c, a, p) => tasks.startTasksNow(env, c, a, p),
   "compact-task-thread": (env, c, _a, p) => thread.compactTaskThreadTool(env, c, p),
+  "split-task": (env, c, a, p) => chunks.splitTaskTool(env, c, a, p),
   // Client previews
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
@@ -110,6 +114,12 @@ export const HANDLERS: Record<string, Handler> = {
   "record-finding": (env, c, a, p) => data.recordFinding(env, c, a, p),
   "resolve-finding": (env, c, _a, p) => data.resolveFindingTool(env, c, p),
   "audit-summary": (env, c, _a, p) => snapshots.auditSummaryTool(env, c, p),
+  // AI search (GEO) and Google Analytics
+  "geo-audit": (env, c, a, p) => geo.geoAuditTool(env, c, a, p),
+  "record-ai-mentions": (env, c, a, p) => geo.recordAiMentionsTool(env, c, a, p),
+  "list-ai-mentions": (env, c, _a, p) => geo.listAiMentionsTool(env, c, p),
+  "connect-ga4": (env, c, a, p) => analytics.connectGa4Tool(env, c, a, p),
+  "list-ga4-summary": (env, c, _a, p) => analytics.listGa4SummaryTool(env, c, p),
   // Optimization
   "detect-signals": (env, c, _a, p) => optimize.detectSignalsTool(env, c, p),
   "list-optimizations": (env, c, _a, p) => optimize.listOptimizationsTool(env, c, p),

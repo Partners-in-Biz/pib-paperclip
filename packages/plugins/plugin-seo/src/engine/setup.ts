@@ -13,6 +13,9 @@ export const GCP_PROJECT = "partners-in-biz-85059";
 export const SA_CONSOLE_URL = `https://console.cloud.google.com/iam-admin/serviceaccounts?project=${GCP_PROJECT}`;
 export const SITE_VERIFICATION_API_URL = `https://console.cloud.google.com/apis/library/siteverification.googleapis.com?project=${GCP_PROJECT}`;
 export const SEARCH_CONSOLE_API_URL = `https://console.cloud.google.com/apis/library/searchconsole.googleapis.com?project=${GCP_PROJECT}`;
+export const GA4_DATA_API_URL = `https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com?project=${GCP_PROJECT}`;
+export const GA4_ADMIN_API_URL = `https://console.cloud.google.com/apis/library/analyticsadmin.googleapis.com?project=${GCP_PROJECT}`;
+export const ANALYTICS_URL = "https://analytics.google.com/analytics/web/";
 export const GITHUB_PAT_URL = "https://github.com/settings/personal-access-tokens/new";
 export const BING_WEBMASTER_URL = "https://www.bing.com/webmasters";
 export const PAGESPEED_KEY_URL = `https://console.cloud.google.com/apis/credentials?project=${GCP_PROJECT}`;
@@ -54,6 +57,8 @@ export interface SetupFacts {
     property: string | null;
     gscVia: "service_account" | "oauth" | null;
     bingVerified: boolean;
+    /** Google Analytics (GA4, read only): the property id once connected, and whether the daily pull works. */
+    ga4?: { propertyId: string | null; connected: boolean; lastError: string | null; lastPullOn: string | null };
   };
 }
 
@@ -68,6 +73,16 @@ export const SERVICE_ACCOUNT_STEPS = [
   "In Paperclip: Settings → Secrets → **New secret** named `SEO_GOOGLE_SERVICE_ACCOUNT`, paste the whole JSON file as the value.",
   "Settings → Plugins → SEO → **Google service account key** → pick that secret → **Save**.",
 ];
+
+/** What the property owner does once for Google Analytics: add the service account as a Viewer. */
+export function ga4Steps(serviceAccountEmail: string | null): string[] {
+  return [
+    `Once per company: enable the **Google Analytics Data API** and the **Google Analytics Admin API** for the project (links below). Only needed the first time.`,
+    "In Google Analytics (as someone who administers the property) open **Admin** (the gear, bottom left) → under the right property **Property access management**.",
+    `Click **+** → **Add users**, enter ${serviceAccountEmail ?? "the service account's email (SEO settings)"}, untick *Notify new users by email*, role **Viewer**, **Add**.`,
+    "That is all. The agent finds the property by the site's address; if the client has several properties, it asks for the property ID (Admin → Property settings → Property ID).",
+  ];
+}
 
 export function githubTokenSteps(prefix: string | null, repo: string | null): string[] {
   return [
@@ -241,6 +256,24 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
       links: [],
       next: "Submits the sitemap and URL batches to Bing; IndexNow pings (which tell Bing and others a page changed) cover Bing too.",
     });
+    if (s.ga4) {
+      const g = s.ga4;
+      items.push({
+        key: "ga4_property",
+        label: "Google Analytics (GA4, optional)",
+        status: g.connected ? "done" : "warn",
+        detail: g.connected
+          ? `Property ${g.propertyId}: weekly sessions, organic traffic and key events are pulled${g.lastPullOn ? ` (last ${g.lastPullOn})` : ""}.`
+          : g.lastError
+            ? `Not connected: ${g.lastError}`
+            : f.serviceAccount.email
+              ? `Not connected: the property owner adds ${f.serviceAccount.email} as a Viewer once. The agent finds the property by the site's address, or takes its ID.`
+              : "Not connected: needs the Google service account key first.",
+        steps: g.connected ? [] : ga4Steps(f.serviceAccount.email),
+        links: g.connected ? [] : [{ label: "Google Analytics", url: ANALYTICS_URL }, { label: "Enable Data API", url: GA4_DATA_API_URL }, { label: "Enable Admin API", url: GA4_ADMIN_API_URL }],
+        next: "Pulls sessions, engaged sessions, key events, organic landing pages and source / medium every week, attributes organic traffic and key events to this sprint's pages, and shows them in the weekly review and the snapshots.",
+      });
+    }
     items.push({
       key: "autopilot",
       label: "Autopilot",

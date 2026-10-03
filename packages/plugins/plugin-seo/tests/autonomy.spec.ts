@@ -497,10 +497,10 @@ describe("plan upgrade to v3", () => {
     expect(host.issueUpdates.some((u) => u.id === "iss-h2")).toBe(false);
     expect(host.issueUpdates.find((u) => u.id === "iss-a1")!.patch).toMatchObject({ status: "todo", assigneeAgentId: "agent-1" });
     expect(host.wakeups.sort()).toEqual(["iss-a1", "iss-h1"]);
-    expect(host.sprint.template_version).toBe(4);
+    expect(host.sprint.template_version).toBe(5);
     expect(host.comments.find((c) => c.id === "root-1")!.body).toContain("Needs you");
     // Idempotent: a sprint on the current plan is left alone.
-    expect((await upgradeSprintPlan(host.env, info, { ...sprint, templateVersion: 4 }, { id: "agent-1", status: "active" })).upgraded).toBe(false);
+    expect((await upgradeSprintPlan(host.env, info, { ...sprint, templateVersion: 5 }, { id: "agent-1", status: "active" })).upgraded).toBe(false);
   });
 
   it("leaves done and sign-off tasks alone", () => {

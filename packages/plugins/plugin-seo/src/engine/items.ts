@@ -5,7 +5,11 @@
 import { gscInspectLink, gscUsersLink } from "../integrations/google-sa.js";
 import type { NewNeedsYouItem } from "./needs-you.js";
 import {
+  ANALYTICS_URL,
   BING_WEBMASTER_URL,
+  GA4_ADMIN_API_URL,
+  GA4_DATA_API_URL,
+  ga4Steps,
   GITHUB_PAT_URL,
   githubTokenSteps,
   SA_CONSOLE_URL,
@@ -231,5 +235,85 @@ export function playbookChangesItem(input: { playbookPath: string | null; scopeL
     after: "Follows the new playbook version from its next run.",
     check: "playbook_decided",
     taskIds: [],
+  };
+}
+
+/** Email text for a client to add the service account to their Google Analytics property (read only). */
+export function clientGa4Email(input: { clientName: string | null; siteUrl: string; serviceAccountEmail: string }): string {
+  return [
+    `Hi${input.clientName ? ` ${input.clientName}` : ""},`,
+    "",
+    `To show you how much traffic and how many enquiries your SEO work brings, we need read-only access to the Google Analytics for ${input.siteUrl}. It takes a minute:`,
+    "",
+    "1. Open Google Analytics (sign in with the account that administers the property) and click Admin (the gear, bottom left).",
+    "2. Under the right property, click Property access management.",
+    `3. Click + then Add users, and enter ${input.serviceAccountEmail}`,
+    "4. Role: Viewer. Untick \"Notify new users by email\". Click Add.",
+    "",
+    "Viewer is read only: we cannot change anything in your Analytics. If you do not use Google Analytics yet, reply and we will help you set it up.",
+    "",
+    "Thank you!",
+  ].join("\n");
+}
+
+/** The Google Analytics grant for one sprint: the service account added as a Viewer (optional: no sprint task waits on it). */
+export function ga4AccessItem(sprint: SprintLike, serviceAccountEmail: string, propertyId: string | null, taskIds: string[] = []): NewNeedsYouItem {
+  const client = Boolean(sprint.clientName);
+  return {
+    key: "ga4_access",
+    kind: client ? "message" : "grant",
+    title: client ? `Ask ${sprint.clientName} to add our service account in Google Analytics` : `Add our service account to Google Analytics for ${sprint.siteName}`,
+    why: `The agent reads Google Analytics (read only) to report how many organic visits and key events (enquiries, sign-ups, sales) ${sprint.siteName} gets and which of them land on the pages this sprint made. The property owner adds ${serviceAccountEmail} as a Viewer once.${propertyId ? ` Property ${propertyId}.` : ""}`,
+    steps: client ? ["Send the email below to the client (from your email).", "Nothing else: the agent finds the property by the site's address and checks every morning."] : ga4Steps(serviceAccountEmail),
+    links: [{ label: "Google Analytics", url: ANALYTICS_URL }],
+    ...(client ? { copy: clientGa4Email({ clientName: sprint.clientName, siteUrl: sprint.siteUrl, serviceAccountEmail }) } : {}),
+    after: "Connects the property (connect-ga4), pulls the weekly numbers and puts organic traffic and key events for this sprint's pages in the weekly review and the snapshots.",
+    check: "ga4_access",
+    taskIds,
+    optional: true,
+    quiet: true,
+  };
+}
+
+/** The Google Cloud APIs Analytics needs, enabled once for the whole company. */
+export function ga4ApiItem(taskIds: string[] = []): NewNeedsYouItem {
+  return {
+    key: "ga4_api",
+    kind: "grant",
+    title: "Enable the Google Analytics APIs (once)",
+    why: "Google answered that the Google Analytics Data API (and the Admin API the agent uses to find a client's property) is not enabled for the service account's Google Cloud project. It is a one-time switch for every client.",
+    steps: ["Open each link below and click **Enable** (project partners-in-biz-85059).", "Nothing else: the agent retries every morning."],
+    links: [{ label: "Enable Data API", url: GA4_DATA_API_URL }, { label: "Enable Admin API", url: GA4_ADMIN_API_URL }],
+    after: "Connects the sprints' Google Analytics properties and starts the weekly pulls.",
+    check: "ga4_access",
+    taskIds,
+    optional: true,
+    quiet: true,
+  };
+}
+
+/**
+ * A firewall or CDN refused an AI search bot twice although robots.txt allows it: only the site's owner can change that, and
+ * only the owner can tell whether it matters. Advice, not a blocker (optional): a probe from an ordinary server address
+ * cannot tell a real block from a CDN that lets the real bots in by their own addresses.
+ */
+export function geoFirewallItem(sprint: SprintLike, bots: Array<{ token: string; detail: string | null }>, taskIds: string[] = []): NewNeedsYouItem {
+  const host = new URL(sprint.siteUrl).hostname.replace(/^www\./, "");
+  const list = bots.map((b) => `${b.token}${b.detail ? ` (${b.detail})` : ""}`).join(", ");
+  return {
+    key: "geo_firewall",
+    kind: "grant",
+    title: `Check that AI search bots get through the firewall of ${host}`,
+    why: `The server of ${host} refused ${list} twice (and answered an ordinary request normally) although robots.txt allows them. If a firewall or CDN rule does this, ChatGPT, Claude or Perplexity cannot read the site and cannot cite it, and the agent cannot reach that setting. It may be a false alarm: this check comes from an ordinary server address, and a CDN that lets verified bots in by their own addresses (Cloudflare does) turns a look-alike away while the real bots get in. It also cannot see blocks by address range.`,
+    steps: [
+      "Open the site's firewall or CDN settings (Cloudflare: Security → Bots, and the AI Scrapers and Crawlers setting; other hosts: bot protection or WAF rules).",
+      `Check these user agents are allowed: ${bots.map((b) => b.token).join(", ")}. Keep blocking scrapers you do not know. If the setting only lets the bots in by their verified addresses, the real bots are probably fine.`,
+      "Fine as it is? Mark this item done: it is not raised again for these bots. Changed the setting? Wait: the agent re-checks every morning and the item closes itself once the bots get a normal answer.",
+    ],
+    links: [],
+    after: "Re-runs the AI-search check; the item closes itself once the bots get a normal answer.",
+    check: "geo_firewall",
+    taskIds,
+    optional: true,
   };
 }

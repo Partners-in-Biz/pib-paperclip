@@ -49,7 +49,7 @@ import {
 import { plural } from "../engine/plain.js";
 import { RawDetails, fmt, pct, shortUrl, small, top } from "./parts.js";
 import { backlinkSegments, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone } from "./series.js";
-import type { Backlink, CallFn, Content, Finding, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle } from "./types.js";
+import type { Backlink, CallFn, Content, Finding, GeoSummary, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle } from "./types.js";
 import { BACKLINK_STATUS_LABEL, BACKLINK_TYPE_LABEL } from "./words.js";
 
 const grid = (min: number, gap = 16) => ({ display: "grid", gap, gridTemplateColumns: fluidColumns(min), minWidth: 0 }) as const;
@@ -580,12 +580,66 @@ function snapshotLine(s: Snapshot): string {
   const r = s.rankings as { top10?: number; tracked?: number };
   const a = s.authority as { liveBacklinks?: number };
   const t = s.traffic as { impressions?: number; clicks?: number };
+  const g = (s.geo ?? {}) as { score?: number | null };
+  const w = (s.analytics ?? {}) as { organicSessions?: number };
   return [
     s.capturedOn ? formatShortDate(s.capturedOn) : null,
     t.impressions != null ? `${formatCompact(t.impressions)} impressions` : null,
     `${r.top10 ?? 0} of ${r.tracked ?? 0} on page one`,
     `${plural(a.liveBacklinks ?? 0, "live link")}`,
+    typeof g.score === "number" ? `AI-search readiness ${g.score}` : null,
+    typeof w.organicSessions === "number" ? `${formatCompact(w.organicSessions)} organic visits (4 weeks)` : null,
   ].filter(Boolean).join(" · ");
+}
+
+const GEO_SECTION_LABEL: Record<string, string> = {
+  crawlers: "AI crawlers can read it",
+  entity: "Says who the business is",
+  answers: "Short direct answers",
+  brand: "Same name everywhere",
+  llms: "llms.txt",
+  snippets: "Snippets allowed",
+};
+
+/** AI-search readiness (what the plugin can verify) and how often sampled AI answers named the business. */
+function GeoCard({ geo, sprintId, call, working }: { geo: GeoSummary | null | undefined; sprintId: string; call: CallFn; working: string | null }) {
+  const score = geo?.score ?? null;
+  const toneName = score == null ? undefined : score >= 65 ? "ok" : score >= 40 ? "warn" : "bad";
+  const sections = Object.entries(geo?.breakdown ?? {}).filter(([, v]) => v && typeof v.possible === "number");
+  return (
+    <SectionCard
+      title="AI search"
+      subtitle="Whether ChatGPT, Claude, Perplexity and Google's AI can read the site, and whether they name the business"
+      icon={Eye}
+      tone={toneName}
+      actions={<Button type="button" variant="secondary" style={small} disabled={working === "geo-audit"} onClick={() => void call("geo-audit", { sprintId }, "AI-search check recorded.")}>{working === "geo-audit" ? "Checking (up to 25 s)…" : "Run the check"}</Button>}
+    >
+      {score == null ? (
+        <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Not checked yet. The daily run does it on its own once the sprint is running; the button does it now.</p>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Pill tone={toneName} size="md">{score}/100 · {geo!.band}{geo!.complete ? "" : " (partly checked)"}</Pill>
+            <span style={{ fontSize: 12, color: tokens.muted }}>Readiness: what can be verified on the site. Checked {geo!.checkedOn ? formatShortDate(geo!.checkedOn) : "—"}.</span>
+          </div>
+          {geo!.blockedSearchBots.length > 0 ? <span style={{ fontSize: 13, color: tone("bad").solid, ...breakAnywhere }}>AI search is blocked for: {geo!.blockedSearchBots.join(", ")}.</span> : null}
+          <div style={{ display: "grid", gap: 4 }}>
+            {sections.map(([key, v]) => (
+              <div key={key} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
+                <span>{GEO_SECTION_LABEL[key] ?? words(key)}</span>
+                <span style={{ color: tokens.muted }}>{v.evaluated ? `${fmt(v.earned, 1)} of ${v.possible}` : "not checked"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 13, ...breakAnywhere }}>
+        {geo?.mentions
+          ? <>Sampled AI answers: the business appeared in <strong>{geo.mentions.visible} of {geo.mentions.sampled}</strong>{geo.mentions.lastSampledOn ? ` (latest ${formatShortDate(geo.mentions.lastSampledOn)})` : ""}. A handful of samples is a signal, not a measurement.</>
+          : <span style={{ color: tokens.muted }}>No AI answers sampled yet: the agent asks the questions customers ask and records what it gets (week 2).</span>}
+      </div>
+    </SectionCard>
+  );
 }
 
 export function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; call: CallFn; working: string | null }) {
@@ -594,6 +648,7 @@ export function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; cal
   const bySeverity = bundle.findings.reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc; }, {});
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+      <GeoCard geo={bundle.geo} sprintId={bundle.sprint.sprintId} call={call} working={working} />
       <SectionCard title="Open findings" subtitle={bundle.findings.length ? `${plural(bundle.findings.length, "problem")} from the site checks; each clears when a re-run no longer finds it` : "Site checks record problems here"} icon={HeartPulse} tone={(bySeverity.critical ?? 0) + (bySeverity.high ?? 0) ? "bad" : bundle.findings.length ? "warn" : "ok"}>
         {bundle.findings.length ? <StackedBar title="Open findings by severity" segments={severitySegments(bundle.findings)} height={10} /> : null}
         {bundle.findings.length === 0 ? (
@@ -636,6 +691,8 @@ export function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; cal
               { key: "rankings", header: "On page one", render: (v) => { const r = v as { top10?: number; tracked?: number }; return `${r.top10 ?? 0} of ${r.tracked ?? 0}`; } },
               { key: "authority", header: "Live links (sites)", render: (v) => { const a = v as { liveBacklinks?: number; referringDomains?: number }; return `${a.liveBacklinks ?? 0} (${a.referringDomains ?? 0})`; } },
               { key: "content", header: "Live content", render: (v) => fmt((v as { live?: number }).live ?? 0, 0) },
+              { key: "geo", header: "AI-search readiness", render: (v) => { const score = ((v ?? {}) as { score?: number | null }).score; return typeof score === "number" ? `${score}/100` : "—"; } },
+              { key: "analytics", header: "Organic visits (4 weeks)", render: (v) => { const n = ((v ?? {}) as { organicSessions?: number }).organicSessions; return typeof n === "number" ? fmt(n, 0) : "—"; } },
             ]}
             rows={bundle.snapshots}
           />

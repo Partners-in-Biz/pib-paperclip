@@ -18,6 +18,8 @@ import {
   type NeedsYouItem,
   type NewNeedsYouItem,
 } from "../engine/needs-you.js";
+import type { AiBotKind } from "../checks/geo.js";
+import { probeKind } from "../engine/geo.js";
 import { TERMINAL_TASK_STATUSES } from "../engine/sprint.js";
 import { verificationKindOf, verifyInstruction } from "../engine/verify-route.js";
 import { resolveAgent } from "./agent.js";
@@ -80,9 +82,11 @@ async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mod
 /** Create, update or close the digest issue to match its items. */
 async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, digest: db.NeedsYouDigest): Promise<string | null> {
   const open = openItems(digest.items);
+  // Quiet items (optional advice such as the Google Analytics grants) never open or reopen the issue on their own.
+  const loud = open.filter((i) => !i.quiet);
   const description = needsYouDescription(sprintCopy(sprint), digest.items, { week: digest.weekStart, cockpitPath: cockpitPath(info, sprint) });
   if (!digest.issueId) {
-    if (open.length === 0) return null;
+    if (open.length === 0 || loud.length === 0) return null;
     try {
       const created = await openIssue(env, {
         companyId: sprint.companyId,
@@ -110,11 +114,35 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     await patchIssue(env, sprint.companyId, digest.issueId, { description, ...(isOpen ? { status: "done" } : {}) });
     if (isOpen) await commentOn(env, sprint.companyId, digest.issueId, "Every item is done. The SEO Specialist carries on.");
     await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "done" });
+  } else if (issue && !isOpen && loud.length === 0) {
+    // Only quiet items are open and a person already closed this issue: leave it closed (touching it would be read as a
+    // person closing it again). The items stay on the digest, the page and the Needs you tool.
+    if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   } else {
     await patchIssue(env, sprint.companyId, digest.issueId, { description, ...(issue && !isOpen ? { status: "todo" } : {}) });
     if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   }
   return digest.issueId;
+}
+
+/** Who closes an item the plugin checked itself (a person's closes carry their own name). */
+export const PLUGIN_CHECK_BY = "checked by the SEO plugin";
+
+/** Whether a "done by" label names a person (a board user or the sprint owner), not the plugin or an agent. */
+export function isPersonLabel(by: string | null | undefined): boolean {
+  return /^(user |a board user|the sprint owner)/.test(by ?? "");
+}
+
+/**
+ * The latest state of an item over the sprint's recent digests (a done item is not carried into a new week, so it is
+ * found in the week it was closed). Looks back 26 weeks; null when it never existed in that time.
+ */
+export async function lastNeedsYouItem(env: Env, sprint: db.Sprint, key: string): Promise<NeedsYouItem | null> {
+  for (const digest of await db.recentNeedsYouDigests(env.ctx.db, sprint.companyId, sprint.id, 26)) {
+    const item = digest.items.find((i) => i.key === key);
+    if (item) return item;
+  }
+  return null;
 }
 
 /** Add (or update) one item on this week's digest. */
@@ -126,7 +154,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   const next = { ...digest, items: merged.items, status: "open" as const };
   await db.upsertNeedsYou(env.ctx.db, next);
   const issueId = await syncDigestIssue(env, info, sprint, next);
-  if (merged.added && issueId && digest.issueId) {
+  if (merged.added && issueId && digest.issueId && !item.quiet) {
     await commentOn(env, sprint.companyId, issueId, `New item: **${item.title}**. ${item.why}`, { pointer: "the whole item is in this issue's description" });
   }
   return { issueId, added: merged.added, key: item.key };
@@ -220,6 +248,26 @@ async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by:
   return resumed;
 }
 
+/** A page group's issue the agent blocked goes back to the agent (todo + wake) when its Needs you line is done. 1 when it was resumed. */
+async function continueGroup(env: Env, sprint: db.Sprint, chunkId: string, by: string): Promise<number> {
+  const chunk = await db.getChunk(env.ctx.db, sprint.companyId, chunkId);
+  if (!chunk?.issueId || (chunk.status !== "open" && chunk.status !== "queued")) return 0;
+  const issue = await getIssue(env, sprint.companyId, chunk.issueId);
+  if (!issue || String(issue.status) !== "blocked") return 0; // a person already moved it
+  const agent = await resolveAgent(env, sprint.companyId);
+  const updated = await patchIssue(env, sprint.companyId, chunk.issueId, { status: "todo", ...(agent ? { assigneeAgentId: agent.id, assigneeUserId: null } : {}) });
+  if (!updated) return 0;
+  await commentOn(env, sprint.companyId, chunk.issueId, `What this group waited for is done (${by}). Back to the SEO Specialist: carry on with the pages.`);
+  if (agent && !["paused", "pending_approval", "terminated"].includes(agent.status)) {
+    try {
+      await env.ctx.issues.requestWakeup(chunk.issueId, sprint.companyId, { reason: "SEO page group unblocked", idempotencyKey: `wake:${chunk.issueId}:${Date.now()}` });
+    } catch (error) {
+      env.ctx.logger.info("SEO wake skipped", { issueId: chunk.issueId, error: errorMessage(error) });
+    }
+  }
+  return 1;
+}
+
 /**
  * A verification item (Search Console access, a Bing tag or file, the IndexNow key file) on a WordPress sprint whose
  * Connector can place verification tags (wp-verify) is agent work, not a person's: it is closed as superseded and its
@@ -268,6 +316,19 @@ export async function checkNeedsYouItem(env: Env, info: CompanyInfo, sprint: db.
     }
     case "wp_sftp":
       return sprint.siteAccess === "wordpress" ? sprintHasSftp(env, sprint) : null;
+    case "ga4_access": {
+      // Both Google Analytics grants close the same way: a pull of the sprint's property worked.
+      const ga4 = await db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "ga4");
+      return ga4?.status === "connected" && Boolean(ga4.propertyUrl);
+    }
+    case "geo_firewall": {
+      // The latest geo-audit's server probes saw no refusal (null before any audit: only a person can say).
+      const latest = await db.latestGeoAudit(env.ctx.db, sprint.companyId, sprint.id);
+      if (!latest) return null;
+      // Only a refused search bot keeps the item open: a refused training crawler is the client's choice.
+      const probes = ((latest.sections as { serverProbes?: Array<{ token: string; kind?: AiBotKind; blocked?: boolean }> }).serverProbes ?? []);
+      return probes.length > 0 && !probes.some((p) => p.blocked && probeKind({ token: p.token, ...(p.kind ? { kind: p.kind } : {}) }) === "search");
+    }
     default:
       // A hand-off line for a task (block-task, or a person's own task) is over once its task is done or skipped,
       // whoever finished it: the agent often completes the task itself after the reason it waited went away.
@@ -292,20 +353,21 @@ async function tasksAllTerminal(env: Env, sprint: db.Sprint, ids: string[]): Pro
 }
 
 /** Mark one item done (by a person, or the agent on a person's word) and carry on. */
-export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint, key: string, by: string, note?: string | null): Promise<{ resolved: boolean; stillOpen: string | null; tasksContinued: number }> {
+export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint, key: string, by: string, note?: string | null, opts: { person?: boolean } = {}): Promise<{ resolved: boolean; stillOpen: string | null; tasksContinued: number }> {
   const digest = await currentDigest(env, info, sprint, "read");
   if (!digest) return { resolved: false, stillOpen: null, tasksContinued: 0 };
   const item = digest.items.find((i) => i.key === key && i.status === "open");
   if (!item) return { resolved: false, stillOpen: null, tasksContinued: 0 };
   const fresh = (await db.getSprint(env.ctx.db, sprint.companyId, sprint.id)) ?? sprint;
-  const seen = await checkNeedsYouItem(env, info, fresh, item);
+  // A person's word beats the AI-bot probe: it cannot tell a real block from a CDN that lets the real bots in by address.
+  const seen = item.check === "geo_firewall" && opts.person ? true : await checkNeedsYouItem(env, info, fresh, item);
   if (seen === false) {
     return { resolved: false, stillOpen: `The plugin does not see "${item.title}" done yet. ${item.steps[item.steps.length - 1] ?? ""}`.trim(), tasksContinued: 0 };
   }
   const result = resolveItem(digest.items, key, by, nowIso(env), note);
   const next = { ...digest, items: result.items };
   await db.upsertNeedsYou(env.ctx.db, next);
-  const tasksContinued = await continueTasks(env, fresh, item.taskIds ?? [], by, note);
+  const tasksContinued = (await continueTasks(env, fresh, item.taskIds ?? [], by, note)) + (key.startsWith("chunk:") ? await continueGroup(env, fresh, key.slice("chunk:".length), by) : 0);
   const issueId = await syncDigestIssue(env, info, fresh, next);
   if (issueId && openItems(next.items).length > 0) await commentOn(env, sprint.companyId, issueId, `Done: **${item.title}** (${by}). ${item.after}`);
   return { resolved: true, stillOpen: null, tasksContinued };
@@ -326,7 +388,7 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
         const kind = superseded ? verificationKindOf(item) : null;
         const site = superseded ? await sprintVerifyRoute(env, sprint) : null;
         const note = kind && site?.siteId ? `Superseded: the PiB Connector can place this itself now, so it is no longer a person's job. ${verifyInstruction(kind, site.siteId)}` : isTaskHandoff(item) ? "Its task is done or skipped, so this line is closed." : null;
-        const r = await resolveNeedsYou(env, info, sprint, item.key, "checked by the SEO plugin", note);
+        const r = await resolveNeedsYou(env, info, sprint, item.key, PLUGIN_CHECK_BY, note);
         if (r.resolved) resolved += 1;
       }
     } catch (error) {
@@ -347,7 +409,7 @@ export async function onNeedsYouIssueUpdated(env: Env, companyId: string, issueI
   const info = await companyInfo(env, companyId);
   const stillOpen: string[] = [];
   for (const item of openItems(digest.items)) {
-    const r = await resolveNeedsYou(env, info, sprint, item.key, "the sprint owner (closed the Needs you issue)");
+    const r = await resolveNeedsYou(env, info, sprint, item.key, "the sprint owner (closed the Needs you issue)", null, { person: true });
     if (!r.resolved) stillOpen.push(item.title);
   }
   if (stillOpen.length > 0) await commentOn(env, companyId, issueId, `Reopened: the plugin does not see these done yet — ${stillOpen.join("; ")}.`);
@@ -497,7 +559,7 @@ export async function needsYouResolveTool(env: Env, companyId: string, actor: Ac
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const key = reqStr(params, "key", { max: 120 });
-  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), str(params, "note", { max: 1000 }) ?? null);
+  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), str(params, "note", { max: 1000 }) ?? null, { person: actor.kind === "user" });
   if (!result.resolved && !result.stillOpen) throw new SeoError(`No open Needs you item ${key} on this sprint`);
   return { sprintId: sprint.id, key, ...result };
 }

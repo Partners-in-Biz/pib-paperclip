@@ -19,6 +19,9 @@ import { fetchBingLinkCounts } from "../integrations/bing.js";
 import { runPagespeed } from "../integrations/pagespeed.js";
 import { configSaved } from "@partnersinbiz/pib-plugin-kit";
 import { ensureProject, linkPendingHire, resolveAgent } from "./agent.js";
+import { ga4Daily } from "./analytics.js";
+import { healChunks } from "./chunks.js";
+import { ensureMonthlyGeoTask, scheduledGeo } from "./geo.js";
 import { savePageHealth } from "./checks.js";
 import { companyInfo, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { clockFor } from "./context.js";
@@ -173,6 +176,8 @@ export interface DailySprintResult {
   status: string;
   day: number;
   issuesOpened: number;
+  /** An AI-search audit was recorded today (the baseline, the 4-weekly refresh, or the firewall re-check). */
+  geoAudited?: boolean;
   planUpgraded: boolean;
   needsYouResolved: number;
   snapshotDay: number | null;
@@ -253,6 +258,20 @@ export async function runDailyForSprint(
     }
   }
 
+  // AI-search readiness (the baseline audit, a refresh every 4 weeks, a daily re-check while the firewall item is open),
+  // Google Analytics (the weekly numbers, or the property search) and the monthly AI re-check after day 90.
+  let geoAudited = false;
+  try {
+    geoAudited = (await scheduledGeo(env, info, sprint, clock.day)).audited;
+    await ensureMonthlyGeoTask(env, info, sprint);
+  } catch (error) {
+    warnings.push(`AI search: ${errorMessage(error)}`);
+  }
+  if (clock.day >= 1) {
+    const ga4Warning = await ga4Daily(env, info, sprint);
+    if (ga4Warning) warnings.push(ga4Warning);
+  }
+
   let issuesOpened = 0;
   if (sprint.rootIssueId) {
     // Top the sprint up to its in-flight cap: the agent gets a steady stream, not one wake per due task at once.
@@ -311,7 +330,7 @@ export async function runDailyForSprint(
     },
     last_daily_on: info.today,
   });
-  return { sprintId: sprint.id, status, day: clock.day, issuesOpened, planUpgraded, needsYouResolved, snapshotDay, measured, healed, warnings };
+  return { sprintId: sprint.id, status, day: clock.day, issuesOpened, geoAudited, planUpgraded, needsYouResolved, snapshotDay, measured, healed, warnings };
 }
 
 /**
@@ -404,6 +423,10 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
     env.ctx.logger.info("SEO cockpit publish failed", { error: errorMessage(error) });
     return { published: 0, skipped: 0, content: 0 };
   });
+  // Page groups of site-wide tasks: re-read open groups (a missed event), open the next one, close the groups of a finished task.
+  for (const companyId of companies) {
+    await healChunks(env, companyId).catch((error: unknown) => env.ctx.logger.info("SEO page group heal failed", { companyId, error: errorMessage(error) }));
+  }
   // Task threads that passed ~60 KB move to a fresh issue before a wake on them fails (also run every 5 minutes with the previews).
   const threads = await guardTaskThreads(env, companies).catch((error: unknown) => {
     env.ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });

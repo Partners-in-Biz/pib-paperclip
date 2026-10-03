@@ -7,6 +7,7 @@
  * (tests/tool-params.spec.ts checks both).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { AI_ENGINES } from "./engine/geo.js";
 import { PLAYBOOK_SECTIONS } from "./engine/playbook.js";
 import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-change.js";
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
@@ -193,6 +194,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       taskId: text("Move just this task (from list-tasks)"),
       dryRun: flag("Default true: only report which issues would move. Pass false to move them"),
       minBytes: int("Thread size in bytes that counts as too long (default 60000, at least 10000); lower it to move a smaller thread"),
+    }),
+  },
+  {
+    group: "Tasks",
+    name: "split-task",
+    displayName: "Split a site-wide task into page groups",
+    description:
+      "A site-wide task (a title and description for every page, alt text, noindex, canonicals) on a site with more pages than one run can do well is split into child issues of N pages, opened one at a time; the plugin does this when the task's issue opens or when you start-task it. Call it yourself on an open task that was not split. After it splits the task, end your run: the pages are the group issues' work, you are woken on the task when the last group is done, and complete-task then checks the site as a whole.",
+    parametersSchema: schema(["taskId"], {
+      taskId,
+      size: int("Pages per group, 5 to 50 (default by task type: 10 for titles and alt text, 25 for canonicals, 40 for noindex)"),
+      urls: list("Split exactly these pages instead of the sitemap's (up to 400)"),
+      dryRun: flag("true = show the plan and open nothing (default false)"),
     }),
   },
   { group: "Tasks", name: "skip-task", displayName: "Skip sprint task", description: "Mark a task skipped (not relevant for this site) with the reason; cancels its issue.", parametersSchema: schema(["taskId", "reason"], { taskId, reason: text("Why the task does not apply to this site (max 2000 chars)") }) },
@@ -639,6 +653,82 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   { group: "Audits", name: "resolve-finding", displayName: "Resolve finding", description: "Mark a finding fixed (checks also resolve their own findings when a re-run no longer reports them).", parametersSchema: schema(["findingId"], { findingId: text("Finding id (from audit-summary)") }) },
   { group: "Audits", name: "audit-summary", displayName: "Audit summary", description: "Snapshots over time, change from first to last, and open findings by severity and category.", parametersSchema: schema(["sprintId"], { sprintId }) },
+
+  // AI search (GEO)
+  {
+    group: "AI search (GEO)",
+    name: "geo-audit",
+    displayName: "AI-search readiness audit",
+    description:
+      "Check whether AI answer engines can read and quote the site: which AI crawlers robots.txt allows (search, user and training bots; training is the client's choice and not scored), whether the server refuses them, llms.txt, Organization data and sameAs links, answer blocks and FAQ coverage, snippet limits, and name and phone consistency across profiles and directory listings. Returns a 0-100 readiness score with its sections, findings and next steps. With sprintId it records the audit and its findings (a re-run closes what it no longer reports, but never what it could not check this time) and keeps the firewall item on Needs you in step; a server refusal counts only when a second request repeats it next to an ordinary one. With only a url (any site) nothing is recorded and no bot user agent is sent. Readiness is not how often AI assistants mention the business: sample that with record-ai-mentions.",
+    parametersSchema: schema([], {
+      sprintId: text("Sprint id: audits the sprint's site and records the result"),
+      url: text("A page on the sprint's site; or, without sprintId, any site's address (nothing is recorded then)"),
+      pages: list("Pages to sample for answer blocks (up to 8); default: the home page, the sprint's own pages and the sitemap's main pages"),
+      brand: text("Without sprintId: the business name to look for on profile pages"),
+      dryRun: flag("true = run the checks and record nothing (default false)"),
+    }),
+  },
+  {
+    group: "AI search (GEO)",
+    name: "record-ai-mentions",
+    displayName: "Record sampled AI answers",
+    description:
+      "Record what you saw when you asked an AI assistant or a search tool the questions customers ask: whether the answer named the business or listed one of its pages as a source, with the evidence, and which competitors it named. Only record answers you really obtained with a tool of yours; never fill a gap with what an assistant would probably say. A mention or citation without a short quote or source URLs (one on the site for a citation) is refused. The same question on the same assistant on the same day replaces that day's row.",
+    parametersSchema: schema(["sprintId", "samples"], {
+      sprintId,
+      samples: {
+        type: "array",
+        description: "The sampled answers, at most 40 per call",
+        items: {
+          type: "object",
+          required: ["query", "engine", "mentioned"],
+          properties: {
+            query: text("The question you asked, as a customer would (at most 200 characters)"),
+            engine: choice(AI_ENGINES, "Which assistant or tool gave the answer; search_tool = your own web search tool"),
+            mentioned: flag("The answer names the business"),
+            cited: flag("The answer lists a page of the site as a source (needs citedUrls on the site)"),
+            citedUrls: list("The source URLs the answer listed (at most 10)"),
+            evidence: text("A short quote from the answer that shows the mention (at most 400 characters)"),
+            position: int("Where the business sits when the answer lists several (1 = first)"),
+            competitors: list("Businesses the answer named instead or as well (at most 10)"),
+            sampledOn: text("The day you asked, YYYY-MM-DD (default today)"),
+            method: text("How you got the answer, e.g. 'Claude web search tool' (at most 120 characters)"),
+            note: text("Anything worth keeping about this answer (at most 400 characters)"),
+          },
+        },
+      },
+    }),
+  },
+  {
+    group: "AI search (GEO)",
+    name: "list-ai-mentions",
+    displayName: "List sampled AI answers",
+    description:
+      "The AI answers sampled for the sprint: the rate at which the business was named or cited (the latest answer per question and assistant), the trend from the first sampling day to the latest, the competitors named instead, and suggested questions to ask when fewer than 10 are sampled. A handful of samples is a signal, not a measurement.",
+    parametersSchema: schema(["sprintId"], { sprintId, limit: int("Questions to return (default 30, at most 100)") }),
+  },
+
+  // Google Analytics
+  {
+    group: "Google Analytics",
+    name: "connect-ga4",
+    displayName: "Connect Google Analytics (GA4)",
+    description:
+      "Connect the sprint to its Google Analytics 4 property (read only, through the same Google service account as Search Console) and pull the last 13 weeks. Without propertyId it finds the property by the site's address once the property's owner has added the service account as a Viewer. A propertyId must be this site's (one of its web streams has the site's address): the service account can read other clients' properties, so an id that is not this site's is refused, and you never try ids you were not given by this site's owner. When a one-time grant is missing (the Google Analytics APIs enabled for the project, or the Viewer access) it goes on the sprint's Needs you digest with the exact steps and, for a client, the email to send; the plugin retries every morning, so carry on with other work.",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      propertyId: text("GA4 property ID (a number, Admin → Property settings). Must be this site's, from its owner, never guessed. Omit it to find the property by the site's address"),
+    }),
+  },
+  {
+    group: "Google Analytics",
+    name: "list-ga4-summary",
+    displayName: "GA4 organic traffic and key events",
+    description:
+      "Weekly sessions, engaged sessions and key events from GA4, the Organic Search channel, and how much organic traffic and how many key events landed on the pages this sprint made or targets (live content, keyword targets, approved optimizations) against every other page. Also AI-assistant referrals, key events by name and top sources. Use it in the weekly review and the day-90 report; never quote a number it did not return.",
+    parametersSchema: schema(["sprintId"], { sprintId, weeks: int("Weeks to return (default 8, at most 26)") }),
+  },
 
   // Optimization
   { group: "Optimization", name: "detect-signals", displayName: "Detect SEO signals", description: "Run the detectors now and update sprint health. propose: true also records capped proposals and puts them on the owner's approval issue.", parametersSchema: schema(["sprintId"], { sprintId, propose: flag("Also record capped proposals on the owner's approval issue (default false)") }) },

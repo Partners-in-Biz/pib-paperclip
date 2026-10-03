@@ -45,6 +45,7 @@ import { addNeedsYou } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
+import { cancelGroups, groupBlockerFor, openGroups, parentSplitSection, planForNewIssue, splitOnStart } from "./chunks.js";
 
 export function taskCopy(task: db.SprintTask): TaskCopy {
   return {
@@ -123,11 +124,15 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
       agent: mc.agent,
       ownerUserId: assignableUser(sprint.ownerUserId),
     });
+    // A site-wide task on a site bigger than one run can do well is split into page groups (child issues of this one);
+    // the agent is not woken on the parent, which only coordinates, but on the first group.
+    const split = await planForNewIssue(env, sprint, task, assignment.kind === "agent");
     const description = taskIssueDescription(taskCopy(task), sprintCopy(sprint), {
       assignment,
       context: task.context,
       cockpitPath: cockpitPath(info, sprint),
       site: siteCopyFor(sprint, task),
+      ...(split ? { extra: parentSplitSection(split) } : {}),
     });
     const created = await openIssue(env, {
       companyId: sprint.companyId,
@@ -139,12 +144,20 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
       parentId: sprint.rootIssueId,
       assigneeAgentId: assignment.kind === "agent" ? assignment.agentId : null,
       assigneeUserId: assignment.kind === "user" ? assignment.userId : null,
-      wake: assignment.kind === "agent" ? assignment.wake : false,
+      wake: assignment.kind === "agent" ? assignment.wake && !split : false,
       wakeReason: `SEO task due: ${task.title}`,
     });
     // Agent work that ended up unassigned (agent missing, or the create fell back) is adopted on activation.
     const assigneeKind = created.assigned !== "none" ? created.assigned : assignment.kind === "user" ? "none" : "unassigned";
     await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_id: created.id, issue_status: "todo", assignee_kind: assigneeKind, issue_project_id: projectId ?? null });
+    if (split) {
+      // The group issues need the task to carry its issue id and project (set just above).
+      const fresh = (await db.getTask(env.ctx.db, sprint.companyId, task.id)) ?? { ...task, issueId: created.id, issueProjectId: projectId ?? null };
+      await openGroups(env, fresh, created.id, split).catch((error: unknown) => {
+        env.ctx.logger.info("SEO page groups not opened; waking the agent on the task instead", { taskId: task.id, error: errorMessage(error) });
+        return wakeIssue(env.ctx, created.id, sprint.companyId, `SEO task due: ${task.title}`);
+      });
+    }
     return created.id;
   } catch (error) {
     await db.releaseTaskClaim(env.ctx.db, sprint.companyId, task.id);
@@ -350,7 +363,14 @@ export async function startTask(env: Env, companyId: string, actor: Actor, param
   await db.updateTask(env.ctx.db, companyId, task.id, patch);
   const note = str(params, "note", { max: 2000 });
   if (note && task.issueId) await commentOn(env, companyId, task.issueId, `Started by ${actorLabel(actor)}: ${note}`);
-  return { ...taskView({ ...task, status: "in_progress" }) };
+  // A site-wide task started on a site bigger than one run can do well is split into page groups now (existing sprints included).
+  const split = actor.kind === "agent" ? await splitOnStart(env, task) : null;
+  return {
+    ...taskView({ ...task, status: "in_progress" }),
+    ...(split
+      ? { split: { groups: split.groups, pages: split.pages, firstGroupIssueId: split.firstGroupIssueId, next: "This task is now split into page groups (child issues, one open at a time). End your run on this issue: the pages are the group issues' work, and you are woken here when the last one is done." } }
+      : {}),
+  };
 }
 
 function parseEvidence(params: Params): { summary: string; links: string[]; artifacts: EvidenceArtifact[] } {
@@ -387,6 +407,9 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
     }
     const blocker = completionBlocker(task.taskType, await db.completionFacts(env.ctx.db, sprint.id), task.templateKey);
     if (blocker) throw new SeoError(blocker);
+    // A task split into page groups is completed after the last group is done.
+    const groups = await groupBlockerFor(env.ctx.db, companyId, task);
+    if (groups) throw new SeoError(groups);
   }
   const now = new Date().toISOString();
   const record = { ...evidence, by: actorId(actor), byKind: actor.kind, at: now, previous: task.evidence ?? undefined };
@@ -503,6 +526,7 @@ export async function skipTask(env: Env, companyId: string, actor: Actor, params
     await commentOn(env, companyId, task.issueId, `Skipped by ${actorLabel(actor)}: ${reason}`);
     const updated = await patchIssue(env, companyId, task.issueId, { status: "cancelled" });
     if (updated) await db.updateTask(env.ctx.db, companyId, task.id, { issue_status: "cancelled" });
+    await cancelGroups(env, companyId, task.id, `The task was skipped: ${reason}`).catch(() => 0);
   }
   return { ...taskView({ ...task, status: "skipped", blockerReason: reason }) };
 }

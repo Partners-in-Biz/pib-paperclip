@@ -7,7 +7,7 @@ import { addDays } from "./time.js";
 import { sprintLabel, withClientPrefix, type SprintCopy } from "./copy.js";
 
 /** How the plugin knows an item is done without asking. `manual` = a person says so. */
-export type NeedsYouCheck = "manual" | "site_project" | "service_account" | "gsc_access" | "bing_key" | "github_token" | "task_done" | "playbook_decided" | "wp_connector" | "wp_sftp";
+export type NeedsYouCheck = "manual" | "site_project" | "service_account" | "gsc_access" | "bing_key" | "github_token" | "task_done" | "playbook_decided" | "wp_connector" | "wp_sftp" | "ga4_access" | "geo_firewall";
 
 export type NeedsYouKind = "grant" | "review" | "pr" | "message" | "task" | "indexing";
 
@@ -32,6 +32,8 @@ export interface NeedsYouItem {
   /** Tasks to resume (issue back to the agent) when the item is done. */
   taskIds?: string[];
   optional?: boolean;
+  /** Rides along on the digest but never opens, or reopens, the digest's issue by itself: advice, not a request. */
+  quiet?: boolean;
   status: "open" | "done";
   addedAt: string;
   doneAt?: string | null;

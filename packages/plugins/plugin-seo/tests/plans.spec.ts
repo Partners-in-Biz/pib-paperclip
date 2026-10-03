@@ -30,6 +30,7 @@ import { OUTRANK_DOC, SKILL_BODY } from "../src/skills.js";
 import { DEFAULT_DIRECTORIES, OUTRANK_90, TEMPLATE_ID, phaseForWeek } from "../src/templates/outrank-90.js";
 import { BUSINESS_TYPES, PLANS, PLAN_TEMPLATE_IDS, allPlanTasks, businessTypeOf, defaultBusinessType, planOf, planTask } from "../src/templates/plans.js";
 import { PLAYBOOKS } from "../src/templates/playbooks.js";
+import { GEO_TASK_KEYS, GEO_TASKS } from "../src/templates/geo.js";
 import { SEO_TOOLS, SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 import { parseCrmWorkspace } from "../src/ui/crm-profile.js";
 import { nextLine, sprintBadge, sprintStatusText, tabsForPhone, tasksLine } from "../src/ui/words.js";
@@ -122,7 +123,7 @@ describe("due, overdue, stuck and waiting: one definition", () => {
 function sprint(extra: Partial<db.Sprint> = {}): db.Sprint {
   return {
     id: "s1", companyId: "co-1", name: "Acme", siteUrl: "https://acme.co.za", siteName: "Acme", clientKind: "company", clientRef: "c1", clientName: "Acme", legacyClientName: null,
-    status: "active", startDate: "2026-09-01", templateId: TEMPLATE_ID, templateVersion: 4, autopilotMode: "safe", ownerUserId: null, projectId: null, rootIssueId: null,
+    status: "active", startDate: "2026-09-01", templateId: TEMPLATE_ID, templateVersion: 5, autopilotMode: "safe", ownerUserId: null, projectId: null, rootIssueId: null,
     rootIssueIdentifier: null, agentId: null, notes: null, pausedReason: null, health: {}, scoreboard: {}, today: {}, currentDay: 0, currentWeek: 0, currentPhase: 0,
     lastDailyOn: null, lastWeeklyOn: null, auditDaysDone: [], seededAt: "2026-09-01T00:00:00Z", siteProjectId: null, clientProjectId: null, siteAccess: "unlinked", siteId: null, repoUrl: null,
     defaultBranch: "main", framework: null, hosting: null, changePolicy: "merge_seo_scope", verification: {}, createdAt: null, updatedAt: null, ...extra,
@@ -167,9 +168,11 @@ describe("sprint overviews (service/overview.ts)", () => {
 describe("plan variants by business type", () => {
   const tools = new Set(SEO_TOOL_DECLARATIONS.map((t) => t.name));
 
-  it("keeps the software plan exactly as it was, under the original template id", () => {
+  it("keeps the software plan as it was (plus the eight GEO tasks of version 5), under the original template id", () => {
     expect(PLANS.saas.id).toBe("outrank-90");
-    expect(PLANS.saas.tasks).toEqual(OUTRANK_90.tasks);
+    expect(PLANS.saas.tasks.filter((t) => !GEO_TASK_KEYS.includes(t.templateKey))).toEqual(OUTRANK_90.tasks);
+    expect(PLANS.saas.tasks.filter((t) => GEO_TASK_KEYS.includes(t.templateKey))).toEqual(GEO_TASKS);
+    expect(PLANS.saas.tasks).toHaveLength(42 + GEO_TASKS.length);
     expect(PLANS.saas.sources).toEqual(DEFAULT_DIRECTORIES);
     expect(businessTypeOf("outrank-90")).toBe("saas");
     expect(businessTypeOf(null)).toBe("saas");

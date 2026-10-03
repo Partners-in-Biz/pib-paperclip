@@ -38,11 +38,13 @@ export async function companySetupFacts(env: Env, info: CompanyInfo): Promise<Se
 
 /** One sprint's facts for the checklist. */
 export async function sprintSetupFacts(env: Env, sprint: db.Sprint, prefix: string | null = null): Promise<NonNullable<SetupFacts["sprint"]>> {
-  const [gsc, bing, site] = await Promise.all([
+  const [gsc, bing, ga4, site] = await Promise.all([
     db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "gsc"),
     db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "bing"),
+    db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "ga4"),
     sprintWordPressSite(env, sprint),
   ]);
+  const ga4Id = ga4 ? (typeof ga4.settings.propertyId === "string" ? ga4.settings.propertyId : ga4.propertyUrl?.replace(/^properties\//, "") ?? null) : null;
   const view = site ? wordPressSiteView(site) : null;
   return {
     siteName: sprint.siteName,
@@ -57,6 +59,7 @@ export async function sprintSetupFacts(env: Env, sprint: db.Sprint, prefix: stri
     property: gsc?.status === "connected" ? gsc.propertyUrl : null,
     gscVia: integrationAuth(gsc),
     bingVerified: bing?.status === "enabled",
+    ga4: { propertyId: ga4Id, connected: ga4?.status === "connected" && Boolean(ga4Id), lastError: ga4?.lastError ?? null, lastPullOn: typeof ga4?.settings.pulledOn === "string" ? ga4.settings.pulledOn : null },
   };
 }
 

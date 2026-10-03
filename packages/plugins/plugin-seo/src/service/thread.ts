@@ -187,6 +187,8 @@ async function rollTask(env: Env, companyId: string, listed: db.SprintTask, old:
     throw error;
   }
   await db.repointPreviews(env.ctx.db, companyId, old.id, created.id);
+  // A split task keeps its page groups: they follow the task to its new issue (else the new issue would not wait for them).
+  await db.repointChunks(env.ctx.db, companyId, old.id, created.id).catch((error: unknown) => env.ctx.logger.info("SEO page groups not moved to the continuation issue", { taskId: task.id, error: errorMessage(error) }));
 
   const size = facts.bytes != null ? `${Math.round(facts.bytes / 1000)} KB` : "very long";
   await commentOn(env, companyId, old.id, `Moved to ${newIdentifier ?? created.id}: this thread was ${size}, too long to hand an agent. The work continues there; this issue is closed.`);

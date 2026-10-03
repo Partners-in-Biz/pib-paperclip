@@ -46,12 +46,16 @@ import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy 
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
 import { materialiseDueTasks } from "./tasks.js";
+import { groupViews } from "./chunks.js";
+import { geoSummary } from "./geo.js";
+import { ga4Line } from "./analytics.js";
 import { loadServiceAccount } from "./google-access.js";
 import { needsYouView } from "./needs-you.js";
 import { playbookSummary } from "./playbook.js";
 import { autoLinkClientProject, siteLinkView } from "./site.js";
 import { autoLinkWordPressSite, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
 import { isCodeTask } from "../engine/site-change.js";
+import { geoLine } from "../engine/geo.js";
 
 /** The plan to seed: `businessType` when given, else local for a client and software for our own sites. */
 export function businessTypeParam(params: Params, forClient: boolean): BusinessType {
@@ -98,7 +102,7 @@ export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVarian
       discoveredVia: "template",
     })),
   );
-  for (const [provider, status] of [["gsc", "disconnected"], ["pagespeed", "enabled"], ["bing", "disabled"]] as const) {
+  for (const [provider, status] of [["gsc", "disconnected"], ["pagespeed", "enabled"], ["bing", "disabled"], ["ga4", "disconnected"]] as const) {
     await db.ensureIntegration(env.ctx.db, { id: randomUUID(), companyId: sprint.companyId, sprintId: sprint.id, provider, status });
   }
   await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, {
@@ -339,7 +343,9 @@ export async function getSprintTool(env: Env, companyId: string, params: Params)
     integrations: integrations.map(integrationView),
     keywords: { tracked: keywords.length, top10: keywords.filter((k) => (k.currentPosition ?? 999) <= 10).length, priority: keywords.filter((k) => k.isPriority).map((k) => k.phrase) },
     pageHealth: health.map((h) => ({ url: h.url, strategy: h.strategy, performance: h.performance, seo: h.seo, lcpMs: h.lcpMs, cls: h.cls, inpMs: h.inpMs, source: h.source, pulledOn: h.pulledOn })),
-    snapshots: snapshots.map((s) => ({ day: s.day, kind: s.kind, capturedOn: s.capturedOn, traffic: s.traffic, rankings: s.rankings })),
+    snapshots: snapshots.map((s) => ({ day: s.day, kind: s.kind, capturedOn: s.capturedOn, traffic: s.traffic, rankings: s.rankings, geo: s.geo, analytics: s.analytics })),
+    // AI-search readiness and how often sampled AI answers named the business (geo-audit, record-ai-mentions).
+    geo: await geoSummary(env, ctx.sprint).catch(() => null),
     scoreboard: ctx.sprint.scoreboard,
   };
 }
@@ -351,8 +357,13 @@ export function integrationView(i: db.Integration) {
     propertyUrl: i.propertyUrl,
     lastPullAt: i.lastPullAt,
     lastError: i.lastError,
-    connected: i.provider === "gsc" ? (Boolean(i.tokenSealed) || i.settings?.auth === "service_account") && i.status === "connected" : i.status === "enabled",
-    auth: i.provider === "gsc" ? (i.settings?.auth === "service_account" ? "service_account" : i.tokenSealed ? "oauth" : null) : null,
+    connected:
+      i.provider === "gsc"
+        ? (Boolean(i.tokenSealed) || i.settings?.auth === "service_account") && i.status === "connected"
+        : i.provider === "ga4"
+          ? i.status === "connected" && Boolean(i.propertyUrl)
+          : i.status === "enabled",
+    auth: i.provider === "gsc" ? (i.settings?.auth === "service_account" ? "service_account" : i.tokenSealed ? "oauth" : null) : i.provider === "ga4" && i.status === "connected" ? "service_account" : null,
     stats: i.stats,
   };
 }
@@ -374,6 +385,8 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   // Tasks whose runs stop at the workspace check are stuck, not blocked on a person (engine/due.ts).
   const tasks = await withRunFailures(env.ctx.db, sprint.companyId, await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: OPEN_TASK_STATUSES }));
   const due = tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day);
+  // A site-wide task split into page groups: the agent works the group issues, not the parent (service/chunks.ts).
+  const groups = await groupViews(env, sprint.companyId, sprint.id).catch(() => new Map());
   const brief = (t: db.SprintTask) => ({
     taskId: t.id,
     title: t.title,
@@ -385,6 +398,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     autopilotEligible: t.autopilotEligible,
     ...(t.humanAsk ? { humanAsk: t.humanAsk } : {}),
     ...(t.blockerReason ? { blockerReason: t.blockerReason } : {}),
+    ...(groups.has(t.id) ? { pageGroups: groups.get(t.id) } : {}),
   });
   const [integrations, proposals, doneRecently] = await Promise.all([
     db.listIntegrations(env.ctx.db, sprint.companyId, sprint.id),
@@ -438,9 +452,22 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   }
   if (inProgress.length > 0) next.push(`Finish the ${plural(inProgress.length, "task")} in progress first.`);
   if (agentWork.length > 0) next.push(`Work the ${plural(agentWork.length, "due agent task")}, oldest week first; complete each with complete-task and evidence.`);
+  for (const view of groups.values()) {
+    const task = tasks.find((t) => t.id === view.taskId);
+    if (task && view.openIssue) next.push(`"${task.title}" is split into ${view.total} page groups (${view.done} done): work the open group issue ${view.openIssue.identifier ?? view.openIssue.issueId}, not the task's own issue; the task is completed after the last group.`);
+  }
   if (blocked.length > 0) next.push(`${plural(blocked.length, "task")} ${blocked.length === 1 ? "is" : "are"} blocked; what they need is on Needs you — do not redo them.`);
   if (needsYou && needsYou.open.length > 0) next.push(`${plural(needsYou.open.length, "item")} ${needsYou.open.length === 1 ? "waits" : "wait"} on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
   if (proposals.length > 0) next.push(`${plural(proposals.length, "optimization proposal")} ${proposals.length === 1 ? "waits" : "wait"} for approval.`);
+  const geo = await geoSummary(env, sprint).catch(() => null);
+  if (geo && (geo.score != null || geo.mentions)) next.push(`${geoLine(geo)}. geo-audit refreshes it; record-ai-mentions adds sampled AI answers.`);
+  const ga4 = integrations.find((i) => i.provider === "ga4");
+  if (ga4?.status === "connected") {
+    const line = await ga4Line(env, sprint);
+    if (line) next.push(line);
+  } else if (sa.key && gsc?.status === "connected") {
+    next.push("Google Analytics is not connected: connect-ga4 finds the property by the site's address; the one-time grant it may need is on Needs you (optional).");
+  }
   for (const a of announcements.filter((row) => row.status === "stuck").slice(0, 3)) next.push(announcementLine(a));
   if (playbook.pending > 0) {
     next.push(

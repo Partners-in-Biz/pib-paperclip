@@ -42,6 +42,22 @@ function socialHandOff(post: string, publishKey: string): Playbook {
   };
 }
 
+/** The re-checks: the same questions asked again against the baseline, with a fresh readiness audit (weeks 8 and 13, then monthly). */
+function geoRecheck(day90: boolean): Playbook {
+  return {
+    goal: `See whether the work moved the answers: the same questions asked again, compared with the baseline, and a fresh readiness check${day90 ? ", for the day-90 report" : ""}.`,
+    steps: [
+      "Run `geo-audit` with sprintId.",
+      "Ask the same questions as the baseline (`list-ai-mentions` lists them) with the same assistants or tools, and record them with `record-ai-mentions`. The latest answer per question and assistant is the one that counts in the rate; the baseline day stays for the trend.",
+      "Compare with `list-ai-mentions`: the baseline rate, the latest rate and the change in points. Name what moved and the competitors that still appear. Say plainly when nothing moved: a handful of samples is a signal, not a measurement.",
+      "For each gap you can explain (a page that does not answer the question, a missing profile, a blocked crawler) `add-task` with the cause." + (day90 ? " Include the readiness score and the mention rate in the day-90 report (`post-digest`), next to the GA4 organic numbers when GA4 is connected (`list-ga4-summary`)." : ""),
+    ],
+    tools: ["geo-audit", "list-ai-mentions", "record-ai-mentions", "add-task", ...(day90 ? ["list-ga4-summary"] : [])],
+    done: "A readiness audit from the last 14 days exists and at least 5 questions were sampled in the last 14 days (complete-task checks this).",
+    evidence: "The readiness score and the mention rate before and after, and the questions that changed.",
+  };
+}
+
 export const PLAYBOOKS: Record<string, Playbook> = {
   "w0-meta-tags": {
     goal: "Every indexable page has a unique title (50–60 chars), meta description (70–160 chars), canonical, og:title and og:image.",
@@ -51,6 +67,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
       "Write the missing or weak titles/descriptions around each page's target keyword (use `list-keywords` if keywords exist yet).",
       SITE_CHANGE,
       "Re-run `check-meta` on production after the deploy; the resolved findings close automatically.",
+      "Large sites: when the site has more pages than one run can do well, the plugin splits this task into page groups (child issues of this one, opened one at a time). Work only the group you are given; this issue is completed after the last group is done.",
     ],
     tools: ["check-sitemap", "check-meta", "list-keywords", "audit-summary"],
     done: "`check-meta` reports no missing title, description, og:image or canonical on the home page and core pages.",
@@ -182,6 +199,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
       "Run `check-canonical` with sprintId on the home page and core pages.",
       "Fix missing canonicals, canonicals to other pages by mistake, http vs https and trailing-slash mismatches.",
       SITE_CHANGE,
+      "Large sites: when the site has more pages than one run can do well, the plugin splits this task into page groups (child issues of this one, opened one at a time). Work only the group you are given; this issue is completed after the last group is done.",
     ],
     tools: ["check-canonical", "check-sitemap"],
     done: "`check-canonical` reports a matching canonical on every key page.",
@@ -194,6 +212,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
       "Write alt text that describes the image in context (not keyword stuffing).",
       SITE_CHANGE,
       "Alt text is SEO scope: merge it yourself under merge_seo_scope when checks pass. " + AFTER_DEPLOY,
+      "Large sites: when the site has more pages than one run can do well, the plugin splits this task into page groups (child issues of this one, opened one at a time). Work only the group you are given; this issue is completed after the last group is done.",
     ],
     tools: ["crawler-sim", "check-change-scope"],
     done: "`crawler-sim` reports no images missing alt text on the core pages.",
@@ -206,6 +225,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
       "Run `crawler-sim` on each to see the current robots meta / X-Robots-Tag.",
       "Add `<meta name=\"robots\" content=\"noindex\">` (or the header) and remove them from the sitemap.",
       SITE_CHANGE,
+      "Large sites: when the site has more pages than one run can do well, the plugin splits this task into page groups (child issues of this one, opened one at a time). Work only the group you are given; this issue is completed after the last group is done.",
     ],
     tools: ["check-sitemap", "crawler-sim"],
     done: "Every private/app page reports noindex in `crawler-sim` and is absent from the sitemap.",
@@ -490,7 +510,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     goal: "A Day 90 snapshot of traffic, rankings, authority and content.",
     steps: [
       "The daily job records the day-90 snapshot automatically on day 90. Run `gsc-pull` first if GSC is connected, then `run-audit-snapshot` (day 90) if it is missing or stale.",
-      "Compare with the day 0/30/60 snapshots (`audit-summary`).",
+      "Compare with the day 0/30/60 snapshots (`audit-summary`). A snapshot also carries the AI-search readiness score (`geo`) and, when GA4 is connected, the organic traffic and key events (`analytics`).",
     ],
     tools: ["gsc-pull", "run-audit-snapshot", "audit-summary"],
     done: "A snapshot for day 90 (or later) exists (complete-task checks this).",
@@ -499,10 +519,10 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w13-audit-report": {
     goal: "A short Day 90 report the client can read: what was done, what moved, what is next.",
     steps: [
-      "Use `audit-summary` and the snapshots; list wins (keywords in top 10, impressions growth, links live) with real numbers only.",
+      "Use `audit-summary` and the snapshots; list wins (keywords in top 10, impressions growth, links live) with real numbers only. Add the AI-search readiness score and how often AI answers named the business (`list-ai-mentions`), and, when GA4 is connected, the organic sessions and key events and which of them landed on the pages this sprint made (`list-ga4-summary`).",
       "Post the report as a comment on the sprint root issue (`post-digest`) and link the Audits tab.",
     ],
-    tools: ["audit-summary", "post-digest"],
+    tools: ["audit-summary", "list-ai-mentions", "list-ga4-summary", "post-digest"],
     done: "The report is posted on the sprint root issue.",
     evidence: "Link to the comment.",
   },
@@ -728,6 +748,84 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   },
 
   // --- Optimization task types -------------------------------------------------
+  // GEO (AI search), template version 5 (templates/geo.ts). The checks behind them: tool geo-audit; samples: record-ai-mentions.
+  "w0-geo-crawlers": {
+    goal: "AI answer engines can read the site: robots.txt does not block the search crawlers of ChatGPT, Claude, Perplexity, Google, Bing or Apple, and the server does not refuse them.",
+    steps: [
+      "Run `geo-audit` with sprintId. Its crawlers section lists every AI crawler as allowed, partly blocked or blocked by robots.txt, and its server probes show whether a firewall or CDN refuses a bot that robots.txt allows (HTTP 403, or a bot-check page).",
+      "Search crawlers (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Googlebot, bingbot, Applebot) and the user agents (ChatGPT-User, Claude-User, Perplexity-User) that robots.txt blocks by mistake (a blanket rule, an old CMS default, a rule copied from another site) are fixed: remove or narrow the rule. robots.txt is SEO scope (WordPress: `wp-robots`). " + SITE_CHANGE,
+      "Training crawlers (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, CCBot, Bytespider, meta-externalagent) are the client's policy, not a defect: report what robots.txt says and never change a rule for them yourself. Blocking them does not affect Google, Bing or the search crawlers above. If the client never decided, put the question on Needs you once (`needs-you-add`, kind message, with a two-line explanation).",
+      "A server refusal is a firewall or CDN setting you cannot reach: `needs-you-add` (kind grant) naming the bots, the probe results and where to change it (for example Cloudflare → Security → Bots → AI Scrapers and Crawlers, or the host's bot protection). Carry on with everything else; `block-task` only when nothing else is left. The probe sees user-agent rules only: a block by IP range cannot be seen from here.",
+      "Run `geo-audit` again after the deploy: findings you fixed resolve on their own.",
+    ],
+    tools: ["geo-audit", "check-robots", "crawler-sim", "check-change-scope", "needs-you-add"],
+    done: "`geo-audit` shows every search and user crawler allowed and no server refusal, or each remaining one is on Needs you with the reason (complete-task checks that an audit was recorded in the last 14 days).",
+    evidence: "The crawler table before and after, the PR or the Connector change ids, and the Needs you keys.",
+  },
+  "w1-geo-llms-txt": {
+    goal: "The site serves a small llms.txt that lists its key pages for AI tools, or the task is skipped with the reason.",
+    steps: [
+      "Be honest about what it is: llms.txt is a proposed convention, and no major search engine or AI company has said it uses it to rank or cite a page. It is cheap, it carries 5% of the readiness score, and you never promise a result from it.",
+      "Draft it from the real site: `# <business name>`, a one-line `> summary`, then `## ` sections (Services, About, Contact, Guides) with `- [Page title](https://absolute-url): what it covers` for 5 to 15 key pages (`check-sitemap`, `list-content`, the core pages). Only pages that exist and answer 200.",
+      "Publish it at `/llms.txt` as plain text. Repo sites: a file in the public folder (a root key file: SEO scope). WordPress: `partnersinbiz.crm:wp-verify` op get, then op set with the existing files plus `{ path: \"/llms.txt\", content }`. If the Connector refuses the file name or the site cannot serve root files, `skip-task` with that reason: never a Needs you item. " + SITE_CHANGE,
+      "Run `geo-audit`: the llms.txt section reads good and every listed page loads.",
+    ],
+    tools: ["geo-audit", "check-sitemap", "list-content", "check-change-scope", "skip-task"],
+    done: "`geo-audit` reports llms.txt as good (title, summary, sections, working links), or the task is skipped with the reason.",
+    evidence: "The file's URL and content, and the PR or the Connector change id.",
+  },
+  "w1-geo-entity": {
+    goal: "The home page tells AI systems who the business is: Organization (or LocalBusiness / ProfessionalService) data with name, logo, description, phone or email, address, a stable @id and links to the business's real profiles (sameAs).",
+    steps: [
+      "Run `geo-audit` (entity section) and `validate-schema` on the home page: what exists and what is missing.",
+      "Collect real facts only: the name exactly as the business writes it, the logo URL, a description in its own words, the phone, email and address the site shows (`get-client-facts` for approved wording), and the profile links that EXIST (LinkedIn, Facebook, Instagram, X, YouTube, Google Business Profile, Hellopeter; Wikipedia or Wikidata only if the business really has an entry). Never invent a profile, and never create one just to fill the field.",
+      "Extend the existing Organization or LocalBusiness node instead of adding a second one (WordPress with Yoast or Rank Math: `wp-schema` with a stable id, joining their graph). Give it an `@id`, `logo`, `description`, `telephone` or `contactPoint`, `address`, `sameAs`, and link the WebSite node's publisher to it. " + SITE_CHANGE,
+      "Re-run `geo-audit` and `validate-schema`.",
+    ],
+    tools: ["geo-audit", "validate-schema", "get-client-facts", "check-change-scope"],
+    done: "`geo-audit`'s entity section scores 80 or more, or each missing item is named as not available, with why.",
+    evidence: "The JSON-LD you added (or its PR) and the entity score before and after.",
+  },
+  "w2-geo-baseline": {
+    goal: "A baseline: how AI assistants answer the questions this business's customers ask, and whether the business is named or cited.",
+    steps: [
+      "`list-ai-mentions` (with sprintId) suggests questions from the priority keywords and the business's own name. Add the real questions customers ask (`list-content`, the site's FAQ, `gsc-query` queries) until you have about 10.",
+      "Ask each question with the answer tools you really have (a web search tool, a browser, an assistant's public page). Use only what you can run. If your run has no tool that returns an AI assistant's answer, do not guess: `skip-task` with that reason.",
+      "Record each answer with `record-ai-mentions`: the query, the engine (which assistant or tool gave the answer), whether it named the business (`mentioned`) or listed a page of the site as a source (`cited`, with `citedUrls`), a short `evidence` quote, the competitors it named and how you got it (`method`). A mention without a quote or a source URL is refused. Never fill a gap with what an assistant would probably say.",
+      "Read the result (`list-ai-mentions`): the rate and the competitors that appear instead. Put the two or three clearest gaps in the task summary.",
+    ],
+    tools: ["list-ai-mentions", "record-ai-mentions", "list-keywords", "list-content", "gsc-query", "skip-task"],
+    done: "At least 5 questions are sampled and recorded with `record-ai-mentions` (complete-task checks this).",
+    evidence: "The questions, the assistants or tools used, the mention rate and the competitors that appeared.",
+  },
+  "w4-geo-answers": {
+    goal: "The core pages answer the questions customers ask in a short, quotable block, and FAQ markup describes only questions the page really shows.",
+    steps: [
+      "`geo-audit` (answers section) shows, for the home page and a sample of core pages, the question headings, how many have a direct answer and the state of the FAQ markup. `list-ai-mentions` shows the questions where the business was missing.",
+      "Under each main question heading on a core page, put a direct answer of 2 to 3 sentences (about 30 to 60 words) that stands on its own: the answer first, then the detail. Real questions only (the FAQ, `gsc-query`, the sampled questions). Facts only from `get-client-facts` and the site: no invented prices, numbers or promises.",
+      "FAQPage markup only for questions the page shows (3 or more), word for word. Remove markup for questions that are not visible (Google ignores it and may flag the site).",
+      SITE_CHANGE,
+      "Re-run `geo-audit` (answers section) and `validate-schema`.",
+    ],
+    tools: ["geo-audit", "list-ai-mentions", "get-client-facts", "validate-schema", "gsc-query", "check-change-scope"],
+    done: "`geo-audit` finds a short direct answer under at least 2 questions on each core page, and no FAQ markup for hidden questions.",
+    evidence: "The pages changed, the questions answered, and the PR or the Connector change ids.",
+  },
+  "w6-geo-brand": {
+    goal: "The business is described the same way everywhere AI systems look: the site, its social profiles and the directories it is listed in (same name, phone, address and a one-sentence description).",
+    steps: [
+      "Run `geo-audit` (brand section): sameAs links that fail or show another name, and directory listings (`list-backlinks`, type directory or citation, status live) that miss the site's name or phone.",
+      "Fix the site first so the canonical version is right (the schema, the footer, the contact page). Then write what each profile and listing must say: name, phone, address, website and one sentence (client facts only).",
+      "A correction on a third-party profile needs the owner's login: prepare the exact text per listing and put the one grant on Needs you (`needs-you-add`, kind message, copy-ready), as the directory tasks do. A listing you can reach yourself: fix it.",
+      "Remove or correct a sameAs link that fails; add the real profiles that are missing. " + SITE_CHANGE,
+      "Run `geo-audit` again: the findings for corrected listings resolve.",
+    ],
+    tools: ["geo-audit", "list-backlinks", "update-backlink", "needs-you-add", "get-client-facts", "validate-schema"],
+    done: "`geo-audit` finds no listing or profile with a different name or phone and no broken sameAs link, or each remaining one is on Needs you.",
+    evidence: "The listings corrected, the listings waiting on a login (Needs you keys), the sameAs links added or removed.",
+  },
+  "w8-geo-recheck": geoRecheck(false),
+  "w13-geo-recheck": geoRecheck(true),
   "opt:page-rewrite": {
     goal: "Test the hypothesis on the target page: rewrite for depth, structure and intent match.",
     steps: [

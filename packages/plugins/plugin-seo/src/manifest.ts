@@ -31,7 +31,8 @@ Non-negotiables:
 - The Social agent owns repurposing: mark pages live (Social is told once they answer 200) and link its drafts with \`link-social-post\`.
 - Read the sprint's learned playbook (\`get-playbook\`) before working its tasks and follow it; turn measured wins and losses into playbook proposals.
 - Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence (PR, commit, check output).
-- Never invent rankings, volumes, DR or traffic numbers.
+- Never invent rankings, volumes, DR, traffic numbers, GA4 figures, or AI answers: record only what a tool returned or you obtained with a tool of yours (record-ai-mentions needs the evidence).
+- A site-wide task on a big site is split into page groups (child issues): work only the group issue you are given; the parent is completed after the last group.
 - Keep each sprint in its scope: pass the sprint's \`client\` on, and never reuse one client's data, copy or accounts for another client or for PiB's own sites.
 - In safe autopilot, anything that publishes, sends or changes the live site on a sign-off task goes to the owner for approval first.
 - Post a digest on each sprint root issue you worked (\`post-digest\`).
@@ -41,7 +42,7 @@ const DAILY_ROUTINE_DESCRIPTION = `Run today's SEO work across every active spri
 
 Procedure:
 1. Call partnersinbiz.seo:today with no sprintId. It lists every active sprint with due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps.
-2. For each sprint, in order of the oldest due week: call partnersinbiz.seo:get-playbook (sprintId) and follow its rules, then work the agent tasks assigned to you using each issue's playbook (skill pib-seo-sprint, references/outrank-90.md). Finish in-progress tasks before starting new ones.
+2. For each sprint, in order of the oldest due week: call partnersinbiz.seo:get-playbook (sprintId) and follow its rules, then work the agent tasks assigned to you using each issue's playbook (skill pib-seo-sprint, references/outrank-90.md). Finish in-progress tasks before starting new ones. A task split into page groups (today shows pageGroups): work the open group issue, never the parent's pages.
 3. Close each finished task with partnersinbiz.seo:complete-task (summary, PR/commit links, check output). Only for a true one-time grant or judgement call partnersinbiz.seo:block-task with a precise humanAsk (review: true for sign-off); it lands on the sprint's weekly Needs you issue. Do not redo tasks already waiting there.
 4. Follow each sprint's next steps from today: verify Search Console yourself with the service account, link the site repo if you know its project (link-site), request indexing, set up Bing. Items already on Needs you close on their own once done.
 5. Never invent numbers. Positions update automatically from GSC each morning.
@@ -55,15 +56,16 @@ Procedure:
 2. For each sprint: partnersinbiz.seo:list-optimizations status proposed, then partnersinbiz.seo:detect-signals (propose false) for context.
 3. Check each proposal's evidence yourself (gsc-query, crawler-sim, run-pagespeed, list-keywords). Comment your recommendation (approve / reject and why) on the proposal's approval issue.
 4. Approve with partnersinbiz.seo:approve-optimization only when the sprint's autopilot is full; otherwise leave the decision to the owner.
-5. Review measured optimizations (list-optimizations status measured) and note wins and losses in a post-digest on the sprint root issue. Each win or loss has a drafted playbook change: propose a clearer rule with partnersinbiz.seo:propose-playbook-change when one fits, and keep or discard pending changes with decide-playbook-change only when autopilot is full.
-6. Close this routine issue with a summary: proposals per sprint, your recommendations, results measured this week.`;
+5. Numbers beyond rankings: detect-signals returns numbers (organic traffic and key events from GA4, AI-search readiness). With GA4 connected call partnersinbiz.seo:list-ga4-summary. Put in the digest the organic sessions with the change on the week before, the key events and the share that landed on the sprint's pages; quote only what the tools return. No GA4 yet: partnersinbiz.seo:connect-ga4 (it puts the one-time grant on Needs you).
+6. Review measured optimizations (list-optimizations status measured) and note wins and losses in a post-digest on the sprint root issue. Each win or loss has a drafted playbook change: propose a clearer rule with partnersinbiz.seo:propose-playbook-change when one fits, and keep or discard pending changes with decide-playbook-change only when autopilot is full.
+7. Close this routine issue with a summary: proposals per sprint, your recommendations, results measured this week.`;
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.22.0",
+  version: "0.23.0",
   displayName: "SEO",
-  description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
+  description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, AI-search (GEO) audits, Google Analytics (GA4) organic traffic and key events, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,

@@ -367,6 +367,10 @@ describe("moving a task thread", () => {
     expect(h.log).toEqual(["issue created", "task repointed", "previews repointed", "old cancelled"]);
     expect(h.tasks.get("t-528")).toMatchObject({ issue_id: uuid(901), issue_identifier: "PAR-901", issue_status: "todo" });
     expect(h.executes.find((e) => /UPDATE plugin_seo_\w+\.previews SET issue_id/.test(e.sql))!.params).toEqual(["co-1", PAR528.id, uuid(901)]);
+    // A split task's page groups follow it to the new issue, finished ones too: the new issue still waits for them.
+    const chunks = h.executes.find((e) => /UPDATE plugin_seo_\w+\.task_chunks SET parent_issue_id = \$3/.test(e.sql))!;
+    expect(chunks.sql).toContain("WHERE company_id = $1 AND parent_issue_id = $2");
+    expect(chunks.params).toEqual(["co-1", PAR528.id, uuid(901)]);
 
     const pointer = h.comments.find((c) => c.id === PAR528.id)!;
     expect(pointer.body).toContain("Moved to PAR-901");

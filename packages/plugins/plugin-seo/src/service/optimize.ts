@@ -34,6 +34,9 @@ import {
 import { clockFor, requireSprint, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { draftFromMeasurement, type DraftResult } from "./playbook.js";
+import { ga4Line } from "./analytics.js";
+import { geoSummary } from "./geo.js";
+import { geoLine } from "../engine/geo.js";
 import { materialiseDueTasks } from "./tasks.js";
 
 /** The weekly proposals posted as a comment on an approval issue that is already open (each proposal carries its evidence). */
@@ -121,6 +124,8 @@ export async function detectSignals(env: Env, info: CompanyInfo, sprint: db.Spri
     signals: signals.map(signalView),
     proposalsCreated: created.map((o) => ({ optimizationId: o.id, hypothesis: o.hypothesis, signal: o.signalType })),
     allowanceLeft: opts.propose ? Math.max(0, allowance - created.length) : null,
+    // Organic traffic and key events (GA4) and AI-search readiness, for the weekly review's digest.
+    numbers: await weeklyNumbers(env, sprint),
   };
 }
 
@@ -136,8 +141,15 @@ function proposalCopy(o: db.Optimization): ProposalCopy {
   };
 }
 
+/** The week's numbers beyond rankings: GA4 organic traffic and key events, and AI-search readiness. Empty without either. */
+export async function weeklyNumbers(env: Env, sprint: db.Sprint): Promise<string[]> {
+  const [traffic, geo] = await Promise.all([ga4Line(env, sprint), geoSummary(env, sprint).catch(() => null)]);
+  return [traffic, geo && (geo.score != null || geo.mentions) ? `${geoLine(geo)}.` : null].filter((line): line is string => Boolean(line));
+}
+
 /** One approval issue per sprint: reuse an open one (comment) or open a new one for the owner. */
 async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint, created: db.Optimization[]): Promise<void> {
+  const numbers = await weeklyNumbers(env, sprint);
   const pending = await db.listOptimizations(env.ctx.db, sprint.companyId, sprint.id, { status: "proposed" });
   const existingIssueId = pending.map((o) => o.approvalIssueId).find((id) => id) ?? null;
   let issueId: string | null = null;
@@ -145,7 +157,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
     const issue = await getIssue(env, sprint.companyId, existingIssueId);
     if (issue && OPEN_ISSUE_STATUSES.has(String(issue.status))) {
       issueId = existingIssueId;
-      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)), { max: PROPOSALS_COMMENT_MAX, pointer: "every proposal is on the SEO page → Optimizations tab" });
+      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint), numbers), { max: PROPOSALS_COMMENT_MAX, pointer: "every proposal is on the SEO page → Optimizations tab" });
     }
   }
   if (!issueId) {
@@ -154,7 +166,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
       const opened = await openIssue(env, {
         companyId: sprint.companyId,
         title: approvalIssueTitle(sprint, `week ${clock.week}`),
-        description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint)),
+        description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint), numbers),
         originKind: ORIGIN.approval,
         originId: sprint.id,
         projectId: sprint.projectId,

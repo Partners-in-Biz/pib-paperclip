@@ -5,7 +5,7 @@
  * "Details" disclosure (never shown on its own).
  */
 
-export type ErrorSource = "gsc" | "pagespeed" | "bing";
+export type ErrorSource = "gsc" | "pagespeed" | "bing" | "ga4";
 
 export interface PlainError {
   /** One plain sentence: what happened and what happens next. */
@@ -17,7 +17,7 @@ export interface PlainError {
   raw: string;
 }
 
-const SOURCE_NAME: Record<ErrorSource, string> = { gsc: "Google Search Console", pagespeed: "PageSpeed", bing: "Bing" };
+const SOURCE_NAME: Record<ErrorSource, string> = { gsc: "Google Search Console", pagespeed: "PageSpeed", bing: "Bing", ga4: "Google Analytics" };
 
 /** An error from Google Search Console, PageSpeed Insights or Bing in plain words. */
 export function plainError(raw: string | null | undefined, source?: ErrorSource | null): PlainError | null {
@@ -33,6 +33,14 @@ export function plainError(raw: string | null | undefined, source?: ErrorSource 
     if (is(/api key not valid|API_KEY_INVALID|invalid api key|\b400\b.*key/i)) return out("Google turned down the PageSpeed API key. Check it in the SEO settings.", "warn", true);
     if (is(/unable to (?:process|resolve)|FAILED_DOCUMENT_REQUEST|ERRORED_DOCUMENT_REQUEST|NO_FCP|net::ERR/i)) return out("PageSpeed could not load the page. Check that it opens in a browser; the next daily run tries again.", "warn", false);
     return out("The PageSpeed check failed; the next daily run tries again.", "warn", false);
+  }
+  if (kind === "ga4") {
+    if (is(/not enabled|has not been used|SERVICE_DISABLED|API is disabled/i)) return out("The Google Analytics APIs are not switched on in the Google Cloud project yet (the one-time step is on Needs you).", "warn", true);
+    if (is(/service account cannot be used|key does not|not valid JSON/i)) return out("The Google service account key does not work. Check it in the SEO settings.", "bad", true);
+    if (is(/sufficient permission|not a viewer|cannot read any|does not have|no access|\b403\b/i)) return out("The service account cannot read this Google Analytics property yet: the property's owner adds it as a Viewer (the steps are on Needs you).", "warn", true);
+    if (is(/quota|rate ?limit|RESOURCE_EXHAUSTED|\b429\b/i)) return out("Google Analytics' limit ran out; the numbers update tomorrow.", "info", false);
+    if (is(/property id|does not know property|not found|\b404\b|\b400\b/i)) return out("Google does not know that property ID. Check it (Admin → Property settings → Property ID).", "warn", true);
+    return out("The Google Analytics pull failed; the next daily run tries again.", "warn", false);
   }
   if (kind === "bing") {
     if (is(/not set|missing/i)) return out("The Bing API key is not set yet (see Setup).", "warn", true);
@@ -67,6 +75,8 @@ const WARNING_AREAS: Array<{ prefix: RegExp; area: string; source?: ErrorSource;
   { prefix: /^PageSpeed:\s*/i, area: "Page speed", source: "pagespeed", tab: "integrations" },
   { prefix: /^GSC:\s*/i, area: "Google Search Console", source: "gsc", tab: "integrations" },
   { prefix: /^Bing:\s*/i, area: "Bing", source: "bing", tab: "integrations" },
+  { prefix: /^GA4:\s*/i, area: "Google Analytics", source: "ga4", tab: "integrations" },
+  { prefix: /^AI search:\s*/i, area: "AI-search check" },
   { prefix: /^Search Console:\s*/i, area: "Google Search Console", source: "gsc", tab: "integrations" },
   { prefix: /^Root issue:\s*/i, area: "Sprint issue" },
   { prefix: /^Plan upgrade:\s*/i, area: "Plan update" },

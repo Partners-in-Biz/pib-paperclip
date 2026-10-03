@@ -66,6 +66,7 @@ describe("SEO cockpit snapshot (unconfigured)", () => {
     const { ctx } = fakeCtx(() => []);
     const snap = await cockpitSnapshot(ctx, "co-1");
     expect(snap).toMatchObject({ plugin: "partnersinbiz.seo", title: "SEO", waiting: [], activity: [] });
+    // No Google Analytics numbers and no AI-search audit yet: those two KPIs are left out, not shown as zero.
     expect(snap.kpis.map((k) => [k.key, k.value])).toEqual([
       ["seo_active_sprints", "0"],
       ["seo_tasks_done_7d", "0"],
@@ -101,7 +102,7 @@ describe("SEO cockpit snapshot (configured)", () => {
   const rows = (sql: string): Row[] => {
     if (sql.includes(`FROM ${T("sprints")} WHERE company_id = $1 ORDER BY`)) return [sprintDbRow(ACME_ROW, 80), sprintDbRow(SPRINT_ROW, 34)];
     if (sql.includes(`FROM ${T("sprint_tasks")}`) && sql.includes("WHERE company_id = $1 AND status IN")) return OPEN_TASKS;
-    if (sql.includes("AS done_7d")) return [{ done_7d: "5", top10: "4", tracked: "30", clicks: "812.0" }];
+    if (sql.includes("AS done_7d")) return [{ done_7d: "5", top10: "4", tracked: "30", clicks: "812.0", organic_visits: "1240", ai_readiness: "58" }];
     if (sql.includes(`FROM ${T("integrations")} i JOIN`) && sql.includes("ORDER BY s.created_at LIMIT 30")) {
       return [
         { ...SPRINT_ROW, provider: "gsc", status: "connected", last_error: "User does not have sufficient permission", last_pull_at: "2026-09-20T05:00:00Z", updated_at: "2026-09-26T05:00:00Z" },
@@ -149,6 +150,9 @@ describe("SEO cockpit snapshot (configured)", () => {
     expect(kpi.seo_stuck_tasks).toMatchObject({ value: "4", tone: "bad", delta: "No SEO agent is linked: fix in Setup → Team", href: "/setup?section=team#team-seo-specialist" });
     expect(kpi.seo_keywords_top10).toMatchObject({ value: "4", delta: "of 30 tracked" });
     expect(kpi.seo_clicks).toMatchObject({ value: "812", raw: 812 });
+    // Google Analytics organic visits and AI-search readiness show only once there are numbers.
+    expect(kpi.seo_organic_visits).toMatchObject({ value: "1,240", raw: 1240, label: "Organic visits (last 4 weeks, Google Analytics)", group: "marketing" });
+    expect(kpi.seo_ai_readiness).toMatchObject({ value: "58/100", raw: 58, tone: "warn", label: "AI-search readiness (lowest sprint)" });
     expect(kpi.seo_health_score).toMatchObject({ value: "62/100", tone: "warn", label: "SEO health (lowest sprint)" });
 
     const health = Object.fromEntries(snap.health.map((h) => [h.key, h]));

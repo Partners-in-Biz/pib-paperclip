@@ -114,7 +114,7 @@ describe("SEO setup status", () => {
   it("maps the checklist for a new company, with exact next steps", async () => {
     const { env } = host();
     const status = await seoSetupStatus(env, "co-1");
-    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.22.0", checkedAt: "2026-09-26T08:00:00.000Z" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.seo", module: "seo", title: "SEO", version: "0.23.0", checkedAt: "2026-09-26T08:00:00.000Z" });
     expect(status.items[0]!.key).toBe("settings");
     const items = byKey(status.items);
     expect(items.settings).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins/051bbf0b-aeb5-42d7-b0b6-c4cabd271cdc" });
@@ -148,6 +148,9 @@ describe("SEO setup status", () => {
     expect(items.site_project).toMatchObject({ status: "done", href: "/seo?sprint=sp-1&tab=integrations" });
     expect(items.autopilot!.status).toBe("done");
     expect(items.gsc_property).toMatchObject({ status: "done", required: false });
+    // Google Analytics is optional: not connected here, so it is offered, never "missing".
+    expect(items.ga4_property).toMatchObject({ status: "optional", required: false, title: "Google Analytics (GA4) connected" });
+    expect(items.ga4_property!.steps!.join(" ")).toContain("paperclip-seo@example.iam.gserviceaccount.com");
     expect(items.agent).toMatchObject({ status: "done", href: "/setup?section=team#team-seo-specialist", hrefLabel: "Open Team in Setup", action: null });
     expect(items.routines).toMatchObject({ status: "done", required: true });
     expect(items.github_token!.steps!.join(" ")).toContain("https://github.com/pib/acme");

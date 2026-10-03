@@ -845,6 +845,7 @@ function TaskSheet({ task, bundle, agent, canWork, onClose, call }: { task: Task
   const state = taskState(task, bundle.sprint.day, canWork);
   const open = ["not_started", "in_progress", "blocked"].includes(task.status);
   const phase = PHASE_NAMES[Math.min(Math.max(task.phase, 0), 4) as SprintPhase];
+  const groups = (bundle.pageGroups ?? []).find((g) => g.taskId === task.id) ?? null;
   return (
     <Modal
       open
@@ -870,6 +871,12 @@ function TaskSheet({ task, bundle, agent, canWork, onClose, call }: { task: Task
             : <a {...nav.linkProps(TEAM_SETUP_HREF)} style={{ ...linkButton, width: "fit-content" }}>Fix in Setup → Team</a>
         ) : null}
         <span>Issue: <IssueLink id={task.issueId} identifier={task.issueIdentifier} /></span>
+        {groups ? (
+          <span style={{ color: tokens.muted }}>
+            <strong>Page groups:</strong> {groups.done} of {groups.total} done
+            {groups.openIssue ? <> · open now: group {groups.openIssue.seq} (<IssueLink id={groups.openIssue.issueId} identifier={groups.openIssue.identifier} />)</> : null}. This site has more pages than one run can do well, so the task is split; it is completed after the last group.
+          </span>
+        ) : null}
         {task.blockerReason && state !== "skipped" ? <span style={{ color: tokens.muted }}><strong>Why:</strong> {task.blockerReason}</span> : null}
       </div>
       {open ? <Field label="Summary, or why it is skipped"><TextArea value={note} onChange={(e) => setNote(e.target.value)} /></Field> : null}

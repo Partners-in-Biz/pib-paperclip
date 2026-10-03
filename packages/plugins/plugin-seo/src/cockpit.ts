@@ -137,7 +137,11 @@ async function kpis(
        (SELECT sum((i.stats->'siteTotals'->>'clicks')::numeric) FROM ${t("integrations")} i JOIN ${t("sprints")} s ON s.id = i.sprint_id
           WHERE i.company_id = $1 AND s.status IN ${RUNNING} AND i.provider = 'gsc' AND i.stats->'siteTotals'->>'clicks' IS NOT NULL
             AND i.last_pull_at >= now() - interval '3 days')::text AS clicks,
-       (SELECT count(*) FROM ${t("playbook_changes")} WHERE company_id = $1 AND status = 'pending')::text AS playbook_pending`,
+       (SELECT count(*) FROM ${t("playbook_changes")} WHERE company_id = $1 AND status = 'pending')::text AS playbook_pending,
+       (SELECT sum(w.organic_sessions) FROM ${t("analytics_weeks")} w JOIN ${t("sprints")} s ON s.id = w.sprint_id
+          WHERE w.company_id = $1 AND s.status IN ${RUNNING} AND w.week_start > current_date - 36 AND w.week_start + 6 < current_date)::text AS organic_visits,
+       (SELECT min(g.score) FROM (SELECT DISTINCT ON (a.sprint_id) a.sprint_id, a.score FROM ${t("geo_audits")} a WHERE a.company_id = $1 ORDER BY a.sprint_id, a.audited_at DESC) g
+          JOIN ${t("sprints")} s ON s.id = g.sprint_id WHERE s.status IN ${RUNNING})::text AS ai_readiness`,
     [companyId],
   );
   const r = rows[0] ?? {};
@@ -187,6 +191,15 @@ async function kpis(
   if (r.clicks != null) {
     const clicks = Math.round(count(r.clicks));
     out.push({ key: "seo_clicks", label: "Search clicks (last 8 days, Search Console)", value: clicks.toLocaleString("en-US"), raw: clicks, tone: "neutral", href: "/seo", group: "marketing" });
+  }
+  // Organic visits from Google Analytics (the last four completed weeks) and AI-search readiness: only once there are numbers.
+  if (r.organic_visits != null) {
+    const visits = Math.round(count(r.organic_visits));
+    out.push({ key: "seo_organic_visits", label: "Organic visits (last 4 weeks, Google Analytics)", value: visits.toLocaleString("en-US"), raw: visits, tone: "neutral", href: "/seo", group: "marketing" });
+  }
+  if (r.ai_readiness != null) {
+    const readiness = Math.round(count(r.ai_readiness));
+    out.push({ key: "seo_ai_readiness", label: sprints.length > 1 ? "AI-search readiness (lowest sprint)" : "AI-search readiness", value: `${readiness}/100`, raw: readiness, tone: readiness >= 65 ? "ok" : readiness >= 40 ? "warn" : "bad", delta: "what AI answer engines can read and quote", href: "/seo", group: "marketing" });
   }
   const playbookPending = count(r.playbook_pending);
   if (playbookPending > 0) {

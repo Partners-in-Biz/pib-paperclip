@@ -34,7 +34,15 @@ export const ORIGIN = {
   needsYou: `plugin:${PLUGIN_ID}:needs-you`,
   build: `plugin:${PLUGIN_ID}:build`,
   previewReview: `plugin:${PLUGIN_ID}:preview-review`,
+  chunk: `plugin:${PLUGIN_ID}:chunk`,
 } as const;
+
+/** Origin id of a page group's issue: `seo:chunk:<chunkId>`. */
+export const CHUNK_ORIGIN_PREFIX = "seo:chunk:";
+
+export function chunkOriginId(chunkId: string): string {
+  return `${CHUNK_ORIGIN_PREFIX}${chunkId}`;
+}
 
 export const BUILD_ORIGIN_PREFIX = "seo:build:";
 

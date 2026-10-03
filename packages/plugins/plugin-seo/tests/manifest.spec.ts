@@ -36,7 +36,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.22.0");
+    expect(manifest.version).toBe("0.23.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -110,7 +110,7 @@ describe("skill", () => {
   it("is the pib- prefixed multi-file skill", () => {
     expect(skill).toMatchObject({ skillKey: "seo-sprint", slug: "pib-seo-sprint" });
     expect(skill.markdown).toMatch(/^---\nname: pib-seo-sprint\nslug: pib-seo-sprint\n/);
-    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md", "references/clients-and-plans.md", "references/search-console-and-indexing.md"]);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md", "references/clients-and-plans.md", "references/search-console-and-indexing.md", "references/geo.md", "references/analytics.md", "references/page-groups.md"]);
     expect(skill.markdown).toContain("complete-task");
     expect(skill.markdown).toContain("references/wordpress.md");
     const wp = skill.files!.find((f) => f.path === "references/wordpress.md")!.content;
@@ -139,8 +139,8 @@ describe("skill", () => {
     expect(skill.markdown).toContain("Never invent data");
   });
 
-  it("stays under the kit's 18,000-character budget with room to spare (0.22.0 moved detail into references, no rule dropped)", () => {
-    expect(skill.markdown!.length).toBeLessThan(17_000);
+  it("stays under the kit's 18,000-character budget (0.22.0 moved detail into references, 0.23.0 added GEO, GA4 and page groups the same way)", () => {
+    expect(skill.markdown!.length).toBeLessThan(17_600);
     const refs = Object.fromEntries(skill.files!.map((f) => [f.path, f.content]));
     // What moved is still there, and the body still points at it.
     for (const path of ["references/clients-and-plans.md", "references/search-console-and-indexing.md", "references/wordpress.md"]) {

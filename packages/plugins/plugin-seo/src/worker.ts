@@ -53,6 +53,9 @@ import { deliverPreviewAnswers, previewRows } from "./service/preview.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
+import { ga4Summary, ga4View } from "./service/analytics.js";
+import { groupViews, onChunkIssueUpdated, openIdleGroups } from "./service/chunks.js";
+import { geoSummary } from "./service/geo.js";
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
@@ -95,6 +98,10 @@ const plugin = definePlugin({
       await syncSignoff(e).catch((error) => ctx.logger.info("SEO sign-off sync failed", { error: errorMessage(error) }));
       await parkTasksWaitingOnYou(e).catch((error) => ctx.logger.info("SEO park waiting tasks failed", { error: errorMessage(error) }));
       await advanceQueuedWeeks(e).catch((error) => ctx.logger.info("SEO queued week advance failed", { error: errorMessage(error) }));
+      // A page group the host refused to create, or whose close was missed: the next group opens within minutes, not at the next hourly run.
+      await db.listSprintCompanies(ctx.db).then(async (companies) => {
+        for (const companyId of companies) await openIdleGroups(e, companyId).catch(() => 0);
+      }).catch((error) => ctx.logger.info("SEO idle page groups not advanced", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
       // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
@@ -114,6 +121,8 @@ const plugin = definePlugin({
       try {
         if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
         if (await onBuildIssueUpdated(e, event.companyId, event.entityId)) return;
+        // A page group of a site-wide task: sync it, open the next group, wake the task when the last one closes.
+        if (await onChunkIssueUpdated(e, event.companyId, event.entityId)) return;
         // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
         // so an early close never marks the task done, tells Social or opens a merge task.
         if (await checkAgentClose(ctx, event)) return;
@@ -364,6 +373,11 @@ function registerActions(e: Env) {
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
+    const [geo, analytics, groups] = await Promise.all([
+      geoSummary(e, sprint).catch(() => null),
+      ga4Summary(e, sprint, { weeks: 13 }).catch(() => null),
+      groupViews(e, companyId, sprintId).catch(() => new Map()),
+    ]);
     const [needsYou, setup, projects, wordpressSites, wpSite, playbook, overviews, timed] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
       setupChecklist(e, info, sprint).catch(() => []),
@@ -391,6 +405,10 @@ function registerActions(e: Env) {
       findings,
       optimizations,
       integrations: integrations.map(integrationView),
+      // AI-search readiness and sampled AI answers; the GA4 weekly numbers; the page groups of split tasks.
+      geo,
+      analytics: { ...ga4View(integrations.find((i) => i.provider === "ga4") ?? null), summary: analytics ? { weeks: analytics.weeks, last4: analytics.last4, change: analytics.change, organicShare: analytics.organicShare, attribution: analytics.attribution, keyEvents: analytics.keyEvents, aiReferrals: analytics.aiReferrals } : null },
+      pageGroups: [...groups.values()],
       pageHealth: health,
       traffic,
       previews,

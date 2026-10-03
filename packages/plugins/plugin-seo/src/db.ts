@@ -1249,6 +1249,10 @@ export interface Snapshot {
   content: Record<string, unknown>;
   cwv: Record<string, unknown>;
   tasks: Record<string, unknown>;
+  /** AI-search readiness score and AI-answer sampling (engine/geo.ts GeoSnapshot); empty before 0.23.0. */
+  geo: Record<string, unknown>;
+  /** GA4 organic numbers over the last four weeks (engine/analytics.ts); empty without GA4. */
+  analytics: Record<string, unknown>;
   source: string;
   notes: string | null;
 }
@@ -1267,6 +1271,8 @@ function snapshotFrom(row: Row): Snapshot {
     content: json(row.content, {}),
     cwv: json(row.cwv, {}),
     tasks: json(row.tasks, {}),
+    geo: json(row.geo, {}),
+    analytics: json(row.analytics, {}),
     source: String(row.source ?? "none"),
     notes: s(row.notes),
   };
@@ -1285,23 +1291,26 @@ export async function insertSnapshot(db: SeoDb, snap: {
   content: unknown;
   cwv: unknown;
   tasks: unknown;
+  geo?: unknown;
+  analytics?: unknown;
   source: string;
   notes: string | null;
 }): Promise<boolean> {
-  const sql = `INSERT INTO ${t("audit_snapshots")} (id, company_id, sprint_id, day, kind, captured_on, traffic, rankings, authority, content, cwv, tasks, source, notes)
-     VALUES ($1, $2, $3, $4::int, $5, $6::date, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14)${
+  const sql = `INSERT INTO ${t("audit_snapshots")} (id, company_id, sprint_id, day, kind, captured_on, traffic, rankings, authority, content, cwv, tasks, source, notes, geo, analytics)
+     VALUES ($1, $2, $3, $4::int, $5, $6::date, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15::jsonb, $16::jsonb)${
        snap.kind === "scheduled" ? " ON CONFLICT (sprint_id, day) WHERE kind = 'scheduled' DO NOTHING" : ""
      }`;
   const result = await db.execute(sql, [
     snap.id, snap.companyId, snap.sprintId, snap.day, snap.kind, snap.capturedOn, jsonParam(snap.traffic), jsonParam(snap.rankings),
     jsonParam(snap.authority), jsonParam(snap.content), jsonParam(snap.cwv), jsonParam(snap.tasks), snap.source, snap.notes,
+    jsonParam(snap.geo ?? {}), jsonParam(snap.analytics ?? {}),
   ]);
   return result.rowCount > 0;
 }
 
 export async function listSnapshots(db: SeoDb, companyId: string, sprintId: string): Promise<Snapshot[]> {
   const rows = await db.query(
-    `SELECT id, sprint_id, day, kind, captured_on::text AS captured_on, captured_at, traffic, rankings, authority, content, cwv, tasks, source, notes
+    `SELECT id, sprint_id, day, kind, captured_on::text AS captured_on, captured_at, traffic, rankings, authority, content, cwv, tasks, geo, analytics, source, notes
        FROM ${t("audit_snapshots")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY day, captured_at`,
     [companyId, sprintId],
   );
@@ -1367,6 +1376,15 @@ export async function resolveStaleFindings(db: SeoDb, input: { sprintId: string;
     [input.sprintId, input.category, input.url ?? "", input.source, jsonParam(input.current.map((f) => f.slice(0, 1000)))],
   );
   return result.rowCount;
+}
+
+/** The text of the open findings one check recorded for one resource (a re-run keeps those it could not judge). */
+export async function openFindingTexts(db: SeoDb, input: { sprintId: string; category: string; url: string | null; source: string }): Promise<string[]> {
+  const rows = await db.query(
+    `SELECT finding FROM ${t("audits")} WHERE sprint_id = $1 AND category = $2 AND url = $3 AND source = $4 AND status = 'open' LIMIT 200`,
+    [input.sprintId, input.category, input.url ?? "", input.source],
+  );
+  return rows.map((r) => String(r.finding ?? ""));
 }
 
 export async function listFindings(db: SeoDb, companyId: string, sprintId: string, opts: { status?: string; limit?: number } = {}): Promise<Finding[]> {
@@ -1550,7 +1568,7 @@ export async function dueMeasurements(db: SeoDb, sprintId: string, today: string
 // Integrations and OAuth sessions
 // ---------------------------------------------------------------------------
 
-export type Provider = "gsc" | "bing" | "pagespeed";
+export type Provider = "gsc" | "bing" | "pagespeed" | "ga4";
 
 export interface Integration {
   id: string;
@@ -1702,6 +1720,8 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
   directoriesNotStarted: number;
   latestSnapshotDay: number | null;
   liveContentWithSocial: number;
+  geoAuditAgeDays: number | null;
+  aiSamplesRecent: number;
 }> {
   const rows = await db.query(
     `SELECT
@@ -1710,7 +1730,9 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
        (SELECT count(*)::int FROM ${t("keywords")} k WHERE k.sprint_id = $1 AND k.retired_at IS NULL AND k.is_priority) AS priority,
        (SELECT count(*)::int FROM ${t("backlinks")} b WHERE b.sprint_id = $1 AND b.type IN ('directory', 'citation') AND b.status = 'not_started') AS dirs,
        (SELECT max(a.day) FROM ${t("audit_snapshots")} a WHERE a.sprint_id = $1) AS latest_day,
-       (SELECT count(*)::int FROM ${t("content")} c WHERE c.sprint_id = $1 AND c.status = 'live' AND jsonb_array_length(COALESCE(c.social_post_ids, '[]'::jsonb)) > 0) AS live_social`,
+       (SELECT count(*)::int FROM ${t("content")} c WHERE c.sprint_id = $1 AND c.status = 'live' AND jsonb_array_length(COALESCE(c.social_post_ids, '[]'::jsonb)) > 0) AS live_social,
+       (SELECT (current_date - max(g.audited_on)) FROM ${t("geo_audits")} g WHERE g.sprint_id = $1) AS geo_age,
+       (SELECT count(DISTINCT (m.query_key, m.engine))::int FROM ${t("ai_mentions")} m WHERE m.sprint_id = $1 AND m.sampled_on >= current_date - 14) AS ai_samples`,
     [sprintId],
   );
   const row = rows[0] ?? {};
@@ -1721,6 +1743,8 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
     directoriesNotStarted: Number(row.dirs ?? 0),
     latestSnapshotDay: n(row.latest_day),
     liveContentWithSocial: Number(row.live_social ?? 0),
+    geoAuditAgeDays: n(row.geo_age),
+    aiSamplesRecent: Number(row.ai_samples ?? 0),
   };
 }
 
@@ -1986,6 +2010,15 @@ export async function latestNeedsYouBefore(db: SeoDb, companyId: string, sprintI
     [companyId, sprintId, weekStart],
   );
   return rows[0] ? needsYouFrom(rows[0]) : null;
+}
+
+/** The sprint's latest digests, newest week first (to find the last state of an item that has moved on from this week's). */
+export async function recentNeedsYouDigests(db: SeoDb, companyId: string, sprintId: string, limit = 8): Promise<NeedsYouDigest[]> {
+  const rows = await db.query(
+    `SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY week_start DESC LIMIT $3::int`,
+    [companyId, sprintId, Math.min(Math.max(limit, 1), 26)],
+  );
+  return rows.map(needsYouFrom);
 }
 
 export async function getNeedsYouByIssue(db: SeoDb, companyId: string, issueId: string): Promise<NeedsYouDigest | null> {
@@ -2377,4 +2410,370 @@ export async function openAnnouncements(db: SeoDb, companyId: string, sprintId?:
 
 export async function updateAnnouncement(db: SeoDb, companyId: string, key: string, patch: Record<string, unknown>): Promise<number> {
   return patchRow(db, "announcements", ANNOUNCEMENT_COLUMNS, { companyId, id: key, idColumn: "key" }, patch);
+}
+
+// ---------------------------------------------------------------------------
+// GEO (AI search): audits and sampled AI answers
+// ---------------------------------------------------------------------------
+
+export interface GeoAuditRow {
+  id: string;
+  sprintId: string;
+  auditedOn: string;
+  auditedAt: string | null;
+  score: number;
+  band: string;
+  complete: boolean;
+  breakdown: Record<string, unknown>;
+  sections: Record<string, unknown>;
+  findingCount: number;
+  source: string;
+}
+
+function geoAuditFrom(row: Row): GeoAuditRow {
+  return {
+    id: String(row.id),
+    sprintId: String(row.sprint_id),
+    auditedOn: s(row.audited_on)?.slice(0, 10) ?? "",
+    auditedAt: iso(row.audited_at),
+    score: Number(row.score ?? 0),
+    band: String(row.band ?? "weak"),
+    complete: row.complete === true || row.complete === "t" || row.complete === "true",
+    breakdown: json(row.breakdown, {}),
+    sections: json(row.sections, {}),
+    findingCount: Number(row.finding_count ?? 0),
+    source: String(row.source ?? "tool"),
+  };
+}
+
+const GEO_AUDIT_SELECT = "id, sprint_id, audited_on::text AS audited_on, audited_at, score, band, complete, breakdown, sections, finding_count, source";
+
+export async function insertGeoAudit(db: SeoDb, a: {
+  id: string;
+  companyId: string;
+  sprintId: string;
+  auditedOn: string;
+  score: number;
+  band: string;
+  complete: boolean;
+  breakdown: unknown;
+  sections: unknown;
+  findingCount: number;
+  source: "tool" | "snapshot" | "scheduled";
+}): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("geo_audits")} (id, company_id, sprint_id, audited_on, score, band, complete, breakdown, sections, finding_count, source)
+     VALUES ($1, $2, $3, $4::date, $5::int, $6, $7::boolean, $8::jsonb, $9::jsonb, $10::int, $11)`,
+    [a.id, a.companyId, a.sprintId, a.auditedOn, a.score, a.band, a.complete, jsonParam(a.breakdown), jsonParam(a.sections), a.findingCount, a.source],
+  );
+}
+
+/** The newest geo-audits of a sprint, newest first. */
+export async function listGeoAudits(db: SeoDb, companyId: string, sprintId: string, limit = 12): Promise<GeoAuditRow[]> {
+  const rows = await db.query(
+    `SELECT ${GEO_AUDIT_SELECT} FROM ${t("geo_audits")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY audited_at DESC LIMIT $3::int`,
+    [companyId, sprintId, Math.min(Math.max(limit, 1), 100)],
+  );
+  return rows.map(geoAuditFrom);
+}
+
+export async function latestGeoAudit(db: SeoDb, companyId: string, sprintId: string): Promise<GeoAuditRow | null> {
+  return (await listGeoAudits(db, companyId, sprintId, 1))[0] ?? null;
+}
+
+export interface AiMentionRow {
+  id: string;
+  sprintId: string;
+  query: string;
+  engine: string;
+  sampledOn: string;
+  mentioned: boolean;
+  cited: boolean;
+  position: number | null;
+  citedUrls: string[];
+  competitors: string[];
+  evidence: string | null;
+  note: string | null;
+  method: string | null;
+  recordedBy: string | null;
+}
+
+function mentionFrom(row: Row): AiMentionRow {
+  return {
+    id: String(row.id),
+    sprintId: String(row.sprint_id),
+    query: String(row.query),
+    engine: String(row.engine),
+    sampledOn: s(row.sampled_on)?.slice(0, 10) ?? "",
+    mentioned: row.mentioned === true || row.mentioned === "t" || row.mentioned === "true",
+    cited: row.cited === true || row.cited === "t" || row.cited === "true",
+    position: n(row.position),
+    citedUrls: strList(row.cited_urls),
+    competitors: strList(row.competitors),
+    evidence: s(row.evidence),
+    note: s(row.note),
+    method: s(row.method),
+    recordedBy: s(row.recorded_by),
+  };
+}
+
+const MENTION_SELECT = "id, sprint_id, query, engine, sampled_on::text AS sampled_on, mentioned, cited, position, cited_urls, competitors, evidence, note, method, recorded_by";
+
+/** Record one sampled answer; the same question on the same assistant on the same day is replaced. */
+export async function upsertMention(db: SeoDb, m: {
+  id: string;
+  companyId: string;
+  sprintId: string;
+  query: string;
+  queryKey: string;
+  engine: string;
+  sampledOn: string;
+  mentioned: boolean;
+  cited: boolean;
+  position: number | null;
+  citedUrls: string[];
+  competitors: string[];
+  evidence: string | null;
+  note: string | null;
+  method: string | null;
+  recordedBy: string | null;
+}): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("ai_mentions")} (id, company_id, sprint_id, query, query_key, engine, sampled_on, mentioned, cited, position, cited_urls, competitors, evidence, note, method, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::boolean, $9::boolean, $10::int, $11::jsonb, $12::jsonb, $13, $14, $15, $16)
+     ON CONFLICT (sprint_id, query_key, engine, sampled_on) DO UPDATE SET
+       query = EXCLUDED.query, mentioned = EXCLUDED.mentioned, cited = EXCLUDED.cited, position = EXCLUDED.position,
+       cited_urls = EXCLUDED.cited_urls, competitors = EXCLUDED.competitors, evidence = EXCLUDED.evidence, note = EXCLUDED.note,
+       method = EXCLUDED.method, recorded_by = EXCLUDED.recorded_by`,
+    [m.id, m.companyId, m.sprintId, m.query, m.queryKey, m.engine, m.sampledOn, m.mentioned, m.cited, m.position, jsonParam(m.citedUrls), jsonParam(m.competitors), m.evidence, m.note, m.method, m.recordedBy],
+  );
+}
+
+/** Every sampled answer of a sprint (newest first), at most `limit`. */
+export async function listMentions(db: SeoDb, companyId: string, sprintId: string, limit = 500): Promise<AiMentionRow[]> {
+  const rows = await db.query(
+    `SELECT ${MENTION_SELECT} FROM ${t("ai_mentions")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY sampled_on DESC, created_at DESC LIMIT $3::int`,
+    [companyId, sprintId, Math.min(Math.max(limit, 1), 1000)],
+  );
+  return rows.map(mentionFrom);
+}
+
+// ---------------------------------------------------------------------------
+// GA4 weekly numbers
+// ---------------------------------------------------------------------------
+
+export interface Ga4WeekRow {
+  weekStart: string;
+  propertyId: string;
+  sessions: number;
+  engagedSessions: number;
+  users: number;
+  keyEvents: number;
+  organic: { sessions: number; engagedSessions: number; users: number; keyEvents: number };
+  channels: Array<{ channel: string; sessions: number; engagedSessions: number; keyEvents: number }>;
+  landingPages: Array<{ path: string; sessions: number; engagedSessions: number; keyEvents: number }>;
+  sources: Array<{ source: string; sessions: number; engagedSessions: number; keyEvents: number }>;
+  keyEventNames: Array<{ name: string; count: number }>;
+  aiReferrals: Array<{ assistant: string; sessions: number; keyEvents: number }>;
+  pulledAt: string | null;
+}
+
+function ga4WeekFrom(row: Row): Ga4WeekRow {
+  return {
+    weekStart: s(row.week_start)?.slice(0, 10) ?? "",
+    propertyId: String(row.property_id ?? ""),
+    sessions: Number(row.sessions ?? 0),
+    engagedSessions: Number(row.engaged_sessions ?? 0),
+    users: Number(row.users ?? 0),
+    keyEvents: Number(row.key_events ?? 0),
+    organic: {
+      sessions: Number(row.organic_sessions ?? 0),
+      engagedSessions: Number(row.organic_engaged_sessions ?? 0),
+      users: Number(row.organic_users ?? 0),
+      keyEvents: Number(row.organic_key_events ?? 0),
+    },
+    channels: json(row.channels, []),
+    landingPages: json(row.landing_pages, []),
+    sources: json(row.sources, []),
+    keyEventNames: json(row.key_event_names, []),
+    aiReferrals: json(row.ai_referrals, []),
+    pulledAt: iso(row.pulled_at),
+  };
+}
+
+const GA4_SELECT = `week_start::text AS week_start, property_id, sessions, engaged_sessions, users, key_events, organic_sessions, organic_engaged_sessions,
+  organic_users, organic_key_events, channels, landing_pages, sources, key_event_names, ai_referrals, pulled_at`;
+
+export async function upsertGa4Week(db: SeoDb, row: Omit<Ga4WeekRow, "pulledAt"> & { id: string; companyId: string; sprintId: string }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("analytics_weeks")} (id, company_id, sprint_id, week_start, property_id, sessions, engaged_sessions, users, key_events,
+       organic_sessions, organic_engaged_sessions, organic_users, organic_key_events, channels, landing_pages, sources, key_event_names, ai_referrals)
+     VALUES ($1, $2, $3, $4::date, $5, $6::int, $7::int, $8::int, $9::int, $10::int, $11::int, $12::int, $13::int, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18::jsonb)
+     ON CONFLICT (sprint_id, week_start) DO UPDATE SET
+       property_id = EXCLUDED.property_id, sessions = EXCLUDED.sessions, engaged_sessions = EXCLUDED.engaged_sessions, users = EXCLUDED.users,
+       key_events = EXCLUDED.key_events, organic_sessions = EXCLUDED.organic_sessions, organic_engaged_sessions = EXCLUDED.organic_engaged_sessions,
+       organic_users = EXCLUDED.organic_users, organic_key_events = EXCLUDED.organic_key_events, channels = EXCLUDED.channels,
+       landing_pages = EXCLUDED.landing_pages, sources = EXCLUDED.sources, key_event_names = EXCLUDED.key_event_names,
+       ai_referrals = EXCLUDED.ai_referrals, pulled_at = now()`,
+    [
+      row.id, row.companyId, row.sprintId, row.weekStart, row.propertyId, row.sessions, row.engagedSessions, row.users, row.keyEvents,
+      row.organic.sessions, row.organic.engagedSessions, row.organic.users, row.organic.keyEvents,
+      jsonParam(row.channels), jsonParam(row.landingPages), jsonParam(row.sources), jsonParam(row.keyEventNames), jsonParam(row.aiReferrals),
+    ],
+  );
+}
+
+/** The newest weeks of a sprint (ascending by week), at most `limit`. */
+export async function listGa4Weeks(db: SeoDb, companyId: string, sprintId: string, limit = 26): Promise<Ga4WeekRow[]> {
+  const rows = await db.query(
+    `SELECT ${GA4_SELECT} FROM ${t("analytics_weeks")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY week_start DESC LIMIT $3::int`,
+    [companyId, sprintId, Math.min(Math.max(limit, 1), 104)],
+  );
+  return rows.map(ga4WeekFrom).reverse();
+}
+
+// ---------------------------------------------------------------------------
+// Page groups (chunks of a site-wide task)
+// ---------------------------------------------------------------------------
+
+export type ChunkStatusValue = "queued" | "open" | "done" | "cancelled";
+
+export interface TaskChunk {
+  id: string;
+  companyId: string;
+  sprintId: string;
+  taskId: string;
+  parentIssueId: string;
+  seq: number;
+  total: number;
+  label: string;
+  urls: string[];
+  status: ChunkStatusValue;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  openedAt: string | null;
+  doneAt: string | null;
+}
+
+function chunkFrom(row: Row): TaskChunk {
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    sprintId: String(row.sprint_id),
+    taskId: String(row.task_id),
+    parentIssueId: String(row.parent_issue_id),
+    seq: Number(row.seq ?? 0),
+    total: Number(row.total ?? 0),
+    label: String(row.label ?? ""),
+    urls: strList(row.urls),
+    status: String(row.status ?? "queued") as ChunkStatusValue,
+    issueId: s(row.issue_id),
+    issueIdentifier: s(row.issue_identifier),
+    openedAt: iso(row.opened_at),
+    doneAt: iso(row.done_at),
+  };
+}
+
+const CHUNK_SELECT = "id, company_id, sprint_id, task_id, parent_issue_id, seq, total, label, urls, status, issue_id, issue_identifier, opened_at, done_at";
+
+const CHUNK_COLUMNS: Record<string, ColumnKind> = {
+  status: "text",
+  issue_id: "text",
+  issue_identifier: "text",
+  opened_at: "ts",
+  done_at: "ts",
+  updated_at: "ts",
+};
+
+export async function insertChunks(db: SeoDb, chunks: Array<{ id: string; companyId: string; sprintId: string; taskId: string; parentIssueId: string; seq: number; total: number; label: string; urls: string[] }>): Promise<number> {
+  if (chunks.length === 0) return 0;
+  const params: unknown[] = [];
+  const values: string[] = [];
+  for (const c of chunks) {
+    const base = params.length;
+    params.push(c.id, c.companyId, c.sprintId, c.taskId, c.parentIssueId, c.seq, c.total, c.label, jsonParam(c.urls));
+    const p = (i: number) => `$${base + i}`;
+    values.push(`(${p(1)}, ${p(2)}, ${p(3)}, ${p(4)}, ${p(5)}, ${p(6)}::int, ${p(7)}::int, ${p(8)}, ${p(9)}::jsonb)`);
+  }
+  const result = await db.execute(
+    `INSERT INTO ${t("task_chunks")} (id, company_id, sprint_id, task_id, parent_issue_id, seq, total, label, urls)
+     VALUES ${values.join(", ")} ON CONFLICT (parent_issue_id, seq) DO NOTHING`,
+    params,
+  );
+  return result.rowCount;
+}
+
+/** The groups of one task (every parent issue it has had), in order. */
+export async function listChunks(db: SeoDb, companyId: string, taskId: string): Promise<TaskChunk[]> {
+  const rows = await db.query(
+    `SELECT ${CHUNK_SELECT} FROM ${t("task_chunks")} WHERE company_id = $1 AND task_id = $2 ORDER BY created_at, seq`,
+    [companyId, taskId],
+  );
+  return rows.map(chunkFrom);
+}
+
+/** Groups of every task of a sprint that is still unfinished (queued or open): what `today` reports. */
+export async function unfinishedChunks(db: SeoDb, companyId: string, sprintId: string): Promise<TaskChunk[]> {
+  const rows = await db.query(
+    `SELECT ${CHUNK_SELECT} FROM ${t("task_chunks")} WHERE company_id = $1 AND sprint_id = $2 AND status IN ('queued', 'open') ORDER BY task_id, seq`,
+    [companyId, sprintId],
+  );
+  return rows.map(chunkFrom);
+}
+
+export async function getChunk(db: SeoDb, companyId: string, id: string): Promise<TaskChunk | null> {
+  const rows = await db.query(`SELECT ${CHUNK_SELECT} FROM ${t("task_chunks")} WHERE company_id = $1 AND id = $2 LIMIT 1`, [companyId, id]);
+  return rows[0] ? chunkFrom(rows[0]) : null;
+}
+
+/** The task's issue was replaced by a continuation issue: its groups follow it (finished ones too, so the progress stays whole). */
+export async function repointChunks(db: SeoDb, companyId: string, fromIssueId: string, toIssueId: string): Promise<number> {
+  const result = await db.execute(`UPDATE ${t("task_chunks")} SET parent_issue_id = $3, updated_at = now() WHERE company_id = $1 AND parent_issue_id = $2`, [companyId, fromIssueId, toIssueId]);
+  return result.rowCount;
+}
+
+export async function getChunkByIssue(db: SeoDb, companyId: string, issueId: string): Promise<TaskChunk | null> {
+  const rows = await db.query(`SELECT ${CHUNK_SELECT} FROM ${t("task_chunks")} WHERE company_id = $1 AND issue_id = $2 LIMIT 1`, [companyId, issueId]);
+  return rows[0] ? chunkFrom(rows[0]) : null;
+}
+
+/** Open groups of a company (their issues are re-read by the daily heal, in case an event was missed). */
+export async function openChunks(db: SeoDb, companyId: string, limit = 100): Promise<TaskChunk[]> {
+  const rows = await db.query(
+    `SELECT ${CHUNK_SELECT} FROM ${t("task_chunks")} WHERE company_id = $1 AND status = 'open' ORDER BY opened_at LIMIT $2::int`,
+    [companyId, Math.min(Math.max(limit, 1), 500)],
+  );
+  return rows.map(chunkFrom);
+}
+
+/** Tasks that have a queued group and no open one: the next group is due to open. */
+export async function tasksWithIdleChunks(db: SeoDb, companyId: string): Promise<string[]> {
+  const rows = await db.query(
+    `SELECT DISTINCT q.task_id FROM ${t("task_chunks")} q
+      WHERE q.company_id = $1 AND q.status = 'queued'
+        AND NOT EXISTS (SELECT 1 FROM ${t("task_chunks")} o WHERE o.task_id = q.task_id AND o.parent_issue_id = q.parent_issue_id AND o.status = 'open')
+      LIMIT 50`,
+    [companyId],
+  );
+  return rows.map((r) => String(r.task_id));
+}
+
+export async function updateChunk(db: SeoDb, companyId: string, id: string, patch: Record<string, unknown>): Promise<number> {
+  return patchRow(db, "task_chunks", CHUNK_COLUMNS, { companyId, id }, patch);
+}
+
+/** Claim a queued group before its issue is created, so two runs never open it twice. */
+export async function claimChunk(db: SeoDb, companyId: string, id: string): Promise<boolean> {
+  const result = await db.execute(
+    `UPDATE ${t("task_chunks")} SET status = 'open', opened_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 AND status = 'queued'`,
+    [id, companyId],
+  );
+  return result.rowCount > 0;
+}
+
+export async function releaseChunk(db: SeoDb, companyId: string, id: string): Promise<void> {
+  await db.execute(
+    `UPDATE ${t("task_chunks")} SET status = 'queued', opened_at = NULL, updated_at = now() WHERE id = $1 AND company_id = $2 AND status = 'open' AND issue_id IS NULL`,
+    [id, companyId],
+  );
 }

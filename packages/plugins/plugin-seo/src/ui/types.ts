@@ -160,7 +160,40 @@ export type Keyword = {
 
 export type Backlink = { id: string; source: string; domain: string; url: string | null; type: string; dr: number | null; status: string; notes: string | null; submittedAt: string | null; liveAt: string | null };
 export type Content = { id: string; title: string; type: string; status: string; targetUrl: string | null; publishedOn: string | null; impressions: number | null; clicks: number | null; position: number | null; linksToPillarIds: string[]; socialPostIds: string[] };
-export type Snapshot = { id: string; day: number; kind: string; capturedOn: string | null; source: string; traffic: Record<string, unknown>; rankings: Record<string, unknown>; authority: Record<string, unknown>; content: Record<string, unknown>; notes: string | null };
+export type Snapshot = { id: string; day: number; kind: string; capturedOn: string | null; source: string; traffic: Record<string, unknown>; rankings: Record<string, unknown>; authority: Record<string, unknown>; content: Record<string, unknown>; geo?: Record<string, unknown>; analytics?: Record<string, unknown>; notes: string | null };
+
+/** AI-search readiness and sampled AI answers (engine/geo.ts GeoSnapshot). */
+export type GeoSummary = {
+  score: number | null;
+  band: "strong" | "good" | "fair" | "weak" | null;
+  complete: boolean;
+  checkedOn: string | null;
+  breakdown: Record<string, { earned: number; possible: number; evaluated: boolean }>;
+  blockedSearchBots: string[];
+  llms: string | null;
+  mentions: { sampled: number; visible: number; rate: number | null; lastSampledOn: string | null } | null;
+};
+
+/** GA4: connection and the stored weeks' summary (engine/analytics.ts). */
+export type AnalyticsView = {
+  connected: boolean;
+  propertyId: string | null;
+  status: string;
+  lastPullAt: string | null;
+  lastError: string | null;
+  summary: {
+    weeks: Array<{ weekStart: string; sessions: number; organicSessions: number; organicKeyEvents: number }>;
+    last4: { weeks: number; sessions: number; organicSessions: number; organicKeyEvents: number; aiReferralSessions: number; from: string | null; to: string | null };
+    change: { organicSessionsPct: number | null; organicKeyEventsPct: number | null; sessionsPct: number | null };
+    organicShare: number | null;
+    attribution: { sprintPages: { count: number; organicSessions: number; organicKeyEvents: number; shareOfOrganicSessions: number | null }; top: Array<{ path: string; sessions: number; keyEvents: number }> };
+    keyEvents: Array<{ name: string; count: number }>;
+    aiReferrals: Array<{ assistant: string; sessions: number }>;
+  } | null;
+};
+
+/** How far a split task's page groups are (service/chunks.ts). */
+export type PageGroups = { taskId: string; total: number; done: number; open: number; queued: number; cancelled: number; openIssue: { issueId: string | null; identifier: string | null; seq: number } | null };
 export type Finding = { id: string; finding: string; severity: string; category: string | null; url: string | null; source: string | null };
 export type Optimization = {
   id: string;
@@ -200,6 +233,12 @@ export type SprintBundle = {
   needsYou: NeedsYouView | null;
   setup: SetupItem[];
   projects: ProjectOption[];
+  /** AI-search readiness and sampled AI answers. */
+  geo?: GeoSummary | null;
+  /** Google Analytics (GA4): connection and the last weeks. */
+  analytics?: AnalyticsView;
+  /** Site-wide tasks split into page groups, with their progress. */
+  pageGroups?: PageGroups[];
   /** What the copy may claim about how the client's business works. */
   clientFacts?: { status: "draft" | "confirmed" | "none"; facts: Array<{ kind: "say" | "avoid"; text: string; source?: string | null }>; updatedAt: string | null };
   /** Client previews made for this sprint (newest first). */

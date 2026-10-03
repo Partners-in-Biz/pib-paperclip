@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { DataTable, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
-import { Button, CompactRows, Gauge, Input, Pill, Search, Section, Share2, breakAnywhere, errorText, formatDateTime, formatShortDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ChartColumn, CompactRows, Gauge, Input, Pill, Search, Section, Share2, breakAnywhere, errorText, formatCompact, formatDateTime, formatShortDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { plainError } from "../engine/plain.js";
 import { sprintPagePath } from "../engine/scope.js";
 import { NeedsYouSection, SetupChecklist, SiteRepoSection } from "./autonomy.js";
@@ -27,7 +27,7 @@ function seconds(ms: number | null): string {
 }
 
 /** Setup items that belong to one sprint; the rest are company-wide and live on the Setup page (and the SEO home's setup card). */
-const SPRINT_SETUP_KEYS = ["site_project", "gsc_property", "bing_site", "autopilot"];
+const SPRINT_SETUP_KEYS = ["site_project", "gsc_property", "bing_site", "ga4_property", "autopilot"];
 
 const STATUS_WORDS: Record<string, string> = {
   connected: "Connected",
@@ -46,6 +46,7 @@ export function IntegrationsTab({ companyId, bundle, load, call, reload, onMessa
   const setIntegration = usePluginAction("seo.integration");
   const [properties, setProperties] = useState<Array<{ propertyUrl: string; usable: boolean }> | null>(null);
   const [bingUrl, setBingUrl] = useState("");
+  const [ga4Id, setGa4Id] = useState("");
   const gsc = bundle.integrations.find((i) => i.provider === "gsc");
   const pagespeed = bundle.integrations.find((i) => i.provider === "pagespeed");
   const bing = bundle.integrations.find((i) => i.provider === "bing");
@@ -53,6 +54,8 @@ export function IntegrationsTab({ companyId, bundle, load, call, reload, onMessa
   const gscProblem = plainError(gsc?.lastError, "gsc");
   const pagespeedProblem = plainError(pagespeed?.lastError, "pagespeed");
   const bingProblem = plainError(bing?.lastError, "bing");
+  const analytics = bundle.analytics;
+  const ga4Problem = plainError(analytics?.lastError, "ga4");
 
   useEffect(() => {
     setBingUrl(bing?.propertyUrl ?? bundle.sprint.siteUrl);
@@ -189,6 +192,36 @@ export function IntegrationsTab({ companyId, bundle, load, call, reload, onMessa
             )}
           </>
         ) : null}
+      </Section>
+      <Section title="Google Analytics (GA4)" icon={ChartColumn} actions={analytics ? <Pill tone={analytics.connected ? "ok" : "warn"} dot>{analytics.connected ? "Connected" : "Not connected"}</Pill> : null}>
+        <span style={{ fontSize: 13, color: tokens.muted }}>
+          Read only, through the same service account as Search Console. Shows how much organic traffic and how many key events (enquiries, sign-ups, sales) the site gets, and how many landed on the pages this sprint made.{" "}
+          {load.settings.serviceAccountEmail ? <>The property's owner adds <code style={breakAnywhere}>{load.settings.serviceAccountEmail}</code> as a Viewer once; the agent then finds the property by the site's address.</> : "It needs the Google service account key first (see Setup)."}
+        </span>
+        {analytics?.connected ? <span style={{ fontSize: 13, ...breakAnywhere }}>Property {analytics.propertyId} · last update {analytics.lastPullAt ? formatDateTime(analytics.lastPullAt) : "never"}</span> : null}
+        {analytics?.summary && analytics.summary.last4.weeks > 0 ? (
+          <div style={{ display: "grid", gap: 4, fontSize: 13 }}>
+            <span>
+              Last {analytics.summary.last4.weeks} weeks: <strong>{formatCompact(analytics.summary.last4.organicSessions)}</strong> organic visits
+              {analytics.summary.change.organicSessionsPct != null ? ` (${analytics.summary.change.organicSessionsPct >= 0 ? "+" : ""}${analytics.summary.change.organicSessionsPct}% on the week before)` : ""}
+              , <strong>{formatCompact(analytics.summary.last4.organicKeyEvents)}</strong> key events.
+            </span>
+            {analytics.summary.attribution.sprintPages.count > 0 ? (
+              <span style={{ color: tokens.muted }}>
+                {formatCompact(analytics.summary.attribution.sprintPages.organicSessions)} of the organic visits landed on the {analytics.summary.attribution.sprintPages.count} pages this sprint works on.
+              </span>
+            ) : null}
+            {analytics.summary.last4.aiReferralSessions > 0 ? <span style={{ color: tokens.muted }}>{formatCompact(analytics.summary.last4.aiReferralSessions)} visits came from AI assistants.</span> : null}
+          </div>
+        ) : null}
+        {ga4Problem && !analytics?.connected ? <PlainProblem problem={ga4Problem} /> : null}
+        {analytics?.lastError ? <RawDetails raw={analytics.lastError} label="Details" /> : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <Input value={ga4Id} onChange={(e) => setGa4Id(e.target.value)} placeholder={analytics?.propertyId ?? "Property ID (optional)"} style={{ maxWidth: 240, flex: "1 1 160px", minWidth: 0 }} aria-label="GA4 property ID" />
+          <Button type="button" variant="secondary" style={small} disabled={working === "connect-ga4" || !load.settings.serviceAccountEmail} onClick={() => void call("connect-ga4", { sprintId, ...(ga4Id.trim() ? { propertyId: ga4Id.trim() } : {}) }, "Google Analytics checked.")}>
+            {working === "connect-ga4" ? "Connecting…" : analytics?.connected ? "Update now" : "Connect"}
+          </Button>
+        </div>
       </Section>
       <Section title="Bing Webmaster Tools" icon={Share2} actions={bing ? <Pill tone={statusTone(bing.status)} dot>{STATUS_WORDS[bing.status] ?? bing.status}</Pill> : null}>
         <span style={{ fontSize: 13, color: tokens.muted }}>
