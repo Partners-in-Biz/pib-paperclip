@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import {
   definePlugin,
   runWorker,
@@ -353,6 +354,8 @@ const plugin = definePlugin({
         if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
       });
     });
+    ctx.events.on(pluginEvent(PIB_PLUGINS.seo, SIGNOFF_EVENT), (event) => onSignoffEvent(ctx, event).catch((error) => ctx.logger.info("CRM sign-off event failed", { error: String(error) })));
+    ctx.events.on(pluginEvent(PIB_PLUGINS.seo, APPROVAL_EVENT), (event) => onApprovalEvent(ctx, event).catch((error) => ctx.logger.info("CRM approval event failed", { error: String(error) })));
     ctx.jobs.register("held-leads", async () => {
       await trackJob(ctx, "held-leads", async () => {
         const result = await processHeldLeads(ctx);

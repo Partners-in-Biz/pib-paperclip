@@ -25,6 +25,12 @@ const instanceConfigSchema: JsonSchema = {
       title: "Send sequence email from",
       description: "A Mailbox (Gmail) address. Leave empty to use the Mailbox's default account.",
     },
+    publicBaseUrl: {
+      type: "string",
+      title: "Paperclip public address",
+      description:
+        "Optional. The address WordPress sites use to download the PiB Connector when an agent runs wp-connector update, e.g. https://paperclip.partnersinbiz.online (the default). It must be a host the Connector accepts for self-updates.",
+    },
     jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };

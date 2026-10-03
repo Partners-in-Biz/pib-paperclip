@@ -107,7 +107,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: "pib-wp-sites",
     description: "Client websites: the PiB Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
     markdown: withFrontmatter(
-      { name: "pib-wp-sites", description: "Work on client WordPress sites: PiB Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
+      { name: "pib-wp-sites", description: "Work on client WordPress sites: PiB Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, wp-verify, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
       CLIENT_SITES_SKILL,
     ),
   },

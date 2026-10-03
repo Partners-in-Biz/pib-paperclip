@@ -1,9 +1,14 @@
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { connectorKeyId, newConnectorKey, signConnectorRequest } from "../src/connector.js";
+import { BUNDLED_CONNECTOR_SHA256, BUNDLED_CONNECTOR_VERSION, CONNECTOR_ENDPOINTS, CONNECTOR_V11_ENDPOINTS, CONNECTOR_V12_ENDPOINTS, compareVersions, connectorKeyId, newConnectorKey, signConnectorRequest } from "../src/connector.js";
+import { CRM_TOOLS } from "../src/tools.js";
+import { buildConnectorZip } from "../../pib-wp-connector/build.mjs";
+import { connectorHeaderVersion } from "../scripts/connector-bundle.mjs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NAMESPACE } from "../src/namespace.js";
-import { normalizeSiteUrl } from "../src/sites.js";
+import { normalizeSiteUrl, PASS, pluginConflictWarnings, WP_TOOL_NAMES } from "../src/sites.js";
 import { BOARD, boot, CO, tool, toolRaw, type Harness } from "./helpers/crm.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 
@@ -158,6 +163,21 @@ describe("client websites", () => {
     expect(list.endpoint).toBe("plugins/list");
   });
 
+  it("blocks an agent's Connector writes on a pr_only site until a person approves; reads still work", async () => {
+    const { harness, store } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    const calls = fakeSite(harness, (route, body) => ({ status: 200, json: { ok: true, data: { changeId: "chg-9", route, echo: body } } }));
+    await harness.emit("plugin.partnersinbiz.seo.site.signoff", { siteId: site.id, required: true }, { companyId: CO });
+    const write = { siteId: site.id, op: "set", url: "/about", title: "New", reason: "test" };
+    const blocked = await toolRaw(harness, "wp-seo", write);
+    expect(blocked.error).toMatch(/sign-off/);
+    expect(calls.filter((c) => c.url.includes("seo/set"))).toHaveLength(0);
+    expect(store.site_changes ?? []).toHaveLength(0);
+    expect((await tool(harness, "wp-seo", { siteId: site.id, op: "get", url: "/about" })).endpoint).toBe("seo/get");
+    // The approved window itself is covered in site-signoff.spec.ts (the in-memory database cannot evaluate approved_until > now()).
+  });
+
   it("falls back to ?rest_route= when /wp-json is not there, and explains a missing plugin", async () => {
     const { harness } = await boot();
     const site = await addWordPressSite(harness);
@@ -209,5 +229,185 @@ describe("client projects", () => {
     await expect(harness.performAction("crm.unlink-client-project", { client: "company:acme", projectId: "proj-acme" }, { companyId: CO, actor: { type: "agent", agentId: "agent-1" } as never })).rejects.toThrow(/Only a person/);
     await harness.performAction("crm.unlink-client-project", { client: "company:acme", projectId: "proj-acme" }, { companyId: CO, actor: BOARD });
     expect(store.client_projects).toHaveLength(0);
+  });
+});
+
+describe("the bundled Connector", () => {
+  it("has generated constants that match the Connector source (run pnpm build after changing the plugin)", async () => {
+    const built = await buildConnectorZip(join(tmpdir(), `pib-connector-test-${process.pid}.zip`));
+    expect(BUNDLED_CONNECTOR_VERSION).toBe(await connectorHeaderVersion());
+    expect(BUNDLED_CONNECTOR_SHA256).toBe(built.sha256);
+    expect(BUNDLED_CONNECTOR_SHA256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("compares versions numerically", () => {
+    expect(compareVersions("1.0.9", "1.1.0")).toBe(-1);
+    expect(compareVersions("1.10.0", "1.9.0")).toBe(1);
+    expect(compareVersions("1.1.0", "1.1")).toBe(0);
+    expect(compareVersions("nope", "1.1.0")).toBeNull();
+  });
+});
+
+describe("the 1.1 Connector tools", () => {
+  const NEW_WRITES = ["media/sideload", "media/set-featured", "media/alt", "posts/img-alt", "posts/update", "posts/create", "posts/publish", "self/update", "self/rollback"] as const;
+
+  it("marks every state-changing 1.1 endpoint as a write and every read as a read", () => {
+    for (const endpoint of NEW_WRITES) expect(CONNECTOR_ENDPOINTS[endpoint], endpoint).toBe(true);
+    for (const endpoint of ["seo/list", "media/list", "posts/get", "posts/images"] as const) expect(CONNECTOR_ENDPOINTS[endpoint], endpoint).toBe(false);
+    for (const endpoint of CONNECTOR_V11_ENDPOINTS) expect(endpoint in CONNECTOR_ENDPOINTS, endpoint).toBe(true);
+    expect(WP_TOOL_NAMES).toEqual(expect.arrayContaining(["wp-media", "wp-content", "wp-connector"]));
+    expect(CRM_TOOLS.map((t) => t.name)).toEqual(expect.arrayContaining(WP_TOOL_NAMES));
+  });
+
+  it("passes the new SEO, list, media and content parameters, and takes nothing for self/update from the caller", () => {
+    expect(PASS["seo/set"]).toEqual(expect.arrayContaining(["ogImage", "termId", "taxonomy", "postTypeArchive"]));
+    expect(PASS["seo/get"]).toEqual(expect.arrayContaining(["termId", "taxonomy", "postTypeArchive"]));
+    expect(PASS["seo/list"]).toEqual(["postType", "status", "search", "page", "perPage", "missing"]);
+    expect(PASS["media/sideload"]).toEqual(["imageUrl", "title", "alt", "filename", "postId", "reason"]);
+    expect(PASS["posts/update"]).not.toContain("status");
+    expect(PASS["self/update"]).toEqual([]);
+  });
+
+  it("wp-seo tool schema carries the new parameters and list op", () => {
+    const seo = CRM_TOOLS.find((t) => t.name === "wp-seo")!.parametersSchema as { properties: Record<string, { enum?: string[] }> };
+    expect(seo.properties.op!.enum).toEqual(["get", "set", "list"]);
+    for (const key of ["ogImage", "termId", "taxonomy", "postTypeArchive", "postType", "status", "search", "page", "perPage", "missing"]) expect(seo.properties[key], key).toBeDefined();
+  });
+
+  it("tool descriptions state the limits: drafts only, own drafts only, no deletes, verify afterwards, no hotlinking", () => {
+    const desc = (name: string) => CRM_TOOLS.find((t) => t.name === name)!.description;
+    expect(desc("wp-content")).toMatch(/DRAFT/);
+    expect(desc("wp-content")).toMatch(/only if the Connector created it/);
+    expect(desc("wp-content")).toMatch(/no deletes/);
+    expect(desc("wp-content")).toMatch(/check-meta or crawler-sim/);
+    expect(desc("wp-media")).toMatch(/never hotlink/);
+    expect(desc("wp-media")).toMatch(/cannot be undone/);
+    expect(desc("wp-connector")).toMatch(/cannot pass either/);
+    expect(desc("wp-connector")).toMatch(/before parking a task on Needs you/);
+    expect(desc("wp-plugins")).toMatch(/people only/);
+  });
+
+  it("every write needs a reason; reads do not; plugin installs stay person-only", async () => {
+    const { harness } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    fakeSite(harness, () => ({ status: 200, json: { ok: true, data: { changeId: "c", items: [] } } }));
+    const writes: Array<[string, Record<string, unknown>]> = [
+      ["wp-media", { op: "sideload", imageUrl: "https://cdn.test/a.jpg" }],
+      ["wp-media", { op: "set-featured", postId: 4, attachmentId: 9 }],
+      ["wp-media", { op: "alt", items: [{ attachmentId: 9, alt: "A plumber" }] }],
+      ["wp-content", { op: "img-alt", postId: 4, alts: [{ index: 0, alt: "x" }] }],
+      ["wp-content", { op: "update", postId: 4, title: "New" }],
+      ["wp-content", { op: "create", title: "New page" }],
+      ["wp-content", { op: "publish", postId: 4 }],
+      ["wp-connector", { op: "rollback", backupId: "b" }],
+      ["wp-seo", { op: "set", termId: 3, title: "Category" }],
+    ];
+    for (const [name, params] of writes) {
+      const res = await toolRaw(harness, name, { siteId: site.id, ...params });
+      expect(res.error, `${name} ${String(params.op)}`).toMatch(/reason is required/);
+    }
+    for (const [name, params] of [["wp-media", { op: "list", missingAlt: true }], ["wp-content", { op: "get", postId: 4 }], ["wp-content", { op: "images", postId: 4 }], ["wp-seo", { op: "list", missing: ["ogImage"] }]] as const) {
+      const res = await toolRaw(harness, name, { siteId: site.id, ...params });
+      expect(res.error, `${name} ${String(params.op)}`).toBeUndefined();
+    }
+    const install = await toolRaw(harness, "wp-plugins", { siteId: site.id, op: "install", zipUrl: "https://x.test/p.zip", sha256: "a".repeat(64), slug: "p", reason: "deploy" });
+    expect(install.error).toMatch(/Only a person/);
+  });
+
+  it("sends only the listed parameters to the site, and logs the change with a readable target", async () => {
+    const { harness, store } = await boot();
+    const site = await addWordPressSite(harness);
+    const { key } = await harness.performAction<Record<string, any>>("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    const calls = fakeSite(harness, (_route, body) => ({ status: 200, json: { ok: true, data: { changeId: "chg-9", echo: body } } }));
+
+    await tool(harness, "wp-seo", { siteId: site.id, op: "set", termId: 12, taxonomy: "product_cat", ogImage: "https://www.acme.co.za/wp-content/uploads/cat.jpg", reason: "Category had no share image", junk: "x" });
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ termId: 12, taxonomy: "product_cat", ogImage: "https://www.acme.co.za/wp-content/uploads/cat.jpg", reason: "Category had no share image" });
+    expect(verify(calls.at(-1)!, key, "/pib-connector/v1/seo/set")).toBe(true);
+
+    await tool(harness, "wp-seo", { siteId: site.id, op: "list", postType: "page", missing: ["description"], perPage: 100, stray: 1 });
+    expect(calls.at(-1)!.url).toContain("/seo/list");
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ postType: "page", missing: ["description"], perPage: 100 });
+
+    const out = await tool(harness, "wp-content", { siteId: site.id, op: "create", title: "Durban drain repairs", content: "<p>Hello</p>", postType: "page", status: "publish", reason: "Service page from the plan" });
+    expect(out).toMatchObject({ endpoint: "posts/create", changeId: "chg-9" });
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ postType: "page", title: "Durban drain repairs", content: "<p>Hello</p>", reason: "Service page from the plan" });
+
+    await tool(harness, "wp-media", { siteId: site.id, op: "alt", items: [{ attachmentId: 9, alt: "Plumber fixing a basin" }], reason: "Images had no alt" });
+    expect(store.site_changes!.map((c) => [c.endpoint, c.target])).toEqual([
+      ["seo/set", "term:12"],
+      ["posts/create", "new: Durban drain repairs"],
+      ["media/alt", "media:1 images"],
+    ]);
+  });
+});
+
+describe("the 1.2 verify tool and plugin warnings", () => {
+  it("registers verify/get as a read and verify/set as a write, with a tool and a filtered pass list", () => {
+    expect(CONNECTOR_ENDPOINTS["verify/get"]).toBe(false);
+    expect(CONNECTOR_ENDPOINTS["verify/set"]).toBe(true);
+    expect(CONNECTOR_V12_ENDPOINTS).toEqual(["verify/get", "verify/set"]);
+    expect(PASS["verify/set"]).toEqual(["metaTags", "files", "reason"]);
+    expect(PASS["verify/get"]).toEqual([]);
+    expect(WP_TOOL_NAMES).toContain("wp-verify");
+    const tool = CRM_TOOLS.find((t) => t.name === "wp-verify")!;
+    expect((tool.parametersSchema as { properties: Record<string, { enum?: string[] }> }).properties.op!.enum).toEqual(["get", "set"]);
+    expect(tool.description).toMatch(/REPLACES/);
+    expect(tool.description).toMatch(/read with op get first/);
+    expect(tool.description).toMatch(/msvalidate\.01/);
+    expect(tool.description).toMatch(/BingSiteAuth\.xml/);
+    expect(tool.description).toMatch(/Nothing is written to disk/);
+    expect(tool.description).toMatch(/Then verify on the live site/);
+  });
+
+  it("set needs a reason, get does not; the body is filtered and the change is logged", async () => {
+    const { harness, store } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    const calls = fakeSite(harness, (_route, body) => ({ status: 200, json: { ok: true, data: { changeId: "chg-v", metaTags: body.metaTags ?? [], files: [], warnings: [] } } }));
+    const noReason = await toolRaw(harness, "wp-verify", { siteId: site.id, op: "set", metaTags: [{ name: "msvalidate.01", content: "ABC" }] });
+    expect(noReason.error).toMatch(/reason is required/);
+    const read = await toolRaw(harness, "wp-verify", { siteId: site.id, op: "get" });
+    expect(read.error).toBeUndefined();
+    expect(calls.at(-1)!.url).toContain("/verify/get");
+    const out = await tool(harness, "wp-verify", { siteId: site.id, op: "set", metaTags: [{ name: "msvalidate.01", content: "ABC" }], files: [], junk: 1, reason: "Bing verification" });
+    expect(out).toMatchObject({ endpoint: "verify/set", changeId: "chg-v" });
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ metaTags: [{ name: "msvalidate.01", content: "ABC" }], files: [], reason: "Bing verification" });
+    expect(store.site_changes!.map((c) => [c.endpoint, c.target])).toEqual([["verify/set", "verify: 1 meta tag, 0 files"]]);
+  });
+
+  it("an install older than 1.2 gets an explanation, not a broken-site mark", async () => {
+    const { harness } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    fakeSite(harness, (route) =>
+      route.endsWith("/health")
+        ? { status: 200, json: { ok: true, data: { connector: { version: "1.1.0", protocol: "1.1" }, plugins: [] } } }
+        : { status: 404, json: { code: "rest_no_route", message: "No route" } },
+    );
+    const res = await toolRaw(harness, "wp-verify", { siteId: site.id, op: "get" });
+    expect(res.error).toMatch(/runs Connector 1\.1\.0, which is older than the 1\.2 routes/);
+    expect(res.error).toMatch(/wp-connector update/);
+  });
+
+  it("warns about Open Graph and maintenance plugins in a way an agent can act on, and shows the protocol", async () => {
+    expect(pluginConflictWarnings([{ name: "Yoast SEO", active: true }, { name: "Open Graph and Twitter Card Tags", active: true }])).toEqual([
+      expect.stringMatching(/Open Graph and Twitter Card Tags is active next to the SEO plugin[\s\S]*wp-seo[\s\S]*check-meta[\s\S]*person[\s\S]*never deleted/),
+    ]);
+    const maintenance = pluginConflictWarnings([{ name: "WP Maintenance Mode & Coming Soon", active: true }, { name: "Coming Soon Old", active: false }]);
+    expect(maintenance).toHaveLength(1);
+    expect(maintenance[0]).toMatch(/503[\s\S]*crawler-sim[\s\S]*person[\s\S]*never delete/);
+    expect(pluginConflictWarnings([{ name: "Open Graph Old", active: false }, { name: "Yoast SEO", active: true }])).toEqual([]);
+    expect(pluginConflictWarnings(undefined)).toEqual([]);
+
+    const { harness } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    fakeSite(harness, (route) => route.endsWith("/ping")
+      ? { status: 200, json: { ok: true, data: { connector: { version: "1.2.0" } } } }
+      : { status: 200, json: { ok: true, data: { connector: { version: "1.2.0", protocol: "1.2", endpoints: ["verify/get", "verify/set"] }, seoPlugin: { key: "yoast" }, site: { blogPublic: true }, plugins: [{ name: "Open Graph and Twitter Card Tags", active: true }, { name: "Maintenance", active: true }] } } });
+    const checked = await harness.performAction<Record<string, any>>("crm.check-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    expect(checked.site.connector.protocol).toBe("1.2");
+    expect(checked.warnings.filter((w: string) => /og: tags|503/.test(w))).toHaveLength(2);
   });
 });

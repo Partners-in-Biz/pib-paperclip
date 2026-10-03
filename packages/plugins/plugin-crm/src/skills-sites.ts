@@ -10,17 +10,26 @@ A client can have several websites. The CRM keeps them (\`list-client-sites\`, \
 - **connector:** the PiB Connector WordPress plugin. Signed, logged SEO changes through the CRM's \`wp-*\` tools.
 - **sftp:** file access for deploying **our own** WordPress plugins. The login is env on the site's Paperclip project, so only runs in that project have it.
 
-Read the site's \`notes\` first. House rules on every WordPress site: **deactivate plugins, never delete them**; never edit wp-config.php, the database or theme files unless the issue says so and a person approved it; keep Yoast or Rank Math installed (the Connector writes into them).
+Read the site's \`notes\` first. House rules on every WordPress site: **deactivate plugins, never delete them**; never edit wp-config.php or the database; theme and plugin template files only as **markup edits** under the routine below (never logic); keep Yoast or Rank Math installed (the Connector writes into them).
 
 ## The PiB Connector (SEO and small settings)
 - \`wp-health\` first: WordPress and PHP versions, SEO plugin, sitemap provider, whether search engines are allowed, plugin updates waiting.
-- Page SEO: \`wp-seo\` op get, decide, then op set with a one-line \`reason\`. Only the fields you send change.
+- Page SEO: \`wp-seo\` op get, decide, then op set with a one-line \`reason\`. Only the fields you send change. It also does categories and tags (\`termId\`), archives and the shop (\`postTypeArchive\`) and the share image (\`ogImage\`); op list audits many pages (\`missing: ["title","description","ogImage"]\`).
 - Schema: \`wp-schema\` with stable ids (\`localbusiness\`, \`faq-home\`); it joins the SEO plugin's graph.
 - Redirects \`wp-redirects\` (301 moved, 410 gone), robots.txt lines and search engine visibility \`wp-robots\`, sitemap \`wp-sitemap\`.
-- Every write returns a \`changeId\`. \`wp-log\` shows the site's log; \`wp-undo\` reverts one change. \`site-changes\` is Paperclip's own log.
-- Check the live page after each change (\`partnersinbiz.seo:check-meta\`, \`validate-schema\`, \`check-sitemap\`). A page cache can serve the old page for minutes: re-check after 2 minutes, then ask for a cache purge on Needs you.
+- Images: \`wp-media\` (op list with \`missingAlt\`, sideload an image from an https URL, set-featured, alt for up to 50 images) and, inside page copy, \`wp-content\` op images then img-alt. **Only use an image you have the rights to:** one already in the Media Library, one from the client's Drive or brand kit, one from the client's Social media library (\`partnersinbiz.social:list-media-assets\`), or one you generated when your run has an image-generation tool. Never hotlink, scrape or copy an image from elsewhere. No source for the image: ask for the asset on Needs you (page, subject, size, where to put it), not for a wp-admin edit. A sideload cannot be undone.
+- Page copy: \`wp-content\` op get, then op update with only what changes and a \`reason\` (the site keeps the last 5 versions and refuses scripts, iframes and forms that were not already there). New pages: op create makes a **draft**; op publish publishes it only if the Connector created it and the task says to publish. No deletes, no status changes on existing pages, no author or password changes.
+- **Site verification is your work, not a person's** (Connector 1.2+): \`wp-verify\` op get, then op set with the existing entries plus your addition (it replaces the lists you send). Meta tags: \`google-site-verification\`, \`msvalidate.01\` (Bing) and a few other search-engine names. Root files: the IndexNow key file \`/<key>.txt\`, Google's \`/google<hex>.html\` and \`/BingSiteAuth.xml\`. Nothing is written to disk, so a read-only web root does not matter. Fetch the live home page or file URL afterwards, confirm the exact content and a 200, then run the search engine's own verify step (\`partnersinbiz.seo:gsc-verify-site\`, \`bing-verify-site\`, \`request-indexing\`). The Google route makes our service account a verified owner of a URL-prefix property, so the client does not have to add it in Search Console. A route error means Connector older than 1.2: \`wp-connector\` update first. Still a person: creating a Merchant Center account (a Google account and business details), and anything that needs a plugin installed or deactivated.
+- Every write returns a \`changeId\`. \`wp-log\` shows the site's log; \`wp-undo\` reverts one change (not image uploads or Connector updates). \`site-changes\` is Paperclip's own log.
+- Check the live page after each change (\`partnersinbiz.seo:check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`; a draft at its previewUrl). A page cache can serve the old page for minutes: re-check after 2 minutes, then ask for a cache purge on Needs you.
 - Not connected: a site with sftp access you pair yourself (below). Otherwise a person pairs it on the CRM client page; put that on Needs you and block the task.
-- Plugin installs through the Connector (\`wp-plugins\` install/rollback) are for people. Use SFTP for our plugins.
+- Plugin installs through the Connector (\`wp-plugins\` install/rollback) are for people, and so is deactivating a plugin (deactivate, never delete). \`check-client-site\` warns about an active Open Graph plugin (duplicate og: tags next to the SEO plugin) and about maintenance or coming-soon plugins (crawlers can get a 503): fix the tags with \`wp-seo\`, check with \`check-meta\` and \`crawler-sim\`, and only then put the deactivation on Needs you. Use SFTP for our plugins. Also a person: deleting anything, publishing anything the Connector did not create, a site's theme or settings.
+
+## Keep the Connector current
+\`check-client-site\` and \`wp-health\` show the installed Connector version. When a tool says a route is missing, or \`check-client-site\` warns "Connector X is out of date (bundled Y)", **update it before you park the task on Needs you**:
+- Connector 1.1 or newer: \`wp-connector\` op update with a \`reason\`. The CRM sends the build it ships and its checksum itself; you cannot pass a URL. It refuses when the site already has that version. Then \`check-client-site\` and re-check a page. If the site breaks, \`wp-connector\` op rollback with the \`backupId\` from the update result.
+- Connector 1.0.x cannot update itself: one person uploads the new zip once in wp-admin → Plugins → Add New → Upload Plugin. Put that on Needs you with the download link from the warning, then block the task. After that you update it yourself.
+- With sftp access you can also deploy the zip yourself using the routine below (back up first, sha256 readback).
 
 ## Pair the Connector over SFTP (sites with sftp access)
 1. \`connect-client-site\` with the \`siteId\`: it returns a new key (treat it as a password; never print it in comments), the key id and the steps.
@@ -50,6 +59,19 @@ rclone lsf "site:$ROOT/wp-content/"   # sanity check: plugins/ mu-plugins/ theme
 6. **Record** on the issue: files, old and new sha256, backup paths, the rollback command, what you checked. \`log-activity\` on the client.
 
 Never delete remote files: renamed old copies and backups stay until a person cleans up. Never upload outside \`$ROOT/wp-content/\`.
+
+## Edit a theme or plugin template file over SFTP (markup only)
+For a small fix the Connector cannot make because it lives in template code: an empty \`alt=""\` on a decorative icon, a missing \`alt\`, a \`<title>\`, heading, meta or link tag. **In scope:** HTML attributes and tags inside a template. **Never:** PHP logic or control flow, queries, functions.php, scripts, forms, payment or login code, wp-config.php. Anything else goes to a person on Needs you. On an SEO sprint run \`partnersinbiz.seo:check-change-scope\` first (category \`theme_markup\`, path \`wp:theme:<file>\`); it says apply or pr_only. No SFTP login yet: \`partnersinbiz.seo:needs-you-add\` key \`wp_sftp\` and block; once the login is there you need no sign-off for each edit.
+
+1. **Connect** as in the deploy routine above (env from the client project).
+2. **Find the file.** Search the page's HTML for the exact tag (\`curl -s <url> | grep -n '<the tag>'\`), then look for the same text in \`$ROOT/wp-content/themes/<active theme>/\` and \`plugins/\` (\`rclone lsf -R\`, then \`rclone cat … | grep -n\`). Prefer the **child theme**: on a parent theme that updates itself, put the fix in the child theme's copy of the template (WordPress loads it first) rather than editing the parent. Rendered by a page builder or from the database: not a file edit, ask a person.
+3. **Download** the file to \`work/\` and keep a copy as \`work/orig\`. Record its sha256.
+4. **Edit the smallest thing** that fixes it (one attribute or one tag). Put the \`diff -u\` on the issue.
+5. **Lint:** \`php -l\` on a PHP file. The diff must touch only markup: if a changed line contains PHP code you did not mean to change, stop.
+6. **Back up** the live file on the server (\`<file>.bak-$STAMP\` next to it) and locally. **Upload** as \`<file>.pib-new\`, read it back (sha256 equals the local edit), then \`rclone moveto\` over the live file.
+7. **Check live:** fetch the page (add \`?nocache=<time>\` when a cache is in front), confirm the fix is present, the page answers 200 and shows no "critical error". A cache still serving the old page after 2 minutes: ask for a purge on Needs you. Run \`partnersinbiz.seo:crawler-sim\` or \`check-meta\` for the page.
+8. **Broken or unexpected:** move the \`.bak-$STAMP\` file back at once, read back, check live, then report. Never leave a half-applied edit.
+9. **Record** on the issue: file path, diff, old and new sha256, backup path, the rollback command and the live check output. \`log-activity\` on the client. Then \`complete-task\`.
 `;
 
 export const IOS_RELEASE_SKILL = `# iOS releases on a Mac build host

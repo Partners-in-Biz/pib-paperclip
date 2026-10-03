@@ -12,11 +12,14 @@
  *
  * One statement per call, writes only to the CRM namespace, lists as JSON text.
  */
+import { signoffBlock } from "./site-signoff.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   CONNECTOR_STATUSES,
   pluginUiBase,
+  readConfig,
+  requirePublicBaseUrl,
   SITE_ACCESS_KINDS,
   SITE_PLATFORMS,
   SITE_SEO_PLUGINS,
@@ -29,12 +32,19 @@ import {
   type SiteSeoPlugin,
 } from "@partnersinbiz/pib-plugin-kit";
 import {
+  BUNDLED_CONNECTOR_SHA256,
+  BUNDLED_CONNECTOR_VERSION,
   callConnector,
+  compareVersions,
   CONNECTOR_ENDPOINTS,
+  CONNECTOR_SELF_UPDATE_MIN_VERSION,
+  CONNECTOR_V11_ENDPOINTS,
+  CONNECTOR_V12_ENDPOINTS,
   ConnectorError,
   connectorKeyId,
   isConnectionFailure,
   newConnectorKey,
+  parseVersion,
   type ConnectorEndpoint,
 } from "./connector.js";
 import { asRecord, asStringList, table } from "./db.js";
@@ -329,12 +339,60 @@ export function siteOut(site: SiteRecord, prefix: string | null) {
       status: site.connectorStatus,
       keyId: site.connectorKey ? connectorKeyId(site.connectorKey) : null,
       version: site.connectorVersion,
+      protocol: typeof health.connectorProtocol === "string" ? health.connectorProtocol : null,
+      bundledVersion: BUNDLED_CONNECTOR_VERSION,
+      updateAvailable: connectorUpdateVia(site.connectorVersion) !== null,
+      updateVia: connectorUpdateVia(site.connectorVersion),
       seenAt: site.connectorSeenAt,
       error: site.connectorError,
     },
     health: Object.keys(health).length > 0 ? health : null,
     updatedAt: site.updatedAt,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The bundled Connector: version checks and where the zip is served
+// ---------------------------------------------------------------------------
+
+/** Where the CRM serves its own Connector zip from when the settings do not say otherwise (also the Connector's self-update host allow-list default). */
+export const DEFAULT_PUBLIC_ORIGIN = "https://paperclip.partnersinbiz.online";
+
+/**
+ * How an out-of-date Connector gets the bundled version: `wp-connector` (the site is 1.1+ and updates itself),
+ * `wp-admin upload` (1.0.x has no update route: a person uploads the zip once) or null (current, or version unknown).
+ */
+export function connectorUpdateVia(installed: string | null | undefined, bundled: string = BUNDLED_CONNECTOR_VERSION): "wp-connector" | "wp-admin upload" | null {
+  if (compareVersions(installed, bundled) !== -1) return null;
+  return compareVersions(installed, CONNECTOR_SELF_UPDATE_MIN_VERSION) === -1 ? "wp-admin upload" : "wp-connector";
+}
+
+/**
+ * The address a site downloads the bundled Connector from: this plugin's public static file
+ * `<origin>/_plugins/<installation uuid>/ui/pib-connector.zip` (the uuid is learned when the CRM page is opened).
+ * The origin is the CRM setting publicBaseUrl, else DEFAULT_PUBLIC_ORIGIN. Null until the page has been opened once.
+ */
+export async function connectorZipUrl(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const base = await pluginUiBase(ctx);
+  if (!base) return null;
+  let origin = DEFAULT_PUBLIC_ORIGIN;
+  try {
+    const configured = (await readConfig(ctx, companyId)).publicBaseUrl;
+    if (typeof configured === "string" && configured.trim()) origin = new URL(requirePublicBaseUrl(configured)).origin;
+  } catch {
+    // An unusable setting falls back to the default origin.
+  }
+  return `${origin}${base}pib-connector.zip`;
+}
+
+/** The health line about the installed Connector version, or null when it is current or unknown. */
+export function connectorVersionWarning(installed: string | null | undefined, zipUrl: string | null, bundled: string = BUNDLED_CONNECTOR_VERSION): string | null {
+  const via = connectorUpdateVia(installed, bundled);
+  if (via === "wp-connector") return `Connector ${installed} is out of date (bundled ${bundled}): run wp-connector update.`;
+  if (via === "wp-admin upload") {
+    return `Connector ${installed} is out of date (bundled ${bundled}) and this version cannot update itself (it has no 1.1 routes): a person uploads the new zip once in wp-admin → Plugins → Add New → Upload Plugin (replace the current one). Put that on Needs you with the download link${zipUrl ? `: ${zipUrl}` : " (the CRM client page, Websites)"}. After that, wp-connector update works.`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -601,26 +659,32 @@ export async function refreshSite(ctx: PluginContext, site: SiteRecord, actor: s
   try {
     const ping = await callConnector(ctx, site, "ping", {}, { actor });
     const health = await callConnector(ctx, site, "health", {}, { actor });
-    const detected = member(SITE_SEO_PLUGINS, asRecord(health.seoPlugin).key);
-    const connector = asRecord(health.connector);
-    const next: SiteRecord = {
-      ...site,
-      seoPlugin: detected ?? site.seoPlugin,
-      connectorStatus: "connected",
-      connectorVersion: typeof connector.version === "string" ? connector.version : typeof asRecord(ping.connector).version === "string" ? String(asRecord(ping.connector).version) : site.connectorVersion,
-      connectorSeenAt: new Date().toISOString(),
-      connectorError: null,
-      health: healthSnapshot(health),
-      updatedAt: new Date().toISOString(),
-    };
-    await writeSite(ctx, next, null);
-    await emitSite(ctx, site.companyId, site.id);
-    return { site: siteOut((await getSite(ctx, site.companyId, site.id))!, prefix), connected: true, warnings: healthWarnings(health) };
+    await saveHealth(ctx, site, health, ping);
+    const zipUrl = await connectorZipUrl(ctx, site.companyId);
+    return { site: siteOut((await getSite(ctx, site.companyId, site.id))!, prefix), connected: true, warnings: healthWarnings(health, zipUrl) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await markConnectorError(ctx, site, message);
     return { site: siteOut((await getSite(ctx, site.companyId, site.id))!, prefix), connected: false, error: message };
   }
+}
+
+/** Stores a successful health read on the site (status, installed Connector version, snapshot) and tells the other modules. */
+async function saveHealth(ctx: PluginContext, site: SiteRecord, health: Record<string, unknown>, ping: Record<string, unknown> = {}): Promise<void> {
+  const detected = member(SITE_SEO_PLUGINS, asRecord(health.seoPlugin).key);
+  const connector = asRecord(health.connector);
+  const next: SiteRecord = {
+    ...site,
+    seoPlugin: detected ?? site.seoPlugin,
+    connectorStatus: "connected",
+    connectorVersion: typeof connector.version === "string" ? connector.version : typeof asRecord(ping.connector).version === "string" ? String(asRecord(ping.connector).version) : site.connectorVersion,
+    connectorSeenAt: new Date().toISOString(),
+    connectorError: null,
+    health: healthSnapshot(health),
+    updatedAt: new Date().toISOString(),
+  };
+  await writeSite(ctx, next, null);
+  await emitSite(ctx, site.companyId, site.id);
 }
 
 async function markConnectorError(ctx: PluginContext, site: SiteRecord, message: string): Promise<void> {
@@ -644,6 +708,8 @@ function healthSnapshot(health: Record<string, unknown>): Record<string, unknown
     redirectsProvider: health.redirectsProvider ?? null,
     blogPublic: asRecord(health.site).blogPublic ?? null,
     features: asRecord(health.connector).features ?? null,
+    connectorProtocol: asRecord(health.connector).protocol ?? null,
+    selfUpdate: Array.isArray(asRecord(health.connector).endpoints) ? (asRecord(health.connector).endpoints as unknown[]).includes("self/update") : null,
     updates: health.updates ?? null,
     plugins: plugins.map((p) => {
       const row = asRecord(p);
@@ -652,14 +718,40 @@ function healthSnapshot(health: Record<string, unknown>): Record<string, unknown
   };
 }
 
-function healthWarnings(health: Record<string, unknown>): string[] {
+const OG_PLUGIN = /open ?graph|og tags|social meta/i;
+const MAINTENANCE_PLUGIN = /maintenance|coming soon/i;
+
+/** Active plugins that fight the SEO setup: duplicate og: tags, or a maintenance mode that can answer crawlers with 503. */
+export function pluginConflictWarnings(plugins: unknown): string[] {
   const out: string[] = [];
+  const active = (Array.isArray(plugins) ? plugins : []).map(asRecord).filter((p) => p.active === true && p.mustUse !== true);
+  const nameOf = (p: Record<string, unknown>) => String(p.name ?? p.file ?? "").trim();
+  const og = active.map(nameOf).filter((n) => OG_PLUGIN.test(n));
+  if (og.length > 0) {
+    out.push(
+      `${og.join(", ")} is active next to the SEO plugin and can print duplicate og: tags (check-meta on a page shows two of each). Set the share title, description and image with wp-seo (ogTitle, ogDescription, ogImage), then check-meta. If the tags are still doubled, put "deactivate ${og[0]}" on Needs you for a person (plugins are deactivated, never deleted, and only by a person).`,
+    );
+  }
+  const maintenance = active.map(nameOf).filter((n) => MAINTENANCE_PLUGIN.test(n));
+  if (maintenance.length > 0) {
+    out.push(
+      `${maintenance.join(", ")} is active. Maintenance or coming-soon mode can answer crawlers with 503 or a holding page: run crawler-sim on the home page and a deep page as Googlebot. If it does not return 200 with the real content, put "switch off maintenance mode or deactivate ${maintenance[0]}" on Needs you for a person (deactivate, never delete).`,
+    );
+  }
+  return out;
+}
+
+function healthWarnings(health: Record<string, unknown>, zipUrl: string | null = null): string[] {
+  const out: string[] = [];
+  const versionWarning = connectorVersionWarning(asRecord(health.connector).version as string | undefined, zipUrl);
+  if (versionWarning) out.push(versionWarning);
   const site = asRecord(health.site);
   if (site.blogPublic === false || site.blogPublic === 0 || site.blogPublic === "0") {
     out.push("Search engines are discouraged on this site (Settings → Reading). Nothing will rank until that is switched off: wp-robots allowSearchEngines: true.");
   }
   const seo = asRecord(health.seoPlugin);
   if (seo.key === "none") out.push("No SEO plugin: the Connector prints titles, descriptions and schema itself.");
+  out.push(...pluginConflictWarnings(health.plugins));
   const updates = asRecord(health.updates);
   if (Number(updates.plugins ?? 0) > 5) out.push(`${updates.plugins} plugin updates are waiting.`);
   return out;
@@ -672,22 +764,40 @@ function healthWarnings(health: Record<string, unknown>): string[] {
 /** Tool name → op → endpoint. */
 const WP_TOOLS: Record<string, Record<string, ConnectorEndpoint>> = {
   "wp-health": { get: "health" },
-  "wp-seo": { get: "seo/get", set: "seo/set" },
+  "wp-seo": { get: "seo/get", set: "seo/set", list: "seo/list" },
   "wp-schema": { get: "schema/get", set: "schema/set" },
   "wp-redirects": { list: "redirects/list", set: "redirects/set", delete: "redirects/delete" },
   "wp-robots": { get: "robots/get", set: "robots/set" },
   "wp-sitemap": { get: "sitemap/get", set: "sitemap/set" },
   "wp-plugins": { list: "plugins/list", backups: "plugins/backups", install: "plugins/install", rollback: "plugins/rollback" },
+  "wp-media": { list: "media/list", sideload: "media/sideload", "set-featured": "media/set-featured", alt: "media/alt" },
+  "wp-content": {
+    get: "posts/get",
+    images: "posts/images",
+    "img-alt": "posts/img-alt",
+    update: "posts/update",
+    create: "posts/create",
+    publish: "posts/publish",
+  },
+  "wp-verify": { get: "verify/get", set: "verify/set" },
+  "wp-connector": { update: "self/update", rollback: "self/rollback" },
   "wp-log": { get: "log" },
   "wp-undo": { set: "undo" },
 };
 
 export const WP_TOOL_NAMES = Object.keys(WP_TOOLS);
 
-/** Parameters each endpoint passes through to the site (everything else is dropped). */
-const PASS: Partial<Record<ConnectorEndpoint, string[]>> = {
-  "seo/get": ["url", "postId"],
-  "seo/set": ["url", "postId", "title", "description", "canonical", "noindex", "nofollow", "focusKeyword", "ogTitle", "ogDescription", "reason"],
+const SEO_TARGET = ["url", "postId", "termId", "taxonomy", "postTypeArchive"];
+const SEO_FIELDS = ["title", "description", "canonical", "noindex", "nofollow", "focusKeyword", "ogTitle", "ogDescription", "ogImage"];
+
+/**
+ * Parameters each endpoint passes through to the site (everything else is dropped).
+ * `self/update` passes nothing from the caller: the CRM sets zipUrl and sha256 itself (see planConnectorUpdate).
+ */
+export const PASS: Partial<Record<ConnectorEndpoint, string[]>> = {
+  "seo/get": SEO_TARGET,
+  "seo/set": [...SEO_TARGET, ...SEO_FIELDS, "reason"],
+  "seo/list": ["postType", "status", "search", "page", "perPage", "missing"],
   "schema/get": ["url", "postId", "site"],
   "schema/set": ["url", "postId", "site", "id", "piece", "remove", "reason"],
   "redirects/set": ["from", "to", "code", "reason"],
@@ -696,17 +806,80 @@ const PASS: Partial<Record<ConnectorEndpoint, string[]>> = {
   "sitemap/set": ["seoPluginSitemap", "excludePostIds", "reason"],
   "plugins/install": ["zipUrl", "sha256", "slug", "reason"],
   "plugins/rollback": ["backupId", "reason"],
+  "media/list": ["search", "postId", "missingAlt", "mime", "page", "perPage"],
+  "media/sideload": ["imageUrl", "title", "alt", "filename", "postId", "reason"],
+  "media/set-featured": ["postId", "attachmentId", "imageUrl", "alt", "title", "reason"],
+  "media/alt": ["items", "reason"],
+  "posts/get": ["postId", "url"],
+  "posts/images": ["postId", "url"],
+  "posts/img-alt": ["postId", "url", "alts", "reason"],
+  "posts/update": ["postId", "url", "title", "content", "excerpt", "slug", "reason"],
+  "posts/create": ["postType", "title", "content", "excerpt", "slug", "parentId", "reason"],
+  "posts/publish": ["postId", "reason"],
+  "verify/get": [],
+  "verify/set": ["metaTags", "files", "reason"],
+  "self/update": [],
+  "self/rollback": ["backupId", "reason"],
   log: ["limit"],
   undo: ["changeId", "reason"],
 };
 
 function targetOf(params: Record<string, unknown>): string | null {
-  for (const key of ["url", "from", "slug", "backupId", "changeId"]) {
+  for (const key of ["url", "from", "postTypeArchive", "slug", "imageUrl", "backupId", "changeId"]) {
     if (typeof params[key] === "string" && params[key]) return String(params[key]).slice(0, 300);
   }
   if (typeof params.postId === "number") return `post:${params.postId}`;
+  if (typeof params.termId === "number") return `term:${params.termId}`;
+  if (typeof params.attachmentId === "number") return `media:${params.attachmentId}`;
+  if (Array.isArray(params.metaTags) || Array.isArray(params.files)) {
+    const tags = Array.isArray(params.metaTags) ? params.metaTags.length : null;
+    const files = Array.isArray(params.files) ? params.files.length : null;
+    return `verify: ${[tags !== null ? `${tags} meta tag${tags === 1 ? "" : "s"}` : null, files !== null ? `${files} file${files === 1 ? "" : "s"}` : null].filter(Boolean).join(", ")}`;
+  }
+  if (Array.isArray(params.items)) return `media:${params.items.length} images`;
+  if (typeof params.title === "string" && params.title) return `new: ${params.title}`.slice(0, 300);
   if (params.site === true) return "site";
   return null;
+}
+
+/** What `wp-connector update` will send: the bundled build, from this plugin's own address. Refuses when there is nothing to do or the site cannot self-update. */
+async function planConnectorUpdate(ctx: PluginContext, viewer: Viewer, site: SiteRecord, actor: string | null): Promise<{ zipUrl: string; sha256: string; installed: string }> {
+  const health = await callConnector(ctx, site, "health", {}, { actor });
+  await saveHealth(ctx, site, health);
+  const connector = asRecord(health.connector);
+  const installed = typeof connector.version === "string" ? connector.version : null;
+  const zipUrl = await connectorZipUrl(ctx, viewer.companyId);
+  if (!installed || !parseVersion(installed)) {
+    throw new CrmError(`${site.url} did not report a Connector version. Run check-client-site and try again; if it still does not, a person checks the plugin in wp-admin.`);
+  }
+  if (compareVersions(installed, BUNDLED_CONNECTOR_VERSION) !== -1) {
+    throw new CrmError(`${site.url} already runs Connector ${installed} (bundled ${BUNDLED_CONNECTOR_VERSION}): nothing to update.`);
+  }
+  const endpoints = connector.endpoints;
+  const hasRoute = Array.isArray(endpoints) ? endpoints.includes("self/update") : compareVersions(installed, CONNECTOR_SELF_UPDATE_MIN_VERSION) !== -1;
+  if (!hasRoute) {
+    throw new CrmError(`Connector ${installed} on ${site.url} cannot update itself (no self/update route before ${CONNECTOR_SELF_UPDATE_MIN_VERSION}). ${connectorVersionWarning(installed, zipUrl) ?? ""} Put the one-time zip upload on Needs you.`.trim());
+  }
+  if (!zipUrl) {
+    throw new CrmError("The CRM does not know its own download address yet: open the CRM page once in Paperclip (or set publicBaseUrl in the CRM settings), then run wp-connector update again.");
+  }
+  return { zipUrl, sha256: BUNDLED_CONNECTOR_SHA256, installed };
+}
+
+/** rest_no_route on a 1.1 endpoint from a site that answers health means an older Connector, not a missing one. */
+async function explainMissingRoute(ctx: PluginContext, site: SiteRecord, endpoint: ConnectorEndpoint, actor: string | null): Promise<CrmError | null> {
+  const needs12 = CONNECTOR_V12_ENDPOINTS.includes(endpoint);
+  if (!needs12 && !CONNECTOR_V11_ENDPOINTS.includes(endpoint)) return null;
+  try {
+    const health = await callConnector(ctx, site, "health", {}, { actor });
+    await saveHealth(ctx, site, health);
+    const installed = typeof asRecord(health.connector).version === "string" ? String(asRecord(health.connector).version) : "unknown version";
+    const zipUrl = await connectorZipUrl(ctx, site.companyId);
+    const how = connectorVersionWarning(installed, zipUrl) ?? `Run wp-health and check that the plugin is current.`;
+    return new CrmError(`${site.url} has no ${endpoint} route: it runs Connector ${installed}, which is older than the ${needs12 ? "1.2" : "1.1"} routes this tool needs. ${how}`);
+  } catch {
+    return null;
+  }
 }
 
 export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string, params: Record<string, unknown>, source: "agent" | "human") {
@@ -723,22 +896,39 @@ export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string
   }
   const writes = CONNECTOR_ENDPOINTS[endpoint];
   const reason = typeof params.reason === "string" ? params.reason.trim().slice(0, 500) : "";
+  if (writes && source === "agent") {
+    const blocked = await signoffBlock(ctx, site.id);
+    if (blocked) throw new CrmError(blocked);
+  }
   if (writes && !reason) throw new CrmError("reason is required for a change: one line on why (it is kept in the site's log)");
   if (endpoint === "plugins/install" || endpoint === "plugins/rollback") {
     requirePerson(viewer, source, "install or roll back WordPress plugins through the Connector");
+  }
+  if (endpoint === "self/update" && (params.zipUrl !== undefined || params.sha256 !== undefined)) {
+    throw new CrmError(`wp-connector update takes no zipUrl or sha256: the CRM sends the Connector build it ships (${BUNDLED_CONNECTOR_VERSION}) from its own address. Leave them out.`);
   }
   const body: Record<string, unknown> = {};
   for (const key of PASS[endpoint] ?? []) if (params[key] !== undefined) body[key] = params[key];
   if (reason) body.reason = reason;
   const actor = actorOf(viewer);
+  let target = targetOf(params);
+  let updatePlan: { zipUrl: string; sha256: string; installed: string } | null = null;
+  let sent = false;
   try {
+    if (endpoint === "self/update") {
+      updatePlan = await planConnectorUpdate(ctx, viewer, site, actor);
+      body.zipUrl = updatePlan.zipUrl;
+      body.sha256 = updatePlan.sha256;
+      target = `connector ${updatePlan.installed} → ${BUNDLED_CONNECTOR_VERSION}`;
+    }
+    sent = true;
     const data = await callConnector(ctx, site, endpoint, body, { actor });
     if (writes) {
       await recordChange(ctx, {
         companyId: viewer.companyId,
         siteId: site.id,
         endpoint,
-        target: targetOf(params),
+        target,
         reason: reason || null,
         changeRef: typeof data.changeId === "string" ? data.changeId : null,
         ok: true,
@@ -746,29 +936,42 @@ export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string
         actor,
       });
     }
-    if (site.connectorStatus !== "connected") {
+    if (endpoint === "self/update" || endpoint === "self/rollback") {
+      // The installed version changed: read it back so the site record and every module show the new one.
+      await refreshSite(ctx, (await getSite(ctx, site.companyId, site.id)) ?? site, actor).catch(() => undefined);
+    } else if (site.connectorStatus !== "connected") {
       await writeSite(ctx, { ...site, connectorStatus: "connected", connectorError: null, connectorSeenAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, null);
       await emitSite(ctx, viewer.companyId, site.id);
     }
+    const next =
+      endpoint === "self/update"
+        ? `Run check-client-site: the site should now report Connector ${BUNDLED_CONNECTOR_VERSION}. Then re-check one page with check-meta or crawler-sim. If the site misbehaves, wp-connector rollback with the backupId from this result.`
+        : endpoint === "self/rollback"
+          ? "Run check-client-site to confirm the restored version, then re-check a page with check-meta or crawler-sim."
+          : "Check it on the live site (check-meta, validate-schema, check-sitemap or crawler-sim; for wp-verify fetch the home page or the file URL and confirm the exact content). A page cache can hold the old version for a few minutes. wp-undo with the changeId reverts it (uploads from wp-media sideload and Connector updates cannot be undone).";
     return {
       siteId: site.id,
       site: site.url,
       endpoint,
       ...data,
-      ...(writes
-        ? { next: "Check it on the live site (check-meta, validate-schema, check-sitemap or crawler-sim). A page cache can hold the old version for a few minutes. wp-undo with the changeId reverts it." }
-        : {}),
+      ...(endpoint === "self/update" && updatePlan ? { installedBefore: updatePlan.installed, bundledVersion: BUNDLED_CONNECTOR_VERSION } : {}),
+      ...(writes ? { next } : {}),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (writes) {
-      await recordChange(ctx, { companyId: viewer.companyId, siteId: site.id, endpoint, target: targetOf(params), reason: reason || null, changeRef: null, ok: false, error: message.slice(0, 500), actor }).catch(() => undefined);
+    let failure: unknown = error;
+    if (sent && error instanceof ConnectorError && error.code === "pib_not_installed" && error.status !== null) {
+      const explained = await explainMissingRoute(ctx, site, endpoint, actor);
+      if (explained) failure = explained;
     }
-    if (isConnectionFailure(error)) await markConnectorError(ctx, site, message).catch(() => undefined);
-    if (error instanceof ConnectorError && error.code === "pib_disabled") {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    if (writes && sent) {
+      await recordChange(ctx, { companyId: viewer.companyId, siteId: site.id, endpoint, target, reason: reason || null, changeRef: null, ok: false, error: message.slice(0, 500), actor }).catch(() => undefined);
+    }
+    if (isConnectionFailure(failure)) await markConnectorError(ctx, site, message).catch(() => undefined);
+    if (failure instanceof ConnectorError && failure.code === "pib_disabled") {
       throw new CrmError(`${message} A person switches it on in ${site.url}/wp-admin → Settings → PiB Connector.`);
     }
-    throw error;
+    throw failure;
   }
 }
 
