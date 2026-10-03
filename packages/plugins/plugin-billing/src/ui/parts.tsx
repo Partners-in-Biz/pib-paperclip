@@ -22,6 +22,7 @@ const ACTION_KEYS = [
   "billing.stop-timer", "billing.log-time", "billing.delete-time-entry", "billing.bill-time", "billing.create-plan", "billing.update-plan",
   "billing.create-subscription", "billing.set-subscription-status", "billing.create-recurring", "billing.pause-recurring", "billing.resume-recurring",
   "billing.update-recurring", "billing.reports", "billing.dunning", "billing.set-dunning-optout", "billing.get-numbering", "billing.set-numbering", "billing.run-dunning", "billing.retry-ledger",
+  "billing.create-payment-link", "billing.payment-links", "billing.cancel-payment-link", "billing.record-refund", "billing.simulate-payment", "billing.payments",
 ] as const;
 
 export type ActionKey = (typeof ACTION_KEYS)[number];

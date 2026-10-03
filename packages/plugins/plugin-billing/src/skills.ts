@@ -9,6 +9,7 @@ You run PiB's billing with the \`partnersinbiz.billing:*\` tools: quotes, invoic
 
 - Approve sending an invoice, a quote or a payment reminder. You ask with \`request-invoice-send\`, \`request-quote-send\` or \`request-reminder-send\`; the Reviewer checks first when there is one.
 - Record a payment, issue a credit note, confirm a proof of payment or a bank match. Your \`record-payment\`, \`create-credit-note\` and \`request-payment-check\` open a decision issue for them; nothing changes until they mark it done.
+- Record a refund (money paid back through a provider). You never refund, never mark an invoice paid because a customer says they paid online, and never change a payment provider's settings.
 - Cancel an invoice, write off a debt, mark a document sent by hand, email a credit note or statement, apply customer credit, approve or pay a supplier bill, and switch on automatic sending or automatic reminders.
 
 Never tell a customer an invoice is paid until \`invoice-detail\` shows status \`paid\`. Never invent prices, dates, numbers or VAT: take them from the CRM deal, the agreement or the owner (\`partnersinbiz.cockpit:ask-owner\`).
@@ -59,6 +60,7 @@ These issues update themselves, reopen when new work arrives and close when noth
 - Customers pay by EFT with the invoice number as reference and reply with proof of payment. Emailed proofs are matched to the invoice and a person checks them; the invoice shows \`payment_pending_verification\` meanwhile.
 - The customer says they paid somewhere else (a call, WhatsApp, a DM, an email Billing missed): \`request-payment-check\` with \`invoiceId\`, a \`note\` of what they said and where, and \`amountMinor\` / \`paidOn\` / \`reference\` when known. A person checks the bank; their "done" records the payment.
 - Money you see in the bank for an invoice: \`record-payment\` (invoiceId, amountMinor, reference, paidAt, \`paymentKey\` = the bank line id) opens "Record payment of R… on LUM-001?" for a person.
+- **Online payment (only when a provider is on).** Invoice emails, reminders and PDFs then carry a "Pay online" link; EFT stays the default and the bank details stay in the email. \`list-payment-links\` (invoiceId) shows the links and their status; \`create-payment-link\` makes or returns one only when you must give a customer the link another way (ask the owner first; it sends nothing). An invoice is paid only by the provider's confirmed payment, never by you. When a provider is off, \`create-payment-link\` says so and names the blocker: tell the owner through \`partnersinbiz.cockpit:ask-owner\`, do not work around it. A payment the provider confirmed is recorded and posted by Billing itself. When the amount or currency is not what the invoice owes, or the invoice was cancelled, Billing opens a decision for a person: wait for it. Read \`references/online-payments.md\` for the statuses and what each means.
 - When an invoice is paid in full, Billing tells the CRM and the Cockpit itself. Overpayments and credit-note remainders stay with the client as credit (\`customer-credit\`); a person applies it.
 
 ## 6. Overdue invoices
@@ -90,9 +92,44 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 | Retainers and next invoice dates | \`list-retainers\`, \`list-recurring-invoices\` |
 | Supplier bills still owed | \`list-bills\` |
 | Time not invoiced yet | \`list-time-entries\` (unbilled \`true\`) |
+| Can this invoice be paid online; has it been paid or refunded online | \`list-payment-links\` (invoiceId) |
 | What was already done about an invoice or quote | \`invoice-detail\` or \`quote-detail\` (\`followUps\`) |
 
+**Lists are small by default.** Every \`list-*\` tool takes \`limit\` (default 50, at most 200), \`offset\` and \`compact\`, and answers \`{ mode, total, count, offset, items, more, next }\`; when \`more\` is true, ask again with \`next\`'s offset. A compact row has the fields you decide with; \`compact: false\` gives the full row, and the detail tools give everything for one id. \`invoice-detail\` is compact too: the invoice, its lines, payments, payment links and recipients, and a count of everything else. Pass \`sections\` (for example \`["followUps","pops"]\`) for those parts in full, or \`compact: false\` for all of it.
+
 \`invoice-html\` and \`quote-html\` return a printable copy (large); read documents with the detail tools instead. Profit and loss, the balance sheet and VAT201 are in Accounting (the Bookkeeper's tools), not Billing.
+`;
+
+export const ONLINE_PAYMENTS_REFERENCE = `# Online payments: what you will see
+
+Billing takes card and instant-EFT payments through a hosted checkout page (Stripe, PayFast). Nothing here is yours to switch on or off: a person does that in Setup. You read the state and you tell the owner what is in the way.
+
+## Links
+
+\`list-payment-links\` (invoiceId) returns one row per provider: \`status\`, \`amountMinor\`, \`currency\`, \`url\` (only while it can be paid), \`paidAt\`, \`feeMinor\`, \`refundedMinor\`, \`lastError\`.
+
+| status | Meaning | What you do |
+|---|---|---|
+| active | A customer can pay it now. | Nothing. The address is already in the invoice and reminder emails. |
+| paid | The provider confirmed the money; Billing recorded the payment and posted it. | Treat the invoice as paid only when \`invoice-detail\` says \`paid\`. |
+| cancelled | The invoice changed (new amount, paid by EFT, cancelled, written off) or a person withdrew it. | The next invoice or reminder email makes a fresh link for what is still owed. |
+| needs_attention | Money arrived that Billing will not settle by itself: a different amount or currency, or an invoice that was cancelled. A decision issue is open for a person. | Wait. Do not record the payment yourself. |
+| failed | The provider refused to make the link (\`lastError\` says why, with no secrets in it). | Tell the owner once with \`partnersinbiz.cockpit:ask-owner\`; the invoice still goes out with EFT details. |
+
+\`create-payment-link\` refuses when no provider is on (the answer names what Setup is waiting for), when the invoice is not open, and for a draft (a draft's link is made when it is sent, for what it owes then). It is safe to repeat: an invoice has at most one active link per provider.
+
+## Money
+
+- The provider's confirmed payment is recorded as a payment of source \`gateway\`, once, however many times the provider repeats its message.
+- The books: the gross amount goes to the payment clearing account (1020) against receivables, and the bank payout later arrives as a bank line that the Bookkeeper categorises to 1020. Billing does this itself.
+- **The provider's fee is posted by Billing only when the provider's notification carries it.** PayFast's does (Dr bank charges / Cr 1020). **Stripe's does not**, and Billing's Stripe key cannot read it, so for Stripe Billing posts no fee: \`feeMinor\` stays empty on the link, the payout line arrives net of the fee, and the fee is left on 1020 until the Bookkeeper books it from the payout (Dr 6120 Bank charges / Cr 1020, by manual journal and the normal approval). Never tell the owner a Stripe fee is already in the books, and never post one yourself.
+- A refund through the provider reverses the payment (the invoice owes it again). Stripe's refunds are recorded automatically; any other refund is recorded by a person from the invoice. You never record one.
+- A canary customer (an id starting \`canary-\` or an address ending \`.invalid\`) only ever gets the test provider's link, and nothing posts to the books.
+
+## When a customer asks
+
+- "I paid online": check \`list-payment-links\` and \`invoice-detail\`. Paid and recorded: say so. Not recorded: \`request-payment-check\` (note what they said); a card payment that is not confirmed yet can take minutes, instant EFT can take a day.
+- "The link does not work": look at the link's status; a cancelled link means the invoice changed, so the next reminder carries a fresh link; say the old email's link was withdrawn.
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [
@@ -101,6 +138,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     displayName: "Billing: lead to cash",
     slug: "pib-invoice-draft",
     description: "Quotes, invoices, retainers, getting paid and overdue follow-up. Agents draft and ask; a person approves every send and money change.",
+    files: [{ path: "references/online-payments.md", content: ONLINE_PAYMENTS_REFERENCE }],
     markdown: withFrontmatter(
       {
         name: "pib-invoice-draft",

@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, LEDGER_EVENTS, PIB_PLUGINS, settleOutbox, type LedgerPostResult, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
+import { isCanaryCustomer } from "./canary.js";
 import { ledgerEnabled, reportingCurrency, type BillingSettings } from "./config.js";
 import { asObject, getInvoice, linesFor, table, type InvoiceRow, type PaymentRow } from "./db.js";
 import { rateToBook } from "./fx.js";
@@ -14,12 +15,14 @@ import {
   billPaymentJournal,
   creditNoteJournal,
   expenseJournal,
+  gatewayFeeJournal,
   invoiceIssueJournal,
   invoiceVoidJournal,
   parseLedgerKey,
   paymentJournal,
   postJournal,
   realisedFxJournal,
+  refundJournal,
   reverseJournal,
   writeOffJournal,
   ymd,
@@ -66,7 +69,7 @@ async function mark(ctx: PluginContext, tableName: string, id: string, extra = "
 
 /** Invoice issued (sent): AR / revenue / output VAT. Stores the issue FX rate. */
 export async function postInvoiceIssue(ctx: PluginContext, invoice: InvoiceRow, settings: BillingSettings): Promise<void> {
-  if (!(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const totals = await invoiceTotals(ctx, invoice);
   if (totals.totalMinor <= 0) return;
   const date = ymd(invoice.sent_at ?? new Date());
@@ -92,7 +95,7 @@ export async function postInvoiceIssue(ctx: PluginContext, invoice: InvoiceRow, 
 
 /** Void a sent invoice: reverse its issue journal. */
 export async function postInvoiceVoid(ctx: PluginContext, invoice: InvoiceRow, settings: BillingSettings): Promise<void> {
-  if (!invoice.ledger_status || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !invoice.ledger_status || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const totals = await invoiceTotals(ctx, invoice);
   if (totals.totalMinor <= 0) return;
   const issue = invoiceIssueJournal({
@@ -136,7 +139,7 @@ function paymentPayload(invoice: InvoiceRow, payment: PaymentRow, fxRate: number
 
 /** Payment received (+ realised FX when the invoice is in a foreign currency). */
 export async function postPayment(ctx: PluginContext, invoice: InvoiceRow, payment: PaymentRow, settings: BillingSettings, bank: BankSide = {}): Promise<void> {
-  if (!(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const date = ymd(payment.paid_at);
   const fxRate = payment.fx_rate != null ? Number(payment.fx_rate) : await bookRate(ctx, settings, invoice.currency, date);
   await postJournal(ctx, invoice.company_id, paymentPayload(invoice, payment, fxRate, { ...bank, bankTxId: payment.bank_tx_id ?? null }));
@@ -161,6 +164,27 @@ export async function postPayment(ctx: PluginContext, invoice: InvoiceRow, payme
   }
 }
 
+/** The provider's fee on a card or online payment (when its delivery carries one): bank charges against the clearing account. */
+export async function postGatewayFee(ctx: PluginContext, invoice: InvoiceRow, payment: PaymentRow, feeMinor: number, provider: string, clearingAccountCode: string, settings: BillingSettings): Promise<void> {
+  if (feeMinor <= 0 || isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  const date = ymd(payment.paid_at);
+  await postJournal(ctx, invoice.company_id, gatewayFeeJournal({ paymentId: payment.id, invoiceNumber: invoice.number, date, currency: invoice.currency, fxRate: payment.fx_rate == null ? null : Number(payment.fx_rate), feeMinor, clearingAccountCode, provider }));
+}
+
+/** Money refunded through the provider: the receivable is back, the clearing account pays it out. */
+export async function postRefund(
+  ctx: PluginContext,
+  invoice: InvoiceRow,
+  refund: { id: string; amountMinor: number; date: unknown; reason: string | null; provider: string },
+  clearingAccountCode: string,
+  settings: BillingSettings,
+): Promise<void> {
+  if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  const date = ymd(refund.date);
+  const fxRate = invoice.fx_rate != null ? Number(invoice.fx_rate) : await bookRate(ctx, settings, invoice.currency, date);
+  await postJournal(ctx, invoice.company_id, refundJournal({ id: refund.id, invoiceNumber: invoice.number, date, currency: invoice.currency, fxRate, amountMinor: refund.amountMinor, customerKind: invoice.customer_kind, customerRef: invoice.customer_ref, clearingAccountCode, provider: refund.provider, reason: refund.reason }));
+}
+
 /**
  * A bank line matched a payment a person recorded earlier (POP or manual):
  * reverse that payment's journal and post it again on the matched bank
@@ -173,7 +197,7 @@ export async function repostPaymentOnBank(
   settings: BillingSettings,
   bank: BankSide & { bankTxId: string },
 ): Promise<void> {
-  if (!payment.ledger_status || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !payment.ledger_status || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const fxRate = payment.fx_rate == null ? null : Number(payment.fx_rate);
   const original = paymentPayload(invoice, payment, fxRate, {});
   await postJournal(ctx, invoice.company_id, reverseJournal(original, payment.paid_at));
@@ -186,7 +210,7 @@ export async function postCreditNote(
   invoice: InvoiceRow,
   settings: BillingSettings,
 ): Promise<void> {
-  if (!(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const totals = await invoiceTotals(ctx, invoice);
   const amount = Number(note.amount_minor);
   await postJournal(ctx, invoice.company_id, creditNoteJournal({
@@ -205,7 +229,7 @@ export async function postCreditNote(
 }
 
 export async function postWriteOff(ctx: PluginContext, invoice: InvoiceRow, amountMinor: number, reason: string | null, settings: BillingSettings): Promise<void> {
-  if (!(await ledgerOn(ctx, invoice.company_id, settings))) return;
+  if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const totals = await invoiceTotals(ctx, invoice);
   await postJournal(ctx, invoice.company_id, writeOffJournal({
     split: splitByGroups(amountMinor, totals.groups),

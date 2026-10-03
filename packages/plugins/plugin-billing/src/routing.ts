@@ -4,15 +4,13 @@
  * - Work (drafting, follow-ups, invoice replies): the Account Manager, else the
  *   Bookkeeper, else the Operator, else the owner (`routeWork`). Quote
  *   replies go to the Deal Desk first (`quoteRoute`).
- * - Outward approvals (sending an invoice, quote or reminder): the Reviewer
- *   first when one is running, else the Billing approver (settings
- *   `reviewerUserId`), else the owner.
- * - Money decisions (payments, credit notes, proof-of-payment checks, bank
- *   matches, bills): the Billing approver, else the owner. Never an agent.
+ * - Approvals and money decisions (send, payments, credit notes, proof-of-payment
+ *   checks, bank matches, bills): `approvals.ts` (the kit's `openApprovalIssue`:
+ *   Reviewer first for outward work, then the Billing approver or the owner,
+ *   then the Operator, then a loud unassigned).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { companyRoles, reviewerAgentId, routeWork, teamAgentId, teamRoleChain, teamSetupPath, type TeamRoleKey, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
-import type { BillingSettings } from "./config.js";
+import { routeWork, teamAgentId, teamRoleChain, teamSetupPath, type TeamRoleKey, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
 
 /** Billing work goes to these roles, in order (then the Operator, then the owner). */
 export const WORK_ROLES: TeamRoleKey[] = ["account-manager", "bookkeeper"];
@@ -40,34 +38,6 @@ export async function quoteRoute(ctx: PluginContext, companyId: string): Promise
 export function assigneeOf(route: Pick<WorkRoute, "assigneeAgentId" | "assigneeUserId">): { assigneeAgentId?: string; assigneeUserId?: string } {
   if (route.assigneeAgentId) return { assigneeAgentId: route.assigneeAgentId };
   return route.assigneeUserId ? { assigneeUserId: route.assigneeUserId } : {};
-}
-
-/** The person who decides Billing's approvals: the Billing approver in settings, else the company owner. */
-export async function approverUserId(ctx: PluginContext, companyId: string, settings: BillingSettings): Promise<string | null> {
-  const configured = typeof settings.reviewerUserId === "string" ? settings.reviewerUserId.trim() : "";
-  if (configured) return configured;
-  return (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
-}
-
-/** Assignee for a money decision: always a person. */
-export async function personAssignee(ctx: PluginContext, companyId: string, settings: BillingSettings): Promise<{ assigneeUserId?: string }> {
-  const userId = await approverUserId(ctx, companyId, settings);
-  return userId ? { assigneeUserId: userId } : {};
-}
-
-export interface ApprovalRoute {
-  assignee: { assigneeAgentId?: string; assigneeUserId?: string };
-  /** The Reviewer agent checking first, when one is running and outward review is on. */
-  reviewer: string | null;
-  /** The person who decides (the Reviewer hands the issue to them). */
-  approver: string | null;
-}
-
-/** Outward approvals: the Reviewer first when one is running, else the person. */
-export async function sendApprovalRoute(ctx: PluginContext, companyId: string, settings: BillingSettings): Promise<ApprovalRoute> {
-  const [reviewer, approver] = await Promise.all([reviewerAgentId(ctx, companyId).catch(() => null), approverUserId(ctx, companyId, settings)]);
-  if (reviewer) return { assignee: { assigneeAgentId: reviewer }, reviewer, approver };
-  return { assignee: approver ? { assigneeUserId: approver } : {}, reviewer: null, approver };
 }
 
 /** Where the Account Manager is staffed, and who Billing's work goes to right now (for the page). */

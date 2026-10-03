@@ -5,6 +5,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decisionConfig, readConfig, SecretResolver, TAX_CODES, type DecisionClientConfig, type R2Config, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
+import type { PaymentSettings } from "./pay/settings.js";
 
 export interface DunningStage {
   daysAfterDue: number;
@@ -34,6 +35,10 @@ export interface BillingSettings {
   anthropic?: { apiKey?: unknown; model?: string; extractReceipts?: boolean };
   jev?: { apiKey?: unknown; model?: string; enabled?: boolean };
   dunning?: { enabled?: boolean; attachInvoice?: boolean; stages?: DunningStage[] };
+  /** Card and online payments (Stripe, PayFast): everything off until the owner adds the keys and switches a provider on. */
+  payments?: PaymentSettings;
+  /** Erasure: how long the law makes Billing keep a person's invoices (default 7 years, Companies Act s24). */
+  privacy?: { retentionYears?: number };
 }
 
 export const DEFAULT_EXPENSE_CATEGORIES = [

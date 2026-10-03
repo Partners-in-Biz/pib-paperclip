@@ -13,6 +13,7 @@ import { AS_AT_CUTOFF_SQL, INVOICE_COLUMNS, table, type CreditNoteRow, type Invo
 import { balanceOutstanding, deriveInvoiceStatus, OPEN_STATUSES, type BalanceState, type InvoiceStatusValue } from "./domain.js";
 import { withdrawPaidDecisions } from "./closeouts.js";
 import { emitInvoicePaid } from "./handoff.js";
+import { retireInvoiceLinks, retireLinksForOtherAmount } from "./pay/links.js";
 
 export interface InvoiceBalanceRow extends InvoiceRow {
   paid_minor: number | string | null;
@@ -147,7 +148,10 @@ export async function refreshInvoiceStatus(ctx: PluginContext, invoiceId: string
   const balance = await invoiceBalance(ctx, invoiceId);
   if (!balance) return null;
   const next = deriveInvoiceStatus(balance.state, now);
-  if (next === balance.invoice.status) return { status: next, changed: false, balance };
+  if (next === balance.invoice.status) {
+    if (balance.outstandingMinor > 0) await retireLinksForOtherAmount(ctx, invoiceId, balance.outstandingMinor).catch(() => 0);
+    return { status: next, changed: false, balance };
+  }
   // Paid on the date of the payment that paid it (not when it was typed in); leaving "paid" clears it.
   const res = await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")}
@@ -160,6 +164,9 @@ export async function refreshInvoiceStatus(ctx: PluginContext, invoiceId: string
     [invoiceId, next],
   );
   balance.invoice.status = next;
+  // An invoice that no longer owes anything takes no more online payments (SQL only; the hourly job switches the provider's link off).
+  if ((next === "paid" || next === "written_off") && (res.rowCount ?? 0) > 0) await retireInvoiceLinks(ctx, invoiceId).catch(() => 0);
+  else if (balanceOutstanding({ ...balance.state, status: next }) > 0) await retireLinksForOtherAmount(ctx, invoiceId, balanceOutstanding({ ...balance.state, status: next })).catch(() => 0);
   if (next === "paid" && (res.rowCount ?? 0) > 0) {
     // Paid in full by any path (payment, POP, bank match, credit, approval): tell the CRM and the Cockpit once.
     try {

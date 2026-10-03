@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue, formatMoneyMinor, PIB_PLUGINS, reviewerBrief } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, reviewerBrief } from "@partnersinbiz/pib-plugin-kit";
 import { datedAfterToday, invoiceBalance, iso } from "./balances.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2 } from "./config.js";
 import { checkCreditNote, issueCreditNote } from "./credits.js";
@@ -23,7 +23,8 @@ import { recipientsFor, requireOwnInvoice, requireQuote } from "./invoices.js";
 import { parseAddresses, renderTemplate } from "./mail.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { closePopIssues, getPop, listPops, recordDecisionIssue, recordPop } from "./pop.js";
-import { billingPath, companyPrefix, issuePath, personAssignee, sendApprovalRoute } from "./routing.js";
+import { openBillingApproval } from "./approvals.js";
+import { billingPath, companyPrefix, issuePath } from "./routing.js";
 import { creditedOnInvoice, paymentBySourceKey, settle } from "./settle.js";
 import { actorLabel, integer, optionalDate, optionalInteger, optionalString, requiredCompany, requiredString, requirePerson } from "./util.js";
 
@@ -165,7 +166,6 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     invoice.send_to = parseAddresses(params.sendTo);
   }
   const recipients = emailEnabled(settings) ? await recipientsFor(ctx, companyId, invoice) : [];
-  const route = await sendApprovalRoute(ctx, companyId, settings);
   const amount = formatMoneyMinor(Number(invoice.total_minor), invoice.currency);
   const name = customerName(invoice);
   const link = billingPath(prefix, { tab: "invoices", client: clientParam(invoice) });
@@ -178,14 +178,16 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
       : `There is no email address for this customer${emailEnabled(settings) ? "" : " (email is off in Billing settings)"}, so mark this issue done after you have sent it yourself. Billing then records it as sent and freezes the sender and customer details.`,
     "Cancel this issue to keep it as a draft.",
   ];
-  const issue = await createWorkIssue(ctx, {
+  const route = await openBillingApproval(ctx, settings, {
     companyId,
     title: sendApprovalTitle("invoice", name, amount),
-    description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`the invoice to ${name} (${amount}) before it is emailed`, recipients.length > 0, route.approver)}` : lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
+    description: lines.join("\n"),
     originId: `${APPROVAL_ORIGINS.invoiceSend}${invoice.id}`,
-    ...route.assignee,
+    outward: true,
+    actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
+    brief: (approver) => sendReviewBrief(`the invoice to ${name} (${amount}) before it is emailed`, recipients.length > 0, approver),
   });
+  const issue = { id: route.id };
   // Claim the invoice for this approval only if nothing changed meanwhile (never a whole-row save).
   const claim = await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")} SET approval_issue_id = $2, pending_action = 'send', updated_at = now()
@@ -200,7 +202,7 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     throw new BillingError(`Invoice ${invoice.number} changed while asking (it may be sent already). Check it with invoice-detail.`);
   }
   const ref = await issueRef(ctx, companyId, issue.id);
-  return { invoiceId: invoice.id, number: invoice.number, issueId: issue.id, issue: issuePath(prefix, ref), pendingAction: "send", recipients, reviewer: Boolean(route.reviewer), already: false, next: SEND_NEXT };
+  return { invoiceId: invoice.id, number: invoice.number, issueId: issue.id, issue: issuePath(prefix, ref), pendingAction: "send", recipients, reviewer: route.reviewer, already: false, next: SEND_NEXT };
 }
 
 /** Ask for a quote to be sent (agents and people). */
@@ -218,7 +220,6 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
     return { quoteId: quote.id, number: quote.number, issueId: pending.id, issue: issuePath(prefix, pending), pendingAction: "send", recipients, reviewer: false, already: true, next: SEND_NEXT };
   }
   const staleIssue = quote.pending_action === "send" ? quote.approval_issue_id ?? "" : "";
-  const route = await sendApprovalRoute(ctx, companyId, settings);
   const name = customerName(quote);
   const amount = formatMoneyMinor(Number(quote.total_minor), quote.currency);
   const link = billingPath(prefix, { tab: "quotes", client: clientParam(quote) });
@@ -231,14 +232,16 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
       : "There is no email address for this customer, so mark this issue done after you have sent it yourself.",
     "Cancel this issue to keep it as it is.",
   ];
-  const issue = await createWorkIssue(ctx, {
+  const route = await openBillingApproval(ctx, settings, {
     companyId,
     title: sendApprovalTitle("quote", name, amount),
-    description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`quote ${quote.number} before it is emailed`, recipients.length > 0, route.approver)}` : lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
+    description: lines.join("\n"),
     originId: `${APPROVAL_ORIGINS.quoteSend}${quote.id}`,
-    ...route.assignee,
+    outward: true,
+    actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
+    brief: (approver) => sendReviewBrief(`quote ${quote.number} before it is emailed`, recipients.length > 0, approver),
   });
+  const issue = { id: route.id };
   const claim = await ctx.db.execute(
     `UPDATE ${table(ctx, "quotes")} SET approval_issue_id = $2, pending_action = 'send', updated_at = now()
       WHERE id = $1 AND status IN ('draft', 'sent') AND COALESCE(delivery_status, '') <> 'queued' AND (pending_action IS NULL OR approval_issue_id = $3)`,
@@ -249,7 +252,7 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
     throw new BillingError(`Quote ${quote.number} changed while asking. Check it with quote-detail; a send approval may already be open.`);
   }
   const ref = await issueRef(ctx, companyId, issue.id);
-  return { quoteId: quote.id, number: quote.number, issueId: issue.id, issue: issuePath(prefix, ref), pendingAction: "send", recipients, reviewer: Boolean(route.reviewer), already: false, next: SEND_NEXT };
+  return { quoteId: quote.id, number: quote.number, issueId: issue.id, issue: issuePath(prefix, ref), pendingAction: "send", recipients, reviewer: route.reviewer, already: false, next: SEND_NEXT };
 }
 
 /** A person asks another person to confirm an invoice was paid in full (the 0.2 payment approval). */
@@ -261,13 +264,13 @@ export async function requestPayApproval(ctx: PluginContext, context: PluginPerf
   if (!balance || balance.outstandingMinor <= 0 || invoice.status === "draft") throw new BillingError("This invoice cannot be marked paid");
   const { settings } = await loadBilling(ctx, companyId);
   const money = formatMoneyMinor(balance.outstandingMinor, invoice.currency);
-  const issue = await createWorkIssue(ctx, {
+  const issue = await openBillingApproval(ctx, settings, {
     companyId,
     title: `Approve payment of ${invoice.number} (${customerName(invoice)}, ${money})`,
     description: `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`,
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: `${APPROVAL_ORIGINS.invoicePay}${invoice.id}`,
-    ...(await personAssignee(ctx, companyId, settings)),
+    outward: false,
+    actorUserId: context.actor.userId ?? null,
   });
   const claim = await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")} SET approval_issue_id = $2, pending_action = 'pay', updated_at = now()
@@ -346,13 +349,12 @@ export async function requestPaymentDecision(ctx: PluginContext, context: Plugin
     "",
     `Invoice: ${billingPath(prefix, { tab: "invoices", client: clientParam(invoice) })}`,
   ];
-  const issue = await createWorkIssue(ctx, {
+  const issue = await openBillingApproval(ctx, settings, {
     companyId,
     title: `Record payment of ${money} on ${invoice.number} (${name})?`,
     description: lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: `${APPROVAL_ORIGINS.recordPayment}${invoice.id}`,
-    ...(await personAssignee(ctx, companyId, settings)),
+    outward: false,
   });
   await recordDecisionIssue(ctx, {
     issueId: issue.id,
@@ -389,13 +391,12 @@ export async function requestCreditDecision(ctx: PluginContext, context: PluginP
     "",
     `Invoice: ${billingPath(prefix, { tab: "invoices", client: clientParam(invoice) })}`,
   ];
-  const issue = await createWorkIssue(ctx, {
+  const issue = await openBillingApproval(ctx, settings, {
     companyId,
     title: `Issue credit note of ${money} on ${invoice.number} (${customerName(invoice)})?`,
     description: lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: `${APPROVAL_ORIGINS.creditNote}${invoice.id}`,
-    ...(await personAssignee(ctx, companyId, settings)),
+    outward: false,
   });
   await recordDecisionIssue(ctx, {
     issueId: issue.id,
@@ -491,7 +492,6 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
   if (recipients.length === 0) throw new BillingError(`There is no email address for ${name}. Add their billing email in the CRM first.`);
   const stage = stages[pick.stage]!;
   const vars = reminderVars(balance, days, settings);
-  const route = await sendApprovalRoute(ctx, companyId, settings);
   const lines = [
     `${who(context)} asks to email payment reminder ${pick.stage + 1} of ${stages.length} for invoice ${invoice.number} (${name}, ${clientParam(invoice)}): ${formatMoneyMinor(balance.outstandingMinor, invoice.currency)} outstanding, ${days} day(s) overdue.`,
     "",
@@ -503,14 +503,16 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
     "Mark this issue done to send it from the Mailbox (with the invoice PDF and EFT details). Cancel this issue to send nothing.",
     `Invoice: ${billingPath(prefix, { tab: "invoices", client: clientParam(invoice) })}`,
   ];
-  const issue = await createWorkIssue(ctx, {
+  const route = await openBillingApproval(ctx, settings, {
     companyId,
     title: `Approve payment reminder ${pick.stage + 1} for ${invoice.number} (${name}, ${formatMoneyMinor(balance.outstandingMinor, invoice.currency)})`,
-    description: route.reviewer ? `${lines.join("\n")}\n${sendReviewBrief(`payment reminder ${pick.stage + 1} for invoice ${invoice.number} before it is emailed`, true, route.approver)}` : lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
+    description: lines.join("\n"),
     originId: `${APPROVAL_ORIGINS.reminder}${invoice.id}`,
-    ...route.assignee,
+    outward: true,
+    actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
+    brief: (approver) => sendReviewBrief(`payment reminder ${pick.stage + 1} for invoice ${invoice.number} before it is emailed`, true, approver),
   });
+  const issue = { id: route.id };
   await recordDecisionIssue(ctx, {
     issueId: issue.id,
     companyId,
@@ -519,7 +521,7 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
     subjectId: invoice.id,
     payload: { invoiceId: invoice.id, number: invoice.number, stage: pick.stage, requestedBy: actorLabel(context) },
   });
-  return decisionResult(prefix, await issueRef(ctx, companyId, issue.id), { already: false, invoiceId: invoice.id, number: invoice.number, stage: pick.stage + 1, recipients, reviewer: Boolean(route.reviewer), next });
+  return decisionResult(prefix, await issueRef(ctx, companyId, issue.id), { already: false, invoiceId: invoice.id, number: invoice.number, stage: pick.stage + 1, recipients, reviewer: route.reviewer, next });
 }
 
 // ── Applying a person's decision ───────────────────────────────────────────
@@ -600,6 +602,7 @@ export async function applyDecision(ctx: PluginContext, decision: DecisionRow, d
       settings,
       r2,
       createdBy: actor,
+      resolver,
     });
     if (outcome.status === "queued") return `Reminder ${Number(payload.stage ?? 0) + 1} for ${balance.invoice.number} is queued in the Mailbox.`;
     if (outcome.status === "already") return `Reminder ${Number(payload.stage ?? 0) + 1} for ${balance.invoice.number} was already sent; nothing more was sent.`;
@@ -632,7 +635,11 @@ export async function openDecisionList(ctx: PluginContext, companyId: string): P
         ? `Issue credit note of ${money} on ${number}`
         : row.kind === "reminder"
           ? `Send payment reminder ${Number(p.stage ?? 0) + 1} for ${number}`
-          : row.kind === "pop"
+          : row.kind === "gateway"
+            ? `Check an online payment on ${number}`
+            : row.kind === "refund"
+              ? `Decide what ${number} does after its refund`
+              : row.kind === "pop"
             ? "Check a proof of payment"
             : row.kind === "bank_match"
               ? "Check a bank match"

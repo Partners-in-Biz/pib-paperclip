@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { formatMoneyMinor } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, type SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2, type BillingSettings, type DunningStage, type PrivateR2 } from "./config.js";
 import { asObject, table } from "./db.js";
@@ -17,6 +17,7 @@ import { docFileName, renderDocument } from "./documents.js";
 import { dayText, daysPastDue } from "./domain.js";
 import { invoiceView, recipientsFor } from "./invoices.js";
 import { parseAddresses, queueMail, reminderEmail } from "./mail.js";
+import { ensurePaymentLinks } from "./pay/links.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
 
 export const DUNNABLE = new Set(["sent", "viewed", "overdue", "partially_paid"]);
@@ -156,7 +157,7 @@ export interface ReminderOutcome {
  */
 export async function queueReminderStage(
   ctx: PluginContext,
-  input: { companyId: string; balance: InvoiceBalance; stageIndex: number; daysOverdue: number; settings: BillingSettings; r2: PrivateR2 | null; createdBy: string },
+  input: { companyId: string; balance: InvoiceBalance; stageIndex: number; daysOverdue: number; settings: BillingSettings; r2: PrivateR2 | null; createdBy: string; resolver?: SecretResolver },
 ): Promise<ReminderOutcome> {
   const stages = dunningStages(input.settings);
   const stage = stages[input.stageIndex];
@@ -171,7 +172,9 @@ export async function queueReminderStage(
     }
     const vars = reminderVars(input.balance, input.daysOverdue, input.settings);
     const payment = asObject(asObject(input.balance.invoice.sender_snapshot).payment ?? input.settings.payment ?? {});
-    const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, input.balance.invoice.number);
+    // An online payment link goes in the reminder too, when a provider is on (for what is owed now).
+    const links = (await ensurePaymentLinks(ctx, input.balance.invoice, input.settings, { createdBy: input.createdBy, ...(input.resolver ? { resolver: input.resolver } : {}) })).links;
+    const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, input.balance.invoice.number, links);
     let attachments: Array<{ url: string; filename: string; mime: string; bytes: number }> = [];
     if (input.r2) {
       const view = await invoiceView(ctx, input.balance.invoice, input.settings);
@@ -217,7 +220,8 @@ export async function runDunningFor(ctx: PluginContext, companyId: string, force
   for (const plan of plans) {
     const balance = byId.get(plan.invoiceId);
     if (!balance) continue;
-    const outcome = await queueReminderStage(ctx, { companyId, balance, stageIndex: plan.stage, daysOverdue: plan.daysOverdue, settings, r2, createdBy: "dunning" });
+    // One resolver for the whole run: every reminder reuses the Stripe key it resolved once (the host allows 30 secret resolves a minute per company).
+    const outcome = await queueReminderStage(ctx, { companyId, balance, stageIndex: plan.stage, daysOverdue: plan.daysOverdue, settings, r2, createdBy: "dunning", resolver });
     if (outcome.status === "queued") sent += 1;
     else if (outcome.status === "skipped") skipped += 1;
   }

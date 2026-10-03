@@ -30,6 +30,10 @@ export const APPROVAL_ORIGINS = {
   paymentCheck: "billing:payment-check:",
   bankMatch: "billing:bank-match:",
   billApproval: "billing:bill-approval:",
+  /** Money a provider confirmed that Billing will not settle by itself: `billing:gateway:<provider>:<event id>`. */
+  gatewayPayment: "billing:gateway:",
+  /** A refund through a provider was recorded: `billing:refund:<refund id>`. */
+  refund: "billing:refund:",
 } as const;
 
 /** The id after a prefix, or null when the origin id has another prefix. */

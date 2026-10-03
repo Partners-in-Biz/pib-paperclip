@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE, TAX_CODES } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE, SKILL_SYNC_JOB, TAX_CODES } from "@partnersinbiz/pib-plugin-kit";
 import { DEFAULT_DUNNING_STAGES, DEFAULT_EXPENSE_CATEGORIES, RECEIPT_MODEL_DEFAULT } from "./config.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
@@ -121,6 +121,52 @@ const instanceConfigSchema: JsonSchema = {
         enabled: { type: "boolean", title: "Post to Accounting", default: true, description: "Every invoice, payment, credit note, bill and expense is sent to the Accounting plugin as a journal." },
       },
     },
+    payments: {
+      type: "object",
+      title: "Card and online payments (optional)",
+      description:
+        "EFT stays the default way to pay. Each provider below is OFF until you switch it on, and it works only when everything it needs is saved. Setup walks you through each step and checks them. When a provider is on, sent invoices and reminders carry a pay-online link, and a payment is recorded only when the provider's signed notification arrives.",
+      properties: {
+        publicBaseUrl: text("Public address of Paperclip", "For example https://paperclip.partnersinbiz.online (https only). The webhook addresses you give the provider are built from it."),
+        clearingAccountCode: { type: "string", title: "Chart account for provider money", default: "1020", description: "Provider money sits here until the provider pays it out to the bank. Accounting 0.4 adds account 1020 for it. Categorise each payout bank line to this account." },
+        stripe: {
+          type: "object",
+          title: "Stripe (card payments)",
+          properties: {
+            enabled: { type: "boolean", title: "Accept card payments through Stripe", default: false },
+            secretKey: secretField("Secret key (sk_live_... or sk_test_...)", "Stored as a Paperclip secret. Creates the payment links."),
+            webhookSecret: secretField("Webhook signing secret (whsec_...)", "Stored as a Paperclip secret. Verifies Stripe's notifications."),
+          },
+        },
+        payfast: {
+          type: "object",
+          title: "PayFast (South Africa)",
+          description: "PayFast sends its payment notifications as web forms, which this Paperclip version cannot receive yet (the Setup item explains and says what to decide). Until it can, switching PayFast on has no effect.",
+          properties: {
+            enabled: { type: "boolean", title: "Accept payments through PayFast", default: false },
+            sandbox: { type: "boolean", title: "Use the PayFast sandbox (test mode)", default: false },
+            merchantId: text("Merchant ID"),
+            merchantKey: secretField("Merchant key", "Stored as a Paperclip secret."),
+            passphrase: secretField("Passphrase", "The one set in PayFast's integration settings. Stored as a Paperclip secret. Leave empty when you set none there."),
+            returnUrl: text("Thank-you page address (optional)", "Where PayFast sends the customer after paying."),
+            cancelUrl: text("Cancel page address (optional)"),
+          },
+        },
+        mock: {
+          type: "object",
+          title: "Test provider (acceptance runs only)",
+          description: "Makes pretend payment links that charge nothing, so the canary client can rehearse the whole money-in path. Leave off.",
+          properties: { enabled: { type: "boolean", title: "Test provider", default: false } },
+        },
+      },
+    },
+    privacy: {
+      type: "object",
+      title: "Personal data (POPIA)",
+      properties: {
+        retentionYears: { type: "integer", title: "Years invoices are kept", default: 7, minimum: 5, maximum: 15, description: "How long the law makes you keep issued invoices (Companies Act s24: 7 years; tax law: 5). After an erasure request, the name and address on a person's invoices are removed when this period ends." },
+      },
+    },
     dunning: {
       type: "object",
       title: "Payment reminders",
@@ -149,7 +195,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.5.3",
+  version: "0.6.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -174,6 +220,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.write",
     "secrets.read-ref",
     "http.outbound",
+    // 0.6: the provider webhooks (POST /api/plugins/partnersinbiz.billing/webhooks/stripe and /payfast). A new capability: a stop-first deploy.
+    "webhooks.receive",
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
@@ -181,6 +229,18 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
   tools: BILLING_TOOLS,
+  webhooks: [
+    {
+      endpointKey: "stripe",
+      displayName: "Stripe payment notifications",
+      description: "POST /api/plugins/partnersinbiz.billing/webhooks/stripe: Stripe's signed events (checkout.session.completed, async_payment_succeeded, async_payment_failed, charge.refunded). A delivery that fails its signature check records nothing.",
+    },
+    {
+      endpointKey: "payfast",
+      displayName: "PayFast payment notifications (ITN)",
+      description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Needs the host to pass form-encoded bodies (see the Setup item).",
+    },
+  ],
   jobs: [
     {
       jobKey: "mark-overdue",
@@ -236,6 +296,13 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Every Monday: one \"Overdue invoices\" issue for the Account Manager with the next step for each overdue invoice.",
       schedule: "45 4 * * 1",
     },
+    {
+      jobKey: "privacy-retention",
+      displayName: "Finish erasures when the retention period ends",
+      description: "Nightly: after an approved erasure, the name and address Billing had to keep on the person's invoices are replaced once the period the law requires has passed.",
+      schedule: "20 2 * * *",
+    },
+    { ...SKILL_SYNC_JOB },
     {
       jobKey: "post-missing-journals",
       displayName: "Post journals missed while Accounting was off",

@@ -8,14 +8,14 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue, formatMoneyMinor, PIB_PLUGINS, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, PIB_PLUGINS, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, invoiceBalances, refreshInvoiceStatus, type InvoiceBalance } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { asObject, table } from "./db.js";
 import { BillingError, isOpenStatus } from "./domain.js";
 import { emitInvoiceItem } from "./openitems.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
-import { personAssignee } from "./routing.js";
+import { openBillingApproval } from "./approvals.js";
 import { settle, type SettleResult } from "./settle.js";
 
 export type MatchBasis = "thread" | "number" | "sender" | "upload" | "agent" | "none";
@@ -233,14 +233,13 @@ async function openPopIssue(ctx: PluginContext, pop: NewPop & { id: string }, ba
     "",
     "Billing never records a payment from a proof or a message alone.",
   ].filter((line) => line !== "");
-  const issue = await createWorkIssue(ctx, {
+  // Money: a person checks it (the Billing approver, else the owner).
+  const issue = await openBillingApproval(ctx, settings, {
     companyId: pop.companyId,
     title,
     description: lines.join("\n"),
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: `${APPROVAL_ORIGINS.paymentCheck}${pop.id}`,
-    // Money: a person checks it (the Billing approver, else the owner).
-    ...(await personAssignee(ctx, pop.companyId, settings)),
+    outward: false,
   });
   await ctx.db.execute(`UPDATE ${table(ctx, "pops")} SET issue_id = $2 WHERE id = $1`, [pop.id, issue.id]);
   await recordDecisionIssue(ctx, { issueId: issue.id, companyId: pop.companyId, kind: "pop", subjectKind: "pop", subjectId: pop.id, payload: { invoiceId: pop.invoiceId } });

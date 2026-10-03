@@ -41,6 +41,8 @@ export interface DocView {
   creditedMinor?: number;
   outstandingMinor?: number;
   payment?: Record<string, unknown> | null;
+  /** Where to pay online, one per enabled provider (none when no provider is on: EFT stays the default). */
+  paymentLinks?: Array<{ provider: string; label: string; url: string }>;
   notes?: string | null;
   /** Credit note: the invoice it credits. */
   againstNumber?: string | null;
@@ -140,6 +142,11 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
   }
   const sections: NonNullable<PdfDocumentSpec["sections"]> = [];
   if (view.kind === "invoice") {
+    // Online payment, only when a provider is on and the invoice still owes money. A long address is not worth wrapping over five lines of a PDF: the email carries the link.
+    const online = view.status === "paid" || view.status === "cancelled" ? [] : (view.paymentLinks ?? []);
+    if (online.length) {
+      sections.push({ heading: "Pay online", lines: online.map((link) => (link.url.length <= 160 ? `${link.label}: ${link.url}` : `${link.label}: use the link in the email this invoice came with.`)) });
+    }
     const pay = paymentLines(view.payment, view.number);
     if (pay.length) {
       sections.push({ heading: "Payment details (EFT)", lines: pay });

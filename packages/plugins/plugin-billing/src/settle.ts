@@ -23,7 +23,8 @@ import { assertPaymentAmount, BillingError, isOpenStatus } from "./domain.js";
 import { emitBillItem, emitInvoiceItem } from "./openitems.js";
 import { postBillPayment, postCreditNote, postPayment, postWriteOff, repostPaymentOnBank, type BillForPosting } from "./posting.js";
 
-export type SettleSource = "manual" | "pop" | "bank" | "approval";
+/** `gateway`: a payment provider (Stripe, PayFast) confirmed the money with a signed webhook. */
+export type SettleSource = "manual" | "pop" | "bank" | "approval" | "gateway";
 
 export interface SettleInput {
   companyId: string;

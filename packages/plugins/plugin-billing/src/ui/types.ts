@@ -175,6 +175,57 @@ export interface Delivery {
   createdAt: string | null;
 }
 
+/** One online payment link (Stripe, PayFast, the test provider). The address is present only while it can be paid. */
+export interface PaymentLink {
+  id: string;
+  invoiceId: string;
+  provider: string;
+  label: string;
+  status: "active" | "paid" | "cancelled" | "needs_attention" | "failed";
+  amountMinor: number;
+  currency: string;
+  url: string | null;
+  paidAt: string | null;
+  feeMinor: number | null;
+  refundedMinor: number;
+  lastError: string | null;
+  createdAt: string | null;
+}
+
+export interface Refund {
+  id: string;
+  provider: string;
+  amountMinor: number;
+  reason: string | null;
+  source: string;
+  createdAt: string | null;
+}
+
+export interface ProviderInfo {
+  key: string;
+  label: string;
+  enabled: boolean;
+  blocker: string | null;
+  webhookUrl: string | null;
+  switchedOn?: boolean;
+}
+
+export interface PaymentEvent {
+  key: string;
+  provider: string;
+  kind: string;
+  result: "applied" | "ignored" | "needs_attention" | "failed";
+  detail: string | null;
+  at: string | null;
+}
+
+/** `billing.payments`: providers, links that need a person, and the last deliveries the providers made. */
+export interface PaymentsStatus {
+  providers: ProviderInfo[];
+  attention: PaymentLink[];
+  events: PaymentEvent[];
+}
+
 export interface InvoiceDetail {
   invoice: Invoice;
   readOnly: boolean;
@@ -190,6 +241,8 @@ export interface InvoiceDetail {
   recipients: Address[];
   customerCredit: CreditSource[];
   ledgerKey: string;
+  paymentLinks?: PaymentLink[];
+  refunds?: Refund[];
 }
 
 export interface QuoteDetail {
@@ -362,6 +415,8 @@ export interface TeamStatus {
 }
 
 export interface Snapshot {
+  /** Online payments: which providers are on and, for those that are not, why. EFT stays the default. */
+  payments?: { providers: ProviderInfo[] };
   /** The day every money figure is for (`YYYY-MM-DD`): nothing dated later counts. */
   asOf?: string;
   futurePayments?: FuturePayment[];

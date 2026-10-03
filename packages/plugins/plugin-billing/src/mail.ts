@@ -113,6 +113,19 @@ function greeting(customer: Record<string, unknown>): string {
   return `Hi ${name.split(/\s+/)[0]},`;
 }
 
+export type OnlineLink = { provider: string; label: string; url: string };
+
+/** "Pay online" block for an email: a link per enabled provider. Empty when no provider is on. */
+function payOnline(links: OnlineLink[] | undefined, amount: string): { html: string; text: string } {
+  const usable = (links ?? []).filter((link) => /^https:\/\//.test(link.url));
+  if (!usable.length) return { html: "", text: "" };
+  const html = usable
+    .map((link) => `<p style="margin:14px 0 6px"><a href="${esc(link.url)}" style="display:inline-block;padding:10px 18px;background:#1a1a1a;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600">Pay ${esc(amount)} online (${esc(link.label)})</a></p>`)
+    .join("");
+  const text = usable.map((link) => `Pay ${amount} online (${link.label}): ${link.url}`).join("\n");
+  return { html, text };
+}
+
 export interface EmailContent {
   subject: string;
   html: string;
@@ -128,11 +141,14 @@ export function invoiceEmail(view: DocView, options: { hasAttachment: boolean; s
   const amount = formatMoneyMinor(view.outstandingMinor ?? view.totalMinor, view.currency);
   const due = day(view.dueAt);
   const intro = `${greeting(view.customer)}\n\n${options.hasAttachment ? "Please find" : "Here is"} invoice ${view.number} for ${amount}${due ? `, due on ${due}` : ""}.${options.hasAttachment ? " The PDF is attached." : ""}`;
-  const how = `Please pay by EFT and use ${view.number} as the payment reference. When you have paid, reply to this email with your proof of payment.`;
+  const online = payOnline(view.paymentLinks, amount);
+  const how = online.text
+    ? `You can pay online with the link below, or by EFT: use ${view.number} as the payment reference and, when you have paid by EFT, reply to this email with your proof of payment.`
+    : `Please pay by EFT and use ${view.number} as the payment reference. When you have paid, reply to this email with your proof of payment.`;
   const eft = eftTable(view.payment, view.number);
   const lines = options.hasAttachment ? "" : view.lines.map((l) => `- ${l.description}: ${formatMoneyMinor(view.pricesIncludeVat ? l.grossMinor : l.netMinor, view.currency)}`).join("\n");
-  const textBody = [intro, lines, how, eft.text, view.notes ?? "", signOff(view.sender, options.signature)].filter(Boolean).join("\n\n");
-  const html = wrap(`${paragraphs(intro)}${lines ? paragraphs(lines) : ""}${paragraphs(how)}${eft.html}${view.notes ? `<div style="margin-top:16px">${paragraphs(view.notes)}</div>` : ""}<div style="margin-top:18px">${paragraphs(signOff(view.sender, options.signature))}</div>`);
+  const textBody = [intro, lines, how, online.text, eft.text, view.notes ?? "", signOff(view.sender, options.signature)].filter(Boolean).join("\n\n");
+  const html = wrap(`${paragraphs(intro)}${lines ? paragraphs(lines) : ""}${paragraphs(how)}${online.html}${eft.html}${view.notes ? `<div style="margin-top:16px">${paragraphs(view.notes)}</div>` : ""}<div style="margin-top:18px">${paragraphs(signOff(view.sender, options.signature))}</div>`);
   return { subject: `Invoice ${view.number} from ${String(view.sender.name ?? "Partners in Biz")}`, html, text: textBody };
 }
 
@@ -163,11 +179,12 @@ export function statementEmail(input: { customer: Record<string, unknown>; sende
   };
 }
 
-export function reminderEmail(stage: { subject: string; body: string }, vars: Record<string, string>, payment: Record<string, unknown> | null | undefined, reference: string): EmailContent {
+export function reminderEmail(stage: { subject: string; body: string }, vars: Record<string, string>, payment: Record<string, unknown> | null | undefined, reference: string, paymentLinks?: OnlineLink[]): EmailContent {
   const subject = renderTemplate(stage.subject, vars);
   const body = renderTemplate(stage.body, vars);
   const eft = eftTable(payment, reference);
-  return { subject, html: wrap(`${paragraphs(body)}${eft.html}`), text: [body, eft.text].filter(Boolean).join("\n\n") };
+  const online = payOnline(paymentLinks, vars.amount ?? "the amount due");
+  return { subject, html: wrap(`${paragraphs(body)}${online.html}${eft.html}`), text: [body, online.text, eft.text].filter(Boolean).join("\n\n") };
 }
 
 export interface QueueMailInput {

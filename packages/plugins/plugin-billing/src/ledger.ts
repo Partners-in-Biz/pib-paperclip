@@ -153,6 +153,46 @@ export function paymentJournal(input: PaymentInput): LedgerPostRequested {
 }
 
 /**
+ * The provider's fee on a card or online payment: Dr bank charges / Cr the clearing account (money held at the provider).
+ * Posted gross; the fee is on the provider's own tax invoice, which the bookkeeper uses for the input VAT.
+ */
+export function gatewayFeeJournal(input: { paymentId: string; invoiceNumber: string; date: unknown; currency: string; fxRate?: number | null; feeMinor: number; clearingAccountCode: string; provider: string }): LedgerPostRequested {
+  const memo = `${input.provider} fee on ${input.invoiceNumber}`;
+  return request({
+    key: `billing:payment:${input.paymentId}:fee`,
+    kind: "payment",
+    id: input.paymentId,
+    date: ymd(input.date),
+    memo,
+    currency: input.currency,
+    fxRate: input.fxRate ?? null,
+    lines: [
+      line("expense:bank_charges", input.feeMinor, 0, { memo }),
+      line("bank", 0, input.feeMinor, { memo, accountCode: input.clearingAccountCode }),
+    ],
+  });
+}
+
+/** Money refunded to the customer through the provider: Dr AR (the invoice owes it again) / Cr the clearing account. */
+export function refundJournal(input: { id: string; invoiceNumber: string; date: unknown; currency: string; fxRate?: number | null; amountMinor: number; customerKind: string; customerRef: string; clearingAccountCode: string; provider: string; reason?: string | null }): LedgerPostRequested {
+  const client = clientOf(input.customerKind, input.customerRef);
+  const memo = `Refund on ${input.invoiceNumber} via ${input.provider}${input.reason ? `: ${input.reason}` : ""}`.slice(0, 300);
+  return request({
+    key: `billing:refund:${input.id}`,
+    kind: "refund",
+    id: input.id,
+    date: ymd(input.date),
+    memo,
+    currency: input.currency,
+    fxRate: input.fxRate ?? null,
+    lines: [
+      line("ar", input.amountMinor, 0, { ...client, memo }),
+      line("bank", 0, input.amountMinor, { memo, accountCode: input.clearingAccountCode }),
+    ],
+  });
+}
+
+/**
  * Realised FX on a foreign-currency receipt, in the book currency. AR was
  * raised at the issue rate; the payment cleared it at the payment rate, so
  * the difference goes to FX gain or loss. Null when there is none.

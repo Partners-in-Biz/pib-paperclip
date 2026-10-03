@@ -665,7 +665,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     const failed = (await h.tools.get("record-payment")!({ invoiceId: "nope", amountMinor: 1 }, run)) as { data: unknown; error: string };
     expect(failed.data).toEqual({ ok: false, error: "Invoice was not found" });
     const listed = (await h.tools.get("list-open-invoices")!({}, run)) as { data: { items: unknown[]; count: number } };
-    expect(listed.data).toEqual({ items: [], count: 0 });
+    expect(listed.data).toEqual({ mode: "compact", total: 0, count: 0, offset: 0, items: [] });
     const created = (await h.tools.get("create-invoice")!({ currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen", customerName: "Lumen Digital" }, run)) as { data: { id: string; number: string } };
     expect(created.data.number).toBe("LUM-001");
     const line = (await h.tools.get("add-line")!({ invoiceId: created.data.id, description: "Work", quantity: 1, unitAmountMinor: 1_000 }, run)) as { data: { totalMinor: number } };

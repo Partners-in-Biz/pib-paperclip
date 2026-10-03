@@ -19,6 +19,7 @@ import {
 import { billingSettings, emailEnabled, ledgerEnabled, r2Configured, vatRegistered } from "./config.js";
 import { asObject, table } from "./db.js";
 import manifest from "./manifest.js";
+import { paymentSetupItems } from "./pay/setup-items.js";
 import { PLUGIN_ID } from "./namespace.js";
 
 export const SETTINGS_FALLBACK_HREF = "/company/settings/instance/plugins";
@@ -214,6 +215,13 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
       agentNext: "Every invoice, payment, bill and expense lands in the books as a journal.",
     };
   }));
+
+  // Online payments: one optional item per provider, with the owner's one-time steps (EFT stays the default).
+  try {
+    items.push(...(await paymentSetupItems(ctx, companyId, settings, settingsHref)));
+  } catch (error) {
+    items.push({ key: "pay_stripe", title: "Online payments", required: false, status: "unknown", detail: `Could not check this: ${error instanceof Error ? error.message : String(error)}` });
+  }
 
   items.push(await probe("reminders", "Payment reminders", false, async () => {
     const on = settings.dunning?.enabled === true;

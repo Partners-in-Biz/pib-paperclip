@@ -425,7 +425,10 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
   it("keeps agent tool results compact and actionable", async () => {
     const invoice = await draft();
     const detail = (await tool("invoice-detail", { invoiceId: invoice.id })).data;
-    expect(detail.invoice).toMatchObject({ id: invoice.id, number: "LUM-001", status: "draft", createdAt: expect.any(String) });
+    expect(detail).toMatchObject({ mode: "compact", invoice: { id: invoice.id, number: "LUM-001", status: "draft" } });
+    // Everything stays reachable by id: the full detail is one parameter away.
+    const full = (await tool("invoice-detail", { invoiceId: invoice.id, compact: false })).data;
+    expect(full.invoice).toMatchObject({ id: invoice.id, number: "LUM-001", status: "draft", createdAt: expect.any(String) });
     const created = await tool("create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-unknown" });
     expect(created.data.error).toBe("customerName is required (the customer is not in the CRM client list yet)");
     const named = await tool("create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-unknown", customerName: "New Client" });

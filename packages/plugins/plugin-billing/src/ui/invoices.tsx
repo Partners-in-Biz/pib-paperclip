@@ -33,7 +33,7 @@ import {
   type ManualCustomer,
 } from "./parts.js";
 import { OPEN_STATUSES, isOverdue } from "./series.js";
-import type { Invoice, InvoiceDetail } from "./types.js";
+import type { Invoice, InvoiceDetail, PaymentLink } from "./types.js";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -242,7 +242,7 @@ function emailTimeline(detail: InvoiceDetail): TimelineItem[] {
   return items.sort((a, b) => Date.parse(String(b.at ?? 0)) - Date.parse(String(a.at ?? 0)));
 }
 
-type Dialog = null | "pay" | "credit" | "pop" | "writeoff" | "cancel" | "apply" | "send";
+type Dialog = null | "pay" | "credit" | "pop" | "writeoff" | "cancel" | "apply" | "send" | "refund";
 
 export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClose: () => void }) {
   const { call, snapshot, run, say } = useBilling();
@@ -257,6 +257,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
   const [reason, setReason] = useState("");
   const [sendTo, setSendTo] = useState("");
   const [credit, setCredit] = useState("");
+  const [refundLink, setRefundLink] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function reload() {
@@ -432,6 +433,8 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         </Card>
       ) : null}
 
+      <OnlinePayment detail={detail} cur={cur} busy={busy} act={act} onRefund={(linkId) => { setRefundLink(linkId); setAmount(""); setReason(""); setDialog("refund"); }} />
+
       {detail.creditNotes.length > 0 ? (
         <Card title="Credit notes">
           {detail.creditNotes.map((n) => (
@@ -503,6 +506,14 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         </Field>
       </Modal>
 
+      <Modal open={dialog === "refund"} title="Record a refund" description="Money you paid back to the customer through the provider (Stripe's own refunds are recorded by themselves). The payment is reversed, the invoice owes it again and the books are updated." onClose={() => setDialog(null)} footer={<>
+        <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
+        <Button type="button" disabled={busy || !toMinor(amount)} onClick={() => void act(() => call("billing.record-refund", { invoiceId: inv.id, provider: (detail.paymentLinks ?? []).find((l) => l.id === refundLink)?.provider, amountMinor: toMinor(amount), reason }), "Refund recorded")}>Record refund</Button>
+      </>}>
+        <Field label={`Amount refunded (${cur})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+        <Field label="Reason"><Input value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+      </Modal>
+
       <Modal open={dialog === "writeoff"} title={`Write off ${money(inv.outstandingMinor, cur)}?`} description="Books what is still owed as a bad debt. Do this only when the customer will not pay." onClose={() => setDialog(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
         <Button type="button" disabled={busy} onClick={() => void act(() => call("billing.write-off", { invoiceId: inv.id, reason }), "Written off")}>Write off</Button>
@@ -517,6 +528,51 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
         <Field label="Reason"><Input value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       </Modal>
     </Drawer>
+  );
+}
+
+const LINK_TONE: Record<PaymentLink["status"], "ok" | "info" | "warn" | "bad" | "neutral"> = { active: "info", paid: "ok", cancelled: "neutral", needs_attention: "warn", failed: "bad" };
+const LINK_LABEL: Record<PaymentLink["status"], string> = { active: "Waiting to be paid", paid: "Paid", cancelled: "Withdrawn", needs_attention: "Needs a person", failed: "Could not be made" };
+
+/** Online payment: the links, what was paid and refunded through them, and what a person can do. Nothing here moves money by itself. */
+function OnlinePayment({ detail, cur, busy, act, onRefund }: { detail: InvoiceDetail; cur: string; busy: boolean; act: (work: () => Promise<unknown>, success: string) => Promise<boolean>; onRefund: (linkId: string) => void }) {
+  const { call, snapshot, say } = useBilling();
+  const links = detail.paymentLinks ?? [];
+  const providers = snapshot.payments?.providers ?? [];
+  const on = providers.filter((p) => p.enabled && p.key !== "mock");
+  const inv = detail.invoice;
+  const open = OPEN.has(inv.status);
+  const refunds = detail.refunds ?? [];
+  if (links.length === 0 && on.length === 0 && refunds.length === 0) return null;
+  const copy = (url: string) => void navigator.clipboard?.writeText(url).then(() => say("Link copied")).catch(() => say(url));
+  return (
+    <Card title="Online payment" subtitle="A pay-online link goes in the invoice and reminder emails while a provider is on. The invoice is paid only when the provider confirms the money; EFT stays the default.">
+      {links.length === 0 ? <Muted>No payment link yet. One is made when the invoice is sent{open ? ", or make one now." : "."}</Muted> : null}
+      {links.map((link) => (
+        <Row key={link.id} style={{ justifyContent: "space-between", fontSize: 13, gap: 8 }}>
+          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+            <strong>{link.label}</strong> · {money(link.amountMinor, link.currency)} · <Pill tone={LINK_TONE[link.status]} dot size="sm">{LINK_LABEL[link.status]}</Pill>
+            {link.refundedMinor > 0 ? ` · ${money(link.refundedMinor, link.currency)} refunded` : ""}
+            {link.feeMinor ? ` · fee ${money(link.feeMinor, link.currency)}` : link.status === "paid" && link.provider === "stripe" ? " · Stripe's fee is not in its notification: the Bookkeeper books it from the payout" : ""}
+            {link.lastError ? <span style={{ color: tone("warn").fg }}> · {link.lastError}</span> : null}
+          </span>
+          <Row style={{ gap: 4 }}>
+            {link.url ? <SmallButton onClick={() => copy(link.url!)}>Copy link</SmallButton> : null}
+            {link.status === "active" ? <SmallButton disabled={busy} onClick={() => void act(() => call("billing.cancel-payment-link", { linkId: link.id }), "Payment link withdrawn")}>Withdraw</SmallButton> : null}
+            {link.status === "paid" && link.amountMinor > link.refundedMinor ? <SmallButton disabled={busy} onClick={() => onRefund(link.id)}>Record refund</SmallButton> : null}
+          </Row>
+        </Row>
+      ))}
+      {refunds.map((r) => (
+        <Row key={r.id} style={{ justifyContent: "space-between", fontSize: 13 }}>
+          <span>{fmtDate(r.createdAt)} · Refund through {words(r.provider)}{r.reason ? ` · ${r.reason}` : ""}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>− {money(r.amountMinor, cur)}</span>
+        </Row>
+      ))}
+      {open && on.length > 0 && !links.some((l) => l.status === "active") ? (
+        <Row><SmallButton variant="primary" disabled={busy} onClick={() => void act(() => call("billing.create-payment-link", { invoiceId: inv.id }), "Payment link made")}>Make a payment link</SmallButton></Row>
+      ) : null}
+    </Card>
   );
 }
 

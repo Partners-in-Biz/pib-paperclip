@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DataTable } from "@paperclipai/plugin-sdk/ui";
-import { Button, CircleCheck, EmptyState, Field, FileText, Input, Modal, Select, Timeline, TriangleAlert, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Button, CircleCheck, EmptyState, Field, FileText, Input, Modal, Pill, Select, Timeline, TriangleAlert, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { statusTone } from "./series.js";
 import { Card, Muted, Row, SmallButton, Status, fmtDate, minorToInput, money, openBase64Pdf, openUrl, today, toMinor, useBilling, words } from "./parts.js";
-import type { Pop } from "./types.js";
+import type { PaymentsStatus, Pop } from "./types.js";
 
 const BASIS: Record<string, string> = {
   number: "invoice number",
@@ -44,6 +44,63 @@ export function CreditNotesSection({ onOpenInvoice }: { onOpenInvoice: (id: stri
           rows={notes.map((n) => ({ ...n, number: n.number ?? "—", invoice: n.invoiceNumber ?? "", amount: money(n.amountMinor, n.currency ?? "ZAR") }))}
         />
       )}
+    </Card>
+  );
+}
+
+const EVENT_TONE: Record<string, "ok" | "info" | "warn" | "bad" | "neutral"> = { applied: "ok", ignored: "neutral", needs_attention: "warn", failed: "bad" };
+const EVENT_LABEL: Record<string, string> = { applied: "Recorded", ignored: "Not about money", needs_attention: "Needs a person", failed: "Failed, the provider will retry" };
+
+/** Online payments: which providers are on (and why the others are not), what needs a person, and the last confirmations. */
+function OnlinePayments({ onOpenInvoice }: { onOpenInvoice: (id: string) => void }) {
+  const { call, snapshot, say } = useBilling();
+  const [status, setStatus] = useState<PaymentsStatus | null>(null);
+  const known = snapshot.payments?.providers ?? [];
+  useEffect(() => {
+    let live = true;
+    void call<PaymentsStatus>("billing.payments").then((r) => { if (live) setStatus(r); }).catch(() => { /* the card still shows the providers from the snapshot */ });
+    return () => { live = false; };
+  }, [snapshot]);
+  const providers = (status?.providers ?? known).filter((p) => p.key !== "mock" || p.enabled);
+  const attention = status?.attention ?? [];
+  const events = status?.events ?? [];
+  const anyOn = providers.some((p) => p.enabled);
+  if (providers.length === 0) return null;
+  const copy = (url: string) => void navigator.clipboard?.writeText(url).then(() => say("Copied")).catch(() => say(url));
+  return (
+    <Card title="Online payments" icon={attention.length ? TriangleAlert : undefined} tone={attention.length ? "warn" : undefined} strip={attention.length > 0} subtitle="Customers can pay an invoice by card or instant EFT from a link in the email. An invoice is marked paid only when the provider confirms the money. Paying by EFT stays the default.">
+      <div style={{ display: "grid", gap: 6 }}>
+        {providers.map((p) => (
+          <Row key={p.key} style={{ justifyContent: "space-between", fontSize: 13, gap: 8 }}>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              <strong>{p.label}</strong> <Pill tone={p.enabled ? "ok" : "neutral"} dot size="sm">{p.enabled ? "On" : "Off"}</Pill>
+              {p.blocker ? <span style={{ opacity: 0.8 }}> · {p.blocker}</span> : null}
+            </span>
+            {p.webhookUrl ? <SmallButton onClick={() => copy(p.webhookUrl!)}>Copy confirmation address</SmallButton> : null}
+          </Row>
+        ))}
+        {!anyOn ? <Muted>No provider is on, so invoices go out with EFT details only. Setup lists the steps for each provider.</Muted> : null}
+      </div>
+      {attention.length > 0 ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <strong style={{ fontSize: 13 }}>Needs a person</strong>
+          {attention.map((link) => (
+            <Row key={link.id} style={{ justifyContent: "space-between", fontSize: 13, gap: 8 }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{link.label} · {money(link.amountMinor, link.currency)}{link.lastError ? ` · ${link.lastError}` : ""}</span>
+              <SmallButton onClick={() => onOpenInvoice(link.invoiceId)}>Open invoice</SmallButton>
+            </Row>
+          ))}
+        </div>
+      ) : null}
+      {events.length > 0 ? (
+        <Timeline dense limit={8} items={events.map((e) => ({
+          id: e.key,
+          at: e.at,
+          title: `${words(e.provider)} · ${words(e.kind.replace(/[._]/g, " "))}`,
+          detail: `${EVENT_LABEL[e.result] ?? e.result}${e.detail ? ` · ${e.detail}` : ""}`,
+          tone: EVENT_TONE[e.result] ?? "neutral",
+        }))} />
+      ) : null}
     </Card>
   );
 }
@@ -126,6 +183,8 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
           }))} />
         </Card>
       ) : null}
+
+      <OnlinePayments onOpenInvoice={onOpenInvoice} />
 
       {scope ? <ClientMoney /> : null}
 

@@ -20,8 +20,10 @@ import {
   redeliver,
   registerCrmProjection,
   checkDoneOnUpdate,
+  registerCompanyBootstrap,
   registerModuleWatch,
   registerRoleWatch,
+  registerSkillSyncJob,
   rememberPluginUiBase,
   resolveCrmClient,
   retryOutbox,
@@ -36,6 +38,13 @@ import {
   type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
 import { backpostTotal, postMissingJournals } from "./backpost.js";
+import { cancelPaymentLinkAction, createPaymentLinkAction, paymentLinksAction, paymentsStatusAction, publicLink, recordRefundAction, simulatePaymentAction } from "./pay/actions.js";
+import { housekeepPaymentLinks } from "./pay/links.js";
+import { providerStates, webhookUrl } from "./pay/settings.js";
+import { linksForInvoice, refundsForInvoice } from "./pay/store.js";
+import { handleBillingWebhook } from "./pay/webhook.js";
+import { finishErasureHolds, registerBillingErasure } from "./privacy.js";
+import { shapeToolResult } from "./tool-results.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { asAtDate, customerCredit, invoiceBalance, invoiceBalances, iso, refreshAsAtStatuses, statusAsAtToday, type InvoiceBalance } from "./balances.js";
 import { BANK_MATCHED_EVENT } from "./bank.js";
@@ -155,6 +164,7 @@ import { createPlan, createSubscription, listRetainers, runSubscriptions, setSub
 import { teamStatus } from "./routing.js";
 import { applyCustomerCredit, settle, writeOff } from "./settle.js";
 import { billingOn, knownCompanyIds, publishAllSetupStatus, setupStatus } from "./setup.js";
+import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
@@ -210,6 +220,13 @@ const ACTIONS: Record<string, Handler> = {
   "billing.list-quotes": (ctx, context, params) => listQuotesAction(ctx, context, params),
   "billing.request-payment-check": requestPaymentCheck,
   "billing.request-reminder-send": (ctx, context, params) => requestReminderSend(ctx, context, params),
+  // Money in through a provider (Q10-6): links are made at send time; these are for a person or agent who needs one, and for the page.
+  "billing.create-payment-link": createPaymentLinkAction,
+  "billing.payment-links": paymentLinksAction,
+  "billing.cancel-payment-link": cancelPaymentLinkAction,
+  "billing.record-refund": recordRefundAction,
+  "billing.simulate-payment": simulatePaymentAction,
+  "billing.payments": (ctx, context) => paymentsStatusAction(ctx, context),
   "billing.log-follow-up": logFollowUp,
   "billing.convert-quote": convertQuote,
   "billing.create-expense": createExpenseAction,
@@ -403,9 +420,16 @@ const plugin = definePlugin({
     ctx.events.on(DEAL_WON_EVENT, guard("deal won", (event) => onDealWon(ctx, event)));
     // After registerModuleWatch (handlers run in order): Accounting switched on → post the journals it missed.
     ctx.events.on(`plugin.${SETUP_PLUGIN}.${SETUP_EVENTS.modulesUpdated}`, guard("module switch", (event) => onModulesUpdated(ctx, event)));
-    ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await skillSync?.ensure(event.companyId);
-    });
+    // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.
+    registerCompanyBootstrap(ctx, { syncer: skillSync });
+    registerBillingErasure(ctx);
+    // Every company's skills, not only the one a call comes from (Q7-2).
+    registerSkillSyncJob(ctx, skillSync, { companyIds: () => billingCompanyIds(ctx), isEnabled: (companyId) => billingOn(ctx, companyId), plugin: PLUGIN_ID });
+    ctx.jobs.register("privacy-retention", () => trackJob(ctx, "privacy-retention", () => privacyRetentionJob(ctx)));
+  },
+  async onWebhook(input) {
+    if (!pluginCtx) throw new Error("Billing is not ready yet. The provider will send this again.");
+    await handleBillingWebhook(pluginCtx, input);
   },
   async onHealth() {
     return { status: "ok", message: "Billing plugin ready" };
@@ -456,6 +480,8 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "customer-credit": { action: "billing.customer-credit", message: "Customer credit listed" },
   "list-proofs-of-payment": { action: "billing.pops", message: "Proofs of payment listed" },
   "request-reminder-send": { action: "billing.request-reminder-send", message: (d) => (d.already ? "A reminder approval is already open for this invoice" : "Reminder approval issue opened for a person") },
+  "create-payment-link": { action: "billing.create-payment-link", message: "Payment link ready (nothing was sent)" },
+  "list-payment-links": { action: "billing.payment-links", message: "Payment links listed" },
   "log-follow-up": { action: "billing.log-follow-up", message: (d) => `Follow-up logged on ${String(d.on ?? "it")}` },
   "create-recurring-invoice": { action: "billing.create-recurring", message: "Recurring invoice scheduled" },
   "list-recurring-invoices": { action: "billing.list-recurring", message: "Recurring invoices listed" },
@@ -492,7 +518,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     const entry = TOOL_ACTIONS[name];
     const handler = entry ? ACTIONS[entry.action] : undefined;
     if (!entry || !handler) return toolFail("Unknown billing tool");
-    const result = toolOk("", await handler(ctx, toolContext(run), body));
+    const result = toolOk("", shapeToolResult(name, await handler(ctx, toolContext(run), body), body));
     return { ...result, content: typeof entry.message === "function" ? entry.message(result.data) : entry.message };
   } catch (error) {
     return toolFail(error instanceof Error ? error.message : "Billing tool failed");
@@ -615,6 +641,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       dunning: settings.dunning?.enabled === true,
       numbering: settings.numbering?.mode === "sequential" ? "sequential" : "client",
     },
+    // Online payments: which providers are on and, for those that are not, why (no secret is read).
+    payments: { providers: providerStates(settings).map((p) => ({ key: p.key, label: p.label, enabled: p.enabled, blocker: p.blocker, webhookUrl: p.key === "stripe" || p.key === "payfast" ? webhookUrl(settings, p.key) : null })) },
     taxCodes: Object.entries(TAX_CODES).map(([code, info]) => ({ code, label: info.label, rate: info.rate })),
     expenseCategories: expenseCategories(settings),
     client: scope ? await clientDetails(ctx, companyId, scope, [...invoices, ...quotes]) : null,
@@ -712,6 +740,9 @@ async function invoiceDetail(ctx: PluginContext, context: PluginPerformActionCon
     customerCredit: await customerCredit(ctx, invoice.company_id, invoice.customer_kind, invoice.customer_ref),
     followUps: invoice.company_id === companyId ? await followUpsFor(ctx, companyId, "invoice", invoice.id) : [],
     ledgerKey: `billing:invoice:${invoice.id}:issue`,
+    // Online payment (empty while every provider is off): the links, and money paid back through a provider.
+    paymentLinks: (await linksForInvoice(ctx, invoice.id)).map(publicLink),
+    refunds: (await refundsForInvoice(ctx, invoice.id)).map((r) => ({ id: r.id, provider: r.provider, amountMinor: Number(r.amount_minor), reason: r.reason, source: r.source, createdAt: iso(r.created_at) })),
   };
 }
 
@@ -1089,11 +1120,27 @@ async function markOverdueJob(ctx: PluginContext) {
     // "As at today": a payment dated in the future counts once its day comes (and an early "paid" is undone).
     await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
     await retitleSendApprovals(ctx, companyId).catch((error) => ctx.logger.info("Approval titles not synced", { companyId, error: errorMessage(error) }));
+    // Payment links withdrawn since the last run are switched off at the provider (best effort; a failure is tried again next hour).
+    if (await configSaved(ctx, companyId).catch(() => false)) {
+      await housekeepPaymentLinks(ctx, companyId, await billingSettings(ctx, companyId)).catch((error) => ctx.logger.info("Payment link housekeeping skipped", { companyId, error: errorMessage(error) }));
+    }
   }
   await markOverdue(ctx, off);
   await publishAllSetupStatus(ctx);
   await publishAllCockpit(ctx);
   await reemitHandoffs(ctx).catch((error) => ctx.logger.info("Hand-off re-send skipped", { error: errorMessage(error) }));
+}
+
+/** Nightly: erasures whose retention period has ended get the name and address replaced too. */
+async function privacyRetentionJob(ctx: PluginContext) {
+  for (const companyId of await companiesWithSettings(ctx)) {
+    try {
+      const finished = await finishErasureHolds(ctx, companyId);
+      if (finished > 0) ctx.logger.info("Erasure retention periods ended", { companyId, finished });
+    } catch (error) {
+      ctx.logger.info("Erasure retention skipped", { companyId, error: errorMessage(error) });
+    }
+  }
 }
 
 /** Daily: the "Drafts to send" issue for each company, and the "Overdue invoices" issue kept current. */

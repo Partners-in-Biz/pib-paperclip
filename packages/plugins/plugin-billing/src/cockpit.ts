@@ -19,6 +19,7 @@ import {
   jobHealth,
   outboxHealth,
   publishCockpitSnapshot,
+  rolesCopyHealth,
   type CockpitSnapshot,
   type FlowStageReport,
   type Tone,
@@ -28,6 +29,7 @@ import { billingSettings } from "./config.js";
 import { asObject, table } from "./db.js";
 import { daysPastDue, shortDayText } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { providerStates } from "./pay/settings.js";
 import { billingOn, knownCompanyIds } from "./setup.js";
 
 /** Scheduled jobs and their interval in minutes (from the manifest schedules). */
@@ -42,6 +44,8 @@ export const BILLING_JOBS: Array<{ key: string; title: string; everyMinutes: num
   { key: "drafts-to-send", title: "Drafts to send (daily issue)", everyMinutes: 1440 },
   { key: "overdue-invoices", title: "Overdue invoices (weekly issue)", everyMinutes: 10080 },
   { key: "post-missing-journals", title: "Journals missed while Accounting was off", everyMinutes: 1440 },
+  { key: "privacy-retention", title: "Erasure retention periods", everyMinutes: 1440 },
+  { key: "sync-skills-all", title: "Skills for every company", everyMinutes: 360 },
 ];
 
 const PAGE = "/billing";
@@ -392,6 +396,37 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     snap.health.push(old > 0
       ? { key: "pops", title: "Proof of payment checks", status: "warn", detail: `${plural(old, "proof")} of payment waiting over 3 days.`, href: `${PAGE}?tab=payments`, fix: "Check each proof against the bank statement and confirm or reject it.", since: iso(rows[0]?.oldest) }
       : { key: "pops", title: "Proof of payment checks", status: "ok" });
+  });
+
+  // Online payments (only said while a provider is on, or something needs a person): notifications that failed to apply,
+  // links a provider refused, and money that arrived and waits on a decision.
+  await part("online payments", async () => {
+    const on = providerStates(settings).filter((state) => state.enabled && state.key !== "mock");
+    const rows = await ctx.db.query<{ failed_events: string; needs_attention: string; failed_links: string; oldest: unknown }>(
+      `SELECT (SELECT count(*) FROM ${table(ctx, "payment_events")} WHERE company_id = $1 AND result = 'failed' AND received_at > now() - interval '3 days')::text AS failed_events,
+              (SELECT count(*) FROM ${table(ctx, "payment_links")} WHERE company_id = $1 AND status = 'needs_attention')::text AS needs_attention,
+              (SELECT count(*) FROM ${table(ctx, "payment_links")} WHERE company_id = $1 AND status = 'failed' AND created_at > now() - interval '7 days')::text AS failed_links,
+              (SELECT min(created_at) FROM ${table(ctx, "payment_links")} WHERE company_id = $1 AND status = 'needs_attention') AS oldest`,
+      [companyId],
+    );
+    const failedEvents = n(rows[0]?.failed_events);
+    const attention = n(rows[0]?.needs_attention);
+    const failedLinks = n(rows[0]?.failed_links);
+    if (on.length === 0 && failedEvents + attention + failedLinks === 0) return;
+    snap.health.push(failedEvents > 0
+      ? { key: "payments:notifications", title: "Online payment notifications", status: "bad", detail: `${plural(failedEvents, "payment notification")} from a provider could not be applied in the last 3 days. A customer may have paid and the invoice still shows unpaid.`, href: `${PAGE}?tab=payments`, fix: "The provider retries for up to 3 days. Open the Billing page → Payments → Online payments to see the error, fix its cause (usually the signing secret or Accounting's clearing account) and the next retry applies it." }
+      : { key: "payments:notifications", title: "Online payment notifications", status: "ok" });
+    snap.health.push(attention > 0
+      ? { key: "payments:attention", title: "Online payments waiting on a person", status: "warn", detail: `${plural(attention, "online payment")} arrived that Billing did not record by itself (wrong amount, or an invoice that cannot take it).`, href: `${PAGE}?tab=payments`, fix: "Open each issue titled Check an online payment and record it or refund it.", since: iso(rows[0]?.oldest) }
+      : { key: "payments:attention", title: "Online payments waiting on a person", status: "ok" });
+    if (failedLinks > 0) {
+      snap.health.push({ key: "payments:links", title: "Payment links", status: "warn", detail: `${plural(failedLinks, "payment link")} could not be made in the last week, so those invoices went out with EFT details only.`, href: `${PAGE}?tab=payments`, fix: "Open Billing → Payments → Online payments for the provider's error (a wrong key, or a currency the provider does not take)." });
+    }
+  });
+
+  await part("approval routing", async () => {
+    const copy = await rolesCopyHealth(ctx, companyId);
+    if (copy) snap.health.push(copy);
   });
 
   // ── Waiting on a person ─────────────────────────────────────────────────

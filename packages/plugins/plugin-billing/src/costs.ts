@@ -21,7 +21,8 @@ import { assertTaxCode, computeDocument, isTaxCodeValue } from "./money.js";
 import { emitBillItem } from "./openitems.js";
 import { APPROVAL_ORIGINS, WORK_ORIGINS } from "./origins.js";
 import { postBill, postExpense, type ExpenseForPosting } from "./posting.js";
-import { assigneeOf, personAssignee, workRoute } from "./routing.js";
+import { openBillingApproval } from "./approvals.js";
+import { assigneeOf, workRoute } from "./routing.js";
 import { decideExpense, expenseState, extractReceipt, ruleVatClaimable, type ReceiptFields } from "./receipts.js";
 import { billColumns, billPaidMinor, BILL_COLUMNS, getBill, settleBill, type BillRow } from "./settle.js";
 import { assertOwnKey, assertUploadable, documentKey, getObject, presignGet, presignPut } from "./storage.js";
@@ -236,14 +237,14 @@ export async function requestBillApproval(ctx: PluginContext, context: PluginPer
   const bill = await requireBill(ctx, companyId, requiredString(params, "billId"));
   if (bill.status !== "draft") throw new BillingError("Only a draft bill can be approved");
   const { settings } = await loadBilling(ctx, companyId);
-  const issue = await createWorkIssue(ctx, {
+  // Money: a person approves (the Billing approver, else the owner), never an agent.
+  const issue = await openBillingApproval(ctx, settings, {
     companyId,
     title: `Approve bill from ${bill.supplier_name}${bill.supplier_reference ? ` (${bill.supplier_reference})` : ""}`,
     description: `Open Billing → Costs → Bills, check the bill's lines and VAT against the supplier's invoice, then mark this issue done. The plugin then approves the bill and posts it to the books. Cancel this issue to leave it as a draft.`,
-    originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: `${APPROVAL_ORIGINS.billApproval}${bill.id}`,
-    // Money: a person approves (the Billing approver, else the owner).
-    ...(await personAssignee(ctx, companyId, settings)),
+    outward: false,
+    actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
   });
   await ctx.db.execute(`UPDATE ${table(ctx, "bills")} SET approval_issue_id = $2, pending_action = 'approve', updated_at = now() WHERE id = $1`, [bill.id, issue.id]);
   return { billId: bill.id, issueId: issue.id };

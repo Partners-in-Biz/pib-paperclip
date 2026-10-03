@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { JsonSchema } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
-import { INVOICE_DRAFT_SKILL, SKILLS } from "../src/skills.js";
+import { INVOICE_DRAFT_SKILL, ONLINE_PAYMENTS_REFERENCE, SKILLS } from "../src/skills.js";
 import { BILLING_TOOLS } from "../src/tools.js";
 import { documentLabel, draftsToSend, futurePaymentsText, waitingOnPerson } from "../src/ui/series.js";
 import type { Snapshot } from "../src/ui/types.js";
@@ -69,6 +69,26 @@ describe("the invoice-draft skill", () => {
     expect(skill.slug).toBe("pib-invoice-draft");
     expect(skill.markdown).toContain("## Company memory");
     expect(skill.markdown).toContain("## Asking a person");
+  });
+
+  it("stays within the 18,000 character budget, keeps the online-payment detail in a reference, and names the new tools", () => {
+    const skill = SKILLS[0]!;
+    expect((skill.markdown ?? "").length).toBeLessThanOrEqual(18_000);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/online-payments.md"]);
+    expect(skill.files![0]!.content).toBe(ONLINE_PAYMENTS_REFERENCE);
+    expect(skill.markdown ?? "").toContain("references/online-payments.md");
+    for (const tool of ["create-payment-link", "list-payment-links"]) expect(INVOICE_DRAFT_SKILL).toContain(`\`${tool}\``);
+    // the person-only rules and the tool-result shape the skill promises
+    expect(INVOICE_DRAFT_SKILL).toContain("You never refund");
+    expect(INVOICE_DRAFT_SKILL).toContain("{ mode, total, count, offset, items, more, next }");
+    // every status the reference tells an agent about is one the table can really hold
+    for (const status of ["active", "paid", "cancelled", "needs_attention", "failed"]) expect(ONLINE_PAYMENTS_REFERENCE).toContain(`| ${status} |`);
+  });
+
+  it("every tool the skill reference names exists", () => {
+    const names = new Set(BILLING_TOOLS.map((t) => t.name));
+    const mentioned = [...ONLINE_PAYMENTS_REFERENCE.matchAll(/`([a-z]+(?:-[a-z]+)+)`/g)].map((m) => m[1]!).filter((n) => !["ask-owner"].includes(n));
+    for (const name of mentioned) expect(names.has(name), name).toBe(true);
   });
 });
 

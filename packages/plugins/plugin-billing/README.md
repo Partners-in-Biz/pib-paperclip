@@ -1,6 +1,8 @@
 # Billing
 
-Paperclip plugin `partnersinbiz.billing` (0.5). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
+Paperclip plugin `partnersinbiz.billing` (0.6). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
+
+**0.6.0** (audit Q5-6, Q8-11, Q10-6 money in, Q10-13, Q1b-2 canary): approvals can no longer open unassigned (kit routing), agent list tools return small paged answers, customers can pay an invoice online through Stripe (PayFast is built but blocked by a host limit, see below), a confirmed payment is matched and posted by itself, refunds are recorded, and a POPIA erasure request is handled. One new migration (`012`), **one new capability: `webhooks.receive` (stop-first deploy)**. A pre-existing bug is fixed too: the first send of an invoice showed "R 0.00" as the amount due in its email and PDF (the document was made while the row was still a draft); a test now holds it.
 
 Agents draft and ask. A person approves every send, every money change and voids. Billing has no agent role of its own: the Account Manager (CRM plugin) carries the `pib-invoice-draft` skill, and Billing's work goes to it (else the Bookkeeper, the Operator, the owner).
 
@@ -20,13 +22,17 @@ Agents draft and ask. A person approves every send, every money change and voids
 
 | Agent tool | Opens | A person's "done" |
 |---|---|---|
-| `request-invoice-send`, `request-quote-send` | an approval issue (the Reviewer first when one is running, else the Billing approver `reviewerUserId`, else the owner) | emails the document |
+| `request-invoice-send`, `request-quote-send` | an approval issue (the Reviewer first when one is running and review-before-approval is on, then the Billing approver `reviewerUserId`, else the owner) | emails the document |
 | `request-reminder-send` | an approval issue with the stage's subject and message (only when automatic reminders are off, the stage is due and the client is not opted out) | sends that reminder stage |
 | `record-payment` | "Record payment of R… on LUM-001?" for a person | records it through `settle()` |
 | `create-credit-note` | "Issue credit note of R… on LUM-001?" for a person | issues, applies and posts it |
 | `request-payment-check` | the proof-of-payment check (source `agent`) | records the payment on the day the customer paid |
 
 Asking twice returns the open issue; two requests at the same moment leave one approval (the other is withdrawn). An agent marking any of these done or cancelled is undone with the kit's `reopenApprovalForPerson` (reopened, given to the approver, a comment says why). A decision that fails is reopened with the reason. Money is never counted twice: a payment decision is not applied when the invoice was paid or credited since the request or its bank line is already recorded, a credit-note decision is not applied when another credit note was issued meanwhile (and a re-approved one never makes a second note), and open payment and reminder decisions are withdrawn when the invoice becomes paid. The issue says what happened. The person who closes the issue is recorded as the approver. People on the page still act directly.
+
+## Approvals always reach someone (0.6.0, audit Q5-6)
+
+Every approval Billing opens goes through `src/approvals.ts` `openBillingApproval`, which calls the kit's `resolveApprover` and `openApprovalIssue`. The chain is: the Reviewer (only for work that leaves the company, `outward: true`: an invoice send, a quote send, a payment reminder, and only when the roles copy has a usable Reviewer and `reviewOutward` is on), then a person: the approver named in Billing settings (`reviewerUserId`), else the owner from the roles copy, else the host's `defaultResponsibleUserId`, else whoever asked, else the last known owner; then the Operator; then loudly unassigned (the issue says "Unrouted", the worker logs a warning). Money decisions (record payment, credit note, bill approval and payment, bank match, proof-of-payment check, a gateway payment that needs a decision) are **never** the Reviewer's: they go to a person. The live failure behind Q5-6 was a roles copy frozen on its first broadcast, with no owner and no Reviewer, so approvals opened unassigned; `tests/approvals.pg.spec.ts` holds a frozen copy to prove the host default owner is used. When the host refuses the configured approver (a person who left), the kit chain is used instead of nobody.
 
 ## Nothing sits silently
 
@@ -52,7 +58,9 @@ Asking twice returns the open issue; two requests at the same moment leave one a
 
 `request-send` (tool `request-invoice-send`) opens an approval issue. When a person marks it done, the invoice's sender/customer details freeze, the PDF is stored and `mail.send.requested` is enqueued in the outbox (key `billing:mail:invoice:<id>:<n>`, labels `PiB/Invoices`, context `{plugin, kind, id, clientKind, clientRef}`) with EFT details and "reply with proof of payment". The invoice becomes `sent` when `plugin.partnersinbiz.mailbox.mail.send.result` says sent; a permanent failure shows on the invoice with **Retry email** (next `<n>`). Email off, or no address: marked sent as before. The `redeliver` job (5 min) re-sends unanswered requests.
 
-## Money in (EFT only)
+## Money in
+
+EFT stays the default. Online payment (next section) is optional and off until the owner sets it up.
 
 Statuses: `draft → sent → payment_pending_verification → partially_paid → paid`, plus `overdue`, `cancelled`, `written_off`.
 
@@ -61,6 +69,56 @@ Statuses: `draft → sent → payment_pending_verification → partially_paid �
 - **Bank matches** from `plugin.partnersinbiz.accounting.bank.matched` (`receiveOnce`): `exact` and not more than owed → settled; otherwise a review issue and `needs_review`. `bank.match.result` is emitted on every delivery (and again as `settled`/`rejected` when a person decides).
 - Supplier invoices by email (`invoice_or_bill`) from a known CRM supplier become draft bills.
 - **Credit notes** are applied to what the invoice owes; the rest is the customer's credit, usable on their other invoices. **Write-off** books bad debt (net + the VAT share on output VAT).
+
+## Online payments (0.6.0, audit Q10-6)
+
+Customers can pay an invoice by card or instant EFT from a link in the invoice email, the reminder email and the PDF. **Nothing is on by default**: a provider is on only when its switch is on **and** every secret it needs is saved (and, for PayFast, the host can deliver its notifications). With no provider on, invoices go out exactly as before, EFT only.
+
+**Code layout** (`src/pay/`): `types.ts` (the `PaymentProvider` interface: `createLink`, `deactivateLink`, `locate`, `verify`), `stripe.ts`, `payfast.ts`, `mock.ts` (the test provider; links on `https://pay.invalid/...`, charges nothing, used by the canary and tests; its links are made for canary invoices only when an invoice is sent or reminded, can be made by a person on a real invoice only to rehearse the books, and are **never shown on a real customer's email, reminder or PDF**), `settings.ts` (which provider is on and why not), `links.ts` (making, reusing and withdrawing links), `webhook.ts` (the receiver), `confirm.ts` (applying an event), `actions.ts` (page actions and tools), `setup-items.ts`, `store.ts` (SQL).
+
+**The link.** One row in `payment_links` per invoice, provider and amount; its id travels to the provider as the reference the payment comes back with (`client_reference_id` for Stripe, `m_payment_id` for PayFast). Only the invoice number and amount go to the provider: no customer name, email or phone, in the request or the address. It is made when an invoice is sent and for each reminder, for what the invoice owes at that moment. When the amount changes (a part payment, a credit note) the old link is withdrawn and the next send makes a new one; when the invoice is paid, cancelled or written off, links are withdrawn. A withdrawn link is switched off at the provider too, by the hourly housekeeping if the first try fails. A provider that refuses never blocks the send: the invoice goes out with EFT only and the link row says `failed` with the reason (never a secret).
+
+**Stripe** (`src/pay/stripe.ts`): a Price and a Payment Link (a bare Checkout Session expires within 24 hours and cannot sit in an invoice email), made with idempotency keys `<linkId>:price` and `<linkId>:link`, `restrictions.completed_sessions.limit = 1` and `metadata.pib_link`. Events handled: `checkout.session.completed` (only when paid), `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `charge.refunded`. The signature is Stripe's `Stripe-Signature` header: HMAC-SHA256 over `<t>.<raw body>` with the webhook signing secret, 300 seconds of tolerance, constant-time comparison, only `v1` signatures believed.
+
+**Webhooks.** The host's webhook primitive is `POST /api/plugins/partnersinbiz.billing/webhooks/<endpointKey>` (`stripe`, `payfast`). It is public, has no company and needs the new capability `webhooks.receive` (hence the stop-first deploy). The worker's `onWebhook` does, in order: locate the link named in the body (untrusted), take the company from **our own** link row (never from the body), resolve **that company's** secrets, verify (signature, plus source address and a server confirmation for PayFast), and only then apply the event once. A Stripe delivery whose `Stripe-Signature` header is missing, malformed or stale is refused before any secret is resolved, and the webhook signing secret is kept in memory for one minute per company and secret reference (`webhookSecretFor` in `settings.ts`): the address is public and the host lets a plugin resolve 30 secrets a minute per company, so without this a flood of unsigned deliveries naming a real link (its id is in the payment address the customer holds) would starve Billing's own secret reads (PDF links, payment links) and make genuine deliveries fail. A rotated secret is a new reference and is read at once; a value changed behind the same reference is picked up within the minute (a delivery signed with the old one is retried by Stripe). A delivery that fails a check records nothing and answers an error (the host answers 502, so the provider retries or alerts). A delivery that names no link of ours is answered 200 and ignored. `payment_events` is keyed `<provider>:<eventId>` so a repeated delivery is answered "already handled"; an event that failed half way is applied by the retry.
+
+**What a confirmed payment does.** `settle()` with source `gateway` and source key `gateway:<provider>:<providerPaymentId>`: the payment row, the invoice status, the proof-of-payment issues closed, `invoice.paid` to the CRM, and the books:
+
+| Event | Key | Lines |
+|---|---|---|
+| Payment | `billing:payment:<id>` | Dr clearing account (default `1020`) / Cr ar, gross |
+| Provider fee | `billing:payment:<id>:fee` | Dr `expense:bank_charges` / Cr clearing account |
+| Refund | `billing:refund:<id>` | Dr ar / Cr clearing account |
+
+The provider's payout later arrives as a bank line, net of the provider's fee, which the Bookkeeper categorises to `1020` (the clearing account setting is `payments.clearingAccountCode`). **Accounting 0.4.0 adds account 1020: deploy it first**, or these postings are rejected until it exists.
+
+**The fee is posted only when the provider's notification carries it. Stripe's does not.** PayFast's ITN carries `amount_fee`, so Billing posts it. A Stripe `checkout.session.completed` event has no fee (it sits on the charge's balance transaction), and the restricted key the owner creates (Products, Prices and Payment Links only, least privilege) cannot read charges or balance transactions, so `StripeProvider.verify` returns `feeMinor: null` and Billing posts **no Stripe fee**: `list-payment-links` shows `feeMinor` empty, and a test holds that a Stripe confirmation posts no fee journal and claims none. The net payout categorised to `1020` therefore leaves the fee on `1020` as a debit (and bank charges understated) until the Bookkeeper posts it: a manual journal Dr `6120` Bank charges / Cr `1020` for that amount through the normal approval, checked against the payout's detail in the Stripe Dashboard (the Accounting skill has the routine). Reading the fee instead would mean widening the key to Charges and PaymentIntents read access and fetching `latest_charge.balance_transaction` (settlement currency may differ from the charge currency); that was not built because it could not be proven without a live Stripe account.
+
+**Never settled by itself.** An amount or currency that differs from the link, a cancelled or draft invoice, or an invoice that does not exist any more: the money is real, so a **person decision issue** opens (kind `gateway`; the issue says what arrived and the two ways out: record it against the right invoice, or refund it at the provider) and the link goes to `needs_attention`. A payment on a link made stale by an EFT part payment is not a mismatch: it is recorded, the invoice takes what it still owed and the rest is customer credit, and a person is told.
+
+**Refunds.** Stripe reports refunds cumulatively; only the new part is recorded: a negative `payments` row (source `gateway_refund`), a `payment_refunds` row (unique per source key), the refund journal, and the invoice owes it again (`partially_paid`, `sent` or `overdue`) because `refreshInvoiceStatus` recomputes it. A refund made in the PayFast dashboard is not reported to us; a person records it with **Record refund** on the invoice (page action `billing.record-refund`, a person only, at most what was paid through that provider). Agents never record a refund. A refund reverses a payment Billing recorded: one that arrives **before** the payment it refunds (Stripe does not promise an order) while the link is still active fails the delivery, so Stripe sends it again once the payment is recorded; one for a link with no recorded payment (a payment a person was asked about, a failed or withdrawn link) is ignored, because the books have nothing to reverse.
+
+**PayFast (built, blocked).** The adapter is written to PayFast's documented API: a signed checkout address (MD5 over the documented field order, PHP-style URL encoding, passphrase appended), and the ITN checks (signature over all posted fields in received order, source address among PayFast's hosts, our merchant id and `m_payment_id`, and a server confirmation POST to `/eng/query/validate` that must answer `VALID`). **It is disabled** because PayFast sends its notification as a web form (`application/x-www-form-urlencoded`) and the host's webhook route parses only JSON, so the body would arrive empty and no payment could be confirmed (`ITN_VIA_HOST = false`; the receiver ignores an empty delivery without a trace and never believes it). It cannot be switched on from settings. The Setup item says so and lists the owner's choices. The adapter has not been run against PayFast's sandbox, and the address form for the checkout (`process?` with the signed fields as a query string) is an assumption to confirm there.
+
+**Setup.** One optional checklist item per provider with the exact steps and deep links (`pay_stripe`, `pay_payfast`; `src/pay/setup-items.ts`). Nothing creates an account or enters a credential: those are the owner's one-time steps, and the secrets are stored as Paperclip secrets and read only when needed (`secretField`, `SecretResolver`; a send, a reminder run and a delivery each share one resolver, and the webhook secret is remembered for a minute, all under the host's 30 resolves a minute per company). The PayFast item shows as optional with its decision text (it is not "waiting on another step": it waits on a host decision).
+
+**Agent tools.** `create-payment-link` (makes or returns the link for a sent invoice; sends nothing; refuses with the reason when no provider is on) and `list-payment-links`. **Page actions**: `billing.create-payment-link`, `billing.payment-links`, `billing.cancel-payment-link`, `billing.record-refund`, `billing.simulate-payment` (the test provider only, a person only), `billing.payments` (providers, items needing a person, the last deliveries). The invoice drawer has an **Online payment** card (links, copy link, withdraw, make one, record refund) and the Payments tab an **Online payments** card (providers and blockers, the confirmation address to copy, links needing a person).
+
+**Cockpit.** Health `payments:notifications` (a delivery that could not be applied), `payments:attention` (money waiting on a person) and `payments:links` (links that failed to be made), shown only when a provider is on or something needs a person.
+
+**Canary (Q1b-2).** Billing honours the CRM canary contract: a customer whose id starts `canary-` or whose address ends `.invalid` never gets a real link (only the test provider's), never gets a real email (`.invalid` recipients are filtered, so a send becomes a manual dry run) and nothing posts to the books for its invoices, payments or credit notes (`src/canary.ts`). Cleaning the canary's documents up afterwards is not done here (see follow-ups). The test provider is the mirror image: it is for canary invoices, so sending or reminding a real customer never makes a test link, and a test link made by hand on a real invoice is never put on its email, reminder or PDF.
+
+## Personal data: erasure and retention (0.6.0, audit Q10-13)
+
+Billing registers the kit's erasure receiver (`src/privacy.ts`). It acts only on an approved `contact.erase.requested` from the CRM and answers what it dropped and what it kept, with the reason.
+
+- **Erased now**: drafts never issued (with their payment links), the CRM projection row, proof-of-payment text (sender, subject, snippet), email delivery records (recipients, subject), follow-up notes, unbilled time, the reason on a reminder opt-out; the person's email and phone wherever they sit on someone else's documents; subscriptions are cancelled and lose the name.
+- **Kept as a minimal record**: issued invoices, credit notes and their payments are tax records (Tax Administration Act s29 and VAT Act s55: five years; Companies Act s24: seven). The frozen customer details are cut to what a tax invoice must show (name, address, VAT and registration numbers); email, phone and contact name go. `privacy_holds` records when the period ends (invoice date plus `privacy.retentionYears`, default 7, between 5 and 15), and the nightly `privacy-retention` job then replaces the name and address with `[erased]`. Stored PDFs and proof-of-payment files stay in the private bucket for the same period: Billing does not delete objects (the kit has no delete yet). **The retention period needs review by an accountant or lawyer** before it is relied on. **A gap Billing cannot close:** the host stores every webhook delivery it receives (payload and headers) in its own `plugin_webhook_deliveries` table with no retention the plugin controls. A Stripe session payload carries the payer's name, email and billing address, so those copies sit outside Billing's erasure. The erasure answer says so under `retained`; removing them is a host-operator job (purge old delivery rows) and needs the owner's decision.
+- `erasures` keeps proof it happened without the person: a SHA-256 of the subject key, the counts and the retained list. Every step is idempotent. A marketing-only request has nothing here.
+
+## Small tool results (0.6.0, audit Q8-11)
+
+Only the agent tool results are shaped (`src/tool-results.ts`); the page's actions are unchanged. Every `list-*` tool takes `limit` (default 50, at most 200), `offset` and `compact` (default true) and answers `{ mode, total, count, offset, items, more, next }`. A compact row has the fields a decision needs (the client as one `company:<id>` text); `compact: false` gives the full row. `invoice-detail` is compact by default (the invoice, its lines, payments, payment links and recipients, and a count of credits, credit notes, proofs, deliveries, reminders, follow-ups and refunds), with `sections` to ask for those parts in full and `compact: false` for everything. Full detail is always reachable by id.
 
 ## Books (Accounting)
 
@@ -77,6 +135,9 @@ Every event enqueues `ledger.post.requested` (kit `LedgerPostRequested`, account
 | Bill approved | `billing:bill:<id>:approve` | Dr expense:<category> + vat_input / Cr ap |
 | Bill paid | `billing:bill_payment:<id>` | Dr ap / Cr bank |
 | Expense | `billing:expense:<id>:v<n>` (`…:reverse` on change) | Dr expense:<category> + vat_input / Cr bank, cash or owner_equity |
+| Online payment | `billing:payment:<id>` | Dr clearing account (`1020`) / Cr ar (see Online payments) |
+| Provider fee | `billing:payment:<id>:fee` | Dr bank charges / Cr clearing account |
+| Refund through a provider | `billing:refund:<id>` | Dr ar / Cr clearing account |
 
 Open invoices and bills are shared as `open-item.upserted` after each change, every 15 minutes for recent changes and nightly in full.
 
@@ -96,8 +157,23 @@ Journals skipped while Accounting was switched off (or `ledger.enabled` was off)
 
 ## Settings
 
-Business, EFT, VAT defaults, numbering, email (`from`, cc, sign-off), `r2` (private bucket; secret-ref), `anthropic.apiKey` (secret-ref), `jev` (kit schema), `ledger.enabled`, `dunning`, expense categories, reviewer user id, book currency. Save once per company: jobs only act for companies with saved settings.
+Business, EFT, VAT defaults, numbering, email (`from`, cc, sign-off), `r2` (private bucket; secret-ref), `anthropic.apiKey` (secret-ref), `jev` (kit schema), `ledger.enabled`, `dunning`, expense categories, reviewer user id, book currency, `payments` (public address of Paperclip, clearing account, Stripe, PayFast and the test provider, each off by default; keys and signing secrets are secret-refs), `privacy.retentionYears`. Save once per company: jobs only act for companies with saved settings.
 
 ## Jobs
 
-All times UTC. `mark-overdue` (hourly; also re-sends recent hand-offs), `run-recurring` (00:00: schedules + retainers), `redeliver` (5 min), `emit-open-items` (15 min), `emit-open-items-all` (01:40), `post-missing-journals` (01:55), `drafts-to-send` (04:30), `overdue-invoices` (Mondays 04:45), `fx-rates` (06:15), `dunning` (07:00).
+All times UTC. `mark-overdue` (hourly; also re-sends recent hand-offs), `run-recurring` (00:00: schedules + retainers), `redeliver` (5 min), `emit-open-items` (15 min), `emit-open-items-all` (01:40), `post-missing-journals` (01:55), `drafts-to-send` (04:30), `overdue-invoices` (Mondays 04:45), `fx-rates` (06:15), `dunning` (07:00), `privacy-retention` (02:20: finishes erasures when the retention period ends), `sync-skills-all` (kit `SKILL_SYNC_JOB`, `41 */6 * * *`: keeps the skill current in every company). `mark-overdue` also runs the payment-link housekeeping (withdrawn links switched off at the provider, stale links retired).
+
+## Deploy notes (0.6.0)
+
+- **Stop-first.** `webhooks.receive` is a new capability, and the migration must run before the new worker does, so the service is stopped before the files are replaced and started again afterwards (the rule for every deploy that adds a capability or a migration: back up, stop, rsync `dist`, `migrations` and `package.json`, chown, start, check `loadAll`, run the sync-skills actions).
+- Migration `012_billing.sql` adds `payment_links`, `payment_events`, `payment_refunds`, `erasures` and `privacy_holds` (DDL only).
+- **Deploy Accounting 0.4.0 first (or in the same window)**, so account `1020` exists before any provider is switched on. Nothing posts to `1020` until a provider is on, so the order costs nothing.
+- Nothing is switched on by the deploy: every provider is off until the owner follows its Setup item. After the deploy run `billing.sync-skills` (the kit sweep also does it every six hours) so agents get the new skill and its reference.
+
+## Housekeeping (0.6.0)
+
+`company.created` uses the kit's `registerCompanyBootstrap`; the Cockpit snapshot adds `rolesCopyHealth` (the roles copy is missing or stale). The skill's online-payment detail lives in `references/online-payments.md`, so the skill stays within the 18,000 character budget.
+
+## Tests
+
+`npx vitest run --config ./vitest.config.ts`. 0.6.0 adds `tests/pay-providers.spec.ts` (Stripe and PayFast signing, verification and adapters against fake APIs), `tests/pay.pg.spec.ts` (the whole money-in path on the embedded Postgres: links, forged and repeated deliveries, a flood of unsigned deliveries and the secret budget, mismatches, refunds including one before its payment, the books and the Stripe fee that is not posted, the test provider kept off real customers' documents, the canary, Setup, the first-send amount), `tests/approvals.pg.spec.ts`, `tests/tool-results.spec.ts`, `tests/privacy.pg.spec.ts` and `tests/ui-actions.pg.spec.ts` (every action the page lists is registered). All provider tests use fake data and fake endpoints: nothing here talks to Stripe or PayFast. The Stripe adapter is therefore **not yet proven against live Stripe**, and PayFast not against its sandbox.

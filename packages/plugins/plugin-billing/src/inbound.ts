@@ -341,6 +341,8 @@ async function openApprovalWhat(ctx: PluginContext, issueId: string): Promise<st
     case "decision_payment": return `recording a payment on ${number}`;
     case "decision_credit_note": return `a credit note on ${number}`;
     case "decision_reminder": return `payment reminder ${Number(asObject(row.payload).stage ?? 0) + 1} for ${number}`;
+    case "decision_gateway": return `an online payment on ${number}`;
+    case "decision_refund": return `what ${number} does after its refund`;
     default: return "a Billing approval";
   }
 }

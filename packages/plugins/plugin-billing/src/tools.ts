@@ -33,6 +33,13 @@ const unitAmountMinor = int("Price of one unit in cents (R 1,500.00 = 150000), e
 const sendTo = str("Comma-separated emails to send to instead of the client's billing contacts in the CRM.");
 const period = oneOf(["monthly", "quarterly", "yearly"], "How often an invoice is made.");
 
+/** The window every list tool takes (audit Q8-11): small by default, full detail by id. */
+const listWindow: Record<string, JsonSchema> = {
+  limit: { type: "integer", minimum: 1, maximum: 200, description: "At most this many rows (default 50). The answer says more: true when there are others." },
+  offset: { type: "integer", minimum: 0, description: "Skip this many rows (to read the next page)." },
+  compact: { type: "boolean", description: "true (default): the fields a decision needs, the client as one company:<id> text. false: the full rows. For everything about one record use its detail tool." },
+};
+
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
@@ -104,14 +111,18 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "invoice-detail",
     displayName: "Invoice detail",
-    description: "One invoice: status, lines, VAT per code, what is owed, payments, credits, proofs of payment, emails, reminders and recipients.",
-    parametersSchema: schema(["invoiceId"], { invoiceId }),
+    description: "One invoice: status, what is owed, its lines, payments, payment links and recipients (compact), with a count of credits, credit notes, proofs of payment, emails, reminders and follow-ups. Add sections for those, or compact false for everything (large).",
+    parametersSchema: schema(["invoiceId"], {
+      invoiceId,
+      compact: bool("true (default): the invoice, its lines, its payments and payment links, its recipients and a count of everything else. false: every section."),
+      sections: { type: "array", items: { type: "string", enum: ["groups", "credits", "creditNotes", "pops", "deliveries", "reminders", "followUps", "customerCredit", "recipients", "refunds"], description: "One section name." }, description: "Extra sections to include in the compact view (VAT groups, credits, credit notes, proofs of payment, emails sent, reminders, follow-up notes, customer credit, refunds)." },
+    }),
   },
   {
     name: "list-open-invoices",
     displayName: "List open invoices",
     description: "Invoices still owed (sent, overdue, part paid, waiting on a payment check) with what each still owes.",
-    parametersSchema: schema([], { client: { ...client, description: "Only this client's invoices: company:<crm id> or contact:<crm id>." } }),
+    parametersSchema: schema([], { client: { ...client, description: "Only this client's invoices: company:<crm id> or contact:<crm id>." }, ...listWindow }),
   },
   {
     name: "request-invoice-send",
@@ -195,6 +206,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       client: { ...client, description: "Only this client's quotes: company:<crm id> or contact:<crm id>." },
       status: oneOf(["draft", "sent", "accepted", "declined", "converted", "expired"], "Only quotes in this status."),
       dealId: str("Only quotes for this CRM deal id."),
+      ...listWindow,
     }),
   },
   {
@@ -263,7 +275,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "list-credit-notes",
     displayName: "List credit notes",
     description: "All credit notes, newest first, with their invoice, amount and status.",
-    parametersSchema: schema([], {}),
+    parametersSchema: schema([], { ...listWindow }),
   },
   {
     name: "customer-credit",
@@ -275,7 +287,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "list-proofs-of-payment",
     displayName: "List proofs of payment",
     description: "Proofs of payment and payment checks (from email, uploads or agents). Only a person confirms or rejects them.",
-    parametersSchema: schema([], { status: oneOf(["pending", "confirmed", "rejected"], "Only this status (pending = waiting for a person's check).") }),
+    parametersSchema: schema([], { status: oneOf(["pending", "confirmed", "rejected"], "Only this status (pending = waiting for a person's check)."), ...listWindow }),
   },
   {
     name: "log-follow-up",
@@ -297,6 +309,27 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["invoiceId"], { invoiceId: str("Overdue invoice id (from the Overdue invoices issue or list-open-invoices).") }),
   },
 
+  {
+    name: "create-payment-link",
+    displayName: "Create payment link",
+    description:
+      "Make (or return) the hosted online payment link for a sent invoice that still owes money, for each payment provider the owner switched on (Stripe or PayFast). The link is for what the invoice owes now. It sends nothing: invoice and reminder emails already carry their links when a provider is on, so use this only to give a customer the link another way, with the owner's approval. Fails with the reason when no provider is on (EFT is then the way to pay). Never tell a customer an invoice is paid until invoice-detail shows paid.",
+    parametersSchema: schema(["invoiceId"], {
+      invoiceId,
+      provider: oneOf(["stripe", "payfast"], "Only this provider's link. Leave out for every provider that is on."),
+    }),
+  },
+  {
+    name: "list-payment-links",
+    displayName: "List payment links",
+    description: "Online payment links: for one invoice (invoiceId) or for the company by status. Shows the provider, status (active, paid, cancelled, needs_attention, failed), the amount, the link address and what was refunded. needs_attention means money arrived that a person must decide.",
+    parametersSchema: schema([], {
+      invoiceId: str("Only this invoice's links (the id from invoice-detail)."),
+      status: oneOf(["active", "paid", "cancelled", "needs_attention", "failed"], "Only links in this status."),
+      ...listWindow,
+    }),
+  },
+
   // ── Recurring and retainers ──────────────────────────────────────────────
   {
     name: "create-recurring-invoice",
@@ -313,7 +346,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "list-recurring-invoices",
     displayName: "List recurring invoices",
     description: "Recurring invoice schedules: the invoice copied, frequency, next date, active or paused.",
-    parametersSchema: schema([], {}),
+    parametersSchema: schema([], { ...listWindow }),
   },
   {
     name: "pause-recurring-invoice",
@@ -360,7 +393,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "list-retainers",
     displayName: "List retainers",
     description: "Retainer plans and subscriptions (status, price, next invoice date), optionally for one client.",
-    parametersSchema: schema([], { client: { ...client, description: "Only this client's subscriptions: company:<crm id> or contact:<crm id>." } }),
+    parametersSchema: schema([], { client: { ...client, description: "Only this client's subscriptions: company:<crm id> or contact:<crm id>." }, ...listWindow }),
   },
 
   // ── Money out ────────────────────────────────────────────────────────────
@@ -423,7 +456,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "list-bills",
     displayName: "List bills",
     description: "Suppliers' bills with status, due date and what is still owed.",
-    parametersSchema: schema([], {}),
+    parametersSchema: schema([], { ...listWindow }),
   },
 
   // ── Time ─────────────────────────────────────────────────────────────────
@@ -466,6 +499,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema([], {
       client: { ...client, description: "Only this client's time: company:<crm id> or contact:<crm id>." },
       unbilled: bool("true for billable time not on an invoice yet."),
+      ...listWindow,
     }),
   },
   {

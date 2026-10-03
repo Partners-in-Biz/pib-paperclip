@@ -7,13 +7,13 @@
  * time the match arrives, so Accounting's retries always get it.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue, formatMoneyMinor, OPEN_ITEM_EVENTS, PIB_PLUGINS, receiveOnce, type BankMatched, type BankMatchResult } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, OPEN_ITEM_EVENTS, PIB_PLUGINS, receiveOnce, type BankMatched, type BankMatchResult } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { BillingError } from "./domain.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { recordDecisionIssue } from "./pop.js";
-import { personAssignee } from "./routing.js";
+import { openBillingApproval } from "./approvals.js";
 import { billPaidMinor, getBill, settle, settleBill, unreconciledPayment } from "./settle.js";
 
 export const BANK_MATCHED_EVENT = `plugin.${PIB_PLUGINS.accounting}.${OPEN_ITEM_EVENTS.bankMatched}` as const;
@@ -59,7 +59,8 @@ async function emitResult(ctx: PluginContext, companyId: string, result: BankMat
 async function openReview(ctx: PluginContext, companyId: string, match: BankMatched, label: string, reason: string, settings: BillingSettings): Promise<string | null> {
   try {
     const amount = formatMoneyMinor(match.amountMinor, match.currency || "ZAR");
-    const issue = await createWorkIssue(ctx, {
+    // Money: a person decides (the Billing approver, else the owner).
+    const issue = await openBillingApproval(ctx, settings, {
       companyId,
       title: `Check bank ${match.kind === "payable" ? "payment" : "receipt"} of ${amount} for ${label}`,
       description: [
@@ -69,10 +70,8 @@ async function openReview(ctx: PluginContext, companyId: string, match: BankMatc
         `Mark this issue done to record ${amount} against ${label}${match.kind === "receivable" ? " (anything above what is owed stays with the customer as credit)" : ""}.`,
         "Cancel this issue if the match is wrong; then fix it in Accounting.",
       ].join("\n"),
-      originKind: `plugin:${PIB_PLUGINS.billing}`,
       originId: `${APPROVAL_ORIGINS.bankMatch}${match.key}`,
-      // Money: a person decides (the Billing approver, else the owner).
-      ...(await personAssignee(ctx, companyId, settings)),
+      outward: false,
     });
     await recordDecisionIssue(ctx, { issueId: issue.id, companyId, kind: "bank_match", subjectKind: match.kind === "payable" ? "bill" : "invoice", subjectId: parseOpenItemKey(match.openItemKey)?.id ?? "", payload: match as unknown as Record<string, unknown> });
     return issue.id;

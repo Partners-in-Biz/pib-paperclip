@@ -36,6 +36,8 @@ import { nextDocumentNumber } from "./numbering.js";
 import { emitQuoteAccepted } from "./handoff.js";
 import { emitInvoiceItem } from "./openitems.js";
 import { postInvoiceIssue, postInvoiceVoid } from "./posting.js";
+import { isCanaryEmail } from "./canary.js";
+import { activePaymentLinks, ensurePaymentLinks, retireInvoiceLinks } from "./pay/links.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
 import { actorLabel, currencyCode, integer, optionalBoolean, optionalDate, optionalString, requiredCompany, requiredString, requirePerson } from "./util.js";
 
@@ -92,8 +94,20 @@ export function customerNameOf(value: unknown): string | null {
   return typeof record.name === "string" ? record.name : null;
 }
 
-/** Who gets the email: the invoice's `send_to`, the customer's email, else billing contacts at the company. */
+/**
+ * Who gets the email: the invoice's `send_to`, the customer's email, else billing contacts at the company.
+ * Never an address on a reserved `.invalid` name (the canary client's): a rehearsal sends nothing, so the
+ * document is marked sent as it is for a customer with no address.
+ */
 export async function recipientsFor(
+  ctx: PluginContext,
+  companyId: string,
+  doc: { customer_kind: string; customer_ref: string; customer: unknown; customer_snapshot?: unknown; send_to?: unknown },
+): Promise<MailAddress[]> {
+  return (await recipientsOf(ctx, companyId, doc)).filter((address) => !isCanaryEmail(address.email));
+}
+
+async function recipientsOf(
   ctx: PluginContext,
   companyId: string,
   doc: { customer_kind: string; customer_ref: string; customer: unknown; customer_snapshot?: unknown; send_to?: unknown },
@@ -648,8 +662,10 @@ export async function invoiceView(ctx: PluginContext, invoice: InvoiceRow, setti
     legacy: totals.legacy,
     paidMinor: balance?.state.paidMinor ?? 0,
     creditedMinor: (balance?.state.creditedMinor ?? 0) + (balance?.state.writtenOffMinor ?? 0),
-    outstandingMinor: invoice.status === "draft" ? totals.totalMinor : balance?.outstandingMinor ?? totals.totalMinor,
+    // What is owed. The row may still be a draft while its email and PDF are made (the send freezes it as "sent" in memory first): a draft owes its whole total, never 0.
+    outstandingMinor: invoice.status === "draft" || balance?.invoice.status === "draft" ? totals.totalMinor : balance?.outstandingMinor ?? totals.totalMinor,
     payment: Object.keys(payment).length ? payment : null,
+    paymentLinks: (await activePaymentLinks(ctx, invoice)).map((link) => ({ provider: link.provider, label: link.label, url: link.url })),
     notes: invoice.notes ?? settings.invoiceNotes ?? null,
   };
 }
@@ -767,6 +783,8 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
     await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
     return { mode: "manual", attached: false, note: emailEnabled(settings) ? "No email address for this customer; marked sent without email." : "Email is off in Billing settings; marked sent." };
   }
+  // Online payment: a link per enabled provider for what the invoice will owe (none while every provider is off, and EFT stays the default).
+  await ensurePaymentLinks(ctx, invoice, settings, { createdBy, resolver });
   const view = await invoiceView(ctx, { ...invoice, status: "sent", sent_at: new Date().toISOString() }, settings);
   const pdf = await storePdf(ctx, invoice.company_id, "invoice", invoice.id, view, settings, resolver);
   const content = invoiceEmail(view, { hasAttachment: Boolean(pdf), signature: settings.email?.signature });
@@ -857,6 +875,7 @@ export async function retrySend(ctx: PluginContext, context: PluginPerformAction
     const { settings, resolver } = await loadBilling(ctx, companyId);
     const to = "sendTo" in params ? parseAddresses(params.sendTo) : await recipientsFor(ctx, companyId, invoice);
     if (to.length === 0) throw new BillingError("Add an email address for this customer first");
+    await ensurePaymentLinks(ctx, invoice, settings, { createdBy, resolver });
     const view = await invoiceView(ctx, invoice, settings);
     const pdf = await storePdf(ctx, companyId, "invoice", invoice.id, view, settings, resolver);
     const seq = Number(invoice.mail_seq ?? 0) + 1;
@@ -890,6 +909,7 @@ export async function cancelInvoice(ctx: PluginContext, context: PluginPerformAc
     `UPDATE ${table(ctx, "invoices")} SET status = 'cancelled', cancelled_at = now(), void_reason = $2, pending_action = NULL, updated_at = now() WHERE id = $1`,
     [invoice.id, reason],
   );
+  await retireInvoiceLinks(ctx, invoice.id);
   if (wasIssued) {
     const { settings } = await loadBilling(ctx, companyId);
     await postInvoiceVoid(ctx, invoice, settings);

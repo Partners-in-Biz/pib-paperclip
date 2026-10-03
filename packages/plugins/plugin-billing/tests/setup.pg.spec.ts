@@ -88,7 +88,7 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
     expect(item(s, "mailbox")).toMatchObject({ status: "optional", required: false, href: "/mailbox" });
     expect(item(s, "reminders")).toMatchObject({ status: "optional", required: false });
     expect(item(s, "first_client")).toMatchObject({ status: "optional", href: "/crm" });
-    expect(s.items.map((i) => i.key)).toEqual(["settings", "sender", "eft", "r2", "mailbox", "ledger", "reminders", "receipts", "jev", "first_client"]);
+    expect(s.items.map((i) => i.key)).toEqual(["settings", "sender", "eft", "r2", "mailbox", "ledger", "pay_stripe", "pay_payfast", "reminders", "receipts", "jev", "first_client"]);
   });
 
   it("marks configured items done and links settings by installation uuid once the page reported it", async () => {
