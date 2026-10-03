@@ -255,6 +255,35 @@ function objectsIn(text: string): string[] {
   return found;
 }
 
+/** Escapes raw control characters (line breaks, tabs) that sit inside JSON string literals, leaving everything else alone. */
+export function escapeControlCharsInStrings(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        out += ch;
+      } else if (ch === "\\") {
+        escaped = true;
+        out += ch;
+      } else if (ch === '"') {
+        inString = false;
+        out += ch;
+      } else if (ch === "\n") out += "\\n";
+      else if (ch === "\r") out += "\\r";
+      else if (ch === "\t") out += "\\t";
+      else if (ch.charCodeAt(0) < 0x20) out += `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+      else out += ch;
+    } else {
+      if (ch === '"') inString = true;
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /** The plan in an agent's answer: the first object with a "plan" list in a ```json fence, else anywhere in the text. An error says what is wrong. */
 export function extractPlan(output: string): { plan: PlanStep[]; summary: string } | { error: string } {
   const text = String(output ?? "");
@@ -265,7 +294,13 @@ export function extractPlan(output: string): { plan: PlanStep[]; summary: string
       try {
         parsed = JSON.parse(candidate);
       } catch {
-        continue;
+        // Agents often write a multi-line comment as a literal line break inside a JSON string, which strict JSON refuses.
+        // That is a formatting slip, not a wrong answer: read it as the intended text.
+        try {
+          parsed = JSON.parse(escapeControlCharsInStrings(candidate));
+        } catch {
+          continue;
+        }
       }
       if (!isRecord(parsed) || !Array.isArray(parsed.plan)) continue;
       const plan: PlanStep[] = [];

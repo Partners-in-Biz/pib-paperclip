@@ -8,6 +8,7 @@ import {
   EvalError,
   evalMarker,
   evalPrompt,
+  escapeControlCharsInStrings,
   extractPlan,
   gateSkill,
   gradeAnswer,
@@ -379,5 +380,24 @@ describe("the committed gate file", () => {
     const a = scenario({ id: "scenario-a" });
     const state = skillState([a], "h1", [{ skillSlug: "pib-operator", skillHash: "h1", scenarioId: "scenario-a", scenarioHash: scenarioHash(a), passed: true, gradedAt: "2026-10-03T10:00:00Z" }]);
     expect(resultsEntry(state, "2026-10-03T10:00:00Z", ["run-1"])).toEqual({ hash: "h1", passRate: 1, scenarios: { "scenario-a": true }, measuredAt: "2026-10-03T10:00:00Z", runs: ["run-1"] });
+  });
+});
+
+describe("extractPlan with literal line breaks inside strings", () => {
+  it("accepts a plan whose comment spans several lines without \\n escapes (a real harness answer)", () => {
+    const raw = '```json\n{"plan":[\n{"kind":"tool","tool":"partnersinbiz.cockpit:memory-recall","args":{"issueId":"PAR-810"},"say":"first"},\n{"kind":"comment","say":"**PASS**\nChecked the list.\n\n**Learned:** none"}\n],"summary":"passed"}\n```';
+    const got = extractPlan(raw);
+    expect("plan" in got).toBe(true);
+    if ("plan" in got) {
+      expect(got.plan).toHaveLength(2);
+      expect(got.plan[1]!.say).toBe("**PASS**\nChecked the list.\n\n**Learned:** none");
+      expect(got.summary).toBe("passed");
+    }
+  });
+  it("still refuses text that is not a plan at all", () => {
+    expect("error" in extractPlan('```json\n{"plan": [ {"kind": "comment", "say": "unterminated }\n```')).toBe(true);
+  });
+  it("escapeControlCharsInStrings leaves escaped sequences and structure alone", () => {
+    expect(escapeControlCharsInStrings('{"a":"x\\ny","b":\n"z\nq"}')).toBe('{"a":"x\\ny","b":\n"z\\nq"}');
   });
 });
