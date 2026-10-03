@@ -39,7 +39,7 @@ const instanceConfigSchema: JsonSchema = {
     healthIssue: {
       type: "boolean",
       title: "System health issue",
-      description: "Keep one open issue listing current problems (bad checks, plugins not reporting, agents in error or at 80% of budget). It closes itself when all is ok.",
+      description: "Keep one open issue listing current problems (bad checks, plugins not reporting, agents in error or at 80% of budget, failing routines and runs, issues blocked or stalled). It closes itself when all is ok.",
       default: true,
     },
     jev: {
@@ -91,7 +91,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.dashboardWidget.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs"] },
+  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations"] },
   tools: COCKPIT_TOOLS,
   jobs: [
     {
@@ -103,7 +103,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOBS.healthAlerts,
       displayName: "System health check",
-      description: "Every hour: opens, updates or closes one System health issue per company (bad checks, warnings older than a day, plugins not reporting, agents in error or at 80% of budget), and settles questions to the owner whose reply was missed.",
+      description: "Every hour: opens, updates or closes one System health issue per company (bad checks, warnings older than a day, plugins not reporting, agents in error or at 80% of budget, routines that failed their last run, agents that fail too often or the same way, issues that keep failing, issues blocked or stalled with nobody to move them), and settles questions to the owner whose reply was missed.",
       schedule: "20 * * * *",
     },
     {

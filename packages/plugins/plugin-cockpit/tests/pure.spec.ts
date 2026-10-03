@@ -170,6 +170,44 @@ describe("agents and budgets", () => {
   });
 });
 
+describe("runs counted by the database (RunStat)", () => {
+  const stat = (agentId: string, status: string, week: number, window: number, lastStartedAt: string | null, lastRunId: string | null = null) => ({ agentId, status, week, window, day: window, lastStartedAt, lastRunId });
+
+  it("builds agent rows from per-status counts: week totals, failures, the latest run and the latest failed run", () => {
+    const rows = agentRows([agent("b")], {
+      stats: [
+        stat("b", "succeeded", 1400, 190, "2026-09-26T09:00:00.000Z", "r-ok"),
+        stat("b", "failed", 90, 20, "2026-09-26T08:00:00.000Z", "r-failed"),
+        stat("b", "timed_out", 10, 1, "2026-09-26T09:30:00.000Z", "r-timeout"),
+        stat("b", "cancelled", 149, 0, "2026-09-25T09:00:00.000Z", "r-cancelled"),
+      ],
+      since: new Date("2026-09-19T10:00:00.000Z"),
+    });
+    // 1,649 runs in the week: far past the 1,000 rows the old read stopped at.
+    expect(rows[0]).toMatchObject({ lastRunAt: "2026-09-26T09:30:00.000Z", lastFailedRunId: "r-timeout", runs: { total: 1649, failed: 100 } });
+  });
+
+  it("adds stats to rows from the page's own run list", () => {
+    const rows = agentRows([agent("b")], {
+      runs: [{ id: "r1", agentId: "b", status: "failed", startedAt: "2026-09-26T09:00:00.000Z" }],
+      stats: [stat("b", "failed", 2, 1, "2026-09-26T09:40:00.000Z", "r2")],
+      since: new Date("2026-09-19T10:00:00.000Z"),
+    });
+    expect(rows[0]).toMatchObject({ lastFailedRunId: "r2", runs: { total: 3, failed: 3 } });
+  });
+
+  it("counts the activity window from the stats, and drops agents with none", () => {
+    const groups = activityGroups({
+      snapshots: [],
+      stats: [stat("a1", "succeeded", 50, 4, "2026-09-26T09:00:00.000Z"), stat("a1", "failed", 9, 3, "2026-09-26T09:30:00.000Z"), stat("a2", "failed", 5, 0, "2026-09-20T09:00:00.000Z")],
+      agents: [{ id: "a1", name: "Social agent" }, { id: "a2", name: "Quiet" }],
+      now: NOW,
+      windowMs: 24 * 3_600_000,
+    });
+    expect(groups.map((g) => [g.name, g.runs])).toEqual([["Social agent", { total: 7, failed: 3 }]]);
+  });
+});
+
 describe("activity", () => {
   it("groups plugin and host activity by agent within the window", () => {
     const groups = activityGroups({

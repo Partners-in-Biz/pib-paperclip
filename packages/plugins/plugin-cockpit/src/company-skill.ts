@@ -170,7 +170,7 @@ Roles are staffed in **Setup → Team** (hire, pick an existing agent, change). 
 - **Brand, audience and sender details**: ours from \`company-profile\` (Cockpit), a client's from \`get-client-profile\` (CRM). Fill empty fields you learn with \`update-company-profile\` / \`update-client-profile\`; changing a set value is the owner's call.
 
 ## How work moves
-- **Everything is an issue.** You are woken on issues assigned to you or by a routine. Do the work in the same run and leave the issue in a clear state: \`done\` (with evidence), \`in_review\` (with a real reviewer or approval), or \`blocked\` (naming exactly who must do what).
+- **Everything is an issue.** You are woken on issues assigned to you or by a routine. Do the work in the same run and leave the issue in a clear state: \`done\` (with evidence), \`in_review\` (with a real reviewer or approval), or \`blocked\` with an \`unblockDescriptor\` (who must do what; a block with none is flagged after a day).
 - **A run ends with your turn** (30 min max) and kills what you started. Detach builds/tests (\`setsid nohup … > <log> 2>&1 < /dev/null &\`), poll. Servers (\`next start\`) never exit: detach, curl within 20s, cap commands with \`timeout 60\`. Never end a turn to "wait" or leave an issue \`in_progress\` without a comment.
 - **Hand-offs**: when another role owns the next step, create an issue for that agent: title \`Hand-off: <what> (<client or own>)\`, the context and links, and what "done" means. Don't do another role's work.
 - **People are asked only for** money, legal, one-time grants (a login consent, a key, DNS) and real judgement: through the module's approval step, or \`ask-owner\` for everything else. Never ask a person to do what an agent can do.

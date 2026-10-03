@@ -91,7 +91,14 @@ export async function startPg(): Promise<PgHarness> {
   await client.query("SET TIME ZONE 'UTC'");
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // Stand-in for the host's core table the Cockpit may read.
-  await client.query(`CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text)`);
+  await client.query(
+    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid)`,
+  );
+  // The core issue columns the operations watch reads (watch.ts), and the blocker relations.
+  await client.query(
+    `CREATE TABLE public.issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT '', status text NOT NULL, hidden_at timestamptz, assignee_agent_id uuid, assignee_user_id text, blocked_transition_at timestamptz, unblock_descriptor jsonb, priority text, origin_kind text, origin_id text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
+  );
+  await client.query(`CREATE TABLE public.issue_relations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, issue_id uuid NOT NULL, related_issue_id uuid NOT NULL, type text NOT NULL DEFAULT 'blocks')`);
   for (const file of readdirSync(join(PLUGIN_ROOT, "migrations")).sort()) {
     const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
     for (const statement of splitSqlStatements(sql)) validateMigrationStatement(statement, NAMESPACE);
@@ -118,7 +125,7 @@ export async function startPg(): Promise<PgHarness> {
     db: {
       namespace: NAMESPACE,
       query: async (sql: string, params: unknown[] = []) => {
-        validateRuntimeQuery(sql, NAMESPACE, ["issues", "heartbeat_runs"]);
+        validateRuntimeQuery(sql, NAMESPACE, ["issues", "heartbeat_runs", "issue_relations"]);
         return JSON.parse(JSON.stringify((await run(sql, params)).rows));
       },
       execute: async (sql: string, params: unknown[] = []) => {
@@ -182,6 +189,8 @@ export async function startPg(): Promise<PgHarness> {
     async reset() {
       for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
       await client.query("DELETE FROM public.heartbeat_runs");
+      await client.query("DELETE FROM public.issue_relations");
+      await client.query("DELETE FROM public.issues");
       issues.clear();
       comments.length = 0;
       config.clear();

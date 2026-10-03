@@ -583,6 +583,23 @@ export interface RunLite {
   error?: string | null;
 }
 
+/**
+ * Runs counted by the database, one row per agent and status (the worker's
+ * `listRuns`): no row limit, so a busy company is counted in full. `week`,
+ * `window` and `day` are the runs that started in the last 7 days, in the
+ * activity window the caller asked for, and in the last 24 hours.
+ */
+export interface RunStat {
+  agentId: string;
+  status: string;
+  week: number;
+  window: number;
+  day: number;
+  /** When the latest run with this status started, and its id (links to its log). */
+  lastStartedAt: string | null;
+  lastRunId: string | null;
+}
+
 export interface AgentRow extends AgentLite {
   budgetRatio: number | null;
   alert: "budget" | "error" | null;
@@ -596,7 +613,8 @@ export interface AgentRow extends AgentLite {
 }
 
 const INACTIVE_AGENT = new Set(["terminated", "archived", "deleted"]);
-const FAILED_RUN = new Set(["failed", "error", "timed_out", "timeout", "cancelled_error"]);
+/** Statuses that count as a failed run (the host writes `failed` and `timed_out`; the others are older names). */
+export const FAILED_RUN = new Set(["failed", "error", "timed_out", "timeout", "cancelled_error"]);
 
 export function budgetRatio(agent: Pick<AgentLite, "budgetMonthlyCents" | "spentMonthlyCents">): number | null {
   return agent.budgetMonthlyCents > 0 ? agent.spentMonthlyCents / agent.budgetMonthlyCents : null;
@@ -623,7 +641,7 @@ export function agentAlert(agent: AgentLite): { alert: AgentRow["alert"]; text: 
   return { alert: null, text: null, raw: null };
 }
 
-export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapshots?: CockpitSnapshot[]; since?: Date } = {}): AgentRow[] {
+export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; stats?: RunStat[]; snapshots?: CockpitSnapshot[]; since?: Date } = {}): AgentRow[] {
   const since = input.since?.getTime() ?? 0;
   const quality = new Map<string, QualityMetric[]>();
   for (const snapshot of input.snapshots ?? []) {
@@ -646,6 +664,19 @@ export function agentRows(agents: AgentLite[], input: { runs?: RunLite[]; snapsh
       if (FAILED_RUN.has(run.status)) entry.failed += 1;
     }
     runs.set(run.agentId, entry);
+  }
+  // Counted by the database: the 7-day counts are already in, `since` does not apply.
+  for (const stat of input.stats ?? []) {
+    const entry = runs.get(stat.agentId) ?? { total: 0, failed: 0, last: null, failedAt: Number.NEGATIVE_INFINITY, failedId: null };
+    const at = stat.lastStartedAt ? Date.parse(stat.lastStartedAt) : Number.NaN;
+    if (!Number.isNaN(at) && (!entry.last || at > Date.parse(entry.last))) entry.last = stat.lastStartedAt;
+    if (FAILED_RUN.has(stat.status) && stat.lastRunId && !Number.isNaN(at) && at > entry.failedAt) {
+      entry.failedAt = at;
+      entry.failedId = stat.lastRunId;
+    }
+    entry.total += stat.week;
+    if (FAILED_RUN.has(stat.status)) entry.failed += stat.week;
+    runs.set(stat.agentId, entry);
   }
   return agents
     .filter((agent) => !INACTIVE_AGENT.has(agent.status))
@@ -758,6 +789,8 @@ export function activityGroups(input: {
   snapshots: CockpitSnapshot[];
   host?: HostActivityLite[];
   runs?: RunLite[];
+  /** Counted by the database; `window` is already the activity window. */
+  stats?: RunStat[];
   agents?: Array<Pick<AgentLite, "id" | "name">>;
   now: Date;
   windowMs: number;
@@ -795,6 +828,12 @@ export function activityGroups(input: {
     const g = group(run.agentId, names.get(run.agentId) ?? "Agent", run.agentId);
     g.runs.total += 1;
     if (FAILED_RUN.has(run.status)) g.runs.failed += 1;
+  }
+  for (const stat of input.stats ?? []) {
+    if (stat.window <= 0) continue;
+    const g = group(stat.agentId, names.get(stat.agentId) ?? "Agent", stat.agentId);
+    g.runs.total += stat.window;
+    if (FAILED_RUN.has(stat.status)) g.runs.failed += stat.window;
   }
   const limit = input.perGroup ?? 8;
   return [...groups.values()]

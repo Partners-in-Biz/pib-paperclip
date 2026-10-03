@@ -7,6 +7,7 @@ import {
   emptySnapshot,
   jobHealth,
   pluginUiBase,
+  routineHealth,
   settingsItem,
   type CockpitSnapshot,
   type HealthCheck,
@@ -24,6 +25,7 @@ import { memoryJevConfig } from "./memory/jev.js";
 import { memoryStats } from "./memory/store.js";
 import { cockpitFlowReports } from "./own-flows.js";
 import { profileSetupItem, readProfile } from "./profile.js";
+import { watchChecks } from "./watch.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
 /** The team (Operator, Reviewer, owner) is staffed in Setup → Team. */
@@ -228,6 +230,14 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     health.push(await jobHealth(env.ctx, JOBS.reemitRoles, "Hourly role updates", 60));
   } catch (error) {
     env.ctx.logger.info("Cockpit job health failed", { error: message(error) });
+  }
+  // The Cockpit's own routines, like every plugin reports its own (the kit adds them to what the others publish).
+  health.push(...(await routineHealth(env.ctx, companyId)));
+  // Run failure rate, repeated errors, retry storms, blocked and stalled issues (watch.ts).
+  try {
+    health.push(...(await watchChecks(env, companyId)));
+  } catch (error) {
+    env.ctx.logger.info("Cockpit watch failed", { error: message(error) });
   }
   try {
     const stats = await memoryStats(env.ctx, companyId);

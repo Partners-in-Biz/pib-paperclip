@@ -39,6 +39,28 @@ export interface FakeRoutine {
   assigneeAgentId: string | null;
 }
 
+function seeded(rows: unknown): Row[] {
+  if (rows instanceof Error) throw rows;
+  return (rows as Row[] | undefined) ?? [];
+}
+
+/** What `listRuns`' GROUP BY agent_id, status statement answers for these rows. */
+export function aggregateRuns(rows: Row[], params: string[]): Row[] {
+  const [, period, week, win, day] = params.map((p, i) => (i === 0 ? p : Date.parse(p)));
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const at = Date.parse(row.started_at);
+    if (Number.isNaN(at) || at < (period as number)) continue;
+    const key = `${row.agent_id}|${row.status}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return [...groups.values()].map((group) => {
+    const newest = [...group].sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at))[0]!;
+    const since = (from: number) => String(group.filter((row) => Date.parse(row.started_at) >= from).length);
+    return { agent_id: newest.agent_id, status: newest.status, week: since(week as number), win: since(win as number), day: since(day as number), last_started_at: newest.started_at, last_id: newest.id ?? null };
+  });
+}
+
 export function fakeCtx(options: {
   savedConfigs?: Record<string, Record<string, unknown>>;
   prefixes?: Record<string, string>;
@@ -52,8 +74,15 @@ export function fakeCtx(options: {
   const PRIORITY: Record<string, number> = { critical: 0, high: 1, medium: 2 };
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
-    coreReadTables: ["issues", "heartbeat_runs"],
+    coreReadTables: ["issues", "heartbeat_runs", "issue_relations"],
     routes: [
+      // The operations watch (watch.ts): rows a test seeds in `store.watch_<rule>` (an Error there makes that read fail); none by default.
+      // They come before the generic routes below.
+      [/row_number\(\) OVER/i, (_params, s) => seeded(s.watch_streak)],
+      [/GROUP BY context_snapshot/i, (_params, s) => seeded(s.watch_storm)],
+      [/GROUP BY agent_id, status, error_code/i, (_params, s) => seeded(s.watch_rate)],
+      [/jsonb_typeof\(i\.unblock_descriptor\)/i, (_params, s) => seeded(s.watch_blocked)],
+      [/i\.status = 'in_progress'/i, (_params, s) => seeded(s.watch_stalled)],
       [/FROM public\.issues/i, (params, s, sql) => {
         if (/origin_kind = \$2/i.test(sql)) {
           // Open issues of one origin kind (backlog counts as open), oldest first.
@@ -72,7 +101,12 @@ export function fakeCtx(options: {
         }
         return rows.filter((row) => row.assignee_user_id === params[1]);
       }],
-      [/FROM public\.heartbeat_runs/i, (params, s) => (s.core_runs ?? []).filter((row) => row.company_id === params[0])],
+      [/FROM public\.heartbeat_runs/i, (params, s, sql) => {
+        const rows = (s.core_runs ?? []).filter((row) => row.company_id === params[0]);
+        // `listRuns`: counted per agent and status, windows given as parameters ($2 period, $3 week, $4 window, $5 day).
+        if (/GROUP BY agent_id, status/i.test(sql)) return aggregateRuns(rows, params as string[]);
+        return rows;
+      }],
     ],
   });
   const emitted: Array<{ name: string; companyId: string; payload: unknown }> = [];

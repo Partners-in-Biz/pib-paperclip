@@ -31,7 +31,7 @@ One place to run the company: what waits on you, what the agents did, money, pip
    - **Overview:** "No Operator yet" and the Operator / Reviewer health checks link to Setup → Team ("Fix in Setup").
 4. **Hourly jobs.** Both only run for companies with saved Cockpit settings.
    - **`reemit-roles`** (`10 * * * *`): sends the roles again and links any pending hires.
-   - **`health-alerts`** (`20 * * * *`): keeps one **System health** issue per company. The issue covers bad checks, plugins that are not reporting, and agents in error or at 80% or more of budget. It is assigned to the Operator when one is linked, otherwise to the owner. The assignee is woken when new problems appear. The issue closes when everything is ok. Set `healthIssue: false` to turn it off.
+   - **`health-alerts`** (`20 * * * *`): keeps one **System health** issue per company. The issue covers bad checks, plugins that are not reporting, agents in error or at 80% or more of budget, and the operations watch below (failing routines, agents that fail too often or the same way, issues that keep failing, issues blocked or stalled with nobody to move them). It is assigned to the Operator when one is linked, otherwise to the owner. The assignee is woken only when a new problem appears (problems are keyed by agent, issue or routine, so a changed count updates the issue in place). The issue closes when everything is ok. Set `healthIssue: false` to turn it off.
 
 ## Flows (the company graph)
 
@@ -85,6 +85,24 @@ The Cockpit keeps the kit CRM projection (`crm_companies`, `crm_contacts`). Memo
 ## Health
 
 The System health issue lists bad checks at once, and **warnings unresolved for more than a day** (`health_warnings` remembers when each started; a check's own `since` counts too). The Cockpit's own checks include the owner not being set and questions older than 3 days.
+
+### Operations watch (0.4.5)
+
+Rules over what the host lets the Cockpit read (`public.heartbeat_runs`, `public.issues`, `public.issue_relations` and its own `asks`; the manifest's `coreReadTables` lists the three host tables). Pure rules in `src/watch-model.ts`, reads in `src/watch.ts`; `ownSnapshot` adds the checks, so they show on the Cockpit page, in `company-brief` → `health.problems` and in the System health issue. Each rule is one aggregate or a few capped rows, with times passed in from the worker's clock. A rule that cannot read its rows says so (`watch-unreadable:<rule>`, a warning) instead of checking nothing.
+
+| Rule (check key) | Fires when | Status |
+|---|---|---|
+| Run rate (`run-rate:<agent>`) | more than 15% of an agent's **finished** runs (succeeded, failed, timed out; cancelled and interrupted runs are not counted) failed or timed out, over at least 20 runs in 24 hours; names the most common error code | warn, bad from 50% |
+| Run streak (`run-streak:<agent>:<code>`) | the same `error_code` on the agent's latest 3 or more finished runs in a row (24 hours; a success or another code ends it) | bad |
+| Retry storm (`retry-storm:<issue>`) | one open issue with 4 or more failed runs in 24 hours whose latest run also failed; names the issue, the agent, the error code and the latest error text (for example `spawn E2BIG`) | bad |
+| Blocked (`blocked-no-way-out`) | issues blocked for more than 24 hours with no `unblockDescriptor`, no open blocker issue (`issue_relations`), no open question to the owner and no person assigned; lists the oldest five with the full count | warn (its own `since` is over a day old, so it reaches the issue at once) |
+| Stalled (`stalled-in-progress`) | `in_progress` issues (not updated for an hour) whose idle agent assignee has had no run for 12 hours and has none queued or running; paused or errored assignees have their own agent entries | warn, reaches the issue after a day |
+
+- **Counts:** `listRuns` (the worker side: scorecards, the brief, the watch rules) is a `GROUP BY agent_id, status` over all runs, not the first 1,000 rows, so a busy company (1,400 runs a week) is counted in full. The Overview page still reads its runs through `ui/api.ts` (`fetchRuns`, `limit=500`), so its per-agent "runs in 7 days", activity groups and runs chart undercount a very busy company until `cockpit.load` returns the aggregate counts.
+- **Redaction:** the latest error text in a retry storm (and an unreadable-rule message) goes through `redactSecrets` before it is copied: `user:password@` in URLs, GitHub, Slack, API and AWS keys, bearer tokens and `token=`, `secret=`, `password=` pairs.
+- **Routines:** a managed routine whose latest firing created no issue (`routine:<key>`, bad) is reported by the kit (`routineHealth`): for the Cockpit's own routines from `ownSnapshot`, for every other plugin through `publishCockpitSnapshot`. `routine_runs` is not a table plugins may read (host `PLUGIN_DATABASE_CORE_READ_TABLES`), so the signal is the routine row: `lastTriggeredAt` set on every firing, `lastEnqueuedAt` only when the firing created or joined an issue. It sees the latest firing only (not how many failed in a row), cannot read the run's error text (the check says where to look), skips paused and activity-gated routines, and waits for the next firing after the routine was edited. The likely cause comes from the issue template the host dispatches from (the routine's stored binding, `managedByPlugin.defaultsJson`), so it also names a routine that still holds an old template after its manifest was fixed; it falls back to the manifest. A firing the host skips because the routine's project is paused looks the same: the kit reads the project when the plugin may (`projects.read`, not the Cockpit) and leaves a paused one out, otherwise the detail mentions it.
+- **Who may do what about a failed routine (host rules).** Any agent of the company may read its runs (`GET /api/routines/{id}/runs`). Running it (`POST /api/routines/{id}/run`) is allowed only for the routine's assignee or the board: the host answers 403 for any other agent. So the Operator runs the Cockpit's own two routines itself and, for another agent's routine, opens an issue for the assignee ("Run <routine> once now and report"); the check also clears at the next scheduled run. Plugins can run their own routines (`ctx.routines.managed.run`); a plugin tool that does so would let the Operator clear the check directly, but none exists yet.
+- **Scope:** the hourly job visits only companies with saved Cockpit settings (host rule), so a company without them is not watched here.
 
 ## Operator and Reviewer
 

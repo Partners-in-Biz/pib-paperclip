@@ -13,6 +13,8 @@ import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
+import { routineFailedCheck } from "@partnersinbiz/pib-plugin-kit";
+import { blockedCheck, retryStormChecks, runRateChecks, runStreakChecks, stalledCheck } from "../src/watch-model.js";
 
 const skill = (slug: string) => SKILLS.find((s) => s.slug === slug)!;
 
@@ -59,6 +61,8 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain("`POST /api/companies/:companyId/cases`");
     expect(body).toContain("**stable `key`**");
     expect(body).toContain("writes the client's report as a `client_report` case");
+    // A block without a way out is flagged after a day (the Cockpit's blocked check).
+    expect(body).toContain("`blocked` with an `unblockDescriptor` (who must do what; a block with none is flagged after a day)");
   });
 });
 
@@ -85,6 +89,68 @@ describe("the Operator skill", () => {
     ]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
     expect(OPERATOR_SKILL_BODY).not.toContain("leads → CRM owner");
     expect(OPERATOR_SKILL_BODY).not.toContain("invoices → Bookkeeper");
+  });
+});
+
+describe("the Operator knows how to act on each watch problem", () => {
+  const demo = new Date("2026-10-03T12:00:00.000Z");
+  const agents = new Map([["seo", { id: "seo", name: "SEO Specialist" }]]);
+  const titles = () => [
+    routineFailedCheck({ routineKey: "k", title: "Run today's SEO", pluginTitle: "SEO", routineId: "r", at: demo.toISOString() }).title,
+    runRateChecks([{ agentId: "seo", status: "succeeded", errorCode: null, count: 10 }, { agentId: "seo", status: "failed", errorCode: "x", count: 10 }], agents)[0]!.title,
+    runStreakChecks(Array.from({ length: 3 }, (_, i) => ({ agentId: "seo", status: "failed", errorCode: "adapter_failed", startedAt: new Date(demo.getTime() - i * 60_000).toISOString(), issueId: null, identifier: null })), agents)[0]!.title,
+    retryStormChecks([{ issueId: "i", identifier: "PAR-1", title: null, failed: 5, errorCode: null, codes: 0, agentId: null, firstFailedAt: null, lastError: null }], agents)[0]!.title,
+    blockedCheck([{ id: "b", identifier: "PAR-2", title: "t", since: "2026-09-28T00:00:00.000Z" }], 1, demo)!.title,
+    stalledCheck([{ id: "s", identifier: "PAR-3", title: "t", assigneeAgentId: "seo", updatedAt: "2026-10-02T00:00:00.000Z", lastRunAt: null }], 1, agents, demo)!.title,
+  ];
+
+  it("quotes the words each problem is titled with, so a renamed check cannot orphan its instructions", () => {
+    const [routine, rate, streak, storm, blocked, stalled] = titles();
+    expect(routine).toContain("failed its last run");
+    expect(rate).toMatch(/failed \d+% of its runs$/);
+    expect(streak).toContain("times in a row with");
+    expect(storm).toContain("keeps failing");
+    expect(blocked).toContain("blocked with no way out");
+    expect(stalled).toContain("in progress with nobody working on");
+    for (const text of ["failed its last run", "% of its runs", "times in a row with", "keeps failing", "blocked with no way out", "in progress with nobody working on"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+  });
+
+  it("says what to do: never just retry, give a blocked issue a way out, wake a stalled assignee", () => {
+    for (const text of [
+      "never just retry",
+      "spawn E2BIG",
+      "continuation issue",
+      "workspace_validation_failed",
+      "`blockedByIssueIds`",
+      "`unblockDescriptor`",
+      "PATCH /api/issues/{id}",
+      "set it `todo` and wake the assignee, or cancel it with a reason",
+      "assignee idle for 12 hours",
+    ]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+  });
+
+  it("tells the Operator only what the host lets it do about a failed routine: read the runs, hand the run to the assignee", () => {
+    const line = OPERATOR_SKILL_BODY.split("\n").find((l) => l.includes("failed its last run"))!;
+    // Reading a routine's runs is open to every agent; running one is not (the host answers 403 unless the agent is its assignee).
+    expect(line).toContain("`GET /api/routines/{id}/runs` (any agent");
+    expect(line).toContain("only its assignee may `POST /api/routines/{id}/run`");
+    expect(line).toContain("(you, for the Cockpit's own routines)");
+    expect(line).toContain('open an issue for the assignee: "Run <routine> once now and report"');
+    expect(line).toContain("or at the next schedule");
+    // No role this plugin cannot name for every company, and no button the Operator may not press.
+    expect(line).toContain("the role that owns code, or the owner if none");
+    for (const text of ["Developer", "Run now"]) expect(OPERATOR_SKILL_BODY, text).not.toContain(text);
+    // The same promise in the check's own fix text, so the skill and the check cannot drift apart.
+    const fix = routineFailedCheck({ routineKey: "k", title: "Run today's SEO", pluginTitle: "SEO", routineId: "r-1", at: demo.toISOString() }).fix!;
+    expect(fix).toContain("only the routine's assignee (or the owner) may POST /api/routines/r-1/run");
+    expect(fix).toContain("open an issue for the assignee");
+  });
+
+  it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
+    const operator = skill("pib-operator");
+    expect(operator.markdown!.length).toBeLessThan(17_950);
+    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(18_000);
+    expect(companySkillBody().length).toBeLessThan(16_000);
   });
 });
 

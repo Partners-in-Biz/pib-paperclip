@@ -30,7 +30,7 @@ import {
   type ApprovalLite,
   type CockpitSnapshot,
   type IssueLite,
-  type RunLite,
+  type RunStat,
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
@@ -129,22 +129,37 @@ export async function listUnassigned(ctx: PluginContext, companyId: string): Pro
   }
 }
 
-/** Heartbeat runs of the last `days` days (core read of public.heartbeat_runs). */
-export async function listRuns(ctx: PluginContext, companyId: string, days: number): Promise<RunLite[]> {
+/**
+ * Heartbeat runs counted per agent and status (core read of
+ * public.heartbeat_runs), by the database: one `GROUP BY agent_id, status`
+ * row per pair, never a row fetch. The old `LIMIT 1000` cut a busy company's
+ * 1,400 runs a week short, which understated every failure view. The counts
+ * cover the last 7 days, the activity window and the last 24 hours; the latest
+ * start and run id per status are read over the last `days` days.
+ */
+export async function listRuns(ctx: PluginContext, companyId: string, input: { now: Date; days: number; windowHours: number }): Promise<RunStat[]> {
+  const ago = (ms: number) => new Date(input.now.getTime() - ms).toISOString();
   try {
     const rows = await ctx.db.query<Record<string, unknown>>(
-      `SELECT id, agent_id, status, started_at, finished_at, error FROM public.heartbeat_runs
-        WHERE company_id = $1 AND started_at >= now() - ($2 || ' days')::interval
-        ORDER BY started_at DESC LIMIT 1000`,
-      [companyId, String(days)],
+      `SELECT agent_id, status,
+              count(*) FILTER (WHERE started_at >= $3::timestamptz)::text AS week,
+              count(*) FILTER (WHERE started_at >= $4::timestamptz)::text AS win,
+              count(*) FILTER (WHERE started_at >= $5::timestamptz)::text AS day,
+              max(started_at) AS last_started_at,
+              (array_agg(id ORDER BY started_at DESC))[1]::text AS last_id
+         FROM public.heartbeat_runs
+        WHERE company_id = $1 AND started_at >= $2::timestamptz
+        GROUP BY agent_id, status`,
+      [companyId, ago(input.days * 86_400_000), ago(7 * 86_400_000), ago(input.windowHours * 3_600_000), ago(86_400_000)],
     );
     return rows.map((row) => ({
-      id: row.id == null ? null : String(row.id),
       agentId: String(row.agent_id),
       status: String(row.status ?? ""),
-      startedAt: iso(row.started_at),
-      finishedAt: iso(row.finished_at),
-      error: row.error == null ? null : String(row.error).slice(0, 300),
+      week: Number(row.week) || 0,
+      window: Number(row.win) || 0,
+      day: Number(row.day) || 0,
+      lastStartedAt: iso(row.last_started_at),
+      lastRunId: row.last_id == null ? null : String(row.last_id),
     }));
   } catch (error) {
     ctx.logger.info("Cockpit run read failed", { companyId, error: message(error) });
@@ -171,7 +186,8 @@ export interface CompanyData {
   snapshots: CockpitSnapshot[];
   receivedAt: Record<string, string>;
   agents: AgentLite[];
-  runs: RunLite[];
+  /** Runs counted by the database (`listRuns`). */
+  runStats: RunStat[];
   approvals: ApprovalLite[];
   ownerIssues: IssueLite[];
   setupMissing: number;
@@ -185,13 +201,13 @@ export interface CompanyData {
   unassigned: { count: number; items: UnassignedIssue[] };
 }
 
-export async function loadCompanyData(env: Env, companyId: string, days = 7): Promise<CompanyData> {
+export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24): Promise<CompanyData> {
   const roles = await getRoles(env.ctx, companyId);
   const stored = await storedSnapshots(env, companyId);
   const own = await ownSnapshot(env, companyId);
-  const [agents, runs, approvals, ownerIssues, statuses, asks, unassigned] = await Promise.all([
+  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned] = await Promise.all([
     listAgents(env, companyId),
-    listRuns(env.ctx, companyId, Math.max(days, 7)),
+    listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
     listApprovals(env.ctx, companyId),
     listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null),
     setupStatuses(env, companyId),
@@ -209,7 +225,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7): Pr
     snapshots: [...stored.map((s) => s.snapshot), own],
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
     agents,
-    runs,
+    runStats,
     approvals,
     ownerIssues,
     setupMissing: missing,
@@ -305,7 +321,7 @@ export function stuckFlowItem(stage: FlowStageView, link: (href: string) => stri
 /** Compact JSON for the Operator: waiting, health, KPIs, activity, agents incl. spend/budget. */
 export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number } = {}) {
   const windowHours = Math.min(Math.max(Math.round(options.windowHours ?? 24), 1), 720);
-  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24));
+  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours);
   const now = env.now();
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
@@ -316,8 +332,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const groups = healthGroups(data.snapshots, stale);
   const problems = await collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince });
   const waiting = waitingFrom(data);
-  const agents = agentRows(data.agents, { runs: data.runs, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
-  const activity = activityGroups({ snapshots: data.snapshots, runs: data.runs, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
+  const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
+  const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;

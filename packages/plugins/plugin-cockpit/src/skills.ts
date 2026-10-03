@@ -43,7 +43,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 
 | Tool | Use it for |
 |---|---|
-| ${T(TOOL_NAMES.brief)} | Everything at once, compact JSON. Start here. \`windowHours: 168\` for the weekly retro. It includes \`asks\` (questions agents asked the owner), \`stuckFlows\` (where work is stuck), \`unassigned\` (open issues nobody holds) and \`team\` (the agent in each role). |
+| ${T(TOOL_NAMES.brief)} | Everything at once, compact JSON. Start here (\`windowHours: 168\` for the weekly retro). It includes \`asks\`, \`stuckFlows\`, \`unassigned\` (open issues nobody holds) and \`team\` (the agent in each role). |
 | ${T(TOOL_NAMES.health)} | Problems worst first, each with \`fix\` and \`href\`. |
 | ${T(TOOL_NAMES.waiting)} | What waits on a person: questions for the owner first, then money and legal. |
 | ${T(TOOL_NAMES.scorecards)} | Per agent: runs, failures, spend vs budget, quality metrics. |
@@ -67,20 +67,22 @@ ${routingMap()}
 2. **Health first.** For every \`bad\` check, then every \`warn\`:
    - Follow its \`fix\`. If an agent owns the broken thing (a failed publish, a stuck sync, a failing job in its plugin), open or reuse an issue for that agent with the check, the detail and the link, and wake it.
    - Agent **in error**: read its last run (\`GET /api/companies/{companyId}/heartbeat-runs?agentId=…&limit=5\`). If the cause is clear and fixable by an agent, hand it off. If it needs a key, a login or money, it goes on the brief.
-   - Agent at **80%+ of its budget**: check what it spent on. Narrow its work (pause low-value routines, comment on its issues). Never raise a budget; that is the owner's call, so put it on the brief with the numbers.
+   - Agent at **80%+ of its budget**: check what it spent on and narrow its work (pause low-value routines). Never raise a budget (the owner's call): put it on the brief with the numbers.
    - "Plugin not reporting": check the plugin is on and its settings are saved (Setup page). If a person must act, it goes on the brief.
+   - **Routine "…" failed its last run**: a schedule fired but created no issue, so that work did not happen. Read why: \`GET /api/routines/{id}/runs\` (any agent; the id is in \`href\`). A plugin bug (the check names it) goes to the role that owns code, or the owner if none; anything else (assignee paused, workspace) you fix. To run it again, only its assignee may \`POST /api/routines/{id}/run\` (you, for the Cockpit's own routines), so open an issue for the assignee: "Run <routine> once now and report". The check clears when a run creates its issue, or at the next schedule.
+   - **An agent failing** ("failed N% of its runs", "N times in a row with <code>", "<issue> keeps failing"): read the latest failed run's error. The same error each time means retrying will not help, so never just retry. Fix the cause or change the work: \`spawn E2BIG\` means the thread is too long (close it and open a continuation issue with a short summary); \`workspace_validation_failed\` means the project's workspace is not set up; a timeout means split the task. Set a storming issue aside (step 5) until it is fixed.
    - The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when everything is ok (closing it yourself reopens it).
 3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.**
    - Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks). Missing or paused: the owner fixes it in Setup → Team; put it on the brief with the link \`/<prefix>/setup?section=team\`.
    - Each module's routines are on (their setup items and health checks say when one is off).
-   - \`asks\`: every question an agent asked the owner. Put the oldest first on the brief. If one does not need the owner after all (you can answer it from context), answer it in a comment and hand the issue back to the agent that asked; that closes the question.
+   - \`asks\`: every question an agent asked the owner. Oldest first on the brief. If you can answer one from context, answer it in a comment and hand the issue back to the agent that asked; that closes it.
 4. **Route unassigned work.** Each item in \`unassigned\` is an open issue nobody holds: assign it to the agent in the role that owns the work (Who owns what) and wake it, or close it as a duplicate. Never leave work unassigned.
-5. **Unblock agents.** List blocked and stale work (\`GET /api/companies/{companyId}/issues?status=blocked\` and in-progress issues not updated for 2 days). For each:
-   - Answer the question yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. If the answer is lasting knowledge, save it with ${T(MEMORY_TOOLS.add)} so the next agent gets it in its brief.
-   - Reassign it when the wrong agent has it.
-   - Split it into a hand-off (below) when another agent must do part of it.
-   - Only when a person must decide or grant something: the agent asks with ${T(TOOL_NAMES.askOwner)} on its issue (ask on it yourself if it did not).
-6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first (the owner sees the same on Cockpit → Flows). Waiting on an agent: wake it, or hand the work to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
+5. **Unblock agents.** Health lists issues **blocked with no way out** for over a day (nothing can wake them) and issues **in progress with nobody working on them**; also check other blocked work (\`GET /api/companies/{companyId}/issues?status=blocked\`). For each:
+   - Give every blocked issue a way out with \`PATCH /api/issues/{id}\`: \`blockedByIssueIds\` when another issue must finish first; \`unblockDescriptor\` \`{"owner": {"agentId": …}, "action": "what must happen"}\` when another agent must do something; ${T(TOOL_NAMES.askOwner)} when a person must. Nothing left to wait for: set it \`todo\` and wake the assignee, or cancel it with a reason.
+   - In progress, assignee idle for 12 hours: comment what to do next to wake it; if it cannot, reassign to the role that owns it; if the work is done, close it with evidence.
+   - Answer the question yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. Lasting knowledge: save it with ${T(MEMORY_TOOLS.add)}.
+   - Reassign it when the wrong agent has it; split off a hand-off (below) when another agent must do part of it.
+6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first. Waiting on an agent: wake it, or hand the work to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
 7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions and say so on the issue. Keep only money, legal, one-time grants (a login consent, a key, a DNS record) and real judgement.
 8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Make sure each has an owner agent and is not blocked.
 9. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief per day.
@@ -106,7 +108,7 @@ Short. The owner reads it on their phone. Use this shape:
 - <agent>: <what it will do>
 \`\`\`
 
-- Never more than ~20 lines. Link every item. No filler, no restating numbers that are fine.
+- Never more than ~20 lines. Link every item. No filler.
 - "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after your clean-up in step 7.
 
 ## Onboarding a new client
@@ -138,7 +140,7 @@ Approvals (sending, publishing, paying, launching) are not questions: they go th
 
 ## Hand-off tasks
 
-When work must move to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`):
+To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`):
 
 - **Title:** \`Hand-off: <what> (<client or "own">)\`
 - **Assignee:** the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). Status \`todo\`.
@@ -148,10 +150,7 @@ When work must move to another agent, create an issue (\`POST /api/companies/{co
 
 ## Unblocking agents
 
-- Read the whole thread before acting. The answer is often already there.
-- Missing information another agent has → hand-off to that agent, block the waiting issue on it.
-- Missing access or a secret → one ${T(TOOL_NAMES.askOwner)} on the agent's issue (every link and step in it), then move the agent to other work meanwhile.
-- The same agent blocked on the same thing twice → note it for the weekly retro.
+Read the whole thread first; the answer is often there. Information another agent has → hand-off plus \`blockedByIssueIds\`. Access or a secret → one ${T(TOOL_NAMES.askOwner)} (every link and step in it) while the agent does other work. The same block twice → weekly retro.
 
 ## Weekly retro (Mondays 08:00, routine)
 
