@@ -16,6 +16,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
 import { COMPANY_OS_INSTRUCTION, COMPANY_OS_SKILL } from "./asking.js";
+import { runProfileForRole, runProfileHireText, runProfileRows, type RunProfile } from "./run-profile.js";
 
 export interface HireSkill {
   /** Canonical key the host gives the managed skill, e.g. `plugin/partnersinbiz-seo/seo-sprint`. */
@@ -51,6 +52,12 @@ export interface HireRole {
   pluginSetup: string[];
   /** Other plugin tool namespaces the agent will use, e.g. `partnersinbiz.crm`. */
   toolPlugins: string[];
+  /**
+   * Model, effort, timeout, turn cap and concurrency for the hire. Omit to take
+   * the kit's default for `roleKey` (`runProfileForRole`). The hire task prints
+   * it; a plugin cannot set it on the agent afterwards.
+   */
+  runProfile?: RunProfile;
 }
 
 export interface HireRecord {
@@ -143,6 +150,7 @@ export function hireSkills(role: HireRole): HireSkill[] {
 }
 
 export function hireTaskDraft(role: HireRole): { title: string; description: string } {
+  const profile = role.runProfile ?? runProfileForRole(role.roleKey);
   const skillLines = hireSkills(role).map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
   const setupLines = role.pluginSetup.map((line) => `- ${line}`).join("\n");
   const description = `The ${role.pluginName} plugin needs an agent. Please hire it the way we hire every agent, so it sits in the right place in the org chart.
@@ -157,7 +165,10 @@ export function hireTaskDraft(role: HireRole): { title: string; description: str
 | **Reports to** | ${role.suggestedManager ?? "the right manager for this work (your call)"} |
 | **Adapter** | ${role.adapterPreference.map((a) => `\`${a}\``).join(", then ")} (first one that has a working model key) |
 | **Budget** | ${money(role.budgetMonthlyCents)} |
+${runProfileRows(profile, role.adapterPreference).join("\n")}
 | **Start** | paused, until its model key is checked |
+
+${runProfileHireText(profile, role.adapterPreference)}
 
 **What it does:** ${role.capabilities}
 
@@ -211,7 +222,8 @@ export async function listCompanyAgents(ctx: PluginContext, companyId: string): 
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function desiredSkills(agent: Record<string, unknown>): string[] {
+/** The skill keys an agent has attached (`adapterConfig.paperclipSkillSync.desiredSkills`). */
+export function agentDesiredSkills(agent: Record<string, unknown>): string[] {
   const config = agent.adapterConfig;
   if (!config || typeof config !== "object") return [];
   const sync = (config as Record<string, unknown>).paperclipSkillSync;
@@ -230,7 +242,7 @@ function norm(value: string | null | undefined): string {
  * manual) never count, or any new PiB agent would match any open hire.
  */
 export function matchesRole(agent: Record<string, unknown>, role: HireRole): boolean {
-  const skills = desiredSkills(agent).map((s) => s.toLowerCase());
+  const skills = agentDesiredSkills(agent).map((s) => s.toLowerCase());
   const ownSkills = role.skills.filter((s) => s.key !== COMPANY_OS_HIRE_SKILL.key && s.slug !== COMPANY_OS_HIRE_SKILL.slug);
   const hasSkill = ownSkills.some((s) =>
     skills.some((k) => k === s.key.toLowerCase() || k === s.slug.toLowerCase() || k.endsWith(`/${s.slug.toLowerCase()}`) || k.endsWith(`/${s.key.split("/").pop()!.toLowerCase()}`)),
@@ -428,14 +440,15 @@ export async function unlinkAgent(ctx: PluginContext, companyId: string, role: H
   await writeHireState(ctx, companyId, role.roleKey, { ...state, agentId: null, linkedAt: null, linkedBy: null });
 }
 
-const AGENT_EVENTS = ["agent.created", "agent.updated", "agent.status_changed", "approval.decided"] as const;
+/** The core events `registerHireWatch` subscribes to (one handler each; no other code of the plugin may subscribe to them). */
+export const HIRE_WATCH_EVENTS = ["agent.created", "agent.updated", "agent.status_changed", "approval.decided"] as const;
 
 /**
  * Watches agent events and links pending hires. Delivery is at-most-once, so
  * callers also run `tryLinkPendingHire` from their page load and hourly job.
  */
 export function registerHireWatch(ctx: PluginContext, roles: Array<{ role: HireRole; onLinked: OnAgentLinked }>): void {
-  for (const name of AGENT_EVENTS) {
+  for (const name of HIRE_WATCH_EVENTS) {
     ctx.events.on(name, async (event: PluginEvent) => {
       if (!event.companyId) return;
       for (const { role, onLinked } of roles) {

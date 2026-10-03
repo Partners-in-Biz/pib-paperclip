@@ -263,9 +263,41 @@ export interface RolesPayload {
   /** Every staffed PiB role (from the plugins' snapshots), so any plugin can route work to the right agent. */
   team?: Partial<Record<TeamRoleKey, { agentId: string | null; status?: string | null }>>;
   updatedAt: string;
+  /** Set by `registerRoleWatch` when a plugin stores its copy: when this copy last arrived (the Cockpit does not send it). */
+  receivedAt?: string;
 }
 
 const ROLES_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "pib-cockpit", stateKey: "roles" });
+const OWNER_LAST_KNOWN_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "pib-kit", stateKey: "owner-last-known" });
+
+/** A moment as epoch ms from an ISO stamp or the host's Postgres text ("2026-09-27 18:46:11.052+00"); NaN when unreadable. */
+export function stampMs(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "string" ? Date.parse(value) : Number.NaN;
+}
+
+/**
+ * True when `incoming` is strictly older than the copy a plugin holds. Stamps
+ * are compared as moments, never as text: the first broadcast carried an ISO
+ * stamp ("2026-09-27T06:32:49.178Z") and every later one the host's Postgres
+ * text ("2026-09-27 18:46:11.052+00"), and "T" sorts after " ", so a text
+ * compare dropped every later broadcast and froze each plugin's copy on the
+ * first one (no owner, no Reviewer) for five days (Q5-6). An unreadable stamp
+ * never blocks an update.
+ */
+export function rolesPayloadIsOlder(current: Pick<RolesPayload, "updatedAt"> | null | undefined, incoming: Pick<RolesPayload, "updatedAt">): boolean {
+  const have = stampMs(current?.updatedAt);
+  const next = stampMs(incoming.updatedAt);
+  return Number.isFinite(have) && Number.isFinite(next) && have > next;
+}
+
+/** The host's board sentinel (a local_trusted install): not a company member, so nothing can be assigned to it. */
+export const LOCAL_BOARD_USER_ID = "local-board";
+
+/** The id when issues can be assigned to it, else null (empty, or the board sentinel). */
+export function assignableUserId(userId: string | null | undefined): string | null {
+  return typeof userId === "string" && userId.trim() && userId.trim() !== LOCAL_BOARD_USER_ID ? userId.trim() : null;
+}
 
 export function registerRoleWatch(ctx: PluginContext): void {
   ctx.events.on(`plugin.${COCKPIT_PLUGIN}.${COCKPIT_EVENTS.rolesUpdated}`, async (event: PluginEvent) => {
@@ -274,20 +306,141 @@ export function registerRoleWatch(ctx: PluginContext): void {
     if (!companyId || !payload) return;
     try {
       const current = (await ctx.state.get(ROLES_STATE(companyId))) as RolesPayload | null;
-      if (current?.updatedAt && payload.updatedAt && Date.parse(current.updatedAt) > Date.parse(payload.updatedAt)) return;
-      await ctx.state.set(ROLES_STATE(companyId), payload);
+      if (rolesPayloadIsOlder(current, payload)) return;
+      await ctx.state.set(ROLES_STATE(companyId), { ...payload, receivedAt: new Date().toISOString() });
+      // The last owner ever seen survives a later copy that has none, so a cleared owner never leaves approvals unassigned.
+      const owner = assignableUserId(payload.ownerUserId);
+      if (owner) await ctx.state.set(OWNER_LAST_KNOWN_STATE(companyId), { userId: owner, at: new Date().toISOString() });
     } catch (error) {
       ctx.logger.info("Roles update failed", { error: error instanceof Error ? error.message : String(error) });
     }
   });
 }
 
-export async function companyRoles(ctx: PluginContext, companyId: string): Promise<RolesPayload | null> {
+export interface RolesRead {
+  roles: RolesPayload | null;
+  /** The state read threw (the host refused the call, or the state store failed); `roles` is null then. */
+  error: string | null;
+  /** How long ago this plugin's copy arrived, when it says (copies stored before kit 0.2 do not). */
+  ageMs: number | null;
+}
+
+let rolesErrorLoggedAt = 0;
+
+/**
+ * The company's roles as this plugin holds them, with what went wrong when
+ * there are none. `companyRoles` returns only the payload; use this where a
+ * missing copy must be visible instead of silently meaning "no Reviewer, no
+ * owner". A failed read is logged (at most once a minute per worker).
+ */
+export async function readCompanyRoles(ctx: PluginContext, companyId: string, now: number = Date.now()): Promise<RolesRead> {
   try {
-    return ((await ctx.state.get(ROLES_STATE(companyId))) as RolesPayload | null) ?? null;
+    const roles = ((await ctx.state.get(ROLES_STATE(companyId))) as RolesPayload | null) ?? null;
+    const received = stampMs(roles?.receivedAt);
+    return { roles, error: null, ageMs: Number.isFinite(received) ? Math.max(0, now - received) : null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (now - rolesErrorLoggedAt > 60_000) {
+      rolesErrorLoggedAt = now;
+      ctx.logger?.warn?.("Roles copy could not be read; routing falls back to the company's default owner", { companyId, error: message });
+    }
+    return { roles: null, error: message, ageMs: null };
+  }
+}
+
+/**
+ * The company's roles for routing. This is the stored copy, with one repair:
+ * when the copy has no owner (or there is no copy at all) and the host knows the
+ * company's default responsible user, that person is the owner. Every existing
+ * caller that reads `.ownerUserId` (approvals, work routing, leave, mail) is
+ * therefore protected from a frozen, missing or ownerless copy without changing
+ * its code. Use `readCompanyRoles` for the raw copy and how old it is.
+ */
+export async function companyRoles(ctx: PluginContext, companyId: string): Promise<RolesPayload | null> {
+  const { roles } = await readCompanyRoles(ctx, companyId);
+  if (assignableUserId(roles?.ownerUserId)) return roles;
+  const owner = await companyDefaultOwner(ctx, companyId);
+  if (!owner) return roles;
+  return roles
+    ? { ...roles, ownerUserId: owner }
+    : { companyId, operatorAgentId: null, reviewerAgentId: null, ownerUserId: owner, reviewOutward: false, updatedAt: "" };
+}
+
+/** The last owner this plugin ever saw in a roles broadcast, or null. */
+export async function lastKnownOwner(ctx: PluginContext, companyId: string): Promise<string | null> {
+  try {
+    const value = (await ctx.state.get(OWNER_LAST_KNOWN_STATE(companyId))) as { userId?: unknown } | null;
+    return assignableUserId(typeof value?.userId === "string" ? value.userId : null);
   } catch {
     return null;
   }
+}
+
+/** One short-lived memo per plugin context (one per worker in production), so tests and workers never share it. */
+const defaultOwnerCache = new WeakMap<object, Map<string, { userId: string | null; at: number }>>();
+const DEFAULT_OWNER_TTL_MS = 5 * 60_000;
+
+/**
+ * The company's default responsible person as the host keeps it
+ * (`Company.defaultResponsibleUserId`, set when the company is created). It
+ * does not depend on the Cockpit's roles broadcast, so it exists for a
+ * company that never saved its team (Partners in Apps has no roles at all).
+ * Needs the `companies.read` capability (every PiB plugin declares it);
+ * null when it is missing, the company is unknown or the call fails. An answer
+ * is cached for five minutes; a failed or empty lookup is not.
+ */
+export async function companyDefaultOwner(ctx: PluginContext, companyId: string, now: number = Date.now()): Promise<string | null> {
+  let memo = defaultOwnerCache.get(ctx);
+  if (!memo) {
+    memo = new Map();
+    defaultOwnerCache.set(ctx, memo);
+  }
+  const cached = memo.get(companyId);
+  if (cached && now - cached.at < DEFAULT_OWNER_TTL_MS) return cached.userId;
+  let userId: string | null = null;
+  try {
+    const company = (await ctx.companies.get(companyId)) as { defaultResponsibleUserId?: string | null } | null;
+    userId = assignableUserId(company?.defaultResponsibleUserId ?? null);
+    // Only an answer is cached. A refused call (a job for a company with no saved config) or an unknown company is not: a tool call seconds later may succeed.
+    if (company) memo.set(companyId, { userId, at: now });
+  } catch {
+    userId = null;
+  }
+  return userId;
+}
+
+/** Clears the default-owner memo for one company, or for all of them. */
+export function forgetCompanyDefaultOwner(ctx: PluginContext, companyId?: string): void {
+  if (!companyId) defaultOwnerCache.delete(ctx);
+  else defaultOwnerCache.get(ctx)?.delete(companyId);
+}
+
+export type OwnerSource = "roles" | "company-default" | "actor" | "last-known";
+
+/**
+ * The person who decides things for the company, from the first source that
+ * has one: the Cockpit's roles copy, the host's default responsible user, the
+ * person who triggered this work (`actorUserId`), and, only when
+ * `lastKnown` is set, the last owner this plugin ever saw. Nothing here depends
+ * on the roles copy being fresh, so an approval finds a person for as long as
+ * the company has one. Approvals set `lastKnown` (an unassigned approval is
+ * never right); plain work routing does not, so an owner someone cleared on
+ * purpose stays cleared.
+ */
+export async function ownerUserFor(
+  ctx: PluginContext,
+  companyId: string,
+  options: { roles?: RolesPayload | null; actorUserId?: string | null; lastKnown?: boolean } = {},
+): Promise<{ userId: string | null; source: OwnerSource | null }> {
+  const roles = options.roles !== undefined ? options.roles : (await readCompanyRoles(ctx, companyId)).roles;
+  const fromRoles = assignableUserId(roles?.ownerUserId);
+  if (fromRoles) return { userId: fromRoles, source: "roles" };
+  const fromCompany = await companyDefaultOwner(ctx, companyId);
+  if (fromCompany) return { userId: fromCompany, source: "company-default" };
+  const actor = assignableUserId(options.actorUserId);
+  if (actor) return { userId: actor, source: "actor" };
+  const remembered = options.lastKnown ? await lastKnownOwner(ctx, companyId) : null;
+  return remembered ? { userId: remembered, source: "last-known" } : { userId: null, source: null };
 }
 
 /**
@@ -328,15 +481,16 @@ export interface WorkRoute {
 
 /**
  * Who gets a piece of work: the first running agent among `roles` (in
- * order), else the Operator, else the company owner, else nobody. Use it for
- * every issue a plugin opens so nothing is left unassigned.
+ * order), else the Operator, else the company owner (`ownerUserFor`: the
+ * roles copy, then the host's default responsible user), else nobody. Use it
+ * for every issue a plugin opens so nothing is left unassigned.
  */
 export async function routeWork(ctx: PluginContext, companyId: string, roles: TeamRoleKey[]): Promise<WorkRoute> {
   for (const role of [...roles, "operator" as const]) {
     const agentId = await teamAgentId(ctx, companyId, role);
     if (agentId) return { assigneeAgentId: agentId, assigneeUserId: null, via: role };
   }
-  const owner = (await companyRoles(ctx, companyId))?.ownerUserId ?? null;
+  const owner = (await ownerUserFor(ctx, companyId)).userId;
   return owner ? { assigneeAgentId: null, assigneeUserId: owner, via: "owner" } : { assigneeAgentId: null, assigneeUserId: null, via: "none" };
 }
 
@@ -382,6 +536,12 @@ export const HANDOFF_EVENTS = {
   invoicePaid: "invoice.paid",
   /** CRM / Campaigns / Mailbox → each other: stop marketing email to an address (every email after a hard bounce). */
   contactSuppressed: "contact.suppressed",
+  /** CRM → every plugin that holds personal data: erase one approved person (kit `privacy.ts`). */
+  contactEraseRequested: "contact.erase.requested",
+  /** Each of those plugins → CRM: what it erased and what the law makes it keep. */
+  contactEraseCompleted: "contact.erase.completed",
+  /** CRM / Mailbox / Campaigns / Social → each other: consent given, withdrawn or a lawful basis noted. */
+  consentRecorded: "consent.recorded",
 } as const;
 
 /** Plugins that send `lead.captured` (the CRM listens to each). */
@@ -479,6 +639,13 @@ export interface ContactSuppressed {
   source: string;
   clientKind?: ClientKind | null;
   clientRef?: string | null;
+  /**
+   * Whose list the opt-out is on: `own` (PiB's own marketing) or `company:<id>` /
+   * `contact:<id>` (a client's). An unsubscribe from one sender never silences
+   * another; a hard bounce (`scope: "all"`) ignores it. Absent on rows from before
+   * kit 0.2: those stay company-wide, as they were (see `sender-scope.ts`).
+   */
+  senderKey?: string | null;
   at: string;
 }
 

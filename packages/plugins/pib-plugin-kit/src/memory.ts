@@ -68,6 +68,15 @@ export function memoryTool(name: (typeof MEMORY_TOOLS)[keyof typeof MEMORY_TOOLS
   return `${MEMORY_PLUGIN_KEY}:${name}`;
 }
 
+/**
+ * The memory tools an agent needs to follow its skills' "Company memory"
+ * section: recall (start of every task), search, add (pin, expire, replace) and
+ * feedback. Exact host tool names; `memory-update` and `memory-review` are the
+ * owner's and the Operator's. A `tools:use` grant limited to these (see
+ * `MEMORY_TOOLS_GRANT`) lets an agent use memory and nothing else.
+ */
+export const MEMORY_AGENT_TOOLS: readonly string[] = [MEMORY_TOOLS.recall, MEMORY_TOOLS.search, MEMORY_TOOLS.add, MEMORY_TOOLS.feedback].map((name) => `${MEMORY_PLUGIN_KEY}:${name}`);
+
 const AREA_BY_PLUGIN: Record<string, MemoryArea> = {
   [PIB_PLUGINS.seo]: "seo",
   [PIB_PLUGINS.social]: "social",

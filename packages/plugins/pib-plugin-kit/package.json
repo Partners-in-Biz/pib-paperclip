@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/pib-plugin-kit",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Worker-side helpers shared by the Partners in Biz Paperclip plugins.",
@@ -16,7 +16,9 @@
     "./agent-client": "./src/agent-client.ts",
     "./team": "./src/team.ts",
     "./asking": "./src/asking.ts",
-    "./flows": "./src/flows.ts"
+    "./flows": "./src/flows.ts",
+    "./run-profile": "./src/run-profile.ts",
+    "./privacy": "./src/privacy.ts"
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",

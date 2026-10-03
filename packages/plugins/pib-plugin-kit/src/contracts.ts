@@ -73,6 +73,16 @@ export interface MailSendRequested {
   key: string;
   /** Mailbox account address to send from; the company's default account when omitted. */
   from?: string | null;
+  /** Display name for the From header (a client's name when sending as the client). */
+  fromName?: string | null;
+  /** Where replies go; the sending account when omitted. Campaigns saved this field and then dropped it. */
+  replyTo?: MailAddress | null;
+  /**
+   * An https address that unsubscribes the recipient with one click (the
+   * List-Unsubscribe-Post target). Without it the Mailbox adds only the
+   * mailto form, which many clients ignore.
+   */
+  unsubscribeUrl?: string | null;
   to: MailAddress[];
   cc?: MailAddress[];
   bcc?: MailAddress[];

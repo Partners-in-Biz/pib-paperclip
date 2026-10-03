@@ -6,7 +6,7 @@
  * `requestWakeup` (capability `issues.wakeup`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { companyRoles } from "./cockpit.js";
+import { ownerUserFor } from "./cockpit.js";
 
 type CreateInput = Parameters<PluginContext["issues"]["create"]>[0];
 
@@ -48,14 +48,16 @@ export async function wakeIssue(ctx: PluginContext, issueId: string, companyId: 
  * Only a person decides an approval. When an agent (a Reviewer, or the agent
  * that asked) marks one done or cancelled, call this: the issue is reopened,
  * taken off the agent and handed to the person (`userId`, else the company
- * owner from the Cockpit roles), with a comment saying why. Returns false when
+ * owner: the Cockpit roles, the host's default responsible user, then the last
+ * owner this plugin saw), with a comment saying why. Returns false when
  * the host refused, so the caller can log it.
  */
 export async function reopenApprovalForPerson(
   ctx: PluginContext,
   input: { issueId: string; companyId: string; userId?: string | null; what?: string | null },
 ): Promise<boolean> {
-  const userId = input.userId ?? (await companyRoles(ctx, input.companyId))?.ownerUserId ?? null;
+  // An approval is never right unassigned, so this path may use the last owner the plugin saw (like `resolveApprover`).
+  const userId = input.userId ?? (await ownerUserFor(ctx, input.companyId, { lastKnown: true })).userId;
   try {
     await ctx.issues.update(input.issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, input.companyId);
   } catch (error) {

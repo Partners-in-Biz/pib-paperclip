@@ -23,6 +23,17 @@ export * from "./cockpit.js";
 export * from "./routine-health.js";
 export * from "./flows.js";
 export * from "./done-checks.js";
+export * from "./approvals.js";
+export * from "./known-companies.js";
+export * from "./company.js";
+export * from "./run-profile.js";
+export * from "./role-drift.js";
+export * from "./grant-check.js";
+export * from "./waiting.js";
+export * from "./client-project.js";
+export * from "./ask-effects.js";
+export * from "./privacy.js";
+export * from "./sender-scope.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

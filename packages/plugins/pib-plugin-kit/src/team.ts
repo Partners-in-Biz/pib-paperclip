@@ -18,6 +18,7 @@
  *   current agents come from `cockpit.load` (`team`, `roles`).
  */
 import { PIB_PLUGINS } from "./contracts.js";
+import { RUN_PROFILES, type RunProfile } from "./run-profile.js";
 import type { ModuleKey } from "./setup.js";
 
 export type TeamRoleKey =
@@ -68,6 +69,8 @@ export interface TeamRole {
   actions: TeamRoleActions;
   /** The plugin page (no company prefix). */
   pagePath: string;
+  /** Model, effort, timeout, turn cap and concurrency the hire task asks for (kit `RUN_PROFILES`). */
+  runProfile: RunProfile;
 }
 
 /** Canonical key the host gives a plugin-managed skill: `plugin/<slug(pluginKey)>/<skillKey>`. */
@@ -110,6 +113,7 @@ function salesRole(key: TeamRoleKey, title: string, summary: string, skill: stri
     ...(extraSkills.length ? { extraSkills } : {}),
     actions: pluginActions("crm", "crm.resync-agent", { role: key }),
     pagePath: "/crm",
+    runProfile: RUN_PROFILES[key],
   };
 }
 
@@ -127,6 +131,7 @@ export const TEAM_ROLES: TeamRole[] = [
     extraSkills: [PAPERCLIP_CORE_SKILL_KEY],
     actions: { options: "cockpit.hire-options", start: "cockpit.start-hire" },
     pagePath: "/cockpit",
+    runProfile: RUN_PROFILES["operator"],
   },
   {
     key: "reviewer",
@@ -141,6 +146,7 @@ export const TEAM_ROLES: TeamRole[] = [
     extraSkills: [PAPERCLIP_CORE_SKILL_KEY],
     actions: { options: "cockpit.hire-options", start: "cockpit.start-hire" },
     pagePath: "/cockpit",
+    runProfile: RUN_PROFILES["reviewer"],
   },
   {
     key: "account-manager",
@@ -159,6 +165,7 @@ export const TEAM_ROLES: TeamRole[] = [
     ],
     actions: pluginActions("crm", "crm.resync-agent"),
     pagePath: "/crm",
+    runProfile: RUN_PROFILES["account-manager"],
   },
   salesRole(
     "sales-lead",
@@ -198,6 +205,7 @@ export const TEAM_ROLES: TeamRole[] = [
     extraSkills: [teamSkillKey(PIB_PLUGINS.crm, "wp-sites")],
     actions: pluginActions("seo", "seo.activate-agent"),
     pagePath: "/seo",
+    runProfile: RUN_PROFILES["seo-specialist"],
   },
   {
     key: "social",
@@ -210,6 +218,7 @@ export const TEAM_ROLES: TeamRole[] = [
     skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-publish"), teamSkillKey(PIB_PLUGINS.social, "social-content")),
     actions: pluginActions("social", "social.activate-agent"),
     pagePath: "/social",
+    runProfile: RUN_PROFILES["social"],
   },
   {
     key: "bookkeeper",
@@ -223,6 +232,7 @@ export const TEAM_ROLES: TeamRole[] = [
     extraSkills: [teamSkillKey(PIB_PLUGINS.billing, "invoice-draft")],
     actions: pluginActions("accounting", "accounting.resync-agent"),
     pagePath: "/accounting",
+    runProfile: RUN_PROFILES["bookkeeper"],
   },
   {
     key: "payroll-clerk",
@@ -235,6 +245,7 @@ export const TEAM_ROLES: TeamRole[] = [
     skills: withOs(teamSkillKey(PIB_PLUGINS.payroll, "payroll")),
     actions: pluginActions("payroll", "payroll.sync-skills"),
     pagePath: "/payroll",
+    runProfile: RUN_PROFILES["payroll-clerk"],
   },
 ];
 

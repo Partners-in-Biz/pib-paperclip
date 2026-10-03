@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { withCompanyMemory } from "./memory.js";
 import { withAskingSection } from "./asking.js";
+import { rememberCompany } from "./known-companies.js";
 
 export interface SkillDeclarationLike {
   skillKey: string;
@@ -75,11 +76,24 @@ export async function syncManagedSkills(
 /**
  * Sync once per company per worker process. Call it from any company-scoped
  * entry point (actions, tools, events, jobs with an explicit company).
+ *
+ * - `ensure`: once per company per process (memoised).
+ * - `force`: always resets every skill.
+ * - `check`: syncs only what changed, every time it is called (not memoised);
+ *   what `syncAllCompanies` and the periodic sweep use, so a copy that was
+ *   edited or left behind is found without a restart.
+ *
+ * Every call remembers the company (kit `rememberCompany`), so a job can later
+ * find the companies this plugin has served without `ctx.companies.list`,
+ * which the host refuses while another call is in flight.
  */
 export function createSkillSyncer(ctx: PluginContext, skills: SkillDeclarationLike[]) {
   const done = new Map<string, Promise<SkillSyncResult[]>>();
   return {
+    /** The declarations this syncer keeps in step (for drift checks). */
+    skills,
     ensure(companyId: string): Promise<SkillSyncResult[]> {
+      void rememberCompany(ctx, companyId);
       const existing = done.get(companyId);
       if (existing) return existing;
       const run = syncManagedSkills(ctx, companyId, skills).then((results) => {
@@ -94,13 +108,23 @@ export function createSkillSyncer(ctx: PluginContext, skills: SkillDeclarationLi
       return run;
     },
     force(companyId: string): Promise<SkillSyncResult[]> {
+      void rememberCompany(ctx, companyId);
       done.delete(companyId);
       const run = syncManagedSkills(ctx, companyId, skills, { force: true });
       done.set(companyId, run);
       return run;
     },
+    async check(companyId: string): Promise<SkillSyncResult[]> {
+      void rememberCompany(ctx, companyId);
+      const results = await syncManagedSkills(ctx, companyId, skills);
+      if (results.every((r) => r.action !== "failed")) done.set(companyId, Promise.resolve(results));
+      return results;
+    },
   };
 }
+
+/** What `createSkillSyncer` returns. */
+export type SkillSyncer = ReturnType<typeof createSkillSyncer>;
 
 /**
  * Prepend frontmatter with a unique pib- slug so reset never clobbers other
