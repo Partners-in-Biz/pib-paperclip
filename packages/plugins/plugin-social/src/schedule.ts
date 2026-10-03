@@ -17,7 +17,7 @@ import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { getPost, iso, setPostScheduleIssue, setPostStatus, type PostRow } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, projectIdForRow, scopeLine, SOCIAL_ORIGINS, socialAssignee } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
 
 /** A proposed time must be at least this far ahead to be kept on approval. */
@@ -126,7 +126,7 @@ export async function openScheduleTask(ctx: PluginContext, companyId: string, po
     }
     const issue = await createIssueSafely(ctx, {
       companyId,
-      projectId: await socialProjectId(ctx, companyId),
+      projectId: await projectIdForRow(ctx, companyId, post),
       title: `${clientPrefix(post)}Schedule approved social posts`,
       description: scheduleTaskDescription(post, line, await socialPath(ctx, companyId, { tab: "posts" }, scopeOfRow(post)).catch(() => null)),
       priority: "medium",
@@ -146,9 +146,10 @@ export async function openScheduleTask(ctx: PluginContext, companyId: string, po
 }
 
 /**
- * Right after a person approved `postId`: schedule it at its proposed time,
- * or hand it to the Social agent. `validate` is `validatePostRecord` (passed
- * in to avoid an import cycle with service.ts).
+ * Right after `postId` was approved (by a person, or by the client under a
+ * client-approval policy; `approver` names who approved, in the notes): schedule it at
+ * its proposed time, or hand it to the Social agent. `validate` checks the
+ * destinations (`validatePostRow`).
  */
 export async function scheduleApproved(
   ctx: PluginContext,
@@ -156,10 +157,11 @@ export async function scheduleApproved(
   postId: string,
   validate: (postId: string) => Promise<{ ok: boolean; problems: string[] }>,
   now: Date = new Date(),
+  approver = "A person",
 ): Promise<ApprovalOutcome> {
   const post = await getPost(ctx, companyId, postId);
   if (!post || post.status !== "approved") {
-    return { scheduled: false, scheduledAt: null, message: "Approved.", note: "A person approved the post." };
+    return { scheduled: false, scheduledAt: null, message: "Approved.", note: `${approver} approved the post.` };
   }
   const proposed = iso(post.scheduled_at);
   const timezone = proposed ? (await loadSocialConfig(ctx, companyId).catch(() => null))?.timezone ?? "UTC" : "UTC";
@@ -171,10 +173,10 @@ export async function scheduleApproved(
     if (check.ok) {
       if (await setPostStatus(ctx, companyId, post.id, ["approved"], "scheduled", proposed)) {
         await setPostScheduleIssue(ctx, companyId, post.id, null).catch(() => undefined);
-        return { scheduled: true, scheduledAt: proposed, message: `Approved and scheduled for ${when}.`, note: `A person approved the post. It is scheduled for ${when}.` };
+        return { scheduled: true, scheduledAt: proposed, message: `Approved and scheduled for ${when}.`, note: `${approver} approved the post. It is scheduled for ${when}.` };
       }
       // Its status changed in the meantime (someone else moved it): leave it as it is now.
-      return { scheduled: false, scheduledAt: null, message: "Approved.", note: "A person approved the post." };
+      return { scheduled: false, scheduledAt: null, message: "Approved.", note: `${approver} approved the post.` };
     }
     reason = "invalid";
     problems = check.problems;
@@ -190,6 +192,6 @@ export async function scheduleApproved(
     ...(problems ? { problems } : {}),
     issueId,
     message: `${what} ${who}`,
-    note: `A person approved the post, but it is not scheduled: ${why}. ${issueId ? "The Social agent has a task to pick a time." : "Someone has to pick a time on the post."}`,
+    note: `${approver} approved the post, but it is not scheduled: ${why}. ${issueId ? "The Social agent has a task to pick a time." : "Someone has to pick a time on the post."}`,
   };
 }

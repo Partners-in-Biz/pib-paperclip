@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, ChartLegend, EmptyState, Field, FileText, Input, Pill, Sheet, Toolbar, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
+import { ApprovalPolicyCard, PostApproval } from "./approvals.js";
 import { Thumb } from "./composer.js";
 import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
@@ -16,7 +17,7 @@ const FILTERS = [
   { id: "problems", label: "Failed" },
 ];
 
-export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; onOpen: (post: Post) => void; onNew: () => void }) {
+export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; run: RunAction; onOpen: (post: Post) => void; onNew: () => void }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
@@ -29,6 +30,7 @@ export function PostsTab({ posts, snapshot, onOpen, onNew }: { posts: Post[]; sn
   }), [posts, filter, q]);
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      <ApprovalPolicyCard snapshot={snapshot} run={run} />
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
@@ -72,13 +74,21 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
   const [problems, setProblems] = useState<string[] | null>(null);
   const [when, setWhen] = useState(toLocalInput(new Date(Date.now() + 60 * 60_000)));
   const [approval, setApproval] = useState<ApprovalOutcome | null>(null);
+  const [waiting, setWaiting] = useState<string | null>(null);
   const tz = snapshot.config.timezone;
   const isUser = Boolean(snapshot.viewer.userId);
   const proposed = (post.status === "draft" || post.status === "review") && post.scheduledAt ? post.scheduledAt : null;
   const approve = () =>
     run("social.approve", { postId: post.id })
-      .then((res) => setApproval((res as { approval?: ApprovalOutcome } | null)?.approval ?? { scheduled: false, scheduledAt: null, message: "Approved." }))
+      .then((res) => {
+        const result = res as { approval?: ApprovalOutcome; signoff?: { completed: boolean; message: string } } | null;
+        // Other sign-offs are still needed (the client, the Reviewer): say so instead of "Approved".
+        if (result?.signoff && !result.signoff.completed) setWaiting(result.signoff.message);
+        else setApproval(result?.approval ?? { scheduled: false, scheduledAt: null, message: "Approved." });
+      })
       .catch(ignore);
+  // Where the client alone approves, a team member has no Approve button: the link and the recorded approval are below.
+  const teamApproves = snapshot.approvalPolicy?.requireOwner !== false;
 
   useEffect(() => {
     if (post.status === "published") return;
@@ -109,6 +119,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       ) : null}
       {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
       {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
+      {waiting ? <Banner tone="info" title="Your approval is recorded">{waiting}</Banner> : null}
+      <PostApproval post={post} snapshot={snapshot} run={run} />
       {proposed ? (
         <Muted>Proposed time: <strong>{fmtDate(proposed, tz)}</strong>. {post.status === "review" ? "Approving schedules it for then." : "Once approved it is scheduled for then."}</Muted>
       ) : null}
@@ -156,7 +168,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       <Row>
         {post.status === "draft" || post.status === "review" ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
         {post.status === "draft" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
-        {post.status === "review" && isUser ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void approve()}>{proposed ? "Approve & schedule" : "Approve"}</Button> : null}
+        {post.status === "review" && isUser && teamApproves ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void approve()}>{proposed ? "Approve & schedule" : "Approve"}</Button> : null}
         {post.status === "review" || post.status === "approved" ? <SmallButton onClick={() => act("social.back-to-draft", "Moved back to draft")}>Back to draft</SmallButton> : null}
         {post.status === "scheduled" ? <SmallButton onClick={() => act("social.unschedule", "Unscheduled")}>Unschedule</SmallButton> : null}
         {(post.status === "failed" || post.status === "partially_published") && failed ? (

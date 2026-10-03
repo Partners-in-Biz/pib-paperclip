@@ -194,6 +194,8 @@ export interface Snapshot {
   experiments: ExperimentOption[];
   /** Chart series (worker `stats.ts`); missing from an older worker. */
   stats?: ScopeStats;
+  /** Who approves posts in this scope; missing from an older worker. */
+  approvalPolicy?: ApprovalPolicyView;
   agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   /** Own page: the weekly plan routine and its last trigger report (null until the agent is linked). */
@@ -208,6 +210,54 @@ export interface WeeklyRoutineRef {
   status: string;
   /** From the page's last report; null when never checked. */
   triggersOn: boolean | null;
+}
+
+/** Who approves posts in a scope (worker `approval-policy.ts`). */
+export interface ApprovalPolicyView {
+  scope: string | null;
+  requireReviewer: boolean;
+  requireOwner: boolean;
+  requireClient: boolean;
+  linkExpiryDays: number;
+  /** False for a scope nobody has set: the default (a team member approves). */
+  custom: boolean;
+  summary: string;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export type SignoffState = "approved" | "changes" | "stale" | "none";
+
+/** One post's approval state (`social.approval-status`): sign-offs for its current version and the client's links. */
+export interface ApprovalStatus {
+  postId: string;
+  status: string;
+  policy: ApprovalPolicyView;
+  signoffs: { reviewer: SignoffState; owner: SignoffState; client: SignoffState };
+  missing: Array<"reviewer" | "owner" | "client">;
+  clientLinks: Array<{
+    approvalId: string;
+    status: "pending" | "approved" | "changes_requested" | "superseded" | "expired";
+    /** The link still matches the post's current version. */
+    current: boolean;
+    sentTo: string | null;
+    answeredBy: string | null;
+    note: string | null;
+    answeredAt: string | null;
+    applied: string | null;
+    expiresAt: string | null;
+    createdAt: string | null;
+  }>;
+}
+
+/** What `social.request-client-approval` returns: the link (shown once) and the email text. */
+export interface RequestedApproval {
+  approvalId: string;
+  url: string;
+  expiresAt: string;
+  recipients: Array<{ name: string; email: string }>;
+  email: { subject: string; text: string; html: string };
+  next: string;
 }
 
 /** What approving a post did to its time (`social.approve` result). */

@@ -8,7 +8,8 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { hireStatus, pluginUiBase, settingsItem, type SetupItem, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
-import { loadSocialConfig, type SocialConfig } from "./config.js";
+import { approvalServiceHealth, checkedApprovalBase } from "./client-approval.js";
+import { DEFAULT_APPROVAL_BASE, loadSocialConfig, type SocialConfig } from "./config.js";
 import { listAccounts } from "./db.js";
 import { GROWTH_CHANNEL } from "./growth/engine.js";
 import { sqlGrowthStore } from "./growth/sql.js";
@@ -183,6 +184,48 @@ export function redirectItem(config: SocialConfig, uiBase: string | null): Setup
   };
 }
 
+/**
+ * The client approval page: where a client opens the link for a post they approve. It is a small service on the
+ * server (plugin-social/ops/approval-server), installed once; this item turns green when its health answers. Optional:
+ * only clients whose approval policy asks for their yes need it. Pure.
+ */
+export function approvalPageItem(input: { base: string; baseSet: boolean; probe: { ok: boolean; error?: string } | null; uiBase: string | null; addressError?: string | null }): SetupItem {
+  const ok = input.probe?.ok === true;
+  // A saved address that cannot work (not https) is a mistake to fix, not just a page that is not installed yet.
+  if (input.addressError) {
+    return {
+      key: "client_approval",
+      title: "Client approval page (optional)",
+      status: "missing",
+      required: false,
+      detail: `The address saved under Client approval page address in the Social plugin settings cannot be used: ${input.addressError} (it is "${input.base}"). Clients cannot be sent an approval link until it is fixed. Needed only for clients who approve their own posts.`,
+      href: settingsHref(input.uiBase),
+      hrefLabel: "Open settings",
+      steps: settingsSteps([`Under Client approval page address, enter the full address starting with https:// (for example ${DEFAULT_APPROVAL_BASE}), or clear the field to use that default.`]),
+      agentNext: "The address is checked again within the hour; once the page answers, the Social agent can make clients' links.",
+    };
+  }
+  return {
+    key: "client_approval",
+    title: "Client approval page (optional)",
+    status: ok ? "done" : input.probe ? "optional" : "unknown",
+    required: false,
+    detail: ok
+      ? `Clients open their post approval links at ${input.base}/<link>. Which clients approve their own posts is set on Social → Posts → Who approves.`
+      : input.probe
+        ? `The page does not answer at ${input.base} (${input.probe.error ?? "no answer"}). Needed only for clients who approve their own posts: the agent cannot send them a working link until it does.`
+        : "Could not check the page. It is needed only for clients who approve their own posts.",
+    href: settingsHref(input.uiBase),
+    hrefLabel: "Open settings",
+    steps: ok ? undefined : [
+      "The platform team installs the approval service once on the server (plugin-social/ops/approval-server/README.md: one install script, a Caddy line and a service). Nothing else to buy or sign up for.",
+      input.baseSet ? "Check that the address under Client approval page in the Social plugin settings is the one the service answers on." : "The default address needs no change in settings once the service answers.",
+      "This item turns green by itself when the page answers.",
+    ],
+    agentNext: "Once it answers, when a client's policy asks for their approval the Social agent makes their link and drafts the email (a person sends it); their answer approves the post.",
+  };
+}
+
 /** Where a person switches the weekly routine on in one click: the Social page's switch-on prompt. */
 export const ROUTINE_SWITCH_ON_PATH = "/social?routine=on";
 
@@ -315,6 +358,17 @@ export async function socialSetupStatus(ctx: PluginContext, companyId: string, n
     steps: jev ? undefined : settingsSteps(["Under **Smart sorting (Jev by TypeSafe)**, pick the API key (a Paperclip secret) and keep it switched on."]),
     agentNext: jev ? null : "Smart sorting triages new inbox items and tags post features from the next runs.",
   });
+
+  // The address is an optional setting: a typo in it is shown on this item, never allowed to take the whole checklist down.
+  const address = checkedApprovalBase(config);
+  const probe = address.ok ? await attempt(ctx, "client approval page", () => approvalServiceHealth(ctx, address.base)) : null;
+  items.push(approvalPageItem({
+    base: address.base,
+    baseSet: config.approvalBaseUrlSet,
+    probe: probe ? (probe.ok ? probe.value : { ok: false, error: probe.error }) : { ok: false, error: address.ok ? undefined : address.error },
+    uiBase,
+    addressError: address.ok ? null : address.error,
+  }));
 
   const program = await attempt(ctx, "growth program", () => sqlGrowthStore(ctx).findProgram(companyId, GROWTH_CHANNEL, null));
   const hasProgram = program.ok && Boolean(program.value);

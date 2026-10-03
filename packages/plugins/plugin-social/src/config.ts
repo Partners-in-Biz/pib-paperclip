@@ -29,6 +29,8 @@ import {
 export const DEFAULT_TIMEZONE = "Africa/Johannesburg";
 export const DEFAULT_GRAPH_VERSION = "v21.0";
 export const DEFAULT_BLUESKY_PDS = "https://bsky.social";
+/** Where the client approval page answers unless the settings say otherwise (the service serves under /a/; ops/approval-server). */
+export const DEFAULT_APPROVAL_BASE = "https://preview.partnersinbiz.online/a";
 
 const CLIENT_ID_LABEL: Partial<Record<SocialPlatform, string>> = {
   facebook: "Meta app ID",
@@ -167,6 +169,13 @@ export function buildInstanceConfigSchema(): JsonSchema {
         description: "Turn on once the LinkedIn Community Management API is approved for the app.",
         default: false,
       },
+      approvalBaseUrl: {
+        type: "string",
+        title: "Client approval page address",
+        description: `Where clients open their post approval links, ending in /a (the approval service answers under /a/). Must start with https://. Default ${DEFAULT_APPROVAL_BASE}. The service is installed once on the server (plugin-social/ops/approval-server).`,
+        // Empty is allowed (the default applies); anything else must be https, the one thing a link to a client cannot do without.
+        pattern: "^$|^https://",
+      },
       allowAgentReplies: {
         type: "boolean",
         title: "Agents may send inbox replies",
@@ -227,6 +236,10 @@ export interface SocialConfig {
   timezone: string;
   linkedinOrgPages: boolean;
   allowAgentReplies: boolean;
+  /** The client approval page's base address (settings, else the default), no trailing slash. */
+  approvalBaseUrl: string;
+  /** True when the settings name an address (the default is in use otherwise). */
+  approvalBaseUrlSet: boolean;
   blueskyDefaultPds: string;
   mastodonDefaultInstance: string | null;
   r2Configured: boolean;
@@ -310,6 +323,8 @@ export function socialConfigFrom(ctx: PluginContext, companyId: string, raw: Rec
     timezone: str(raw.timezone) ?? DEFAULT_TIMEZONE,
     linkedinOrgPages: raw.linkedinOrgPages === true,
     allowAgentReplies: raw.allowAgentReplies === true,
+    approvalBaseUrl: (str(raw.approvalBaseUrl) ?? DEFAULT_APPROVAL_BASE).replace(/\/+$/, ""),
+    approvalBaseUrlSet: Boolean(str(raw.approvalBaseUrl)),
     blueskyDefaultPds: str(obj(platforms.bluesky).defaultPdsUrl) ?? DEFAULT_BLUESKY_PDS,
     mastodonDefaultInstance: str(obj(platforms.mastodon).defaultInstance),
     r2Configured,

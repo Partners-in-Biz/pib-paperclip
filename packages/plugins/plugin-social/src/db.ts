@@ -1150,6 +1150,17 @@ export async function getMediaAssets(ctx: PluginContext, companyId: string, ids:
   );
 }
 
+/** An asset already imported from this source (an issue attachment), in this scope: importing the same file twice gives the same asset. */
+export async function findMediaBySource(ctx: PluginContext, companyId: string, sourceUrl: string, scope: ClientScope): Promise<MediaAssetRow | null> {
+  const params: unknown[] = [companyId, sourceUrl];
+  const where = scopeClause(scope, params);
+  const rows = await ctx.db.query<MediaAssetRow>(
+    `SELECT ${MEDIA_COLS} FROM ${table(ctx, "media_assets")} WHERE company_id = $1 AND source_url = $2${where} ORDER BY created_at DESC LIMIT 1`,
+    params,
+  );
+  return rows[0] ?? null;
+}
+
 export function mediaRefFromAsset(asset: MediaAssetRow): MediaRef {
   return {
     assetId: asset.id,

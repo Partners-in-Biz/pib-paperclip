@@ -13,6 +13,7 @@ import {
   linkedAgentId,
   outboxHealth,
   publishCockpitSnapshot,
+  reviewerAgentId,
   withClientParam,
   type ActivityItem,
   type CockpitKpi,
@@ -24,6 +25,8 @@ import {
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
+import { getPolicy } from "./approval-policy.js";
+import { approvalServiceHealth, checkedApprovalBase, clientApprovalCounts } from "./client-approval.js";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { iso, table } from "./db.js";
@@ -47,6 +50,7 @@ export const SOCIAL_JOBS: Array<{ key: string; title: string; everyMinutes: numb
   { key: "score-posts", title: "Score posts (Growth Lab)", everyMinutes: 24 * 60 },
   { key: "measure-experiments", title: "Measure experiments (Growth Lab)", everyMinutes: 24 * 60 },
   { key: "redeliver", title: "Re-send leads to the CRM", everyMinutes: 10 },
+  { key: "client-answers", title: "Apply client approvals", everyMinutes: 5 },
 ];
 
 type Scoped = { client_kind: string | null; client_ref: string | null; client_name: string | null };
@@ -215,6 +219,75 @@ export function agentRunChecks(rows: AgentRunRow[], projectId: string): HealthCh
   ];
 }
 
+export interface ApprovalCheckInput {
+  /** Client links open (not answered, not expired). */
+  pending: number;
+  /** Open links older than 7 days. */
+  unanswered: number;
+  /** Answers the 5-minute job has not applied yet. */
+  waitingDelivery: number;
+  /** The approval page's health; null when it was not probed. */
+  pageOk: boolean | null;
+  pageError?: string | null;
+  /** Scopes whose policy needs the Reviewer's pass. */
+  reviewerPolicies: string[];
+  reviewerAvailable: boolean;
+}
+
+/** Health for client approvals and approval policies: said only when there is something to say. Pure. */
+export function approvalChecks(input: ApprovalCheckInput): HealthCheck[] {
+  const checks: HealthCheck[] = [];
+  if (input.pending + input.waitingDelivery > 0 && input.pageOk === false) {
+    checks.push({
+      key: "approval-page",
+      title: "Clients cannot open their approval links",
+      status: "bad",
+      detail: `${plural(input.pending, "client link")} ${input.pending === 1 ? "is" : "are"} out, but the approval page does not answer${input.pageError ? ` (${clip(input.pageError, 120)})` : ""}.`,
+      href: "/company/settings/instance/plugins",
+      fix: "The approval service on the server is down or its address is wrong: check Social settings → Client approval page, and restart the pib-approval service (plugin-social/ops/approval-server/README.md).",
+    });
+  }
+  if (input.unanswered > 0) {
+    checks.push({
+      key: "approval-unanswered",
+      title: `${plural(input.unanswered, "client approval")} unanswered for over a week`,
+      status: "warn",
+      detail: "The client has had the link for more than 7 days. The post waits (nothing is published without their yes).",
+      href: POSTS,
+      fix: "Open the post's review issue: the Social agent drafts a short reminder (a Mailbox draft; a person sends it), or a person records the client's answer if they gave it elsewhere.",
+    });
+  }
+  if (input.reviewerPolicies.length > 0 && !input.reviewerAvailable) {
+    checks.push({
+      key: "approval-reviewer",
+      title: "An approval policy needs the Reviewer, and none is running",
+      status: "warn",
+      detail: `${plural(input.reviewerPolicies.length, "scope")} (${input.reviewerPolicies.slice(0, 3).join(", ")}) ask for the Reviewer's pass first, so posts there cannot be approved.`,
+      href: "/setup?section=team",
+      fix: "Staff or resume the Reviewer in Setup → Team (and switch on review of outward-facing work), or untick the Reviewer's pass on Social → Posts → Who approves.",
+    });
+  }
+  return checks;
+}
+
+async function approvalHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+  const counts = await clientApprovalCounts(ctx, companyId);
+  const reviewerPolicies = (
+    await ctx.db.query<{ scope_key: string }>(`SELECT scope_key FROM ${table(ctx, "approval_policies")} WHERE company_id = $1 AND require_reviewer = true ORDER BY scope_key LIMIT 20`, [companyId])
+  ).map((row) => row.scope_key);
+  let pageOk: boolean | null = null;
+  let pageError: string | null = null;
+  if (counts.pending + counts.waitingDelivery > 0) {
+    // A bad saved address is a reason clients cannot open their links: said as that, not as a failure that hides every approval check.
+    const address = checkedApprovalBase(await loadSocialConfig(ctx, companyId));
+    const probe = address.ok ? await approvalServiceHealth(ctx, address.base) : { ok: false, error: address.error };
+    pageOk = probe.ok;
+    pageError = probe.error ?? null;
+  }
+  const reviewerAvailable = reviewerPolicies.length > 0 ? Boolean(await reviewerAgentId(ctx, companyId)) : true;
+  return approvalChecks({ pending: counts.pending, unanswered: counts.unanswered7d, waitingDelivery: counts.waitingDelivery, pageOk, pageError, reviewerPolicies, reviewerAvailable });
+}
+
 async function healthChecks(ctx: PluginContext, companyId: string, agentId: string | null): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   for (const job of SOCIAL_JOBS) {
@@ -262,6 +335,8 @@ async function healthChecks(ctx: PluginContext, companyId: string, agentId: stri
   }
   // Leads handed to the CRM that it has not answered (kit outbox).
   checks.push(await part(ctx, "outbox", () => outboxHealth(ctx, companyId), { key: "outbox", title: "Cross-plugin deliveries", status: "ok" as const }));
+  // Client approval links and approval policies (said only when there is a problem).
+  checks.push(...(await part(ctx, "approvals", () => approvalHealth(ctx, companyId), [] as HealthCheck[])));
   const failed = await part(
     ctx,
     "failed",
@@ -302,16 +377,28 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
        FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
+  const policies = new Map<string, Awaited<ReturnType<typeof getPolicy>>>();
+  const policyOf = async (post: Scoped) => {
+    const scope = scopeOfRow(post);
+    const key = scope ? `${scope.kind}:${scope.id}` : "own";
+    if (!policies.has(key)) policies.set(key, await getPolicy(ctx, companyId, scope));
+    return policies.get(key)!;
+  };
   for (const post of posts) {
+    // Where the client alone approves, nobody on the team has to: the item says who is waited for.
+    const policy = await policyOf(post);
+    const clientOnly = !policy.requireOwner && policy.requireClient;
     items.push({
       key: `social:review:${post.id}`,
-      title: `${clientPrefix(post)}Approve post: ${snippet(post.body)}`,
-      why: post.review_issue_id
-        ? "A person approves every post before it is scheduled. The Reviewer checks it first on its issue."
-        : "A person approves every post before it is scheduled.",
+      title: `${clientPrefix(post)}${clientOnly ? "Waiting for the client" : "Approve post"}: ${snippet(post.body)}`,
+      why: clientOnly
+        ? "The client approves this post on their link; nobody on the team has to. The Social agent sends the link and is woken with the answer."
+        : post.review_issue_id
+          ? "A person approves every post before it is scheduled. The Reviewer checks it first on its issue."
+          : "A person approves every post before it is scheduled.",
       href: path(POSTS, post),
       issueId: post.review_issue_id,
-      kind: "review",
+      kind: clientOnly ? "other" : "review",
       since: post.updated_at,
     });
   }

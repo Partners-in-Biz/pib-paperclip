@@ -22,6 +22,7 @@ import {
   type ResolvedScope,
 } from "../clients.js";
 import { loadSocialConfig, type ProviderApp, type SocialConfig } from "../config.js";
+import { resolveConnectRequests } from "../connect-requests.js";
 import {
   consumeOauthSession,
   createOauthSession,
@@ -194,6 +195,13 @@ async function saveCandidate(
   });
   // A scope with no plan yet gets its first one now, not at the next Monday routine (never fails the connection).
   await startPlan(ctx, input.companyId, target);
+  // The agent that asked for this connection is told (and its issue handed back), and a "Reconnect ..." issue closes (never fails the connection).
+  await resolveConnectRequests(
+    ctx,
+    input.companyId,
+    { platform: c.platform, accountId: saved.id, displayName: c.displayName, scope: target.scope, reconnectIssueId: existing?.reconnect_issue_id ?? null, reconnected: Boolean(existing) },
+    target.client?.name ?? null,
+  );
   return { ...saved, platform: c.platform, displayName: c.displayName, belongsTo: scopeLabel(target) };
 }
 

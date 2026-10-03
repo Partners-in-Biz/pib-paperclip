@@ -1,0 +1,17 @@
+[Unit]
+Description=PiB client post approval service
+After=network.target postgresql.service
+
+[Service]
+User=paperclip
+EnvironmentFile=/root/pib-ops/approval.env
+ExecStart=/opt/node24/bin/node /home/paperclip/pib-approval/server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

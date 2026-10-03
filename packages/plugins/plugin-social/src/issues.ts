@@ -4,7 +4,7 @@
  * woken (kit createWorkIssue); plugin-created issues do not wake on their own.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { ASK_OWNER_TOOL, companyRoles, createWorkIssue, linkedAgentId, routeWork } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, companyRoles, createWorkIssue, linkedAgentId, resolveClientProjectId, routeWork, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { clientPrefix, formatClientParam, scopeOfRow } from "./clients.js";
 import type { AccountRow, DestinationRow, PostRow } from "./db.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
@@ -34,6 +34,8 @@ export const SOCIAL_ORIGINS = {
   review: "review:",
   /** A Growth Lab week's decisions for a person: `growth:<programId>:<week>`. */
   growth: "growth:",
+  /** The Account Manager's task to draft the email that carries a client's link (a Mailbox draft): `client-link-email:<postId>`. (No "approv" in the key: the kit treats such origins as approvals only a person may close.) */
+  clientLinkEmail: "client-link-email:",
   /** The first plan of a scope whose account just connected: `plan:<own|company:<id>|contact:<id>>` (Social agent). The weekly routine's issues are the host's own routine issues, not these. */
   plan: "plan:",
 } as const;
@@ -109,6 +111,34 @@ export async function socialProjectId(ctx: PluginContext, companyId: string): Pr
   }
 }
 
+/** True when `projectId` is the managed Social project (where own work and unlinked clients' issues live). Never throws. */
+export async function isSocialProject(ctx: PluginContext, companyId: string, projectId: string): Promise<boolean> {
+  return (await socialProjectId(ctx, companyId)) === projectId;
+}
+
+/**
+ * The project to open a scope's issue in (Q1a-12). Own work, and a client with no
+ * linked project, use the managed Social project; a client with a project linked
+ * in the CRM (`client_projects`, projected by the CRM's `client.projects.updated`)
+ * gets its own, so client work never mixes into PiB's. Never throws.
+ */
+export async function projectIdFor(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<string | undefined> {
+  const fallback = (await socialProjectId(ctx, companyId)) ?? null;
+  if (!scope) return fallback ?? undefined;
+  try {
+    const choice = await resolveClientProjectId(ctx, companyId, scope, { fallbackProjectId: fallback });
+    return choice.projectId ?? undefined;
+  } catch (error) {
+    ctx.logger.info("Client project lookup failed; using the Social project", { companyId, error: error instanceof Error ? error.message : String(error) });
+    return fallback ?? undefined;
+  }
+}
+
+/** `projectIdFor` for a row that carries a scope (post, account, inbox item). */
+export function projectIdForRow(ctx: PluginContext, companyId: string, row: Pick<PostRow, "client_kind" | "client_ref">): Promise<string | undefined> {
+  return projectIdFor(ctx, companyId, scopeOfRow(row));
+}
+
 function label(platform: string): string {
   return isSocialPlatform(platform) ? PLATFORM_LABELS[platform] : platform;
 }
@@ -173,7 +203,7 @@ export async function openPublishFailureIssue(
   try {
     const issue = await createWorkIssue(ctx, {
       companyId,
-      projectId: await socialProjectId(ctx, companyId),
+      projectId: await projectIdForRow(ctx, companyId, post),
       title: `${clientPrefix(post)}Social post failed to publish`,
       description,
       priority: "high",
@@ -196,7 +226,7 @@ export async function openReconnectIssue(ctx: PluginContext, companyId: string, 
   try {
     const issue = await createWorkIssue(ctx, {
       companyId,
-      projectId: await socialProjectId(ctx, companyId),
+      projectId: await projectIdForRow(ctx, companyId, account),
       title: `${clientPrefix(account)}Reconnect ${label(account.platform)}: ${account.display_name}`,
       description: [
         `The ${label(account.platform)} account **${account.display_name}**${account.client_ref ? ` (client ${account.client_name ?? account.client_ref})` : " (own work)"} needs to be reconnected.`,

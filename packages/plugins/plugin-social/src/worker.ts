@@ -10,10 +10,16 @@ import {
 } from "@paperclipai/plugin-sdk";
 import {
   COCKPIT_ROUTE,
+  installAskEffects,
   linkAgent,
   publishSetupStatus,
   redeliver,
+  registerAskEffect,
+  registerClientProjectWatch,
+  registerCompanyBootstrap,
+  registerEraseReceiver,
   registerRoleWatch,
+  syncAllCompanies,
   trackJob,
   registerCrmProjection,
   registerHireWatch,
@@ -25,8 +31,11 @@ import {
   unlinkAgent,
 } from "@partnersinbiz/pib-plugin-kit";
 import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
+import { clientAnswersJob } from "./client-approval.js";
 import { scopeFromParams } from "./clients.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
+import { CONNECT_EFFECT_KEY, connectEffect } from "./connect-requests.js";
+import { eraseSubject } from "./erasure.js";
 import { loadSocialConfig } from "./config.js";
 import { deleteExpiredOauthSessions } from "./db.js";
 import { SocialError } from "./domain.js";
@@ -53,17 +62,18 @@ import {
   scorePostsJob,
   updateProgramRecord,
 } from "./growth/service.js";
-import { importFromUrl, presignUpload, registerAsset } from "./media.js";
+import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
 import { planSweep } from "./plan-trigger.js";
-import { PLAN_ROUTINE_KEY } from "./platforms.js";
+import { PLAN_ROUTINE_KEY, PLUGIN_ID } from "./platforms.js";
 import { saveRoutineReport } from "./routine-state.js";
 import { pollRssJob } from "./rss.js";
 import {
   accountAnalyticsRecord,
+  approvalStatusRecord,
   attachDestination,
   bulkSchedule,
   connectAccountRecord,
@@ -73,6 +83,7 @@ import {
   deletePostRecord,
   detachDestination,
   disconnectAccountRecord,
+  getApprovalPolicyRecord,
   getPostDetail,
   listAccountsRecord,
   listClientsRecord,
@@ -86,14 +97,19 @@ import {
   objectParams,
   optionalString,
   postAnalyticsRecord,
+  recordClientApprovalRecord,
   recordInboxRecord,
   recordMetricsRecord,
+  recordReviewVerdictRecord,
   refreshAccountRecord,
   replyInboxRecord,
+  requestClientApprovalRecord,
   requiredString,
   requireUser,
   retryPostRecord,
+  reviewOutcomesRecord,
   schedulePost,
+  setApprovalPolicyRecord,
   setRssActiveRecord,
   transitionPost,
   updateAccountRecord,
@@ -198,6 +214,21 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return registerAsset(ctx, viewer.companyId, p);
     case "import-media-from-url":
       return importFromUrl(ctx, viewer.companyId, p);
+    case "list-issue-attachments":
+      return listIssueAttachments(ctx, viewer.companyId, p);
+    case "import-media-from-attachment":
+      return importFromAttachment(ctx, viewer.companyId, p);
+    // Who approves, the client's link, the Reviewer's verdict, the autonomy inputs.
+    case "get-approval-policy":
+      return getApprovalPolicyRecord(ctx, viewer, p);
+    case "get-approval-status":
+      return approvalStatusRecord(ctx, viewer, requiredString(p, "postId"));
+    case "request-client-approval":
+      return requestClientApprovalRecord(ctx, viewer, p);
+    case "record-review-verdict":
+      return recordReviewVerdictRecord(ctx, viewer, p);
+    case "review-outcomes":
+      return reviewOutcomesRecord(ctx, viewer, p);
     case "create-rss-feed":
       return createRssFeedRecord(ctx, viewer, p);
     case "list-rss-feeds":
@@ -288,6 +319,16 @@ const ACTIONS: Record<string, ActionHandler> = {
     requireUser(v, "approve a post");
     return transitionPost(ctx, v, requiredString(p, "postId"), "approved");
   },
+  // Who approves posts (people only: a policy delegates authority), the client's link, the client's approval recorded by hand.
+  "social.approval-policy": (ctx, v, p) => getApprovalPolicyRecord(ctx, v, p),
+  "social.set-approval-policy": (ctx, v, p) => setApprovalPolicyRecord(ctx, v, p),
+  "social.approval-status": (ctx, v, p) => approvalStatusRecord(ctx, v, requiredString(p, "postId")),
+  "social.request-client-approval": (ctx, v, p) => {
+    requireUser(v, "make the client's approval link");
+    return requestClientApprovalRecord(ctx, v, p);
+  },
+  "social.record-client-approval": (ctx, v, p) => recordClientApprovalRecord(ctx, v, p),
+  "social.review-outcomes": (ctx, v, p) => reviewOutcomesRecord(ctx, v, p),
   "social.schedule": (ctx, v, p) => schedulePost(ctx, v, p),
   "social.unschedule": (ctx, v, p) => transitionPost(ctx, v, requiredString(p, "postId"), "approved"),
   "social.retry-post": (ctx, v, p) => retryPostRecord(ctx, v, requiredString(p, "postId")),
@@ -471,13 +512,21 @@ function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown
   });
 }
 
+/**
+ * True for a company that can use Social: the module is not switched off and its settings were saved. The hourly sweeps act only for
+ * these (the host refuses company calls for a company with no saved settings, which would only fill the sweep's problem count).
+ */
+export async function companyUsesSocial(ctx: PluginContext, companyId: string): Promise<boolean> {
+  return (await socialOn(ctx, companyId)) && (await loadSocialConfig(ctx, companyId)).saved;
+}
+
 /** Hourly: push each known company's setup checklist to the Setup plugin. */
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
   for (const companyId of await knownCompanies(ctx)) {
     try {
       // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
-      if (!(await socialOn(ctx, companyId)) || !(await loadSocialConfig(ctx, companyId)).saved) {
+      if (!(await companyUsesSocial(ctx, companyId))) {
         result.skipped += 1;
         continue;
       }
@@ -509,11 +558,18 @@ const plugin = definePlugin({
       const summary = await refreshTokensJob(ctx, ensure, (companyId) => hourlyUpkeep(ctx, companyId));
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
       const setupStatus = await publishSetupStatuses(ctx);
+      // Every known company, not only the ones that call us: a company nobody touches still gets this release's skills.
+      const skillSync = await syncAllCompanies(ctx, bootstrap!.skills, { companyIds: await knownCompanies(ctx), isEnabled: (companyId) => companyUsesSocial(ctx, companyId), plugin: PLUGIN_ID })
+        .then((sweep) => ({ companies: sweep.outcomes.length, reset: sweep.outcomes.filter((o) => o.status === "synced").length, problems: sweep.outcomes.filter((o) => o.status === "failed" || o.status === "needs_settings").length }))
+        .catch((error: unknown) => {
+          ctx.logger.info("Social skill sweep failed", { error: error instanceof Error ? error.message : String(error) });
+          return { companies: 0, reset: 0, problems: 1 };
+        });
       const cockpit = await publishCockpitSnapshots(ctx).catch((error: unknown) => {
         ctx.logger.info("Social cockpit publish failed", { error: error instanceof Error ? error.message : String(error) });
         return { published: 0, skipped: 0, leads: 0 };
       });
-      return { ...summary, setupStatus, cockpit };
+      return { ...summary, setupStatus, skillSync, cockpit };
     });
     registerJob(ctx, "collect-metrics", () => collectMetricsJob(ctx, ensure));
     registerJob(ctx, "poll-inbox", () => pollInboxJob(ctx, ensure));
@@ -522,6 +578,8 @@ const plugin = definePlugin({
     registerJob(ctx, "measure-experiments", () => measureExperimentsJob(ctx, ensure));
     // Leads the CRM has not answered yet are re-sent with backoff (kit outbox).
     registerJob(ctx, "redeliver", () => redeliver(ctx));
+    // The client's answers on the approval page: comment on the post's review issue, wake the Social agent, approve when the policy's sign-offs are in.
+    registerJob(ctx, "client-answers", () => clientAnswersJob(ctx, ensure));
 
     // Matching leaves out the operating manual every PiB agent carries (see SOCIAL_MATCH_ROLE).
     registerHireWatch(ctx, [{ role: SOCIAL_MATCH_ROLE, onLinked: onSocialAgentLinked(ctx) }]);
@@ -533,10 +591,16 @@ const plugin = definePlugin({
     // with no time, reconnects, the reply queue, failed posts); unfinished work is reopened with what is missing.
     // This is the plugin's only issue.updated subscription (a second one would deliver each event twice).
     registerDoneChecks(ctx, SOCIAL_DONE_CHECKS);
-    ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await ensure(event.companyId);
-    });
+    // The one company.created wiring (kit): remembers the company, syncs the skills, checks the weekly routine's stored template.
+    registerCompanyBootstrap(ctx, { ensureResources: ensure });
     registerCrmProjection(ctx, ctx.db.namespace);
+    // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
+    registerClientProjectWatch(ctx);
+    // An answered "connect this account" ask verifies the connection (Q9-10); the connect flow itself resolves the asking issue.
+    registerAskEffect(CONNECT_EFFECT_KEY, connectEffect);
+    installAskEffects(ctx);
+    // POPIA: the CRM sends an approved erasure; Social wipes the person from its inbox data (Q10-13).
+    registerEraseReceiver(ctx, { plugin: PLUGIN_ID, erase: (request, companyId) => eraseSubject(ctx, request, companyId) });
   },
   async onHealth() {
     const failing = Object.entries(lastRuns).filter(([, run]) => !run.ok);

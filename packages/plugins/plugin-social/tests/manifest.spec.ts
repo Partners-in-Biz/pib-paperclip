@@ -48,7 +48,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.7.2");
+    expect(manifest.version).toBe("0.8.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -115,6 +115,6 @@ describe("manifest", () => {
   });
 
   it("schedules every job", () => {
-    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss", "score-posts", "measure-experiments", "redeliver"]);
+    expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(["publish-due", "refresh-tokens", "collect-metrics", "poll-inbox", "poll-rss", "score-posts", "measure-experiments", "redeliver", "client-answers"]);
   });
 });

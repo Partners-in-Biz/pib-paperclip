@@ -106,7 +106,10 @@ describe("reviewer routing for posts", () => {
     const description = String(issue.description);
     expect(description).toContain("## Reviewer: check before the person approves");
     for (const check of POST_REVIEW_CHECKS) expect(description).toContain(check);
-    expect(description).toContain("reassign this issue to user `owner-1`");
+    // The Reviewer records its verdict with the tool; the plugin hands the issue on (to the person who approves, here the post owner).
+    expect(description).toContain("partnersinbiz.social:record-review-verdict");
+    expect(description).toContain("after a pass to user `owner-1` (who approves this post)");
+    expect(description).toContain("Do not reassign it yourself");
     expect(description).toContain("LinkedIn · PiB");
     expect(description).toContain("Closing this issue does not approve it");
     expect(w.wakeups).toEqual(["iss-1"]);

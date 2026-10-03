@@ -13,12 +13,14 @@
  * | `inbox:<accountId>:<day>` (reply queue) | every comment on it is replied to or needs no reply             |
  * | `post-failed:<postId>`                  | no destination of the post is still failed                      |
  * | `plan:<scope>` (first plan)             | a post was drafted in that scope since the issue opened         |
+ * | `review:<postId>` (review, client link) | the post left review, or nothing is left for an agent to do     |
  *
  * Each check also passes when the issue is not Social's (another plugin can
  * use the same words in its origin ids): it only reads rows that belong to it.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, parseClientParam, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
+import { openLinkFor, signoffState } from "./approval-flow.js";
 import { destinationsForPost, getAccount, getAccountsByIds, getPost, table } from "./db.js";
 import { clip } from "./domain.js";
 import { SOCIAL_ORIGINS } from "./issues.js";
@@ -241,6 +243,37 @@ export async function checkPlan(issue: DoneCheckIssue, ctx: PluginContext): Prom
   };
 }
 
+/**
+ * A post's review issue: an agent may close it when the post left review (approved, sent back, deleted) or when nothing is left
+ * that an agent can do: what still waits is a team member's click, or the client's answer on a link that is out. Not done when the
+ * policy needs the Reviewer's pass and no verdict is recorded for this version, or the client has to approve and no link for this
+ * version is open (the agent closed the issue after drafting the email, or before making the link). Without this an agent's early
+ * close leaves a post in review that nobody is working on.
+ */
+export async function checkReview(issue: DoneCheckIssue, ctx: PluginContext): Promise<DoneCheckResult> {
+  const postId = (issue.originId ?? "").slice(SOCIAL_ORIGINS.review.length);
+  const post = await getPost(ctx, issue.companyId, postId);
+  if (!post || post.status !== "review") return { done: true };
+  const state = await signoffState(ctx, issue.companyId, post);
+  if (state.policy.requireReviewer && state.signoffs.reviewer !== "approved") {
+    return {
+      done: false,
+      missing: [
+        `No Reviewer verdict is recorded for this version of "${snippet(post.body)}" (post \`${post.id}\`): check it and call \`partnersinbiz.social:record-review-verdict\` (\`pass\` or \`changes\`). The tool hands the issue on; do not close it yourself.`,
+      ],
+    };
+  }
+  if (state.missing.includes("client") && !(await openLinkFor(ctx, issue.companyId, post.id, state.hash))) {
+    return {
+      done: false,
+      missing: [
+        `The client has to approve "${snippet(post.body)}" (post \`${post.id}\`) and no link for this version is open: \`request-client-approval\`, then a Mailbox draft (never send it yourself) and one \`${ASK_OWNER_TOOL}\`. Once their link is out you may close this issue: when they ask for changes, or the link runs out, the plugin gives you a task again.`,
+      ],
+    };
+  }
+  return { done: true };
+}
+
 export const SOCIAL_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: SOCIAL_ORIGINS.repurpose, label: "Repurpose for social", check: checkRepurpose },
   { originPrefix: SOCIAL_ORIGINS.schedule, label: "Schedule approved social posts", check: checkSchedule },
@@ -248,5 +281,6 @@ export const SOCIAL_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: SOCIAL_ORIGINS.replyQueue, label: "Reply to social comments", check: checkReplyQueue },
   { originPrefix: SOCIAL_ORIGINS.publishFailed, label: "Failed social post", check: checkPublishFailure },
   { originPrefix: SOCIAL_ORIGINS.plan, label: "First social plan", check: checkPlan },
+  { originPrefix: SOCIAL_ORIGINS.review, label: "Review or approve a social post", check: checkReview },
 ];
 

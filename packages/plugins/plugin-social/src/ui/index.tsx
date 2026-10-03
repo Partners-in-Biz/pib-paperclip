@@ -57,6 +57,11 @@ const ACTION_KEYS = [
   "social.review",
   "social.back-to-draft",
   "social.approve",
+  "social.approval-policy",
+  "social.set-approval-policy",
+  "social.approval-status",
+  "social.request-client-approval",
+  "social.record-client-approval",
   "social.schedule",
   "social.unschedule",
   "social.retry-post",
@@ -89,7 +94,7 @@ const ACTION_KEYS = [
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.growth-load", "social.routine-report"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.approval-policy", "social.approval-status", "social.request-client-approval", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.growth-load", "social.routine-report"]);
 
 type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "growth" | "media" | "feeds" | "templates";
 const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "growth", "media", "feeds", "templates"];
@@ -255,7 +260,7 @@ export function SocialPage({ context }: PluginPageProps) {
         onChange={(id) => setTab(id as TabId)}
       />
       {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} onOpenPost={(p) => setDetailId(p.id)} tabLink={tabLink} /> : null}
-      {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
+      {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} run={run} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
       {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
       {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
       {tab === "inbox" ? <InboxTab snapshot={snapshot} run={run} /> : null}

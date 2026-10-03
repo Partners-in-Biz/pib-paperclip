@@ -48,7 +48,7 @@ import {
 import { clip, SocialError } from "./domain.js";
 import { localDate } from "./growth/engine.js";
 import { sendLead } from "./handoff.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdForRow, scopeLine, SOCIAL_ORIGINS, socialAssignee } from "./issues.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 
 export const TRIAGE_PURPOSE = "social-inbox-triage";
@@ -348,7 +348,7 @@ async function queueForAgent(ctx: PluginContext, config: SocialConfig, account: 
   try {
     const issue = await createIssueSafely(ctx, {
       companyId,
-      projectId: await socialProjectId(ctx, companyId),
+      projectId: await projectIdForRow(ctx, companyId, account),
       title: `${clientPrefix(account)}Reply to social comments: ${label} (${day})`,
       description,
       priority: "medium",
@@ -384,7 +384,7 @@ async function escalateToPerson(ctx: PluginContext, config: SocialConfig, item: 
   try {
     const issue = await createIssueSafely(ctx, {
       companyId,
-      projectId: await socialProjectId(ctx, companyId),
+      projectId: await projectIdForRow(ctx, companyId, scoped),
       title: `${clientPrefix(scoped)}Check a ${item.kind} on ${where}: possible legal, safety or PR risk`,
       description: [
         `${escalationWhy(triage)}. It was not queued for the agent, so nobody replies until you decide.`,

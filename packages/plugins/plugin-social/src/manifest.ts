@@ -9,10 +9,10 @@ import { SOCIAL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.7.2",
+  version: "0.8.0",
   displayName: "Social",
   description:
-    "Connect social accounts for PiB's own work or for one CRM client (company or contact) at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft and approve posts, and publish them on schedule with retries. Inbox triage (built-in rules, or Jev); Growth Lab scores, experiments and playbook. " +
+    "Connect social accounts for PiB's own work or one CRM client at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft posts, approve them (a team member by default; a client can approve on a link) and publish on schedule with retries. Inbox triage; Growth Lab. " +
     "OAuth redirect URI for every provider (shown on the Social page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
@@ -30,7 +30,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "routines.managed",
     "authorization.grants.read",
     "authorization.grants.write",
+    "projects.read",
     "issues.read",
+    "issue.attachments.read",
     "issues.create",
     "issues.update",
     "issues.wakeup",
@@ -101,6 +103,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Re-send leads to the CRM",
       description: "Re-sends inbox leads the CRM has not answered yet (lead.captured.result), with backoff, for about three days.",
       schedule: "*/10 * * * *",
+    },
+    {
+      jobKey: "client-answers",
+      displayName: "Apply client approvals",
+      description: "Applies what clients answered on their approval links: records the verdict, comments on the post's review issue, wakes the Social agent and approves the post when the scope's sign-offs are in. Closes links that ran out unanswered.",
+      schedule: "*/5 * * * *",
     },
   ],
   apiRoutes: [

@@ -10,9 +10,13 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { ASK_OWNER_TOOL, withClientParam } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
+import { approvalView, approvePostByPerson, completeApproval, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
+import { listClientApprovals, requestClientApproval } from "./client-approval.js";
+import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
   formatClientParam,
   inScope,
@@ -34,7 +38,6 @@ import {
 import { loadSocialConfig } from "./config.js";
 import { handoffPayload } from "./done-checks.js";
 import {
-  accountMeta,
   accountMetrics,
   deleteDestination,
   deletePost,
@@ -105,10 +108,11 @@ import {
   type PostStatus,
   type SocialPlatform,
 } from "./platforms.js";
-import { buildPublishRequest, retryPost, validateDestination } from "./publish.js";
+import { retryPost } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
+import { reviewStats } from "./review-outcomes.js";
 import { routineReport } from "./routine-state.js";
-import { scheduleApproved } from "./schedule.js";
+import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
 import { scopeStats } from "./stats.js";
@@ -429,6 +433,8 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
   });
+  // Any edit voids the client's open links: they were made for the old version.
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
   if (moving) {
     for (const d of await destinationsForPost(ctx, post.id)) {
       if (accountIds && !accountIds.includes(d.account_id)) await deleteDestination(ctx, viewer.companyId, post.id, d.account_id);
@@ -481,34 +487,15 @@ export async function listPostsRecord(ctx: PluginContext, viewer: Viewer, params
 
 export async function validatePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   const post = await requirePost(ctx, viewer, postId);
-  const destinations = await destinationsForPost(ctx, post.id);
-  const results = [];
-  const problems: string[] = [];
-  if (destinations.length === 0) problems.push("Attach at least one destination account");
-  for (const asset of await foreignMedia(ctx, viewer.companyId, postMedia(post), scopeOfRow(post))) {
-    problems.push(`Media "${asset.name}" belongs to ${scopeLabel(asset)}; this post is for ${scopeLabel(post)}. Replace it.`);
-  }
-  for (const d of destinations) {
-    const account = await getAccount(ctx, viewer.companyId, d.account_id);
-    if (!account || !isSocialPlatform(account.platform)) continue;
-    if (d.status === "published") {
-      results.push({ accountId: account.id, platform: account.platform, accountName: account.display_name, problems: [] as string[], published: true });
-      continue;
-    }
-    const list = validateDestination(account.platform, buildPublishRequest(post, account.platform), accountMeta(account));
-    if (!inScope(account, scopeOfRow(post))) list.unshift(`${account.display_name} belongs to ${scopeLabel(account)}, not ${scopeLabel(post)}. Remove it from this post`);
-    if (!account.token_enc || account.status === "disabled") list.push(`${account.display_name} is disconnected`);
-    else if (account.status === "needs_reconnect") list.push(`${account.display_name} needs to be reconnected`);
-    results.push({ accountId: account.id, platform: account.platform, accountName: account.display_name, problems: list, published: false });
-    problems.push(...list.map((p) => `${PLATFORM_LABELS[account.platform as SocialPlatform]} (${account.display_name}): ${p}`));
-  }
-  return { postId: post.id, ok: problems.length === 0, problems, destinations: results };
+  return validatePostRow(ctx, viewer.companyId, post);
 }
 
 export async function attachDestination(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
   await attachAccounts(ctx, viewer, post, await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]));
+  // The accounts are part of what a sign-off and a client link cover: the client saw the post going to other accounts.
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -516,6 +503,7 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -524,6 +512,12 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
+  if (to === "approved" && post.status === "review") {
+    // Approval needs every sign-off the scope's policy asks for (a team member's click is one of them); the post is
+    // approved, scheduled at its proposed time, and its review issue closed once they are all in (approval-flow.ts).
+    const progress = await approvePostByPerson(ctx, viewer, post);
+    return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
+  }
   // Unscheduling clears the time. Every other move keeps it: a draft's time is its proposed time.
   const clearSchedule = post.status === "scheduled" && to === "approved" ? null : undefined;
   if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], to, clearSchedule))) {
@@ -534,11 +528,12 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
     await routePostReview(ctx, viewer, post);
     return getPostDetail(ctx, viewer, post.id);
   }
-  if (to === "approved" && post.status === "review") {
-    // Approval keeps the proposed time: scheduled at once, or the Social agent gets a task to pick one.
-    const approval = await scheduleApproved(ctx, viewer.companyId, post.id, (id) => validatePostRecord(ctx, viewer, id));
-    await closePostReview(ctx, viewer, post, to, approval.note);
-    return { ...(await getPostDetail(ctx, viewer, post.id)), approval };
+  // Back to draft: a link the client holds would only let them answer for a post that is no longer waiting.
+  if (to === "draft" && post.status === "review") await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  // A person sending a post back from review is a verdict too: the owner asked for changes (autonomy input).
+  if (to === "draft" && post.status === "review" && !viewer.isAgent && viewer.userId) {
+    const state = await signoffState(ctx, viewer.companyId, post).catch(() => null);
+    if (state) await recordSignoff(ctx, viewer.companyId, post, state.hash, "owner", "changes", "ui", { userId: viewer.userId });
   }
   await closePostReview(ctx, viewer, post, to);
   return getPostDetail(ctx, viewer, post.id);
@@ -583,6 +578,92 @@ export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postI
   const post = await requirePost(ctx, viewer, postId);
   if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review or approved posts can be deleted");
   return { deleted: post.id };
+}
+
+// ── approvals: policy, client link, Reviewer verdict, sign-offs ─────────────
+
+export async function getApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return policyOut(await getPolicy(ctx, viewer.companyId, scope));
+}
+
+/** A person sets who approves posts in a scope. An agent cannot: the policy delegates authority. */
+export async function setApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const userId = requireUser(viewer, "set who approves posts");
+  const target = await readScope(ctx, viewer, params);
+  if (params.requireReviewer === true && !(await reviewerAgentId(ctx, viewer.companyId))) {
+    throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
+  }
+  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId);
+  // A looser policy can leave posts in review with every sign-off already in: approve those now.
+  const { approved, routed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...policyOut(saved), approved, routed };
+}
+
+/**
+ * Posts in review in a scope whose sign-offs are all in under the current policy are approved. A post that still waits on an agent's
+ * step with no open review issue to say so (the policy began to ask for the client after the post went to review) gets its issue.
+ */
+async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope): Promise<{ approved: number; routed: number }> {
+  let approved = 0;
+  let routed = 0;
+  try {
+    for (const post of (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: 50 })).filter((p) => postVisible(viewer, p))) {
+      const state = await signoffState(ctx, viewer.companyId, post);
+      if (state.missing.length > 0) {
+        if (await routeWaitingPost(ctx, viewer, post)) routed += 1;
+        continue;
+      }
+      await completeApproval(ctx, viewer, post, "A person (the policy changed)");
+      approved += 1;
+    }
+  } catch (error) {
+    ctx.logger.info("Social policy re-check skipped", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
+  }
+  return { approved, routed };
+}
+
+/** Where a post's approval stands: the policy, each sign-off for the current version, what is missing, and the client's links (never the links themselves). */
+export async function approvalStatusRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
+  const post = await requirePost(ctx, viewer, postId);
+  return { postId: post.id, status: post.status, ...(await approvalView(ctx, viewer.companyId, post)), clientLinks: await listClientApprovals(ctx, viewer.companyId, post) };
+}
+
+/** `request-client-approval`: the client's link for a post in review, plus the email text. */
+export async function requestClientApprovalRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const draft = optionalString(params, "draft");
+  if (draft !== undefined && draft !== "me" && draft !== "account-manager") throw new SocialError('draft must be "me" or "account-manager"');
+  return requestClientApproval(ctx, viewer.companyId, post, await loadSocialConfig(ctx, viewer.companyId), {
+    createdBy: viewer.agentId ?? viewer.userId,
+    recipientEmail: optionalString(params, "recipientEmail") ?? null,
+    draft: draft as "me" | "account-manager" | undefined,
+    byAgent: viewer.isAgent,
+  });
+}
+
+/** `record-review-verdict`: only the company's Reviewer agent. */
+export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the Reviewer agent records a review verdict. People approve or send the post back on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const verdict = requiredString(params, "verdict");
+  if (verdict !== "pass" && verdict !== "changes") throw new SocialError('verdict must be "pass" or "changes"');
+  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null });
+}
+
+/** A person records that the client approved outside the approval page. */
+export async function recordClientApprovalRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "record the client's approval");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  if (post.status !== "review") throw new SocialError("Only a post in review can take the client's approval.");
+  const progress = await recordClientApprovalByPerson(ctx, viewer, post, requiredString(params, "note"), optionalString(params, "by") ?? null);
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
+}
+
+/** `review-outcomes`: first-pass rates and approval streaks per post type, as inputs for a later autonomy policy. */
+export async function reviewOutcomesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return reviewStats(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 90), 7), 365));
 }
 
 // ── accounts ────────────────────────────────────────────────────────────────
@@ -678,10 +759,38 @@ export function connectInstructions(platformInput: string, redirectUri: string |
   };
 }
 
-/** `connect-account`: the steps and deep link for the scope's Accounts tab. */
+/**
+ * `connect-account`: the steps and deep link for the scope's Accounts tab. When an agent asks, the wish is
+ * recorded against the issue it is working on: connecting the account then comments on that issue, hands it
+ * back to the agent and wakes it (connect-requests.ts), so the agent does not have to poll.
+ */
 export async function connectAccountRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, redirectUri: string | null) {
-  const { scope } = await readScope(ctx, viewer, params);
-  return connectInstructions(requiredString(params, "platform"), redirectUri, withClientParam("/social?tab=accounts", scope));
+  const target = await readScope(ctx, viewer, params);
+  const platform = requiredString(params, "platform");
+  const instructions = connectInstructions(platform, redirectUri, withClientParam("/social?tab=accounts", target.scope));
+  if (!viewer.isAgent) return instructions;
+  // An issue named by identifier (PIB-23) is stored by id, so asking twice by either name is one request.
+  const named = optionalString(params, "issueId");
+  const issueId = named ? String((await ctx.issues.get(named, viewer.companyId).catch(() => null))?.id ?? named) : await issueOfRun(ctx, viewer.companyId, viewer.agentId, viewer.runId);
+  const request = await recordConnectRequest(ctx, viewer.companyId, {
+    platform,
+    scope: target.scope,
+    clientName: target.client?.name ?? null,
+    agentId: viewer.agentId,
+    runId: viewer.runId,
+    issueId,
+  });
+  const clientValue = target.scope ? formatClientParam(target.scope) : "own";
+  return {
+    ...instructions,
+    ...(request.id
+      ? {
+          noted: `Recorded against issue ${request.issueId}: when the account is connected the plugin comments there, hands the issue back to you and wakes you. Do not poll.`,
+          effect: { key: CONNECT_EFFECT_KEY, params: { platform, client: clientValue } },
+          effectNote: "If ask-owner has an `effect` parameter, pass this effect on your ask: when the owner answers, the plugin checks the account really is connected and tells you. Without it the plugin still wakes you when the account is connected.",
+        }
+      : { noted: "Pass the issue you are working on as issueId and the plugin will wake you when the account is connected." }),
+  };
 }
 
 // ── templates, feeds, inbox, analytics ──────────────────────────────────────
@@ -922,7 +1031,7 @@ export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
 export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
   const target = await scopeFromParams(ctx, viewer.companyId, params);
   const scope: ClientScope = target.scope;
-  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats] = await Promise.all([
+  const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats, policy] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),
     listAccounts(ctx, viewer.companyId, scope),
     listPosts(ctx, viewer.companyId, { limit: 300, scope }),
@@ -938,6 +1047,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
     // Chart series (published per day, destination statuses, weekly lift).
     scopeStats(ctx, viewer.companyId, scope),
+    // Who approves posts in this scope (the page shows it and a person can change it).
+    getPolicy(ctx, viewer.companyId, scope),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
@@ -978,6 +1089,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     inbox: inbox.map(inboxOut),
     experiments,
     stats,
+    approvalPolicy: policyOut(policy),
     agent,
     pendingPickers: pickers
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))

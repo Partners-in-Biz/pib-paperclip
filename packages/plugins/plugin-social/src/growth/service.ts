@@ -15,7 +15,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig } from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, SOCIAL_ORIGINS, socialProjectId } from "../issues.js";
+import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
@@ -199,7 +199,7 @@ async function announce(env: GrowthEnv, config: SocialConfig, program: Program, 
   try {
     const issue = await createIssueSafely(env.ctx, {
       companyId,
-      projectId: await socialProjectId(env.ctx, companyId),
+      projectId: await projectIdFor(env.ctx, companyId, scope),
       title: approvalIssueTitle(program, week),
       description: approvalIssueDescription(program, lines, await socialPath(env.ctx, companyId, { tab: "growth" }, scope)),
       priority: "medium",

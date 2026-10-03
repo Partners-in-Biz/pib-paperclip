@@ -23,7 +23,7 @@ import { clientWhere, parseClientParam, type ClientScope } from "@partnersinbiz/
 import { OWN, rowScope, scopeColumns, scopeLabel, type ResolvedScope } from "./clients.js";
 import { table } from "./db.js";
 import { clip } from "./domain.js";
-import { createIssueSafely, ORIGIN_KIND, scopeLine, SOCIAL_ORIGINS, socialAssignee, socialProjectId } from "./issues.js";
+import { createIssueSafely, ORIGIN_KIND, projectIdFor, scopeLine, SOCIAL_ORIGINS, socialAssignee } from "./issues.js";
 import { socialOn } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 
@@ -114,7 +114,7 @@ export function planDescription(target: ResolvedScope, accounts: LiveAccount[]):
     "1. `list-connected-accounts` for this scope. Plan only for accounts that are connected; skip any that need reconnecting.",
     "2. `get-playbook` for this scope (it starts with the standard playbook). `performance-review` only if posts have been published already.",
     "3. Draft next week's posts for each connected platform with `create-post`, following the playbook, each with a proposed time (`scheduledAt`). `validate-post`, fix every problem, then `request-review`.",
-    "4. Never approve a post: a person approves every post, and approval schedules it at its proposed time.",
+    "4. Never approve a post: who approves is the scope's policy (a person by default, or the client for a client that asked to), and approval schedules it at its proposed time.",
     "5. Close this issue with one line: the posts drafted per platform and anything the approver must decide. The close is checked: at least one post must exist in this scope that was drafted after this issue opened.",
     "",
     `Plan key: \`${SOCIAL_ORIGINS.plan}${planScopeKey(target.scope)}\``,
@@ -160,7 +160,7 @@ export async function ensurePlanForScope(ctx: PluginContext, companyId: string, 
 
   const issue = await createIssueSafely(ctx, {
     companyId,
-    projectId: await socialProjectId(ctx, companyId),
+    projectId: await projectIdFor(ctx, companyId, scope),
     title: `Plan social for ${scopeLabel(target)}`,
     description: planDescription(target, accounts),
     priority: "medium",

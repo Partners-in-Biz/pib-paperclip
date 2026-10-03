@@ -104,8 +104,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "connect-account",
     displayName: "Connect social account",
-    description: "A person connects accounts (signing in is a one-time grant). Returns the deep link and exact steps to put in one partnersinbiz.cockpit:ask-owner request.",
-    parametersSchema: schema(["platform"], { platform: choice(ALL_PLATFORMS, "Platform to connect"), ...scope }),
+    description:
+      "A person connects accounts (signing in is a one-time grant). Returns the deep link and exact steps to put in one partnersinbiz.cockpit:ask-owner request, and the effect to pass on that ask. Pass the issue you are working on: when the account is connected the plugin comments on it, hands it back to you and wakes you, so do not poll.",
+    parametersSchema: schema(["platform"], {
+      platform: choice(ALL_PLATFORMS, "Platform to connect"),
+      issueId: text("The issue you are working on (id or identifier). Default: read from your run."),
+      ...scope,
+    }),
   },
   {
     name: "refresh-account",
@@ -177,8 +182,49 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "request-review",
     displayName: "Request review",
-    description: "Send a draft for approval. A person approves (the Reviewer checks first when the Cockpit has one); approval schedules it at its proposed time.",
+    description:
+      "Send a draft for approval. Who approves is the scope's policy (get-approval-policy): by default a person (the Reviewer checks first when the Cockpit has one); for a client it can be the client, on a link (request-client-approval). Approval schedules the post at its proposed time. Editing a post after a sign-off makes that sign-off stale.",
     parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "get-approval-policy",
+    displayName: "Get approval policy",
+    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. Read it before you promise anyone a timeline. Only a person sets it; you cannot.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
+  },
+  {
+    name: "get-approval-status",
+    displayName: "Get approval status",
+    description: "Where one post's approval stands: the policy, each sign-off for the post's CURRENT version (approved, changes, stale or none), what is still missing, and the client's links (status and answer; never the link itself).",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "request-client-approval",
+    displayName: "Request client approval",
+    description:
+      "Make the client's approval link for a post in review (only when the scope's policy asks for the client). Returns the link, the people at the client with an email, and a ready email text. The link opens a page showing the post exactly as it will appear, with Approve and Request changes. Email it ONLY as a Mailbox draft (partnersinbiz.mailbox:create-draft): never send it yourself. Editing the post afterwards voids the link. The plugin comments on the review issue and wakes you when the client answers.",
+    parametersSchema: schema(["postId"], {
+      postId: POST_ID,
+      recipientEmail: text("The client's email the link is meant for (kept on the record). Default: none."),
+      draft: choice(["me", "account-manager"], "Who drafts the Mailbox email. Leave it out: the plugin opens a drafting task for the Account Manager (who holds a mailbox delegation) when the company has one, otherwise you draft it. me: you create the Mailbox draft yourself (only if you hold a delegation). account-manager: always open the task for the Account Manager (or the Operator or owner when none is staffed)."),
+    }),
+  },
+  {
+    name: "record-review-verdict",
+    displayName: "Record review verdict",
+    description:
+      "Reviewer only. Record your verdict on a post in review: pass (it is ready for whoever approves) or changes (with notes: one line per problem). A pass is a check, not an approval. The plugin hands the review issue on: after a pass to the person or the Social agent the policy names; after changes back to the Social agent with the post returned to draft. Do not reassign the issue yourself.",
+    parametersSchema: schema(["postId", "verdict"], {
+      postId: POST_ID,
+      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft with your notes."),
+      notes: text("changes: what to fix, one line per problem. pass: optional remarks."),
+    }),
+  },
+  {
+    name: "review-outcomes",
+    displayName: "Review outcomes",
+    description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. These are inputs for a later autonomy policy: auto-approval is off and you never approve.${OWN}`,
+    parametersSchema: schema([], { ...scope, days: int("Days to look back, 7-365 (default 90)") }),
   },
   {
     name: "schedule-post",
@@ -238,6 +284,24 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     description: `Download a public https image (JPEG, PNG, GIF, WebP) or video (MP4, MOV) up to 512 MB and store it on the R2 media domain. Returns the asset id.${OWN}`,
     parametersSchema: schema(["url"], {
       url: text("Public https URL to download"),
+      name: text("Display name (default: the file name)"),
+      altText: text("What the image or video shows, for screen readers"),
+      ...scope,
+    }),
+  },
+  {
+    name: "list-issue-attachments",
+    displayName: "List issue attachments",
+    description: "The files attached to an issue (usually the one you are working on): id, name, size and whether it looks like an importable image or video. No links, no bytes. Use it to find the attachment id for import-media-from-attachment.",
+    parametersSchema: schema(["issueId"], { issueId: text("Issue id or identifier") }),
+  },
+  {
+    name: "import-media-from-attachment",
+    displayName: "Import media from an issue attachment",
+    description: `Turn a file you attached to an issue (a carousel slide, a branded image, a short video you made) into a media asset on R2, so a post can use it. Takes the issue id and attachment id; returns the asset id (never a link to private storage). The type is read from the file's bytes (an attachment stored as application/octet-stream is fine); JPEG, PNG, GIF, WebP, MP4 or MOV up to 64 MB. Width, height and video length are read and shape problems reported (not 9:16, under 1080 px). Importing the same attachment again returns the same asset. To use a file from your workspace, attach it to the issue first.${OWN}`,
+    parametersSchema: schema(["issueId", "attachmentId"], {
+      issueId: text("The issue the file is attached to"),
+      attachmentId: text("Attachment id from list-issue-attachments"),
       name: text("Display name (default: the file name)"),
       altText: text("What the image or video shows, for screen readers"),
       ...scope,

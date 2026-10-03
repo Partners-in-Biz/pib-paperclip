@@ -50,7 +50,7 @@ function ctxWith(rows: (sql: string, params: unknown[]) => unknown[], extra: Rec
 describe("origin ids", () => {
   it("every kind of work issue has a stable prefix, and the rules cover the agent's work", () => {
     expect(SOCIAL_ORIGINS).toMatchObject({ repurpose: "repurpose:", schedule: "schedule:", reconnect: "account:", replyQueue: "inbox:", publishFailed: "post-failed:", plan: "plan:" });
-    expect(SOCIAL_DONE_CHECKS.map((r) => r.originPrefix)).toEqual(["repurpose:", "schedule:", "account:", "inbox:", "post-failed:", "plan:"]);
+    expect(SOCIAL_DONE_CHECKS.map((r) => r.originPrefix)).toEqual(["repurpose:", "schedule:", "account:", "inbox:", "post-failed:", "plan:", "review:"]);
     // "inbox:" never catches the escalation issues a person decides.
     expect(`${SOCIAL_ORIGINS.escalation}x`.startsWith(SOCIAL_ORIGINS.replyQueue)).toBe(false);
   });
