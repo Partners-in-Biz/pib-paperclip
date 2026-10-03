@@ -1,0 +1,111 @@
+# CI for the Partners in Biz plugins and their shared kit.
+#
+# Our own code lives only under packages/plugins/. Upstream's workflows skip all of it (they are built for the
+# Paperclip host), so until this file existed ~2,450 plugin tests and the kit contract tests only ran when someone
+# remembered to run them before a manual deploy. This workflow is the gate: typecheck, tests and build for every PiB
+# package on every push and pull request to `development` (our working branch; main/master only moves with the
+# owner's approval).
+#
+# Not product code: this is the one file outside packages/plugins that we add, because GitHub only reads workflows
+# from .github/workflows. It does not touch, replace or depend on any upstream workflow.
+#
+# The deploy script (operations/vps/deploy-plugins.sh in the PiB Paperclip repo) runs the same three steps locally
+# before it ships anything, and refuses to deploy a commit that is not on origin/development, so what this workflow
+# checks is what gets deployed.
+name: PiB plugins CI
+
+# No paths filter on purpose: the aggregate check "PiB plugins CI" below is meant to be a required branch check, and a
+# required check that is skipped by a paths filter never reports, which blocks the pull request forever.
+on:
+  push:
+    branches: [development]
+  pull_request:
+    branches: [development]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces the older run; runs on `development` itself are never cancelled, so every
+# commit that can be deployed has its own finished result.
+concurrency:
+  group: pib-plugins-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
+          - pib-plugin-kit
+          - plugin-accounting
+          - plugin-billing
+          - plugin-campaigns
+          - plugin-cockpit
+          - plugin-crm
+          - plugin-mailbox
+          - plugin-partners
+          - plugin-payroll
+          - plugin-seo
+          - plugin-setup
+          - plugin-social
+          - pib-wp-connector
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
+        with:
+          persist-credentials: false
+
+      # No `version:` here: the action reads it from package.json "packageManager" (pnpm@9.15.4).
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # The scripts a package does not have are skipped (--if-present): the kit and the UI package have no build, the
+      # connector has only a build. The kit's `test` runs its unit tests and then the cross-plugin contract tests
+      # (skill text against registered tools) that read every PiB plugin's sources.
+      - name: Typecheck
+        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present typecheck
+
+      - name: Test
+        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present test
+
+      - name: Build
+        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present build
+
+      # The connector is PHP. Its own tests run on the runner's PHP; the zip it ships (inside the CRM bundle) must be
+      # byte-for-byte the same on every build, because the CRM hands its sha256 to the sites that self-update.
+      - name: Connector tests and reproducible zip
+        if: matrix.package == 'pib-wp-connector'
+        run: |
+          php --version
+          php packages/plugins/pib-wp-connector/tests/run.php
+          node packages/plugins/pib-wp-connector/tests/sign.mjs --vector > /dev/null
+          first="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
+          pnpm --filter "@partnersinbiz/pib-wp-connector" run build
+          second="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
+          test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
+
+  # One stable name for a branch rule: every package above must have passed.
+  pib-plugins-ci:
+    name: PiB plugins CI
+    needs: package
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All packages passed
+        run: |
+          test "${{ needs.package.result }}" = "success" || { echo "a package failed: ${{ needs.package.result }}"; exit 1; }
