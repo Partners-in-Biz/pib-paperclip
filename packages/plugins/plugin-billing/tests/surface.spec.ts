@@ -12,6 +12,8 @@ import { documentLabel, draftsToSend, futurePaymentsText, waitingOnPerson } from
 import type { Snapshot } from "../src/ui/types.js";
 import { resolveView, sectionsFor, tabsFor, TAB_SECTIONS, TOP_TABS, VIEW_IDS, type View } from "../src/ui/views.js";
 
+const PKG_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 type Schema = JsonSchema & { properties?: Record<string, Schema>; items?: Schema; enum?: unknown[]; description?: string; required?: string[] };
 
 describe("agent tools", () => {
@@ -73,7 +75,7 @@ describe("the invoice-draft skill", () => {
 describe("manifest", () => {
   it("keeps the package version, comments capability and the follow-up jobs", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.5.2");
+    expect(manifest.version).toBe(PKG_VERSION);
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.capabilities).toContain("issue.comments.create");
     const jobs = new Map((manifest.jobs ?? []).map((j) => [j.jobKey, j.schedule]));

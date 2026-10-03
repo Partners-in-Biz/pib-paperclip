@@ -12,6 +12,8 @@ import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
 import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
 
+const PKG_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 const available = await embeddedAvailable();
 const MODULES_UPDATED = "plugin.partnersinbiz.setup.modules.updated";
 const UUID = "0f1e2d3c-4b5a-4968-8776-655443322110";
@@ -25,7 +27,7 @@ const FULL = {
 describe("manifest", () => {
   it("declares the setup-status route and matches the package version", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(manifest.version).toBe("0.5.2");
+    expect(manifest.version).toBe(PKG_VERSION);
     expect(pkg.version).toBe(manifest.version);
     expect(manifest.apiRoutes).toContainEqual(SETUP_STATUS_ROUTE);
     expect(manifest.capabilities).toContain("api.routes.register");
@@ -77,7 +79,7 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
 
   it("lists what is missing before anything is saved, linking to the plugin list", async () => {
     const s = await status();
-    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: "0.5.2" });
+    expect(s).toMatchObject({ plugin: "partnersinbiz.billing", module: "billing", title: "Billing", version: PKG_VERSION });
     expect(s.items[0]).toMatchObject({ key: "settings", status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(s, "sender")).toMatchObject({ status: "missing", required: true });
     expect(item(s, "eft")).toMatchObject({ status: "missing", required: true });
