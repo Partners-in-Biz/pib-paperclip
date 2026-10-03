@@ -42,6 +42,19 @@ describe("team roles", () => {
     expect(teamRoleChain("bookkeeper")).toEqual(["bookkeeper"]);
   });
 
+  it("tells the Social agent to carry out social work, and keeps social media off the Account Manager", () => {
+    // Live 2026-10-03: the Social agent declined social tasks as another role's job while the Account Manager's text claimed social media.
+    const social = teamRole("social").summary;
+    expect(social).toMatch(/^Does the social work itself/);
+    expect(social).toContain("Carries out every social task");
+    expect(social).toContain("never declines one");
+    const manager = teamRole("account-manager").summary;
+    expect(manager).toContain("Not social media: that is the Social agent's job.");
+    expect(manager.replace("Not social media: that is the Social agent's job.", "")).not.toMatch(/social/i);
+    // No other role claims social posts or the social inbox.
+    for (const role of TEAM_ROLES.filter((r) => r.key !== "social")) expect(role.summary.replace("Not social media: that is the Social agent's job.", ""), role.key).not.toMatch(/social (post|inbox|media)|schedules and publishes posts/i);
+  });
+
   it("builds canonical skill keys like the host", () => {
     expect(teamSkillKey("partnersinbiz.seo", "seo-sprint")).toBe("plugin/partnersinbiz-seo/seo-sprint");
   });

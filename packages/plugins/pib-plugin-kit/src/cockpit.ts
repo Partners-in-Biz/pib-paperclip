@@ -17,6 +17,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import type { ClientKind } from "./client-ref.js";
 import { PIB_PLUGINS } from "./contracts.js";
+import { routineHealth } from "./routine-health.js";
 import { teamRoleChain, teamRoleHealth, type TeamRoleKey } from "./team.js";
 import type { FlowStageReport } from "./flows.js";
 
@@ -221,9 +222,24 @@ export async function jobHealth(ctx: PluginContext, jobKey: string, title: strin
   return { key, title, status: "ok" };
 }
 
+/**
+ * The snapshot with a health check for every managed routine of this plugin
+ * whose latest firing created no work (kit `routineHealth`). Plugins that
+ * build their own live snapshot can wrap it too, so the page shows the same.
+ * Never throws; a check the plugin already reports itself is kept as is.
+ */
+export async function withRoutineHealth(ctx: PluginContext, companyId: string, snapshot: CockpitSnapshot): Promise<CockpitSnapshot> {
+  try {
+    const checks = (await routineHealth(ctx, companyId)).filter((check) => !snapshot.health.some((own) => own.key === check.key));
+    return checks.length ? { ...snapshot, health: [...snapshot.health, ...checks] } : snapshot;
+  } catch {
+    return snapshot;
+  }
+}
+
 export async function publishCockpitSnapshot(ctx: PluginContext, companyId: string, snapshot: CockpitSnapshot): Promise<void> {
   try {
-    await ctx.events.emit(COCKPIT_EVENTS.snapshot, companyId, snapshot as unknown as Record<string, unknown>);
+    await ctx.events.emit(COCKPIT_EVENTS.snapshot, companyId, (await withRoutineHealth(ctx, companyId, snapshot)) as unknown as Record<string, unknown>);
   } catch (error) {
     ctx.logger.info("Cockpit snapshot emit failed", { error: error instanceof Error ? error.message : String(error) });
   }
