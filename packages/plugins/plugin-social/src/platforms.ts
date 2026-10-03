@@ -6,9 +6,14 @@
 export const PLUGIN_ID = "partnersinbiz.social";
 export const SOCIAL_AGENT_KEY = "social-media-manager";
 export const SOCIAL_PROJECT_KEY = "social";
+/**
+ * The weekly plan routine. It declares no `issueTemplate`: the host then opens
+ * its issues as `routine_execution` with the routine's own id as origin id (the
+ * Routines page and the host's run lookup both rely on that). A template with
+ * an `originId` of our own and no `surfaceVisibility: "plugin_operation"` makes
+ * the host query a uuid column with that string and fail the whole dispatch.
+ */
 export const PLAN_ROUTINE_KEY = "plan-next-week";
-/** Origin id of the weekly plan routine's issues (the manifest's issueTemplate). */
-export const PLAN_ROUTINE_ORIGIN_ID = "routine:plan-next-week";
 
 export type SocialPlatform =
   | "facebook"

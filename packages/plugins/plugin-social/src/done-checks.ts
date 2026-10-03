@@ -12,6 +12,7 @@
  * | `account:<accountId>` (reconnect)       | the account is connected again (or was disconnected or removed) |
  * | `inbox:<accountId>:<day>` (reply queue) | every comment on it is replied to or needs no reply             |
  * | `post-failed:<postId>`                  | no destination of the post is still failed                      |
+ * | `plan:<scope>` (first plan)             | a post was drafted in that scope since the issue opened         |
  *
  * Each check also passes when the issue is not Social's (another plugin can
  * use the same words in its origin ids): it only reads rows that belong to it.
@@ -21,6 +22,7 @@ import { ASK_OWNER_TOOL, parseClientParam, type DoneCheckIssue, type DoneCheckRe
 import { destinationsForPost, getAccount, getAccountsByIds, getPost, table } from "./db.js";
 import { clip } from "./domain.js";
 import { SOCIAL_ORIGINS } from "./issues.js";
+import { liveAccountsInScope, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 
 export { SOCIAL_ORIGINS };
@@ -94,6 +96,8 @@ export async function repurposeDraftCounts(ctx: PluginContext, companyId: string
 }
 
 export interface HandoffPayload {
+  /** A first plan's claim (`handoffs` kind `plan`): the scope key (`own`, `company:<id>`, `contact:<id>`). */
+  scope?: string;
   key?: string;
   url?: string;
   title?: string;
@@ -223,11 +227,26 @@ export async function checkPublishFailure(issue: DoneCheckIssue, ctx: PluginCont
   };
 }
 
+/** First plan of a scope: a post was drafted in it since the issue opened (or the scope has no live account left to plan for). */
+export async function checkPlan(issue: DoneCheckIssue, ctx: PluginContext): Promise<DoneCheckResult> {
+  const scope = planScopeOfKey((issue.originId ?? "").slice(SOCIAL_ORIGINS.plan.length));
+  if (scope === undefined) return { done: true };
+  if ((await liveAccountsInScope(ctx, issue.companyId, scope)).length === 0) return { done: true };
+  if ((await postsMadeInScope(ctx, issue.companyId, scope, issue.createdAt)) > 0) return { done: true };
+  return {
+    done: false,
+    missing: [
+      `No post has been drafted for ${scope ? "this client" : "own work"} since this plan opened: \`get-playbook\`, then \`create-post\` for each connected platform with a proposed time (\`scheduledAt\`${clientArg(scope?.kind, scope?.id)}), \`validate-post\`, \`request-review\`, and close this issue with the post ids.`,
+    ],
+  };
+}
+
 export const SOCIAL_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: SOCIAL_ORIGINS.repurpose, label: "Repurpose for social", check: checkRepurpose },
   { originPrefix: SOCIAL_ORIGINS.schedule, label: "Schedule approved social posts", check: checkSchedule },
   { originPrefix: SOCIAL_ORIGINS.reconnect, label: "Reconnect a social account", check: checkReconnect },
   { originPrefix: SOCIAL_ORIGINS.replyQueue, label: "Reply to social comments", check: checkReplyQueue },
   { originPrefix: SOCIAL_ORIGINS.publishFailed, label: "Failed social post", check: checkPublishFailure },
+  { originPrefix: SOCIAL_ORIGINS.plan, label: "First social plan", check: checkPlan },
 ];
 

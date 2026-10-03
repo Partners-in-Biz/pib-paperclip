@@ -160,16 +160,20 @@ describe("publish-due engine", () => {
 });
 
 describe("OAuth completion through the bridge", () => {
-  function sessionWorld(extra: Record<string, unknown> = { clientRef: null }) {
+  function sessionWorld(extra: Record<string, unknown> = { clientRef: null }, services: Record<string, unknown> = {}) {
     const session = {
       state: "st-1", company_id: "co", platform: "facebook", account_label: "Facebook", extra, pending_options: null as string | null,
       created_by_user_id: "user-1", picker_id: null as string | null, status: "started", expires_at: new Date(Date.now() + 600_000),
     };
     const inserted: unknown[][] = [];
-    const ctx = fakeCtx(hostServices().services, {
+    const claims: unknown[][] = [];
+    const ctx = fakeCtx(hostServices(services).services, {
       queryResult: (sql, params) => {
         if (sql.includes(`FROM ${NAMESPACE}.oauth_sessions`) && sql.includes("WHERE state = $1")) return params[0] === session.state ? [session] : [];
         if (sql.includes("WHERE picker_id = $1")) return params[0] === session.picker_id && session.status === "pending_selection" ? [session] : [];
+        // The first-plan trigger: the scope has one live account and no posts.
+        if (sql.includes(`FROM ${NAMESPACE}.accounts`) && sql.includes("status IN ('connected', 'expiring')")) return [{ platform: "facebook", display_name: "PiB" }];
+        if (sql.includes(`FROM ${NAMESPACE}.handoffs WHERE key = $1`)) return claims.length ? [{ issue_id: null }] : [];
         return [];
       },
       executeResult: (sql, params) => {
@@ -185,6 +189,10 @@ describe("OAuth completion through the bridge", () => {
           return 1;
         }
         if (sql.startsWith(`INSERT INTO ${NAMESPACE}.accounts`)) inserted.push(params);
+        if (sql.startsWith(`INSERT INTO ${NAMESPACE}.handoffs`)) {
+          if (claims.length) return 0;
+          claims.push(params);
+        }
         return 1;
       },
     });
@@ -196,8 +204,14 @@ describe("OAuth completion through the bridge", () => {
         { id: "p2", name: "Client", access_token: "pt2" },
       ] })],
     ]);
-    return { ctx, session, inserted };
+    return { ctx, session, inserted, claims };
   }
+
+  /** A Social agent is linked (hire state) and idle, so first plans have someone to go to. */
+  const withAgent = {
+    state: { get: vi.fn(async (key: { namespace?: string }) => (key.namespace === "pib-hire" ? { agentId: "agent-1" } : null)), set: vi.fn(), delete: vi.fn() },
+    agents: { get: vi.fn(async (id: string) => ({ id, status: "idle" })), managed: { get: vi.fn(async () => ({ agentId: null })) } },
+  };
 
   it("rejects a completion for another company or user", async () => {
     const { ctx } = sessionWorld();
@@ -235,6 +249,48 @@ describe("OAuth completion through the bridge", () => {
     expect(confirmed).toMatchObject({ connected: 1, belongsTo: "Sam Sole" });
     // INSERT accounts params: ..., key_version, client_kind, client_ref, client_name, created_by_user_id
     expect(inserted[0]!.slice(12, 16)).toEqual(["contact", "ct1", "Sam Sole", "user-1"]);
+  });
+
+  it("the first accounts of a scope open one first plan for the Social agent, not one per account", async () => {
+    const { ctx, claims } = sessionWorld({ clientRef: null }, withAgent);
+    const result = await completeOAuth(ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c", state: "st-1" } });
+    const confirmed = await confirmPicker(ctx, "co", "user-1", { pickerId: result.pickerId!, selections: ["page:p1", "ig:ig1"] });
+    expect(confirmed.connected).toBe(2);
+    const issues = (ctx as unknown as { issues: { create: ReturnType<typeof vi.fn> } }).issues.create;
+    // Facebook saved first and opened the plan; Instagram found the scope's plan claimed.
+    expect(issues).toHaveBeenCalledTimes(1);
+    expect(issues.mock.calls[0]![0]).toMatchObject({
+      companyId: "co",
+      title: "Plan social for own work",
+      originKind: "plugin:partnersinbiz.social",
+      originId: "plan:own",
+      assigneeAgentId: "agent-1",
+      projectId: "proj-social",
+    });
+    expect(claims).toHaveLength(1);
+    expect(claims[0]![0]).toBe("plan:co:own");
+  });
+
+  it("a client's first account opens the plan in the client's scope", async () => {
+    const { ctx } = sessionWorld({ clientKind: "contact", clientRef: "ct1", clientName: "Sam Sole" }, withAgent);
+    const result = await completeOAuth(ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c", state: "st-1" } });
+    await confirmPicker(ctx, "co", "user-1", { pickerId: result.pickerId!, selections: ["page:p2"] });
+    const issues = (ctx as unknown as { issues: { create: ReturnType<typeof vi.fn> } }).issues.create;
+    expect(issues.mock.calls.map((c) => [(c[0] as { title: string }).title, (c[0] as { originId: string }).originId])).toEqual([["Plan social for Sam Sole", "plan:contact:ct1"]]);
+  });
+
+  it("with no Social agent nothing is planned, and a plan that fails never fails the connection", async () => {
+    const none = sessionWorld({ clientRef: null });
+    const first = await completeOAuth(none.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c", state: "st-1" } });
+    await confirmPicker(none.ctx, "co", "user-1", { pickerId: first.pickerId!, selections: ["page:p1"] });
+    expect((none.ctx as unknown as { issues: { create: ReturnType<typeof vi.fn> } }).issues.create).not.toHaveBeenCalled();
+    expect(none.claims).toEqual([]);
+
+    const broken = sessionWorld({ clientRef: null }, { ...withAgent, issues: { create: vi.fn(async () => { throw new Error("host refused"); }), requestWakeup: vi.fn(), createComment: vi.fn() } });
+    const second = await completeOAuth(broken.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c", state: "st-1" } });
+    const confirmed = await confirmPicker(broken.ctx, "co", "user-1", { pickerId: second.pickerId!, selections: ["page:p1"] });
+    expect(confirmed.connected).toBe(1);
+    expect(broken.inserted).toHaveLength(1);
   });
 
   it("returns the provider's error when access was denied", async () => {

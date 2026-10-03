@@ -38,6 +38,7 @@ import {
   upsertAccount,
 } from "../db.js";
 import { SocialError } from "../domain.js";
+import { startPlan } from "../plan-trigger.js";
 import { CONNECT_MODE, isSocialPlatform, PLATFORM_LABELS, type SocialPlatform } from "../platforms.js";
 import { publicOrigin } from "./http.js";
 import { connectBluesky } from "./providers/bluesky.js";
@@ -191,6 +192,8 @@ async function saveCandidate(
     ...scopeColumns(target),
     created_by_user_id: input.userId,
   });
+  // A scope with no plan yet gets its first one now, not at the next Monday routine (never fails the connection).
+  await startPlan(ctx, input.companyId, target);
   return { ...saved, platform: c.platform, displayName: c.displayName, belongsTo: scopeLabel(target) };
 }
 

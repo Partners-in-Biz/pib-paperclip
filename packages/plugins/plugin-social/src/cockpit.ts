@@ -31,8 +31,10 @@ import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
+import { socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
-import { isSocialPlatform, PLAN_ROUTINE_ORIGIN_ID, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
+import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
+import { isSocialPlatform, PLAN_ROUTINE_KEY, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
 import { TRIAGE_PURPOSE } from "./triage.js";
 
 /** Scheduled jobs and their interval in minutes (manifest schedules). */
@@ -177,7 +179,43 @@ export function accountChecks(rows: AccountHealthRow[]): HealthCheck[] {
   return checks;
 }
 
-async function healthChecks(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+/** The `heartbeat_runs.error_code` the host gives a run it refused to start because its workspace could not be made. */
+export const WORKSPACE_FAILURE_CODE = "workspace_validation_failed";
+
+/** The fix for the Social agent stopping at the workspace check, in plain words (agents can do it too: any caller with company access may PATCH a project). */
+export const WORKSPACE_FIX =
+  "Social needs no git repo. Open the Social project in Paperclip → Configuration and set its execution workspace to a shared workspace (isolated worktrees off); an agent can do the same with PATCH /api/projects/<project id> and {\"executionWorkspacePolicy\":{\"enabled\":false,\"defaultMode\":\"shared_workspace\"}}. Then retry the stopped issues.";
+
+export interface AgentRunRow {
+  error_code: string | null;
+  at: string | null;
+}
+
+/**
+ * The Social agent's latest runs on the Social project's issues, newest first.
+ * Flags it when its most recent runs all stopped at the host's workspace check
+ * (the project folder is not a git checkout and the host default asks for an
+ * isolated worktree): nothing the agent is given there runs until that is
+ * fixed. A later run that got past the check clears it. Pure.
+ */
+export function agentRunChecks(rows: AgentRunRow[], projectId: string): HealthCheck[] {
+  const streak = rows.findIndex((row) => row.error_code !== WORKSPACE_FAILURE_CODE);
+  const failing = streak === -1 ? rows.length : streak;
+  if (failing === 0) return [{ key: "agent-runs", title: "Social agent runs", status: "ok" }];
+  return [
+    {
+      key: "agent-runs",
+      title: "The Social agent cannot start: its project has no workspace it can use",
+      status: "bad",
+      detail: `${plural(failing, "run")} stopped at the workspace check before the agent started (${WORKSPACE_FAILURE_CODE}), so the weekly plan, first plans, reply queues and repurpose tasks wait.`,
+      href: `/projects/${projectId}/configuration`,
+      fix: WORKSPACE_FIX,
+      since: rows[failing - 1]?.at ?? null,
+    },
+  ];
+}
+
+async function healthChecks(ctx: PluginContext, companyId: string, agentId: string | null): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   for (const job of SOCIAL_JOBS) {
     checks.push(await part(ctx, `job:${job.key}`, () => jobHealth(ctx, job.key, job.title, job.everyMinutes), { key: `job:${job.key}`, title: job.title, status: "ok" as const, detail: "Run history unavailable." }));
@@ -201,6 +239,27 @@ async function healthChecks(ctx: PluginContext, companyId: string): Promise<Heal
       [] as HealthCheck[],
     )),
   );
+  if (agentId) {
+    checks.push(
+      ...(await part(
+        ctx,
+        "agent-runs",
+        async () => {
+          const projectId = await socialProjectId(ctx, companyId);
+          if (!projectId) return [] as HealthCheck[];
+          // Runs on the Social project's issues only: a linked agent may also work in projects with their own workspace problems.
+          const rows = await ctx.db.query<AgentRunRow>(
+            `SELECT error_code, created_at::text AS at FROM public.heartbeat_runs
+              WHERE company_id = $1 AND agent_id = $2 AND context_snapshot->>'projectId' = $3 AND created_at >= now() - interval '7 days'
+              ORDER BY created_at DESC LIMIT 5`,
+            [companyId, agentId, projectId],
+          );
+          return agentRunChecks(rows, projectId);
+        },
+        [] as HealthCheck[],
+      )),
+    );
+  }
   // Leads handed to the CRM that it has not answered (kit outbox).
   checks.push(await part(ctx, "outbox", () => outboxHealth(ctx, companyId), { key: "outbox", title: "Cross-plugin deliveries", status: "ok" as const }));
   const failed = await part(
@@ -468,7 +527,7 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, agentId: st
 const DAY_MS = 24 * 3600_000;
 const OPEN_ISSUE = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 
-/** A repurpose task or the weekly plan with no draft yet is stuck after this many days. */
+/** A repurpose task, the weekly plan or a first plan with no draft yet is stuck after this many days. */
 export const DRAFT_STUCK_DAYS = 2;
 
 function ageMs(value: string | null | undefined, now: Date): number | null {
@@ -480,9 +539,9 @@ function days(ms: number): number {
   return Math.floor(ms / DAY_MS);
 }
 
-/** Work that should produce drafts but has none yet: a repurpose task or the weekly plan. */
+/** Work that should produce drafts but has none yet: a repurpose task, the weekly plan, or a scope's first plan. */
 export interface DraftWork {
-  kind: "repurpose" | "plan";
+  kind: "repurpose" | "plan" | "first_plan";
   createdAt: string | null;
 }
 
@@ -490,13 +549,20 @@ export interface DraftWork {
  * `social.drafts`: posts in draft, plus open work that should make drafts
  * and has none yet (a repurpose task with no draft for its page, by the same
  * rule as its done-check; the open weekly plan with no post drafted since it
- * opened). Stuck: that work over two days old. Pure.
+ * opened; a scope's open first plan with none drafted in it since). Stuck:
+ * that work over two days old. Pure.
  */
 export function draftsFlow(input: { drafts: number; work: DraftWork[] }, now: Date): FlowStageReport {
   const late = input.work.map((w) => ({ ...w, age: ageMs(w.createdAt, now) ?? 0 })).filter((w) => w.age > DRAFT_STUCK_DAYS * DAY_MS);
   const repurpose = late.filter((w) => w.kind === "repurpose").length;
   const plans = late.filter((w) => w.kind === "plan").length;
-  const what = [repurpose ? plural(repurpose, "repurpose task") : null, plans ? (plans === 1 ? "the weekly plan" : plural(plans, "weekly plan")) : null].filter(Boolean).join(" and ");
+  const firsts = late.filter((w) => w.kind === "first_plan").length;
+  const parts = [
+    repurpose ? plural(repurpose, "repurpose task") : null,
+    plans ? (plans === 1 ? "the weekly plan" : plural(plans, "weekly plan")) : null,
+    firsts ? (firsts === 1 ? "a first plan" : plural(firsts, "first plan")) : null,
+  ].filter((part): part is string => part !== null);
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : (parts[0] ?? "");
   return {
     stage: "social.drafts",
     count: input.drafts + input.work.length,
@@ -532,7 +598,9 @@ async function draftWork(ctx: PluginContext, companyId: string): Promise<{ draft
     work.push({ kind: "repurpose", createdAt: iso(h.created_at) });
   }
   // The weekly review & plan routine's open issue, with no post drafted since it opened (RSS and reply drafts do not count).
-  const plans = await part(ctx, "plan-issues", async () => (await ctx.issues.list({ companyId, originId: PLAN_ROUTINE_ORIGIN_ID, limit: 10 })).filter((i) => OPEN_ISSUE.has(String(i.status))), []);
+  // The host opens it as a routine_execution issue whose origin id is the routine's own id, so look the routine up first.
+  const routineId = await part(ctx, "plan-routine", async () => (await ctx.routines.managed.get(PLAN_ROUTINE_KEY, companyId)).routineId, null as string | null);
+  const plans = routineId ? await part(ctx, "plan-issues", async () => (await ctx.issues.list({ companyId, originId: routineId, limit: 10 })).filter((i) => OPEN_ISSUE.has(String(i.status))), []) : [];
   for (const plan of plans) {
     const since = iso(plan.createdAt);
     if (!since) continue;
@@ -541,6 +609,26 @@ async function draftWork(ctx: PluginContext, companyId: string): Promise<{ draft
       [companyId, since],
     );
     if (count(made[0]?.n) === 0) work.push({ kind: "plan", createdAt: since });
+  }
+  // First plans (a scope whose account connected with nothing planned): open, with no post drafted in their scope since.
+  const first = await part(
+    ctx,
+    "first-plans",
+    () =>
+      ctx.db.query<{ issue_id: string; payload: unknown; created_at: string | null }>(
+        `SELECT issue_id, payload, created_at::text AS created_at FROM ${table(ctx, "handoffs")}
+          WHERE company_id = $1 AND kind = '${PLAN_HANDOFF_KIND}' AND issue_id IS NOT NULL AND created_at >= now() - interval '30 days'
+          ORDER BY created_at LIMIT 25`,
+        [companyId],
+      ),
+    [] as Array<{ issue_id: string; payload: unknown; created_at: string | null }>,
+  );
+  for (const plan of first) {
+    const since = iso(plan.created_at);
+    const key = handoffPayload(plan.payload).scope;
+    const scope = typeof key === "string" ? planScopeOfKey(key) : undefined;
+    if (!since || scope === undefined || !(await issueStillOpen(ctx, companyId, plan.issue_id))) continue;
+    if ((await postsMadeInScope(ctx, companyId, scope, since)) === 0) work.push({ kind: "first_plan", createdAt: since });
   }
   return { drafts: count(counted[0]?.drafts), work };
 }
@@ -625,7 +713,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   const snap = emptySnapshot(PLUGIN_ID, "Social");
   const agentId = await part(ctx, "agent", () => linkedAgentId(ctx, companyId, SOCIAL_HIRE_ROLE, legacySocialAgent(ctx)), null);
   snap.kpis = await part(ctx, "kpis", () => kpis(ctx, companyId), [] as CockpitKpi[]);
-  snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId), [] as HealthCheck[]);
+  snap.health = await part(ctx, "health", () => healthChecks(ctx, companyId, agentId), [] as HealthCheck[]);
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, agentId), [] as QualityMetric[]);

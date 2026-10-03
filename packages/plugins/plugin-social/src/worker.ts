@@ -58,6 +58,7 @@ import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
+import { planSweep } from "./plan-trigger.js";
 import { PLAN_ROUTINE_KEY } from "./platforms.js";
 import { saveRoutineReport } from "./routine-state.js";
 import { pollRssJob } from "./rss.js";
@@ -442,6 +443,18 @@ async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) 
 
 // ── jobs ────────────────────────────────────────────────────────────────────
 
+/**
+ * Hourly, for each company with accounts: link a hire whose agent has appeared
+ * (agent events are delivered at most once), then give every scope that has a
+ * live account and no plan its first plan (the connect flow does this at once;
+ * this catches accounts connected before it existed and plans that failed).
+ */
+async function hourlyUpkeep(ctx: PluginContext, companyId: string): Promise<void> {
+  await tryLinkSocialHire(ctx, companyId);
+  const plans = await planSweep(ctx, companyId);
+  if (plans.opened) ctx.logger.info("Social plan sweep opened first plans", { companyId, ...plans });
+}
+
 function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown>) {
   ctx.jobs.register(key, async () => {
     try {
@@ -493,8 +506,7 @@ const plugin = definePlugin({
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {
-      // Hourly fallback for hire links (agent events are delivered at most once).
-      const summary = await refreshTokensJob(ctx, ensure, (companyId) => tryLinkSocialHire(ctx, companyId));
+      const summary = await refreshTokensJob(ctx, ensure, (companyId) => hourlyUpkeep(ctx, companyId));
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
       const setupStatus = await publishSetupStatuses(ctx);
       const cockpit = await publishCockpitSnapshots(ctx).catch((error: unknown) => {

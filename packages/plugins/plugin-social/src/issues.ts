@@ -34,6 +34,8 @@ export const SOCIAL_ORIGINS = {
   review: "review:",
   /** A Growth Lab week's decisions for a person: `growth:<programId>:<week>`. */
   growth: "growth:",
+  /** The first plan of a scope whose account just connected: `plan:<own|company:<id>|contact:<id>>` (Social agent). The weekly routine's issues are the host's own routine issues, not these. */
+  plan: "plan:",
 } as const;
 
 /** The company's default person, then the Cockpit owner: who gets person-only work nobody else owns. */

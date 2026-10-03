@@ -15,7 +15,16 @@ const USER = { type: "user", userId: "u1", agentId: null, runId: null, companyId
 const AGENT_ACTOR = { type: "agent", userId: null, agentId: "a-x", runId: null, companyId: "co" };
 
 /** An in-memory company: agents, plugin state, grants, the weekly routine, issues. */
-function world(input: { agents?: Agent[]; legacyAgentId?: string | null; routine?: Routine | null } = {}) {
+function world(
+  input: {
+    agents?: Agent[];
+    legacyAgentId?: string | null;
+    routine?: Routine | null;
+    /** Extra answers for the plugin's own SQL (undefined = the default). */
+    rows?: (sql: string, params: unknown[]) => unknown[] | undefined;
+    execute?: (sql: string, params: unknown[]) => number | undefined;
+  } = {},
+) {
   const agents: Agent[] = input.agents ?? [];
   const state = new Map<string, unknown>();
   let routine: Routine | null = input.routine ?? null;
@@ -82,7 +91,8 @@ function world(input: { agents?: Agent[]; legacyAgentId?: string | null; routine
     jobs: { register: (key: string, fn: Handler) => void jobs.set(key, fn) },
     events: { on: (name: string, fn: Handler) => void events.set(name, [...(events.get(name) ?? []), fn]) },
   }, {
-    queryResult: (sql) => (sql.includes("SELECT DISTINCT company_id") ? [{ company_id: "co" }] : []),
+    queryResult: (sql, params) => input.rows?.(sql, params) ?? (sql.includes("SELECT DISTINCT company_id") ? [{ company_id: "co" }] : []),
+    executeResult: (sql, params) => input.execute?.(sql, params) ?? 1,
   });
 
   return {
@@ -248,6 +258,37 @@ describe("hire actions", () => {
     await w.runJob("refresh-tokens");
     expect((await socialAgent(w.ctx, "co")).agentId).toBe("smm");
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "smm" });
+  });
+
+  it("the hourly job opens a connected scope's first plan once its agent exists, and only once", async () => {
+    const claimed = new Set<string>();
+    const w = world({
+      agents: [ceo()],
+      rows: (sql, params) => {
+        if (sql.includes("GROUP BY client_kind, client_ref")) return [{ client_kind: null, client_ref: null, client_name: null }];
+        if (sql.includes("status IN ('connected', 'expiring')")) return [{ platform: "facebook", display_name: "PiB" }];
+        if (sql.includes("handoffs WHERE key = $1")) return claimed.has(String(params[0])) ? [{ issue_id: "issue-plan" }] : [];
+        return undefined;
+      },
+      execute: (sql, params) => {
+        if (sql.includes("INSERT INTO") && sql.includes(".handoffs")) claimed.add(String(params[0]));
+        return undefined;
+      },
+    });
+    await w.setup();
+    await w.act("social.start-hire", { assigneeUserId: "u1" });
+    const plans = () => w.issuesCreate.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((i) => i.originId === "plan:own");
+    // The account is connected but nobody can plan yet (the CEO is not the Social agent): nothing is opened or claimed.
+    await w.runJob("refresh-tokens");
+    expect(plans()).toEqual([]);
+    expect(claimed.size).toBe(0);
+
+    w.agents.push({ id: "smm", name: "Social Media Manager", role: "general", status: "idle", createdAt: new Date(), adapterConfig: withSkills });
+    await w.runJob("refresh-tokens");
+    expect(plans()).toHaveLength(1);
+    expect(plans()[0]).toMatchObject({ companyId: "co", title: "Plan social for own work", assigneeAgentId: "smm", originKind: "plugin:partnersinbiz.social" });
+    await w.runJob("refresh-tokens");
+    expect(plans()).toHaveLength(1);
   });
 
   it("manual link of an existing agent without the skills says to attach them", async () => {

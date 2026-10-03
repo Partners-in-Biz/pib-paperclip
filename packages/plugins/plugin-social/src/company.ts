@@ -7,11 +7,17 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { deleteJunkAccounts, flagLegacyTokens } from "./db.js";
 import { rememberCompany } from "./modules.js";
+import { healPlanRoutine } from "./routine-template.js";
 import { SKILLS } from "./skills.js";
+
+/** After a repair that did not stick (the host has not loaded this release's manifest yet), wait this long before the next try. */
+const HEAL_RETRY_MS = 10 * 60_000;
 
 export function createCompanyBootstrap(ctx: PluginContext) {
   const skills = createSkillSyncer(ctx, SKILLS);
   const cleaned = new Set<string>();
+  // Next time (ms) the weekly routine's stored template may be checked for a company; Infinity once it is right.
+  const routineCheckAt = new Map<string, number>();
   return {
     skills,
     async ensure(companyId: string): Promise<void> {
@@ -21,6 +27,11 @@ export function createCompanyBootstrap(ctx: PluginContext) {
         await skills.ensure(companyId);
       } catch (error) {
         ctx.logger.info("Social skill sync skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+      }
+      // Once per process (a worker restart after an upgrade checks again): an old stored issue template makes the host fail the weekly routine's dispatch.
+      if (Date.now() >= (routineCheckAt.get(companyId) ?? 0)) {
+        const outcome = await healPlanRoutine(ctx, companyId);
+        routineCheckAt.set(companyId, outcome === "stale" ? Date.now() + HEAL_RETRY_MS : Number.POSITIVE_INFINITY);
       }
       if (!cleaned.has(companyId)) {
         cleaned.add(companyId);

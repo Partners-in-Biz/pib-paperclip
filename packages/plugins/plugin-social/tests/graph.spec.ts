@@ -49,8 +49,8 @@ function ctxWith(rows: (sql: string, params: unknown[]) => unknown[], extra: Rec
 
 describe("origin ids", () => {
   it("every kind of work issue has a stable prefix, and the rules cover the agent's work", () => {
-    expect(SOCIAL_ORIGINS).toMatchObject({ repurpose: "repurpose:", schedule: "schedule:", reconnect: "account:", replyQueue: "inbox:", publishFailed: "post-failed:" });
-    expect(SOCIAL_DONE_CHECKS.map((r) => r.originPrefix)).toEqual(["repurpose:", "schedule:", "account:", "inbox:", "post-failed:"]);
+    expect(SOCIAL_ORIGINS).toMatchObject({ repurpose: "repurpose:", schedule: "schedule:", reconnect: "account:", replyQueue: "inbox:", publishFailed: "post-failed:", plan: "plan:" });
+    expect(SOCIAL_DONE_CHECKS.map((r) => r.originPrefix)).toEqual(["repurpose:", "schedule:", "account:", "inbox:", "post-failed:", "plan:"]);
     // "inbox:" never catches the escalation issues a person decides.
     expect(`${SOCIAL_ORIGINS.escalation}x`.startsWith(SOCIAL_ORIGINS.replyQueue)).toBe(false);
   });
@@ -275,11 +275,18 @@ describe("company graph: the stages Social reports", () => {
       oldestDays: 5,
     });
     expect(draftsFlow({ drafts: 2, work: [] }, NOW)).toEqual({ stage: "social.drafts", count: 2, stuck: 0, stuckReason: null, oldestDays: null });
+    expect(draftsFlow({ drafts: 0, work: [{ kind: "first_plan", createdAt: ago(3) }, { kind: "first_plan", createdAt: ago(4) }, { kind: "first_plan", createdAt: ago(1) }] }, NOW)).toMatchObject({
+      count: 3,
+      stuck: 2,
+      stuckReason: "2 first plans over 2 days old with no draft",
+    });
   });
 
   function flowRows(opts: { drafted?: number; issueStatus?: string } = {}) {
     return (sql: string, params: unknown[]): unknown[] => {
       if (sql.includes("status = 'draft'")) return [{ drafts: "3" }];
+      // First plans (the connect-time trigger) have their own query; none here.
+      if (sql.includes(`FROM ${T("handoffs")}`) && sql.includes("kind = 'plan'")) return [];
       if (sql.includes(`FROM ${T("handoffs")}`)) return [HANDOFF];
       if (sql.includes("jsonb_to_recordset")) return [{ key: HANDOFF.key, drafts: opts.drafted ?? 0 }];
       if (sql.includes("created_at >= $2::timestamptz")) return [{ n: params[1] === ago(4) ? "0" : "1" }];
@@ -288,11 +295,13 @@ describe("company graph: the stages Social reports", () => {
       return [];
     };
   }
+  // The weekly routine's issues are the host's routine_execution issues: their origin id is the routine's own id.
   const issues = (status = "todo") => ({
     issues: {
       get: vi.fn(async () => ({ id: "iss-r", status })),
       list: vi.fn(async () => [{ id: "plan-1", status: "in_progress", createdAt: ago(4) }, { id: "plan-0", status: "done", createdAt: ago(11) }]),
     },
+    routines: { managed: { get: vi.fn(async () => ({ routineId: "routine-1" })) } },
   });
 
   it("reports all three stages from Social's own data", async () => {
@@ -306,6 +315,37 @@ describe("company graph: the stages Social reports", () => {
     expect(ctx.fakeDb.executes).toEqual([]);
     const scheduledSql = ctx.fakeDb.queries.find((q) => q.sql.includes("AS approved_late"))!.sql;
     expect(scheduledSql).toContain("d.status = 'failed'");
+    // The weekly plan is found by the routine's own id (the host's routine_execution origin), never an origin string of our own.
+    const list = (ctx as unknown as { issues: { list: ReturnType<typeof vi.fn> } }).issues.list;
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0]![0]).toMatchObject({ companyId: "co", originId: "routine-1" });
+  });
+
+  it("without the routine there is no weekly plan to look for", async () => {
+    const ctx = ctxWith(flowRows(), { ...issues(), routines: { managed: { get: vi.fn(async () => ({ routineId: null })) } } });
+    const flows = await socialFlows(ctx, "co", NOW);
+    expect(flows[0]).toMatchObject({ count: 4, stuck: 1, stuckReason: "1 repurpose task over 2 days old with no draft" });
+    expect((ctx as unknown as { issues: { list: ReturnType<typeof vi.fn> } }).issues.list).not.toHaveBeenCalled();
+  });
+
+  it("a scope's open first plan with nothing drafted in it is waiting for drafts; one with a draft, or closed, is not", async () => {
+    const claim = { issue_id: "iss-p", payload: { scope: "company:c1", clientName: "Acme" }, created_at: ago(3) };
+    const rows = (made: string) => (sql: string, params: unknown[]): unknown[] => {
+      if (sql.includes(`FROM ${T("handoffs")}`) && sql.includes("kind = 'plan'")) return [claim];
+      // postsMadeInScope for a client scope: company, kind, id, since
+      if (sql.includes("source NOT IN ('rss', 'inbox_reply') AND client_ref = $3")) {
+        expect(params).toEqual(["co", "company", "c1", ago(3)]);
+        return [{ n: made }];
+      }
+      return flowRows()(sql, params);
+    };
+    const waiting = await socialFlows(ctxWith(rows("0"), issues()), "co", NOW);
+    expect(waiting[0]).toMatchObject({ count: 6, stuck: 3, stuckReason: "1 repurpose task, the weekly plan and a first plan over 2 days old with no draft" });
+    const drafted = await socialFlows(ctxWith(rows("2"), issues()), "co", NOW);
+    expect(drafted[0]).toMatchObject({ count: 5, stuck: 2 });
+    // The first plan's issue is closed (and the repurpose one, which shares the stub): only the weekly routine's open issue waits.
+    const closed = await socialFlows(ctxWith(rows("0"), issues("done")), "co", NOW);
+    expect(closed[0]).toMatchObject({ count: 4, stuck: 1, stuckReason: "the weekly plan over 2 days old with no draft" });
   });
 
   it("a drafted page, or a repurpose issue a person closed, is not waiting for drafts", async () => {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { withMemoryInstruction } from "@partnersinbiz/pib-plugin-kit";
 import { SOCIAL_HIRE_INSTRUCTIONS } from "../src/hire.js";
 import manifest from "../src/manifest.js";
+import { PLAN_ROUTINE_KEY } from "../src/platforms.js";
 import { SKILLS, DESIRED_SKILLS } from "../src/skills.js";
 import { SOCIAL_TOOLS } from "../src/tools.js";
 
@@ -47,7 +48,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.7.1");
+    expect(manifest.version).toBe("0.7.2");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -98,6 +99,19 @@ describe("manifest", () => {
     expect(content).toContain("get-playbook");
     const create = manifest.tools!.find((t) => t.name === "create-post")!;
     expect(Object.keys((create.parametersSchema as any).properties)).toEqual(expect.arrayContaining(["experimentId", "arm"]));
+  });
+
+  it("no managed routine declares an issue origin the host cannot dispatch", () => {
+    // The host opens a routine's issue as routine_execution with the template's originId (else the routine's uuid) and then
+    // looks the run up with it in a uuid column: a string origin without surfaceVisibility "plugin_operation" fails every dispatch.
+    for (const routine of manifest.routines ?? []) {
+      const template = routine.issueTemplate;
+      if (template?.originId) expect(template.surfaceVisibility, routine.routineKey).toBe("plugin_operation");
+    }
+    // The weekly plan routine declares none, so its issues carry the routine's own id (what the Cockpit and the Routines page read).
+    const plan = manifest.routines!.find((r) => r.routineKey === PLAN_ROUTINE_KEY)!;
+    expect(plan.issueTemplate).toBeUndefined();
+    expect(JSON.stringify(manifest)).not.toContain("routine:plan-next-week");
   });
 
   it("schedules every job", () => {
