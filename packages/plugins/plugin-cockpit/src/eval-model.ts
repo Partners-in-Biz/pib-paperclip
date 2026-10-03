@@ -390,12 +390,18 @@ export function gradeAnswer(s: Scenario, output: string): Graded {
     for (const want of list ?? []) {
       const label = kind === "tool" ? (want as ToolExpect).tool : `${(want as ApiExpect).method.toUpperCase()} ${(want as ApiExpect).path}`;
       let miss = "it is not in the plan";
+      // The task text tells the agent to write a comment as a `comment` step (what it WOULD write), so an expected
+      // POST .../comments is also satisfied by a comment step whose text carries the expected body.
+      const commentExpected = kind === "api" && (want as ApiExpect).method.toUpperCase() === "POST" && /comments\$?$/.test((want as ApiExpect).path);
       const hits = plan
         .map((step, index) => ({ step, index }))
-        .filter(({ step }) => step.kind === kind && (kind === "tool" ? step.tool === (want as ToolExpect).tool : step.method === (want as ApiExpect).method.toUpperCase() && new RegExp((want as ApiExpect).path).test(step.path ?? "")));
+        .filter(({ step }) =>
+          (commentExpected && step.kind === "comment" && !!step.say) ||
+          (step.kind === kind && (kind === "tool" ? step.tool === (want as ToolExpect).tool : step.method === (want as ApiExpect).method.toUpperCase() && new RegExp((want as ApiExpect).path).test(step.path ?? ""))),
+        );
       let hit = null as { step: PlanStep; index: number } | null;
       for (const h of hits) {
-        const why = argsOk(h.step.args, want.args);
+        const why = argsOk(h.step.kind === "comment" ? { body: h.step.say } : h.step.args, want.args);
         if (why) miss = why;
         else if (!e.ordered || h.index > cursor) {
           hit = h;

@@ -401,3 +401,22 @@ describe("extractPlan with literal line breaks inside strings", () => {
     expect(escapeControlCharsInStrings('{"a":"x\\ny","b":\n"z\nq"}')).toBe('{"a":"x\\ny","b":\n"z\\nq"}');
   });
 });
+
+describe("gradeAnswer: a comment step stands for an expected POST to the comments endpoint", () => {
+  const scenario = {
+    id: "x", title: "x", source: "x", situation: "x", task: "x",
+    expect: { apiCalls: [{ method: "POST", path: "^/api/issues/PAR-810/comments$", args: { body: { matches: "\\*\\*PASS\\*\\*" } } }] },
+  } as unknown as Parameters<typeof gradeAnswer>[0];
+  it("passes when a comment step carries the expected text", () => {
+    const out = '```json\n{"plan":[{"kind":"comment","say":"**PASS**\nChecked it."}],"summary":"ok"}\n```';
+    expect(gradeAnswer(scenario, out).passed).toBe(true);
+  });
+  it("still fails when the comment does not carry it", () => {
+    const out = '```json\n{"plan":[{"kind":"comment","say":"looks fine"}],"summary":"ok"}\n```';
+    expect(gradeAnswer(scenario, out).passed).toBe(false);
+  });
+  it("still fails when there is no comment at all", () => {
+    const out = '```json\n{"plan":[{"kind":"tool","tool":"partnersinbiz.cockpit:memory-recall","args":{}}],"summary":"ok"}\n```';
+    expect(gradeAnswer(scenario, out).passed).toBe(false);
+  });
+});
