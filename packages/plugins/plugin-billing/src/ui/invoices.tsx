@@ -97,6 +97,47 @@ export function NewDocumentModal({ kind, open, onClose, onCreated, dealId = null
   );
 }
 
+/** Set a client's three letters and the number its next invoice gets, to carry on from an old system. */
+function NumberingModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { call, snapshot, scope, clientName, run } = useBilling();
+  const clients = snapshot.clients ?? [];
+  const [picked, setPicked] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [start, setStart] = useState("");
+  const [hint, setHint] = useState<string | null>(null);
+  const ref = scope ? { kind: scope.kind, id: scope.id } : parseClientParam(picked);
+  const client = ref ? `${ref.kind}:${ref.id}` : "";
+  useEffect(() => {
+    if (!open || !client) { setPrefix(""); setStart(""); setHint(null); return; }
+    let live = true;
+    void call<{ prefix: string | null; nextNumber: number; next: string | null }>("billing.get-numbering", { client }).then((n) => {
+      if (!live) return;
+      setPrefix(n.prefix ?? "");
+      setStart(String(n.nextNumber));
+      setHint(n.next ? `Next invoice: ${n.next}` : "No invoice number yet. Choose three letters.");
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [open, client]);
+  return (
+    <Modal open={open} title={`Invoice numbering${scope ? ` for ${clientName}` : ""}`} onClose={onClose} footer={(
+      <>
+        <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button type="button" onClick={() => void run(async () => {
+          if (!client) throw new Error("Choose a client");
+          const result = await call<{ next: string }>("billing.set-numbering", { client, prefix: prefix.trim(), nextNumber: Number(start) });
+          onClose();
+          return result;
+        }, "Numbering saved. The next invoice continues from it.")}>Save</Button>
+      </>
+    )}>
+      {scope ? <Field label="Client"><Input value={clientName} readOnly disabled /></Field> : <ClientSelect clients={clients} value={picked} onChange={setPicked} />}
+      <Field label="Three letters"><Input value={prefix} maxLength={3} placeholder="ABC" onChange={(event) => setPrefix(event.target.value.replace(/[^A-Za-z]/g, "").toUpperCase())} /></Field>
+      <Field label="Next invoice number"><Input value={start} inputMode="numeric" placeholder="1" onChange={(event) => setStart(event.target.value.replace(/\D/g, ""))} /></Field>
+      <Muted>{hint ?? "Pick the letters and the number of the next invoice, e.g. ABC and 150 gives ABC-150. Numbers already issued never change."}</Muted>
+    </Modal>
+  );
+}
+
 /** A payment dated after today on this invoice: it counts from that day. */
 function FutureNote({ invoice }: { invoice: Invoice }) {
   if (!invoice.futurePaidMinor) return null;
@@ -109,6 +150,7 @@ export function InvoicesTab({ openId, setOpenId, onCreate }: { openId: string | 
   const narrow = useIsNarrow();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
   const [search, setSearch] = useState("");
+  const [numbering, setNumbering] = useState(false);
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => snapshot.invoices.filter((invoice) => {
     if (q && !`${invoice.number} ${invoice.status} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)) return false;
@@ -130,6 +172,8 @@ export function InvoicesTab({ openId, setOpenId, onCreate }: { openId: string | 
   return (
     <div style={{ display: "grid", gap: 12 }}>
       {snapshot.invoices.length > 0 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search invoices…" /> : null}
+      <NumberingModal open={numbering} onClose={() => setNumbering(false)} />
+      {snapshot.features?.numbering !== "sequential" ? <Row><SmallButton onClick={() => setNumbering(true)}>Set invoice numbering</SmallButton></Row> : null}
       {snapshot.invoices.length > 0 ? <Row>
         {FILTERS.map((f) => (
           <SmallButton key={f.id} variant={filter === f.id ? "primary" : "secondary"} onClick={() => setFilter(f.id)}>

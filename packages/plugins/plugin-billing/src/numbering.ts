@@ -198,3 +198,72 @@ export async function nextDocumentNumber(
   }
   throw new BillingError("Could not assign a document number");
 }
+
+/** The client's saved prefix and the number its next invoice will get (null prefix: none assigned yet). */
+export async function clientNumbering(
+  ctx: PluginContext,
+  companyId: string,
+  customer: { kind: string; ref: string },
+  settings: BillingSettings,
+): Promise<{ prefix: string | null; nextNumber: number; next: string | null }> {
+  const prefix = await readPrefix(ctx, companyId, customer);
+  if (!prefix) return { prefix: null, nextNumber: 1, next: null };
+  const rows = await ctx.db.query<{ n: string | number }>(
+    `SELECT n FROM ${table(ctx, "numbering_counters")} WHERE company_id = $1 AND kind = 'invoice' AND prefix = $2`,
+    [companyId, prefix],
+  );
+  const used = rows[0] ? Number(rows[0].n) : await highestExisting(ctx, companyId, "invoice", prefix, false);
+  const nextNumber = used + 1;
+  return { prefix, nextNumber, next: formatDocNumber("invoice", prefix, nextNumber, digitsOf(settings)) };
+}
+
+/**
+ * Set a client's three-letter prefix and/or the number its next invoice gets,
+ * to carry on from an old system (ABC, 150 → ABC-150). Numbers already issued
+ * never change: the start must be above the highest used for the prefix, and
+ * a prefix another client holds is refused. The prefix applies to quotes and
+ * credit notes too (Q-ABC-…, CN-ABC-…), whose counters are left alone.
+ */
+export async function setClientNumbering(
+  ctx: PluginContext,
+  companyId: string,
+  customer: { kind: string; ref: string },
+  input: { prefix?: string; nextNumber?: number },
+  settings: BillingSettings,
+): Promise<{ prefix: string; nextNumber: number; next: string }> {
+  const current = await readPrefix(ctx, companyId, customer);
+  let prefix = current;
+  if (input.prefix !== undefined) {
+    const wanted = input.prefix.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(wanted)) throw new BillingError("The prefix must be exactly three letters, like ABC");
+    if (RESERVED.has(wanted)) throw new BillingError(`${wanted} is kept for the old sequential numbers. Choose other letters`);
+    if (wanted !== current) {
+      const clash = await ctx.db.query<{ customer_ref: string }>(
+        `SELECT customer_ref FROM ${table(ctx, "client_prefixes")} WHERE company_id = $1 AND prefix = $2`,
+        [companyId, wanted],
+      );
+      if (clash.length > 0) throw new BillingError(`${wanted} already belongs to another client. Choose other letters`);
+      const res = await ctx.db.execute(
+        `INSERT INTO ${table(ctx, "client_prefixes")} (company_id, customer_kind, customer_ref, prefix) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (company_id, customer_kind, customer_ref) DO UPDATE SET prefix = EXCLUDED.prefix`,
+        [companyId, customer.kind, customer.ref, wanted],
+      );
+      if ((res.rowCount ?? 0) === 0) throw new BillingError("Could not save the prefix");
+    }
+    prefix = wanted;
+  }
+  if (!prefix) throw new BillingError("This client has no prefix yet. Give the three letters too");
+  if (input.nextNumber !== undefined) {
+    const start = Math.floor(Number(input.nextNumber));
+    if (!Number.isFinite(start) || start < 1 || start > 99_999_999) throw new BillingError("The next number must be a whole number from 1");
+    const highest = await highestExisting(ctx, companyId, "invoice", prefix, false);
+    if (start <= highest) throw new BillingError(`${formatDocNumber("invoice", prefix, highest, digitsOf(settings))} is already used. Start at ${highest + 1} or higher`);
+    await ctx.db.execute(
+      `INSERT INTO ${table(ctx, "numbering_counters")} (company_id, kind, prefix, n) VALUES ($1, 'invoice', $2, $3)
+       ON CONFLICT (company_id, kind, prefix) DO UPDATE SET n = EXCLUDED.n, updated_at = now()`,
+      [companyId, prefix, start - 1],
+    );
+  }
+  const now = await clientNumbering(ctx, companyId, customer, settings);
+  return { prefix, nextNumber: now.nextNumber, next: now.next ?? formatDocNumber("invoice", prefix, now.nextNumber, digitsOf(settings)) };
+}

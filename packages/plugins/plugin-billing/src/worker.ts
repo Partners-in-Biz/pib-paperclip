@@ -135,7 +135,7 @@ import {
 } from "./invoices.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { nextDocumentNumber } from "./numbering.js";
+import { clientNumbering, nextDocumentNumber, setClientNumbering } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -316,6 +316,19 @@ const ACTIONS: Record<string, Handler> = {
   "billing.reports": (ctx, context, params) => reportsAction(ctx, context, params),
   "billing.dunning": (ctx, context, params) => dunningStatus(ctx, context, params),
   "billing.set-dunning-optout": (ctx, context, params) => setDunningOptOut(ctx, context, params),
+  "billing.get-numbering": async (ctx, context, params) => {
+    const companyId = requiredCompany(context);
+    const scope = readClientScope(params);
+    if (!scope) throw new BillingError("client is required");
+    return clientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, await billingSettings(ctx, companyId));
+  },
+  "billing.set-numbering": async (ctx, context, params) => {
+    const companyId = requiredCompany(context);
+    const scope = readClientScope(params);
+    if (!scope) throw new BillingError("client is required");
+    const nextNumber = optionalInteger(params, "nextNumber");
+    return setClientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, { prefix: optionalString(params, "prefix"), nextNumber }, await billingSettings(ctx, companyId));
+  },
   "billing.run-dunning": async (ctx, context) => {
     requirePerson(context, "sending reminders");
     return runDunningFor(ctx, requiredCompany(context), true);

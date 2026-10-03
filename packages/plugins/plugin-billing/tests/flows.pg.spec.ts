@@ -90,6 +90,20 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     });
   });
 
+  describe("set numbering", () => {
+    it("sets the letters and continues from a start number", async () => {
+      await draft("ct-lumen", []);
+      const set = await h.call<{ prefix: string; next: string }>("billing.set-numbering", { client: "contact:ct-lumen", prefix: "abc", nextNumber: 150 });
+      expect(set).toMatchObject({ prefix: "ABC", next: "ABC-150" });
+      expect((await draft("ct-lumen", [])).number).toBe("ABC-150");
+      expect((await draft("ct-lumen", [])).number).toBe("ABC-151");
+      await expect(h.call("billing.set-numbering", { client: "contact:ct-lumen", nextNumber: 100 })).rejects.toThrow(/already used/);
+      await expect(h.call("billing.set-numbering", { client: "contact:ct-lumen", prefix: "AB1" })).rejects.toThrow(/three letters/);
+      await draft("ct-lumos", []);
+      await expect(h.call("billing.set-numbering", { client: "contact:ct-lumos", prefix: "ABC" })).rejects.toThrow(/another client/);
+    });
+  });
+
   describe("per-line VAT", () => {
     it("totals VAT per line and per code, exclusive and inclusive", async () => {
       const invoice = await draft("ct-lumen", [
