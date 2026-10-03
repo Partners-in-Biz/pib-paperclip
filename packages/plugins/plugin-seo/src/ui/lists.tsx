@@ -49,7 +49,7 @@ import {
 import { plural } from "../engine/plain.js";
 import { RawDetails, fmt, pct, shortUrl, small, top } from "./parts.js";
 import { backlinkSegments, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone } from "./series.js";
-import type { Backlink, CallFn, Content, Finding, Keyword, Optimization, Snapshot, SprintBundle } from "./types.js";
+import type { Backlink, CallFn, Content, Finding, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle } from "./types.js";
 import { BACKLINK_STATUS_LABEL, BACKLINK_TYPE_LABEL } from "./words.js";
 
 const grid = (min: number, gap = 16) => ({ display: "grid", gap, gridTemplateColumns: fluidColumns(min), minWidth: 0 }) as const;
@@ -354,6 +354,95 @@ export function BacklinksTab({ bundle, call }: { bundle: SprintBundle; call: Cal
 const CONTENT_STATUSES = ["idea", "drafting", "review", "scheduled", "live", "archived"];
 const CONTENT_TYPES = ["post", "page", "comparison", "alternative", "use-case", "pillar", "cluster", "how-to", "feature"];
 
+const REVIEW_LABEL: Record<string, string> = { pending: "Being checked", passed: "Checked", changes_needed: "Sent back" };
+const ANSWER_LABEL: Record<string, string> = { pending: "Waiting for the client", approved: "Client approved", changes_requested: "Client wants changes" };
+
+function copyText(text: string) {
+  try {
+    void navigator.clipboard.writeText(text);
+  } catch {
+    // The link stays visible to copy by hand.
+  }
+}
+
+/** The preview links for the client, with who has checked them and what the client answered. */
+function PreviewsSection({ previews }: { previews: PreviewItem[] }) {
+  const [showOld, setShowOld] = useState(false);
+  const current = previews.filter((p) => !p.superseded);
+  const rows = showOld ? previews : current;
+  if (previews.length === 0) return null;
+  return (
+    <SectionCard title="Client previews" subtitle={`${current.length} page${current.length === 1 ? "" : "s"} · a link opens for the client only after the Reviewer has checked it`} icon={Eye}>
+      <div style={{ display: "grid", gap: 8 }}>
+        {rows.map((p) => (
+          <div key={p.id} style={{ display: "grid", gap: 4, padding: "8px 0", borderTop: `1px solid ${tokens.border}`, opacity: p.superseded ? 0.6 : 1 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13 }}>{p.title}</strong>
+              <Pill tone={p.reviewStatus === "passed" ? "success" : p.reviewStatus === "changes_needed" ? "warn" : "neutral"} dot>{REVIEW_LABEL[p.reviewStatus] ?? p.reviewStatus}</Pill>
+              {p.reviewStatus === "passed" ? <Pill tone={p.status === "approved" ? "success" : p.status === "changes_requested" ? "warn" : "neutral"} dot>{ANSWER_LABEL[p.status] ?? p.status}</Pill> : null}
+              {p.superseded ? <Pill tone="neutral">Older version</Pill> : null}
+            </div>
+            <span style={{ fontSize: 12, color: tokens.muted }}>
+              {shortUrl(p.pageUrl)} · {p.keptPct != null ? `${p.renderedChecked ? "as a visitor sees it, " : "page source: "}keeps ${p.keptPct}% of the live text, adds ${p.addedWords ?? 0} words · ` : ""}made {formatShortDate(p.createdAt)} · expires {formatShortDate(p.expiresAt)}
+            </span>
+            {p.reviewNote ? <span style={{ fontSize: 12 }}>Reviewer: {p.reviewNote}</span> : null}
+            {p.decisionNote ? <span style={{ fontSize: 12 }}>Client: {p.decisionNote}</span> : null}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button type="button" variant="secondary" onClick={() => copyText(p.url)} disabled={p.reviewStatus !== "passed"} title={p.reviewStatus === "passed" ? "Copy the client link" : "Not checked yet: the client would only see a waiting page"}>Copy client link</Button>
+              <a href={p.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, alignSelf: "center", color: tokens.fg }}>Open</a>
+              {p.reviewUrl ? <a href={p.reviewUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, alignSelf: "center", color: tokens.fg }}>Live vs proposal</a> : null}
+            </div>
+          </div>
+        ))}
+        {previews.length > current.length ? (
+          <div><Button type="button" variant="secondary" onClick={() => setShowOld((v) => !v)}>{showOld ? "Hide older versions" : `Show ${previews.length - current.length} older version${previews.length - current.length === 1 ? "" : "s"}`}</Button></div>
+        ) : null}
+      </div>
+    </SectionCard>
+  );
+}
+
+
+/** What the copy may claim about how the client's business works. create-preview refuses claims that are not here. */
+function ClientFactsSection({ sprintId, facts, call }: { sprintId: string; facts: NonNullable<SprintBundle["clientFacts"]>; call: CallFn }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const say = facts.facts.filter((f) => f.kind === "say");
+  const avoid = facts.facts.filter((f) => f.kind === "avoid");
+  const statusText = facts.status === "confirmed" ? "Confirmed by you" : facts.status === "draft" ? "Drafted from the client's own pages: please check and confirm" : "No fact sheet yet";
+  const open = () => {
+    setText(facts.facts.map((f) => `${f.kind === "say" ? "+" : "-"} ${f.text}${f.source ? ` | ${f.source}` : ""}`).join("\n"));
+    setEditing(true);
+  };
+  const save = async (confirm: boolean) => {
+    await call("set-client-facts", { sprintId, text, confirm }, confirm ? "Fact sheet confirmed." : "Fact sheet saved as a draft.");
+    setEditing(false);
+  };
+  return (
+    <SectionCard title="What the copy may claim" subtitle={`${statusText} · ${say.length} approved wording${say.length === 1 ? "" : "s"}, ${avoid.length} never to say`} icon={ListChecks}>
+      <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
+        <span style={{ color: tokens.muted, fontSize: 12 }}>Claims about how the business works (bidding, ownership, fees, delivery, guarantees, licences) are only allowed in the approved wordings below. The preview tool refuses anything else and the Reviewer checks against this list.</span>
+        {say.slice(0, 6).map((f, i) => <div key={`s${i}`}>✓ {f.text}{f.source ? <span style={{ color: tokens.muted }}> ({f.source})</span> : null}</div>)}
+        {say.length > 6 ? <span style={{ color: tokens.muted }}>… and {say.length - 6} more</span> : null}
+        {avoid.map((f, i) => <div key={`a${i}`} style={{ color: tokens.destructive }}>✗ Never say: {f.text}</div>)}
+        <div><Button type="button" variant="secondary" onClick={open}>{facts.status === "none" ? "Add facts" : "Edit"}</Button></div>
+      </div>
+      <Modal open={editing} title="What the copy may claim" description="One per line. + approved wording | where it comes from. - something never to say." onClose={() => setEditing(false)}
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button type="button" variant="secondary" onClick={() => void save(false)}>Save as draft</Button>
+            <Button type="button" onClick={() => void save(true)}>Save and confirm</Button>
+          </>
+        )}
+      >
+        <TextArea value={text} rows={14} onChange={(e) => setText(e.target.value)} />
+      </Modal>
+    </SectionCard>
+  );
+}
+
+
 export function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
   const narrow = useIsNarrow();
   const [adding, setAdding] = useState(false);
@@ -373,6 +462,8 @@ export function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallF
   };
   return (
     <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+      <PreviewsSection previews={bundle.previews ?? []} />
+      {bundle.clientFacts ? <ClientFactsSection sprintId={bundle.sprint.sprintId} facts={bundle.clientFacts} call={call} /> : null}
       {bundle.content.length ? (
         <div style={grid(150, 10)}>
           <KpiCard label="Live" value={bundle.content.filter((c) => c.status === "live").length} icon={CircleCheck} />

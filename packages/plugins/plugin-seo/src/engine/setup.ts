@@ -48,7 +48,7 @@ export interface SetupFacts {
     siteProjectId: string | null;
     repoUrl: string | null;
     /** wordpress mode: the linked CRM site (null when it was removed from the CRM). */
-    wordpress?: { url: string; summary: string; connected: boolean; clientName: string | null; clientPath: string } | null;
+    wordpress?: { url: string; summary: string; connected: boolean; clientName: string | null; clientPath: string; /** wp-verify: available (Connector 1.2+), update (older Connector) or none. */ verifyRoute?: "available" | "update" | "none" } | null;
     changePolicy: string;
     autopilotMode: string;
     property: string | null;
@@ -197,7 +197,7 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
             : `${wp.url} · ${wp.summary}. The PiB Connector is not connected yet: the agent cannot change the site.`,
         steps: wp?.connected ? [] : wpConnectorSteps(wp?.clientName ?? null, wp?.url ?? s.siteUrl),
         links: wp ? [{ label: "CRM client → Websites", url: wp.clientPath }] : [],
-        next: "Makes every SEO change through the PiB Connector (SEO fields, schema, redirects, robots and sitemap), then verifies it on the live site.",
+        next: "Makes every SEO change through the PiB Connector (SEO fields, schema, redirects, robots, sitemap, image alt text, featured images and page copy), then verifies it on the live site.",
       });
     } else {
       items.push({
@@ -216,16 +216,19 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
         next: "Opens every code and content task in the site project, works on `seo/<task>` branches, opens PRs and merges SEO-scope changes when checks pass.",
       });
     }
+    const wpSelfServe = s.siteAccess === "wordpress" && Boolean(s.wordpress?.connected) && (s.wordpress?.verifyRoute === "available" || s.wordpress?.verifyRoute === "update");
     items.push({
       key: "gsc_property",
       label: "Search Console property",
       status: s.property ? "done" : "todo",
       detail: s.property
         ? `${s.property} via ${s.gscVia === "oauth" ? "an OAuth connection (fallback)" : "the service account"}.`
-        : s.isClient
+        : wpSelfServe
+          ? `Not connected yet: the agent verifies the site itself through the PiB Connector (gsc-verification-token → wp-verify → gsc-verify-site${s.wordpress?.verifyRoute === "update" ? ", after wp-connector update" : ""}). The client is asked to add the service account only if that fails.`
+          : s.isClient
           ? "Not connected: the client adds the service account as a user (the agent drafts the email in Needs you)."
           : "Not verified yet: the agent verifies it with the service account through the repo.",
-      steps: s.property ? [] : s.isClient ? ["Send the client the email from the Needs you digest (it has the service account email and the Search Console Users link)."] : ["Nothing for you once the service account key and the site repo are set: the agent runs gsc-verification-token → PR → gsc-verify-site."],
+      steps: s.property || wpSelfServe ? [] : s.isClient ? ["Send the client the email from the Needs you digest (it has the service account email and the Search Console Users link)."] : ["Nothing for you once the service account key and the site repo are set: the agent runs gsc-verification-token → PR → gsc-verify-site."],
       links: [],
       next: "Submits the sitemap, pulls rankings every morning, and inspects core URLs.",
     });
@@ -233,7 +236,7 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
       key: "bing_site",
       label: "Bing site verified",
       status: s.bingVerified ? "done" : "todo",
-      detail: s.bingVerified ? "Verified." : f.bingKey ? "The agent adds and verifies it (bing-add-site → repo → bing-verify-site)." : "Needs the Bing API key first.",
+      detail: s.bingVerified ? "Verified." : f.bingKey ? `The agent adds and verifies it (${wpSelfServe ? "bing-add-site → wp-verify" : "bing-add-site → repo"} → bing-verify-site).` : "Needs the Bing API key first.",
       steps: [],
       links: [],
       next: "Submits the sitemap and URL batches to Bing; IndexNow pings (which tell Bing and others a page changed) cover Bing too.",

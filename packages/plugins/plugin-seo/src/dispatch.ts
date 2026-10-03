@@ -10,6 +10,11 @@ import * as needsYou from "./service/needs-you.js";
 import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
+import * as facts from "./service/facts.js";
+import * as redesign from "./service/redesign.js";
+import * as build from "./service/build.js";
+import * as signoff from "./service/signoff.js";
+import * as preview from "./service/preview.js";
 import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
 import * as snapshots from "./service/snapshots.js";
@@ -38,6 +43,13 @@ export const HANDLERS: Record<string, Handler> = {
   "block-task": (env, c, a, p) => tasks.blockTask(env, c, a, p),
   "skip-task": (env, c, a, p) => tasks.skipTask(env, c, a, p),
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
+  "start-tasks-now": (env, c, a, p) => tasks.startTasksNow(env, c, a, p),
+  // Client previews
+  "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
+  "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
+  "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
+  "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),
+  "list-previews": (env, c, _a, p) => preview.listPreviews(env, c, p),
   // Keywords
   "list-keywords": (env, c, _a, p) => data.listKeywordsTool(env, c, p),
   "add-keywords": (env, c, a, p) => data.addKeywords(env, c, a, p),
@@ -107,8 +119,15 @@ export const HANDLERS: Record<string, Handler> = {
   "decide-playbook-change": (env, c, a, p) => playbook.decidePlaybookChangeTool(env, c, a, p),
 };
 
+/** Page-only actions (people press a button; no agent tool): reached through the UI's `seo.call`. */
+export const UI_ONLY_HANDLERS: Record<string, Handler> = {
+  "approve-site-writes": (env, c, a, p) => signoff.approveSiteWrites(env, c, a, p),
+  "add-redesign": (env, c, a, p) => redesign.addRedesign(env, c, a, p),
+  "set-client-facts": (env, c, a, p) => facts.setClientFacts(env, c, a, p),
+};
+
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {
-  const handler = HANDLERS[name];
+  const handler = HANDLERS[name] ?? UI_ONLY_HANDLERS[name];
   if (!handler) throw new SeoError(`Unknown SEO tool ${name}`);
   return handler(env, companyId, actor, asParams(params));
 }

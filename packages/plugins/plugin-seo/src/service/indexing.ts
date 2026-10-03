@@ -21,6 +21,7 @@ import { bool, companyInfo, errorMessage, reqStr, SeoError, str, strList, urlPar
 import { requireSprint } from "./context.js";
 import { gscAccess, GscUnavailable, settingsPath } from "./gsc.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
+import { setVerifyFailure, sprintVerifyRoute } from "./wordpress.js";
 
 interface IndexNowState {
   key: string;
@@ -75,6 +76,13 @@ export async function indexNowKeyTool(env: Env, companyId: string, params: Param
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const { state, live, liveError } = await indexNowState(env, sprint);
   const path = `/${state.key}.txt`;
+  const wp = live ? null : await sprintVerifyRoute(env, sprint);
+  const via =
+    wp?.route === "available"
+      ? `WordPress site: place it with the CRM's wp-verify (siteId ${wp.siteId}): op get, then op set with the existing files plus { path: "${path}", content: "${state.key}" } and a reason. Fetch ${state.keyLocation} to confirm the exact key and a 200 (or run indexnow-key again), then request-indexing. Do not put this on Needs you.`
+      : wp?.route === "update"
+        ? `This WordPress site runs Connector ${wp.connectorVersion ?? "of unknown version"}, which cannot serve the key file (wp-verify needs 1.2): run the CRM's wp-connector update first, then place the file with wp-verify and run request-indexing.`
+        : null;
   return {
     sprintId: sprint.id,
     key: state.key,
@@ -82,9 +90,10 @@ export async function indexNowKeyTool(env: Env, companyId: string, params: Param
     keyLocation: state.keyLocation,
     live,
     liveError,
+    ...(wp?.route === "available" ? { wordpress: { tool: "partnersinbiz.crm:wp-verify", siteId: wp.siteId, set: { files: [{ path, content: state.key }] }, replaceSemantics: "op set replaces the whole files list: run op get first and send the existing files plus this one." } } : {}),
     next: live
       ? "The key file is live: request-indexing pings IndexNow (Bing and others) for the core URLs."
-      : "Add the key file through the site repo (SEO scope: verification/key files), deploy, then run request-indexing.",
+      : (via ?? "Add the key file through the site repo (SEO scope: verification/key files), deploy, then run request-indexing."),
   };
 }
 
@@ -198,6 +207,11 @@ async function bingIntegration(env: Env, sprint: db.Sprint): Promise<db.Integrat
   return integration;
 }
 
+/** BingSiteAuth.xml in the compact form the Connector accepts. */
+function bingXml(code: string): string {
+  return `<?xml version="1.0"?><users><user>${code}</user></users>`;
+}
+
 export async function bingAddSiteTool(env: Env, companyId: string, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
@@ -208,6 +222,7 @@ export async function bingAddSiteTool(env: Env, companyId: string, params: Param
   });
   await saveVerification(env, sprint, { bing: { siteUrl, code: site.authenticationCode, verified: site.isVerified, addedAt: env.now().toISOString() } });
   const files = site.authenticationCode ? bingVerificationFiles(site.authenticationCode) : null;
+  const wp = await sprintVerifyRoute(env, sprint);
   return {
     sprintId: sprint.id,
     siteUrl,
@@ -215,9 +230,24 @@ export async function bingAddSiteTool(env: Env, companyId: string, params: Param
     authenticationCode: site.authenticationCode,
     file: files?.file ?? null,
     meta: files?.meta ?? null,
+    ...(wp.route === "available" && site.authenticationCode
+      ? {
+          wordpress: {
+            tool: "partnersinbiz.crm:wp-verify",
+            siteId: wp.siteId,
+            set: { metaTags: [{ name: "msvalidate.01", content: site.authenticationCode }] },
+            orFile: { files: [{ path: "/BingSiteAuth.xml", content: bingXml(site.authenticationCode) }] },
+            replaceSemantics: "op set replaces the whole list of each kind you send: run op get first and send the existing entries plus this one.",
+          },
+        }
+      : {}),
     next: site.isVerified
       ? "Already verified: run bing-verify-site to enable Bing on the sprint and submit the sitemap."
-      : "Add BingSiteAuth.xml (or the msvalidate.01 meta tag) through the site repo (SEO scope), deploy, then run bing-verify-site.",
+      : wp.route === "available"
+        ? `WordPress site: place the msvalidate.01 meta tag (or /BingSiteAuth.xml) with the CRM's wp-verify (siteId ${wp.siteId}): op get, then op set with the existing entries plus the new one and a reason. Confirm it on the live site (check-meta on the home page, or fetch ${origin(sprint.siteUrl)}/BingSiteAuth.xml), then run bing-verify-site. Do not put this on Needs you.`
+        : wp.route === "update"
+          ? `This WordPress site runs Connector ${wp.connectorVersion ?? "of unknown version"}, which cannot place verification tags (wp-verify needs 1.2): run the CRM's wp-connector update first, then wp-verify, then bing-verify-site.`
+          : "Add BingSiteAuth.xml (or the msvalidate.01 meta tag) through the site repo (SEO scope), deploy, then run bing-verify-site.",
   };
 }
 
@@ -231,6 +261,7 @@ export async function bingVerifySiteTool(env: Env, companyId: string, params: Pa
     throw new SeoError(errorMessage(error));
   });
   if (!verified) {
+    if ((await sprintVerifyRoute(env, sprint)).route === "available") await setVerifyFailure(env, sprint, "bing", "Bing VerifySite returned not verified").catch(() => undefined);
     throw new SeoError(`Bing could not verify ${siteUrl}. Check ${origin(sprint.siteUrl)}/BingSiteAuth.xml (or the msvalidate.01 meta tag) is live on production, then run bing-verify-site again.`);
   }
   const integration = await bingIntegration(env, sprint);
@@ -247,6 +278,7 @@ export async function bingVerifySiteTool(env: Env, companyId: string, params: Pa
     }
   }
   await resolveNeedsYou(env, info, sprint, "bing_key", "checked by the SEO plugin").catch(() => undefined);
+  await setVerifyFailure(env, (await db.getSprint(env.ctx.db, companyId, sprint.id)) ?? sprint, "bing", null).catch(() => undefined);
   return { sprintId: sprint.id, siteUrl, verified: true, bingEnabled: true, sitemap, next: "Bing link counts pull daily; submit new URLs with bing-submit (IndexNow pings reach Bing too)." };
 }
 

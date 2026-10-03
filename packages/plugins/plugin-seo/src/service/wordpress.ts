@@ -5,8 +5,9 @@
  */
 import { getCrmSite, listCrmSites, type CrmSiteRow } from "@partnersinbiz/pib-plugin-kit";
 import { sameSite, siteSummary, type ConnectorStatus, type SitePlatform, type SiteSeoPlugin, type SiteAccessKind } from "@partnersinbiz/pib-plugin-kit/client-sites";
-import type * as db from "../db.js";
-import { wpConnectorItem } from "../engine/items.js";
+import * as db from "../db.js";
+import { wpConnectorItem, wpSftpItem } from "../engine/items.js";
+import { verifyRouteOf, type VerifyFailure, type VerifyKind, type VerifyRoute } from "../engine/verify-route.js";
 import type { NewNeedsYouItem } from "../engine/needs-you.js";
 import { crmClientPath } from "../engine/setup.js";
 import { NAMESPACE } from "../namespace.js";
@@ -105,4 +106,61 @@ export function sprintCrmPath(prefix: string | null, sprint: Pick<db.Sprint, "cl
 /** The standard `wp_connector` Needs you item for a sprint's WordPress site. */
 export function wpConnectorItemFor(ctx: { prefix: string | null }, sprint: db.Sprint, site: CrmSiteRow | null, taskIds: string[] = []): NewNeedsYouItem {
   return wpConnectorItem({ clientName: sprint.clientName, clientPath: sprintCrmPath(ctx.prefix, sprint), siteUrl: site?.url ?? sprint.siteUrl }, taskIds);
+}
+
+export function wpSftpItemFor(ctx: { prefix: string | null }, sprint: db.Sprint, site: CrmSiteRow | null, taskIds: string[] = []): NewNeedsYouItem {
+  return wpSftpItem(
+    {
+      clientName: sprint.clientName,
+      clientPath: sprintCrmPath(ctx.prefix, sprint),
+      siteUrl: site?.url ?? sprint.siteUrl,
+      projectPath: sprint.clientProjectId ? `${ctx.prefix ? `/${ctx.prefix}` : ""}/projects/${sprint.clientProjectId}` : null,
+    },
+    taskIds,
+  );
+}
+
+/** Whether the sprint's WordPress site has SFTP access recorded in the CRM (theme and template edits). */
+export async function sprintHasSftp(env: Env, sprint: db.Sprint): Promise<boolean> {
+  const site = await sprintWordPressSite(env, sprint);
+  return Boolean(site && Array.isArray(site.access) && site.access.includes("sftp"));
+}
+
+/**
+ * Whether the sprint's WordPress site can take verification tags and key files through the CRM's `wp-verify`
+ * (Connector 1.2+). `update` = connected but older: run wp-connector update first.
+ */
+export async function sprintVerifyRoute(env: Env, sprint: db.Sprint): Promise<{ route: VerifyRoute; siteId: string | null; siteUrl: string | null; connectorVersion: string | null }> {
+  const site = await sprintWordPressSite(env, sprint);
+  if (!site) return { route: "none", siteId: null, siteUrl: null, connectorVersion: null };
+  return {
+    route: verifyRouteOf({ siteAccess: sprint.siteAccess, connectorStatus: site.connector_status, connectorVersion: site.connector_version }),
+    siteId: site.id,
+    siteUrl: site.url,
+    connectorVersion: site.connector_version ?? null,
+  };
+}
+
+/** The recorded failure of the wp-verify route for one kind of verification, or null. */
+export function verifyFailureOf(sprint: Pick<db.Sprint, "verification">, kind: VerifyKind): VerifyFailure | null {
+  const all = (sprint.verification.wpVerifyFailures ?? {}) as Partial<Record<VerifyKind, VerifyFailure>>;
+  const entry = all[kind];
+  return entry && typeof entry.at === "string" ? entry : null;
+}
+
+/**
+ * Remember on the sprint that the wp-verify route failed for `kind` (or, with `error` null, that it now works), so
+ * falling back to a person is never silent and a success reopens the self-serve route. No-op when nothing changes.
+ */
+export async function setVerifyFailure(env: Env, sprint: db.Sprint, kind: VerifyKind, error: string | null): Promise<db.Sprint> {
+  const all = { ...((sprint.verification.wpVerifyFailures ?? {}) as Partial<Record<VerifyKind, VerifyFailure>>) };
+  if (error === null) {
+    if (!all[kind]) return sprint;
+    delete all[kind];
+  } else {
+    all[kind] = { at: env.now().toISOString(), error: error.slice(0, 500) };
+  }
+  const verification = { ...sprint.verification, wpVerifyFailures: all };
+  await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { verification });
+  return { ...sprint, verification };
 }

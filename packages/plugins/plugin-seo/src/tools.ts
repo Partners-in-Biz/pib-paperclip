@@ -199,7 +199,84 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       createIssue: flag("Open its issue now when it is due (default true; else the daily run opens it)"),
     }),
   },
+  {
+    group: "Tasks",
+    name: "request-build",
+    displayName: "Hand a build to a developer",
+    description:
+      "Hand the BUILDING of a change to a developer agent and wait for their report. You decide what the page should say; the Developer builds page templates, theme or markup changes, schema code, redirects, internal-link code and repo changes (Senior Developer for theme or template work, many pages, ecommerce or anything tricky: level senior). Send the task, a summary, and the exact change set (pages, fields, old and new values or the full copy). On a site that needs the client's sign-off, send previewId of an APPROVED preview. It opens a build issue under the task for them and wakes them; end your turn. You are woken when it is done: verify it on the live site and complete the task. Copy, titles, descriptions, keyword choices and the checks stay yours.",
+    parametersSchema: schema(["sprintId", "taskId", "summary", "changeSet"], {
+      sprintId,
+      taskId: text("The SEO task this build is for (from list-tasks)."),
+      summary: text("What to build and why, in a few sentences."),
+      changeSet: text("The exact change: each page or file, the field, old value, new value, or the full copy and structure."),
+      acceptance: text("How you will check it is right (checks you will run, what must be true)."),
+      previewId: text("Id of the client-approved preview (from list-previews). Required on sites that need client sign-off."),
+      level: choice(["developer", "senior"], "senior = Senior Developer for theme or template work, many pages, ecommerce or anything tricky (default developer)"),
+    }),
+  },
+  {
+    group: "Tasks",
+    name: "start-tasks-now",
+    displayName: "Start tasks early",
+    description:
+      "Pull upcoming plan tasks forward: send taskId (one task) or week (every task of that week that has not started) and they become due today with their issues opened, instead of waiting for their day. The plan does not move otherwise. People decide the pace (the Start now buttons on the SEO plan); an agent may only use it when the sprint's autopilot is full. Works on tasks that have not started; up to 25 per call.",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      taskId: text("One task to start now (from list-tasks)."),
+      week: int("Start every not-started task of this plan week now (0 to 13)."),
+    }),
+  },
 
+  {
+    group: "Site",
+    name: "create-preview",
+    displayName: "Create a client preview link",
+    description:
+      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. Existing pages only; the link expires after 30 days.",
+    parametersSchema: schema(["sprintId", "pageUrl"], {
+      sprintId,
+      pageUrl: text("The live page to preview a change on: a full URL or a path like /about on the sprint's site."),
+      taskId: text("The task this is for (from list-tasks); the client's answer is posted on its issue."),
+      title: text("Proposed <title> (about 50-60 characters)."),
+      metaDescription: text("Proposed meta description (about 150-160 characters)."),
+      h1: text("Proposed H1. Replaces the page's own H1 inside the content; a theme heading elsewhere is never touched (the new one goes at the top of the content)."),
+      bodyHtml: text("Copy to ADD to the page, as plain HTML (headings, paragraphs, lists, links). It is added to the existing content, never instead of it, unless bodyMode is replace."),
+      bodyMode: choice(["before", "after", "replace"], "before (default, above the existing content), after (below it) or replace (whole content area; needs allowReplace)"),
+      css: text("Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). Imports, scripts and event handlers are removed."),
+      allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
+      label: text("Short name for the proposal, shown on the Needs you item."),
+    }),
+  },
+  {
+    group: "Site",
+    name: "review-preview",
+    displayName: "Record a preview check",
+    description:
+      "For the Reviewer: after opening the review page of a client preview (side-by-side screenshots of the live page and the proposal, plus the text figures) and looking at both screenshots, record the verdict. pass releases the link to the client; changes (with notes, one line per problem) sends it back to the SEO Specialist and the client never sees it. With changes, say who fixes it (fixBy): the SEO Specialist for wording and facts, a developer for markup, styling or layout problems (the plugin then opens the build for them and they make the corrected preview), the Senior Developer for theme or template work. You cannot check a preview you made yourself.",
+    parametersSchema: schema(["sprintId", "previewId", "verdict"], {
+      sprintId,
+      previewId: text("The preview id (from the review issue)."),
+      verdict: choice(["pass", "changes"], "pass = fine to show the client; changes = send back"),
+      notes: text("What you checked and found; required with changes."),
+      fixBy: choice(["seo", "developer", "senior"], "With changes: who fixes it. seo = wording or facts; developer = markup, styling, layout; senior = theme or template work"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "get-client-facts",
+    displayName: "Read the client fact sheet",
+    description:
+      "Read it BEFORE writing copy for a client. It lists the approved wordings the copy may use for claims about how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, verification, licences, legal wording, refunds, time commitments) and what must never be said. create-preview refuses a sentence that makes such a claim without an approved wording; the Reviewer checks against it. If a fact you need is missing, ask the owner (Needs you); never invent or reword one.",
+    parametersSchema: schema(["sprintId"], { sprintId }),
+  },
+  {
+    group: "Site",
+    name: "list-previews",
+    displayName: "List client previews",
+    description: "Previews made for a sprint with their status (pending, approved, changes_requested), the client's comment and link. Check it before applying a change: apply only what the owner has confirmed as approved.",
+    parametersSchema: schema(["sprintId"], { sprintId }),
+  },
   // Keywords
   { group: "Keywords", name: "list-keywords", displayName: "List keywords", description: "Tracked keywords with current position, impressions, clicks, CTR, intent and target URL.", parametersSchema: schema(["sprintId"], { sprintId, includeRetired: flag("Include retired keywords (default false)") }) },
   {
@@ -377,7 +454,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Google Search Console",
     name: "gsc-verification-token",
     displayName: "GSC verification token",
-    description: "Site Verification API: the exact meta tag (META) or file (FILE) for a URL-prefix site, or the DNS TXT record for a domain property, for the service account to become a verified owner. Add it through the site repo, then gsc-verify-site.",
+    description: "Site Verification API: the exact meta tag (META) or file (FILE) for a URL-prefix site, or the DNS TXT record for a domain property, for the service account to become a verified owner. Add it through the site repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (op get, then op set with the existing entries plus metaTags [{ name: \"google-site-verification\", content }] or the file; the result carries the exact call), check it on the live site, then gsc-verify-site.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       method: choice(["META", "FILE", "DNS_TXT"], "Default META (URL-prefix); DNS_TXT for a domain property"),
@@ -389,7 +466,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Google Search Console",
     name: "gsc-verify-site",
     displayName: "Verify site with the service account",
-    description: "Verify the token that is live on the site (the service account becomes a verified owner), add the Search Console property, store it on the sprint and submit <site>/sitemap.xml.",
+    description: "Verify the token that is live on the site (repo route: after the deploy; WordPress route: after wp-verify set; the service account becomes a verified owner of the URL-prefix property, so the client grants nothing), add the Search Console property, store it on the sprint and submit <site>/sitemap.xml.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       method: choice(["META", "FILE", "DNS_TXT"], "Default: the method from gsc-verification-token, else META"),
@@ -400,11 +477,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Google Search Console",
     name: "gsc-check-access",
     displayName: "Check service account access",
-    description: "Can the service account read this sprint's property? Selects it when yes. For client sites without access it puts the email (service account + Search Console Users link) on the Needs you issue.",
+    description: "Can the service account read this sprint's property? Selects it when yes. WordPress sprint with a connected Connector 1.2+: it does NOT email the client first; it returns the exact route (gsc-verification-token method META property url → wp-verify set → gsc-verify-site), and only queues the client email (service account + Search Console Users link) on the Needs you issue after that route failed (gsc-verify-site records the failure on the sprint). A Connector older than 1.2: it tells you to run the CRM's wp-connector update first. Repo and no-repo client sites: the email is queued as before.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       property: text("Property to check, e.g. sc-domain:example.com; default: detected from the site"),
-      askClient: flag("Queue the client email even for own sites"),
+      askClient: flag("Queue the client email even for own sites (ignored on a WordPress site whose wp-verify route has not failed yet)"),
       taskId: text("The task this is for (resumed when a missing grant is added)"),
     }),
   },
@@ -430,7 +507,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Google Search Console", name: "gsc-inspect-url", displayName: "Inspect URL in GSC", description: "URL Inspection: verdict, coverage, robots state, last crawl, Google vs declared canonical. (Google has no public request-indexing API; use request-indexing.)", parametersSchema: schema(["sprintId", "url"], { sprintId, url: text("Page to inspect: absolute URL or a path like /pricing") }) },
 
   // Indexing and Bing
-  { group: "Indexing and Bing", name: "indexnow-key", displayName: "IndexNow key", description: "The sprint's IndexNow key, the key file to add through the repo (public/<key>.txt), and whether it is live.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  { group: "Indexing and Bing", name: "indexnow-key", displayName: "IndexNow key", description: "The sprint's IndexNow key, the key file to add and whether it is live. Repo: public/<key>.txt. WordPress with a Connector 1.2+: the CRM's wp-verify op set files [{ path: \"/<key>.txt\", content: \"<key>\" }] (op get first, it replaces the list); confirm with this tool again (it fetches the file), then request-indexing. Never a Needs you item on such a site.", parametersSchema: schema(["sprintId"], { sprintId }) },
   {
     group: "Indexing and Bing",
     name: "request-indexing",
@@ -438,8 +515,8 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     description: "Sitemap to Search Console, IndexNow ping (Bing and others; needs the live key file) and URL Inspection for up to 5 URLs (default: home + priority/live pages). The daily run re-inspects after 14 days and adds optional Search Console links to Needs you only for pages still not indexed.",
     parametersSchema: schema(["sprintId"], { sprintId, urls: list("Absolute URLs or paths; default the core pages"), sitemapUrl: text("Sitemap URL or path to submit (default <site origin>/sitemap.xml)") }),
   },
-  { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo. Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
-  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml is live; enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }) },
+  { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (metaTags [{ name: \"msvalidate.01\", content }] or files [{ path: \"/BingSiteAuth.xml\", content }]; the result carries the call). Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
+  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }) },
   { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
 
   // Site repo
@@ -448,10 +525,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Site repo",
     name: "link-site",
     displayName: "Link site repo",
-    description: "Link the Paperclip project whose workspace holds the site repo (code and content tasks open there), wordpressSiteId for a client's WordPress site reached through the PiB Connector (changes through the partnersinbiz.crm:wp-* tools), or noRepo: true for a CMS / client-managed site without the Connector. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
+    description: "Link the client's own Paperclip project (clientProjectId: all this sprint's issues open there) and/or the Paperclip project whose workspace holds the site repo (code and content tasks open there), wordpressSiteId for a client's WordPress site reached through the PiB Connector (changes through the partnersinbiz.crm:wp-* tools), or noRepo: true for a CMS / client-managed site without the Connector. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       projectId: text("Paperclip project whose workspace holds the site repo (from list-site-projects)"),
+      clientProjectId: text("The client's own Paperclip project (from list-site-projects): all issues of this sprint open there. Auto-linked when a project is named like the client"),
       wordpressSiteId: text("CRM website id of the sprint client's WordPress site (from list-site-projects wordpressSites): wordpress mode, changes through the PiB Connector"),
       noRepo: flag("No repo access: change sets go through Needs you"),
       unlink: flag("Remove the site link, back to unlinked (people only)"),
@@ -491,11 +569,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Needs you",
     name: "needs-you-add",
     displayName: "Add to Needs you",
-    description: "Put something only a person can do on the sprint's weekly Needs you issue (deduped by key): an out-of-scope PR to merge (kind pr), a DM or email from a personal account with copy-ready text (kind message), a one-time grant. Say exactly what to do and what you do after. Standard keys github_token, site_project, service_account, bing_key and wp_connector fill in the exact steps and links themselves (pass taskIds; why = what failed).",
+    description: "Put something only a person can do on the sprint's weekly Needs you issue (never Search Console, Bing or IndexNow verification on a WordPress site with the Connector: wp-verify does that, and this tool refuses it unless wpVerifyFailed says what failed) (deduped by key): an out-of-scope PR to merge (kind pr), a DM or email from a personal account with copy-ready text (kind message), a one-time grant. Say exactly what to do and what you do after. Standard keys github_token, site_project, service_account, bing_key and wp_connector fill in the exact steps and links themselves (pass taskIds; why = what failed).",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       kind: choice(["grant", "review", "pr", "message", "task", "indexing"], "Item type (default grant): grant, review, pr (PR to merge), message (text to send), task or indexing"),
-      key: text("Stable key for dedupe, e.g. pr:<url>; or a standard key: github_token, site_project, service_account, bing_key, wp_connector"),
+      key: text("Stable key for dedupe, e.g. pr:<url>; or a standard key: github_token, site_project, service_account, bing_key, wp_connector, wp_sftp"),
       title: text("Short title (max 200 chars); required unless a standard key"),
       why: text("Why it is needed (max 2000 chars); required unless a standard key (github_token: what failed)"),
       steps: list("Exact steps"),
@@ -504,6 +582,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       after: text("What you do once it is done (required unless a standard key)"),
       taskIds: list("Tasks that continue when it is done"),
       optional: flag("Listed under Optional on the Needs you issue (default false)"),
+      wpVerifyFailed: text("Verification items on a WordPress site with wp-verify are refused unless this says what you tried and the error; it is recorded on the sprint."),
     }),
   },
   { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text("Item key (from needs-you)"), note: text("What was done, stored on the item (max 1000 chars)") }) },

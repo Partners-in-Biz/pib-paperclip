@@ -31,9 +31,9 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
-import { DAILY_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
+import { DAILY_JOB_KEY, PREVIEW_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
-import { dispatch, HANDLERS, toolSummary } from "./dispatch.js";
+import { dispatch, HANDLERS, toolSummary, UI_ONLY_HANDLERS } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
 import { NAMESPACE } from "./namespace.js";
 import {
@@ -49,6 +49,10 @@ import {
 } from "./service/agent.js";
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
+import { deliverPreviewAnswers, previewRows } from "./service/preview.js";
+import { syncSignoff } from "./service/signoff.js";
+import { loadFacts } from "./service/facts.js";
+import { onBuildIssueUpdated } from "./service/build.js";
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
@@ -57,9 +61,9 @@ import { integrationView, sprintView, upgradeLegacySprint } from "./service/spri
 import { displayTitle, sprintOverviews, withRunFailures } from "./service/overview.js";
 import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
-import { onIssueUpdated } from "./service/tasks.js";
+import { onIssueUpdated, advanceQueuedWeeks } from "./service/tasks.js";
 import { checkAgentClose } from "./service/done-checks.js";
-import { needsYouView, onNeedsYouIssueUpdated } from "./service/needs-you.js";
+import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
@@ -86,6 +90,13 @@ const plugin = definePlugin({
       const result = await trackJob(ctx, DAILY_JOB_KEY, () => runDailyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO daily job finished", { ...result, trigger: job.trigger });
     });
+    ctx.jobs.register(PREVIEW_JOB_KEY, async () => {
+      await syncSignoff(e).catch((error) => ctx.logger.info("SEO sign-off sync failed", { error: errorMessage(error) }));
+      await parkTasksWaitingOnYou(e).catch((error) => ctx.logger.info("SEO park waiting tasks failed", { error: errorMessage(error) }));
+      await advanceQueuedWeeks(e).catch((error) => ctx.logger.info("SEO queued week advance failed", { error: errorMessage(error) }));
+      const sent = await deliverPreviewAnswers(e);
+      if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
+    });
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
@@ -95,6 +106,7 @@ const plugin = definePlugin({
       if (!event.entityId || !event.companyId) return;
       try {
         if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
+        if (await onBuildIssueUpdated(e, event.companyId, event.entityId)) return;
         // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
         // so an early close never marks the task done, tells Social or opens a merge task.
         if (await checkAgentClose(ctx, event)) return;
@@ -117,6 +129,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     // Client websites (platform, SEO plugin, Connector status) for the wordpress site mode; never the Connector key.
     registerCrmSiteProjection(ctx, NAMESPACE);
+    // Tell the CRM which sites need the client's sign-off right away (the 5-minute job repeats it).
+    void syncSignoff(e).catch(() => undefined);
     ctx.logger.info("SEO plugin ready");
   },
 
@@ -336,6 +350,8 @@ function registerActions(e: Env) {
       db.latestPageHealth(ctx.db, sprintId),
       resolveAgent(e, companyId),
     ]);
+    const previews = await previewRows(e, companyId, sprintId).catch(() => []);
+    const clientFacts = await loadFacts(e, companyId, sprintId).catch(() => ({ status: "none", facts: [], updatedAt: null }));
     const [history, traffic] = await Promise.all([
       db.sprintHistory(ctx.db, sprintId, "2000-01-01"),
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
@@ -370,6 +386,8 @@ function registerActions(e: Env) {
       integrations: integrations.map(integrationView),
       pageHealth: health,
       traffic,
+      previews,
+      clientFacts,
       needsYou,
       setup,
       projects,
@@ -380,7 +398,7 @@ function registerActions(e: Env) {
 
   action("seo.call", async (companyId, actor, params) => {
     const tool = reqStr(params, "tool");
-    if (!HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
+    if (!HANDLERS[tool] && !UI_ONLY_HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
     return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
   });
 

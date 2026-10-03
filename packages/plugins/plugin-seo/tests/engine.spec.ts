@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DAILY_STAGGER_SPREAD, SPRINT_ISSUE_CAP, dailyStaggerHours, issueRoom } from "../src/engine/sprint.js";
 import { taskIssueDescription, taskIssueTitle, rootIssueTitle, blockComment, withClientPrefix } from "../src/engine/copy.js";
 import { completionBlocker } from "../src/engine/guards.js";
 import {
@@ -179,5 +180,28 @@ describe("issue copy", () => {
     expect(text).toContain("Blocked — needs a person");
     expect(text).toContain("Add the TXT record");
     expect(blockComment({ reason: "Draft ready", humanAsk: "Approve", review: true })).toContain("sign-off");
+  });
+});
+
+
+describe("daily pacing", () => {
+  it("gives each sprint a stable start offset inside the spread, and spreads real ids across it", () => {
+    const ids = ["5381f355-4ada-474b-a4c4-449edabcd402", "a77fe324-4b9a-428a-8f60-b5ea29f835f1", "499c4344-4a90-43f5-9097-4b6c855f391b", "71c61589-63d2-4f03-ae17-6dc60ba3be80", "sp-1", "sp-2", "sp-3"];
+    const offsets = ids.map((id) => dailyStaggerHours(id));
+    for (const [i, id] of ids.entries()) {
+      expect(offsets[i]).toBeGreaterThanOrEqual(0);
+      expect(offsets[i]).toBeLessThan(DAILY_STAGGER_SPREAD);
+      expect(dailyStaggerHours(id)).toBe(offsets[i]);
+    }
+    expect(new Set(offsets).size).toBeGreaterThan(1);
+    expect(dailyStaggerHours("anything", 1)).toBe(0);
+  });
+
+  it("tops a sprint up to its in-flight cap and never goes negative", () => {
+    expect(issueRoom(0)).toBe(SPRINT_ISSUE_CAP);
+    expect(issueRoom(3)).toBe(SPRINT_ISSUE_CAP - 3);
+    expect(issueRoom(SPRINT_ISSUE_CAP)).toBe(0);
+    expect(issueRoom(SPRINT_ISSUE_CAP + 5)).toBe(0);
+    expect(issueRoom(2, 5)).toBe(3);
   });
 });

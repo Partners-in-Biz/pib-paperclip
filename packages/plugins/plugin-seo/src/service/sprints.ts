@@ -49,7 +49,7 @@ import { materialiseDueTasks } from "./tasks.js";
 import { loadServiceAccount } from "./google-access.js";
 import { needsYouView } from "./needs-you.js";
 import { playbookSummary } from "./playbook.js";
-import { siteLinkView } from "./site.js";
+import { autoLinkClientProject, siteLinkView } from "./site.js";
 import { autoLinkWordPressSite, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
 import { isCodeTask } from "../engine/site-change.js";
 
@@ -205,7 +205,9 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   }
   const seeded = await seedTemplate(env, sprint, plan);
   await env.skills.ensure(companyId).catch(() => []);
-  const projectId = await ensureProject(env, companyId);
+  // A client sprint works in the client's own project when one exists; the company SEO project is the fallback.
+  sprint = await autoLinkClientProject(env, sprint);
+  const projectId = sprint.clientProjectId ?? (await ensureProject(env, companyId));
   const warnings: string[] = [];
   try {
     sprint = await ensureRootIssue(env, info, { ...sprint, projectId }, projectId);
@@ -447,7 +449,13 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
         : `${plural(playbook.pending, "playbook change")} ${playbook.pending === 1 ? "waits" : "wait"} for a person (Needs you / SEO → Playbook); follow the current version meanwhile.`,
     );
   }
-  if (next.length === 0) next.push("Nothing is due. Check keyword positions (list-keywords) and post a short digest.");
+  if (next.length === 0) {
+    next.push(
+      sprint.autopilotMode === "full"
+        ? "Nothing is due. Check keyword positions (list-keywords) and post a short digest. The plan is ahead of its dates: you may pull the next week forward with start-tasks-now (week)."
+        : "Nothing is due. Check keyword positions (list-keywords) and post a short digest. Pulling the plan forward is the owner's call (Start now on the SEO plan).",
+    );
+  }
   return {
     sprintId: sprint.id,
     site: sprint.siteName,

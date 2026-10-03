@@ -15,6 +15,7 @@ export const AGENT_CAPABILITIES =
 export const SKILL_KEY = "seo-sprint";
 export const SKILL_SLUG = "pib-seo-sprint";
 export const DAILY_JOB_KEY = "seo-daily";
+export const PREVIEW_JOB_KEY = "seo-previews";
 export const WEEKLY_JOB_KEY = "seo-weekly";
 
 /** Canonical key the host gives a plugin-managed skill: `plugin/<slug(pluginKey)>/<skillKey>`. */
@@ -31,7 +32,21 @@ export const ORIGIN = {
   approval: `plugin:${PLUGIN_ID}:approval`,
   alert: `plugin:${PLUGIN_ID}:alert`,
   needsYou: `plugin:${PLUGIN_ID}:needs-you`,
+  build: `plugin:${PLUGIN_ID}:build`,
+  previewReview: `plugin:${PLUGIN_ID}:preview-review`,
 } as const;
+
+export const BUILD_ORIGIN_PREFIX = "seo:build:";
+
+export function buildOriginId(taskId: string): string {
+  return `${BUILD_ORIGIN_PREFIX}${taskId}`;
+}
+
+/** The task id in a build issue's origin id, or null. */
+export function taskIdFromBuildOrigin(originId: string | null | undefined): string | null {
+  if (!originId?.startsWith(BUILD_ORIGIN_PREFIX)) return null;
+  return originId.slice(BUILD_ORIGIN_PREFIX.length) || null;
+}
 
 /**
  * Origin id of a sprint task's issue: `seo:task:<taskId>` (the done-check

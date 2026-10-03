@@ -28,13 +28,14 @@ import { commentOn } from "./issues.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
 import { relocateCodeTasks } from "./tasks.js";
 import { sprintClock } from "../engine/sprint.js";
-import { clientWordPressSites, requireWordPressSite, sprintCrmPath, sprintWordPressSite, wordPressSiteView, wpConnectorItemFor } from "./wordpress.js";
+import { clientWordPressSites, requireWordPressSite, sprintCrmPath, sprintVerifyRoute, sprintWordPressSite, sprintHasSftp, wordPressSiteView, wpConnectorItemFor } from "./wordpress.js";
 
 /** `site`: the projected CRM site of a wordpress sprint, when the caller loaded it (else null). */
 export function siteLinkView(sprint: db.Sprint, site?: CrmSiteRow | null) {
   return {
     siteAccess: sprint.siteAccess,
     siteProjectId: sprint.siteProjectId,
+    clientProjectId: sprint.clientProjectId,
     siteId: sprint.siteId,
     site: sprint.siteAccess === "wordpress" && site ? wordPressSiteView(site) : null,
     repoUrl: sprint.repoUrl,
@@ -97,6 +98,40 @@ export async function wordPressSiteOptions(env: Env, sprint: db.Sprint) {
   return sites.sort((a, b) => Number(b.suggested) - Number(a.suggested) || a.url.localeCompare(b.url));
 }
 
+function slug(value: string | null | undefined): string {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * The client's own Paperclip project: the one active, non-plugin project whose name or
+ * URL key equals the sprint's client name. Only a single match counts.
+ */
+export async function findClientProject(env: Env, sprint: db.Sprint): Promise<string | null> {
+  const wanted = slug(sprint.clientName);
+  if (!sprint.clientRef || !wanted) return null;
+  const projects = await env.ctx.projects.list({ companyId: sprint.companyId, limit: 200 });
+  const hits = projects.filter((project) => {
+    const p = project as unknown as { name?: string; urlKey?: string; archivedAt?: unknown; managedByPlugin?: { pluginKey?: string } | null };
+    if (p.archivedAt || p.managedByPlugin) return false;
+    return slug(p.name) === wanted || slug(p.urlKey) === wanted;
+  });
+  return hits.length === 1 ? String((hits[0] as unknown as { id: string }).id) : null;
+}
+
+/** Link the client's project to a client sprint that has none yet (best effort). Returns the fresh sprint. */
+export async function autoLinkClientProject(env: Env, sprint: db.Sprint): Promise<db.Sprint> {
+  if (sprint.clientProjectId || !sprint.clientRef) return sprint;
+  try {
+    const id = await findClientProject(env, sprint);
+    if (!id) return sprint;
+    await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { client_project_id: id, project_id: id });
+    return { ...sprint, clientProjectId: id, projectId: id };
+  } catch (error) {
+    env.ctx.logger.info("SEO client project auto-link skipped", { sprintId: sprint.id, error: errorMessage(error) });
+    return sprint;
+  }
+}
+
 export async function listSiteProjectsTool(env: Env, companyId: string, params: Params) {
   const sprintId = str(params, "sprintId");
   const sprint = sprintId ? await requireSprint(env, companyId, sprintId) : null;
@@ -120,6 +155,7 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
   const patch: Record<string, unknown> = {};
   const projectId = str(params, "projectId", { max: 100 });
   const wordpressSiteId = str(params, "wordpressSiteId", { max: 100 });
+  const clientProjectId = str(params, "clientProjectId", { max: 100 });
   const noRepo = bool(params, "noRepo") ?? false;
   const unlink = bool(params, "unlink") ?? false;
   let wpSite: CrmSiteRow | null = null;
@@ -150,6 +186,14 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
     Object.assign(patch, { site_access: "repo", site_project_id: projectId, site_id: null, repo_url: repoUrl });
     if (branch && !str(params, "defaultBranch")) patch.default_branch = branch.replace(/^refs\/heads\/|^origin\//, "");
   }
+  if (clientProjectId) {
+    const clientProject = await env.ctx.projects.get(clientProjectId, companyId);
+    if (!clientProject) throw new SeoError(`Project ${clientProjectId} was not found in this company`);
+    if ((clientProject as unknown as { managedByPlugin?: { pluginKey?: string } | null }).managedByPlugin?.pluginKey === PLUGIN_ID) {
+      throw new SeoError("The plugin's own SEO project is the shared fallback, not a client project. Pick the client's project.");
+    }
+    Object.assign(patch, { client_project_id: clientProjectId, project_id: clientProjectId });
+  }
   const defaultBranch = str(params, "defaultBranch", { max: 100 });
   if (defaultBranch) patch.default_branch = defaultBranch;
   const framework = str(params, "framework", { max: 40 });
@@ -163,12 +207,12 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
     }
     patch.change_policy = policy;
   }
-  if (Object.keys(patch).length === 0) throw new SeoError("Nothing to change: pass projectId, wordpressSiteId, noRepo, unlink, defaultBranch, framework, hosting or changePolicy");
+  if (Object.keys(patch).length === 0) throw new SeoError("Nothing to change: pass projectId, clientProjectId, wordpressSiteId, noRepo, unlink, defaultBranch, framework, hosting or changePolicy");
   await db.updateSprint(env.ctx.db, companyId, sprint.id, patch);
   const fresh = (await db.getSprint(env.ctx.db, companyId, sprint.id))!;
   let moved = { moved: 0, opened: 0 };
   let resolved = false;
-  const linkChanged = fresh.siteAccess !== sprint.siteAccess || fresh.siteProjectId !== sprint.siteProjectId || fresh.siteId !== sprint.siteId;
+  const linkChanged = fresh.siteAccess !== sprint.siteAccess || fresh.siteProjectId !== sprint.siteProjectId || fresh.siteId !== sprint.siteId || fresh.clientProjectId !== sprint.clientProjectId;
   const site = wpSite ?? (await sprintWordPressSite(env, fresh));
   if (linkChanged) {
     if (fresh.siteAccess !== "unlinked") {
@@ -180,7 +224,7 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
         env.ctx.logger.info("SEO wp_connector item not added", { sprintId: sprint.id, error: errorMessage(error) });
       });
     }
-    if (fresh.rootIssueId && fresh.seededAt && fresh.siteAccess !== "unlinked") {
+    if (fresh.rootIssueId && fresh.seededAt && (fresh.siteAccess !== "unlinked" || fresh.clientProjectId)) {
       const clock = sprintClock(fresh.startDate, info.today);
       moved = await relocateCodeTasks(env, {
         info,
@@ -217,25 +261,30 @@ export async function linkSiteTool(env: Env, companyId: string, actor: Actor, pa
 /** What the agent does on a wordpress sprint, by change policy (get-site-link `next`). */
 export function wordPressNext(sprint: db.Sprint, site: CrmSiteRow | null, prefix: string | null): string {
   const tools = [
-    "`partnersinbiz.crm:wp-seo` (op get / set: title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription)",
+    "`partnersinbiz.crm:wp-seo` (op get / list / set: title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription, ogImage; pages, categories via termId, archives via postTypeArchive)",
     "`partnersinbiz.crm:wp-schema`",
     "`partnersinbiz.crm:wp-redirects`",
     "`partnersinbiz.crm:wp-robots`",
     "`partnersinbiz.crm:wp-sitemap`",
+    "`partnersinbiz.crm:wp-verify` (get, set: Search Console, Bing and IndexNow verification tags and root files; Connector 1.2+)",
+    "`partnersinbiz.crm:wp-media` (list, sideload, set-featured, alt)",
+    "`partnersinbiz.crm:wp-content` (get, images, img-alt, update, create as a draft, publish your own draft)",
+    "`partnersinbiz.crm:wp-connector` (update the Connector)",
     "`partnersinbiz.crm:wp-health`",
     "`partnersinbiz.crm:wp-log`",
     "`partnersinbiz.crm:wp-undo`",
   ].join(", ");
   const policy =
     sprint.changePolicy === "pr_only"
-      ? "Change policy pr_only: read with the tools, then write the exact change set (page, field, old value, new value), put it on Needs you (needs-you-add kind task, the change set in copy) and block-task."
-      : `Change policy ${sprint.changePolicy.replace(/_/g, " ")}: apply SEO fields, schema, redirects, extra robots.txt lines and sitemap settings yourself, then verify.`;
+      ? "Change policy pr_only (the client signs off before anything changes): read with the tools, then for each page write the exact change set (page, field, old value, new value) AND make a client preview link with `create-preview` (pageUrl, taskId and the proposed title, metaDescription, h1 and bodyHtml). Put the change set and the preview link on Needs you (needs-you-add kind task, link in copy) and block-task. Never apply the change yourself: after the owner confirms the client approved it (the client's answer is also commented on the task issue; `list-previews` shows it), apply it through the Connector and verify it live. If the client asks for changes, revise and make a new preview."
+      : `Change policy ${sprint.changePolicy.replace(/_/g, " ")}: apply SEO fields, schema, redirects, extra robots.txt lines, sitemap settings, image alt text, featured and share images, page copy edits and new draft pages yourself (publish your own drafts only when the task says so), then verify. Building work (theme or template markup, page layouts, many pages, schema code) is for a developer: request-build, then verify their result.`;
   if (!site) return `This sprint is linked to WordPress site ${sprint.siteId ?? "?"}, which is no longer in the CRM. Ask a person to pick the site again (needs-you-add key site_project) and work other tasks meanwhile.`;
   const lines = [
     `WordPress site ${site.url} (${wordPressSiteView(site).summary}). Every SEO change on this site goes through the CRM's Connector tools with siteId "${site.id}": ${tools}. All take siteId; writes take a reason.`,
     "Then verify on the live site with check-meta, validate-schema, check-sitemap and crawler-sim (use check-change-scope with wp:<area>:<target> paths first when unsure).",
     policy,
-    "Plugin installs (`partnersinbiz.crm:wp-plugins`) always go to Needs you for a person.",
+    "Verification is yours, not a person's: Search Console, Bing and IndexNow verification tags and key files go through `wp-verify` (gsc-verification-token → wp-verify → gsc-verify-site; bing-add-site → wp-verify → bing-verify-site; indexnow-key → wp-verify). A route error means a Connector older than 1.2: wp-connector update first.",
+    "Still Needs you: plugin installs and rollbacks (`partnersinbiz.crm:wp-plugins`), deleting anything, publishing anything the Connector did not create, a site's theme or settings, and anything that needs an image you have no source for (ask for the asset). If the Connector lacks an ability, check `wp-health` and run `wp-connector` update before you park the task on Needs you.",
   ];
   if (site.connector_status !== "connected") {
     lines.unshift(`The PiB Connector is not connected (${site.connector_status}): needs-you-add with key wp_connector, then block-task. Steps for the person: ${sprintCrmPath(prefix, sprint)} → Websites.`);
@@ -275,7 +324,9 @@ export async function checkChangeScopeTool(env: Env, companyId: string, params: 
   const checks = (oneOf(params, "checks", ["passed", "failed", "pending"] as const) ?? "pending") as ChecksState;
   if (sprint.siteAccess === "wordpress") {
     // No CI on the Connector: the change is verified on the live site after it is applied.
-    return { sprintId: sprint.id, changePolicy: sprint.changePolicy, checks, ...evaluateWordPressChange(sprint.changePolicy, changes), categories: WORDPRESS_SCOPE_CATEGORIES };
+    const { route } = await sprintVerifyRoute(env, sprint);
+    const sftp = await sprintHasSftp(env, sprint);
+    return { sprintId: sprint.id, changePolicy: sprint.changePolicy, checks, sftp, ...evaluateWordPressChange(sprint.changePolicy, changes, { verify: route, sftp }), categories: WORDPRESS_SCOPE_CATEGORIES, verifyRoute: route };
   }
   const verdict = evaluateChange(sprint.changePolicy, changes, checks);
   return { sprintId: sprint.id, changePolicy: sprint.changePolicy, checks, ...verdict, categories: SEO_SCOPE_CATEGORIES };

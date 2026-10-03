@@ -6,7 +6,7 @@ import { companyInfo, str, type CompanyInfo, type Env, type Params } from "./com
 import { requireSprint } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { integrationAuth, settingsPath } from "./gsc.js";
-import { sprintCrmPath, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
+import { sprintCrmPath, sprintVerifyRoute, sprintWordPressSite, wordPressSiteView } from "./wordpress.js";
 
 async function secretSet(info: CompanyInfo, path: string): Promise<boolean> {
   try {
@@ -51,7 +51,7 @@ export async function sprintSetupFacts(env: Env, sprint: db.Sprint, prefix: stri
     siteAccess: sprint.siteAccess,
     siteProjectId: sprint.siteProjectId,
     repoUrl: sprint.repoUrl,
-    wordpress: view ? { url: view.url, summary: view.summary, connected: view.connected, clientName: sprint.clientName, clientPath: sprintCrmPath(prefix, sprint) } : null,
+    wordpress: view ? { url: view.url, summary: view.summary, connected: view.connected, clientName: sprint.clientName, clientPath: sprintCrmPath(prefix, sprint), verifyRoute: (await sprintVerifyRoute(env, sprint)).route } : null,
     changePolicy: sprint.changePolicy,
     autopilotMode: sprint.autopilotMode,
     property: gsc?.status === "connected" ? gsc.propertyUrl : null,

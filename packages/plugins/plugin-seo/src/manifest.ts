@@ -6,6 +6,7 @@ import {
   AGENT_DISPLAY_NAME,
   AGENT_KEY,
   DAILY_JOB_KEY,
+  PREVIEW_JOB_KEY,
   DAILY_ROUTINE_KEY,
   PROJECT_KEY,
   SKILL_CANONICAL_KEY,
@@ -60,7 +61,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.10.0",
+  version: "0.21.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task.",
   author: "Partners in Biz",
@@ -106,6 +107,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Daily SEO run",
       description: "Hourly check; once per sprint per day after the configured local hour: sprint clock, Search Console/PageSpeed/Bing pulls, audit snapshots, due task issues, measurements, issue sync.",
       schedule: "5 * * * *",
+    },
+    {
+      jobKey: PREVIEW_JOB_KEY,
+      displayName: "Client preview answers",
+      description: "Every 5 minutes: posts a client's Approve / Request changes answer from a preview link on the task's issue.",
+      schedule: "*/5 * * * *",
     },
     {
       jobKey: WEEKLY_JOB_KEY,

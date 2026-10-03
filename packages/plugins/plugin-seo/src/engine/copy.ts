@@ -95,9 +95,9 @@ export interface SiteCopy {
 }
 
 const WP_POLICY_LINE: Record<string, string> = {
-  merge_seo_scope: "apply SEO fields, schema, redirects, extra robots.txt lines and sitemap settings yourself",
+  merge_seo_scope: "apply SEO fields (pages, categories, archives, share images), schema, redirects, extra robots.txt lines, sitemap settings, image alt text, featured images, page copy edits and new draft pages yourself, and publish your own drafts when the task says so",
   pr_only: "do not apply anything: write the exact change set (page, field, old value, new value), put it on Needs you with `partnersinbiz.seo:needs-you-add` (kind task, the change set in `copy`), then `block-task`",
-  full: "apply SEO fields, schema, redirects, extra robots.txt lines and sitemap settings yourself",
+  full: "apply SEO fields (pages, categories, archives, share images), schema, redirects, extra robots.txt lines, sitemap settings, image alt text, featured images, page copy edits and new draft pages yourself, and publish your own drafts when the task says so",
 };
 
 const POLICY_LINE: Record<string, string> = {
@@ -110,9 +110,9 @@ export function siteSection(site: SiteCopy): string[] {
   if (site.access === "wordpress") {
     return [
       "## Site changes (WordPress)",
-      `This site is WordPress, reached through the PiB Connector (siteId \`${site.siteId ?? "see get-site-link"}\`). Make every SEO change with the CRM's Connector tools, passing \`siteId\`: \`partnersinbiz.crm:wp-seo\` (op get, then op set: title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription), \`partnersinbiz.crm:wp-schema\`, \`partnersinbiz.crm:wp-redirects\`, \`partnersinbiz.crm:wp-robots\`, \`partnersinbiz.crm:wp-sitemap\`; every write takes a \`reason\`. Read \`partnersinbiz.crm:wp-health\` first.`,
+      `This site is WordPress, reached through the PiB Connector (siteId \`${site.siteId ?? "see get-site-link"}\`). Make every SEO change with the CRM's Connector tools, passing \`siteId\`: \`partnersinbiz.crm:wp-seo\` (op get, list or set: title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription, ogImage, for pages, categories via termId and archives such as the shop via postTypeArchive), \`partnersinbiz.crm:wp-schema\`, \`partnersinbiz.crm:wp-redirects\`, \`partnersinbiz.crm:wp-robots\`, \`partnersinbiz.crm:wp-sitemap\`, \`partnersinbiz.crm:wp-media\` (list, sideload, set-featured, alt), \`partnersinbiz.crm:wp-content\` (get, images, img-alt, update, create, publish) and \`partnersinbiz.crm:wp-verify\` (get, set: Search Console, Bing and IndexNow verification tags and root key files; Connector 1.2+) and \`partnersinbiz.crm:wp-connector\` (update the Connector itself); every write takes a \`reason\`. Read \`partnersinbiz.crm:wp-health\` first.`,
       `Change policy: ${WP_POLICY_LINE[site.changePolicy] ?? WP_POLICY_LINE.pr_only}. Then verify on the live site with \`check-meta\`, \`validate-schema\`, \`check-sitemap\` or \`crawler-sim\`, and \`complete-task\` with the Connector change ids (\`partnersinbiz.crm:wp-log\`) and the check output. Every change can be undone with \`partnersinbiz.crm:wp-undo\`.`,
-      "Connector not connected? `partnersinbiz.seo:needs-you-add` with key `wp_connector`, then `block-task`. Plugin installs always go to Needs you. New pages, copy and alt text are wp-admin edits: change set on Needs you. Details: skill reference `references/wordpress.md`.",
+      "Connector not connected? `partnersinbiz.seo:needs-you-add` with key `wp_connector`, then `block-task`. Search Console, Bing and IndexNow verification is yours on this site: gsc-verification-token → wp-verify → gsc-verify-site, bing-add-site → wp-verify → bing-verify-site, indexnow-key → wp-verify. Do not ask the client or put it on Needs you unless that route failed. Still Needs you: plugin installs and rollbacks, deleting anything, publishing anything the Connector did not create, a site's theme or settings, deactivating a plugin, Merchant Center account creation (a Google account and business details), and anything that needs an image you have no source for (ask for the asset, not for a wp-admin edit). Never hotlink an image you have no rights to. Before you park a task because the Connector cannot do something (a route missing, an ability missing), run `partnersinbiz.crm:wp-health` and `partnersinbiz.crm:wp-connector` update: an out-of-date Connector is yours to update. Details: skill reference `references/wordpress.md`.",
       "",
     ];
   }

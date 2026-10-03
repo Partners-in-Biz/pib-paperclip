@@ -51,6 +51,7 @@ import { requireSprint } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, patchIssue } from "./issues.js";
 import { loadServiceAccount, serviceAccountAccess } from "./google-access.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
+import { setVerifyFailure, sprintVerifyRoute, verifyFailureOf } from "./wordpress.js";
 import { settingsPath } from "./settings-path.js";
 
 export { settingsPath };
@@ -592,6 +593,17 @@ function methodParam(params: Params): VerificationMethod | undefined {
   return upper;
 }
 
+function wpGoogleRoute(wp: { route: string; siteId: string | null }, change: { kind: string; detail: Record<string, string> }) {
+  if (change.kind === "dns") return { route: "not applicable: a domain property is verified through DNS" };
+  return {
+    route: wp.route,
+    tool: "partnersinbiz.crm:wp-verify",
+    siteId: wp.siteId,
+    set: change.kind === "meta" ? { metaTags: [{ name: "google-site-verification", content: change.detail.content }] } : { files: [{ path: change.detail.path, content: change.detail.content }] },
+    replaceSemantics: "op set replaces the whole list of each kind you send: run op get first and send the existing entries plus this one.",
+  };
+}
+
 export async function gscVerificationToken(env: Env, companyId: string, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
@@ -607,6 +619,7 @@ export async function gscVerificationToken(env: Env, companyId: string, params: 
     throw new SeoError(`Site Verification token failed: ${errorMessage(error)}. Check the Site Verification API is enabled for the service account's project.`);
   }
   const change = verificationChange(result.method, result.token);
+  const wp = await sprintVerifyRoute(env, sprint);
   const google = { ...((sprint.verification.google as Record<string, unknown>) ?? {}), method: result.method, token: result.token, site, property: propertyFor(site), requestedAt: env.now().toISOString(), serviceAccountEmail: sa.email };
   await db.updateSprint(env.ctx.db, companyId, sprint.id, { verification: { ...sprint.verification, google } });
   if (change.kind === "dns") {
@@ -620,10 +633,15 @@ export async function gscVerificationToken(env: Env, companyId: string, params: 
     method: result.method,
     token: result.token,
     change,
+    ...(wp.route === "none" ? {} : { wordpress: wpGoogleRoute(wp, change) }),
     next:
       change.kind === "dns"
         ? "The TXT record is on the Needs you digest (the agent has no DNS access). Run gsc-verify-site once it is added."
-        : `Add it through the site repo (verification files are SEO scope under merge_seo_scope): ${change.kind === "meta" ? "the meta tag in the root layout's <head>" : `the file at ${change.detail.path}`}. After the deploy, check it on production, then run gsc-verify-site.`,
+        : wp.route === "available"
+          ? `WordPress site: place it with the CRM's wp-verify (siteId ${wp.siteId}): op get, then op set with the existing entries plus ${change.kind === "meta" ? `metaTags [{ name: "google-site-verification", content: "${change.detail.content}" }]` : `files [{ path: "${change.detail.path}", content: "${change.detail.content}" }]`} and a reason. Check it on the live site (check-meta on the home page${change.kind === "file" ? ", or fetch the file URL" : ""}), then run gsc-verify-site. No client access is needed.`
+          : wp.route === "update"
+            ? `This WordPress site runs Connector ${wp.connectorVersion ?? "of unknown version"}, which cannot place verification tags (wp-verify needs 1.2). Run the CRM's wp-connector update first, then place the token with wp-verify and run gsc-verify-site.`
+            : `Add it through the site repo (verification files are SEO scope under merge_seo_scope): ${change.kind === "meta" ? "the meta tag in the root layout's <head>" : `the file at ${change.detail.path}`}. After the deploy, check it on production, then run gsc-verify-site.`,
   };
 }
 
@@ -634,10 +652,12 @@ export async function gscVerifySite(env: Env, companyId: string, actor: Actor, p
   const pending = (sprint.verification.google ?? {}) as { method?: VerificationMethod; site?: { type: "SITE" | "INET_DOMAIN"; identifier: string } };
   const method = methodParam(params) ?? pending.method ?? "META";
   const site = pending.site ?? verificationSite({ siteUrl: sprint.siteUrl, domain: method === "DNS_TXT" });
+  const wpRoute = await sprintVerifyRoute(env, sprint);
   let owners: string[] = [];
   try {
     owners = (await insertWebResource(env.fetch, sa.token, site, method)).owners;
   } catch (error) {
+    if (wpRoute.route === "available") await setVerifyFailure(env, sprint, "google", errorMessage(error)).catch(() => undefined);
     throw new SeoError(
       `Google could not verify ${site.identifier} (${errorMessage(error)}). ${method === "META" ? "Check the google-site-verification meta tag is live on the home page (check-meta on production)" : method === "FILE" ? "Check the verification file is live at its URL" : "Check the DNS TXT record (it can take up to an hour)"} and run gsc-verify-site again.`,
     );
@@ -661,6 +681,7 @@ export async function gscVerifySite(env: Env, companyId: string, actor: Actor, p
   const google = { ...((sprint.verification.google as Record<string, unknown>) ?? {}), method, site, property, verifiedAt: env.now().toISOString(), owners: owners.slice(0, 10), addedToSearchConsole: added };
   await db.updateSprint(env.ctx.db, companyId, sprint.id, { verification: { ...sprint.verification, google } });
   for (const key of ["gsc_access", "gsc_dns", "gsc_reconnect"]) await resolveNeedsYou(env, info, sprint, key, "the service account").catch(() => undefined);
+  await setVerifyFailure(env, (await db.getSprint(env.ctx.db, companyId, sprint.id)) ?? sprint, "google", null).catch(() => undefined);
   let sitemap: { submitted: boolean; sitemapUrl: string; error?: string } | null = null;
   if (bool(params, "submitSitemap") ?? true) {
     const sitemapUrl = `${new URL(urlParam(sprint.siteUrl)).origin}/sitemap.xml`;
@@ -700,20 +721,48 @@ export async function gscCheckAccess(env: Env, companyId: string, params: Params
     return { sprintId: sprint.id, serviceAccountEmail: sa.email, hasAccess: true, property, permissionLevel: entry!.permissionLevel, next: "Property selected. Submit the sitemap (gsc-submit-sitemap); rankings pull every morning." };
   }
   const guess = requested ?? `sc-domain:${new URL(urlParam(sprint.siteUrl)).hostname.replace(/^www\./, "")}`;
+  const visibleProperties = sites.map((s) => ({ propertyUrl: s.siteUrl, permissionLevel: s.permissionLevel })).slice(0, 50);
+  const wp = await sprintVerifyRoute(env, sprint);
+  const failure = verifyFailureOf(sprint, "google");
+  const base = { sprintId: sprint.id, serviceAccountEmail: sa.email, hasAccess: false, property: guess, usersLink: gscUsersLink(guess), visibleProperties };
+  // A WordPress site with a Connector that can place verification tags: the agent verifies the site itself; the client email is the fallback.
+  if ((wp.route === "available" || wp.route === "update") && !failure) {
+    const urlProperty = propertyFor(verificationSite({ siteUrl: sprint.siteUrl, domain: false }));
+    const askedAnyway = bool(params, "askClient") ?? false;
+    const steps =
+      wp.route === "available"
+        ? [
+            `gsc-verification-token { sprintId, method: "META", property: "url" } → the exact google-site-verification content for ${urlProperty}.`,
+            `partnersinbiz.crm:wp-verify { siteId: "${wp.siteId}", op: "get" }, then op set with the existing metaTags plus { name: "google-site-verification", content: <the token content> } and a reason.`,
+            "Check the tag on the live home page (check-meta), then gsc-verify-site: the service account becomes a verified owner of the URL-prefix property, adds it to Search Console and submits the sitemap.",
+            "Only if gsc-verify-site (or wp-verify) fails, run gsc-check-access again: it then queues the client email and records why.",
+          ]
+        : [
+            `Site ${wp.siteUrl} runs Connector ${wp.connectorVersion ?? "of unknown version"}: wp-verify needs 1.2. Run partnersinbiz.crm:wp-connector { siteId: "${wp.siteId}", op: "update", reason } first (a Connector older than 1.1 needs one manual zip upload, then you keep it current).`,
+            "Then gsc-verification-token { method: \"META\", property: \"url\" } → wp-verify set (op get first) → check-meta on the live home page → gsc-verify-site.",
+            "Only if that route fails, run gsc-check-access again: it then queues the client email and records why.",
+          ];
+    return {
+      ...base,
+      queued: false,
+      verificationRoute: { route: wp.route === "available" ? "wp-verify" : "wp-connector update, then wp-verify", siteId: wp.siteId, urlProperty, steps },
+      ...(askedAnyway ? { askClientIgnored: "askClient is ignored while the wp-verify route is untried; no client access is needed." } : {}),
+      next: `Do not ask the client: verify the site yourself. ${steps[0]} ${steps[1]}`,
+    };
+  }
   let queued = false;
   if (sprint.clientRef || sprint.siteAccess === "none" || bool(params, "askClient")) {
     await addNeedsYou(env, info, sprint, clientGscAccessItem(sprint, sa.email, guess, taskId ? [taskId] : []));
     queued = true;
   }
   return {
-    sprintId: sprint.id,
-    serviceAccountEmail: sa.email,
-    hasAccess: false,
-    property: guess,
-    usersLink: gscUsersLink(guess),
-    visibleProperties: sites.map((s) => ({ propertyUrl: s.siteUrl, permissionLevel: s.permissionLevel })).slice(0, 50),
+    ...base,
+    queued,
+    ...(failure ? { verificationAttempt: { route: "wp-verify", failed: true, at: failure.at, error: failure.error } } : {}),
     next: queued
-      ? "The email asking the client to add the service account is on the Needs you digest; the plugin re-checks access every morning."
+      ? failure
+        ? `The wp-verify route failed (${failure.error}), so the email asking the client to add the service account is on the Needs you digest; the plugin re-checks access every morning.`
+        : "The email asking the client to add the service account is on the Needs you digest; the plugin re-checks access every morning."
       : "This is one of our own sites: verify it with gsc-verification-token → repo change → gsc-verify-site (no person needed).",
   };
 }

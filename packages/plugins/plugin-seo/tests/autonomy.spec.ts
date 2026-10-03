@@ -29,8 +29,10 @@ import { blockTask, createTaskIssue, type MaterialiseContext } from "../src/serv
 import { addNeedsYou, recheckNeedsYou, resolveNeedsYou } from "../src/service/needs-you.js";
 import { checkChangeScopeTool, getSiteLinkTool, linkSiteTool } from "../src/service/site.js";
 import { needsYouAddTool } from "../src/service/needs-you.js";
-import { autoLinkWordPressSite } from "../src/service/wordpress.js";
-import { evaluateWordPressChange } from "../src/engine/site-change.js";
+import { autoLinkWordPressSite, setVerifyFailure } from "../src/service/wordpress.js";
+import { verificationKindOf, verifyRouteOf, versionAtLeast } from "../src/engine/verify-route.js";
+import { indexNowKeyTool, bingAddSiteTool } from "../src/service/indexing.js";
+import { evaluateWordPressChange, SEO_SCOPE_CATEGORIES, WORDPRESS_SCOPE_CATEGORIES } from "../src/engine/site-change.js";
 import { wpConnectorItem } from "../src/engine/items.js";
 import { siteSection } from "../src/engine/copy.js";
 import { registerCrmSiteProjection } from "@partnersinbiz/pib-plugin-kit";
@@ -800,17 +802,37 @@ describe("link-site: wordpress mode", () => {
     expect((host.digests[0]!.items as Row[])[0]!.status).toBe("done");
   });
 
+  it("closes a task hand-off line when its task is later finished by the agent, and keeps it while the task is open", async () => {
+    // AHS Law: the agent handed PAR-91 to a person, then completed it itself; the line stayed open for days.
+    const host = fakeHost({ sprint: CLIENT_SPRINT, tasks: [taskRow({ id: "t-open", status: "blocked" }), taskRow({ id: "t-fin", status: "done" })] });
+    const info = await companyInfo(host.env, "co-1");
+    const db = await import("../src/db.js");
+    const sprint = (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!;
+    for (const id of ["t-open", "t-fin"]) {
+      await addNeedsYou(host.env, info, sprint, { key: `task:${id}`, kind: "task", title: `Task ${id}`, why: "w", steps: [], links: [], after: "a", check: "manual", taskIds: [id] });
+    }
+    // A custom-keyed ask that names a finished task is still a real ask for a person.
+    await addNeedsYou(host.env, info, sprint, { key: "par131-duplicate-og-plugin", kind: "task", title: "Deactivate a plugin", why: "w", steps: [], links: [], after: "a", check: "manual", taskIds: ["t-fin"] });
+    // A plain manual item without tasks is never auto-closed.
+    await addNeedsYou(host.env, info, sprint, { key: "gbp_claim", kind: "grant", title: "Claim the profile", why: "w", steps: [], links: [], after: "a", check: "manual" });
+    expect(await recheckNeedsYou(host.env, info, sprint)).toBe(1);
+    const items = host.digests[host.digests.length - 1]!.items as Row[];
+    expect(items.map((i) => [i.key, i.status])).toEqual([["task:t-open", "open"], ["task:t-fin", "done"], ["par131-duplicate-og-plugin", "open"], ["gbp_claim", "open"]]);
+    expect(String(items[1]!.note)).toMatch(/task is done or skipped/);
+  });
+
   it("get-site-link explains the Connector flow by change policy", async () => {
     const host = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1" }, sites: [siteRow()] });
     const link = await getSiteLinkTool(host.env, "co-1", { sprintId: "sp-1" });
-    for (const tool of ["wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-health", "wp-log", "wp-undo", "wp-plugins"]) expect(link.next).toContain(`partnersinbiz.crm:${tool}`);
+    for (const tool of ["wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-health", "wp-log", "wp-undo", "wp-plugins", "wp-media", "wp-content", "wp-connector"]) expect(link.next).toContain(`partnersinbiz.crm:${tool}`);
+    expect(link.next).toMatch(/run `wp-connector` update before you park the task on Needs you|run wp-connector update|`wp-connector` update before you park/);
     expect(link.next).toContain('siteId "site-1"');
     expect(link.next).toMatch(/apply SEO fields, schema, redirects/);
     expect(link.site?.connected).toBe(true);
     const prOnly = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1", change_policy: "pr_only" }, sites: [siteRow({ connector_status: "none" })] });
     const next = (await getSiteLinkTool(prOnly.env, "co-1", { sprintId: "sp-1" })).next;
     expect(next).toMatch(/key wp_connector, then block-task/);
-    expect(next).toMatch(/put it on Needs you \(needs-you-add kind task/);
+    expect(next).toMatch(/Needs you \(needs-you-add kind task/);
   });
 
   it("needs-you-add wp_connector writes the standard item; refused on a sprint without WordPress", async () => {
@@ -845,9 +867,36 @@ describe("check-change-scope: wordpress", () => {
     expect(evaluateWordPressChange("merge_seo_scope", seo)).toMatchObject({ decision: "apply", verdict: "apply", siteAccess: "wordpress", inScope: true });
     expect(evaluateWordPressChange("full", seo).decision).toBe("apply");
     expect(evaluateWordPressChange("pr_only", seo)).toMatchObject({ decision: "pr_only", inScope: true });
-    const content = evaluateWordPressChange("merge_seo_scope", [...seo, { path: "wp:page:/new-service", category: "new_content" }]);
-    expect(content.decision).toBe("pr_only");
-    expect(content.outOfScope.map((o) => o.path)).toEqual(["wp:page:/new-service"]);
+    // 0.11.0: alt text, images, page copy and new draft pages are the agent's now.
+    const wider = [
+      ...seo,
+      { path: "wp:images:/about", category: "image_alt" },
+      { path: "wp:media:/about", category: "media" },
+      { path: "wp:content:/about", category: "page_copy" },
+      { path: "wp:content:/about", category: "internal_links" },
+      { path: "wp:page:/new-service", category: "new_content" },
+    ];
+    expect(evaluateWordPressChange("merge_seo_scope", wider)).toMatchObject({ decision: "apply", inScope: true, outOfScope: [] });
+    expect(evaluateWordPressChange("pr_only", wider).decision).toBe("pr_only");
+    for (const category of ["image_alt", "internal_links", "new_content", "page_copy", "media"]) expect(WORDPRESS_SCOPE_CATEGORIES).toContain(category);
+    // Repo sprints keep their own scope.
+    expect(SEO_SCOPE_CATEGORIES).not.toContain("page_copy");
+    expect(SEO_SCOPE_CATEGORIES).not.toContain("media");
+    // Still a person, whatever the policy.
+    for (const [path, reason] of [
+      ["wp:plugins:hunt-auctions", /plugin installs and rollbacks/],
+      ["wp:delete:/old-page", /deleting anything/],
+      ["wp:publish-existing:/about", /Connector did not create/],
+      ["wp:theme:functions", /theme changes go to a person/],
+      ["wp:settings:blogname", /settings and users/],
+    ] as const) {
+      const verdict = evaluateWordPressChange("full", [{ path, category: "page_copy" }]);
+      expect(verdict.decision, path).toBe("pr_only");
+      expect(verdict.outOfScope[0]!.reason, path).toMatch(reason);
+    }
+    const unknown = evaluateWordPressChange("merge_seo_scope", [{ path: "wp:menus", category: "other" }]);
+    expect(unknown.decision).toBe("pr_only");
+    expect(unknown.outOfScope[0]!.reason).toMatch(/ask for the asset, not for a wp-admin edit/);
     const plugin = evaluateWordPressChange("full", [{ path: "wp:plugins:hunt-auctions", category: "other" }]);
     expect(plugin).toMatchObject({ decision: "pr_only" });
     expect(plugin.outOfScope[0]!.reason).toMatch(/plugin installs/);
@@ -872,6 +921,14 @@ describe("WordPress copy, checklist and Needs you item", () => {
     expect(text).toContain("siteId `site-1`");
     expect(text).toContain("partnersinbiz.crm:wp-seo");
     expect(text).toContain("references/wordpress.md");
+    for (const tool of ["wp-media", "wp-content", "wp-connector"]) expect(text).toContain(`partnersinbiz.crm:${tool}`);
+    // 0.11.0 change policy: what the agent does now, what stays with a person, and update before parking.
+    expect(text).toMatch(/image alt text, featured images, page copy edits and new draft pages yourself, and publish your own drafts when the task says so/);
+    expect(text).toMatch(/Still Needs you: plugin installs and rollbacks, deleting anything, publishing anything the Connector did not create, a site's theme or settings/);
+    expect(text).toMatch(/ask for the asset, not for a wp-admin edit/);
+    expect(text).toMatch(/Never hotlink an image you have no rights to/);
+    expect(text).toMatch(/Before you park a task because the Connector cannot do something.*wp-connector.* update/);
+    expect(text).not.toMatch(/New pages, copy and alt text are wp-admin edits/);
     expect(siteSection({ access: "wordpress", siteId: "site-1", repoUrl: null, defaultBranch: "main", branch: "b", changePolicy: "pr_only", hosting: null }).join(" ")).toMatch(/do not apply anything/);
   });
 
@@ -944,5 +1001,248 @@ describe("CRM site projection", () => {
     await handlers.get("plugin.partnersinbiz.crm.site.deleted")!({ companyId: "co-1", payload: { id: "site-1" } });
     expect(executes[1]!.sql).toContain("SET deleted = true");
     expect(executes[1]!.params).toEqual(["site-1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.12.0: verification through the Connector (wp-verify)
+// ---------------------------------------------------------------------------
+
+const WP_SPRINT: Row = { ...CLIENT_SPRINT, site_access: "wordpress", site_id: "site-1", site_url: "https://www.huntandgun.co.za" };
+const NO_ACCESS = async (url: string): Promise<Response> => (url.startsWith("https://oauth2") ? json({ access_token: "sa-token", expires_in: 3600 }) : json({ siteEntry: [] }));
+
+describe("verification through the Connector: the rules", () => {
+  it("wp-verify needs a connected Connector 1.2 or newer", () => {
+    expect(versionAtLeast("1.2.0", "1.2.0")).toBe(true);
+    expect(versionAtLeast("1.10.0", "1.2.0")).toBe(true);
+    expect(versionAtLeast("1.1.9", "1.2.0")).toBe(false);
+    expect(versionAtLeast(null, "1.2.0")).toBe(false);
+    expect(verifyRouteOf({ siteAccess: "wordpress", connectorStatus: "connected", connectorVersion: "1.2.0" })).toBe("available");
+    expect(verifyRouteOf({ siteAccess: "wordpress", connectorStatus: "connected", connectorVersion: "1.1.0" })).toBe("update");
+    expect(verifyRouteOf({ siteAccess: "wordpress", connectorStatus: "connected", connectorVersion: null })).toBe("update");
+    expect(verifyRouteOf({ siteAccess: "wordpress", connectorStatus: "pending", connectorVersion: "1.2.0" })).toBe("none");
+    expect(verifyRouteOf({ siteAccess: "repo", connectorStatus: "connected", connectorVersion: "1.2.0" })).toBe("none");
+  });
+
+  it("recognises verification items by key and title, and leaves the real grants alone", () => {
+    expect(verificationKindOf({ key: "gsc_access", title: "Ask Acme to add our service account in Search Console" })).toBe("google");
+    expect(verificationKindOf({ key: "indexnow_key_file", title: "Upload the IndexNow key file" })).toBe("indexnow");
+    expect(verificationKindOf({ key: "task:bing-verification-meta", title: "Add the Bing msvalidate.01 meta tag" })).toBe("bing");
+    expect(verificationKindOf({ key: "bing_verification_file", title: "Add BingSiteAuth.xml" })).toBe("bing");
+    for (const key of ["bing_key", "service_account", "github_token", "site_project", "wp_connector", "gsc_dns", "gsc_reconnect"]) expect(verificationKindOf({ key, title: "Add the Bing key for Search Console" }), key).toBeNull();
+    expect(verificationKindOf({ key: "task:purge-cache", title: "Purge the site cache" })).toBeNull();
+  });
+
+  it("check-change-scope: verification_file is in scope only with a Connector that has wp-verify", () => {
+    const change = [{ path: "wp:verify:/BingSiteAuth.xml", category: "verification_file" }];
+    expect(WORDPRESS_SCOPE_CATEGORIES).toContain("verification_file");
+    expect(evaluateWordPressChange("merge_seo_scope", change, { verify: "available" })).toMatchObject({ decision: "apply", inScope: true });
+    const old = evaluateWordPressChange("merge_seo_scope", change, { verify: "update" });
+    expect(old).toMatchObject({ decision: "pr_only", inScope: false });
+    expect(old.outOfScope[0]!.reason).toMatch(/wp-connector.* update first/);
+    expect(evaluateWordPressChange("full", change, { verify: "none" }).outOfScope[0]!.reason).toMatch(/connected Connector 1\.2/);
+    expect(evaluateWordPressChange("pr_only", change, { verify: "available" }).decision).toBe("pr_only");
+  });
+});
+
+describe("check-change-scope tool: verification_file on WordPress", () => {
+  const change = [{ path: "wp:verify:/abcd1234.txt", category: "verification_file" }];
+
+  it("applies on Connector 1.2, points to wp-connector update on 1.0", async () => {
+    const fresh = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })] });
+    expect(await checkChangeScopeTool(fresh.env, "co-1", { sprintId: "sp-1", changes: change })).toMatchObject({ decision: "apply", verifyRoute: "available" });
+    const old = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.0.0" })] });
+    const verdict = await checkChangeScopeTool(old.env, "co-1", { sprintId: "sp-1", changes: change });
+    expect(verdict).toMatchObject({ decision: "pr_only", verifyRoute: "update" });
+    expect(verdict.outOfScope[0]!.reason).toMatch(/older Connector/);
+  });
+
+  it("repo sprints keep verification_file as before", async () => {
+    const repo = fakeHost({ sprint: { site_access: "repo", site_project_id: "site-proj" } });
+    expect(await checkChangeScopeTool(repo.env, "co-1", { sprintId: "sp-1", changes: [{ path: "public/BingSiteAuth.xml", category: "verification_file" }], checks: "passed" })).toMatchObject({ decision: "merge" });
+  });
+});
+
+describe("gsc-check-access: three cases", () => {
+  it("WordPress + Connector 1.2: no client email, the exact route instead", async () => {
+    const host = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })], fetch: NO_ACCESS });
+    const result = (await gscCheckAccess(host.env, "co-1", { sprintId: "sp-1", askClient: true })) as Row;
+    expect(result).toMatchObject({ hasAccess: false, queued: false });
+    expect(host.digests).toHaveLength(0);
+    expect(host.issuesCreated).toHaveLength(0);
+    const route = result.verificationRoute as { steps: string[]; siteId: string; urlProperty: string };
+    expect(route).toMatchObject({ route: "wp-verify", siteId: "site-1", urlProperty: "https://www.huntandgun.co.za/" });
+    expect(route.steps.join(" ")).toMatch(/gsc-verification-token.*META.*url[\s\S]*wp-verify[\s\S]*gsc-verify-site/);
+    expect(result.askClientIgnored).toBeDefined();
+    expect(String(result.next)).toMatch(/Do not ask the client/);
+  });
+
+  it("WordPress + older Connector: run wp-connector update first, still no client email", async () => {
+    const host = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.1.0" })], fetch: NO_ACCESS });
+    const result = (await gscCheckAccess(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect(result).toMatchObject({ hasAccess: false, queued: false });
+    expect(host.digests).toHaveLength(0);
+    const route = result.verificationRoute as { steps: string[]; route: string };
+    expect(route.route).toMatch(/wp-connector update, then wp-verify/);
+    expect(route.steps[0]).toMatch(/wp-connector.*update/);
+    expect(route.steps[0]).toMatch(/1\.1\.0/);
+  });
+
+  it("WordPress: the client email is queued once the wp-verify route has failed, and says why", async () => {
+    const host = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })], fetch: NO_ACCESS });
+    const db = await import("../src/db.js");
+    await setVerifyFailure(host.env, (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!, "google", "Google could not find the meta tag");
+    const result = (await gscCheckAccess(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect(result).toMatchObject({ queued: true, verificationAttempt: { route: "wp-verify", failed: true, error: "Google could not find the meta tag" } });
+    expect(String(result.next)).toMatch(/wp-verify route failed \(Google could not find the meta tag\)/);
+    expect(host.digests[0]!.items as Row[]).toEqual([expect.objectContaining({ key: "gsc_access", kind: "message" })]);
+  });
+
+  it("repo and no-repo client sprints: unchanged, the email is queued straight away", async () => {
+    for (const sprint of [{ ...CLIENT_SPRINT, site_access: "repo", site_project_id: "site-proj" }, { ...CLIENT_SPRINT, site_access: "none" }]) {
+      const host = fakeHost({ config: SA_CONFIG, sprint, fetch: NO_ACCESS });
+      const result = (await gscCheckAccess(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+      expect(result).toMatchObject({ hasAccess: false, queued: true });
+      expect(result).not.toHaveProperty("verificationRoute");
+      expect((host.digests[0]!.items as Row[])[0]).toMatchObject({ key: "gsc_access" });
+    }
+    // A WordPress sprint whose Connector is not connected has no wp-verify route either.
+    const pending = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_status: "pending", connector_version: "1.2.0" })], fetch: NO_ACCESS });
+    expect(await gscCheckAccess(pending.env, "co-1", { sprintId: "sp-1" })).toMatchObject({ queued: true });
+  });
+
+  it("gsc-verify-site records a failed attempt on a WordPress sprint, and a success clears it", async () => {
+    let webResource = 400;
+    const host = fakeHost({
+      config: SA_CONFIG,
+      sprint: WP_SPRINT,
+      sites: [siteRow({ connector_version: "1.2.0" })],
+      fetch: async (url) => {
+        if (url.startsWith("https://oauth2")) return json({ access_token: "sa-token", expires_in: 3600 });
+        if (url.endsWith("/siteVerification/v1/token")) return json({ method: "META", token: '<meta name="google-site-verification" content="abc123" />' });
+        if (url.includes("/siteVerification/v1/webResource")) return webResource === 200 ? json({ id: "x", owners: [SA_EMAIL] }) : json({ error: { message: "The necessary verification token could not be found" } }, 400);
+        return json({});
+      },
+    });
+    const token = (await gscVerificationToken(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect(token.wordpress).toMatchObject({ route: "available", tool: "partnersinbiz.crm:wp-verify", siteId: "site-1", set: { metaTags: [{ name: "google-site-verification", content: "abc123" }] } });
+    expect(String(token.next)).toMatch(/wp-verify.*siteId site-1.*op get, then op set/);
+    await expect(gscVerifySite(host.env, "co-1", agentActor, { sprintId: "sp-1" })).rejects.toThrow(/could not verify/);
+    expect(((host.sprint.verification as Row).wpVerifyFailures as Row).google).toMatchObject({ error: expect.stringContaining("token could not be found") });
+    webResource = 200;
+    await gscVerifySite(host.env, "co-1", agentActor, { sprintId: "sp-1" });
+    expect((host.sprint.verification as Row).wpVerifyFailures).toEqual({});
+  });
+});
+
+describe("indexnow-key and bing-add-site on WordPress", () => {
+  it("point at wp-verify with the exact file or tag, never at the repo or Needs you", async () => {
+    const host = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })], fetch: async (url) => (url.includes("GetUserSites") ? json({ d: [{ Url: "https://www.huntandgun.co.za/", IsVerified: false, AuthenticationCode: "ABC123DEF456" }] }) : json({ d: {} })) });
+    const key = (await indexNowKeyTool(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect(key.live).toBe(false);
+    expect((key.wordpress as Row).tool).toBe("partnersinbiz.crm:wp-verify");
+    expect((key.wordpress as { set: { files: Array<{ path: string; content: string }> } }).set.files[0]).toEqual({ path: `/${key.key}.txt`, content: key.key });
+    expect(String(key.next)).toMatch(/wp-verify.*op get.*existing files/);
+    const bing = (await bingAddSiteTool(host.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect((bing.wordpress as { set: unknown }).set).toEqual({ metaTags: [{ name: "msvalidate.01", content: "ABC123DEF456" }] });
+    expect(String(bing.next)).toMatch(/wp-verify/);
+    expect(String(bing.next)).toMatch(/Do not put this on Needs you/);
+    expect(host.digests).toHaveLength(0);
+    const old = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.0.0" })] });
+    expect(String(((await indexNowKeyTool(old.env, "co-1", { sprintId: "sp-1" })) as Row).next)).toMatch(/wp-connector update first/);
+    const repo = fakeHost({ config: SA_CONFIG, sprint: { site_access: "repo", site_project_id: "site-proj" } });
+    const repoKey = (await indexNowKeyTool(repo.env, "co-1", { sprintId: "sp-1" })) as Row;
+    expect(repoKey).not.toHaveProperty("wordpress");
+    expect(String(repoKey.next)).toMatch(/through the site repo/);
+  });
+});
+
+describe("Needs you: verification on WordPress sites that can self-serve", () => {
+  const item = { sprintId: "sp-1", kind: "task", title: "Add the IndexNow key file to the site root", why: "The key file returns 404.", after: "Runs request-indexing.", key: "indexnow_key_file" };
+
+  it("refuses to raise indexnow, bing and Search Console items while wp-verify is available (or one update away)", async () => {
+    for (const version of ["1.2.0", "1.1.0"]) {
+      const host = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: version })] });
+      await expect(needsYouAddTool(host.env, "co-1", agentActor, item)).rejects.toThrow(/Not a Needs you item[\s\S]*wp-verify[\s\S]*IndexNow/);
+      await expect(needsYouAddTool(host.env, "co-1", agentActor, { ...item, key: "bing_verification_meta", title: "Add the Bing msvalidate.01 meta tag" })).rejects.toThrow(/Bing verification/);
+      await expect(needsYouAddTool(host.env, "co-1", agentActor, { ...item, key: "gsc_access", title: "Give the service account access in Search Console" })).rejects.toThrow(/Search Console access/);
+      expect(host.digests).toHaveLength(0);
+    }
+    const old = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.1.0" })] });
+    await expect(needsYouAddTool(old.env, "co-1", agentActor, item)).rejects.toThrow(/Run the CRM's wp-connector update first/);
+  });
+
+  it("accepts the item once wpVerifyFailed says what failed, and records it on the sprint", async () => {
+    const host = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })] });
+    const result = await needsYouAddTool(host.env, "co-1", agentActor, { ...item, wpVerifyFailed: "wp-verify set answered pib_unsafe: path not allowed" });
+    expect(result).toMatchObject({ added: true });
+    expect(((host.sprint.verification as Row).wpVerifyFailures as Row).indexnow).toMatchObject({ error: expect.stringContaining("pib_unsafe") });
+    // A failure for one kind does not open the others.
+    await expect(needsYouAddTool(host.env, "co-1", agentActor, { ...item, key: "bing_verification_meta", title: "Add the Bing msvalidate.01 meta tag" })).rejects.toThrow(/Not a Needs you item/);
+  });
+
+  it("does not touch repo sprints, sites without a connected Connector, the Bing API key or other items", async () => {
+    const repo = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "repo", site_project_id: "site-proj" } });
+    expect(await needsYouAddTool(repo.env, "co-1", agentActor, item)).toMatchObject({ added: true });
+    const pending = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_status: "pending", connector_version: "1.2.0" })] });
+    expect(await needsYouAddTool(pending.env, "co-1", agentActor, item)).toMatchObject({ added: true });
+    const wp = fakeHost({ config: SA_CONFIG, sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })] });
+    expect(await needsYouAddTool(wp.env, "co-1", agentActor, { sprintId: "sp-1", key: "bing_key" })).toMatchObject({ added: true, standard: true });
+    expect(await needsYouAddTool(wp.env, "co-1", agentActor, { ...item, key: "task:merchant-center", title: "Create the Merchant Center account" })).toMatchObject({ added: true });
+  });
+
+  it("the daily check closes existing items as superseded, keeps them as history and hands the task back", async () => {
+    const host = fakeHost({
+      sprint: WP_SPRINT,
+      sites: [siteRow({ connector_version: "1.1.0" })],
+      tasks: [taskRow({ id: "t-9", owner: "agent", status: "blocked", issue_id: "issue-9", task_type: "indexing-setup" })],
+    });
+    const db = await import("../src/db.js");
+    const info = { ...(await companyInfo(host.env, "co-1")), today: "2026-09-26" };
+    const sprint = (await db.getSprint(host.env.ctx.db, "co-1", "sp-1"))!;
+    const manual = (key: string, title: string, extra: Partial<NewNeedsYouItem> = {}): NewNeedsYouItem => ({ key, kind: "task", title, why: "parked", steps: ["Add it"], links: [], after: "Carries on.", check: "manual", taskIds: ["t-9"], ...extra });
+    await addNeedsYou(host.env, info, sprint, manual("indexnow_key_file", "Upload the IndexNow key file"));
+    await addNeedsYou(host.env, info, sprint, manual("bing_verification_meta", "Add the Bing msvalidate.01 meta tag"));
+    await addNeedsYou(host.env, info, sprint, manual("gsc_access", "Ask Hunt and Gun to add our service account in Search Console", { kind: "message", check: "gsc_access" }));
+    await addNeedsYou(host.env, info, sprint, manual("task:merchant-center", "Create the Merchant Center account"));
+    expect((host.digests[0]!.items as Row[]).map((i) => i.status)).toEqual(["open", "open", "open", "open"]);
+
+    const resolved = await recheckNeedsYou(host.env, info, sprint);
+    expect(resolved).toBe(3);
+    const items = host.digests[0]!.items as Row[];
+    expect(items.map((i) => [i.key, i.status])).toEqual([["indexnow_key_file", "done"], ["bing_verification_meta", "done"], ["gsc_access", "done"], ["task:merchant-center", "open"]]);
+    expect(items[0]).toMatchObject({ doneBy: "checked by the SEO plugin", note: expect.stringMatching(/Superseded[\s\S]*wp-verify/) });
+    expect(host.issueUpdates.some((u) => u.id === "issue-9" && u.patch.status === "todo")).toBe(true);
+    expect(host.comments.some((c) => c.id === "issue-9" && /Superseded/.test(c.body))).toBe(true);
+  });
+
+  it("the daily check leaves items on Needs you once the wp-verify route failed, or on a repo sprint", async () => {
+    const wp = fakeHost({ sprint: WP_SPRINT, sites: [siteRow({ connector_version: "1.2.0" })] });
+    const db = await import("../src/db.js");
+    const info = { ...(await companyInfo(wp.env, "co-1")), today: "2026-09-26" };
+    const sprint = (await db.getSprint(wp.env.ctx.db, "co-1", "sp-1"))!;
+    const failed = await setVerifyFailure(wp.env, sprint, "indexnow", "file rejected");
+    await addNeedsYou(wp.env, info, failed, { key: "indexnow_key_file", kind: "task", title: "Upload the IndexNow key file", why: "w", steps: [], links: [], after: "a", check: "manual", taskIds: [] });
+    expect(await recheckNeedsYou(wp.env, info, failed)).toBe(0);
+    expect((wp.digests[0]!.items as Row[])[0]!.status).toBe("open");
+    const repo = fakeHost({ sprint: { ...CLIENT_SPRINT, site_access: "repo", site_project_id: "site-proj" } });
+    const repoSprint = (await db.getSprint(repo.env.ctx.db, "co-1", "sp-1"))!;
+    await addNeedsYou(repo.env, info, repoSprint, { key: "indexnow_key_file", kind: "task", title: "Upload the IndexNow key file", why: "w", steps: [], links: [], after: "a", check: "manual", taskIds: [] });
+    expect(await recheckNeedsYou(repo.env, info, repoSprint)).toBe(0);
+  });
+});
+
+describe("setup checklist: verification on WordPress", () => {
+  it("says the agent verifies Search Console and Bing itself through the Connector", () => {
+    const base = { siteName: "Hunt and Gun", siteUrl: "https://huntandgun.co.za", isClient: true, siteAccess: "wordpress", siteProjectId: null, repoUrl: null, changePolicy: "merge_seo_scope", autopilotMode: "safe", property: null, gscVia: null, bingVerified: false };
+    const wordpress = { url: "https://huntandgun.co.za", summary: "WordPress · Yoast SEO · Connector connected", connected: true, clientName: "Hunt and Gun", clientPath: "/PIB/crm?client=company:crm-1" };
+    const facts = { prefix: "PIB", settingsPath: null, settingsSaved: true, serviceAccount: { configured: true, email: SA_EMAIL, error: null }, agent: null, pagespeedKey: false, bingKey: true };
+    const find = (verifyRoute: "available" | "update" | "none", key: string) => buildSetupChecklist({ ...facts, sprint: { ...base, wordpress: { ...wordpress, verifyRoute } } }).find((i) => i.key === key)!;
+    expect(find("available", "gsc_property").detail).toMatch(/verifies the site itself through the PiB Connector.*wp-verify.*gsc-verify-site/);
+    expect(find("available", "gsc_property").steps).toEqual([]);
+    expect(find("update", "gsc_property").detail).toMatch(/after wp-connector update/);
+    expect(find("available", "bing_site").detail).toMatch(/bing-add-site → wp-verify → bing-verify-site/);
+    expect(find("none", "gsc_property").detail).toMatch(/client adds the service account/);
+    expect(find("none", "gsc_property").steps.join(" ")).toMatch(/Send the client the email/);
   });
 });

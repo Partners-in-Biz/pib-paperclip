@@ -18,7 +18,7 @@ import {
   type AgentAvailability,
   type TaskStatus,
 } from "../engine/sprint.js";
-import { dueDayFor, phaseForWeek } from "../templates/outrank-90.js";
+import { dueDayFor, OUTRANK_90, phaseForWeek } from "../templates/outrank-90.js";
 import {
   actorId,
   actorLabel,
@@ -40,6 +40,7 @@ import {
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { resolveAgent } from "./agent.js";
+import { assertPreviewLinksChecked } from "./preview.js";
 import { addNeedsYou } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
@@ -112,7 +113,7 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
     await addNeedsYou(env, info, sprint, linkSiteItem(info, sprint, [task.id]));
     return null;
   }
-  const projectId = code && sprint.siteAccess === "repo" && sprint.siteProjectId ? sprint.siteProjectId : mc.projectId ?? sprint.projectId;
+  const projectId = taskProjectId(sprint, code, mc.projectId);
   if (!(await db.claimTaskForIssue(env.ctx.db, sprint.companyId, task.id))) return null;
   try {
     const assignment = decideAssignee({
@@ -231,6 +232,7 @@ export async function onIssueUpdated(env: Env, companyId: string, issueId: strin
     await publishTaskDone(env, companyId, task.id, mergeTaskId);
     await releaseAnnouncements(env, companyId, task.id);
   }
+  if (result.changed && (result.status === "done" || result.status === "skipped" || result.status === "blocked") && task.status !== result.status) await openNextQueuedTask(env, companyId, task);
 }
 
 /** GitHub pull request links in a task's sign-off hand-off. */
@@ -407,6 +409,7 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
   // Social hears about a published page only once it answers 200; a merge task releases what waited for it.
   const announcement = await publishTaskDone(env, companyId, task.id);
   await releaseAnnouncements(env, companyId, task.id);
+  await openNextQueuedTask(env, companyId, task);
   return {
     ...taskView({ ...task, status: "done", completedAt: now }),
     issueClosed,
@@ -417,6 +420,7 @@ export async function completeTask(env: Env, companyId: string, actor: Actor, pa
 export async function blockTask(env: Env, companyId: string, actor: Actor, params: Params) {
   const task = await requireTask(env, companyId, params);
   if ((TERMINAL_TASK_STATUSES as string[]).includes(task.status)) throw new SeoError(`This task is already ${task.status}`);
+  await assertPreviewLinksChecked(env, companyId, params);
   const { sprint, info } = await loadSprintContext(env, companyId, task.sprintId);
   const reason = reqStr(params, "reason", { max: 4000 });
   const humanAsk = reqStr(params, "humanAsk", { max: 4000 });
@@ -470,6 +474,7 @@ export async function blockTask(env: Env, companyId: string, actor: Actor, param
       }
     }
   }
+  await openNextQueuedTask(env, companyId, task);
   return {
     ...taskView({ ...task, status, blockerReason: review ? null : reason, humanAsk }),
     handedTo: review
@@ -560,28 +565,149 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
   };
 }
 
+/** Position of a task in the plan (template order); tasks added by hand come after the template's. */
+export function planOrder(task: Pick<db.SprintTask, "templateKey">): number {
+  const at = task.templateKey ? OUTRANK_90.tasks.findIndex((t) => t.templateKey === task.templateKey) : -1;
+  return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+}
+
+export function inPlanOrder<T extends Pick<db.SprintTask, "templateKey" | "createdAt" | "title">>(tasks: T[]): T[] {
+  return [...tasks].sort((a, b) => planOrder(a) - planOrder(b) || String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")) || a.title.localeCompare(b.title));
+}
+
 /**
- * After the site repo is linked: open code tasks whose issue sits outside the
- * site project move there (the old issue is cancelled with a pointer), so the
- * agent runs them in the repo workspace. Work in progress stays put.
+ * Start now opens a week one task at a time, in plan order (later tasks build on earlier ones: "Record the
+ * keywords" needs the picked ones). The rest are due but wait without an issue; when the open one finishes
+ * this opens the next. It also opens when the task is parked on a person (blocked, sign-off), so waiting for a
+ * client does not hold the rest of the week. Nothing happens while another task of that week is held by an agent.
+ */
+export async function openNextQueuedTask(env: Env, companyId: string, finished: Pick<db.SprintTask, "sprintId" | "week" | "id">): Promise<string | null> {
+  try {
+    const ctx = await loadSprintContext(env, companyId, finished.sprintId);
+    if (ctx.sprint.status !== "active" || !ctx.sprint.rootIssueId) return null;
+    const tasks = await db.listTasks(env.ctx.db, companyId, finished.sprintId, { week: finished.week });
+    // Work an agent holds counts; a task waiting on a person (blocked, sign-off, Needs you) does not hold the queue.
+    const inFlight = tasks.some((t) => t.id !== finished.id && t.issueId && (t.status === "not_started" || t.status === "in_progress") && (!t.assigneeKind || t.assigneeKind === "agent" || t.assigneeKind === "unassigned"));
+    if (inFlight) return null;
+    const next = inPlanOrder(tasks).find((t) => t.status === "not_started" && !t.issueId && t.dueDay != null && t.dueDay <= ctx.clock.day);
+    if (!next) return null;
+    const result = await materialiseDueTasks(
+      env,
+      { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId },
+      { onlyTaskIds: [next.id] },
+    );
+    return result.created > 0 ? next.id : null;
+  } catch (error) {
+    env.ctx.logger.info("SEO next queued task not opened", { sprintId: finished.sprintId, error: errorMessage(error) });
+    return null;
+  }
+}
+
+/** Weeks whose queued tasks have nothing agent-held in front of them (e.g. the open task was parked on a client): open the next one. Runs from the 5-minute job. */
+export async function advanceQueuedWeeks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT DISTINCT q.company_id, q.sprint_id, q.week
+       FROM ${db.t("sprint_tasks")} q JOIN ${db.t("sprints")} s ON s.id = q.sprint_id
+      WHERE s.status = 'active' AND q.status = 'not_started' AND q.issue_id IS NULL AND q.due_day IS NOT NULL
+        AND EXISTS (SELECT 1 FROM ${db.t("sprint_tasks")} o WHERE o.sprint_id = q.sprint_id AND o.week = q.week AND o.issue_id IS NOT NULL)
+      LIMIT 50`,
+  );
+  let opened = 0;
+  for (const row of rows) {
+    if (await openNextQueuedTask(env, String(row.company_id), { sprintId: String(row.sprint_id), week: Number(row.week), id: "" })) opened += 1;
+  }
+  return opened;
+}
+
+/** Most tasks one "start now" call opens; a whole week of the plan is far below this. */
+const START_NOW_LIMIT = 25;
+
+/**
+ * Pull upcoming tasks forward: one task (taskId) or every upcoming task of a
+ * week (week) becomes due today and gets its issue at once, instead of waiting
+ * for its day. The plan itself (weeks, phases, other tasks) does not move.
+ * People decide the pace; an agent may only do it when the sprint's autopilot is full.
+ */
+export async function startTasksNow(env: Env, companyId: string, actor: Actor, params: Params) {
+  const sprintId = reqStr(params, "sprintId");
+  const taskId = str(params, "taskId", { max: 80 });
+  const week = num(params, "week", { integer: true, min: 0, max: 200 });
+  if (!taskId && week == null) throw new SeoError("Send taskId (one task) or week (every upcoming task of that week).");
+  if (taskId && week != null) throw new SeoError("Send taskId or week, not both.");
+  const ctx = await loadSprintContext(env, companyId, sprintId);
+  assertWritable(ctx.sprint);
+  if (actor.kind === "agent" && ctx.sprint.autopilotMode !== "full") {
+    throw new SeoError("Only a person can start tasks early unless the sprint's autopilot is full. The plan follows its dates; ask the owner to press Start now on the SEO page.");
+  }
+  if (ctx.sprint.status === "paused") throw new SeoError("This sprint is paused. Resume it first; nothing starts while it is paused.");
+  if (!ctx.sprint.rootIssueId) throw new SeoError("The sprint has no root issue yet, so task issues cannot be opened.");
+  const today = ctx.clock.day;
+  const open = await db.listTasks(env.ctx.db, companyId, sprintId, { status: ["not_started"] });
+  const isUpcoming = (t: db.SprintTask) => t.dueDay != null && t.dueDay > today;
+  const wanted = taskId ? open.filter((t) => t.id === taskId) : open.filter((t) => t.week === week);
+  if (taskId && wanted.length === 0) {
+    const task = await db.getTask(env.ctx.db, companyId, taskId);
+    if (!task || task.sprintId !== sprintId) throw new SeoError("No such task on this sprint.");
+    throw new SeoError(`This task is already ${task.status.replace(/_/g, " ")}; only tasks that have not started can be started early.`);
+  }
+  const upcoming = wanted.filter(isUpcoming);
+  const alreadyDue = wanted.length - upcoming.length;
+  const picked = inPlanOrder(upcoming).slice(0, START_NOW_LIMIT);
+  if (picked.length === 0) {
+    return { sprintId, started: 0, tasks: [], alreadyDue, note: alreadyDue > 0 ? "Those tasks are already due; the daily run or the agent has them." : "Nothing upcoming to start." };
+  }
+  const dueDay = today <= 0 ? null : today;
+  for (const task of picked) await db.updateTask(env.ctx.db, companyId, task.id, { due_day: dueDay });
+  const materialised = await materialiseDueTasks(
+    env,
+    { info: ctx.info, sprint: ctx.sprint, day: today, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId },
+    // One task at a time for a week (the next opens when it finishes); a single task starts on its own.
+    { onlyTaskIds: [picked[0]!.id] },
+  );
+  const fresh = await db.listTasks(env.ctx.db, companyId, sprintId, { status: ["not_started", "in_progress", "blocked"] });
+  const byId = new Map(fresh.map((t) => [t.id, t]));
+  return {
+    sprintId,
+    started: picked.length,
+    tasks: picked.map((t) => ({ taskId: t.id, title: t.title, week: t.week, owner: t.owner, issueId: byId.get(t.id)?.issueId ?? null, issueIdentifier: byId.get(t.id)?.issueIdentifier ?? null })),
+    issuesOpened: materialised.created,
+    ...(picked.length > 1 ? { queued: picked.length - 1, note: "The week runs one task at a time in plan order; the next opens when the one before it is done." } : {}),
+    ...(alreadyDue > 0 ? { alreadyDue } : {}),
+    ...(upcoming.length > picked.length ? { left: upcoming.length - picked.length, note: `Started the first ${START_NOW_LIMIT}; run it again for the rest.` } : {}),
+    ...(materialised.errors.length > 0 ? { errors: materialised.errors } : {}),
+  };
+}
+
+/** Where a task issue opens: the repo project for repo code tasks, else the client's own project, else the company SEO project. */
+export function taskProjectId(sprint: db.Sprint, code: boolean, fallback: string | null): string | null {
+  if (code && sprint.siteAccess === "repo" && sprint.siteProjectId) return sprint.siteProjectId;
+  return sprint.clientProjectId ?? fallback ?? sprint.projectId;
+}
+
+/**
+ * After the site repo or the client project is linked: open tasks whose issue
+ * sits in the wrong project move to the right one (the old issue is cancelled
+ * with a pointer and a new one replaces it). Work in progress stays put, and so
+ * does anything that already ran; only code tasks also move while blocked.
  */
 export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promise<{ moved: number; opened: number }> {
   const { sprint } = mc;
-  if (sprint.siteAccess === "unlinked") return { moved: 0, opened: 0 };
+  if (sprint.siteAccess === "unlinked" && !sprint.clientProjectId) return { moved: 0, opened: 0 };
   let moved = 0;
-  if (sprint.siteAccess === "repo" && sprint.siteProjectId) {
-    const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
-    for (const task of tasks) {
-      if (task.owner !== "agent" || !isCodeTask(task) || !task.issueId) continue;
-      if (task.issueProjectId === sprint.siteProjectId) continue;
-      const issue = await getIssue(env, sprint.companyId, task.issueId);
-      if (!issue || !["todo", "backlog", "blocked"].includes(String(issue.status))) continue;
-      const oldIssueId = task.issueId;
-      await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_id: null, issue_status: null, issue_identifier: null, issue_project_id: null, status: "not_started", blocker_reason: null });
-      await commentOn(env, sprint.companyId, oldIssueId, "Moved to the site's repo project so the SEO Specialist works it in the repo workspace. A new issue replaces this one.");
-      await patchIssue(env, sprint.companyId, oldIssueId, { status: "cancelled" });
-      moved += 1;
-    }
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
+  for (const task of tasks) {
+    if (task.owner !== "agent" || !task.issueId) continue;
+    const code = isCodeTask(task);
+    const target = taskProjectId(sprint, code, null);
+    if (!target || task.issueProjectId === target) continue;
+    const issue = await getIssue(env, sprint.companyId, task.issueId);
+    const movable = code ? ["todo", "backlog", "blocked"] : ["todo", "backlog"];
+    if (!issue || !movable.includes(String(issue.status))) continue;
+    const oldIssueId = task.issueId;
+    await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_id: null, issue_status: null, issue_identifier: null, issue_project_id: null, status: "not_started", blocker_reason: null });
+    await commentOn(env, sprint.companyId, oldIssueId, code && sprint.siteAccess === "repo" ? "Moved to the site's repo project so the SEO Specialist works it in the repo workspace. A new issue replaces this one." : "Moved to the client's own project. A new issue replaces this one.");
+    await patchIssue(env, sprint.companyId, oldIssueId, { status: "cancelled" });
+    moved += 1;
   }
   // Code tasks that waited for the link open now (in the site project, or the SEO project without a repo or on WordPress).
   const opened = await materialiseDueTasks(env, mc);

@@ -1,0 +1,17 @@
+[Unit]
+Description=PiB client preview service
+After=network.target postgresql.service
+
+[Service]
+User=paperclip
+EnvironmentFile=/root/pib-ops/preview.env
+ExecStart=/opt/node24/bin/node /home/paperclip/pib-preview/server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -183,6 +183,8 @@ export interface Sprint {
   seededAt: string | null;
   /** The Paperclip project whose workspace holds the site repo (code tasks go there). */
   siteProjectId: string | null;
+  /** The client's own Paperclip project: the root issue and every task issue of the sprint open there. */
+  clientProjectId: string | null;
   siteAccess: SiteAccess;
   /** The CRM website (projected into crm_sites) a `wordpress` sprint changes through the PiB Connector. */
   siteId: string | null;
@@ -200,7 +202,7 @@ export interface Sprint {
 const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, client_ref, client_name, status, start_date::text AS start_date,
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
-  last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, site_access, site_id, repo_url, default_branch, framework,
+  last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, client_project_id, site_access, site_id, repo_url, default_branch, framework,
   hosting, change_policy, verification, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
@@ -234,6 +236,7 @@ function sprintFrom(row: Row): Sprint {
     auditDaysDone: numList(row.audit_days_done),
     seededAt: iso(row.seeded_at),
     siteProjectId: s(row.site_project_id),
+    clientProjectId: s(row.client_project_id),
     siteAccess: (SITE_ACCESS as readonly string[]).includes(String(row.site_access)) ? (String(row.site_access) as SiteAccess) : "unlinked",
     siteId: s(row.site_id),
     repoUrl: s(row.repo_url),
@@ -284,6 +287,7 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   audit_days_done: "jsonb",
   seeded_at: "ts",
   site_project_id: "text",
+  client_project_id: "text",
   site_access: "text",
   site_id: "text",
   repo_url: "text",
@@ -1790,6 +1794,26 @@ export async function issuesWithFailingRuns(db: SeoDb, companyId: string, issueI
     [companyId, JSON.stringify(ids)],
   );
   for (const row of rows) if (row.error_code === code && row.issue_id) out.set(String(row.issue_id), { at: s(row.at) });
+  return out;
+}
+
+/**
+ * Issues an agent run has started on (last 30 days), with when the first one began. The host raises no
+ * issue.updated event when an agent picks an issue up, so this is how a task learns its work started.
+ */
+export async function issuesWithStartedRuns(db: SeoDb, companyId: string, issueIds: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
+  if (ids.length === 0) return out;
+  const rows = await db.query(
+    `SELECT r.context_snapshot->>'issueId' AS issue_id, min(r.started_at)::text AS at
+       FROM public.heartbeat_runs r
+      WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days' AND r.started_at IS NOT NULL
+        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
+      GROUP BY 1`,
+    [companyId, JSON.stringify(ids)],
+  );
+  for (const row of rows) if (row.issue_id) out.set(String(row.issue_id), s(row.at));
   return out;
 }
 

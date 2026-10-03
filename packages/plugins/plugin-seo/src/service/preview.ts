@@ -1,0 +1,432 @@
+/**
+ * Client preview links: the agent proposes a page's copy, the server renders it on top of the live page and the
+ * client opens `PREVIEW_BASE/p/<site>/<token>` (preview service on the VPS) to approve or ask for changes. Nothing is
+ * applied to the site here; a person approves, then the agent applies the change through the Connector.
+ */
+import { randomBytes } from "node:crypto";
+import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import * as db from "../db.js";
+import { t } from "../db.js";
+import { checkClaims } from "../engine/claims.js";
+import { loadFacts } from "./facts.js";
+import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { ORIGIN } from "../constants.js";
+import { actorId, assignableUser, bool, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
+import { assertWritable, loadSprintContext } from "./context.js";
+import { companyInfo } from "./common.js";
+import { startPreviewFix } from "./build.js";
+import { addNeedsYou, closeSignoffItems } from "./needs-you.js";
+import { commentOn, openIssue, patchIssue } from "./issues.js";
+
+export const PREVIEW_DAYS = 30;
+const MAX_HTML = 1_500_000;
+export { PREVIEW_BASE, previewLink, previewSlug } from "./preview-links.js";
+import { previewLink, previewSlug } from "./preview-links.js";
+
+function hostOf(url: string): string {
+  return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
+}
+
+export async function createPreview(env: Env, companyId: string, actor: Actor, params: Params) {
+  const sprintId = reqStr(params, "sprintId");
+  const { sprint } = await loadSprintContext(env, companyId, sprintId);
+  assertWritable(sprint);
+  const rawUrl = reqStr(params, "pageUrl", { max: 2000 });
+  let pageUrl: string;
+  try {
+    pageUrl = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : new URL(rawUrl, sprint.siteUrl).toString()).toString();
+  } catch {
+    throw new SeoError("pageUrl must be a page of the client's site (a full URL or a path such as /about).");
+  }
+  if (hostOf(pageUrl) !== hostOf(sprint.siteUrl)) throw new SeoError(`pageUrl must be a page on ${sprint.siteUrl}; previews are only built for this sprint's own site.`);
+  const changes: PreviewChanges = {
+    title: str(params, "title", { max: 300 }),
+    metaDescription: str(params, "metaDescription", { max: 500 }),
+    h1: str(params, "h1", { max: 300 }),
+    bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
+    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
+    css: str(params, "css", { max: 80_000 }),
+  };
+  const allowReplace = bool(params, "allowReplace") ?? false;
+  if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css) throw new SeoError("Send at least one proposed change: title, metaDescription, h1 or bodyHtml.");
+  const taskId = str(params, "taskId", { max: 80 });
+  const task = taskId ? await db.getTask(env.ctx.db, companyId, taskId) : null;
+  if (taskId && (!task || task.sprintId !== sprintId)) throw new SeoError("No such task on this sprint.");
+  const redesign = task?.taskType === "redesign";
+  if (changes.css && !redesign) throw new SeoError("css (styles on the preview) is only for redesign tasks. Copy goes in bodyHtml; styling an ordinary page is a build problem for a developer.");
+
+  // The claims rule: statements about how the business works need an approved wording from the fact sheet.
+  const sheet = await loadFacts(env, companyId, sprintId);
+  const violations = checkClaims([changes.title, changes.metaDescription, changes.h1, changes.bodyHtml], sheet.facts);
+  if (violations.length > 0) {
+    const approved = sheet.facts.filter((f) => f.kind === "say").slice(0, 12).map((f) => `- ${f.text}`);
+    throw new SeoError(
+      [
+        `The copy makes claims about how the business works that the client fact sheet does not cover (${violations.length}):`,
+        ...violations.slice(0, 8).map((v) => `- "${v.sentence.slice(0, 220)}": ${v.why}`),
+        "",
+        approved.length > 0 ? `Approved wordings you may reuse (shortened is fine, reworded is not):\n${approved.join("\n")}` : "There are no approved wordings yet for this client.",
+        "Leave the claim out, or use an approved wording. If a fact is needed and missing, put a Needs you item for the owner to add it (get-client-facts shows the sheet). Do not invent or paraphrase it.",
+      ].join("\n"),
+    );
+  }
+
+  const res = await env.site(pageUrl, { maxChars: MAX_HTML });
+  if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
+  const token = randomBytes(24).toString("base64url");
+  const built = buildPreviewHtml(res.text, res.url || pageUrl, changes, { token, clientName: sprint.clientName });
+  if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
+  const stats = previewStats(res.text, built.html);
+  if (stats.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
+    throw new SeoError(
+      `This preview would keep only ${stats.keptPct}% of the live page's text (${stats.removedWords} of ${stats.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
+    );
+  }
+  const reviewKey = randomBytes(18).toString("base64url");
+  const expiresAt = new Date(env.now().getTime() + PREVIEW_DAYS * 86_400_000).toISOString();
+  await env.ctx.db.execute(
+    `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb)`,
+    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl, built.html, JSON.stringify(changes), expiresAt, actorId(actor), reviewKey, JSON.stringify(stats)],
+  );
+  const review = await routePreviewReview(env, sprint, { id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
+  await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
+  return {
+    previewId: token,
+    url: previewLink(sprint.siteUrl, token),
+    pageUrl,
+    expiresAt,
+    applied: built.applied,
+    stats,
+    reviewStatus: "pending",
+    reviewIssueId: review,
+    ...(built.notes.length > 0 ? { notes: built.notes } : {}),
+    next: "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.",
+  };
+}
+
+export async function listPreviews(env: Env, companyId: string, params: Params) {
+  const sprintId = reqStr(params, "sprintId");
+  const rows = await env.ctx.db.query(
+    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats FROM ${t("previews")}
+      WHERE company_id = $1 AND sprint_id = $2 ORDER BY created_at DESC LIMIT 100`,
+    [companyId, sprintId],
+  );
+  return {
+    previews: rows.map((r) => ({
+      previewId: String(r.id),
+      url: previewLink(String(r.page_url), String(r.id)),
+      taskId: r.task_id ? String(r.task_id) : null,
+      pageUrl: String(r.page_url),
+      title: String(r.title),
+      status: String(r.status),
+      reviewStatus: String(r.review_status ?? "pending"),
+      ...(r.review_note ? { reviewNote: String(r.review_note) } : {}),
+      stats: typeof r.stats === "string" ? JSON.parse(String(r.stats)) : r.stats ?? {},
+      ...(r.decision_note ? { note: String(r.decision_note) } : {}),
+      decidedAt: r.decided_at ? String(r.decided_at) : null,
+      expiresAt: String(r.expires_at),
+    })),
+  };
+}
+
+/** Tells the task's issue what the client answered (once per answer). Runs from the 5-minute job. */
+export async function deliverPreviewAnswers(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, company_id, task_id, issue_id, page_url, title, status, decision_note FROM ${t("previews")}
+      WHERE decided_at IS NOT NULL AND notified_at IS NULL ORDER BY decided_at LIMIT 25`,
+  );
+  let sent = 0;
+  for (const row of rows) {
+    const id = String(row.id);
+    const companyId = String(row.company_id);
+    const issueId = row.issue_id ? String(row.issue_id) : null;
+    const approved = row.status === "approved";
+    try {
+      if (issueId) {
+        const verdict = approved ? "**approved**" : "**asked for changes** on";
+        const note = row.decision_note ? `\n\n> ${String(row.decision_note).replace(/\n/g, "\n> ")}` : "";
+        const next = approved
+          ? "Nothing is applied yet: the owner confirms first (Apply approved changes on the sprint's Site section), then the agent applies it."
+          : "The task is back with the SEO Specialist: revise the copy and make a new preview (it is checked by the Reviewer again); do not apply anything.";
+        // A client who asks for changes reopens the task; an approval waits for the owner.
+        if (!approved) await resumeTaskAfterClient(env, companyId, row.task_id ? String(row.task_id) : null);
+        const ok = await commentOn(env, companyId, issueId, `The client ${verdict} the preview of ${String(row.page_url)} (${String(row.title)}).${note}\n\n${next}`);
+        if (!ok) continue;
+        if (!approved) await wakeIssue(env.ctx, issueId, companyId, "The client asked for changes to a preview");
+      }
+      await env.ctx.db.execute(`UPDATE ${t("previews")} SET notified_at = now() WHERE id = $1`, [id]);
+      sent += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO preview answer not delivered", { previewId: id, error: errorMessage(error) });
+    }
+  }
+  return sent;
+}
+
+/** The client asked for changes: a task parked on the sign-off goes back to its agent. */
+async function resumeTaskAfterClient(env: Env, companyId: string, taskId: string | null): Promise<void> {
+  if (!taskId) return;
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || !task.issueId) return;
+  await closeSignoffItems(env, companyId, task.sprintId, task.id, "The client asked for changes.");
+  if (task.status !== "blocked") return;
+  if (!(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) return;
+  await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+}
+
+const REVIEW_CHECKS = [
+  "Open the review page (side-by-side screenshots of the live page and the proposal) and read the figures.",
+  "Nothing the live page shows has disappeared: its sections, listings, menu, images, prices and calls to action are all still there (the figures say how much text is kept).",
+  "The proposed copy reads well, is accurate for this client, invents no facts, prices, reviews or ratings, and its links go to real pages.",
+  "Title (about 50-60 characters), description (about 150-160) and H1 are right and match the page.",
+  "The page would look like a normal page of the site if this were published: no broken layout, no stray code.",
+  "It LOOKS like it belongs on this site: colours, fonts, spacing and tone match the live page; new copy is set in the site's own styling, not dropped in as a plain box; the hierarchy is clear and the first screen still shows what visitors come for.",
+];
+
+const REDESIGN_CHECKS = [
+  "This is a REDESIGN: judge the design, not only whether anything is missing. Is it clearly better than the live page, and does it keep the brand?",
+  "Look at the phone screenshots too (the review page shows live and proposal at phone width): nothing overflows, text is readable, buttons are tappable.",
+  "Everything that makes the page work is still there: listings, menu, forms, prices, calls to action, links.",
+  "Say in your notes what you would improve; use fixBy developer or senior for design and build problems.",
+];
+
+/** Opens a review issue for the Reviewer (else the owner) and returns its id. Never throws. */
+async function routePreviewReview(
+  env: Env,
+  sprint: db.Sprint,
+  p: { id: string; key: string; pageUrl: string; title: string; stats: ReturnType<typeof previewStats>; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
+): Promise<string | null> {
+  try {
+    const reviewer = await reviewerAgentId(env.ctx, sprint.companyId);
+    const owner = assignableUser(sprint.ownerUserId);
+    const reviewUrl = `${previewLink(p.pageUrl, p.id)}/review?key=${p.key}`;
+    const sheet = await loadFacts(env, sprint.companyId, sprint.id);
+    const lines = [
+      `A client preview for **${sprint.siteName}** (${sprint.siteUrl}) must be checked before the client sees it. The client's link shows "being checked" until you pass it.`,
+      "",
+      `Page: ${p.pageUrl}`,
+      `Proposed: ${p.title} (changed: ${p.applied.join(", ")})`,
+      `Review page (screenshots + figures): ${reviewUrl}`,
+      `Text kept from the live page: ${p.stats.keptPct}% (${p.stats.liveWords} words live, +${p.stats.addedWords} added, -${p.stats.removedWords} removed).`,
+      ...(p.notes.length ? ["", ...p.notes.map((n) => `Note: ${n}`)] : []),
+      "",
+      "## The client fact sheet (what the copy may claim)",
+      sheet.facts.length > 0
+        ? `${sheet.status === "confirmed" ? "Confirmed by the owner" : "Drafted from the client's own pages, not yet confirmed"}. Copy may describe how the business works only with these wordings:\n${sheet.facts.filter((f) => f.kind === "say").map((f) => `- ${f.text}`).join("\n")}\nNever say:\n${sheet.facts.filter((f) => f.kind === "avoid").map((f) => `- ${f.text}`).join("\n") || "- (nothing listed)"}`
+        : "There is no fact sheet for this client yet: any claim about how the business works is unapproved.",
+      "Still check every claim against the client's own pages (terms, lot pages, FAQ): the fact sheet is a floor, not proof the copy is right.",
+      "",
+      "## Check",
+      ...[...REVIEW_CHECKS, ...(p.redesign ? REDESIGN_CHECKS : [])].map((c) => `- ${c}`),
+      "",
+      `Open the two screenshots for yourself (the review page links the PNG files: fetch them and look at them). Then record your verdict with \`partnersinbiz.seo:review-preview\` (sprintId ${sprint.id}, previewId ${p.id}, verdict pass or changes, notes with one line per problem) and set this issue to done. For verdict changes say WHO fixes it with fixBy: seo when the problem is the wording, keyword choice or facts; developer when it is how the page is built (markup, styling, colours, layout, links that do not look like links, an invisible heading); senior for theme or template changes, many pages or ecommerce. A developer then fixes it and makes the corrected preview, which you check again. Do not approve anything for the client and do not change the site.`,
+    ];
+    const created = await openIssue(env, {
+      companyId: sprint.companyId,
+      title: `Check client preview: ${p.title}`.slice(0, 240),
+      description: lines.join("\n"),
+      originKind: ORIGIN.previewReview,
+      originId: `preview-review:${p.id}`,
+      projectId: sprint.projectId,
+      parentId: p.taskIssueId ?? sprint.rootIssueId ?? undefined,
+      assigneeAgentId: reviewer,
+      assigneeUserId: reviewer ? null : owner,
+      priority: "medium",
+      wakeReason: "Client preview needs a check",
+    });
+    await env.ctx.db.execute(`UPDATE ${t("previews")} SET review_issue_id = $2 WHERE id = $1`, [p.id, created.id]);
+    return created.id;
+  } catch (error) {
+    env.ctx.logger.info("SEO preview review routing failed", { previewId: p.id, error: errorMessage(error) });
+    return null;
+  }
+}
+
+/** The Reviewer (or the owner) records what they saw. Pass releases the link to the client; changes goes back to the SEO agent. */
+export async function reviewPreview(env: Env, companyId: string, actor: Actor, params: Params) {
+  const sprintId = reqStr(params, "sprintId");
+  const previewId = reqStr(params, "previewId", { max: 80 });
+  const verdict = oneOf(params, "verdict", ["pass", "changes"] as const);
+  if (!verdict) throw new SeoError("verdict must be pass or changes.");
+  const notes = str(params, "notes", { max: 4000 });
+  const fixBy = oneOf(params, "fixBy", ["seo", "developer", "senior"] as const) ?? "seo";
+  if (verdict === "changes" && !notes) throw new SeoError("Say what is wrong: notes are required with verdict changes.");
+  const rows = await env.ctx.db.query(
+    `SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM ${t("previews")} WHERE id = $1 AND company_id = $2 AND sprint_id = $3 LIMIT 1`,
+    [previewId, companyId, sprintId],
+  );
+  const row = rows[0];
+  if (!row) throw new SeoError("No such preview on this sprint.");
+  if (actor.kind === "agent" && actorId(actor) === String(row.created_by)) throw new SeoError("You made this preview, so someone else has to check it: the Reviewer or the owner.");
+  if (verdict === "pass" && actor.kind === "agent") {
+    const stat = await env.ctx.db.query(`SELECT stats FROM ${t("previews")} WHERE id = $1 LIMIT 1`, [previewId]);
+    const raw = stat[0]?.stats;
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, any>) : ((raw ?? {}) as Record<string, any>);
+    const rendered = parsed.rendered as { keptPct?: number } | undefined;
+    if (!rendered || typeof rendered.keptPct !== "number") throw new SeoError("Open the review page first (the link in your review issue): it measures the proposal against the live page as a visitor sees it, and a preview cannot be passed before that check has run.");
+    if (rendered.keptPct < MIN_KEPT_PCT) throw new SeoError(`The rendered check shows the proposal keeps only ${rendered.keptPct}% of what the live page shows. Send it back with verdict changes and say what is missing; only the owner can pass a preview like this.`);
+  }
+  await env.ctx.db.execute(
+    `UPDATE ${t("previews")} SET review_status = $2, review_note = $3, reviewed_by = $4, reviewed_at = now() WHERE id = $1`,
+    [previewId, verdict === "pass" ? "passed" : "changes_needed", notes ?? null, actorId(actor)],
+  );
+  const issueId = row.issue_id ? String(row.issue_id) : null;
+  const taskId = row.task_id ? String(row.task_id) : null;
+  const pageUrl = String(row.page_url);
+  // A page that keeps failing the check goes to the owner instead of round and round.
+  if (verdict === "changes" && taskId) {
+    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
+    if (Number(rounds[0]?.n ?? 0) >= MAX_REVIEW_ROUNDS) {
+      const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId, pageUrl, String(row.title), notes!, Number(rounds[0]?.n));
+      if (escalated) {
+        if (issueId) await commentOn(env, companyId, issueId, `The preview of ${pageUrl} has now been sent back ${rounds[0]?.n} times by the Reviewer. It is on the owner's Needs you list; do not make another preview for this page until it is answered. Last reason:\n\n${notes}`);
+        return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, escalatedToOwner: true, next: "Set your review issue to done. The owner decides what happens with this page." };
+      }
+    }
+  }
+  // A build problem (markup, styling, layout, theme) is fixed by a developer, not by the SEO Specialist.
+  let fix: Awaited<ReturnType<typeof startPreviewFix>> | null = null;
+  if (verdict === "changes" && fixBy !== "seo" && taskId) {
+    const changes = typeof row.changes === "string" ? (JSON.parse(String(row.changes)) as Record<string, unknown>) : ((row.changes ?? {}) as Record<string, unknown>);
+    fix = await startPreviewFix(env, companyId, {
+      previewId,
+      taskId,
+      pageUrl,
+      notes: notes!,
+      level: fixBy,
+      reviewUrl: row.review_key ? `${previewLink(pageUrl, previewId)}/review?key=${String(row.review_key)}` : null,
+      changes,
+    });
+  }
+  const handedToDeveloper = fix !== null && "issueId" in fix;
+  if (!handedToDeveloper) await resumeTaskAfterReview(env, companyId, taskId);
+  if (issueId) {
+    const text =
+      verdict === "pass"
+        ? `The Reviewer passed the preview of ${pageUrl} (${String(row.title)}).${notes ? ` Notes: ${notes}` : ""} It is now open to the client. Put the link on Needs you for the owner.`
+        : handedToDeveloper
+          ? `The Reviewer sent the preview of ${pageUrl} (${String(row.title)}) back for a BUILD problem:\n\n${notes}\n\n${(fix as { builder: string }).builder} is fixing it (issue ${(fix as { issueId: string }).issueId}) and makes the corrected preview. This task stays parked; you are woken when the corrected preview passes the Reviewer. Do not make another preview meanwhile.`
+          : `The Reviewer asked for changes to the preview of ${pageUrl} (${String(row.title)}):\n\n${notes}\n\n${fix && "fallback" in fix ? `(It was meant for a developer but ${fix.fallback}.) ` : ""}Fix this and make a new preview; the client has not seen the old one.`;
+    const woke = !handedToDeveloper;
+    if ((await commentOn(env, companyId, issueId, text)) && woke) await wakeIssue(env.ctx, issueId, companyId, `Preview ${verdict === "pass" ? "passed" : "needs changes"}`);
+  }
+  return { previewId, reviewStatus: verdict === "pass" ? "passed" : "changes_needed", clientCanOpen: verdict === "pass", next: verdict === "pass" ? "Set your review issue to done." : handedToDeveloper ? "Set your review issue to done; a developer fixes the build problems and makes a new preview for you to check." : "Set your review issue to done; the SEO Specialist revises.", ...(handedToDeveloper ? { fixIssueId: (fix as { issueId: string }).issueId, fixedBy: (fix as { builder: string }).builder } : {}) };
+}
+
+export interface PreviewRow {
+  id: string;
+  pageUrl: string;
+  title: string;
+  status: string;
+  reviewStatus: string;
+  reviewNote: string | null;
+  decisionNote: string | null;
+  keptPct: number | null;
+  addedWords: number | null;
+  /** The check on the page as a visitor sees it has run. */
+  renderedChecked: boolean;
+  createdAt: string;
+  expiresAt: string;
+  url: string;
+  reviewUrl: string | null;
+  superseded: boolean;
+}
+
+/** The sprint's previews for the SEO page (staff only: includes the review link). A newer preview of the same page supersedes older ones. */
+export async function previewRows(env: Env, companyId: string, sprintId: string): Promise<PreviewRow[]> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, page_url, title, status, review_status, review_note, decision_note, review_key, stats, created_at, expires_at FROM ${t("previews")}
+      WHERE company_id = $1 AND sprint_id = $2 ORDER BY created_at DESC LIMIT 200`,
+    [companyId, sprintId],
+  );
+  const seen = new Set<string>();
+  return rows.map((r) => {
+    const stats = typeof r.stats === "string" ? (JSON.parse(String(r.stats)) as Record<string, number>) : ((r.stats ?? {}) as Record<string, number>);
+    const rendered = (stats as unknown as { rendered?: { keptPct?: number; addedWords?: number } }).rendered;
+    const page = String(r.page_url);
+    const superseded = seen.has(page);
+    seen.add(page);
+    return {
+      id: String(r.id),
+      pageUrl: page,
+      title: String(r.title),
+      status: String(r.status),
+      reviewStatus: String(r.review_status ?? "pending"),
+      reviewNote: r.review_note ? String(r.review_note) : null,
+      decisionNote: r.decision_note ? String(r.decision_note) : null,
+      keptPct: typeof rendered?.keptPct === "number" ? rendered.keptPct : typeof stats.keptPct === "number" ? stats.keptPct : null,
+      addedWords: typeof rendered?.addedWords === "number" ? rendered.addedWords : typeof stats.addedWords === "number" ? stats.addedWords : null,
+      renderedChecked: Boolean(rendered),
+      createdAt: String(r.created_at),
+      expiresAt: String(r.expires_at),
+      url: previewLink(page, String(r.id)),
+      reviewUrl: r.review_key ? `${previewLink(page, String(r.id))}/review?key=${String(r.review_key)}` : null,
+      superseded,
+    };
+  });
+}
+
+const LINK_RE = /preview\.partnersinbiz\.online\/p\/(?:[a-z0-9-]{1,30}\/)?([A-Za-z0-9_-]{20,64})/g;
+
+/**
+ * Nobody is asked to look at a preview that the Reviewer has not passed: a person or the client would be shown a
+ * page nobody has compared with the live one. Scans everything the caller sent (reason, ask, copy, links).
+ */
+export async function assertPreviewLinksChecked(env: Env, companyId: string, params: Params): Promise<void> {
+  const text = JSON.stringify(params);
+  const ids = [...new Set([...text.matchAll(LINK_RE)].map((m) => m[1]!))];
+  if (ids.length === 0) return;
+  const rows = await env.ctx.db.query(`SELECT id, review_status, page_url FROM ${t("previews")} WHERE company_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
+  const byId = new Map(rows.map((r) => [String(r.id), r]));
+  const bad = ids.filter((id) => byId.get(id)?.review_status !== "passed");
+  if (bad.length === 0) return;
+  const lines = bad.map((id) => {
+    const r = byId.get(id);
+    return r ? `${String(r.page_url)} is ${String(r.review_status).replace(/_/g, " ")}` : `a link that is not one of this company's previews`;
+  });
+  throw new SeoError(`You linked a preview that has not been checked (${lines.join("; ")}). Nobody is asked to review a preview until the Reviewer has passed it. Make a new preview with create-preview if needed (list-previews shows the status), end your turn, and use only links of previews with reviewStatus passed.`);
+}
+
+/** The task waits for the Reviewer: parked (not the agent's to work) until the verdict arrives. */
+async function parkTaskForReview(env: Env, companyId: string, taskId: string | null, title: string): Promise<void> {
+  if (!taskId) return;
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || !task.issueId || (task.status !== "in_progress" && task.status !== "not_started")) return;
+  if (!(await patchIssue(env, companyId, task.issueId, { status: "blocked" }))) return;
+  await db.updateTask(env.ctx.db, companyId, task.id, { status: "blocked", issue_status: "blocked", assignee_kind: "reviewer", blocker_reason: `Waiting for the Reviewer to check the preview: ${title}` });
+}
+
+/** The Reviewer answered: the task goes back to the SEO agent. */
+async function resumeTaskAfterReview(env: Env, companyId: string, taskId: string | null): Promise<void> {
+  if (!taskId) return;
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || !task.issueId || task.status !== "blocked" || task.assigneeKind !== "reviewer") return;
+  if (!(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) return;
+  await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+}
+
+/** Rounds of Reviewer changes on one page before the owner is asked instead. */
+export const MAX_REVIEW_ROUNDS = 2;
+
+async function escalateStuckPreview(env: Env, companyId: string, sprintId: string, taskId: string, pageUrl: string, title: string, notes: string, rounds: number): Promise<boolean> {
+  try {
+    const { sprint } = await loadSprintContext(env, companyId, sprintId);
+    const info = await companyInfo(env, companyId);
+    await addNeedsYou(env, info, sprint, {
+      key: `preview-stuck:${taskId}:${pageUrl}`.slice(0, 120),
+      kind: "task",
+      title: `Preview of ${pageUrl} keeps failing the check`,
+      why: `The Reviewer has sent the preview "${title}" back ${rounds} times. Last reason: ${notes}`.slice(0, 1500),
+      steps: ["Read the Reviewer's notes on the preview (SEO page, Content tab, Client previews).", "Decide: tell the SEO Specialist what to do differently, fix the underlying problem (for example a fact the client must confirm), or skip this page.", "Mark this item done to send the task back to the SEO Specialist."],
+      links: [],
+      after: "Sends the task back to the SEO Specialist.",
+      check: "manual",
+      taskIds: [taskId],
+    });
+    return true;
+  } catch (error) {
+    env.ctx.logger.info("SEO stuck preview escalation failed", { taskId, error: errorMessage(error) });
+    return false;
+  }
+}

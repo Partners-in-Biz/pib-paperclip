@@ -23,7 +23,7 @@ export const SEO_SCOPE: Record<string, string> = {
   head_metadata: "`<head>` metadata: title, meta description, canonical, robots meta, Open Graph / Twitter tags (Next.js `metadata` / `generateMetadata`).",
   json_ld: "JSON-LD structured data blocks (Organization, WebSite, FAQPage, Product, LocalBusiness …), including fixes such as a broken WebSite SearchAction.",
   sitemap_robots: "sitemap.xml / `app/sitemap.ts` and robots.txt / `app/robots.ts`. On WordPress: extra robots.txt lines (`wp-robots`) and the sitemap settings (`wp-sitemap`).",
-  verification_file: "Search engine verification and key files: the google-site-verification meta tag or HTML file, BingSiteAuth.xml, the IndexNow key file.",
+  verification_file: "Search engine verification and key files: the google-site-verification meta tag or HTML file, the msvalidate.01 meta tag or BingSiteAuth.xml, the IndexNow key file. On WordPress with a Connector 1.2+: `wp-verify` (meta tags and root files, nothing written to disk).",
   image_alt: "Image alt text.",
   internal_links: "Internal links and their anchor text inside existing copy.",
   new_content: "New blog posts and landing pages written from an approved brief (content files or pages only; no new components beyond the page itself).",
@@ -111,15 +111,44 @@ export function evaluateChange(policy: ChangePolicy, changes: ProposedChange[], 
 }
 
 /**
- * What the PiB Connector applies on a WordPress site: SEO fields (title,
- * description, canonical, robots meta, Open Graph), schema, redirects, extra
- * robots.txt lines and sitemap settings. New pages, copy and alt text are
- * edits in wp-admin, so they go to a person.
+ * What the PiB Connector (1.1+) applies on a WordPress site: SEO fields (title,
+ * description, canonical, robots meta, Open Graph title, description and
+ * image) for pages, categories and archives, schema, redirects, extra
+ * robots.txt lines and sitemap settings, image alt text, featured and share
+ * images (`media`), edits to existing page copy (`page_copy`, always with a
+ * reason), internal links, and new pages or posts as drafts that the agent
+ * publishes only when the task says so (`new_content`). Also the Connector's own
+ * update, and (Connector 1.2+) search engine verification tags and key files through
+ * `wp-verify` (`verification_file`). `page_copy` and `media` exist only on WordPress; repo sites keep
+ * SEO_SCOPE_CATEGORIES.
  */
-export const WORDPRESS_SCOPE_CATEGORIES = ["head_metadata", "json_ld", "seo_redirect", "sitemap_robots"];
+export const WORDPRESS_SCOPE_CATEGORIES = [
+  "head_metadata",
+  "json_ld",
+  "seo_redirect",
+  "sitemap_robots",
+  "image_alt",
+  "internal_links",
+  "new_content",
+  "page_copy",
+  "media",
+  // Markup in a theme or plugin template file over SFTP (alt attributes, meta/link/heading tags, no logic): needs the site's SFTP login.
+  "theme_markup",
+  // Connector 1.2+ only (wp-verify): applicable when the site's Connector has it, see evaluateWordPressChange.
+  "verification_file",
+];
 
-/** A plugin install or update through the Connector (path `wp:plugins:…` or category `plugins`) always goes to a person. */
-const WP_PLUGIN_CHANGE = /^wp:plugins?\b/i;
+/**
+ * Always a person, whatever the policy: plugin installs and rollbacks, deleting anything, publishing anything the
+ * Connector did not create, changing the theme or a site's settings. The Connector refuses most of these anyway.
+ */
+const WP_PERSON_ONLY: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /^wp:plugins?\b/i, reason: "plugin installs and rollbacks always go to a person (Needs you)" },
+  { pattern: /^wp:(delete|trash|remove)\b/i, reason: "deleting anything is for a person in wp-admin (the Connector cannot delete)" },
+  { pattern: /^wp:publish-existing\b/i, reason: "publishing anything the Connector did not create is for a person (the Connector refuses it)" },
+  { pattern: /^wp:(settings|options|users?)\b/i, reason: "a site's settings and users are for a person in wp-admin" },
+  { pattern: /^wp:theme\b/i, reason: "theme changes go to a person unless they are template markup edits over SFTP (category theme_markup)" },
+];
 
 export interface WordPressVerdict {
   /** apply = make the change yourself through the Connector tools, then verify it live. */
@@ -136,18 +165,38 @@ export interface WordPressVerdict {
  * name the Connector area and target, e.g. `wp:seo:/about`,
  * `wp:schema:site/localbusiness`, `wp:redirects:/old-page`.
  */
-export function evaluateWordPressChange(policy: ChangePolicy, changes: ProposedChange[]): WordPressVerdict {
+export function evaluateWordPressChange(policy: ChangePolicy, changes: ProposedChange[], opts: { verify?: "available" | "update" | "none"; sftp?: boolean } = {}): WordPressVerdict {
+  const verify = opts.verify ?? "available";
+  const sftp = opts.sftp ?? false;
   const outOfScope: WordPressVerdict["outOfScope"] = [];
   const reasons: string[] = [];
   if (changes.length === 0) reasons.push("No changes were listed.");
   for (const change of changes) {
     const path = change.path.trim();
-    if (change.category === "plugins" || WP_PLUGIN_CHANGE.test(path)) {
-      outOfScope.push({ path, reason: "plugin installs always go to a person (Needs you)" });
+    const personOnly = change.category === "plugins" ? WP_PERSON_ONLY[0] : WP_PERSON_ONLY.find((rule) => rule.pattern.test(path) && !(change.category === "theme_markup" && /^wp:theme\b/i.test(path)));
+    if (personOnly) {
+      outOfScope.push({ path, reason: personOnly.reason });
+      continue;
+    }
+    if (change.category === "theme_markup" && !sftp) {
+      outOfScope.push({
+        path,
+        reason: "theme_markup edits a template file over SFTP and this site has no SFTP login yet: put `needs-you-add` key `wp_sftp` on Needs you (a person adds the login once), then block-task",
+      });
+      continue;
+    }
+    if (change.category === "verification_file" && verify !== "available") {
+      outOfScope.push({
+        path,
+        reason:
+          verify === "update"
+            ? "verification_file needs Connector 1.2 (wp-verify) and this site runs an older Connector: run `partnersinbiz.crm:wp-connector` update first (a Connector older than 1.1 needs one manual zip upload), then check again"
+            : "verification_file goes through wp-verify, which needs a connected Connector 1.2 or newer",
+      });
       continue;
     }
     if (!WORDPRESS_SCOPE_CATEGORIES.includes(change.category)) {
-      outOfScope.push({ path, reason: `category "${change.category}" is not something the Connector applies (only SEO fields, schema, redirects, robots and sitemap settings)` });
+      outOfScope.push({ path, reason: `category "${change.category}" is not something the Connector applies (only ${WORDPRESS_SCOPE_CATEGORIES.join(", ")}). If it needs an image you have no source for, ask for the asset, not for a wp-admin edit` });
     }
   }
   const inScope = changes.length > 0 && outOfScope.length === 0;
@@ -160,7 +209,7 @@ export function evaluateWordPressChange(policy: ChangePolicy, changes: ProposedC
     if (outOfScope.length > 0) reasons.push("Out of scope for the Connector: put the exact change set on Needs you (needs-you-add kind task) and block-task.");
     return done("pr_only");
   }
-  reasons.push("Every change is SEO scope: apply it with the Connector tools (siteId and a reason on every write), then verify it on the live site.");
+  reasons.push("Every change is in the Connector's scope: apply it with the Connector tools (siteId and a reason on every write), then verify it on the live site. New pages stay drafts until the task says to publish them.");
   return done("apply");
 }
 

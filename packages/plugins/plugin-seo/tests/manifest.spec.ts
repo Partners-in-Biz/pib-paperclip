@@ -23,8 +23,8 @@ describe("manifest", () => {
     expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs"]);
   });
 
-  it("schedules the daily and weekly jobs", () => {
-    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-weekly", "0 5 * * 1"]]);
+  it("schedules the daily, preview-answer and weekly jobs", () => {
+    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-previews", "*/5 * * * *"], ["seo-weekly", "0 5 * * 1"]]);
   });
 
   it("declares the OAuth, client-summary, setup-status and cockpit routes with company resolution", () => {
@@ -35,7 +35,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.10.0");
+    expect(manifest.version).toBe("0.21.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -113,9 +113,28 @@ describe("skill", () => {
     expect(skill.markdown).toContain("complete-task");
     expect(skill.markdown).toContain("references/wordpress.md");
     const wp = skill.files!.find((f) => f.path === "references/wordpress.md")!.content;
-    for (const tool of ["wp-health", "wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-log", "wp-undo", "wp-plugins"]) expect(wp).toContain(`partnersinbiz.crm:${tool}`);
+    for (const tool of ["wp-health", "wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-log", "wp-undo", "wp-plugins", "wp-media", "wp-content", "wp-connector"]) expect(wp).toContain(`partnersinbiz.crm:${tool}`);
     expect(wp).toContain("allowSearchEngines");
     expect(wp).toContain("wp_connector");
+    // 0.11.0: the agent now does alt text, images, archive SEO, copy edits, drafts and Connector updates.
+    for (const word of ["ogImage", "termId", "postTypeArchive", "missingAlt", "img-alt", "set-featured", "sideload", "create", "publish", "wp-connector"]) expect(wp).toContain(word);
+    expect(wp).toMatch(/Never hotlink, scrape or copy an image you have no rights to/);
+    expect(wp).toMatch(/Ask for the asset, not for a wp-admin edit/);
+    expect(wp).toMatch(/Connector 1\.0\.x/);
+    expect(wp).toMatch(/Do not put the task on Needs you for that/);
+    const stillPerson = wp.slice(wp.indexOf("## Still a person"));
+    for (const item of ["Plugin installs and rollbacks", "Deleting anything", "Publishing anything the Connector did not create", "theme, settings or users"]) expect(stillPerson).toContain(item);
+    expect(stillPerson).not.toMatch(/alt text|New pages,? copy/);
+    expect(wp).not.toMatch(/New pages, copy and alt text are wp-admin edits/);
+    // 0.12.0: verification through wp-verify is agent work.
+    expect(wp).toContain("wp-verify");
+    expect(wp).toMatch(/## 9\. Search engine verification \(yours, not the client's\)/);
+    expect(wp).toMatch(/replaces the whole \\?`?metaTags\\?`? and \\?`?files\\?`? lists/);
+    expect(wp.slice(wp.indexOf("## Still a person"))).toContain("Merchant Center account creation");
+    expect(skill.markdown).toMatch(/Verification is your work here/);
+    expect(skill.markdown).toMatch(/needs-you-add\\?`? refuses Search Console, Bing and IndexNow verification items/);
+    // The SEO Specialist is told to update the Connector before parking a task.
+    expect(skill.markdown).toMatch(/do not park the task on Needs you first: run \\?`wp-health\\?` and \\?`wp-connector\\?` update/);
     expect(skill.markdown).toContain("Never invent data");
   });
 
@@ -127,3 +146,18 @@ describe("skill", () => {
     for (const tool of SEO_TOOLS) expect(TOOLS_DOC).toContain(`### ${tool.name}`);
   });
 });
+
+describe("0.12.0 tool descriptions: the WordPress verification route", () => {
+  const desc = (name: string) => SEO_TOOLS.find((t) => t.name === name)!.description;
+  it("describe wp-verify next to the repo route", () => {
+    for (const name of ["gsc-verification-token", "gsc-verify-site", "gsc-check-access", "indexnow-key", "bing-add-site", "bing-verify-site"]) expect(desc(name), name).toMatch(/wp-verify/);
+    expect(desc("gsc-check-access")).toMatch(/does NOT email the client first/);
+    expect(desc("gsc-check-access")).toMatch(/wp-connector update/);
+    expect(desc("gsc-check-access")).toMatch(/after that route failed/);
+    expect(desc("gsc-verification-token")).toMatch(/site repo, or on a WordPress site/);
+    expect(desc("needs-you-add")).toMatch(/never Search Console, Bing or IndexNow verification on a WordPress site/);
+    const params = SEO_TOOLS.find((t) => t.name === "needs-you-add")!.parametersSchema as { properties: Record<string, unknown> };
+    expect(params.properties.wpVerifyFailed).toBeDefined();
+  });
+});
+

@@ -68,6 +68,28 @@ export function selectDueTasks<T extends DueCandidate>(tasks: T[], day: number):
   return tasks.filter((task) => task.status === "not_started" && !task.issueId && isDue(task, day));
 }
 
+/**
+ * How many agent task issues one sprint may have in flight (opened and not finished). The daily run tops the sprint up to
+ * this many, so a new sprint releases its plan in steps instead of waking the agent for every due task at once.
+ * "Start now" on the SEO plan is the person's way past it.
+ */
+export const SPRINT_ISSUE_CAP = 8;
+
+/** Sprints start their daily run 0 to (SPREAD - 1) hours after the configured hour, so they do not all fire in one tick. */
+export const DAILY_STAGGER_SPREAD = 3;
+
+/** A stable 0..spread-1 hour offset for a sprint (from its id), so a sprint always runs at the same time of day. */
+export function dailyStaggerHours(sprintId: string, spread = DAILY_STAGGER_SPREAD): number {
+  let sum = 0;
+  for (const ch of sprintId) sum = (sum * 31 + ch.charCodeAt(0)) % 1_000_003;
+  return sum % Math.max(1, spread);
+}
+
+/** How many more issues the daily run may open for a sprint that already has `inFlight` agent issues open. */
+export function issueRoom(inFlight: number, cap = SPRINT_ISSUE_CAP): number {
+  return Math.max(0, cap - Math.max(0, inFlight));
+}
+
 export type AgentAvailability = { id: string; status: string; name?: string | null } | null;
 
 export type Assignment =

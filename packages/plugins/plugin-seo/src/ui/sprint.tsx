@@ -19,6 +19,7 @@ import {
   FileText,
   HeartPulse,
   Info,
+  Input,
   KpiCard,
   Lightbulb,
   ListChecks,
@@ -480,6 +481,50 @@ function needsYouParts(bundle: SprintBundle, short: boolean): Array<{ text: stri
   return parts;
 }
 
+/** Ask for a redesign of one page: the Senior Developer designs it and shows it as a client preview. Not part of the plan unless asked. */
+function RedesignRequest({ sprintId, call }: { sprintId: string; call: CallFn }) {
+  const [open, setOpen] = useState(false);
+  const [pageUrl, setPageUrl] = useState("");
+  const [goal, setGoal] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await call("add-redesign", { sprintId, pageUrl, goal }, "Redesign started. The Senior Developer designs it; it comes back as a preview the Reviewer checks.");
+      setOpen(false);
+      setPageUrl("");
+      setGoal("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 12, color: tokens.muted }}>
+        <Button type="button" variant="secondary" style={small} onClick={() => setOpen(true)}>Ask for a redesign</Button>
+        <span>A page looks dated or off-brand? The Senior Developer designs a better one; nothing changes until the client signs off.</span>
+      </div>
+      <Modal
+        open={open}
+        title="Ask for a redesign"
+        description="One page. The Senior Developer designs it and shows it as a client preview, checked by the Reviewer on desktop and phone."
+        onClose={() => setOpen(false)}
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="button" disabled={busy || !pageUrl.trim() || !goal.trim()} onClick={() => void submit()}>Start the redesign</Button>
+          </>
+        )}
+      >
+        <div style={{ display: "grid", gap: 12 }}>
+          <Field label="Page"><Input value={pageUrl} placeholder="/ or https://client.co.za/about" onChange={(e) => setPageUrl(e.target.value)} /></Field>
+          <Field label="What is wrong, and what should it feel like?"><TextArea value={goal} rows={5} placeholder="e.g. The home page is dense and dated. Keep the dark theme and the auction listings, but make the first screen clearer and the intro look designed." onChange={(e) => setGoal(e.target.value)} /></Field>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
 function PlanTab({ bundle, today, agent, canWork, call, onTab }: { bundle: SprintBundle; today: string; agent: AgentState; canWork: boolean; call: CallFn; onTab: (tab: TabId) => void }) {
   const narrow = useIsNarrow();
   const [selected, setSelected] = useState<Task | null>(null);
@@ -507,6 +552,7 @@ function PlanTab({ bundle, today, agent, canWork, call, onTab }: { bundle: Sprin
 
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+      {bundle.sprint.status !== "archived" ? <RedesignRequest sprintId={bundle.sprint.sprintId} call={call} /> : null}
       {needs.length ? (
         <Banner tone="warn" action={<Button type="button" variant="secondary" style={{ ...small, minHeight: 40 }} onClick={() => onTab(needs[0]!.tab)}>Open</Button>}>
           <span><strong>Needs you:</strong> {needs.map((n) => n.text).join(" · ")}</span>
@@ -607,7 +653,7 @@ function PlanTab({ bundle, today, agent, canWork, call, onTab }: { bundle: Sprin
         ) : null}
       </SectionCard>
       <SprintOverview bundle={bundle} today={today} canWork={canWork} />
-      <PlanGrid bundle={bundle} canWork={canWork} onSelect={setSelected} />
+      <PlanGrid bundle={bundle} canWork={canWork} onSelect={setSelected} call={call} />
       <TaskSheet task={selected} bundle={bundle} agent={agent} canWork={canWork} onClose={() => setSelected(null)} call={call} />
     </div>
   );
@@ -682,7 +728,7 @@ function SprintOverview({ bundle, today, canWork }: { bundle: SprintBundle; toda
 }
 
 /** The 13-week plan as chips, coloured by state (engine/due.ts). */
-function PlanGrid({ bundle, canWork, onSelect }: { bundle: SprintBundle; canWork: boolean; onSelect: (t: Task) => void }) {
+function PlanGrid({ bundle, canWork, onSelect, call }: { bundle: SprintBundle; canWork: boolean; onSelect: (t: Task) => void; call: CallFn }) {
   const narrow = useIsNarrow();
   const day = bundle.sprint.day;
   const weekColumns = `${narrow ? 58 : 72}px minmax(0, 1fr)`;
@@ -703,6 +749,16 @@ function PlanGrid({ bundle, canWork, onSelect }: { bundle: SprintBundle; canWork
               <div key={w} style={{ display: "grid", gridTemplateColumns: weekColumns, gap: narrow ? 8 : 10, alignItems: "start" }}>
                 <div style={{ fontSize: 12, fontWeight: current ? 700 : 500, color: current ? tone("accent").fg : tokens.muted, paddingTop: 5, display: "flex", alignItems: "center", gap: 5 }}>
                   {current ? <StatusDot tone="accent" pulse label="This week" /> : null}Week {w}
+                  {upcomingCount(items, day) > 0 && bundle.sprint.status !== "paused" ? (
+                    <button
+                      type="button"
+                      title={`Open the ${upcomingCount(items, day)} upcoming task${upcomingCount(items, day) === 1 ? "" : "s"} of week ${w} now instead of on their day`}
+                      onClick={() => void call("start-tasks-now", { sprintId: bundle.sprint.sprintId, week: w }, `Week ${w} started. The agent picks the tasks up in its next runs.`)}
+                      style={{ appearance: "none", border: `1px solid ${tokens.border}`, background: "transparent", color: tokens.muted, borderRadius: 6, padding: "1px 6px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}
+                    >
+                      Start
+                    </button>
+                  ) : null}
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {items.map((t) => <TaskChip key={t.id} task={t} state={stateOf(t, day, canWork)} onClick={() => onSelect(t)} />)}
@@ -722,6 +778,11 @@ function PlanGrid({ bundle, canWork, onSelect }: { bundle: SprintBundle; canWork
       </ScrollX>
     </SectionCard>
   );
+}
+
+/** Tasks of a plan week that have not started and whose day has not come yet. */
+function upcomingCount(items: Task[], day: number): number {
+  return items.filter((t) => t.status === "not_started" && t.dueDay != null && t.dueDay > day).length;
 }
 
 function TaskChip({ task, state, onClick }: { task: Task; state: TaskState; onClick: () => void }) {
@@ -792,6 +853,9 @@ function TaskSheet({ task, bundle, agent, canWork, onClose, call }: { task: Task
       onClose={onClose}
       footer={open ? (
         <>
+          {state === "upcoming" && task.status === "not_started" ? (
+            <Button type="button" variant="secondary" onClick={() => void call("start-tasks-now", { sprintId: bundle.sprint.sprintId, taskId: task.id }, "Started. The agent picks it up in its next run.").then(onClose)}>Start now</Button>
+          ) : null}
           <Button type="button" variant="secondary" disabled={!note.trim()} onClick={() => void call("skip-task", { taskId: task.id, reason: note }, "Task skipped.").then(onClose)}>Skip (reason below)</Button>
           <Button type="button" onClick={() => void call("complete-task", { taskId: task.id, summary: note.trim() || "Marked done from the SEO page." }, "Task done.").then(onClose)}>Mark done</Button>
         </>

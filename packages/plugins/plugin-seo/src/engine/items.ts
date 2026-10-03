@@ -42,11 +42,31 @@ export function wpConnectorItem(input: { clientName: string | null; clientPath: 
     key: "wp_connector",
     kind: "grant",
     title: `Connect the PiB Connector on ${input.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}`,
-    why: "This WordPress site is changed through the PiB Connector (SEO fields, schema, redirects, robots and sitemap). It is not connected yet, so the agent cannot change the site.",
+    why: "This WordPress site is changed through the PiB Connector (SEO fields, schema, redirects, robots, sitemap, image alt text, featured images and page copy). It is not connected yet, so the agent cannot change the site.",
     steps: wpConnectorSteps(input.clientName, input.siteUrl),
     links: [{ label: "CRM client → Websites", url: input.clientPath }],
     after: "Reads the site's health through the Connector and carries on with the waiting SEO changes, verifying each on the live site.",
     check: "wp_connector",
+    taskIds,
+  };
+}
+
+/** The one-time SFTP login for a WordPress site: lets the agent edit theme and template files itself. */
+export function wpSftpItem(input: { clientName: string | null; clientPath: string; siteUrl: string; projectPath: string | null }, taskIds: string[] = []): NewNeedsYouItem {
+  const host = input.siteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return {
+    key: "wp_sftp",
+    kind: "grant",
+    title: `Add the SFTP login for ${host}`,
+    why: "Some fixes live in the theme or a plugin's template files (for example an empty alt on a decorative icon), which the PiB Connector cannot edit. With the site's SFTP login the agent makes these small markup edits itself, with a backup, a checksum readback, a live check and an automatic rollback.",
+    steps: [
+      "Paperclip → Company settings → **Secrets**: add one secret per value (host, user, password or private key) from the hosting panel or the macOS Keychain.",
+      `Open the ${input.clientName ?? "client"} project → Settings → **Env** and bind them as WP_SFTP_HOST, WP_SFTP_PORT (22 if empty), WP_SFTP_USER and WP_SFTP_PASSWORD (or WP_SFTP_KEY).`,
+      `CRM → ${input.clientName ?? "the client"} → **Websites** → ${host}: tick **SFTP** under access and set the web root (the folder that contains wp-content).`,
+    ],
+    links: [{ label: "CRM client → Websites", url: input.clientPath }, ...(input.projectPath ? [{ label: "Client project", url: input.projectPath }] : [])],
+    after: "Carries on with the waiting theme and template edits: backup, upload, checksum readback, live check, rollback if anything looks wrong.",
+    check: "wp_sftp",
     taskIds,
   };
 }

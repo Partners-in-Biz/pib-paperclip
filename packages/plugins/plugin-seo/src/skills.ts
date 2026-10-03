@@ -67,11 +67,12 @@ Use these words in digests and comments: "3 due, 1 overdue", never "task(s)".
 ## Autonomy: what you do alone
 
 - **Site changes** go through the site repo. The sprint links a Paperclip project whose workspace is the repo (\`get-site-link\`, \`link-site\`, \`list-site-projects\`); code and content tasks open in that project so you run inside the repo workspace. Flow: branch \`seo/<task-key>\` → commit → push → PR → CI and the Vercel preview → verify on the preview with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\` → \`check-change-scope\` → merge, or leave the PR on Needs you → after the deploy re-check production → \`complete-task\` with PR, commit and check output. Full procedure (git + GitHub REST with $GITHUB_TOKEN, no gh needed): \`references/site-changes.md\`.
-- **WordPress sites** (site access \`wordpress\`): the sprint links one of the client's CRM websites and you change it through the PiB Connector with the CRM's tools, always passing \`siteId\` (from \`get-site-link\`): \`partnersinbiz.crm:wp-health\` first, then \`wp-seo\` (op get → op set with a \`reason\`), \`wp-schema\`, \`wp-redirects\`, \`wp-robots\`, \`wp-sitemap\`; \`wp-log\` / \`wp-undo\` reverse any change. Verify live with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`. \`merge_seo_scope\` / \`full\`: apply SEO fields, schema, redirects, robots lines and sitemap settings yourself; \`pr_only\`: the change set goes on Needs you. Connector not connected: \`needs-you-add\` key \`wp_connector\`, then \`block-task\`. Plugin installs (\`wp-plugins\`) always go to a person. Full procedure: \`references/wordpress.md\`.
+- **WordPress sites** (site access \`wordpress\`): the sprint links one of the client's CRM websites and you change it through the PiB Connector with the CRM's tools, always passing \`siteId\` (from \`get-site-link\`): \`partnersinbiz.crm:wp-health\` first, then \`wp-seo\` (op get / list / set with a \`reason\`: pages, categories, archives, share images), \`wp-schema\`, \`wp-redirects\`, \`wp-robots\`, \`wp-sitemap\`, \`wp-media\` (sideload, featured image, alt text), \`wp-content\` (page copy edits, in-content alt text, new pages as drafts, publishing your own drafts) and \`wp-connector\` (update the Connector itself) and \`wp-verify\` (Search Console, Bing and IndexNow verification tags and root files, Connector 1.2+); \`wp-log\` / \`wp-undo\` reverse any change. Verify live with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`. \`merge_seo_scope\` / \`full\`: apply all of that yourself; \`pr_only\`: the change set goes on Needs you. Connector not connected: \`needs-you-add\` key \`wp_connector\`, then \`block-task\`. **Verification is your work here:** \`gsc-verification-token\` (META, property url) → \`wp-verify\` → \`gsc-verify-site\`; \`bing-add-site\` → \`wp-verify\` → \`bing-verify-site\`; \`indexnow-key\` → \`wp-verify\` (op get first, op set replaces the lists). \`gsc-check-access\` does not email the client on such a site until that route failed, and \`needs-you-add\` refuses Search Console, Bing and IndexNow verification items. Still a person: plugin installs, rollbacks and deactivation (\`wp-plugins\`), Merchant Center account creation (a Google account and business details), deleting anything, publishing anything the Connector did not create, a site's settings and users, theme changes beyond template markup, and anything that needs an image you have no source for (ask for the asset). **Template markup in a theme or plugin file** (an empty \`alt=""\` on a decorative icon, a missing \`alt\`, a \`<title>\` or heading tag, a meta or link tag; never logic, PHP control flow, scripts, forms or styling) is yours when the site has SFTP access: \`check-change-scope\` with category \`theme_markup\` and a path like \`wp:theme:<file>\`, then the theme-edit routine in the CRM's \`wp-sites\` skill (backup, php -l, upload, checksum readback, live check, rollback). No SFTP login yet: \`needs-you-add\` key \`wp_sftp\` (one grant, then it is yours from then on), then \`block-task\`. **When the Connector lacks an ability, do not park the task on Needs you first: run \`wp-health\` and \`wp-connector\` update** (a Connector older than 1.1 needs one manual zip upload, then you keep it current yourself). Full procedure: \`references/wordpress.md\`.
+  **On a WordPress sprint a note about GitHub, a token or a site repo does not apply: never look for a repo, and never check out an unrelated repo you find (a Next.js rebuild of the site is not the live site). A task that is blocked on a person stays blocked: a wake with nothing new (a repeat wake, "are you done?", a general note) gets at most one short comment, and only if the state really changed; do not re-verify and re-post the same status.**
 - **Change policy** (per sprint): \`merge_seo_scope\` (default) — merge yourself when every changed file is SEO scope and checks pass; \`pr_only\` — never merge; \`full\` — merge any SEO-plan change when checks pass. Only people raise it.
-- **Search Console** runs through one Google **service account**. Own sites: \`gsc-verification-token\` → add the meta tag (or file) through the repo → \`gsc-verify-site\` (verifies, adds the property, submits the sitemap). Client sites: \`gsc-check-access\`; without access it puts the email for the client (service account email + Users link) on Needs you. The OAuth connection is only a fallback.
-- **Crawling:** Google has no public "Request indexing" API for normal pages. \`indexnow-key\` (key file through the repo) → \`request-indexing\` (sitemap + IndexNow + URL Inspection). The daily run follows up after 14 days.
-- **Bing:** \`bing-add-site\` → BingSiteAuth.xml through the repo → \`bing-verify-site\` → \`bing-submit\`.
+- **Search Console** runs through one Google **service account**. Own sites: \`gsc-verification-token\` → add the meta tag (or file) through the repo (WordPress with a Connector 1.2+: through \`wp-verify\`, client sites too) → \`gsc-verify-site\` (verifies, adds the property, submits the sitemap). Other client sites: \`gsc-check-access\`; without access it puts the email for the client (service account email + Users link) on Needs you. The OAuth connection is only a fallback.
+- **Crawling:** Google has no public "Request indexing" API for normal pages. \`indexnow-key\` (key file through the repo, or \`wp-verify\` on WordPress) → \`request-indexing\` (sitemap + IndexNow + URL Inspection). The daily run follows up after 14 days.
+- **Bing:** \`bing-add-site\` → BingSiteAuth.xml or the msvalidate.01 tag through the repo (or \`wp-verify\`) → \`bing-verify-site\` → \`bing-submit\`.
 - **Setup:** \`setup-checklist\` shows every one-time grant and its status. Missing grants are raised on Needs you automatically; standard ones via \`needs-you-add\` with key \`github_token\`, \`site_project\`, \`service_account\`, \`bing_key\` or \`wp_connector\`.
 
 ## Rules
@@ -328,59 +329,102 @@ Wait for the production deployment of the merge commit (deployment status \`succ
 
 export const WORDPRESS_DOC = `# WordPress sites through the PiB Connector
 
-A sprint in site access \`wordpress\` is linked to one of its client's CRM websites. The site runs the **PiB Connector**, a small WordPress plugin a person installs once. You change the site only through the CRM's Connector tools, and every call takes \`siteId\` (\`get-site-link\` → \`siteId\`, or \`today\` → \`siteRepo.siteId\`). Writes take a \`reason\`: one plain sentence naming the task and why (it is stored in the site's change log). Code and content tasks stay in the SEO project; there is no repo and no branch.
+A sprint in site access \`wordpress\` is linked to one of its client's CRM websites. The site runs the **PiB Connector**, a small WordPress plugin a person installs once; after that you keep it up to date yourself. You change the site only through the CRM's Connector tools, and every call takes \`siteId\` (\`get-site-link\` → \`siteId\`, or \`today\` → \`siteRepo.siteId\`). Writes take a \`reason\`: one plain sentence naming the task and why (it is stored in the site's change log). Every issue of the sprint opens in the client's own Paperclip project; there is no repo and no branch.
 
 | Tool | What it does |
 |---|---|
-| \`partnersinbiz.crm:wp-health\` | WordPress, PHP and theme versions, the SEO plugin, the sitemap provider, \`blogPublic\`, active plugins, pending updates |
-| \`partnersinbiz.crm:wp-seo\` | op \`get\` / \`set\` per page (\`url\` or \`postId\`): title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription |
+| \`partnersinbiz.crm:wp-health\` | WordPress, PHP and theme versions, the SEO plugin, the sitemap provider, \`blogPublic\`, active plugins, pending updates, the installed Connector version |
+| \`partnersinbiz.crm:wp-seo\` | op \`get\` / \`set\` for a page (\`url\` or \`postId\`), a category or tag (\`termId\`, \`taxonomy\`) or a post type archive such as the shop (\`postTypeArchive\`): title, description, canonical, noindex, nofollow, focusKeyword, ogTitle, ogDescription, \`ogImage\`. op \`list\` audits many pages (\`postType\`, \`status\`, \`search\`, \`page\`, \`perPage\`, \`missing\`) |
 | \`partnersinbiz.crm:wp-schema\` | JSON-LD pieces per page or for the whole site (\`site: true\`), each under a stable \`id\` |
 | \`partnersinbiz.crm:wp-redirects\` | list, set (301/302/307/308/410) and delete redirects |
 | \`partnersinbiz.crm:wp-robots\` | extra robots.txt lines; \`allowSearchEngines: true\` switches "Discourage search engines" off |
 | \`partnersinbiz.crm:wp-sitemap\` | the SEO plugin's sitemap on or off (Yoast), posts left out of the sitemap |
+| \`partnersinbiz.crm:wp-media\` | Media Library: op \`list\` (\`missingAlt\`), \`sideload\` an image from an https URL, \`set-featured\` (a post's featured image), \`alt\` (alt text on up to 50 images) |
+| \`partnersinbiz.crm:wp-content\` | op \`get\`, \`images\`, \`img-alt\` (alt text on in-content images), \`update\` (title, content, excerpt, slug of an existing post or page), \`create\` (a new page or post, always a draft), \`publish\` (your own draft only) |
+| \`partnersinbiz.crm:wp-verify\` | Connector 1.2+: op \`get\` / \`set\` for verification meta tags (\`google-site-verification\`, \`msvalidate.01\`, …) and root files (IndexNow \`/<key>.txt\`, Google \`/google<hex>.html\`, \`/BingSiteAuth.xml\`); set replaces the lists you send |
+| \`partnersinbiz.crm:wp-connector\` | op \`update\` (installs the Connector build Paperclip ships; you cannot pass a URL) and \`rollback\` (restores the backup an update made) |
 | \`partnersinbiz.crm:wp-log\` | the last 200 changes with before and after |
 | \`partnersinbiz.crm:wp-undo\` | reverse one change by its \`changeId\` |
 
 ## 1. Read the site first
 
-Call \`wp-health\` at the start of each task. Note the SEO plugin (Yoast, Rank Math or none), the sitemap provider and \`blogPublic\`.
+Call \`wp-health\` at the start of each task. Note the SEO plugin (Yoast, Rank Math or none), the sitemap provider, \`blogPublic\` and the Connector version.
 
 - **Keep Yoast or Rank Math installed.** The Connector writes into their own fields, so wp-admin and the live page stay in step. Never suggest removing them.
 - **\`blogPublic\` false** ("Discourage search engines" is on) blocks the whole site from Google. It is the top finding on the sprint. Under \`merge_seo_scope\` or \`full\` fix it with \`wp-robots\` \`allowSearchEngines: true\` and a reason; under \`pr_only\` put it on Needs you first.
 - The Connector not connected (a 401 or "not paired" error, or \`get-site-link\` says so): \`needs-you-add\` with key \`wp_connector\` and this task in \`taskIds\`, then \`block-task\`. The item closes itself when the CRM sees the Connector connected, and the task comes back to you.
 
-## 2. Check the change scope
+## 2. Keep the Connector current (before you park anything)
 
-List what you plan to change as \`wp:<area>:<target>\` with a category and call \`check-change-scope\`, e.g. \`{ "path": "wp:seo:/about", "category": "head_metadata" }\`, \`{ "path": "wp:schema:site/localbusiness", "category": "json_ld" }\`, \`{ "path": "wp:redirects:/old-page", "category": "seo_redirect" }\`, \`{ "path": "wp:robots", "category": "sitemap_robots" }\`.
+A tool answering that a route is missing, or \`check-client-site\` warning "Connector X is out of date (bundled Y)", means the plugin on the site is older than the tools. **Do not put the task on Needs you for that.** Read the warning:
 
-- **apply**: every change is SEO scope and the policy lets you (\`merge_seo_scope\` or \`full\`). Make it yourself.
-- **pr_only**: the policy is \`pr_only\`, or something is out of scope (new pages, copy, alt text, plugins). Write the exact change set (page, field, old value, new value) and \`needs-you-add\` it (kind \`task\`, the change set in \`copy\`, \`taskIds\` this task), then \`block-task\`.
+- **Connector 1.1 or newer:** run \`partnersinbiz.crm:wp-connector\` op \`update\` with a \`reason\`. The CRM sends the shipped build itself; you never pass a URL or a checksum. Afterwards \`check-client-site\` (it should report the new version) and re-check a page with \`check-meta\`. If the site misbehaves, \`wp-connector\` op \`rollback\` with the \`backupId\` from the update result, then put the problem on Needs you.
+- **Connector 1.0.x:** it has no update route. One person uploads the new zip once in wp-admin → Plugins → Add New → Upload Plugin (replace the current one). \`needs-you-add\` that as a one-time grant with the download link from the warning, \`block-task\`; after that you update it yourself.
+- **The update tool says the feature is off:** a person switches "Connector updates" on in wp-admin → Settings → PiB Connector: one Needs you item.
 
-## 3. SEO fields, page by page
+## 3. Check the change scope
 
-For each page: \`wp-seo\` op \`get\` → decide from the stored values (null means the page falls back to the SEO plugin's template) → op \`set\` with only the fields that change and a \`reason\`. Keep the answer's \`changeId\`.
+List what you plan to change as \`wp:<area>:<target>\` with a category and call \`check-change-scope\`, e.g. \`{ "path": "wp:seo:/about", "category": "head_metadata" }\`, \`{ "path": "wp:schema:site/localbusiness", "category": "json_ld" }\`, \`{ "path": "wp:redirects:/old-page", "category": "seo_redirect" }\`, \`{ "path": "wp:robots", "category": "sitemap_robots" }\`, \`{ "path": "wp:media:/about", "category": "media" }\`, \`{ "path": "wp:content:/about", "category": "page_copy" }\`, \`{ "path": "wp:images:/about", "category": "image_alt" }\`, \`{ "path": "wp:page:/durban-drain-repairs", "category": "new_content" }\`.
+
+- **apply**: every change is in the Connector's scope and the policy lets you (\`merge_seo_scope\` or \`full\`). Make it yourself.
+- **pr_only**: the policy is \`pr_only\`, or something is a person's job (see Never). Write the exact change set (page, field, old value, new value) and \`needs-you-add\` it (kind \`task\`, the change set in \`copy\`, \`taskIds\` this task), then \`block-task\`.
+
+## 4. SEO fields, page by page
+
+For each page: \`wp-seo\` op \`get\` → decide from the stored values (null means the page falls back to the SEO plugin's template) → op \`set\` with only the fields that change and a \`reason\`. Keep the answer's \`changeId\`. To audit a whole site, \`wp-seo\` op \`list\` with \`missing: ["title","description","ogImage"]\` finds the pages that need work; page through it with \`page\`.
+
+- **Categories, tags and product categories:** \`termId\` (and \`taxonomy\` when the id could belong to more than one). **Archives and the shop:** \`postTypeArchive: "product"\`. On WooCommerce the shop page writes to the product archive settings too (Yoast only); archives take no canonical or nofollow.
+- **Share images:** \`ogImage\` takes an https URL or a site-relative path; use the URL of an image already in the Media Library. No \`ogImage\` and no featured image means the page shares without a picture: that is a finding.
 
 Verify on the live page with \`check-meta\` (with \`sprintId\`, so findings resolve). Pages are often cached: if the old title or description still shows, wait 2 minutes and check again. Still old: note a possible page cache on the task and \`needs-you-add\` an item to purge the site's cache (the caching plugin or the host panel), with the page URLs.
 
-## 4. Schema
+## 5. Images: alt text, featured and share images
+
+- **Alt text.** Library images: \`wp-media\` op \`list\` with \`missingAlt: true\`, then op \`alt\` (up to 50 per call). Images inside page copy: \`wp-content\` op \`images\` (index, src, alt), then op \`img-alt\` with the indexes to change; only the \`alt\` attributes change. Alt text describes the picture in context, plain text, under 300 characters; decorative images stay empty. Verify with \`crawler-sim\`.
+- **Where an image comes from.** Never hotlink, scrape or copy an image you have no rights to. Use, in this order: (1) an image already in the site's Media Library (\`wp-media\` op \`list\`); (2) the client's own asset: a URL from their Drive or brand kit, or a media asset in the client's Social scope (\`partnersinbiz.social:list-media-assets\`, public https URLs); (3) an image you generate, if your run has an image-generation tool (check your tools; this plugin has none) and the client's brand allows generated images. Then \`wp-media\` op \`sideload\` with an \`imageUrl\` (jpeg, png, webp, gif or avif, up to 10 MB; the same URL is not duplicated; a sideload cannot be undone, so use it only for an image you mean to keep), with \`alt\` and a sensible \`filename\`.
+- **No source for the image?** Ask for the asset, not for a wp-admin edit: \`needs-you-add\` naming the page, the image needed (subject, size) and where to put it (the client's Drive folder or the Social media library). Carry on with other work; when the asset is there, sideload it yourself.
+- **Featured image:** \`wp-media\` op \`set-featured\` (\`postId\` plus \`attachmentId\` or \`imageUrl\`). **Share image:** \`wp-seo\` op \`set\` with \`ogImage\`.
+
+## 6. Page copy and new pages
+
+- **Editing existing copy:** \`wp-content\` op \`get\` first, change the smallest thing that does the job, then op \`update\` with only the fields that change and a \`reason\`. The content is block markup; \`update\` replaces the whole \`content\`, so start from what \`get\` returned. The site refuses scripts, iframes, forms and event handlers that are not already in the content, and keeps the last 5 versions (\`wp-undo\` restores one). A changed \`slug\` on a page with traffic also needs a \`wp-redirects\` entry. Never touch status, author or password: the Connector ignores them.
+- **New pages and posts:** \`wp-content\` op \`create\` (a \`page\` by default) makes a **draft**, never a live page. Check it at the \`previewUrl\`. Publish it with op \`publish\` only when the task says to publish, and only for a draft the Connector created; anything else it refuses. A page that is not yours to publish goes on Needs you with the link to review.
+- Put internal links inside the copy with \`update\` (category \`internal_links\`). Verify live pages with \`check-meta\` and \`crawler-sim\`; a new page also with \`check-sitemap\`.
+
+## 7. Schema
 
 \`wp-schema\` with a stable, readable \`id\` per piece, e.g. \`localbusiness\` or \`organization\` for the site (\`site: true\`) and \`faq-home\` or \`service-<slug>\` for a page. Setting the same \`id\` again replaces the piece, so never make a new id for the same thing. With Yoast or Rank Math the piece joins their schema graph; do not add a second Organization or WebSite next to theirs. Then \`validate-schema\` on the live page.
 
-## 5. Redirects, robots and sitemap
+## 8. Redirects, robots and sitemap
 
 - \`wp-redirects\` set for moved or duplicate URLs (301 by default, 410 for pages gone for good). Before you redirect a page, check whether it has traffic or rankings (\`gsc-query\` by page, tracked keywords); if it does, say so in the \`reason\` and on the task. Never create chains: point to the final URL.
 - \`wp-robots\` \`extraLines\` only adds lines (e.g. a \`Sitemap:\` line). The Connector refuses a blanket \`Disallow: /\`.
 - \`wp-sitemap\` leaves thin or duplicate posts out (\`excludePostIds\`) or switches Yoast's sitemap on. Then \`check-sitemap\` and \`check-robots\`.
 
-## 6. Reversible, logged, then done
+## 9. Search engine verification (yours, not the client's)
 
-Every write is in \`wp-log\` with its before and after. If a check shows a change did harm, \`wp-undo\` its \`changeId\` and note it on the task. Finish with \`complete-task\`: the pages changed, the \`changeId\`s and the check output as artifacts.
+Connector 1.2+ prints verification meta tags and serves root key files itself (nothing is written to disk, so a read-only web root does not matter). \`wp-verify\` op \`get\` first, then op \`set\` with the existing entries plus your addition: it replaces the whole \`metaTags\` and \`files\` lists you send. Always fetch the live page or file afterwards and confirm the exact content and a 200.
 
-## Never
+- **Search Console:** \`gsc-verification-token\` (method META, property url) → \`wp-verify\` set \`metaTags [{ name: "google-site-verification", content }]\` → \`check-meta\` → \`gsc-verify-site\`. The service account becomes a verified owner of the URL-prefix property, so the client grants nothing and \`gsc-check-access\` does not email them. Only if this route fails does it queue the client email, and it records why on the sprint.
+- **Bing:** \`bing-add-site\` → \`wp-verify\` set \`metaTags [{ name: "msvalidate.01", content }]\` or \`files [{ path: "/BingSiteAuth.xml", content }]\` → \`bing-verify-site\`.
+- **IndexNow:** \`indexnow-key\` → \`wp-verify\` set \`files [{ path: "/<key>.txt", content: "<key>" }]\` → \`indexnow-key\` (confirms it is live) → \`request-indexing\`.
+- A tool saying the route is missing means Connector older than 1.2: \`wp-connector\` update first (section 2).
+- \`needs-you-add\` refuses these items on such a site unless \`wpVerifyFailed\` says what you tried and the error. Existing items of this kind are closed as superseded by the daily check and the task comes back to you.
 
-- Install, update or remove plugins yourself: \`partnersinbiz.crm:wp-plugins\` always goes to Needs you for a person.
-- Delete posts, pages or users, or edit theme files. The Connector cannot, and a person does it in wp-admin if needed.
-- Remove or replace Yoast or Rank Math.
+## 10. Reversible, logged, then done
+
+Every write is in \`wp-log\` with its before and after. If a check shows a change did harm, \`wp-undo\` its \`changeId\` and note it on the task (image uploads and Connector updates are not undoable: leave the upload, roll the Connector back with \`wp-connector\` op \`rollback\`). Finish with \`complete-task\`: the pages changed, the \`changeId\`s and the check output as artifacts.
+
+## Still a person (Needs you)
+
+- Plugin installs and rollbacks (\`partnersinbiz.crm:wp-plugins\`): you never run them. Deactivating a plugin is a person too (wp-admin; deactivate, never delete). An active Open Graph plugin (duplicate og: tags) or maintenance / coming-soon plugin that \`check-client-site\` warns about is fixed first with \`wp-seo\` and checked with \`check-meta\` / \`crawler-sim\`; only then is the deactivation (never deletion) put on Needs you.
+- Merchant Center account creation (a Google account and business details).
+- Deleting anything (posts, pages, media, users). The Connector cannot.
+- Publishing anything the Connector did not create, or unpublishing a page.
+- Changing a site's theme, settings or users, or editing theme files.
+- A new page, featured image or share image that needs an image you have no source for: ask for the asset (see 5), not for a wp-admin edit.
+- The one-time zip upload for a Connector older than 1.1 (see 2), and switching a Connector feature on in wp-admin.
+- Removing or replacing Yoast or Rank Math: never.
 `;
 
 function renderSiteChanges(): string {

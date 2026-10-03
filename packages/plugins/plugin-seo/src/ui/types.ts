@@ -200,6 +200,10 @@ export type SprintBundle = {
   needsYou: NeedsYouView | null;
   setup: SetupItem[];
   projects: ProjectOption[];
+  /** What the copy may claim about how the client's business works. */
+  clientFacts?: { status: "draft" | "confirmed" | "none"; facts: Array<{ kind: "say" | "avoid"; text: string; source?: string | null }>; updatedAt: string | null };
+  /** Client previews made for this sprint (newest first). */
+  previews?: PreviewItem[];
   /** The sprint client's WordPress sites from the CRM (wordpress site mode). */
   wordpressSites?: WordPressSite[];
   /** The scope's learned playbook: version and changes waiting for a decision. */
@@ -209,3 +213,21 @@ export type SprintBundle = {
 export type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "playbook" | "integrations";
 
 export type CallFn = (tool: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;
+
+export type PreviewItem = {
+  id: string;
+  pageUrl: string;
+  title: string;
+  status: string;
+  reviewStatus: string;
+  reviewNote: string | null;
+  decisionNote: string | null;
+  keptPct: number | null;
+  addedWords: number | null;
+  renderedChecked: boolean;
+  createdAt: string;
+  expiresAt: string;
+  url: string;
+  reviewUrl: string | null;
+  superseded: boolean;
+};

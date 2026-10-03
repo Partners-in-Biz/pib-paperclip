@@ -264,7 +264,7 @@ export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [],
       {site.siteAccess === "wordpress" ? (
         <span style={{ fontSize: 13, color: tokens.muted, display: "grid", gap: 4 }}>
           <span>
-            The agent changes this WordPress site through the PiB Connector: SEO fields, schema, redirects, robots and sitemap, each checked on the live site.
+            The agent changes this WordPress site through the PiB Connector: SEO fields, schema, redirects, robots, sitemap, image alt text, featured images and page copy, each checked on the live site.
             {current ? <> Site: <code style={breakAnywhere}>{siteHost(current.url)}</code> · {current.summary}.</> : " The linked site is no longer in the CRM: pick it again."}
           </span>
           {current && !current.connected ? <span style={{ color: tokens.destructive }}>The Connector is not connected yet. Connect it on the CRM client page → Websites.</span> : null}
@@ -324,6 +324,16 @@ export function SiteRepoSection({ sprintId, site, projects, wordpressSites = [],
       {picked && !picked.repoUrl ? <span style={{ fontSize: 12, color: tokens.destructive }}>This project has no repo URL on its workspace. Add one in the project first.</span> : null}
       {pickedWp && !pickedWp.connected && site.siteAccess !== "wordpress" ? (
         <span style={{ fontSize: 12, color: tokens.destructive }}>The PiB Connector is not connected on this site yet. Connect it on the CRM client page → Websites; until then the agent cannot change the site.</span>
+      ) : null}
+      {site.siteAccess === "wordpress" && site.changePolicy === "pr_only" ? (
+        <div style={{ display: "grid", gap: 6, padding: 10, border: `1px solid ${tokens.border}`, borderRadius: 8 }}>
+          <span style={{ fontSize: 12, color: tokens.muted }}>
+            This site needs the client's sign-off. The agent cannot change it, whatever it is told: it proposes changes with a preview link for the client. After the client approves, press this to let the agent apply the approved changes for 24 hours.
+          </span>
+          <div>
+            <Button type="button" variant="secondary" onClick={() => void call("approve-site-writes", { sprintId }, "Approved. The agent applies the client-approved changes for the next 24 hours.")}>Apply approved changes</Button>
+          </div>
+        </div>
       ) : null}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <Button type="button" disabled={!projectId} onClick={save}>Save</Button>

@@ -19,7 +19,7 @@ export interface Playbook {
 }
 
 const SITE_CHANGE =
-  "Make the change through the site repo (the issue's Site repo section; skill `references/site-changes.md`): branch `seo/<task>`, commit, push, open a PR, wait for CI and the preview, verify on the preview with the check tools, `check-change-scope`, then merge when it says merge (or add the PR to Needs you). No repo link (site access none): write the exact change set and add it to Needs you with `needs-you-add`.";
+  "First read `get-client-facts`: describe how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, legal or licence wording) ONLY with an approved wording from the fact sheet, otherwise leave the claim out; `create-preview` refuses anything else. Decide what the change is, then hand the BUILD to a developer with `request-build` (Developer; level senior for theme or template work, many pages or ecommerce): they branch (`seo/<task>`), commit, push and open the PR; you do not build it yourself and you end your turn until they report back (the issue's Site repo section and skill `references/site-changes.md` describe the repo flow). When they report the PR: wait for CI and the preview, verify on the preview with the check tools, `check-change-scope`, then merge when it says merge (or add the PR to Needs you). No repo link (site access none): write the exact change set and add it to Needs you with `needs-you-add`.";
 
 const AFTER_DEPLOY = "After the deploy, re-run the same checks on production and `complete-task` with the PR link, the commit and the check output.";
 
@@ -76,7 +76,8 @@ export const PLAYBOOKS: Record<string, Playbook> = {
       "Own site with a repo: `gsc-verification-token` (method META for a URL-prefix property). It returns the exact meta tag (Next.js: `metadata.verification.google`).",
       "Add the tag to the root layout's <head> through the repo — a verification file is SEO scope, so merge it yourself when checks pass. " + AFTER_DEPLOY.replace("`complete-task` with", "note"),
       "Run `gsc-verify-site`: Google verifies the tag, the service account becomes an owner, the property is added and stored, and the sitemap is submitted.",
-      "Client site without repo access: `gsc-check-access` puts the ready-to-send email (service account email + Search Console Users link) on the Needs you digest. Block this task with `block-task`; it comes back when the plugin sees access.",
+      "WordPress site with the PiB Connector (site access `wordpress`): this is your work, not the client's. `gsc-verification-token` (method META, property url) → `partnersinbiz.crm:wp-verify` op get, then op set with the existing metaTags plus `{ name: \"google-site-verification\", content }` and a reason → `check-meta` on the live home page → `gsc-verify-site`. The service account becomes a verified owner of the URL-prefix property; nobody grants anything. A Connector older than 1.2 (wp-verify says a route is missing): `partnersinbiz.crm:wp-connector` op update first. `gsc-check-access` does not email the client on such a site until this route has failed.",
+      "Client site without repo access (not WordPress): `gsc-check-access` puts the ready-to-send email (service account email + Search Console Users link) on the Needs you digest. Block this task with `block-task`; it comes back when the plugin sees access.",
       "No service account key yet: the tools put it on Needs you. Block with `block-task` and move on to other work.",
     ],
     tools: ["gsc-check-access", "gsc-verification-token", "gsc-verify-site", "check-meta", "check-change-scope", "gsc-pull"],
@@ -98,7 +99,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     goal: "The 5 most important pages are discovered and crawled: sitemap submitted, IndexNow pinged, and URL Inspection confirms their state.",
     steps: [
       "Google has no public API to 'Request indexing' for normal pages (the Indexing API is only for job postings and livestreams). Do not ask a person to click it.",
-      "Run `indexnow-key`. If the key file is not live, add it through the repo (`public/<key>.txt`; SEO scope), merge when checks pass, and wait for the deploy.",
+      "Run `indexnow-key`. If the key file is not live, add it through the repo (`public/<key>.txt`; SEO scope), merge when checks pass, and wait for the deploy. On a WordPress site with the Connector: `partnersinbiz.crm:wp-verify` op get, then op set with the existing files plus `{ path: \"/<key>.txt\", content: \"<key>\" }` and a reason, then run `indexnow-key` again to confirm it is live. Never a Needs you item.",
       "Run `request-indexing` (optionally with the 5 core URLs): it submits the sitemap to Search Console, pings IndexNow (Bing and others) and inspects each URL.",
       "Fix what the inspections show (noindex, canonical elsewhere, blocked, 4xx/5xx) as code tasks. Make sure every core page is linked from the home page.",
       "Complete the task with the inspection table. The daily run re-inspects the pages after 14 days and only then adds optional URL-inspection links to Needs you for any still not indexed.",
@@ -111,11 +112,11 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     goal: "The site is added and verified in Bing Webmaster Tools through the API, with the sitemap submitted.",
     steps: [
       "Run `bing-add-site`. Without a Bing API key it puts the key on Needs you: block this task with `block-task` and carry on elsewhere.",
-      "Add the returned BingSiteAuth.xml (`public/BingSiteAuth.xml`) or the msvalidate.01 meta tag through the repo (SEO scope), merge when checks pass, wait for the deploy.",
+      "Add the returned BingSiteAuth.xml (`public/BingSiteAuth.xml`) or the msvalidate.01 meta tag through the repo (SEO scope), merge when checks pass, wait for the deploy. On a WordPress site with the Connector: `partnersinbiz.crm:wp-verify` op get, then op set with the existing entries plus `metaTags [{ name: \"msvalidate.01\", content }]` (or `files [{ path: \"/BingSiteAuth.xml\", content }]`) and a reason; fetch the live tag or file. Never a Needs you item.",
       "Run `bing-verify-site`: it verifies, enables Bing on the sprint and submits the sitemap.",
       "(Import from Google Search Console is not available in the Bing API; the XML file is the API route.)",
     ],
-    tools: ["bing-add-site", "bing-verify-site", "bing-submit", "check-change-scope"],
+    tools: ["bing-add-site", "bing-verify-site", "bing-submit", "check-change-scope", "check-meta"],
     done: "`bing-verify-site` reports verified and the sitemap submitted.",
     evidence: "Verified site URL, the PR that added BingSiteAuth.xml, the sitemap submission.",
   },

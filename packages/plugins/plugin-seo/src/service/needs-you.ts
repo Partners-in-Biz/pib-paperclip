@@ -19,7 +19,9 @@ import {
   type NewNeedsYouItem,
 } from "../engine/needs-you.js";
 import { TERMINAL_TASK_STATUSES } from "../engine/sprint.js";
+import { verificationKindOf, verifyInstruction } from "../engine/verify-route.js";
 import { resolveAgent } from "./agent.js";
+import { assertPreviewLinksChecked } from "./preview.js";
 import {
   actorLabel,
   assignableUser,
@@ -42,7 +44,7 @@ import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "
 import { settingsPath } from "./settings-path.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { routePrReview } from "./review.js";
-import { sprintWordPressSite, wpConnectorItemFor } from "./wordpress.js";
+import { setVerifyFailure, sprintVerifyRoute, sprintWordPressSite, verifyFailureOf, sprintHasSftp, wpConnectorItemFor, wpSftpItemFor } from "./wordpress.js";
 
 const nowIso = (env: Env) => env.now().toISOString();
 
@@ -129,8 +131,65 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   return { issueId, added: merged.added, key: item.key };
 }
 
+/**
+ * An agent task whose Needs you item is open (a PR to merge, a login to add, a client's sign-off) is waiting on
+ * a person, not working. If the agent did not block-task it, the host keeps waking it ("continuation needed")
+ * and every run just re-checks the same thing. Park such tasks as blocked; `continueTasks` resumes them when the
+ * item is done. Runs from the 5-minute job; returns how many tasks it parked.
+ */
+export async function parkTasksWaitingOnYou(env: Env): Promise<number> {
+  const companies = await env.ctx.db.query(`SELECT DISTINCT company_id FROM ${db.t("sprints")} WHERE status = 'active'`);
+  let parked = 0;
+  for (const row of companies) {
+    const companyId = String(row.company_id);
+    for (const digest of await db.openNeedsYouDigests(env.ctx.db, companyId)) {
+      for (const item of digest.items) {
+        if (item.status !== "open" || item.optional || item.key.startsWith("task:")) continue;
+        for (const taskId of item.taskIds ?? []) {
+          const task = await db.getTask(env.ctx.db, companyId, taskId);
+          if (!task || task.owner !== "agent" || !task.issueId || (task.status !== "in_progress" && task.status !== "not_started")) continue;
+          if (task.assigneeKind && task.assigneeKind !== "agent" && task.assigneeKind !== "unassigned") continue;
+          try {
+            const updated = await patchIssue(env, companyId, task.issueId, { status: "blocked" });
+            if (!updated) continue;
+            await db.updateTask(env.ctx.db, companyId, task.id, { status: "blocked", issue_status: "blocked", blocker_reason: `Waiting on you: ${item.title}`, assignee_kind: "needs_you" });
+            await commentOn(env, companyId, task.issueId, `Waiting on a person: **${item.title}** (it is on the Needs you list). This task is parked; it goes back to the SEO Specialist when that is done. No need to check it again.`);
+            parked += 1;
+          } catch (error) {
+            env.ctx.logger.info("SEO park waiting task failed", { taskId, error: errorMessage(error) });
+          }
+        }
+      }
+    }
+  }
+  return parked;
+}
+
+/**
+ * The client asked for changes: the sign-off items that waited on that answer for this one task are no longer
+ * waiting (and must not park the task again). Setup items (logins, repo links) are left alone.
+ */
+export async function closeSignoffItems(env: Env, companyId: string, sprintId: string, taskId: string, note: string): Promise<number> {
+  const sprint = await requireSprint(env, companyId, sprintId);
+  const info = await companyInfo(env, companyId);
+  const digest = await currentDigest(env, info, sprint, "read");
+  if (!digest) return 0;
+  let closed = 0;
+  const items = digest.items.map((item) => {
+    const only = (item.taskIds ?? []).length === 1 && item.taskIds![0] === taskId;
+    if (item.status !== "open" || !only || (STANDARD_KEYS as readonly string[]).includes(item.key)) return item;
+    closed += 1;
+    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: "client", note };
+  });
+  if (closed === 0) return 0;
+  const next = { ...digest, items };
+  await db.upsertNeedsYou(env.ctx.db, next);
+  await syncDigestIssue(env, info, sprint, next);
+  return closed;
+}
+
 /** Hand waiting tasks back: human tasks complete, agent tasks go back to the agent (todo + wake). */
-async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by: string): Promise<number> {
+async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by: string, note?: string | null): Promise<number> {
   if (taskIds.length === 0) return 0;
   const agent = await resolveAgent(env, sprint.companyId);
   let resumed = 0;
@@ -147,7 +206,7 @@ async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by:
     const updated = await patchIssue(env, sprint.companyId, task.issueId, patch);
     if (!updated) continue;
     await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", blocker_reason: null, issue_status: "todo", assignee_kind: agent ? "agent" : task.assigneeKind });
-    await commentOn(env, sprint.companyId, task.issueId, `What this task waited for is done (${by}). Back to the SEO Specialist.`);
+    await commentOn(env, sprint.companyId, task.issueId, `What this task waited for is done (${by}). Back to the SEO Specialist.${note ? ` ${note}` : ""}`);
     if (agent && !["paused", "pending_approval", "terminated"].includes(agent.status)) {
       try {
         await env.ctx.issues.requestWakeup(task.issueId, sprint.companyId, { reason: "SEO task unblocked", idempotencyKey: `wake:${task.issueId}:${Date.now()}` });
@@ -160,8 +219,22 @@ async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by:
   return resumed;
 }
 
+/**
+ * A verification item (Search Console access, a Bing tag or file, the IndexNow key file) on a WordPress sprint whose
+ * Connector can place verification tags (wp-verify) is agent work, not a person's: it is closed as superseded and its
+ * tasks go back to the agent, unless the wp-verify route already failed for that kind.
+ */
+async function supersededByWpVerify(env: Env, sprint: db.Sprint, item: NeedsYouItem): Promise<boolean> {
+  if (item.check !== "manual" && item.check !== "gsc_access") return false;
+  const kind = verificationKindOf(item);
+  if (!kind || sprint.siteAccess !== "wordpress") return false;
+  if (verifyFailureOf(sprint, kind)) return false;
+  return (await sprintVerifyRoute(env, sprint)).route !== "none";
+}
+
 /** Whether the plugin itself can see the item done: true / false, or null when only a person can say. */
 export async function checkNeedsYouItem(env: Env, info: CompanyInfo, sprint: db.Sprint, item: NeedsYouItem): Promise<boolean | null> {
+  if (await supersededByWpVerify(env, sprint, item)) return true;
   switch (item.check) {
     case "site_project":
       return sprint.siteAccess !== "unlinked";
@@ -192,9 +265,29 @@ export async function checkNeedsYouItem(env: Env, info: CompanyInfo, sprint: db.
       const site = await sprintWordPressSite(env, sprint);
       return site?.connector_status === "connected";
     }
+    case "wp_sftp":
+      return sprint.siteAccess === "wordpress" ? sprintHasSftp(env, sprint) : null;
     default:
-      return null;
+      // A hand-off line for a task (block-task, or a person's own task) is over once its task is done or skipped,
+      // whoever finished it: the agent often completes the task itself after the reason it waited went away.
+      return isTaskHandoff(item) ? tasksAllTerminal(env, sprint, item.taskIds ?? []) : null;
   }
+}
+
+/** A Needs you line that exists only because a sprint task was handed to a person. */
+function isTaskHandoff(item: NeedsYouItem): boolean {
+  // Only the standard `task:<id>` lines. A custom-keyed item can name a task it was raised from and still be a real ask
+  // for a person (for example deactivating a plugin) that outlives that task.
+  return item.kind === "task" && item.key.startsWith("task:") && (item.taskIds?.length ?? 0) > 0;
+}
+
+/** true when every task is done or skipped; null (only a person can say) while any is still open or unknown. */
+async function tasksAllTerminal(env: Env, sprint: db.Sprint, ids: string[]): Promise<boolean | null> {
+  for (const id of ids) {
+    const task = await db.getTask(env.ctx.db, sprint.companyId, id);
+    if (!task || !(TERMINAL_TASK_STATUSES as string[]).includes(task.status)) return null;
+  }
+  return true;
 }
 
 /** Mark one item done (by a person, or the agent on a person's word) and carry on. */
@@ -211,7 +304,7 @@ export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   const result = resolveItem(digest.items, key, by, nowIso(env), note);
   const next = { ...digest, items: result.items };
   await db.upsertNeedsYou(env.ctx.db, next);
-  const tasksContinued = await continueTasks(env, fresh, item.taskIds ?? [], by);
+  const tasksContinued = await continueTasks(env, fresh, item.taskIds ?? [], by, note);
   const issueId = await syncDigestIssue(env, info, fresh, next);
   if (issueId && openItems(next.items).length > 0) await commentOn(env, sprint.companyId, issueId, `Done: **${item.title}** (${by}). ${item.after}`);
   return { resolved: true, stillOpen: null, tasksContinued };
@@ -225,10 +318,14 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   if (!digest.issueId && openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
   let resolved = 0;
   for (const item of openItems(digest.items)) {
-    if (item.check === "manual") continue;
+    if (item.check === "manual" && !isTaskHandoff(item) && !(await supersededByWpVerify(env, sprint, item))) continue;
     try {
       if ((await checkNeedsYouItem(env, info, sprint, item)) === true) {
-        const r = await resolveNeedsYou(env, info, sprint, item.key, "checked by the SEO plugin");
+        const superseded = await supersededByWpVerify(env, sprint, item);
+        const kind = superseded ? verificationKindOf(item) : null;
+        const site = superseded ? await sprintVerifyRoute(env, sprint) : null;
+        const note = kind && site?.siteId ? `Superseded: the PiB Connector can place this itself now, so it is no longer a person's job. ${verifyInstruction(kind, site.siteId)}` : isTaskHandoff(item) ? "Its task is done or skipped, so this line is closed." : null;
+        const r = await resolveNeedsYou(env, info, sprint, item.key, "checked by the SEO plugin", note);
         if (r.resolved) resolved += 1;
       }
     } catch (error) {
@@ -284,9 +381,10 @@ export async function needsYouTool(env: Env, companyId: string, params: Params) 
 const KINDS = ["grant", "review", "pr", "message", "task", "indexing"] as const;
 
 /** Keys with a standard item (exact steps and links written by the plugin). */
-export const STANDARD_KEYS = ["github_token", "site_project", "service_account", "bing_key", "wp_connector"] as const;
+export const STANDARD_KEYS = ["github_token", "site_project", "service_account", "bing_key", "wp_connector", "wp_sftp"] as const;
 
 export async function needsYouAddTool(env: Env, companyId: string, actor: Actor, params: Params) {
+  await assertPreviewLinksChecked(env, companyId, params);
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const taskIds = strList(params, "taskIds", { max: 20, itemMax: 100 });
@@ -295,6 +393,11 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
     if (key === "wp_connector") {
       if (sprint.siteAccess !== "wordpress") throw new SeoError("wp_connector is for a sprint linked to a WordPress site (link-site with wordpressSiteId).");
       const item = wpConnectorItemFor(info, sprint, await sprintWordPressSite(env, sprint), taskIds);
+      return { sprintId: sprint.id, ...(await addNeedsYou(env, info, sprint, item, { reopen: true })), standard: true, by: actorLabel(actor) };
+    }
+    if (key === "wp_sftp") {
+      if (sprint.siteAccess !== "wordpress") throw new SeoError("wp_sftp is for a sprint linked to a WordPress site (link-site with wordpressSiteId).");
+      const item = wpSftpItemFor(info, sprint, await sprintWordPressSite(env, sprint), taskIds);
       return { sprintId: sprint.id, ...(await addNeedsYou(env, info, sprint, item, { reopen: true })), standard: true, by: actorLabel(actor) };
     }
     const settings = await settingsPath(env, info);
@@ -328,6 +431,20 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
     taskIds,
     optional: bool(params, "optional") ?? false,
   };
+  // Verification on a WordPress site whose Connector can place tags and key files is the agent's work.
+  const verifyKind = verificationKindOf(item);
+  if (verifyKind && sprint.siteAccess === "wordpress") {
+    const wp = await sprintVerifyRoute(env, sprint);
+    if (wp.route !== "none" && !verifyFailureOf(sprint, verifyKind)) {
+      const tried = str(params, "wpVerifyFailed", { max: 500 });
+      if (!tried) {
+        throw new SeoError(
+          `Not a Needs you item: this WordPress site's Connector ${wp.route === "available" ? "has wp-verify" : `(${wp.connectorVersion ?? "unknown version"}) can be updated to get it`}, so ${verifyKind === "google" ? "Search Console access" : verifyKind === "bing" ? "Bing verification" : "the IndexNow key file"} is your work. ${wp.route === "update" ? "Run the CRM's wp-connector update first. " : ""}${verifyInstruction(verifyKind, wp.siteId ?? "?")} Only if wp-verify or the search engine's verify step failed, call needs-you-add again with wpVerifyFailed set to what you tried and the error (it is recorded on the sprint).`,
+        );
+      }
+      await setVerifyFailure(env, sprint, verifyKind, tried);
+    }
+  }
   const result = await addNeedsYou(env, info, sprint, item, { reopen: true });
   // An out-of-scope PR is outward-facing: the Cockpit Reviewer checks it before the owner merges.
   const reviewIssueId = kind === "pr" && result.added ? await routePrReview(env, sprint, item) : null;

@@ -70,11 +70,33 @@ export function overviewFor(
 }
 
 /**
+ * A not-started task whose issue has had an agent run is in progress: the host sends no event when an agent
+ * picks an issue up, so the plan would show it as due until it finished. Saved on the task; never throws.
+ */
+export async function withStartedWork<T extends db.SprintTask>(sdb: db.SeoDb, companyId: string, tasks: T[]): Promise<T[]> {
+  const waiting = tasks.filter((task) => task.status === "not_started" && task.issueId && task.assigneeKind !== "needs_you");
+  if (waiting.length === 0) return tasks;
+  try {
+    const started = await db.issuesWithStartedRuns(sdb, companyId, waiting.map((task) => task.issueId!));
+    if (started.size === 0) return tasks;
+    return await Promise.all(tasks.map(async (task) => {
+      if (task.status !== "not_started" || !task.issueId || !started.has(task.issueId)) return task;
+      const at = task.startedAt ?? started.get(task.issueId) ?? new Date().toISOString();
+      await db.updateTask(sdb, companyId, task.id, { status: "in_progress", started_at: at });
+      return { ...task, status: "in_progress", startedAt: at };
+    }));
+  } catch {
+    return tasks;
+  }
+}
+
+/**
  * Marks each open task whose issue's latest run stopped at the host's
  * workspace check (no checkout of the project's repo on the server): that
  * work is stuck (engine/due.ts). Unknown when the lookup fails: never throws.
  */
-export async function withRunFailures<T extends db.SprintTask>(sdb: db.SeoDb, companyId: string, tasks: T[]): Promise<Array<T & { runsFailing: boolean }>> {
+export async function withRunFailures<T extends db.SprintTask>(sdb: db.SeoDb, companyId: string, input: T[]): Promise<Array<T & { runsFailing: boolean }>> {
+  const tasks = await withStartedWork(sdb, companyId, input);
   const issueIds = tasks.filter((task) => task.issueId && isOpenTask(task)).map((task) => task.issueId!);
   let failing = new Map<string, unknown>();
   if (issueIds.length > 0) {

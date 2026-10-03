@@ -13,7 +13,7 @@
  */
 import { comparableUrl } from "../checks/parse.js";
 import * as db from "../db.js";
-import { isRunning, nextSprintStatus, type AgentAvailability } from "../engine/sprint.js";
+import { dailyStaggerHours, isRunning, issueRoom, nextSprintStatus, type AgentAvailability } from "../engine/sprint.js";
 import { daysBetween } from "../engine/time.js";
 import { fetchBingLinkCounts } from "../integrations/bing.js";
 import { runPagespeed } from "../integrations/pagespeed.js";
@@ -30,12 +30,13 @@ import { activateShippedRoutines } from "./routines.js";
 import { upgradeSprintPlan } from "./upgrade.js";
 import { bingKeyItem, serviceAccountItem } from "../engine/items.js";
 import { isCodeTask } from "../engine/site-change.js";
+import { autoLinkClientProject } from "./site.js";
 import { detectSignals, measureDue } from "./optimize.js";
 import { ensureRootIssue, sprintToday } from "./sprints.js";
 import { publishSetupStatuses, seoCompanies, seoOn } from "./setup-status.js";
 import { publishCockpitSnapshots } from "../cockpit.js";
 import { scheduledSnapshots } from "./snapshots.js";
-import { healTasks, materialiseDueTasks } from "./tasks.js";
+import { healTasks, materialiseDueTasks, relocateCodeTasks } from "./tasks.js";
 import { sprintWordPressSite, wpConnectorItemFor } from "./wordpress.js";
 
 const JOB_BUDGET_MS = 200_000;
@@ -185,7 +186,7 @@ export async function runDailyForSprint(
   input: db.Sprint,
   deps: { agent: AgentAvailability; projectId: string | null },
 ): Promise<DailySprintResult> {
-  let sprint = input;
+  let sprint = await autoLinkClientProject(env, input);
   const warnings: string[] = [];
   const clock = clockFor(sprint, info.today);
   const status = nextSprintStatus(sprint.status, clock);
@@ -202,6 +203,16 @@ export async function runDailyForSprint(
     sprint = await ensureRootIssue(env, info, sprint, sprint.projectId);
   } catch (error) {
     warnings.push(`Root issue: ${errorMessage(error)}`);
+  }
+
+  // Just linked to the client's project: open tasks that were created in the shared SEO project move over.
+  if (!input.clientProjectId && sprint.clientProjectId && sprint.rootIssueId && sprint.seededAt) {
+    try {
+      const moved = await relocateCodeTasks(env, { info, sprint, day: clock.day, agent: deps.agent, projectId: sprint.clientProjectId });
+      if (moved.moved) warnings.push(`Moved ${moved.moved} open task issue(s) to the client's project.`);
+    } catch (error) {
+      warnings.push(`Client project move: ${errorMessage(error)}`);
+    }
   }
 
   let planUpgraded = false;
@@ -243,9 +254,17 @@ export async function runDailyForSprint(
 
   let issuesOpened = 0;
   if (sprint.rootIssueId) {
-    const result = await materialiseDueTasks(env, { info, sprint, day: clock.day, agent: deps.agent, projectId: sprint.projectId }, { limit: 60 });
+    // Top the sprint up to its in-flight cap: the agent gets a steady stream, not one wake per due task at once.
+    const inFlight = (await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] })).filter((t) => t.issueId && t.assigneeKind === "agent").length;
+    const room = issueRoom(inFlight);
+    const result = room > 0
+      ? await materialiseDueTasks(env, { info, sprint, day: clock.day, agent: deps.agent, projectId: sprint.projectId }, { limit: room })
+      : { created: 0, remaining: 0, errors: [] as string[] };
     issuesOpened = result.created;
     warnings.push(...result.errors.slice(0, 5));
+    if (room === 0 || result.remaining > 0) {
+      env.ctx.logger.info("SEO daily run: due tasks wait for room", { sprintId: sprint.id, inFlight, room, remaining: result.remaining });
+    }
   }
 
   let needsYouResolved = 0;
@@ -349,7 +368,8 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
       skipped += list.length;
       continue;
     }
-    const pending = list.filter((s) => opts.force || s.lastDailyOn !== info.today);
+    // Sprints of a company start on different hours after the daily hour (a stable offset per sprint), not all in one tick.
+    const pending = list.filter((s) => opts.force || (s.lastDailyOn !== info.today && info.hour >= Math.min(23, info.loaded.config.dailyHourLocal + dailyStaggerHours(s.id))));
     if (pending.length === 0) continue;
     await env.skills.ensure(companyId).catch(() => []);
     const projectId = await ensureProject(env, companyId);

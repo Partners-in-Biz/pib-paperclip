@@ -124,7 +124,7 @@ function sprint(extra: Partial<db.Sprint> = {}): db.Sprint {
     id: "s1", companyId: "co-1", name: "Acme", siteUrl: "https://acme.co.za", siteName: "Acme", clientKind: "company", clientRef: "c1", clientName: "Acme", legacyClientName: null,
     status: "active", startDate: "2026-09-01", templateId: TEMPLATE_ID, templateVersion: 4, autopilotMode: "safe", ownerUserId: null, projectId: null, rootIssueId: null,
     rootIssueIdentifier: null, agentId: null, notes: null, pausedReason: null, health: {}, scoreboard: {}, today: {}, currentDay: 0, currentWeek: 0, currentPhase: 0,
-    lastDailyOn: null, lastWeeklyOn: null, auditDaysDone: [], seededAt: "2026-09-01T00:00:00Z", siteProjectId: null, siteAccess: "unlinked", siteId: null, repoUrl: null,
+    lastDailyOn: null, lastWeeklyOn: null, auditDaysDone: [], seededAt: "2026-09-01T00:00:00Z", siteProjectId: null, clientProjectId: null, siteAccess: "unlinked", siteId: null, repoUrl: null,
     defaultBranch: "main", framework: null, hosting: null, changePolicy: "merge_seo_scope", verification: {}, createdAt: null, updatedAt: null, ...extra,
   };
 }
