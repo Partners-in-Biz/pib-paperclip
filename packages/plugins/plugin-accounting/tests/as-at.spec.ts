@@ -23,6 +23,7 @@ import { cockpitSnapshot } from "../src/service/cockpit.js";
 import { receivePostRequest } from "../src/service/ledger.js";
 import { overview, trends } from "../src/service/reports.js";
 import * as guard from "./helpers/sql-guard.js";
+import { freePort } from "./helpers/free-port.js";
 
 describe("as at today: pure rules", () => {
   it("finds statement lines dated after today, earliest first", () => {
@@ -89,7 +90,7 @@ describe.skipIf(!available)("as at today (postgres)", () => {
     const { drizzle } = await import(`${DB_PKG}/drizzle-orm/postgres-js/index.js`);
     sqlTag = (await import(`${DB_PKG}/drizzle-orm/sql/sql.js`)).sql;
     const postgres = (await import(`${DB_PKG}/postgres/src/index.js`)).default;
-    const port = 55_900 + Math.floor(Math.random() * 90);
+    const port = await freePort();
     pg = new EmbeddedPostgres({ databaseDir: dataDir, user: "t", password: "t", port, persistent: false, initdbFlags: ["--encoding=UTF8", "--locale=C"], onLog: () => {}, onError: () => {} });
     await pg.initialise();
     await pg.start();

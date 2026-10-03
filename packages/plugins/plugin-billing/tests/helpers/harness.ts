@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../../src/namespace.js";
 import { bindLikeHost, validateExecute, validateMigration, validateQuery } from "./sql-guard.js";
+import { freePort } from "./free-port.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** Plugin root (overridable so scratch scripts that bundle this file still find it). */
@@ -63,7 +64,7 @@ const TABLES_IN_ORDER = [
 export async function startHarness(): Promise<Harness> {
   const { default: EmbeddedPostgres } = (await import(EMBEDDED)) as { default: new (opts: Record<string, unknown>) => { initialise: () => Promise<void>; start: () => Promise<void>; stop: () => Promise<void>; getPgClient: () => PgClient } };
   const dir = mkdtempSync(join(tmpdir(), "billing-pg-"));
-  const port = 56000 + Math.floor(Math.random() * 3000);
+  const port = await freePort();
   const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port, persistent: false, onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();

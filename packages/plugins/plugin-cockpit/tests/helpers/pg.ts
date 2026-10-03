@@ -12,6 +12,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Env } from "../../src/env.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import { splitSqlStatements, validateMigrationStatement, validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./sql-guard.js";
+import { freePort } from "./free-port.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PLUGIN_ROOT = join(here, "../..");
@@ -97,7 +98,7 @@ export const OTHER_COMPANY = "22222222-2222-2222-2222-222222222222";
 export async function startPg(): Promise<PgHarness> {
   const { default: EmbeddedPostgres } = (await import(EMBEDDED)) as { default: new (opts: Record<string, unknown>) => { initialise: () => Promise<void>; start: () => Promise<void>; stop: () => Promise<void>; getPgClient: () => PgClient } };
   const dir = mkdtempSync(join(tmpdir(), "cockpit-pg-"));
-  const port = 52000 + Math.floor(Math.random() * 3000);
+  const port = await freePort();
   const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port, persistent: false, onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();

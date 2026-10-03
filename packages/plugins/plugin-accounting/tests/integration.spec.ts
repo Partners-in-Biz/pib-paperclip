@@ -29,6 +29,7 @@ import { approveReconciliation, discardReconciliation, prepareReconciliation, pr
 import { runReport, trends } from "../src/service/reports.js";
 import { approveVatReturn, prepareVatReturn, requestVatApproval } from "../src/service/vat.js";
 import * as guard from "./helpers/sql-guard.js";
+import { freePort } from "./helpers/free-port.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DB_PKG = path.resolve(here, "../../../db/node_modules");
@@ -93,7 +94,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     const { drizzle } = await import(`${DB_PKG}/drizzle-orm/postgres-js/index.js`);
     sqlTag = (await import(`${DB_PKG}/drizzle-orm/sql/sql.js`)).sql;
     const postgres = (await import(`${DB_PKG}/postgres/src/index.js`)).default;
-    const port = 55_500 + Math.floor(Math.random() * 400);
+    const port = await freePort();
     pg = new EmbeddedPostgres({ databaseDir: dataDir, user: "t", password: "t", port, persistent: false, initdbFlags: ["--encoding=UTF8", "--locale=C"], onLog: () => {}, onError: () => {} });
     await pg.initialise();
     await pg.start();

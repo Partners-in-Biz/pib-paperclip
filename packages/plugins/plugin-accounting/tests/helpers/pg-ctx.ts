@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NAMESPACE } from "../../src/namespace.js";
 import * as guard from "./sql-guard.js";
+import { freePort } from "./free-port.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DB_PKG = path.resolve(here, "../../../../db/node_modules");
@@ -53,7 +54,7 @@ export async function startPgCtx(): Promise<PgCtx> {
   const { drizzle } = await import(`${DB_PKG}/drizzle-orm/postgres-js/index.js`);
   const sqlTag = (await import(`${DB_PKG}/drizzle-orm/sql/sql.js`)).sql as { raw(s: string): unknown; join(chunks: unknown[], sep: unknown): unknown } & ((strings: TemplateStringsArray, ...values: unknown[]) => unknown);
   const postgres = (await import(`${DB_PKG}/postgres/src/index.js`)).default;
-  const port = 55_900 + Math.floor(Math.random() * 400);
+  const port = await freePort();
   const pg = new EmbeddedPostgres({ databaseDir: dataDir, user: "t", password: "t", port, persistent: false, initdbFlags: ["--encoding=UTF8", "--locale=C"], onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();
