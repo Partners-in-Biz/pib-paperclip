@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendFrom, connectReadiness, draftRecipients, missingTechnical, moduleName, recentTime, sendBlock, sentBy } from "../src/ui/view.js";
+import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, domainFacts, domainStatusLabel, domainTone, draftRecipients, missingTechnical, moduleName, recentTime, sendBlock, sentBy, suggestMapping } from "../src/ui/view.js";
 import { draftView, isoTime } from "../src/worker.js";
 
 const READY = { saved: true, publicBaseUrl: "https://paperclip.example.com", encryptionKey: true, googleClientSecret: true };
@@ -74,5 +74,25 @@ describe("draft rows for the page", () => {
     expect(draftView({ id: "d-2", account_id: "a", subject: "s", body: null, status: "draft", direction: "outbound", is_read: false, to_addrs: null, cc_addrs: null, bcc_addrs: null, draft: null, send_error: null, created_at: null }))
       .toMatchObject({ body: "", to_addrs: [], drafted_by: null, created_at: null, is_reply: false });
     expect(isoTime(new Date("2026-09-01T00:00:00Z"))).toBe("2026-09-01T00:00:00.000Z");
+  });
+});
+
+describe("sender domains and client mail on the page", () => {
+  it("words a domain's status and picks its pill", () => {
+    expect(["healthy", "warn", "bad", "unknown"].map(domainStatusLabel)).toEqual(["Healthy", "Needs attention", "Problem", "Not known yet"]);
+    expect(["healthy", "warn", "bad", "unknown", "anything"].map(domainTone)).toEqual(["ok", "warn", "bad", "neutral", "neutral"]);
+  });
+
+  it("sums up SPF, DKIM, DMARC and MX in one line, and says when DNS could not be read", () => {
+    expect(domainFacts({ mx: "ok", spf: "missing", dkim: "ok", dmarc: "none" })).toBe("MX ok · SPF missing · DKIM ok · DMARC monitoring (p=none)");
+    expect(domainFacts({ mx: "ok", spf: "ok", dkim: "ok", dmarc: "reject" })).toBe("MX ok · SPF ok · DKIM ok · DMARC p=reject");
+    expect(domainFacts({ mx: null, spf: "unreadable", dkim: null, dmarc: "unreadable" })).toBe("MX not read · SPF unreadable · DKIM not read · DMARC unreadable");
+  });
+
+  it("suggests the sender's domain as a starting mapping, and nothing for a sender without one", () => {
+    expect(suggestMapping({ from: { email: "WordPress@AHSLaw.co.za" } })).toEqual({ matchType: "sender_domain", pattern: "ahslaw.co.za" });
+    expect(suggestMapping({ from: null })).toBeNull();
+    expect(suggestMapping({ from: { email: "no-at-sign" } })).toBeNull();
+    expect(Object.keys(MAP_TYPE_NAMES)).toEqual(["sender_domain", "sender_address", "recipient_domain", "recipient_address"]);
   });
 });

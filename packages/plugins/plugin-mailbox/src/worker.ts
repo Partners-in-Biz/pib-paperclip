@@ -8,18 +8,28 @@ import {
   type PluginApiResponse,
   type PluginContext,
   type PluginPerformActionContext,
+  type PluginWebhookInput,
   type ToolResult,
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  COCKPIT_EVENTS,
   COCKPIT_ROUTE,
+  configSaved,
   createSkillSyncer,
   decisionStats,
   HANDOFF_EVENTS,
+  installAskEffects,
+  isModuleEnabled,
+  registerAskEffect,
+  registerCompanyBootstrap,
+  registerConsentReceiver,
   registerDoneChecks,
+  registerEraseReceiver,
   registerModuleWatch,
   registerRoleWatch,
   settleOutbox,
+  syncAllCompanies,
   trackJob,
   SETUP_STATUS_ROUTE,
   MAIL_CATEGORIES,
@@ -33,12 +43,32 @@ import {
   valueAtPath,
   type MailAddress,
   type MailSendRequested,
+  type RolesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
-import { gmailRedirectUri, loadMailboxConfig, r2Configured, validateMailboxConfig } from "./config.js";
+import { gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
+import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
+import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
+import { sendingDomain } from "./dns.js";
+import {
+  checkAndStore,
+  checkDomain,
+  DEFAULT_DKIM_SELECTORS,
+  defaultResolver,
+  onboardingGuide,
+  reannounceDomainChecks,
+  runDomainChecks,
+  senderDomainHealth,
+  sendingDomains,
+  type DomainRunEnv,
+  type SendingDomain,
+} from "./domain-health.js";
+import { eraseSubject, onConsentRecorded } from "./erasure.js";
+import { isFreeMailDomain } from "./free-mail.js";
+import { handleUnsubscribeWebhook, probeCompanies, probeUnsubscribeProxy, probeUrl } from "./unsubscribe.js";
 import { onContactSuppressed, reannounceSuppressions, suppressionEvents } from "./suppression.js";
-import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
-import { publishAllSetupStatus, rememberCompany, settingsHref, setupStatus } from "./setup-status.js";
+import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { knownCompanies, publishAllSetupStatus, rememberCompany, settingsHref, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { SqlStore, type RecentMessageRow } from "./db.js";
 import { mailboxDoneChecks } from "./done-checks.js";
@@ -49,8 +79,10 @@ import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
-import type { AccountRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
+import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
+import type { DomainReport } from "./domain-health.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
 
@@ -68,6 +100,14 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     // An agent's close of a "Reply needed" issue is checked: reopened while the thread still has no reply.
     registerDoneChecks(ctx, mailboxDoneChecks(store));
+    // New companies get their skills here (the kit's one company.created wiring, plus a catch-up on a rare core event).
+    registerCompanyBootstrap(ctx, { syncer: skillSync });
+    // An answered "may I read and draft on this mailbox?" creates the delegation, checks it, and says so (RC5).
+    registerAskEffect(DELEGATE_EFFECT_KEY, mailboxDelegateEffect(() => requireEnv()));
+    installAskEffects(ctx);
+    // Data-subject erasure (the CRM starts it, after a person approved) and withdrawn consent.
+    registerEraseReceiver(ctx, { plugin: PLUGIN_ID, erase: (request, companyId) => eraseSubject(requireEnv(), companyId, request) });
+    registerConsentReceiver(ctx, { plugin: PLUGIN_ID, onConsent: (companyId, consent) => onConsentRecorded(requireEnv(), companyId, consent) });
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
@@ -86,25 +126,48 @@ const plugin = definePlugin({
       return load(ctx, companyId, params);
     });
     ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("mailbox.create-account", (params, context) => createAccount(requiredCompany(context), context.actor.userId, params));
-    ctx.actions.register("mailbox.create-delegation", (params, context) => createDelegation(requiredCompany(context), params));
     ctx.actions.register("mailbox.create-draft", (params, context) =>
       createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent", drafter(context)),
     );
-    ctx.actions.register("mailbox.list-inbox", (params, context) => listInbox(requiredCompany(context), params));
-    ctx.actions.register("mailbox.mark-read", (params, context) => markRead(requiredCompany(context), params));
     ctx.actions.register("mailbox.create-email-template", (params, context) => createEmailTemplateAction(requiredCompany(context), params));
     ctx.actions.register("mailbox.list-email-templates", (_params, context) => requireStore().listTemplates(requiredCompany(context)));
-    ctx.actions.register("mailbox.list-threads", (params, context) => listThreads(requiredCompany(context), params));
+
+    // The host lets any agent with company access call an action, and an action has no delegation check. So what hands out
+    // access or reads mail is for a signed-in person only; an agent uses the tools of the same names, which check its delegation.
+    user("mailbox.create-account", (companyId, userId, params) => createAccount(companyId, userId, params));
+    user("mailbox.create-delegation", (companyId, userId, params) => createDelegation(companyId, params, userId));
+    user("mailbox.list-inbox", (companyId, _userId, params) => listInbox(companyId, params));
+    user("mailbox.mark-read", (companyId, _userId, params) => markRead(companyId, params));
+    user("mailbox.list-threads", (companyId, _userId, params) => listThreads(companyId, params));
 
     user("mailbox.connect-start", (companyId, userId, params) => connectStart(requireEnv(), companyId, userId, params));
     user("mailbox.disconnect", (companyId, _userId, params) => disconnect(requireEnv(), companyId, requiredString(params, "accountId")));
     user("mailbox.set-default", async (companyId, _userId, params) => {
       const account = await requireStore().getAccount(companyId, requiredString(params, "accountId"));
       if (!account || account.status !== "connected") throw new MailboxError("Only a connected Gmail account can be the default");
+      if (account.client_ref) throw new MailboxError("A mailbox that belongs to a client is never the default sender: it sends only that client's mail");
       await requireStore().setDefaultAccount(companyId, account.id);
       return { id: account.id, isDefault: true };
     });
+    // A person takes an agent's access away. The defaults never give it back; only a new grant does.
+    user("mailbox.remove-delegation", async (companyId, userId, params) => {
+      const accountId = requiredString(params, "accountId");
+      const agentId = requiredString(params, "agentId");
+      if (!(await requireStore().getAccount(companyId, accountId))) throw new MailboxError("Mailbox not found");
+      return removeDelegation(requireStore(), companyId, accountId, agentId, userId);
+    });
+    // A mailbox belongs to a client (or back to the company): it then sends only that client's mail, with its own opt-out list.
+    user("mailbox.set-account-client", (companyId, _userId, params) => setAccountClient(companyId, params));
+    user("mailbox.check-domain", (companyId, _userId, params) => checkSenderDomain(companyId, params));
+    // "Check now" for the one-click unsubscribe link: the Mailbox posts to its own address and records whether the proxy passed the token on.
+    user("mailbox.check-unsubscribe-proxy", (companyId) => checkUnsubscribeProxy(companyId));
+    user("mailbox.client-maps", (companyId) => clientMapOverview(requireStore(), companyId));
+    user("mailbox.crm-clients", async (companyId) => ({ clients: (await requireStore().crmClients(companyId, 500)).map((c) => ({ ref: `${c.kind}:${c.id}`, name: c.name, kind: c.kind })) }));
+    user("mailbox.add-client-map", async (companyId, userId, params) => {
+      const { map, filed, rehanded } = await addClientMap(requireEnv(), companyId, clientMapInput(params), userId);
+      return { id: map.id, filed, rehanded };
+    });
+    user("mailbox.remove-client-map", (companyId, _userId, params) => removeClientMap(requireStore(), companyId, requiredString(params, "mapId")));
     user("mailbox.sync-now", (companyId, _userId, params) => syncNow(companyId, optionalString(params, "accountId")));
     user("mailbox.inbox", (companyId, _userId, params) => inboxView(companyId, params));
     user("mailbox.sent", (companyId, _userId, params) => sentView(companyId, params));
@@ -122,9 +185,18 @@ const plugin = definePlugin({
     });
     ctx.jobs.register(SETUP_STATUS_JOB_KEY, async () => {
       await trackJob(ctx, SETUP_STATUS_JOB_KEY, async () => {
+        // First, so the Setup status below shows today's answer: can the Mailbox's own one-click link work?
+        await probeCompanies(requireEnv(), await knownCompanies(ctx));
         await publishAllSetupStatus(ctx, requireStore());
         await publishAllCockpit(ctx);
         await reannounceSuppressions(requireEnv());
+        await hourlyHousekeeping(ctx);
+      });
+    });
+    // Daily: SPF, DKIM, DMARC and MX of every sending domain, recorded and announced; problems reach the Cockpit.
+    ctx.jobs.register(DOMAIN_JOB_KEY, async () => {
+      await trackJob(ctx, DOMAIN_JOB_KEY, async () => {
+        await runAllDomainChecks(ctx);
       });
     });
 
@@ -148,8 +220,12 @@ const plugin = definePlugin({
         ctx.logger.info("Lead result not recorded", { key: payload.key, error: errorMessage(error) });
       }
     });
-    ctx.events.on("company.created", async (event) => {
-      if (event.companyId) await skillSync?.ensure(event.companyId);
+    // The Cockpit's roles broadcast: an Operator that is staffed after Gmail was connected gets its default access now.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.cockpit, COCKPIT_EVENTS.rolesUpdated), async (event) => {
+      const payload = event.payload as RolesPayload | undefined;
+      const companyId = payload?.companyId ?? event.companyId;
+      if (!companyId || !payload) return;
+      await ensureDefaultDelegations(requireEnv(), companyId, { roles: payload });
     });
   },
 
@@ -159,6 +235,13 @@ const plugin = definePlugin({
 
   async onValidateConfig(config) {
     return validateMailboxConfig(config);
+  },
+
+  /** The public one-click unsubscribe address (RFC 8058). A bad or missing token changes nothing and says nothing. */
+  async onWebhook(input: PluginWebhookInput): Promise<void> {
+    if (!env) return;
+    const outcome = await handleUnsubscribeWebhook(env, input);
+    env.ctx.logger.info("Unsubscribe webhook handled", { outcome });
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
@@ -237,6 +320,26 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       const data = await correctTriageFor(run.companyId, requiredString(body, "messageId"), body, null, run.agentId);
       return { content: "Triage corrected", data };
     }
+    if (name === "check-sender-domain") {
+      const data = await checkSenderDomain(run.companyId, body);
+      return { content: `${data.domain}: ${data.status}${data.sendReady ? ", ready to send" : ""}`, data };
+    }
+    if (name === "sender-domain-health") {
+      const data = await senderDomainHealthTool(run.companyId, optionalString(body, "domain"));
+      return { content: `${data.domains.length} sending domain(s)`, data };
+    }
+    if (name === "map-client-mail") {
+      const { map, filed, rehanded } = await addClientMap(requireEnv(), run.companyId, clientMapInput(body), `agent:${run.agentId}`);
+      return { content: `Mapped ${map.match_type.replace("_", " ")} ${map.pattern} to ${map.client_name ?? map.client_ref}${filed ? `; filed ${filed} message(s)` : ""}`, data: { mapId: map.id, filed, rehanded } };
+    }
+    if (name === "list-client-mail-maps") {
+      const data = await clientMapOverview(requireStore(), run.companyId);
+      return { content: `${data.maps.length} mapping(s); ${data.unmapped.length} sender domain(s) of unmapped client-looking mail`, data };
+    }
+    if (name === "remove-client-mail-map") {
+      const data = await removeClientMap(requireStore(), run.companyId, requiredString(body, "mapId"));
+      return { content: data.removed ? "Mapping removed" : "No mapping with that id", data };
+    }
     if (name === "mail-status") {
       const row = await requireStore().getSend(run.companyId, requiredString(body, "key"));
       if (!row) return { content: "No send request with that key", data: { key: body.key, status: "unknown" } };
@@ -279,6 +382,29 @@ function accountView(account: AccountRow) {
     last_error: account.last_error,
     sync_stats: account.sync_stats,
     connected_at: account.connected_at,
+    client_kind: account.client_kind,
+    client_ref: account.client_ref,
+    from_name: account.from_name,
+  };
+}
+
+/** A stored domain check as the page shows it. */
+function domainView(row: DomainCheckRow) {
+  const report = (row.result ?? {}) as Partial<DomainReport>;
+  return {
+    domain: row.domain,
+    status: row.status,
+    sendReady: Boolean(report.sendReady),
+    checkedAt: row.checked_at,
+    statusSince: row.status_since,
+    source: row.source,
+    clientKind: row.client_kind,
+    clientRef: row.client_ref,
+    mx: report.mx?.state ?? null,
+    spf: report.spf?.state ?? null,
+    dkim: report.dkim?.state ?? null,
+    dmarc: report.dmarc?.state === "unreadable" ? "unreadable" : report.dmarc?.policy ?? report.dmarc?.state ?? null,
+    problems: (report.problems ?? []).slice(0, 6).map((problem) => ({ severity: problem.severity, message: problem.message, fix: problem.fix })),
   };
 }
 
@@ -293,7 +419,7 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
   } catch {
     redirectUri = null;
   }
-  const [accounts, delegations, messages, templates, unreadCount, sendCounts, categoryCounts, dailyRows] = await Promise.all([
+  const [accounts, delegations, messages, templates, unreadCount, sendCounts, categoryCounts, dailyRows, domains, clientMaps] = await Promise.all([
     s.listAccounts(companyId),
     s.listDelegations(companyId),
     s.recentMessages(companyId, 50),
@@ -303,6 +429,8 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     s.categoryCounts(companyId),
     // Chart series; a failed read leaves the charts empty, the page still loads.
     s.dailyCounts(companyId, DAILY_DAYS).catch(() => []),
+    s.listDomainChecks(companyId).catch(() => []),
+    clientMapOverview(s, companyId).catch(() => null),
   ]);
   const raw = loaded.raw;
   const settingsLink = await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }));
@@ -320,6 +448,9 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
       sendRatePerMinute: loaded.config.sendRatePerMinute,
       triageIssues: loaded.config.replyIssues,
       r2: r2Configured(raw),
+      autoDelegate: loaded.config.autoDelegate,
+      domainChecks: loaded.config.domainChecks,
+      unsubscribeSecret: configured(raw, "unsubscribe.secret"),
     },
     suppressions: (await s.listSuppressions(companyId, 200).catch(() => [])).map((row) => ({ email: row.email, scope: row.scope, reason: row.reason, source: row.source, at: row.updated_at })),
     accounts: accounts.map(accountView),
@@ -331,6 +462,8 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     categoryCounts: Object.fromEntries(categoryCounts.map((row) => [row.category ?? "untriaged", Number(row.n)])),
     categories: MAIL_CATEGORIES,
     daily: shapeDaily(dailyRows, DAILY_DAYS),
+    domains: domains.map(domainView),
+    clientMaps,
   };
 }
 
@@ -387,6 +520,8 @@ function messageView(row: MessageRow) {
     client_name: row.triage?.clientName ?? null,
     triage_source: row.triage?.source ?? null,
     reply_to: row.reply_to,
+    map_state: row.map_state,
+    visitor: row.reply_to_addr,
   };
 }
 
@@ -489,22 +624,176 @@ async function createAccount(companyId: string, ownerUserId: string | null, para
   return { id };
 }
 
-/** Board action (the Mailboxes tab and the Setup items): read, draft unless canDraft is false, send only when canSend. */
-async function createDelegation(companyId: string, params: Record<string, unknown>) {
+/**
+ * Board action (the Mailboxes tab and the Setup items): read, draft unless canDraft is false, send only when canSend.
+ * A person's grant is explicit: it also ends an earlier removal, so the default access can come back for that agent.
+ */
+async function createDelegation(companyId: string, params: Record<string, unknown>, userId: string) {
   const defaults = defaultDelegation();
   const canSend = params.canSend === true;
   const canDraft = params.canDraft === false ? false : defaults.canDraft;
   const id = randomUUID();
+  const accountId = requiredString(params, "accountId");
+  if (!(await requireStore().getAccount(companyId, accountId))) throw new MailboxError("Mailbox not found");
   await requireStore().insertDelegation({
     id,
     companyId,
-    accountId: requiredString(params, "accountId"),
+    accountId,
     agentId: requiredString(params, "agentId"),
     canRead: defaults.canRead,
     canDraft,
     canSend,
+    grantedBy: userId,
   });
   return { id, canRead: defaults.canRead, canDraft, canSend };
+}
+
+/** Board action: runs the check of the proxy rule now. `probeUrl` is for a person who has to run it by hand (`curl -X POST`) when the Mailbox cannot reach its own address. */
+async function checkUnsubscribeProxy(companyId: string) {
+  const e = requireEnv();
+  const proof = await probeUnsubscribeProxy(e, companyId);
+  if (!proof) return { configured: false, ok: false, detail: "Set the unsubscribe secret and the public base URL in the Mailbox settings first." };
+  return { configured: true, ok: proof.ok, at: proof.at, detail: proof.detail, probeUrl: proof.ok ? null : await probeUrl(await loadMailboxConfig(e.ctx, companyId), companyId) };
+}
+
+/** Board action: a mailbox belongs to a client (their mail only, their own opt-out list) or goes back to the company. */
+async function setAccountClient(companyId: string, params: Record<string, unknown>) {
+  const s = requireStore();
+  const account = await s.getAccount(companyId, requiredString(params, "accountId"));
+  if (!account) throw new MailboxError("Mailbox not found");
+  const clientRef = optionalString(params, "clientRef") ?? null;
+  const fromName = optionalString(params, "fromName") ?? null;
+  if (!clientRef) {
+    await s.setAccountClient(companyId, account.id, { clientKind: null, clientRef: null, fromName });
+    return { id: account.id, client: null };
+  }
+  const clientKind = params.clientKind === "contact" ? "contact" : "company";
+  const found = clientKind === "company" ? await s.crmCompany(companyId, clientRef) : await s.crmContact(companyId, clientRef);
+  if (!found) throw new MailboxError(`The CRM has no ${clientKind} ${clientRef} in this company`);
+  const otherOwn = (await s.listAccounts(companyId)).filter((a) => a.id !== account.id && !a.client_ref && a.token_sealed && (a.status === "connected" || a.status === "needs_reconnect"));
+  if (!account.client_ref && otherOwn.length === 0) {
+    throw new MailboxError("This is the company's only mailbox with Gmail. Connect another one for the company before giving this one to a client, or nothing would send for the company.");
+  }
+  await s.setAccountClient(companyId, account.id, { clientKind, clientRef, fromName: fromName ?? found.name });
+  // No agent gets a client's mailbox automatically: what the defaults gave while it was still the company's goes. A person's own grant stays.
+  const droppedDefaults = await s.deleteDefaultDelegations(companyId, account.id);
+  return { id: account.id, droppedDefaultAccess: droppedDefaults, client: { kind: clientKind, ref: clientRef, name: found.name } };
+}
+
+function clientMapInput(params: Record<string, unknown>) {
+  const matchType = requiredString(params, "matchType");
+  const clientKind = requiredString(params, "clientKind");
+  if (clientKind !== "company" && clientKind !== "contact") throw new MailboxError("clientKind must be company or contact");
+  return { matchType: matchType as ClientMapType, pattern: requiredString(params, "pattern"), clientKind: clientKind as "company" | "contact", clientRef: requiredString(params, "clientRef"), note: optionalString(params, "note") ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// Sender domains
+// ---------------------------------------------------------------------------
+
+function domainEnv(): DomainRunEnv {
+  const e = requireEnv();
+  return { ctx: e.ctx, store: requireStore(), dns: e.dns ?? defaultResolver(e.ctx), now: e.now };
+}
+
+/** The usual DKIM selectors plus the company's and the caller's extra ones. */
+function selectorsFor(loadedSelectors: string[], extra: string | undefined): string[] {
+  return [...new Set([...DEFAULT_DKIM_SELECTORS, ...loadedSelectors, ...parseSelectors(extra)])];
+}
+
+/** At most this many domains can be watched on purpose (a domain with a mailbox is always watched). */
+const MAX_WATCHED_DOMAINS = 25;
+
+/** Checks one domain now (a tool or the page's Check button), records it and returns the report with the onboarding steps. */
+async function checkSenderDomain(companyId: string, params: Record<string, unknown>) {
+  const s = requireStore();
+  const input = optionalString(params, "domain") ?? optionalString(params, "address");
+  const domain = sendingDomain(input);
+  if (!domain) throw new MailboxError("domain is required, e.g. client.co.za");
+  if (isFreeMailDomain(domain)) {
+    return { domain, status: "unknown" as const, applicable: false, note: `${domain} is a free mail service: Google, Microsoft or Yahoo authenticate its mail themselves. Mail authentication applies to a company's own domain.` };
+  }
+  const loaded = await loadMailboxConfig(requireEnv().ctx, companyId);
+  const known = (await sendingDomains(s, companyId)).find((entry) => entry.domain === domain);
+  const accounts = (await s.listAccounts(companyId)).filter((account) => sendingDomain(account.address) === domain && account.status !== "disconnected");
+  const clientKind = params.clientKind === "contact" ? "contact" : params.clientKind === "company" ? "company" : null;
+  const clientRef = optionalString(params, "clientRef") ?? null;
+  const watch = params.watch !== false;
+  const target: SendingDomain = known ?? { domain, mailboxes: [], gmail: false, sendingSince: null, source: "manual", clientKind: clientRef ? clientKind ?? "company" : null, clientRef };
+  if (clientRef && !target.clientRef) Object.assign(target, { clientKind: clientKind ?? "company", clientRef });
+  const selectors = selectorsFor(loaded.config.dkimSelectors, optionalString(params, "selectors"));
+  const env2 = domainEnv();
+  let report;
+  const stored = await s.getDomainCheck(companyId, domain);
+  if (!known && !stored && !watch) {
+    // Look only: nothing is kept.
+    report = await checkDomain(env2.dns, domain, { selectors, now: env2.now(), hasMailbox: false, gmail: false });
+  } else {
+    if (!known && !stored && (await s.listDomainChecks(companyId)).filter((row) => row.source === "manual").length >= MAX_WATCHED_DOMAINS) {
+      throw new MailboxError(`${MAX_WATCHED_DOMAINS} domains are already watched. Check this one with watch false, or ask the owner to clean up.`);
+    }
+    report = await checkAndStore(env2, companyId, target, { selectors });
+  }
+  const guide = onboardingGuide(domain, report, { gmail: target.gmail || target.mailboxes.length === 0, reportsMailbox: accounts[0]?.address ?? null });
+  return {
+    domain,
+    applicable: true,
+    status: report.status,
+    healthy: report.status === "healthy",
+    sendReady: report.sendReady,
+    checkedAt: report.checkedAt,
+    watched: Boolean(known || stored || watch),
+    problems: report.problems,
+    mx: report.mx,
+    spf: report.spf,
+    dkim: { state: report.dkim.state, found: report.dkim.found },
+    dmarc: report.dmarc,
+    unreadable: report.unreadable,
+    manual: report.manual,
+    onboarding: guide,
+  };
+}
+
+async function senderDomainHealthTool(companyId: string, domainOrAddress: string | undefined) {
+  const s = requireStore();
+  const now = requireEnv().now();
+  const rows = await s.listDomainChecks(companyId);
+  const wanted = domainOrAddress ? sendingDomain(domainOrAddress) ?? domainOrAddress.toLowerCase() : null;
+  const domains = [];
+  for (const row of wanted ? rows.filter((entry) => entry.domain === wanted) : rows) domains.push(await senderDomainHealth(s, companyId, row.domain, now));
+  if (wanted && domains.length === 0) domains.push(await senderDomainHealth(s, companyId, wanted, now));
+  return { domains, note: "Healthy means SPF, DKIM and DMARC are right. This blocks nothing: the Mailbox still sends. Launch a campaign from a domain only when it is healthy; check-sender-domain re-reads DNS now." };
+}
+
+/** Daily job body: every company that has the Mailbox on, settings saved and the checks not switched off. */
+async function runAllDomainChecks(ctx: PluginContext): Promise<void> {
+  for (const companyId of await knownCompanies(ctx)) {
+    try {
+      if (!(await configSaved(ctx, companyId)) || !(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
+      const loaded = await loadMailboxConfig(ctx, companyId);
+      if (!loaded.config.domainChecks) continue;
+      const summary = await runDomainChecks(domainEnv(), companyId, { selectors: selectorsFor(loaded.config.dkimSelectors, undefined) });
+      if (summary.checked > 0) ctx.logger.info("Sender domains checked", { companyId, ...summary });
+    } catch (error) {
+      ctx.logger.info("Sender domain checks skipped", { companyId, error: errorMessage(error) });
+    }
+  }
+}
+
+/** Hourly: managed skills for every company (not only the one a call comes from), and the domain results announced again. */
+async function hourlyHousekeeping(ctx: PluginContext): Promise<void> {
+  try {
+    if (skillSync) await syncAllCompanies(ctx, skillSync, { companyIds: await knownCompanies(ctx), isEnabled: (companyId) => isModuleEnabled(ctx, companyId, PLUGIN_ID), plugin: PLUGIN_ID });
+  } catch (error) {
+    ctx.logger.info("Mailbox skill sweep failed", { error: errorMessage(error) });
+  }
+  for (const companyId of await knownCompanies(ctx)) {
+    try {
+      if (await configSaved(ctx, companyId)) await reannounceDomainChecks(domainEnv(), companyId);
+    } catch {
+      // the next hour tries again
+    }
+  }
 }
 
 function addresses(params: Record<string, unknown>, key: string): MailAddress[] {
@@ -538,6 +827,8 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const cc = addresses(params, "cc");
   const bcc = addresses(params, "bcc");
   const replyToMessageId = optionalString(params, "replyToMessageId") ?? null;
+  const replyTo = parseReplyTo(params.replyTo);
+  if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
   let threadId: string | null = null;
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
@@ -553,7 +844,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by },
+    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
   });
   return { id, status: "draft", to: to.map((a) => a.email) };
 }
@@ -586,7 +877,10 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     threadId: row.draft?.threadId ?? null,
     inReplyToMessageId: row.draft?.replyToMessageId ?? null,
     attachments: [],
-    context: { plugin: PLUGIN_ID, kind: "draft", id: row.id },
+    // A draft on a client's mailbox is that client's mail: its context says so, or the mailbox would refuse it.
+    context: draftSendContext(account!, row.id, PLUGIN_ID),
+    ...(row.draft?.fromName ? { fromName: row.draft.fromName } : {}),
+    ...(row.draft?.replyTo ? { replyTo: row.draft.replyTo } : {}),
   };
   if (!request.text && !request.html) throw new MailboxError("This draft has no body");
   await s.setDraftStatus(companyId, row.id, "queued", null);

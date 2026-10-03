@@ -145,9 +145,9 @@ describe("the shared list", () => {
     const { env, store } = setup();
     const crm = pluginEvent(PIB_PLUGINS.crm, HANDOFF_EVENTS.contactSuppressed);
     await onContactSuppressed(env, event({ email: " Ann@Client.co.za ", reason: "unsubscribed", scope: "marketing", source: "partnersinbiz.crm" }, crm));
-    expect(store.suppressions.get(`${CO}:ann@client.co.za`)).toMatchObject({ scope: "marketing", reason: "unsubscribed", source: "partnersinbiz.crm" });
+    expect(store.suppressions.get(`${CO}:ann@client.co.za:`)).toMatchObject({ scope: "marketing", reason: "unsubscribed", source: "partnersinbiz.crm" });
     await onContactSuppressed(env, event({ email: "ann@client.co.za", reason: "bounced" }, pluginEvent(PIB_PLUGINS.campaigns, HANDOFF_EVENTS.contactSuppressed)));
-    expect(store.suppressions.get(`${CO}:ann@client.co.za`)).toMatchObject({ scope: "all", reason: "bounced", source: "partnersinbiz.campaigns" });
+    expect(store.suppressions.get(`${CO}:ann@client.co.za:`)).toMatchObject({ scope: "all", reason: "bounced", source: "partnersinbiz.campaigns" });
     await onContactSuppressed(env, event({ email: "nope", reason: "bounced" }, crm));
     await onContactSuppressed(env, event({ email: "x@y.co", reason: "because" }, crm));
     expect(store.suppressions.size).toBe(1);
@@ -158,7 +158,7 @@ describe("the shared list", () => {
     const { env, store, host } = setup();
     store.addSuppression(CO, "new@x.co", "marketing", "unsubscribed", "partnersinbiz.mailbox");
     store.addSuppression(CO, "crm@x.co", "marketing", "unsubscribed", "partnersinbiz.crm");
-    store.suppressions.set(`${CO}:old@x.co`, { company_id: CO, email: "old@x.co", scope: "all", reason: "bounced", source: "partnersinbiz.mailbox", detail: null, created_at: new Date(now - (REANNOUNCE_HOURS + 1) * 3_600_000).toISOString(), updated_at: new Date(now - (REANNOUNCE_HOURS + 1) * 3_600_000).toISOString() });
+    store.suppressions.set(`${CO}:old@x.co:`, { company_id: CO, email: "old@x.co", scope: "all", reason: "bounced", source: "partnersinbiz.mailbox", detail: null, sender_key: "", email_hash: null, erased_at: null, created_at: new Date(now - (REANNOUNCE_HOURS + 1) * 3_600_000).toISOString(), updated_at: new Date(now - (REANNOUNCE_HOURS + 1) * 3_600_000).toISOString() });
     expect(await reannounceSuppressions(env, now)).toBe(1);
     expect(announced(host.emitted).map((payload) => payload.email)).toEqual(["new@x.co"]);
   });

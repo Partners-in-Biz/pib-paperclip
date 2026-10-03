@@ -12,6 +12,9 @@ export const DEFAULT_GOOGLE_CLIENT_ID = "430887310034-6hc826irms25pf22ou7qi22s70
 export const DEFAULT_LABEL_PREFIX = "PiB";
 export const DEFAULT_SEND_RATE = 20;
 
+/** `autoDelegate` setting: who gets a default delegation on the company's own mailboxes (see delegations.ts). */
+export type AutoDelegateMode = "operator" | "operator+roles" | "off";
+
 export const instanceConfigSchema: JsonSchema = {
   type: "object",
   title: "Mailbox settings",
@@ -87,6 +90,34 @@ export const instanceConfigSchema: JsonSchema = {
       enum: ["read-draft", "draft-only"],
       default: "read-draft",
     },
+    autoDelegate: {
+      type: "string",
+      title: "Mailbox access given without asking",
+      description:
+        "Who gets read and draft access (never sending) on the company's own Gmail mailboxes automatically. operator: only the Operator (default). operator+roles: also the Account Manager (read and draft) and the Bookkeeper (read). off: nobody; access is given by hand or by answering an agent's ask. Access a person removes is never given back automatically.",
+      enum: ["operator", "operator+roles", "off"],
+      default: "operator",
+    },
+    domainChecks: {
+      type: "boolean",
+      title: "Check sender domains every day",
+      description: "Reads SPF, DKIM, DMARC and MX of every domain the company's mailboxes send from (public DNS) and reports problems on the Cockpit. It never changes DNS.",
+      default: true,
+    },
+    dkimSelectors: {
+      type: "string",
+      title: "Extra DKIM selectors to look for",
+      description: "Comma separated, e.g. mailer1, brevo. The usual ones (google, default, selector1, selector2, resend, k1, s1, s2, mail, dkim, smtp) are always tried.",
+    },
+    unsubscribe: {
+      type: "object",
+      title: "One-click unsubscribe (optional)",
+      description:
+        "With a secret here, marketing mail to a single recipient carries an https one-click unsubscribe link (RFC 8058) next to the mailto one, and the Mailbox's public unsubscribe address accepts it. The reverse proxy must pass the request address on (see the README): the Mailbox checks that every hour and adds its own link only while the check passes. Without it the Mailbox only adds a caller's https link or the mailto form.",
+      properties: {
+        secret: secretField("Unsubscribe link secret", "A Paperclip secret of 16 or more random characters that signs the unsubscribe links. Changing it invalidates links already sent."),
+      },
+    },
   },
 };
 
@@ -96,6 +127,12 @@ export interface TriageAssignee {
 }
 
 export interface MailboxConfig {
+  /** Who gets a default delegation (see delegations.ts). */
+  autoDelegate: AutoDelegateMode;
+  /** Run the daily sender domain checks (default on). */
+  domainChecks: boolean;
+  /** Extra DKIM selectors to look for. */
+  dkimSelectors: string[];
   saved: boolean;
   publicBaseUrl: string | null;
   googleClientId: string;
@@ -125,12 +162,26 @@ export function parseTriageAssignee(value: unknown): TriageAssignee | null {
   return id ? { agentId: id } : null;
 }
 
+export function parseAutoDelegate(value: unknown): AutoDelegateMode {
+  return value === "off" || value === "operator+roles" ? value : "operator";
+}
+
+/** `google, default` → a clean selector list (DNS labels only, at most 10). */
+export function parseSelectors(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  const out = value.split(/[\s,;]+/).map((item) => item.trim().toLowerCase()).filter((item) => /^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$/.test(item));
+  return [...new Set(out)].slice(0, 10);
+}
+
 export function parseMailboxConfig(raw: Record<string, unknown>): MailboxConfig {
   const google = (raw.google && typeof raw.google === "object" ? raw.google : {}) as Record<string, unknown>;
   const rate = Number(raw.sendRatePerMinute);
   const base = typeof raw.publicBaseUrl === "string" && raw.publicBaseUrl.trim() ? raw.publicBaseUrl.trim() : null;
   const fromName = typeof raw.fromName === "string" && raw.fromName.trim() ? raw.fromName.replace(/[\r\n]/g, " ").trim().slice(0, 120) : null;
   return {
+    autoDelegate: parseAutoDelegate(raw.autoDelegate),
+    domainChecks: raw.domainChecks !== false,
+    dkimSelectors: parseSelectors(raw.dkimSelectors),
     saved: Object.keys(raw).length > 0,
     publicBaseUrl: base,
     googleClientId: typeof google.clientId === "string" && google.clientId.trim() ? google.clientId.trim() : DEFAULT_GOOGLE_CLIENT_ID,

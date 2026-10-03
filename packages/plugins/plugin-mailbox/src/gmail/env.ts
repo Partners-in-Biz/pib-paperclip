@@ -1,5 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GmailStore } from "../db.js";
+import type { DnsResolver } from "../dns.js";
 import type { FetchLike } from "./api.js";
 
 /** Everything the Gmail logic needs; tests swap the store and fetch. */
@@ -13,6 +14,8 @@ export interface Env {
   now: () => number;
   /** Access tokens by account id for this worker process. */
   tokenCache: Map<string, { token: string; expiresAt: number }>;
+  /** DNS over HTTPS for the sender domain checks; the public resolvers through the host's guarded fetch when absent (tests pass a fake). */
+  dns?: DnsResolver;
 }
 
 export function createEnv(ctx: PluginContext, store: GmailStore, overrides: Partial<Omit<Env, "ctx" | "store">> = {}): Env {
@@ -23,6 +26,7 @@ export function createEnv(ctx: PluginContext, store: GmailStore, overrides: Part
     jevFetch: overrides.jevFetch,
     now: overrides.now ?? (() => Date.now()),
     tokenCache: overrides.tokenCache ?? new Map(),
+    dns: overrides.dns,
   };
 }
 

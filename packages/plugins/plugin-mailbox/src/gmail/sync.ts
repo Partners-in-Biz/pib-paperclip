@@ -23,7 +23,6 @@ import {
   redeliver,
   RISK_THRESHOLDS,
   routeWork,
-  type LeadCaptured,
   type MailReceived,
 } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
@@ -46,9 +45,14 @@ import { decodeEncodedWords, headerMap, isBounceMail, isBulkMail, parseAddressLi
 import { ensureLabelIds } from "./labels.js";
 import { withGmail } from "./tokens.js";
 import { REPLY_ISSUE_CATEGORIES, triageMessage, type TriageRunContext } from "./triage.js";
-import type { AccountRow, AttachmentMeta, BounceInfo, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
+import type { AccountRow, AttachmentMeta, BounceInfo, ClientMapRow, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
 import { suppressFromInbound } from "../suppression.js";
 import { replyOrigin } from "../done-checks.js";
+import { ensureDefaultDelegations } from "../delegations.js";
+import { erasureHash } from "../hash.js";
+import { isLeadCandidate, leadCapturedFrom } from "./leads.js";
+
+export { gmailWebLink, isLeadCandidate, leadCapturedFrom, type MailLeadCaptured } from "./leads.js";
 
 export { SYNC_JOB_KEY } from "../constants.js";
 export const RESYNC_QUERY = "newer_than:7d -in:chats -in:drafts -in:spam -in:trash";
@@ -151,6 +155,8 @@ export function parseGmailMessage(
     read: !message.labelIds.includes("UNREAD"),
     triaged: outbound,
     bounce: outbound ? null : bounce,
+    // A website form relayed by its host puts the visitor in Reply-To.
+    replyToAddr: outbound ? null : parseAddressList(headers.get("reply-to"))[0] ?? null,
   };
 }
 
@@ -187,72 +193,19 @@ export function mailReceivedFrom(row: MessageRow, accountAddress: string): MailR
   return event;
 }
 
-/** A lead worth handing to the CRM: triaged `lead`, a real sender, not bulk or phishing. */
-export function isLeadCandidate(row: MessageRow): boolean {
-  const triage = row.triage;
-  if (row.direction !== "inbound" || !row.gmail_message_id) return false;
-  if ((triage?.category ?? row.category) !== "lead") return false;
-  if (row.bulk || row.bounce) return false;
-  if ((triage?.phishing ?? Number(row.phishing ?? 0)) >= 0.9) return false;
-  return Boolean(row.from_addr?.email);
-}
-
-/** The message in Gmail on the web, signed in as the mailbox that received it. */
-export function gmailWebLink(accountAddress: string, gmailMessageId: string): string {
-  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(accountAddress)}#all/${encodeURIComponent(gmailMessageId)}`;
-}
-
 /**
- * `lead.captured` for the CRM, plus where the mail is: `messageId` (for
- * `get-message`), `accountId`, `threadId` and a Gmail link. `mentionsClient*`
- * is the client triage linked the mail to; it is not the lead's owner.
+ * True when a message to or from an erased person was received before they were erased (the marker keeps their hash and the moment).
+ * The Reply-To counts as well: for a relayed website form it is the visitor (the From is the website).
  */
-export type MailLeadCaptured = LeadCaptured & {
-  messageId: string;
-  gmailMessageId: string | null;
-  threadId: string | null;
-  accountId: string;
-  accountAddress: string | null;
-  mentionsClientKind: "company" | "contact" | null;
-  mentionsClientRef: string | null;
-  mentionsClientName: string | null;
-};
-
-/**
- * `lead.captured` for the CRM (`HANDOFF_EVENTS.leadCaptured`). The Mailbox's
- * accounts are the company's own, so the lead is our own lead: `clientKind`
- * and `clientRef` stay empty (a client scope would file it as that client's
- * lead, with no follow-up). The client triage matched goes in `mentionsClient*`.
- */
-export function leadCapturedFrom(row: MessageRow, accountAddress: string | null = null): MailLeadCaptured {
-  const triage = row.triage;
-  const subject = (row.subject ?? "").trim();
-  const snippet = (row.snippet ?? "").trim();
-  const text = subject && snippet ? `${subject}: ${snippet}` : subject || snippet;
-  const mentionsKind = triage?.clientKind ?? (row.client_kind === "company" || row.client_kind === "contact" ? row.client_kind : null);
-  const mentionsRef = triage?.clientRef ?? row.client_ref ?? null;
-  return {
-    key: `mail:${row.gmail_message_id}`,
-    source: "email",
-    name: row.from_addr?.name?.trim() || null,
-    email: row.from_addr?.email?.toLowerCase() ?? null,
-    handle: null,
-    platform: null,
-    text: text.slice(0, 300),
-    url: accountAddress && row.gmail_message_id ? gmailWebLink(accountAddress, row.gmail_message_id) : null,
-    clientKind: null,
-    clientRef: null,
-    confidence: triage?.confidence ?? null,
-    capturedAt: row.received_at ?? row.created_at,
-    messageId: row.id,
-    gmailMessageId: row.gmail_message_id,
-    threadId: row.gmail_thread_id,
-    accountId: row.account_id,
-    accountAddress,
-    mentionsClientKind: mentionsRef ? mentionsKind ?? "company" : null,
-    mentionsClientRef: mentionsRef,
-    mentionsClientName: mentionsRef ? triage?.clientName ?? null : null,
-  };
+export function isErasedMail(row: Pick<NewGmailMessage, "from" | "to" | "cc" | "receivedAt" | "replyToAddr">, erased: Map<string, string>, ownAddress: string): boolean {
+  if (erased.size === 0) return false;
+  const received = Date.parse(row.receivedAt);
+  for (const address of [row.from?.email, row.replyToAddr?.email, ...row.to.map((a) => a.email), ...row.cc.map((a) => a.email)]) {
+    if (!address || address.toLowerCase() === ownAddress.toLowerCase()) continue;
+    const at = Date.parse(erased.get(erasureHash(address)) ?? "");
+    if (Number.isFinite(at) && (!Number.isFinite(received) || received < at)) return true;
+  }
+  return false;
 }
 
 export interface SyncStats {
@@ -358,8 +311,11 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
       throw error;
     }
   });
+  // Mail of a person who was erased and was received before the erasure is never imported again (their later mail is new).
+  const erased = await env.store.erasedMarkers(account.company_id).catch(() => new Map<string, string>());
   let stored = 0;
   for (const row of parsed) {
+    if (row && isErasedMail(row, erased, account.address)) continue;
     if (row && (await env.store.insertGmailMessage(row))) stored += 1;
   }
 
@@ -449,9 +405,18 @@ export async function handOffLead(env: Env, account: AccountRow, row: MessageRow
   if (!isLeadCandidate(row)) return { handed: false, created: false };
   try {
     if (!(await isModuleEnabled(env.ctx, account.company_id, PIB_PLUGINS.crm))) return { handed: false, created: false };
-    const contacts = await env.store.crmContactsByEmail(account.company_id, row.from_addr!.email);
-    if (contacts.length > 0) return { handed: false, created: false };
-    const lead = leadCapturedFrom(row, account.address);
+    // A client mail mapping files the lead under the client; the person is the visitor, not the website.
+    const mapped = row.triage?.mapping && row.client_kind && row.client_ref ? { match_type: row.triage.mapping.type, client_kind: row.client_kind as "company" | "contact", client_ref: row.client_ref } : null;
+    // A mailbox that belongs to a client receives that client's mail: its leads are the client's, and the sender is the person (like mail addressed to the client).
+    const owned = account.client_ref ? { match_type: "recipient_address" as const, client_kind: (account.client_kind === "contact" ? "contact" : "company") as "company" | "contact", client_ref: account.client_ref } : null;
+    const mapping = mapped ?? owned;
+    // A lead for the company that is already a CRM contact is the Account Manager's reply to write. A client's lead is the CRM's to file in the client's scope,
+    // whoever the visitor is: the company must not answer a visitor of its client's website as itself.
+    if (!mapping) {
+      const contacts = await env.store.crmContactsByEmail(account.company_id, row.from_addr!.email);
+      if (contacts.length > 0) return { handed: false, created: false };
+    }
+    const lead = leadCapturedFrom(row, account.address, mapping);
     const { created } = await enqueue(env.ctx, account.company_id, HANDOFF_EVENTS.leadCaptured, lead as unknown as { key: string } & Record<string, unknown>);
     return { handed: true, created };
   } catch (error) {
@@ -582,6 +547,8 @@ export async function runSyncJob(env: Env): Promise<{ accounts: number; synced: 
     // Only the Mailbox's own switch stops the sync; other modules being off does not.
     if (!(await isModuleEnabled(env.ctx, companyId, PLUGIN_ID))) continue;
     const loaded = await loadMailboxConfig(env.ctx, companyId);
+    // The Operator's default read and draft access on the company's own mailboxes (cheap, at most every ten minutes).
+    await ensureDefaultDelegations(env, companyId);
     const run = await triageRunFor(env, loaded);
     for (const account of list) {
       const ok = await syncOne(env, loaded, account, run);
@@ -602,10 +569,15 @@ export async function triageRunFor(env: Env, loaded: LoadedConfig, limits: { max
     env.ctx.logger.info("Jev settings unavailable; using rules", { companyId: loaded.companyId, error: errorMessage(error) });
   }
   let clients: Promise<CrmClientRow[]> | null = null;
+  let maps: Promise<ClientMapRow[]> | null = null;
+  let own: Promise<Set<string>> | null = null;
   return {
     jev,
     labelPrefix: loaded.config.labelPrefix,
     clients: () => (clients ??= env.store.crmClients(loaded.companyId, 1000)),
+    // Loaded once per run: a handful of rows each.
+    maps: () => (maps ??= env.store.listClientMaps(loaded.companyId).catch(() => [])),
+    ownAddresses: () => (own ??= env.store.listAccounts(loaded.companyId).then((rows) => new Set(rows.map((row) => row.address.toLowerCase())))),
     ...limits,
   };
 }

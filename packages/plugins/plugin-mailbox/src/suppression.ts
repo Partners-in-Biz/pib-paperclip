@@ -17,8 +17,11 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   HANDOFF_EVENTS,
+  OWN_SENDER,
   pluginEvent,
+  suppressionBlocks,
   suppressionEmail,
+  suppressionKey,
   suppressionScope,
   SUPPRESSION_SOURCES,
   type ContactSuppressed,
@@ -27,10 +30,12 @@ import {
   type SuppressionReason,
 } from "@partnersinbiz/pib-plugin-kit";
 import type { GmailStore } from "./db.js";
+import { announceOptOut } from "./erasure.js";
 import { errorMessage, type Env } from "./gmail/env.js";
 import { isValidEmail } from "./gmail/headers.js";
 import type { AccountRow, MessageRow, SkippedRecipient, SuppressionReasonKey, SuppressionRow, SuppressionScope } from "./gmail/types.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { accountSenderKey } from "./sender.js";
 
 export const REANNOUNCE_HOURS = 72;
 const REASONS: SuppressionReasonKey[] = ["unsubscribed", "bounced", "complained", "manual"];
@@ -56,17 +61,26 @@ export interface SuppressionCheck {
   error: string | null;
 }
 
-/** Whether this row stops this kind of send. */
-export function blocks(row: Pick<SuppressionRow, "scope">, marketing: boolean): boolean {
-  return row.scope === "all" || marketing;
+/**
+ * Whether this row stops this send: a hard bounce (`all`) stops every send, a
+ * marketing opt-out stops marketing from the same sender (and from every sender
+ * when the row has none: it was written before senders existed).
+ */
+export function blocks(row: Pick<SuppressionRow, "scope" | "sender_key">, send: { marketing: boolean; senderKey?: string | null }): boolean {
+  return suppressionBlocks({ scope: row.scope, senderKey: row.sender_key || null }, send);
 }
 
-/** Leaves out suppressed recipients (to, cc, bcc). */
-export async function checkSuppression(store: Pick<GmailStore, "suppressionsFor">, companyId: string, request: MailSendRequested): Promise<SuppressionCheck> {
+/** Leaves out suppressed recipients (to, cc, bcc). `senderKey` is whose list applies (the sending mailbox's client, or `own`). */
+export async function checkSuppression(store: Pick<GmailStore, "suppressionsFor">, companyId: string, request: MailSendRequested, senderKey: string = OWN_SENDER): Promise<SuppressionCheck> {
   const all = [...request.to, ...(request.cc ?? []), ...(request.bcc ?? [])];
   const rows = all.length ? await store.suppressionsFor(companyId, all.map((a) => a.email)) : [];
   const marketing = request.marketing === true;
-  const stop = new Map(rows.filter((row) => blocks(row, marketing)).map((row) => [row.email, row]));
+  // One row per address is enough to skip it; a hard bounce or an erasure marker is the strongest reason, so it is the one named.
+  const stop = new Map<string, SuppressionRow>();
+  for (const row of rows.filter((entry) => blocks(entry, { marketing, senderKey }))) {
+    const have = stop.get(row.email);
+    if (!have || (row.scope === "all" && have.scope !== "all")) stop.set(row.email, row);
+  }
   if (stop.size === 0) return { request, skipped: [], blocked: false, error: null };
   const keep = (list: MailAddress[] | undefined) => (list ?? []).filter((address) => !stop.has(suppressionEmail(address.email)));
   const filtered: MailSendRequested = { ...request, to: keep(request.to), cc: keep(request.cc), bcc: keep(request.bcc) };
@@ -82,9 +96,17 @@ export async function checkSuppression(store: Pick<GmailStore, "suppressionsFor"
   };
 }
 
-/** `List-Unsubscribe` for marketing mail: a reply to the sending account with subject "unsubscribe". */
-export function listUnsubscribeHeader(fromAddress: string): string {
-  return `<mailto:${fromAddress}?subject=unsubscribe>`;
+/**
+ * `List-Unsubscribe` for marketing mail: a reply to the sending account with
+ * subject "unsubscribe", and, when there is an https address, that first (mail
+ * clients prefer it). `post` is `List-Unsubscribe-Post`, set only with an https
+ * address: RFC 8058 one-click needs both headers.
+ */
+export function listUnsubscribeHeader(fromAddress: string, httpsUrl?: string | null): { value: string; post: string | null } {
+  const mailto = `<mailto:${fromAddress}?subject=unsubscribe>`;
+  const both = httpsUrl ? `<${httpsUrl}>, ${mailto}` : null;
+  // The header is one unfolded line of at most 998 characters (RFC 5322); a link that would push it over is left out, never truncated.
+  return both && "List-Unsubscribe: ".length + both.length <= 998 ? { value: both, post: "List-Unsubscribe=One-Click" } : { value: mailto, post: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,16 +169,19 @@ export async function hardBounceRecipients(store: Pick<GmailStore, "sendsByRfcId
   return out;
 }
 
-export function suppressionPayload(input: { email: string; reason: SuppressionReasonKey; scope: SuppressionScope; clientKind?: string | null; clientRef?: string | null; at?: string; source?: string }): ContactSuppressed {
+export function suppressionPayload(input: { email: string; reason: SuppressionReasonKey; scope: SuppressionScope; clientKind?: string | null; clientRef?: string | null; at?: string; source?: string; senderKey?: string | null }): ContactSuppressed {
   const email = suppressionEmail(input.email);
+  const senderKey = input.senderKey || null;
   return {
-    key: `suppress:${email}:${input.reason}`,
+    key: suppressionKey(email, input.reason, senderKey ?? OWN_SENDER),
     email,
     reason: input.reason,
     scope: input.scope,
     source: input.source ?? PLUGIN_ID,
     clientKind: input.clientKind === "company" || input.clientKind === "contact" ? input.clientKind : null,
     clientRef: input.clientRef ?? null,
+    // A hard bounce is per address, not per sender: it carries none.
+    ...(senderKey && input.scope === "marketing" ? { senderKey } : {}),
     at: input.at ?? new Date().toISOString(),
   };
 }
@@ -182,10 +207,13 @@ export async function suppressFromInbound(env: Env, account: AccountRow, row: Me
   const added: Array<{ email: string; scope: SuppressionScope; reason: SuppressionReasonKey }> = [];
   const sender = row.from_addr?.email ? suppressionEmail(row.from_addr.email) : null;
   if (sender && !row.bounce && !row.bulk && !ownAddresses.has(sender) && isOptOutRequest(row.subject ?? "", row.snippet ?? "")) {
-    const stored = await env.store.upsertSuppression({ companyId, email: sender, scope: "marketing", reason: "unsubscribed", source: PLUGIN_ID, detail: `Asked to stop in message ${row.id}` });
+    // An opt-out is on the list of whoever the mailbox sends as: the company's own, or the client the mailbox belongs to.
+    const senderKey = accountSenderKey(account);
+    const stored = await env.store.upsertSuppression({ companyId, email: sender, scope: "marketing", reason: "unsubscribed", source: PLUGIN_ID, detail: `Asked to stop in message ${row.id}`, senderKey });
     if (stored.created) {
       added.push({ email: sender, scope: "marketing", reason: "unsubscribed" });
-      await announce(env, companyId, suppressionPayload({ email: sender, reason: "unsubscribed", scope: "marketing", clientKind: row.client_kind, clientRef: row.client_ref }));
+      await announce(env, companyId, suppressionPayload({ email: sender, reason: "unsubscribed", scope: "marketing", clientKind: row.client_kind, clientRef: row.client_ref, senderKey }));
+      await announceOptOut(env, companyId, { email: sender, senderKey, source: "reply", wording: firstLine(row.snippet ?? ""), at: row.received_at ?? undefined });
     }
   }
   for (const email of await hardBounceRecipients(env.store, companyId, row)) {
@@ -222,8 +250,10 @@ export async function onContactSuppressed(env: Env, event: PluginEvent): Promise
   if (!companyId || !isValidEmail(email) || !reason) return;
   const scope: SuppressionScope = body.scope === "all" || body.scope === "marketing" ? body.scope : suppressionScope(reason);
   const source = typeof body.source === "string" && body.source ? body.source.slice(0, 120) : senderOf(String(event.eventType)) ?? "unknown";
+  // A hard bounce is per address; an opt-out is on the sender's list. No sender (an older plugin): every sender, as before.
+  const senderKey = scope === "marketing" && typeof body.senderKey === "string" ? body.senderKey.trim().slice(0, 200) : "";
   try {
-    await env.store.upsertSuppression({ companyId, email, scope, reason, source, detail: null });
+    await env.store.upsertSuppression({ companyId, email, scope, reason, source, detail: null, senderKey });
   } catch (error) {
     env.ctx.logger.error("Mailbox suppression failed", { email, error: errorMessage(error) });
   }
@@ -234,7 +264,9 @@ export async function reannounceSuppressions(env: Env, now = Date.now()): Promis
   const since = new Date(now - REANNOUNCE_HOURS * 3_600_000).toISOString();
   let sent = 0;
   for (const row of await env.store.ownSuppressionsSince(PLUGIN_ID, since, 500)) {
-    if (await announce(env, row.company_id, suppressionPayload({ email: row.email, reason: row.reason, scope: row.scope, at: row.updated_at || row.created_at }))) sent += 1;
+    // An erased person's marker has no address to announce.
+    if (row.email_hash) continue;
+    if (await announce(env, row.company_id, suppressionPayload({ email: row.email, reason: row.reason, scope: row.scope, senderKey: row.sender_key, at: row.updated_at || row.created_at }))) sent += 1;
   }
   return sent;
 }

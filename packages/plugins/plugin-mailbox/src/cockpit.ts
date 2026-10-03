@@ -20,7 +20,10 @@ import {
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig } from "./config.js";
-import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { SqlStore } from "./db.js";
+import { domainHealthChecks } from "./domain-health.js";
+import type { DomainCheckRow } from "./gmail/types.js";
 import { TRIAGE_PURPOSE } from "./gmail/triage.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { knownCompanies } from "./setup-status.js";
@@ -139,7 +142,23 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string, now
 
   if (counts) snap.health.push(sendQueueHealth(counts));
   snap.health.push(await leadHandoffHealth(ctx, companyId));
+  // Mail authentication of each sending domain (SPF, DKIM, DMARC, MX) and client mail nobody has mapped yet.
+  const store = new SqlStore(ctx.db);
+  snap.health.push(...domainHealthChecks(await part(ctx, "domains", () => store.listDomainChecks(companyId), [] as DomainCheckRow[]), now));
+  const unmapped = await part(ctx, "unmapped", () => store.unmappedSummary(companyId, 30), [] as Awaited<ReturnType<SqlStore["unmappedSummary"]>>);
+  const flagged = unmapped.reduce((sum, row) => sum + Number(row.n), 0);
+  if (flagged > 0) {
+    snap.health.push({
+      key: "mailbox:client-mail-unmapped",
+      title: "Client mail without a mapping",
+      status: "warn",
+      detail: `${flagged} message${flagged === 1 ? "" : "s"} in the last 30 days look like a client's mail (${unmapped.slice(0, 3).map((row) => row.domain).join(", ")}) but are filed as the company's own.`,
+      href: HREF,
+      fix: "The Account Manager maps each sender with map-client-mail (list-client-mail-maps shows them), or add a mapping on the Mailboxes tab.",
+    });
+  }
   snap.health.push(await jobHealth(ctx, SYNC_JOB_KEY, "Gmail sync", 2));
+  snap.health.push(await jobHealth(ctx, DOMAIN_JOB_KEY, "Sender domain checks", 24 * 60));
   snap.health.push(await jobHealth(ctx, SETUP_STATUS_JOB_KEY, "Setup and cockpit report", 60));
 
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId, counts), [] as ActivityItem[]);

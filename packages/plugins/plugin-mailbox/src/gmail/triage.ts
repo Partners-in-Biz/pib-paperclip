@@ -18,9 +18,12 @@ import {
   type MailCategory,
 } from "@partnersinbiz/pib-plugin-kit";
 import type { GmailStore } from "../db.js";
+import { isFreeMailDomain } from "../free-mail.js";
+import { bySender, relayedPerson } from "./leads.js";
+import { factsOf, looksLikeClientMail, matchClientMap, mappedClient } from "../client-maps.js";
 import type { Env } from "./env.js";
 import { emailDomain } from "./headers.js";
-import type { CrmClientRow, MessageRow, SendContext, StoredTriage, TriageWrite } from "./types.js";
+import type { ClientMapRow, CrmClientRow, MapState, MessageRow, SendContext, StoredTriage, TriageWrite } from "./types.js";
 
 export const TRIAGE_PURPOSE = "mail-triage";
 const NONE_OPTION = "none of these";
@@ -65,37 +68,7 @@ export const URGENCY_LEVELS = [
 /** Categories where a reply issue may be opened. */
 export const REPLY_ISSUE_CATEGORIES = new Set<MailCategory>(["lead", "client", "support"]);
 
-const FREE_MAIL = new Set([
-  "gmail.com",
-  "googlemail.com",
-  "outlook.com",
-  "hotmail.com",
-  "live.com",
-  "msn.com",
-  "yahoo.com",
-  "ymail.com",
-  "icloud.com",
-  "me.com",
-  "mac.com",
-  "aol.com",
-  "proton.me",
-  "protonmail.com",
-  "gmx.com",
-  "gmx.net",
-  "zoho.com",
-  "yandex.com",
-  "mweb.co.za",
-  "telkomsa.net",
-  "vodamail.co.za",
-  "webmail.co.za",
-  "absamail.co.za",
-  "lantic.net",
-  "iafrica.com",
-]);
-
-export function isFreeMailDomain(domain: string | null): boolean {
-  return !domain || FREE_MAIL.has(domain.toLowerCase());
-}
+export { isFreeMailDomain };
 
 export function isCategory(value: unknown): value is MailCategory {
   return typeof value === "string" && (MAIL_CATEGORIES as readonly string[]).includes(value);
@@ -111,6 +84,8 @@ export interface TriageFacts {
   hasClient: boolean;
   /** A delivery failure notice. */
   bounce?: boolean;
+  /** A client's website or system relayed a visitor's message to us (a sender mapping matched and Reply-To names the visitor): a lead for that client. */
+  relay?: boolean;
 }
 
 const has = (text: string, re: RegExp) => re.test(text);
@@ -127,6 +102,7 @@ export function ruleCategory(facts: TriageFacts): MailCategory {
   if (has(text, /\bbank statement\b|\bstatement (is )?(available|attached) for (your )?account\b/)) return "bank_statement";
   if (has(text, /\b(invoice|tax invoice|statement of account|amount due|payment due|bill)\b/) && !facts.isReply) return "invoice_or_bill";
   if (facts.isReply) return "reply";
+  if (facts.relay) return "lead";
   if (facts.hasClient && !facts.bulk) return "client";
   if (facts.bulk) {
     if (has(text, /\b(receipt|order|shipped|delivered|sign[- ]?in|security alert|verification code|password|invitation|reminder)\b/) || /^(no-?reply|notifications?)/.test(local)) {
@@ -264,7 +240,7 @@ export function triageQuestions(options: ClientOptions | null): JevQuestions {
 }
 
 /** The only data Jev sees. */
-export function triageState(row: MessageRow, flags: { isReply: boolean; knownClient: boolean }) {
+export function triageState(row: MessageRow, flags: { isReply: boolean; knownClient: boolean; formRelay?: boolean }) {
   return {
     fromDomain: emailDomain(row.from_addr?.email ?? null),
     subject: (row.subject ?? "").slice(0, 300),
@@ -273,6 +249,8 @@ export function triageState(row: MessageRow, flags: { isReply: boolean; knownCli
     bulk: Boolean(row.bulk),
     repliesToOurMail: flags.isReply,
     fromKnownClient: flags.knownClient,
+    // Only when true: a client's website forwarded a visitor's message to us (the visitor is a lead for that client).
+    ...(flags.formRelay ? { clientWebsiteForm: true } : {}),
   };
 }
 
@@ -286,7 +264,7 @@ function numberOf(answer: JevAnswer | undefined, type: "noul" | "score"): number
 }
 
 export interface Deterministic {
-  client: (CrmClientRow & { source: "email" | "domain" | "reply" }) | null;
+  client: (CrmClientRow & { source: "email" | "domain" | "reply" | "mapping" }) | null;
   replyTo: SendContext | null;
 }
 
@@ -424,6 +402,10 @@ export interface TriageRunContext {
   labelPrefix: string;
   /** Loaded once per run per company. */
   clients: () => Promise<CrmClientRow[]>;
+  /** The company's client mail mappings (loaded once per run); none when absent. */
+  maps?: () => Promise<ClientMapRow[]>;
+  /** The company's own mailbox addresses (never a recipient that proves a mapping). */
+  ownAddresses?: () => Promise<Set<string>>;
 }
 
 /** Triage one stored inbound message and save the result. */
@@ -432,6 +414,13 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
   const fromEmail = row.from_addr?.email ?? null;
   const replyTo = await replyContextFor(env.store, companyId, row);
   let client = await clientFromSender(env.store, companyId, fromEmail);
+  // A mapping says whose mail this is (forwarded or BCC'd client mail); it beats a guess from the CRM.
+  const mapped = run.maps ? matchClientMap(await run.maps(), factsOf(row), run.ownAddresses ? await run.ownAddresses() : new Set()) : null;
+  if (mapped) {
+    const picked = mappedClient(mapped);
+    client = { kind: picked.kind, id: picked.id, name: picked.name, domain: null, emails: [], accountIds: [], source: "mapping" };
+  }
+  const relay = Boolean(mapped && bySender(mapped.match_type) && relayedPerson(row) && !row.bounce);
   if (!client && replyTo?.clientRef) {
     client = {
       kind: replyTo.clientKind === "contact" ? "contact" : "company",
@@ -450,8 +439,10 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
     bulk: Boolean(row.bulk),
     attachments: (row.attachments ?? []).map((a) => ({ filename: a.filename, mime: a.mime })),
     isReply: Boolean(replyTo),
-    hasClient: Boolean(client),
+    // A mapping says whose mail this IS, not that the sender is one of our clients: it must not turn an enquiry into "client" mail.
+    hasClient: Boolean(client) && client?.source !== "mapping",
     bounce: Boolean(row.bounce),
+    relay,
   };
   let options: ClientOptions | null = null;
   if (!client && run.jev) {
@@ -467,7 +458,7 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
         config: run.jev,
         purpose: TRIAGE_PURPOSE,
         subject: { kind: "message", id: row.id },
-        state: triageState(row, { isReply: facts.isReply, knownClient: facts.hasClient }),
+        state: triageState(row, { isReply: facts.isReply, knownClient: facts.hasClient, formRelay: relay }),
         questions: triageQuestions(options),
         acting: options ? ["category", "client"] : ["category"],
         fetchImpl: env.jevFetch,
@@ -476,6 +467,20 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
   const triage = combineTriage({ facts, deterministic: { client, replyTo }, result, options, labelPrefix: run.labelPrefix });
   if (triage.clientRef && !triage.clientName && triage.clientKind === "company") {
     triage.clientName = (await env.store.crmCompany(companyId, triage.clientRef))?.name ?? null;
+  }
+  // A mapped client's website form is a lead for that client, whatever the sender's address looks like (spam and phishing stay what they are).
+  let mapState: MapState | null = null;
+  if (mapped) {
+    triage.mapping = { id: mapped.id, type: mapped.match_type };
+    if (relay && triage.category !== "spam" && triage.category !== "lead" && (triage.phishing ?? 0) < 0.9) {
+      triage.category = "lead";
+      triage.source = "rules";
+      triage.labels = triageLabels(run.labelPrefix, triage);
+    }
+    mapState = "mapped";
+  } else if (looksLikeClientMail(row, triage)) {
+    // It stays the company's own, flagged until a person or the Account Manager maps it.
+    mapState = "needs_mapping";
   }
   const write: TriageWrite = {
     triage,
@@ -486,6 +491,8 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
     clientKind: triage.clientKind,
     clientRef: triage.clientRef,
     replyTo,
+    mapState,
+    mapId: mapped?.id ?? null,
   };
   await env.store.setTriage(companyId, row.id, write);
   Object.assign(row, {
@@ -498,6 +505,8 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
     client_kind: triage.clientKind,
     client_ref: triage.clientRef,
     reply_to: replyTo,
+    map_state: mapState ?? row.map_state ?? null,
+    map_id: mapped?.id ?? row.map_id ?? null,
   });
   return triage;
 }

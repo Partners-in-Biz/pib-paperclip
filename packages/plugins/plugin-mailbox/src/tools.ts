@@ -17,7 +17,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "list-mailboxes",
     displayName: "List mailboxes",
     description:
-      "The company's mail accounts: address, Gmail status, which one is the default sender, and your delegation on each (mayRead, mayDraft, maySend). Call it first to get an accountId.",
+      "The company's mail accounts: address, Gmail status, which one is the default sender, the client a mailbox belongs to (if any), and your delegation on each (mayRead, mayDraft, maySend). A mailbox you have no access on carries askToOwner: pass it to partnersinbiz.cockpit:ask-owner once and a yes grants the access by itself. Call it first to get an accountId.",
     parametersSchema: schema([], {}),
   },
   {
@@ -34,6 +34,8 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       cc: addresses("Copy"),
       bcc: addresses("Blind copy"),
       replyToMessageId: str("The message this answers (mailbox or Gmail id); keeps the Gmail thread."),
+      replyTo: str("Where replies should go when it is not the mailbox itself (a client's address): a@b.com or Name <a@b.com>."),
+      fromName: str("Display name for From (a client's name when drafting for them). Default: the mailbox's own name."),
     }),
   },
   {
@@ -126,6 +128,52 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       needsReply: { type: "boolean", description: "Whether it needs a written reply from us." },
       client: str("company:<crm id>, contact:<crm id>, or none."),
     }),
+  },
+  {
+    name: "check-sender-domain",
+    displayName: "Check a sender domain",
+    description:
+      "Reads the DNS of a domain mail is sent from (public DNS, nothing is changed): MX, SPF with its lookup count, DKIM at the usual selectors, DMARC. Returns healthy, warn or bad with each problem and its fix, sendReady, and the exact records to add for a new client domain (onboarding). DNS is edited by the person who controls the domain: hand them the steps with one partnersinbiz.cockpit:ask-owner, then check again. By default the domain is also watched every day.",
+    parametersSchema: schema([], {
+      domain: str("The domain to check, e.g. client.co.za (or use address)."),
+      address: str("A sender address; its domain is checked."),
+      selectors: str("Extra DKIM selectors to try, comma separated (e.g. mailer1, brevo). The usual ones are always tried."),
+      watch: { type: "boolean", description: "Keep checking this domain every day and report problems on the Cockpit (default true)." },
+      clientKind: { type: "string", enum: ["company", "contact"], description: "With clientRef: the client this domain belongs to (kept with the check)." },
+      clientRef: str("The CRM id of that client."),
+    }),
+  },
+  {
+    name: "sender-domain-health",
+    displayName: "Sender domain health",
+    description:
+      "The last stored check of each sending domain (no DNS lookup): status, healthy, sendReady (SPF, DKIM and DMARC in place), problems and when it was checked. Use it before launching a campaign from a domain: it must be healthy. Nothing is blocked by this; the caller decides.",
+    parametersSchema: schema([], { domain: str("One domain or an address at it. Omit for every sending domain of the company.") }),
+  },
+  {
+    name: "map-client-mail",
+    displayName: "Map client mail",
+    description:
+      "Say that mail from or to a domain or address belongs to a client (a website form relayed by the client's host, a BCC copy, an alias we forward). Such mail is then filed under the client and its leads go to the CRM in the client's scope, with the visitor as the person. Find the client with partnersinbiz.crm:find-records first. Flagged mail of the last 30 days is filed too. list-client-mail-maps shows mail waiting for a mapping.",
+    parametersSchema: schema(["matchType", "pattern", "clientKind", "clientRef"], {
+      matchType: { type: "string", enum: ["sender_domain", "sender_address", "recipient_domain", "recipient_address"], description: "sender_*: mail FROM the client's site or system. recipient_*: mail TO the client's address or an alias we forward." },
+      pattern: str("A domain (ahslaw.co.za) or an exact address, matching matchType. Never your own domain or a free mail domain."),
+      clientKind: { type: "string", enum: ["company", "contact"], description: "company or contact." },
+      clientRef: str("The CRM id of the client."),
+      note: str("Optional: why (e.g. the AHS Law website form)."),
+    }),
+  },
+  {
+    name: "list-client-mail-maps",
+    displayName: "List client mail mappings",
+    description: "The client mail mappings, and the sender domains of mail that looks like a client's but has no mapping yet (last 30 days, with a sample messageId to read with get-message). Map those with map-client-mail.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "remove-client-mail-map",
+    displayName: "Remove a client mail mapping",
+    description: "Delete a mapping. Mail already filed keeps its client; new mail from that sender is the company's own again.",
+    parametersSchema: schema(["mapId"], { mapId: str("The mapping id from list-client-mail-maps.") }),
   },
   {
     name: "mail-status",

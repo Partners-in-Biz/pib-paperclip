@@ -108,3 +108,32 @@ export function recentTime(value: string | null | undefined, now: Date = new Dat
   if (minutes >= 60 && minutes < 60 * 24) return `${Math.round(minutes / 60)} h ago`;
   return null;
 }
+
+/** Page wording for a sender domain's status. */
+export function domainStatusLabel(status: string): string {
+  return status === "healthy" ? "Healthy" : status === "warn" ? "Needs attention" : status === "bad" ? "Problem" : "Not known yet";
+}
+
+/** Pill tone for a sender domain's status (the page's `Pill` tones). */
+export function domainTone(status: string): "ok" | "warn" | "bad" | "neutral" {
+  return status === "healthy" ? "ok" : status === "warn" ? "warn" : status === "bad" ? "bad" : "neutral";
+}
+
+export const MAP_TYPE_NAMES: Record<string, string> = {
+  sender_domain: "Mail from the domain",
+  sender_address: "Mail from the address",
+  recipient_domain: "Mail to the domain",
+  recipient_address: "Mail to the address",
+};
+
+/** A starting point for a mapping from a mail the Mailbox flagged: its sender's domain. Null when there is no usable sender. */
+export function suggestMapping(mail: { from: { email: string } | null }): { matchType: "sender_domain"; pattern: string } | null {
+  const domain = mail.from?.email.split("@")[1]?.toLowerCase().trim();
+  return domain && domain.includes(".") ? { matchType: "sender_domain", pattern: domain } : null;
+}
+
+/** One line for the DKIM, SPF, DMARC and MX results of a stored domain check. */
+export function domainFacts(row: { mx: string | null; spf: string | null; dkim: string | null; dmarc: string | null }): string {
+  const word = (state: string | null) => (state === null ? "not read" : state === "ok" || state === "enforced" ? "ok" : state === "monitor" ? "monitoring" : state);
+  return `MX ${word(row.mx)} · SPF ${word(row.spf)} · DKIM ${word(row.dkim)} · DMARC ${row.dmarc === "none" ? "monitoring (p=none)" : row.dmarc === "quarantine" || row.dmarc === "reject" ? `p=${row.dmarc}` : word(row.dmarc)}`;
+}

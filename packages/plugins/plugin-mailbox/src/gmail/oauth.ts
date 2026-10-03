@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginApiRequestInput, PluginApiResponse } from "@paperclipai/plugin-sdk";
 import { pluginUiBase, requirePublicBaseUrl, TokenKeyError } from "@partnersinbiz/pib-plugin-kit";
 import { gmailRedirectUri, loadMailboxConfig } from "../config.js";
+import { ensureDefaultDelegations } from "../delegations.js";
 import { MailboxError } from "../domain.js";
 import { buildGoogleAuthorizeUrl, exchangeGoogleCode, getProfile, GMAIL_MODIFY_SCOPE, GMAIL_SEND_SCOPE, GmailApiError } from "./api.js";
 import { errorMessage, type Env } from "./env.js";
@@ -99,6 +100,8 @@ export async function oauthComplete(env: Env, input: PluginApiRequestInput): Pro
     env.tokenCache.set(accountId, { token: tokens.accessToken, expiresAt: tokens.expiresAt });
     const account = await env.store.getAccount(session.companyId, accountId);
     if (account) await closeReconnectIssue(env, account);
+    // The Operator can read and draft on the new mailbox without anyone being asked (never sending; skipped for a removed one).
+    await ensureDefaultDelegations(env, session.companyId, { force: true });
     return { status: 200, body: { redirectTo: session.returnTo ?? "/", address: profile.emailAddress, accountId } };
   } catch (error) {
     const message =

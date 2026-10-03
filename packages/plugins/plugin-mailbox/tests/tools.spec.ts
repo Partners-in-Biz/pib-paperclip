@@ -39,6 +39,26 @@ describe("Mailbox skill", () => {
     for (const tool of MAILBOX_TOOLS) expect(MAILBOX_DRAFT_SKILL, tool.name).toContain(`\`${tool.name}\``);
   });
 
+  it("stays within the skill budget, with the reference material in the skill's files", () => {
+    // The kit contract fails a skill over 18,000 characters; the new material lives in references the agent opens when needed.
+    expect(SKILLS[0]!.markdown!.length).toBeLessThanOrEqual(18_000);
+    expect(SKILLS[0]!.files!.map((file) => file.path)).toEqual(["references/sender-domains.md", "references/client-mail.md", "references/privacy.md"]);
+    for (const file of SKILLS[0]!.files ?? []) {
+      expect(SKILLS[0]!.markdown!, file.path).toContain(file.path);
+      expect(file.content.length, file.path).toBeGreaterThan(300);
+    }
+  });
+
+  it("teaches an agent to ask once for access, check a domain before a campaign, and map client mail", () => {
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/carries `askToOwner`\. Pass it to `partnersinbiz\.cockpit:ask-owner` once, unchanged/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/do not ask again, and do not ask in a comment/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/Access a person removed stays removed/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/Before a campaign goes out from a domain it must be healthy; the Mailbox itself blocks nothing/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/Never call a domain healthy without a check/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/find the client with `partnersinbiz\.crm:find-records` first/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/You never erase mail yourself/);
+  });
+
   it("explains the do-not-email list and attachments", () => {
     expect(MAILBOX_DRAFT_SKILL).toMatch(/"unsubscribe" or "stop"/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/hard bounce/);

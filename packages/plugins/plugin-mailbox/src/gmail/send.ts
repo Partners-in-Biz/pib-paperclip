@@ -15,10 +15,14 @@
  *   `suppressed` addresses so the sender stops for good.
  */
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
+import { isModuleEnabled, MAIL_EVENTS, OWN_SENDER, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
+import { senderDomainHealth } from "../domain-health.js";
+import { sendingDomain } from "../dns.js";
 import { GmailUnavailable, MailboxError, SendThrottled } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { accountScopeProblem, accountSenderKey, cleanDisplayName, effectiveReplyTo, parseReplyTo, parseUnsubscribeUrl, senderScopeWarnings } from "../sender.js";
+import { ownOneClickUrl } from "../unsubscribe.js";
 import { getMessageMetadata, getThreadMetadata, GmailApiError, listMessages, modifyMessage, sendRaw, type FetchLike } from "./api.js";
 import { errorMessage, type Env } from "./env.js";
 import { headerMap, parseMessageIds, toMailAddress } from "./headers.js";
@@ -108,9 +112,16 @@ export function normaliseRequest(payload: unknown, sender: string): { request: M
     }
     attachments.push({ url, filename, mime: str(a.mime, 200) ?? "application/octet-stream", bytes: typeof a.bytes === "number" ? a.bytes : undefined });
   }
+  const replyTo = parseReplyTo(p.replyTo);
+  if (replyTo.invalid) problems.push("Invalid replyTo address");
+  const unsubscribe = parseUnsubscribeUrl(p.unsubscribeUrl);
+  if (unsubscribe.invalid) problems.push("unsubscribeUrl must be an https address with no spaces");
   const request: MailSendRequested = {
     key,
     from: str(p.from, 320),
+    ...(cleanDisplayName(p.fromName) ? { fromName: cleanDisplayName(p.fromName) } : {}),
+    ...(replyTo.address ? { replyTo: replyTo.address } : {}),
+    ...(unsubscribe.url ? { unsubscribeUrl: unsubscribe.url } : {}),
     to,
     cc,
     bcc,
@@ -130,8 +141,11 @@ export function normaliseRequest(payload: unknown, sender: string): { request: M
   return { request, problem: problems[0] ?? null };
 }
 
-/** A send result; `suppressed` lists recipients left out because they are on the do-not-email list. */
-export type SendResult = MailSendResult & { suppressed?: SkippedRecipient[] };
+/**
+ * A send result; `suppressed` lists recipients left out because they are on the do-not-email list; `warnings`
+ * says what is wrong with the sending domain's mail authentication (marketing sends only; it never blocks one).
+ */
+export type SendResult = MailSendResult & { suppressed?: SkippedRecipient[]; warnings?: string[] };
 
 export function resultFromRow(row: SendRow): SendResult {
   const skipped = row.skipped ?? [];
@@ -282,11 +296,15 @@ export async function performSend(env: Env, companyId: string, request: MailSend
     context: request.context,
     request,
   };
-  // Never email a suppressed address: marketing skips every one, any send skips hard bounces.
-  const check = problem ? null : await checkSuppression(env.store, companyId, request);
+  // A client's mailbox only sends that client's mail; its opt-outs are that client's list (the company's own mailbox: `own`).
+  const scopeProblem = account && !problem ? accountScopeProblem(account, request) : null;
+  const senderKey = account ? accountSenderKey(account) : OWN_SENDER;
+  // Never email a suppressed address: marketing skips every one of the sender's, any send skips hard bounces.
+  const check = problem || scopeProblem ? null : await checkSuppression(env.store, companyId, request, senderKey);
   const blocked = check?.blocked ? check.skipped : undefined;
   const permanentProblem =
     problem ??
+    scopeProblem ??
     (check?.blocked ? check.error : null) ??
     (!account
       ? request.from
@@ -323,7 +341,7 @@ export async function performSend(env: Env, companyId: string, request: MailSend
       const found = await withGmail(env, loaded, sender, (token) => listMessages(env.fetch, token, `rfc822msgid:${rfcMessageId}`, { maxResults: 1 }));
       if (found.messages[0]) sent = { id: found.messages[0].id, threadId: found.messages[0].threadId, labelIds: [] };
     }
-    if (!sent) sent = await sendNow(env, loaded, sender, outgoing, rfcMessageId);
+    if (!sent) sent = await sendNow(env, loaded, sender, outgoing, rfcMessageId, senderKey);
   } catch (error) {
     const message = errorMessage(error);
     if ((error instanceof AttachmentError && error.permanent) || isPermanentGmail(error)) {
@@ -335,17 +353,36 @@ export async function performSend(env: Env, companyId: string, request: MailSend
   }
   // Gmail has the message now. A failure below leaves the claim in place (never "retrying"), so a
   // later delivery finds the sent message by its Message-ID instead of sending it again.
-  return finishSent(env, loaded, sender, outgoing, options, sent, rfcMessageId, skipped);
+  return finishSent(env, loaded, sender, outgoing, options, sent, rfcMessageId, skipped, [...(await domainWarnings(env, sender, outgoing)), ...senderScopeWarnings(sender, outgoing)]);
 }
 
-async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string) {
+/** What is wrong with the sending domain's mail authentication, for a marketing send. Reads the last stored check; never blocks, never throws. */
+export async function domainWarnings(env: Pick<Env, "store" | "now">, account: Pick<AccountRow, "company_id" | "address">, request: Pick<MailSendRequested, "marketing">): Promise<string[]> {
+  if (request.marketing !== true) return [];
+  try {
+    const domain = sendingDomain(account.address);
+    if (!domain) return [];
+    const health = await senderDomainHealth(env.store, account.company_id, domain, env.now());
+    return health.known && (health.status === "bad" || health.status === "warn") ? health.reasons.slice(0, 3) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string, senderKey: string = OWN_SENDER) {
   const attachments = await downloadAttachments(env.fetch, request.attachments ?? []);
   const thread = await threadingFor(env, loaded, sender, request);
+  // Marketing mail: an https one-click address (the caller's, else the Mailbox's own once its proxy rule is proved) next to the mailto form.
+  const unsubscribe = request.marketing
+    ? listUnsubscribeHeader(sender.address, request.unsubscribeUrl ?? (await ownOneClickUrl(env, loaded, request, sender.company_id, senderKey)))
+    : null;
   const mime = buildMime({
-    from: { email: sender.address, name: loaded.config.fromName },
+    // The request's name wins, then the mailbox's own (a client's), then the company setting.
+    from: { email: sender.address, name: request.fromName ?? sender.from_name ?? loaded.config.fromName },
     to: request.to,
     cc: request.cc ?? [],
     bcc: request.bcc ?? [],
+    replyTo: effectiveReplyTo(request.replyTo, sender.address),
     subject: request.subject,
     text: request.text,
     html: request.html,
@@ -354,7 +391,8 @@ async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, reque
     inReplyTo: thread.inReplyTo,
     references: thread.references,
     date: new Date(env.now()),
-    listUnsubscribe: request.marketing ? listUnsubscribeHeader(sender.address) : null,
+    listUnsubscribe: unsubscribe?.value ?? null,
+    listUnsubscribePost: unsubscribe?.post ?? null,
   });
   return withGmail(env, loaded, sender, (token) => sendRaw(env.fetch, token, mime, thread.threadId));
 }
@@ -368,6 +406,7 @@ async function finishSent(
   sent: { id: string; threadId: string; labelIds: string[] },
   generatedRfcId: string,
   skipped: SkippedRecipient[] = [],
+  warnings: string[] = [],
 ): Promise<SendResult> {
   let rfcMessageId: string | null = generatedRfcId;
   let labelIds = sent.labelIds;
@@ -438,6 +477,7 @@ async function finishSent(
     permanent: false,
     context: request.context,
     ...(skipped.length ? { suppressed: skipped } : {}),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 

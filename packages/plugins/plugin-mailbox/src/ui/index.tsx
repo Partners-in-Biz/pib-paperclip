@@ -56,7 +56,7 @@ import {
 import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
-import { canSendFrom, connectReadiness, draftRecipients, missingTechnical, recentTime, sendBlock, sentBy } from "./view.js";
+import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, domainFacts, domainStatusLabel, domainTone, draftRecipients, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping } from "./view.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
 
@@ -75,6 +75,10 @@ interface Settings {
   triageIssues: boolean;
   /** Private R2 storage for get-attachment links. */
   r2?: boolean;
+  /** Who gets mailbox access without asking (0.5.0). */
+  autoDelegate?: string;
+  domainChecks?: boolean;
+  unsubscribeSecret?: boolean;
 }
 interface Suppression { email: string; scope: "marketing" | "all"; reason: string; source: string; at: string }
 interface Account {
@@ -87,8 +91,42 @@ interface Account {
   last_sync_at: string | null;
   last_error: string | null;
   sync_stats: { stored?: number; triaged?: number; mode?: string } | null;
+  /** The client this mailbox belongs to (0.5.0): it sends only that client's mail. */
+  client_kind?: string | null;
+  client_ref?: string | null;
+  from_name?: string | null;
 }
-interface Delegation { id: string; account_id: string; agent_id: string; can_read?: boolean; can_draft?: boolean; can_send: boolean }
+interface Delegation { id: string; account_id: string; agent_id: string; can_read?: boolean; can_draft?: boolean; can_send: boolean; source?: string }
+interface DomainProblem { severity: string; message: string; fix: string }
+interface DomainRow {
+  domain: string;
+  status: string;
+  sendReady: boolean;
+  checkedAt: string;
+  statusSince: string;
+  source: string;
+  mx: string | null;
+  spf: string | null;
+  dkim: string | null;
+  dmarc: string | null;
+  problems: DomainProblem[];
+}
+interface ClientMapView { id: string; matchType: string; pattern: string; clientKind: string; clientRef: string; clientName: string | null; note: string | null }
+interface ClientMapOverview {
+  maps: ClientMapView[];
+  unmapped: Array<{ domain: string; messages: number; lastReceivedAt: string | null; sampleMessageId: string | null }>;
+}
+interface DomainCheckResult {
+  domain: string;
+  applicable?: boolean;
+  note?: string;
+  status: string;
+  healthy?: boolean;
+  sendReady?: boolean;
+  problems?: DomainProblem[];
+  manual?: string[];
+  onboarding?: { steps: string[]; dig: string[]; alreadyDone: string[] };
+}
 interface Draft {
   id: string;
   account_id: string;
@@ -118,6 +156,10 @@ interface Snapshot {
   daily?: DailySeries;
   /** The do-not-email list, newest first (worker 0.3.0+). */
   suppressions?: Suppression[];
+  /** Last SPF, DKIM, DMARC and MX check of each sending domain (worker 0.5.0+). */
+  domains?: DomainRow[];
+  /** Client mail mappings and the sender domains of mail waiting for one (worker 0.5.0+). */
+  clientMaps?: ClientMapOverview | null;
 }
 interface InboxMessage {
   id: string;
@@ -137,6 +179,9 @@ interface InboxMessage {
   client_name: string | null;
   attachments: Array<{ filename: string }>;
   reply_to: { plugin: string; kind: string } | null;
+  /** `needs_mapping`: it looks like a client's mail but no mapping says so (worker 0.5.0+). */
+  map_state?: string | null;
+  visitor?: { email: string; name?: string | null } | null;
 }
 interface ClientOption { ref: string; name: string; kind: string }
 interface SendRequest {
@@ -166,7 +211,7 @@ interface NamedAgent { id: string; name: string; status: string }
 
 const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
 type TabId = (typeof TAB_IDS)[number];
-type CreateKind = "mailbox" | "delegation" | "draft" | null;
+type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | null;
 type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
 
 const URGENCY_NAMES = ["Can wait", "Normal", "Soon", "Urgent"];
@@ -175,6 +220,11 @@ const SOURCE_NAMES: Record<string, string> = { "partnersinbiz.mailbox": "Mailbox
 const QUESTION_NAMES: Record<string, string> = { category: "Category", urgency: "Urgency", needs_reply: "Needs a reply", phishing: "Suspicious mail", client: "Which client" };
 const DRAFT_STATUS: Record<string, string> = { draft: "Draft", queued: "Queued" };
 const TECH_ANCHOR = "technical-setup";
+
+/** Where a delegation came from, for the table: the defaults and answered asks are not a person's click. */
+function sourceNote(row: { source?: string }): string {
+  return row.source === "default" ? " · given automatically" : row.source === "ask" ? " · you approved" : "";
+}
 
 /** "5 min ago" for the last day, then "28 Sep" (the year only when it is not this year). */
 function whenText(value: string | null | undefined, now: Date = new Date()): string {
@@ -386,6 +436,12 @@ export function MailboxPage({ context }: PluginPageProps) {
   const createAccount = usePluginAction("mailbox.create-account");
   const createDelegation = usePluginAction("mailbox.create-delegation");
   const createDraft = usePluginAction("mailbox.create-draft");
+  const removeDelegation = usePluginAction("mailbox.remove-delegation");
+  const checkDomain = usePluginAction("mailbox.check-domain");
+  const setAccountClient = usePluginAction("mailbox.set-account-client");
+  const addClientMap = usePluginAction("mailbox.add-client-map");
+  const removeClientMap = usePluginAction("mailbox.remove-client-map");
+  const loadCrmClients = usePluginAction("mailbox.crm-clients");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
@@ -417,6 +473,12 @@ export function MailboxPage({ context }: PluginPageProps) {
   const [draftBody, setDraftBody] = useState("");
   const [correcting, setCorrecting] = useState<InboxMessage | null>(null);
   const [fix, setFix] = useState({ category: "", urgency: "", needsReply: "", client: "" });
+  const [domainInput, setDomainInput] = useState("");
+  const [domainResult, setDomainResult] = useState<DomainCheckResult | null>(null);
+  const [crmClients, setCrmClients] = useState<ClientOption[]>([]);
+  const [mapForm, setMapForm] = useState({ matchType: "sender_domain", pattern: "", client: "", note: "" });
+  const [bindTarget, setBindTarget] = useState<Account | null>(null);
+  const [bindClient, setBindClient] = useState("");
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
@@ -457,6 +519,44 @@ export function MailboxPage({ context }: PluginPageProps) {
       setMessage(success);
       setCreate(null);
       setPreview(null);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function removeAccess(row: Delegation) {
+    const who = agentName(row.agent_id);
+    if (!window.confirm(`Remove ${who}'s access to ${addressOf(row.account_id)}? It will not be given back automatically; only you can give it again.`)) return;
+    void run(() => removeDelegation({ accountId: row.account_id, agentId: row.agent_id }), `${who}'s access was removed`);
+  }
+  async function ensureClients() {
+    if (crmClients.length > 0) return;
+    try {
+      setCrmClients(((await loadCrmClients({})) as { clients: ClientOption[] }).clients);
+    } catch (error) {
+      setMessage(errorText(error));
+    }
+  }
+  async function openBind(account: Account) {
+    setBindTarget(account);
+    setBindClient("");
+    setCreate("account-client");
+    await ensureClients();
+  }
+  async function openMapping(prefill?: { matchType: string; pattern: string }) {
+    setMapForm({ matchType: prefill?.matchType ?? "sender_domain", pattern: prefill?.pattern ?? "", client: "", note: "" });
+    setPreview(null);
+    setCreate("client-map");
+    await ensureClients();
+  }
+  async function runDomainCheck(domain: string) {
+    setMessage("");
+    setBusy(true);
+    try {
+      setDomainResult((await checkDomain({ domain })) as DomainCheckResult);
+      await refresh();
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -596,6 +696,7 @@ export function MailboxPage({ context }: PluginPageProps) {
                       <strong style={{ fontSize: 14, minWidth: 0, ...breakAnywhere }}>{account.address}</strong>
                       {accountBadge(account)}
                       {account.is_default ? <Chip tone="info">Sends for all modules</Chip> : null}
+                      {account.client_ref ? <Chip tone="accent">Client mailbox: {account.from_name || account.client_ref}</Chip> : null}
                     </div>
                     <span style={{ fontSize: 12, color: tokens.muted }}>
                       Last sync {whenText(account.last_sync_at, now)}
@@ -611,9 +712,14 @@ export function MailboxPage({ context }: PluginPageProps) {
                   <MoreMenu
                     label={`More for ${account.address}`}
                     items={[
-                      ...(account.status === "connected" && !account.is_default
+                      ...(account.status === "connected" && !account.is_default && !account.client_ref
                         ? [{ label: "Send all module mail from here", onSelect: () => void run(() => setDefault({ accountId: account.id }), `${account.address} now sends for all modules`) }]
                         : []),
+                      ...(account.client_ref
+                        ? [{ label: "Make it the company's mailbox again", onSelect: () => void run(() => setAccountClient({ accountId: account.id }), `${account.address} is the company's again`) }]
+                        : account.has_credential
+                          ? [{ label: "Give it to a client…", onSelect: () => void openBind(account) }]
+                          : []),
                       ...(account.status !== "disconnected" && account.has_credential
                         ? [{
                           label: "Disconnect",
@@ -1021,14 +1127,19 @@ export function MailboxPage({ context }: PluginPageProps) {
             actions={accounts.length ? <Button type="button" variant={connectedCount && !(snapshot?.delegations ?? []).length ? "primary" : "secondary"} onClick={() => setCreate("delegation")}>Give an agent access</Button> : undefined}
           >
             {(snapshot?.delegations ?? []).length === 0 ? (
-              <Muted>{accounts.length ? "No agent has access yet. The Account Manager needs it to answer client mail." : "Connect Gmail first, then give agents access."}</Muted>
+              <Muted>{accounts.length ? "No agent has access yet. The Operator gets read and draft access on the company's own mailboxes by itself; an agent that asks and is answered yes gets it too." : "Connect Gmail first, then give agents access."}</Muted>
             ) : narrow ? (
               <CompactRows
                 label="Agents with access"
                 rows={snapshot?.delegations ?? []}
                 title={(row) => agentName(row.agent_id)}
-                meta={(row) => addressOf(row.account_id)}
-                trailing={(row) => <Pill size="sm" tone={row.can_send ? "ok" : "neutral"} dot>{row.can_send ? "Can send" : row.can_draft === false ? "Read only" : "Read and draft"}</Pill>}
+                meta={(row) => `${addressOf(row.account_id)}${sourceNote(row)}`}
+                trailing={(row) => (
+                  <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    <Pill size="sm" tone={row.can_send ? "ok" : "neutral"} dot>{row.can_send ? "Can send" : row.can_draft === false ? "Read only" : "Read and draft"}</Pill>
+                    <Button type="button" variant="secondary" disabled={busy} style={{ height: 28, fontSize: 12 }} onClick={() => void removeAccess(row)}>Remove</Button>
+                  </span>
+                )}
               />
             ) : (
               <DataTable
@@ -1036,15 +1147,81 @@ export function MailboxPage({ context }: PluginPageProps) {
                   { key: "agent", header: "Agent" },
                   { key: "account", header: "Mailbox", render: (value) => <span style={{ overflowWrap: "anywhere" }}>{String(value)}</span> },
                   { key: "send", header: "May", render: (value, row) => <Pill tone={(row as unknown as Delegation).can_send ? "ok" : "neutral"} dot>{String(value)}</Pill> },
+                  { key: "id", header: "", render: (_value, row) => <Button type="button" variant="secondary" disabled={busy} style={{ height: 28, fontSize: 12 }} onClick={() => void removeAccess(row as unknown as Delegation)}>Remove</Button> },
                 ]}
                 rows={(snapshot?.delegations ?? []).map((delegation) => ({
                   ...delegation,
                   agent: agentName(delegation.agent_id),
                   account: addressOf(delegation.account_id),
-                  send: delegation.can_send ? "Read, draft and send" : delegation.can_draft === false ? "Read only" : "Read and draft",
+                  send: `${delegation.can_send ? "Read, draft and send" : delegation.can_draft === false ? "Read only" : "Read and draft"}${sourceNote(delegation)}`,
                 }))}
                 emptyMessage="No agent has access yet."
               />
+            )}
+          </SectionCard>
+          <SectionCard
+            id="sender-domains"
+            title="Sender domains"
+            subtitle="SPF, DKIM and DMARC of each domain mail is sent from, checked every day. Nothing is blocked; a domain should be healthy before a campaign goes out from it."
+            icon={MailCheck}
+            tone={(snapshot?.domains ?? []).some((row) => row.status === "bad") ? "bad" : (snapshot?.domains ?? []).some((row) => row.status === "warn") ? "warn" : undefined}
+            actions={<Button type="button" variant="secondary" onClick={() => { setDomainResult(null); setDomainInput(""); setCreate("domain"); }}>Check a domain</Button>}
+          >
+            {(snapshot?.domains ?? []).length === 0 ? (
+              <Muted>Nothing checked yet. A domain is added when a mailbox on it is connected, or when you check one. For a new client's domain, check it here to see exactly which DNS records to add.</Muted>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {(snapshot?.domains ?? []).map((row) => (
+                  <div key={row.domain} style={{ display: "grid", gap: 6, padding: "10px 12px", border: `1px solid ${row.status === "bad" ? tone("bad").border : tokens.border}`, borderRadius: 10, minWidth: 0 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                        <strong style={{ fontSize: 14, ...breakAnywhere }}>{row.domain}</strong>
+                        <Pill size="sm" tone={domainTone(row.status)} dot>{domainStatusLabel(row.status)}</Pill>
+                        {row.sendReady ? <Chip tone="ok">Ready for campaigns</Chip> : null}
+                      </div>
+                      <Button type="button" variant="secondary" disabled={busy} onClick={() => void runDomainCheck(row.domain)}>Check now</Button>
+                    </div>
+                    <span style={{ fontSize: 12, color: tokens.muted }}>{domainFacts(row)} · checked {whenText(row.checkedAt, now)}</span>
+                    {row.problems.filter((problem) => problem.severity !== "info").slice(0, 3).map((problem) => (
+                      <div key={problem.message} style={{ fontSize: 12.5, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+                        <span style={{ color: problem.severity === "bad" ? tone("bad").fg : tokens.fg }}>{problem.message}</span>
+                        <span style={{ color: tokens.muted }}> {problem.fix}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+          <SectionCard
+            title="Client mail"
+            subtitle="Mail from a client's website form, or BCC'd or forwarded to a company mailbox, is filed as that client's, not the company's own lead."
+            icon={ListChecks}
+            tone={(snapshot?.clientMaps?.unmapped ?? []).length ? "warn" : undefined}
+            actions={<Button type="button" variant="secondary" onClick={() => void openMapping()}>Add a mapping</Button>}
+          >
+            {(snapshot?.clientMaps?.unmapped ?? []).length ? (
+              <div style={{ display: "grid", gap: 6, marginBottom: 10 }}>
+                <strong style={{ fontSize: 13 }}>Looks like client mail, not mapped yet</strong>
+                {(snapshot?.clientMaps?.unmapped ?? []).map((row) => (
+                  <div key={row.domain} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", fontSize: 13 }}>
+                    <span style={breakAnywhere}>{row.domain} · {row.messages} message{row.messages === 1 ? "" : "s"}{row.lastReceivedAt ? ` · last ${whenText(row.lastReceivedAt, now)}` : ""}</span>
+                    <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => void openMapping({ matchType: "sender_domain", pattern: row.domain })}>Map it</Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {(snapshot?.clientMaps?.maps ?? []).length === 0 ? (
+              <Muted>No mappings yet. Without one, mail like this stays the company's own and is flagged here so it can be mapped once.</Muted>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {(snapshot?.clientMaps?.maps ?? []).map((map) => (
+                  <div key={map.id} style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", fontSize: 13, minWidth: 0 }}>
+                    <span style={breakAnywhere}>{MAP_TYPE_NAMES[map.matchType] ?? map.matchType} <strong>{map.pattern}</strong> → {map.clientName ?? map.clientRef}</span>
+                    <Button type="button" variant="secondary" disabled={busy} style={{ height: 28, fontSize: 12 }} onClick={() => void run(() => removeClientMap({ mapId: map.id }), "Mapping removed")}>Remove</Button>
+                  </div>
+                ))}
+              </div>
             )}
           </SectionCard>
           {otherMailboxes.length ? (
@@ -1193,6 +1370,13 @@ export function MailboxPage({ context }: PluginPageProps) {
                 previewMail.attachments.length ? ["Files", previewMail.attachments.map((a) => a.filename).join(", ")] : null,
               ]}
             />
+            {previewMail.map_state === "needs_mapping" ? (
+              <div style={{ display: "grid", gap: 6, justifyItems: "start" }}>
+                <Muted>This looks like a client's mail (for example a website form), but nothing says whose. It is filed as the company's own until it is mapped.</Muted>
+                {suggestMapping(previewMail) ? <Button type="button" variant="secondary" onClick={() => void openMapping(suggestMapping(previewMail)!)}>Map {suggestMapping(previewMail)!.pattern} to a client</Button> : null}
+              </div>
+            ) : null}
+            {previewMail.visitor ? <Muted>Reply-To (the visitor, for a relayed form): {previewMail.visitor.name ? `${previewMail.visitor.name} · ` : ""}{previewMail.visitor.email}</Muted> : null}
             {previewMail.snippet ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{previewMail.snippet}…</p> : null}
             <Muted>Open Gmail to read and answer the whole message.</Muted>
           </>
@@ -1341,6 +1525,78 @@ export function MailboxPage({ context }: PluginPageProps) {
         {!draftTo.trim() ? <Muted>Without a recipient the draft can't be sent.</Muted> : null}
         <Field label="Subject"><Input value={subject} onChange={(event) => setSubject(event.target.value)} required /></Field>
         <Field label="Message"><TextArea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} rows={6} /></Field>
+      </Modal>
+      <Modal open={create === "domain"} title="Check a sender domain" description="Reads the public DNS of a domain: nothing is changed. Use it for a new client's domain to see exactly which records to add. The domain is then checked every day." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Close</Button>
+          <Button type="button" disabled={busy || !domainInput.trim()} onClick={() => void runDomainCheck(domainInput.trim())}>Check</Button>
+        </>
+      )}>
+        <Field label="Domain"><Input value={domainInput} onChange={(event) => setDomainInput(event.target.value)} placeholder="client.co.za" /></Field>
+        {domainResult ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            {domainResult.applicable === false ? <Muted>{domainResult.note}</Muted> : (
+              <>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <strong>{domainResult.domain}</strong>
+                  <Pill size="sm" tone={domainTone(domainResult.status)} dot>{domainStatusLabel(domainResult.status)}</Pill>
+                  {domainResult.sendReady ? <Chip tone="ok">Ready for campaigns</Chip> : null}
+                </div>
+                {(domainResult.problems ?? []).filter((problem) => problem.severity !== "info").map((problem) => (
+                  <div key={problem.message} style={{ fontSize: 12.5, lineHeight: 1.45, overflowWrap: "anywhere" }}>{problem.message} <span style={{ color: tokens.muted }}>{problem.fix}</span></div>
+                ))}
+                {domainResult.onboarding?.steps.length ? (
+                  <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6, fontSize: 13, lineHeight: 1.45 }}>
+                    {domainResult.onboarding.steps.map((step) => <li key={step} style={{ overflowWrap: "anywhere" }}>{step}</li>)}
+                  </ol>
+                ) : null}
+                {domainResult.onboarding?.alreadyDone.length ? <Muted>Already in place: {domainResult.onboarding.alreadyDone.join("; ")}.</Muted> : null}
+                {(domainResult.manual ?? []).length ? <Muted>Part of the DNS could not be read. By hand: {(domainResult.manual ?? []).join("  ·  ")}</Muted> : null}
+              </>
+            )}
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal open={create === "client-map"} title="Map client mail" description="Mail matching this rule is filed under the client, and its leads go to the CRM as that client's." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
+          <Button type="button" disabled={busy || !mapForm.pattern.trim() || !mapForm.client} onClick={() => {
+            const [clientKind, clientRef] = mapForm.client.split(":");
+            void run(() => addClientMap({ matchType: mapForm.matchType, pattern: mapForm.pattern, clientKind, clientRef, note: mapForm.note || undefined }), "Mapping added. Flagged mail was filed under the client.");
+          }}>Add mapping</Button>
+        </>
+      )}>
+        <Field label="Mail">
+          <Select value={mapForm.matchType} onChange={(event) => setMapForm({ ...mapForm, matchType: event.target.value })}>
+            {Object.entries(MAP_TYPE_NAMES).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </Select>
+        </Field>
+        <Field label={mapForm.matchType.endsWith("domain") ? "Domain" : "Address"}><Input value={mapForm.pattern} onChange={(event) => setMapForm({ ...mapForm, pattern: event.target.value })} placeholder={mapForm.matchType.endsWith("domain") ? "ahslaw.co.za" : "forms@ahslaw.co.za"} /></Field>
+        <Field label="Client">
+          <Select value={mapForm.client} onChange={(event) => setMapForm({ ...mapForm, client: event.target.value })}>
+            <option value="">Choose a client…</option>
+            {crmClients.map((c) => <option key={c.ref} value={c.ref}>{c.name}{c.kind === "contact" ? " (person)" : ""}</option>)}
+          </Select>
+        </Field>
+        <Field label="Note (optional)"><Input value={mapForm.note} onChange={(event) => setMapForm({ ...mapForm, note: event.target.value })} placeholder="The AHS Law website form" /></Field>
+      </Modal>
+
+      <Modal open={create === "account-client"} title={bindTarget ? `Give ${bindTarget.address} to a client` : "Give a mailbox to a client"} description="The mailbox then sends only that client's mail, as the client, with the client's own do-not-email list. It stops being a company mailbox: it is never the default sender and no agent gets access to it automatically." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
+          <Button type="button" disabled={busy || !bindTarget || !bindClient} onClick={() => {
+            const [clientKind, clientRef] = bindClient.split(":");
+            void run(() => setAccountClient({ accountId: bindTarget!.id, clientKind, clientRef }), "The mailbox belongs to the client now");
+          }}>Give it to the client</Button>
+        </>
+      )}>
+        <Field label="Client">
+          <Select value={bindClient} onChange={(event) => setBindClient(event.target.value)}>
+            <option value="">Choose a client…</option>
+            {crmClients.map((c) => <option key={c.ref} value={c.ref}>{c.name}{c.kind === "contact" ? " (person)" : ""}</option>)}
+          </Select>
+        </Field>
       </Modal>
     </Page>
   );

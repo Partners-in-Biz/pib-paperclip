@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
-import { SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
+import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -18,6 +18,8 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    // The mailbox.delegate ask effect checks that the agent it grants is an active agent of this company.
+    "agents.read",
     "issues.read",
     "issues.create",
     "issues.update",
@@ -33,6 +35,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "events.emit",
     "api.routes.register",
+    // The public one-click unsubscribe address (RFC 8058).
+    "webhooks.receive",
+    // DNS over HTTPS for the sender domain checks.
     "http.outbound",
     "secrets.read-ref",
     "plugin.state.read",
@@ -54,8 +59,21 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: SETUP_STATUS_JOB_KEY,
       displayName: "Report setup status",
-      description: "Tells the Setup plugin what the Mailbox still needs, and sends the Cockpit snapshot, for each company.",
+      description: "Tells the Setup plugin what the Mailbox still needs, sends the Cockpit snapshot, keeps every company's managed skills up to date and announces the sender domain results again, for each company.",
       schedule: "29 * * * *",
+    },
+    {
+      jobKey: DOMAIN_JOB_KEY,
+      displayName: "Check sender domains",
+      description: "Daily: reads SPF, DKIM, DMARC and MX of every domain the company's mailboxes send from (public DNS, nothing is changed), records the result and reports problems on the Cockpit.",
+      schedule: "17 5 * * *",
+    },
+  ],
+  webhooks: [
+    {
+      endpointKey: UNSUBSCRIBE_ENDPOINT,
+      displayName: "One-click unsubscribe",
+      description: "POST /api/plugins/partnersinbiz.mailbox/webhooks/unsubscribe: a mail client's one-click unsubscribe (RFC 8058). The signed token must reach the plugin as the X-Pib-Unsubscribe-Token header or in the X-Original-Uri query (the reverse proxy passes it on; the Mailbox checks that every hour and makes its own https links only while the check passes); a bad token does nothing.",
     },
   ],
   apiRoutes: [

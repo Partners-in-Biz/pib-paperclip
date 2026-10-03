@@ -24,6 +24,7 @@ export const METADATA_HEADERS = [
   "From",
   "To",
   "Cc",
+  "Reply-To",
   "Subject",
   "Date",
   "Message-ID",

@@ -4,10 +4,16 @@
  * SQL. `GmailStore` is what the Gmail logic needs (tests use an in-memory
  * one); `SqlStore` also carries the older delegation/draft/template queries.
  */
+import { randomUUID } from "node:crypto";
 import type { MailAddress, MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
+import { erasureHash, markerEmail } from "./hash.js";
 import type {
   AccountRow,
+  ClientMapRow,
+  ClientMapType,
   CrmClientRow,
+  DelegationSource,
+  DomainCheckRow,
   DraftExtras,
   InboxFilter,
   MessageRow,
@@ -85,6 +91,8 @@ export interface GmailStore {
   /** Moves the account to needs_reconnect; true only for the call that changed it. */
   markNeedsReconnect(companyId: string, id: string, error: string): Promise<boolean>;
   setDefaultAccount(companyId: string, id: string): Promise<void>;
+  /** Binds a mailbox to a client (or back to the company's own with nulls). A client's mailbox is never the default sender. */
+  setAccountClient(companyId: string, id: string, patch: { clientKind: string | null; clientRef: string | null; fromName?: string | null }): Promise<void>;
   tryLockSync(accountId: string, seconds: number): Promise<boolean>;
   unlockSync(accountId: string): Promise<void>;
   mergeLabelIds(accountId: string, map: Record<string, string>): Promise<void>;
@@ -130,10 +138,20 @@ export interface GmailStore {
   deleteOAuthSession(state: string): Promise<void>;
   // delegations
   delegationFor(accountId: string, agentId: string): Promise<{ can_read: boolean; can_draft: boolean; can_send: boolean } | null>;
+  /** A person removed this agent's access: the defaults never give it back. */
+  hasDelegationRemoval(accountId: string, agentId: string): Promise<boolean>;
+  /** Creates a default delegation unless one exists or was removed. True when it created one. */
+  insertDefaultDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; grantedBy: string }): Promise<boolean>;
+  /** An explicit grant: adds rights, never lowers them, and clears an earlier removal. */
+  grantDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; source: DelegationSource; grantedBy: string | null }): Promise<void>;
+  /** A mailbox given to a client: the delegations the defaults made go (explicit grants by a person or an answered ask stay). Returns how many. */
+  deleteDefaultDelegations(companyId: string, accountId: string): Promise<number>;
+  /** Removes the delegation and remembers the removal. True when a delegation was deleted. */
+  removeDelegation(companyId: string, accountId: string, agentId: string, removedBy: string | null): Promise<boolean>;
   // do-not-email list
-  /** The rows for these addresses (lower case). */
+  /** The rows for these addresses (lower case), every sender's; an erased person's marker comes back with the address that was asked for. */
   suppressionsFor(companyId: string, emails: string[]): Promise<SuppressionRow[]>;
-  /** Adds the address once; a later `all` widens a `marketing` row. Returns whether it is new and the scope now stored. */
+  /** Adds the address once per sender; a later `all` widens a `marketing` row. Returns whether it is new and the scope now stored. */
   upsertSuppression(input: SuppressionInput): Promise<{ created: boolean; widened: boolean; scope: SuppressionScope }>;
   listSuppressions(companyId: string, limit: number): Promise<SuppressionRow[]>;
   /** Rows this plugin found since `sinceIso`, across companies (re-announced hourly). */
@@ -143,18 +161,51 @@ export interface GmailStore {
   crmCompaniesByDomain(companyId: string, domain: string): Promise<CrmClientRow[]>;
   crmCompany(companyId: string, id: string): Promise<CrmClientRow | null>;
   crmClients(companyId: string, limit: number): Promise<CrmClientRow[]>;
+  crmContact(companyId: string, id: string): Promise<CrmClientRow | null>;
+  // client mail mappings
+  listClientMaps(companyId: string): Promise<ClientMapRow[]>;
+  insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }): Promise<ClientMapRow>;
+  deleteClientMap(companyId: string, id: string): Promise<boolean>;
+  /** Mail flagged as looking like a client's with no mapping, by sender domain (newest first). */
+  unmappedSummary(companyId: string, days: number): Promise<Array<{ domain: string; n: number | string; last_at: string | null; sample_id: string | null }>>;
+  flaggedMessages(companyId: string, days: number, limit: number): Promise<MessageRow[]>;
+  // sender domain checks
+  getDomainCheck(companyId: string, domain: string): Promise<DomainCheckRow | null>;
+  listDomainChecks(companyId: string): Promise<DomainCheckRow[]>;
+  upsertDomainCheck(row: DomainCheckRow): Promise<void>;
+  // erasure
+  crmContactEmails(companyId: string, contactId: string): Promise<string[]>;
+  messagesInvolving(companyId: string, emails: string[]): Promise<Array<{ id: string; account_id: string; gmail_thread_id: string | null; status: string; direction: string }>>;
+  threadIssueIds(companyId: string, threadIds: string[]): Promise<string[]>;
+  deleteDecisionsFor(companyId: string, messageIds: string[]): Promise<number>;
+  deleteMessages(companyId: string, ids: string[]): Promise<number>;
+  /** Keys of send requests to, cc'd or bcc'd to these addresses. */
+  sendKeysTo(companyId: string, emails: string[]): Promise<string[]>;
+  /** Keeps the record (key, status, context) so a repeated request is still refused; removes recipients, subject, body and error text. */
+  redactSends(companyId: string, keys: string[]): Promise<number>;
+  scrubInboxResults(companyId: string, keys: string[]): Promise<number>;
+  deleteLeadOutbox(companyId: string, emails: string[]): Promise<number>;
+  blankCrmProjection(companyId: string, contactId: string | null, emails: string[]): Promise<number>;
+  /** Replaces the address's do-not-email rows (every sender) with one marker that holds only its hash. */
+  eraseSuppression(input: { companyId: string; email: string; hash: string; scope: SuppressionScope }): Promise<{ replaced: number }>;
+  /** Erased people by hash, with when: mail received before that is never imported again. */
+  erasedMarkers(companyId: string): Promise<Map<string, string>>;
 }
 
 const ACCOUNT_COLUMNS =
-  "id, company_id, provider, address, status, token_sealed, token_expires_at, scopes, history_id, last_sync_at, last_error, sync_stats, connected_by_user_id, connected_at, alert_issue_id, is_default, label_ids, owner_user_id, created_at";
+  "id, company_id, provider, address, status, token_sealed, token_expires_at, scopes, history_id, last_sync_at, last_error, sync_stats, connected_by_user_id, connected_at, alert_issue_id, is_default, label_ids, owner_user_id, client_kind, client_ref, from_name, created_at";
 
 const MESSAGE_COLUMNS =
-  "id, company_id, account_id, subject, body, direction, status, created_at, read_at, gmail_message_id, gmail_thread_id, rfc_message_id, in_reply_to, refs, from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, triage, triaged_at, category, urgency, needs_reply, phishing, client_kind, client_ref, reply_to, sent_context, send_key, draft, send_error, bounce";
+  "id, company_id, account_id, subject, body, direction, status, created_at, read_at, gmail_message_id, gmail_thread_id, rfc_message_id, in_reply_to, refs, from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, triage, triaged_at, category, urgency, needs_reply, phishing, client_kind, client_ref, reply_to, sent_context, send_key, draft, send_error, bounce, reply_to_addr, map_state, map_id";
 
 const SEND_COLUMNS =
   "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at, skipped";
 
-const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, created_at, updated_at";
+const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, sender_key, email_hash, erased_at, created_at, updated_at";
+
+const DOMAIN_COLUMNS = "company_id, domain, status, result, source, client_kind, client_ref, checked_at, first_checked_at, status_since, dmarc_none_since";
+
+const MAP_COLUMNS = "id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, created_by, created_at";
 
 /** Column → SQL cast for account patches. Only these columns can be patched. */
 const ACCOUNT_PATCH_CASTS: Record<keyof AccountPatch, string> = {
@@ -196,6 +247,9 @@ function normaliseAccount(row: AccountRow): AccountRow {
     created_at: iso(row.created_at) ?? "",
     label_ids: row.label_ids ?? {},
     sync_stats: row.sync_stats ?? {},
+    client_kind: row.client_kind ?? null,
+    client_ref: row.client_ref ?? null,
+    from_name: row.from_name ?? null,
   };
 }
 
@@ -212,6 +266,9 @@ function normaliseMessage(row: MessageRow): MessageRow {
     bcc_addrs: row.bcc_addrs ?? [],
     labels: row.labels ?? [],
     attachments: row.attachments ?? [],
+    reply_to_addr: row.reply_to_addr ?? null,
+    map_state: row.map_state ?? null,
+    map_id: row.map_id ?? null,
   };
 }
 
@@ -229,7 +286,22 @@ function normaliseSend(row: SendRow): SendRow {
 }
 
 function normaliseSuppression(row: SuppressionRow): SuppressionRow {
-  return { ...row, created_at: iso(row.created_at) ?? "", updated_at: iso(row.updated_at) ?? "" };
+  return { ...row, sender_key: row.sender_key ?? "", email_hash: row.email_hash ?? null, erased_at: iso(row.erased_at), created_at: iso(row.created_at) ?? "", updated_at: iso(row.updated_at) ?? "" };
+}
+
+function normaliseDomainCheck(row: DomainCheckRow): DomainCheckRow {
+  return {
+    ...row,
+    result: row.result ?? {},
+    checked_at: iso(row.checked_at) ?? "",
+    first_checked_at: iso(row.first_checked_at) ?? "",
+    status_since: iso(row.status_since) ?? "",
+    dmarc_none_since: iso(row.dmarc_none_since),
+  };
+}
+
+function normaliseMap(row: ClientMapRow): ClientMapRow {
+  return { ...row, created_at: iso(row.created_at) ?? "" };
 }
 
 interface CrmContactDb {
@@ -291,7 +363,7 @@ export class SqlStore implements GmailStore {
   async defaultAccount(companyId: string): Promise<AccountRow | null> {
     const rows = await this.db.query<AccountRow>(
       `SELECT ${ACCOUNT_COLUMNS} FROM ${this.t("accounts")}
-        WHERE company_id = $1 AND status IN ('connected', 'needs_reconnect') AND token_sealed IS NOT NULL
+        WHERE company_id = $1 AND status IN ('connected', 'needs_reconnect') AND token_sealed IS NOT NULL AND client_ref IS NULL
         ORDER BY is_default DESC, (status = 'connected') DESC, created_at LIMIT 1`,
       [companyId],
     );
@@ -331,6 +403,14 @@ export class SqlStore implements GmailStore {
     await this.db.execute(`UPDATE ${this.t("accounts")} SET is_default = (id = $2), updated_at = now() WHERE company_id = $1`, [companyId, id]);
   }
 
+  async setAccountClient(companyId: string, id: string, patch: { clientKind: string | null; clientRef: string | null; fromName?: string | null }): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("accounts")} SET client_kind = $3, client_ref = $4, from_name = $5, is_default = CASE WHEN $4::text IS NULL THEN is_default ELSE false END, updated_at = now()
+        WHERE id = $1 AND company_id = $2`,
+      [id, companyId, patch.clientRef ? patch.clientKind : null, patch.clientRef, patch.fromName ?? null],
+    );
+  }
+
   async tryLockSync(accountId: string, seconds: number): Promise<boolean> {
     const res = await this.db.execute(
       `UPDATE ${this.t("accounts")} SET sync_lock_until = now() + make_interval(secs => $2::int)
@@ -363,9 +443,9 @@ export class SqlStore implements GmailStore {
     const res = await this.db.execute(
       `INSERT INTO ${this.t("messages")}
         (id, company_id, account_id, subject, body, direction, status, gmail_message_id, gmail_thread_id, rfc_message_id, in_reply_to, refs,
-         from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, read_at, sent_context, send_key, triaged_at, bounce)
+         from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, read_at, sent_context, send_key, triaged_at, bounce, reply_to_addr)
        VALUES ($1, $2, $3, $4, '', $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17::jsonb, $18::jsonb, $19,
-         $20::timestamptz, CASE WHEN $21::boolean THEN now() ELSE NULL END, $22::jsonb, $23, CASE WHEN $24::boolean THEN now() ELSE NULL END, $25::jsonb)
+         $20::timestamptz, CASE WHEN $21::boolean THEN now() ELSE NULL END, $22::jsonb, $23, CASE WHEN $24::boolean THEN now() ELSE NULL END, $25::jsonb, $26::jsonb)
        ON CONFLICT DO NOTHING`,
       [
         row.id,
@@ -393,6 +473,7 @@ export class SqlStore implements GmailStore {
         row.sendKey ?? null,
         row.triaged === true,
         json(row.bounce ?? null),
+        json(row.replyToAddr ?? null),
       ],
     );
     return (res.rowCount ?? 0) > 0;
@@ -421,7 +502,8 @@ export class SqlStore implements GmailStore {
   async setTriage(companyId: string, id: string, write: TriageWrite): Promise<void> {
     await this.db.execute(
       `UPDATE ${this.t("messages")} SET triage = $3::jsonb, category = $4, urgency = $5, needs_reply = $6, phishing = $7,
-         client_kind = $8, client_ref = $9, reply_to = $10::jsonb, triaged_at = now(), updated_at = now()
+         client_kind = $8, client_ref = $9, reply_to = $10::jsonb, map_state = COALESCE($11::text, map_state), map_id = COALESCE($12::text, map_id),
+         triaged_at = now(), updated_at = now()
         WHERE id = $1 AND company_id = $2`,
       [
         id,
@@ -434,6 +516,8 @@ export class SqlStore implements GmailStore {
         write.clientKind,
         write.clientRef,
         json(write.replyTo),
+        write.mapState ?? null,
+        write.mapId ?? null,
       ],
     );
   }
@@ -747,26 +831,30 @@ export class SqlStore implements GmailStore {
   async suppressionsFor(companyId: string, emails: string[]): Promise<SuppressionRow[]> {
     const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
     if (wanted.length === 0) return [];
+    // An erased person's marker has a hash, not an address: look for both, and hand the marker back under the address asked for.
+    const byHash = new Map(wanted.map((email) => [erasureHash(email), email]));
     const rows = await this.db.query<SuppressionRow>(
-      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE company_id = $1 AND email = ANY(${textArray(2)})`,
-      [companyId, json(wanted)],
+      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")}
+        WHERE company_id = $1 AND (email = ANY(${textArray(2)}) OR email_hash = ANY(${textArray(3)}))`,
+      [companyId, json(wanted), json([...byHash.keys()])],
     );
-    return rows.map(normaliseSuppression);
+    return rows.map(normaliseSuppression).map((row) => (row.email_hash && byHash.has(row.email_hash) ? { ...row, email: byHash.get(row.email_hash)! } : row));
   }
 
   async upsertSuppression(input: SuppressionInput): Promise<{ created: boolean; widened: boolean; scope: SuppressionScope }> {
     const email = input.email.trim().toLowerCase();
+    const senderKey = input.senderKey ?? "";
     const res = await this.db.execute(
-      `INSERT INTO ${this.t("suppressions")} (company_id, email, scope, reason, source, detail) VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (company_id, email) DO NOTHING`,
-      [input.companyId, email, input.scope, input.reason, input.source, input.detail?.slice(0, 500) ?? null],
+      `INSERT INTO ${this.t("suppressions")} (company_id, email, scope, reason, source, detail, sender_key) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (company_id, email, sender_key) DO NOTHING`,
+      [input.companyId, email, input.scope, input.reason, input.source, input.detail?.slice(0, 500) ?? null, senderKey],
     );
     if ((res.rowCount ?? 0) > 0) return { created: true, widened: false, scope: input.scope };
     if (input.scope !== "all") return { created: false, widened: false, scope: "marketing" };
     const widened = await this.db.execute(
-      `UPDATE ${this.t("suppressions")} SET scope = 'all', reason = $3, source = $4, detail = $5, updated_at = now()
-        WHERE company_id = $1 AND email = $2 AND scope = 'marketing'`,
-      [input.companyId, email, input.reason, input.source, input.detail?.slice(0, 500) ?? null],
+      `UPDATE ${this.t("suppressions")} SET scope = 'all', reason = $4, source = $5, detail = $6, updated_at = now()
+        WHERE company_id = $1 AND email = $2 AND sender_key = $3 AND scope = 'marketing'`,
+      [input.companyId, email, senderKey, input.reason, input.source, input.detail?.slice(0, 500) ?? null],
     );
     return { created: false, widened: (widened.rowCount ?? 0) > 0, scope: "all" };
   }
@@ -781,7 +869,7 @@ export class SqlStore implements GmailStore {
 
   async ownSuppressionsSince(source: string, sinceIso: string, limit: number): Promise<SuppressionRow[]> {
     const rows = await this.db.query<SuppressionRow>(
-      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE source = $1 AND updated_at >= $2::timestamptz ORDER BY updated_at LIMIT $3`,
+      `SELECT ${SUPPRESSION_COLUMNS} FROM ${this.t("suppressions")} WHERE source = $1 AND email_hash IS NULL AND updated_at >= $2::timestamptz ORDER BY updated_at LIMIT $3`,
       [source, sinceIso, Math.max(1, Math.min(limit, 1000))],
     );
     return rows.map(normaliseSuppression);
@@ -828,11 +916,214 @@ export class SqlStore implements GmailStore {
     return [...companies.map(companyRow), ...contacts.map(contactRow)];
   }
 
+  async crmContact(companyId: string, id: string): Promise<CrmClientRow | null> {
+    const rows = await this.db.query<CrmContactDb>(
+      `SELECT id, name, emails, account_ids FROM ${this.t("crm_contacts")} WHERE company_id = $1 AND id = $2 AND deleted = false`,
+      [companyId, id],
+    );
+    return rows[0] ? contactRow(rows[0]) : null;
+  }
+
+  // ── client mail mappings ────────────────────────────────────────────────
+
+  async listClientMaps(companyId: string): Promise<ClientMapRow[]> {
+    const rows = await this.db.query<ClientMapRow>(`SELECT ${MAP_COLUMNS} FROM ${this.t("client_mail_maps")} WHERE company_id = $1 ORDER BY created_at`, [companyId]);
+    return rows.map(normaliseMap);
+  }
+
+  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }): Promise<ClientMapRow> {
+    const id = `map_${randomUUID()}`;
+    await this.db.execute(
+      `INSERT INTO ${this.t("client_mail_maps")} (id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [id, row.companyId, row.matchType, row.pattern, row.clientKind, row.clientRef, row.clientName, row.note, row.createdBy],
+    );
+    const rows = await this.db.query<ClientMapRow>(`SELECT ${MAP_COLUMNS} FROM ${this.t("client_mail_maps")} WHERE company_id = $1 AND id = $2`, [row.companyId, id]);
+    return normaliseMap(rows[0] ?? { id, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, created_by: row.createdBy, created_at: "" });
+  }
+
+  async deleteClientMap(companyId: string, id: string): Promise<boolean> {
+    const res = await this.db.execute(`DELETE FROM ${this.t("client_mail_maps")} WHERE company_id = $1 AND id = $2`, [companyId, id]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async unmappedSummary(companyId: string, days: number) {
+    return this.db.query<{ domain: string; n: number | string; last_at: string | null; sample_id: string | null }>(
+      `SELECT lower(split_part(from_addr ->> 'email', '@', 2)) AS domain, count(*)::int AS n, max(COALESCE(received_at, created_at))::text AS last_at,
+              (array_agg(id ORDER BY COALESCE(received_at, created_at) DESC))[1] AS sample_id
+         FROM ${this.t("messages")}
+        WHERE company_id = $1 AND map_state = 'needs_mapping' AND COALESCE(received_at, created_at) >= now() - make_interval(days => $2::int)
+        GROUP BY 1 ORDER BY n DESC, last_at DESC LIMIT 25`,
+      [companyId, days],
+    );
+  }
+
+  async flaggedMessages(companyId: string, days: number, limit: number): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND direction = 'inbound' AND map_state = 'needs_mapping' AND COALESCE(received_at, created_at) >= now() - make_interval(days => $2::int)
+        ORDER BY COALESCE(received_at, created_at) DESC LIMIT $3`,
+      [companyId, days, Math.max(1, Math.min(limit, 500))],
+    );
+    return rows.map(normaliseMessage);
+  }
+
+  // ── sender domain checks ────────────────────────────────────────────────
+
+  async getDomainCheck(companyId: string, domain: string): Promise<DomainCheckRow | null> {
+    const rows = await this.db.query<DomainCheckRow>(`SELECT ${DOMAIN_COLUMNS} FROM ${this.t("domain_checks")} WHERE company_id = $1 AND domain = $2`, [companyId, domain.toLowerCase()]);
+    return rows[0] ? normaliseDomainCheck(rows[0]) : null;
+  }
+
+  async listDomainChecks(companyId: string): Promise<DomainCheckRow[]> {
+    const rows = await this.db.query<DomainCheckRow>(`SELECT ${DOMAIN_COLUMNS} FROM ${this.t("domain_checks")} WHERE company_id = $1 ORDER BY domain`, [companyId]);
+    return rows.map(normaliseDomainCheck);
+  }
+
+  async upsertDomainCheck(row: DomainCheckRow): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO ${this.t("domain_checks")} (company_id, domain, status, result, source, client_kind, client_ref, checked_at, first_checked_at, status_since, dmarc_none_since)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10::timestamptz, $11::timestamptz)
+       ON CONFLICT (company_id, domain) DO UPDATE SET status = EXCLUDED.status, result = EXCLUDED.result, source = EXCLUDED.source, client_kind = EXCLUDED.client_kind,
+         client_ref = EXCLUDED.client_ref, checked_at = EXCLUDED.checked_at, status_since = EXCLUDED.status_since, dmarc_none_since = EXCLUDED.dmarc_none_since`,
+      [row.company_id, row.domain.toLowerCase(), row.status, json(row.result), row.source, row.client_kind, row.client_ref, row.checked_at, row.first_checked_at, row.status_since, row.dmarc_none_since],
+    );
+  }
+
+  // ── erasure ─────────────────────────────────────────────────────────────
+
+  async crmContactEmails(companyId: string, contactId: string): Promise<string[]> {
+    const rows = await this.db.query<{ emails: string[] | null }>(`SELECT emails FROM ${this.t("crm_contacts")} WHERE company_id = $1 AND id = $2`, [companyId, contactId]);
+    return (rows[0]?.emails ?? []).map((email) => email.toLowerCase());
+  }
+
+  async messagesInvolving(companyId: string, emails: string[]) {
+    if (emails.length === 0) return [];
+    return this.db.query<{ id: string; account_id: string; gmail_thread_id: string | null; status: string; direction: string }>(
+      `SELECT id, account_id, gmail_thread_id, status, direction FROM ${this.t("messages")}
+        WHERE company_id = $1 AND (
+          lower(from_addr ->> 'email') = ANY(${textArray(2)})
+          OR lower(reply_to_addr ->> 'email') = ANY(${textArray(2)})
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(to_addrs || cc_addrs || bcc_addrs) AS a WHERE lower(a ->> 'email') = ANY(${textArray(2)})))
+        LIMIT 5000`,
+      [companyId, json(emails.map((email) => email.toLowerCase()))],
+    );
+  }
+
+  async threadIssueIds(companyId: string, threadIds: string[]): Promise<string[]> {
+    if (threadIds.length === 0) return [];
+    const rows = await this.db.query<{ issue_id: string }>(
+      `SELECT DISTINCT issue_id FROM ${this.t("thread_issues")} WHERE company_id = $1 AND issue_id IS NOT NULL AND gmail_thread_id = ANY(${textArray(2)})`,
+      [companyId, json(threadIds)],
+    );
+    return rows.map((row) => row.issue_id);
+  }
+
+  async deleteDecisionsFor(companyId: string, messageIds: string[]): Promise<number> {
+    let removed = 0;
+    for (let at = 0; at < messageIds.length; at += 500) {
+      const res = await this.db.execute(
+        `DELETE FROM ${this.t("decisions")} WHERE company_id = $1 AND subject_kind = 'message' AND subject_id = ANY(${textArray(2)})`,
+        [companyId, json(messageIds.slice(at, at + 500))],
+      );
+      removed += res.rowCount ?? 0;
+    }
+    return removed;
+  }
+
+  async deleteMessages(companyId: string, ids: string[]): Promise<number> {
+    let removed = 0;
+    for (let at = 0; at < ids.length; at += 500) {
+      const res = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND id = ANY(${textArray(2)})`, [companyId, json(ids.slice(at, at + 500))]);
+      removed += res.rowCount ?? 0;
+    }
+    return removed;
+  }
+
+  async sendKeysTo(companyId: string, emails: string[]): Promise<string[]> {
+    if (emails.length === 0) return [];
+    const rows = await this.db.query<{ key: string }>(
+      `SELECT key FROM ${this.t("send_requests")}
+        WHERE company_id = $1 AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(to_addrs || COALESCE(request -> 'cc', '[]'::jsonb) || COALESCE(request -> 'bcc', '[]'::jsonb)) AS a
+           WHERE lower(a ->> 'email') = ANY(${textArray(2)}))
+        LIMIT 5000`,
+      [companyId, json(emails.map((email) => email.toLowerCase()))],
+    );
+    return rows.map((row) => row.key);
+  }
+
+  async redactSends(companyId: string, keys: string[]): Promise<number> {
+    let changed = 0;
+    for (let at = 0; at < keys.length; at += 500) {
+      const res = await this.db.execute(
+        `UPDATE ${this.t("send_requests")} SET to_addrs = '[]'::jsonb, subject = '[erased on request]', skipped = '[]'::jsonb,
+           error = CASE WHEN error IS NULL THEN NULL ELSE '[erased on request]' END, request = jsonb_build_object('key', key, 'erased', true), updated_at = now()
+          WHERE company_id = $1 AND key = ANY(${textArray(2)})`,
+        [companyId, json(keys.slice(at, at + 500))],
+      );
+      changed += res.rowCount ?? 0;
+    }
+    return changed;
+  }
+
+  async scrubInboxResults(companyId: string, keys: string[]): Promise<number> {
+    let changed = 0;
+    for (let at = 0; at < keys.length; at += 500) {
+      const res = await this.db.execute(
+        `UPDATE ${this.t("inbox")} SET result = (result - 'error') - 'suppressed' WHERE company_id = $1 AND result IS NOT NULL AND key = ANY(${textArray(2)})`,
+        [companyId, json(keys.slice(at, at + 500))],
+      );
+      changed += res.rowCount ?? 0;
+    }
+    return changed;
+  }
+
+  async deleteLeadOutbox(companyId: string, emails: string[]): Promise<number> {
+    if (emails.length === 0) return 0;
+    const res = await this.db.execute(
+      `DELETE FROM ${this.t("outbox")} WHERE company_id = $1 AND event = 'lead.captured' AND lower(payload ->> 'email') = ANY(${textArray(2)})`,
+      [companyId, json(emails.map((email) => email.toLowerCase()))],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async blankCrmProjection(companyId: string, contactId: string | null, emails: string[]): Promise<number> {
+    const res = await this.db.execute(
+      `UPDATE ${this.t("crm_contacts")} SET name = '', emails = '{}', phones = '{}', tags = '{}', account_ids = '{}', deleted = true
+        WHERE company_id = $1 AND (id = $2::text OR EXISTS (SELECT 1 FROM unnest(emails) AS e WHERE lower(e) = ANY(${textArray(3)})))`,
+      [companyId, contactId, json(emails.map((email) => email.toLowerCase()))],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async eraseSuppression(input: { companyId: string; email: string; hash: string; scope: SuppressionScope }): Promise<{ replaced: number }> {
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.db.query<{ scope: SuppressionScope }>(`SELECT scope FROM ${this.t("suppressions")} WHERE company_id = $1 AND email = $2`, [input.companyId, email]);
+    const scope: SuppressionScope = input.scope === "all" || existing.some((row) => row.scope === "all") ? "all" : "marketing";
+    const removed = await this.db.execute(`DELETE FROM ${this.t("suppressions")} WHERE company_id = $1 AND email = $2`, [input.companyId, email]);
+    await this.db.execute(
+      `INSERT INTO ${this.t("suppressions")} AS s (company_id, email, scope, reason, source, detail, sender_key, email_hash, erased_at)
+       VALUES ($1, $2, $3, 'manual', $4, 'Erased on request: only a hash of the address is kept', '', $5, now())
+       ON CONFLICT (company_id, email, sender_key) DO UPDATE SET scope = CASE WHEN s.scope = 'all' OR EXCLUDED.scope = 'all' THEN 'all' ELSE 'marketing' END, erased_at = now(), updated_at = now()`,
+      [input.companyId, markerEmail(input.hash), scope, "partnersinbiz.mailbox", input.hash],
+    );
+    return { replaced: removed.rowCount ?? 0 };
+  }
+
+  async erasedMarkers(companyId: string): Promise<Map<string, string>> {
+    const rows = await this.db.query<{ email_hash: string; erased_at: unknown }>(
+      `SELECT email_hash, erased_at FROM ${this.t("suppressions")} WHERE company_id = $1 AND email_hash IS NOT NULL AND erased_at IS NOT NULL`,
+      [companyId],
+    );
+    return new Map(rows.map((row) => [row.email_hash, iso(row.erased_at) ?? ""]));
+  }
+
   // ── delegations, drafts, templates (existing tools) ─────────────────────
 
   async listDelegations(companyId: string) {
-    return this.db.query<{ id: string; account_id: string; agent_id: string; can_read: boolean; can_draft: boolean; can_send: boolean }>(
-      `SELECT id, account_id, agent_id, can_read, can_draft, can_send FROM ${this.t("delegations")} WHERE company_id = $1`,
+    return this.db.query<{ id: string; account_id: string; agent_id: string; can_read: boolean; can_draft: boolean; can_send: boolean; source: DelegationSource; granted_by: string | null }>(
+      `SELECT id, account_id, agent_id, can_read, can_draft, can_send, source, granted_by FROM ${this.t("delegations")} WHERE company_id = $1`,
       [companyId],
     );
   }
@@ -844,13 +1135,51 @@ export class SqlStore implements GmailStore {
     );
   }
 
-  /** Adds a delegation; an existing one for the same mailbox and agent only gains rights, never loses them. */
-  async insertDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean }): Promise<void> {
+  /** Adds a delegation a person made on the page; an existing one for the same mailbox and agent only gains rights, never loses them. */
+  async insertDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; grantedBy?: string | null }): Promise<void> {
+    await this.grantDelegation({ ...row, source: "manual", grantedBy: row.grantedBy ?? null });
+  }
+
+  async grantDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; source: DelegationSource; grantedBy: string | null }): Promise<void> {
     await this.db.execute(
-      `INSERT INTO ${this.t("delegations")} AS d (id, company_id, account_id, agent_id, can_read, can_draft, can_send) VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (account_id, agent_id) DO UPDATE SET can_read = d.can_read OR EXCLUDED.can_read, can_draft = d.can_draft OR EXCLUDED.can_draft, can_send = d.can_send OR EXCLUDED.can_send`,
-      [row.id, row.companyId, row.accountId, row.agentId, row.canRead, row.canDraft, row.canSend],
+      `INSERT INTO ${this.t("delegations")} AS d (id, company_id, account_id, agent_id, can_read, can_draft, can_send, source, granted_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (account_id, agent_id) DO UPDATE SET can_read = d.can_read OR EXCLUDED.can_read, can_draft = d.can_draft OR EXCLUDED.can_draft, can_send = d.can_send OR EXCLUDED.can_send,
+         source = EXCLUDED.source, granted_by = EXCLUDED.granted_by`,
+      [row.id, row.companyId, row.accountId, row.agentId, row.canRead, row.canDraft, row.canSend, row.source, row.grantedBy],
     );
+    // A person's explicit grant ends an earlier removal.
+    await this.db.execute(`DELETE FROM ${this.t("delegation_removals")} WHERE account_id = $1 AND agent_id = $2`, [row.accountId, row.agentId]);
+  }
+
+  async insertDefaultDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; grantedBy: string }): Promise<boolean> {
+    const res = await this.db.execute(
+      `INSERT INTO ${this.t("delegations")} (id, company_id, account_id, agent_id, can_read, can_draft, can_send, source, granted_by)
+       SELECT $1::text, $2::text, $3::text, $4::text, $5::boolean, $6::boolean, $7::boolean, 'default', $8::text
+        WHERE NOT EXISTS (SELECT 1 FROM ${this.t("delegation_removals")} WHERE account_id = $3 AND agent_id = $4)
+       ON CONFLICT (account_id, agent_id) DO NOTHING`,
+      [row.id, row.companyId, row.accountId, row.agentId, row.canRead, row.canDraft, row.canSend, row.grantedBy],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async hasDelegationRemoval(accountId: string, agentId: string): Promise<boolean> {
+    const rows = await this.db.query<{ present: number }>(`SELECT 1 AS present FROM ${this.t("delegation_removals")} WHERE account_id = $1 AND agent_id = $2 LIMIT 1`, [accountId, agentId]);
+    return rows.length > 0;
+  }
+
+  async deleteDefaultDelegations(companyId: string, accountId: string): Promise<number> {
+    const res = await this.db.execute(`DELETE FROM ${this.t("delegations")} WHERE company_id = $1 AND account_id = $2 AND source = 'default'`, [companyId, accountId]);
+    return res.rowCount ?? 0;
+  }
+
+  async removeDelegation(companyId: string, accountId: string, agentId: string, removedBy: string | null): Promise<boolean> {
+    const res = await this.db.execute(`DELETE FROM ${this.t("delegations")} WHERE company_id = $1 AND account_id = $2 AND agent_id = $3`, [companyId, accountId, agentId]);
+    await this.db.execute(
+      `INSERT INTO ${this.t("delegation_removals")} (account_id, agent_id, company_id, removed_by) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (account_id, agent_id) DO UPDATE SET removed_at = now(), removed_by = EXCLUDED.removed_by, company_id = EXCLUDED.company_id`,
+      [accountId, agentId, companyId, removedBy],
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 
   async delegationFor(accountId: string, agentId: string): Promise<{ can_read: boolean; can_draft: boolean; can_send: boolean } | null> {

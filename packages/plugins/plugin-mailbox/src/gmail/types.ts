@@ -37,6 +37,11 @@ export interface AccountRow {
   is_default: boolean;
   label_ids: Record<string, string> | null;
   owner_user_id: string | null;
+  /** The client this mailbox belongs to (null: the company's own mailbox). It sends only that client's mail, and the leads it receives go to the CRM in the client's scope. */
+  client_kind: string | null;
+  client_ref: string | null;
+  /** Display name for mail sent from this mailbox (a request's `fromName` wins). */
+  from_name: string | null;
   created_at: string;
 }
 
@@ -52,11 +57,13 @@ export interface StoredTriage {
   clientName: string | null;
   /** Where the category came from. */
   source: "jev" | "rules" | "reply" | "correction";
-  clientSource: "email" | "domain" | "reply" | "jev" | "correction" | null;
+  clientSource: "email" | "domain" | "reply" | "jev" | "correction" | "mapping" | null;
   decisionIds: Record<string, string>;
   model: string | null;
   /** Gmail label names applied for this triage. */
   labels: string[];
+  /** The client mail mapping that filed this message (client mail forwarded or relayed to a company mailbox). */
+  mapping?: { id: string; type: ClientMapType } | null;
 }
 
 export interface MessageRow {
@@ -97,12 +104,22 @@ export interface MessageRow {
   draft: DraftExtras | null;
   send_error: string | null;
   bounce: BounceInfo | null;
+  /** The Reply-To header of inbound mail (the visitor, for a form relayed by a website). */
+  reply_to_addr: MailAddress | null;
+  /** `mapped`: a client mail mapping filed it; `needs_mapping`: it looks like a client's mail but no mapping says so. */
+  map_state: MapState | null;
+  map_id: string | null;
 }
+
+export type MapState = "mapped" | "needs_mapping";
 
 export interface DraftExtras {
   html?: string | null;
   replyToMessageId?: string | null;
   threadId?: string | null;
+  /** Reply-To and display name the draft is sent with. */
+  replyTo?: MailAddress | null;
+  fromName?: string | null;
   /** Who saved the draft: an agent (tool or action) or a person on the Mailbox page. */
   by?: { kind: "agent" | "user"; id: string } | null;
 }
@@ -134,6 +151,7 @@ export interface NewGmailMessage {
   /** Outbound rows written at send time are already "triaged". */
   triaged?: boolean;
   bounce?: BounceInfo | null;
+  replyToAddr?: MailAddress | null;
 }
 
 export type SendStatus = "sending" | "sent" | "failed" | "retrying";
@@ -150,6 +168,11 @@ export interface SuppressionRow {
   /** The plugin that saw it (`partnersinbiz.mailbox`, `.crm`, `.campaigns`). */
   source: string;
   detail: string | null;
+  /** Whose list the opt-out is on (`own`, `company:<id>`, `contact:<id>`). Empty: written before senders existed, blocks every sender. */
+  sender_key: string;
+  /** Set on an erased person's marker row: a one-way hash of the address (the row keeps no address). */
+  email_hash: string | null;
+  erased_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -161,6 +184,8 @@ export interface SuppressionInput {
   reason: SuppressionReasonKey;
   source: string;
   detail?: string | null;
+  /** Whose list (default: empty, every sender). */
+  senderKey?: string | null;
 }
 
 /** A recipient a send left out because it is on the list. */
@@ -168,6 +193,53 @@ export interface SkippedRecipient {
   email: string;
   scope: SuppressionScope;
   reason: SuppressionReasonKey;
+}
+
+export type DelegationSource = "manual" | "default" | "ask";
+
+export interface DelegationRow {
+  id: string;
+  company_id: string;
+  account_id: string;
+  agent_id: string;
+  can_read: boolean;
+  can_draft: boolean;
+  can_send: boolean;
+  source: DelegationSource;
+  granted_by: string | null;
+}
+
+export type ClientMapType = "sender_domain" | "sender_address" | "recipient_domain" | "recipient_address";
+
+/** Mail from or to this domain or address is a client's, not the company's own. */
+export interface ClientMapRow {
+  id: string;
+  company_id: string;
+  match_type: ClientMapType;
+  /** Lower case; a domain without a leading `@`. */
+  pattern: string;
+  client_kind: "company" | "contact";
+  client_ref: string;
+  client_name: string | null;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export type DomainStatus = "healthy" | "warn" | "bad" | "unknown";
+
+export interface DomainCheckRow {
+  company_id: string;
+  domain: string;
+  status: DomainStatus;
+  result: Record<string, unknown>;
+  source: "account" | "manual";
+  client_kind: string | null;
+  client_ref: string | null;
+  checked_at: string;
+  first_checked_at: string;
+  status_since: string;
+  dmarc_none_since: string | null;
 }
 
 export interface SendRow {
@@ -216,6 +288,9 @@ export interface TriageWrite {
   clientKind: string | null;
   clientRef: string | null;
   replyTo: SendContext | null;
+  /** Left out (undefined): the stored mapping state is kept. */
+  mapState?: MapState | null;
+  mapId?: string | null;
 }
 
 export interface CrmClientRow {

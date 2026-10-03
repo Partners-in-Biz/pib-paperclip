@@ -8,7 +8,11 @@ import type { AccountPatch, GmailStore, SentFields } from "../../src/db.js";
 import { createEnv, type Env } from "../../src/gmail/env.js";
 import type {
   AccountRow,
+  ClientMapRow,
+  ClientMapType,
   CrmClientRow,
+  DelegationSource,
+  DomainCheckRow,
   InboxFilter,
   MessageRow,
   NewGmailMessage,
@@ -23,6 +27,7 @@ import type {
   TriageWrite,
 } from "../../src/gmail/types.js";
 import { createFakeDb, type Store } from "./fake-db.js";
+import { erasureHash, markerEmail } from "../../src/hash.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import type { FetchLike } from "../../src/gmail/api.js";
 
@@ -38,12 +43,54 @@ export class MemoryStore implements GmailStore {
   crm: CrmClientRow[] = [];
   inboxResults = new Map<string, Record<string, unknown>>();
   /** Delegations by `account:agent`. */
-  delegations = new Map<string, { can_read: boolean; can_draft: boolean; can_send: boolean }>();
+  delegations = new Map<string, { can_read: boolean; can_draft: boolean; can_send: boolean; source?: DelegationSource; granted_by?: string | null }>();
+  /** Removed delegations (`account:agent`): the defaults never create them again. */
+  removals = new Set<string>();
   async delegationFor(accountId: string, agentId: string) {
-    return this.delegations.get(`${accountId}:${agentId}`) ?? null;
+    const row = this.delegations.get(`${accountId}:${agentId}`);
+    return row ? { can_read: row.can_read, can_draft: row.can_draft, can_send: row.can_send } : null;
   }
   delegate(accountId: string, agentId: string, grant: Partial<{ can_read: boolean; can_draft: boolean; can_send: boolean }> = {}): void {
-    this.delegations.set(`${accountId}:${agentId}`, { can_read: true, can_draft: true, can_send: false, ...grant });
+    this.delegations.set(`${accountId}:${agentId}`, { can_read: true, can_draft: true, can_send: false, source: "manual", ...grant });
+  }
+  async hasDelegationRemoval(accountId: string, agentId: string) {
+    return this.removals.has(`${accountId}:${agentId}`);
+  }
+  async insertDefaultDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; grantedBy: string }) {
+    const key = `${row.accountId}:${row.agentId}`;
+    if (this.delegations.has(key) || this.removals.has(key)) return false;
+    this.delegations.set(key, { can_read: row.canRead, can_draft: row.canDraft, can_send: row.canSend, source: "default", granted_by: row.grantedBy });
+    return true;
+  }
+  async grantDelegation(row: { id: string; companyId: string; accountId: string; agentId: string; canRead: boolean; canDraft: boolean; canSend: boolean; source: DelegationSource; grantedBy: string | null }) {
+    const key = `${row.accountId}:${row.agentId}`;
+    const have = this.delegations.get(key);
+    this.delegations.set(key, {
+      can_read: (have?.can_read ?? false) || row.canRead,
+      can_draft: (have?.can_draft ?? false) || row.canDraft,
+      can_send: (have?.can_send ?? false) || row.canSend,
+      source: row.source,
+      granted_by: row.grantedBy,
+    });
+    this.removals.delete(key);
+  }
+  async deleteDefaultDelegations(_companyId: string, accountId: string) {
+    void _companyId;
+    let n = 0;
+    for (const [key, row] of [...this.delegations]) {
+      if (key.startsWith(`${accountId}:`) && row.source === "default") {
+        this.delegations.delete(key);
+        n += 1;
+      }
+    }
+    return n;
+  }
+  async removeDelegation(_companyId: string, accountId: string, agentId: string, _removedBy: string | null = null) {
+    void _removedBy;
+    const key = `${accountId}:${agentId}`;
+    const had = this.delegations.delete(key);
+    this.removals.add(key);
+    return had;
   }
   /** Do-not-email list by `company:email`. */
   suppressions = new Map<string, SuppressionRow>();
@@ -52,15 +99,19 @@ export class MemoryStore implements GmailStore {
 
   async suppressionsFor(companyId: string, emails: string[]) {
     const wanted = new Set(emails.map((e) => e.trim().toLowerCase()));
-    return [...this.suppressions.values()].filter((row) => row.company_id === companyId && wanted.has(row.email)).map((row) => ({ ...row }));
+    const byHash = new Map([...wanted].map((email) => [erasureHash(email), email]));
+    return [...this.suppressions.values()]
+      .filter((row) => row.company_id === companyId && (wanted.has(row.email) || (row.email_hash !== null && byHash.has(row.email_hash))))
+      .map((row) => ({ ...row, ...(row.email_hash && byHash.has(row.email_hash) ? { email: byHash.get(row.email_hash)! } : {}) }));
   }
   async upsertSuppression(input: SuppressionInput) {
     const email = input.email.trim().toLowerCase();
-    const key = `${input.companyId}:${email}`;
+    const senderKey = input.senderKey ?? "";
+    const key = `${input.companyId}:${email}:${senderKey}`;
     const existing = this.suppressions.get(key);
     const now = nowIso();
     if (!existing) {
-      this.suppressions.set(key, { company_id: input.companyId, email, scope: input.scope, reason: input.reason, source: input.source, detail: input.detail ?? null, created_at: now, updated_at: now });
+      this.suppressions.set(key, { company_id: input.companyId, email, scope: input.scope, reason: input.reason, source: input.source, detail: input.detail ?? null, sender_key: senderKey, email_hash: null, erased_at: null, created_at: now, updated_at: now });
       return { created: true, widened: false, scope: input.scope };
     }
     if (input.scope === "all" && existing.scope === "marketing") {
@@ -73,10 +124,10 @@ export class MemoryStore implements GmailStore {
     return [...this.suppressions.values()].filter((row) => row.company_id === companyId).slice(0, limit);
   }
   async ownSuppressionsSince(source: string, sinceIso: string, limit: number) {
-    return [...this.suppressions.values()].filter((row) => row.source === source && row.updated_at >= sinceIso).slice(0, limit);
+    return [...this.suppressions.values()].filter((row) => row.source === source && !row.email_hash && row.updated_at >= sinceIso).slice(0, limit);
   }
-  addSuppression(companyId: string, email: string, scope: "marketing" | "all", reason: SuppressionRow["reason"] = scope === "all" ? "bounced" : "unsubscribed", source = "partnersinbiz.crm"): void {
-    this.suppressions.set(`${companyId}:${email}`, { company_id: companyId, email, scope, reason, source, detail: null, created_at: nowIso(), updated_at: nowIso() });
+  addSuppression(companyId: string, email: string, scope: "marketing" | "all", reason: SuppressionRow["reason"] = scope === "all" ? "bounced" : "unsubscribed", source = "partnersinbiz.crm", senderKey = ""): void {
+    this.suppressions.set(`${companyId}:${email}:${senderKey}`, { company_id: companyId, email, scope, reason, source, detail: null, sender_key: senderKey, email_hash: null, erased_at: null, created_at: nowIso(), updated_at: nowIso() });
   }
 
   addAccount(partial: Partial<AccountRow> & { id: string; company_id: string; address: string }): AccountRow {
@@ -96,6 +147,9 @@ export class MemoryStore implements GmailStore {
       is_default: false,
       label_ids: {},
       owner_user_id: "user-1",
+      client_kind: null,
+      client_ref: null,
+      from_name: null,
       created_at: nowIso(),
       ...partial,
     };
@@ -119,7 +173,7 @@ export class MemoryStore implements GmailStore {
   }
   async defaultAccount(companyId: string) {
     const list = [...this.accounts.values()]
-      .filter((a) => a.company_id === companyId && a.token_sealed && (a.status === "connected" || a.status === "needs_reconnect"))
+      .filter((a) => a.company_id === companyId && a.token_sealed && !a.client_ref && (a.status === "connected" || a.status === "needs_reconnect"))
       .sort((a, b) => Number(b.is_default) - Number(a.is_default) || Number(b.status === "connected") - Number(a.status === "connected"));
     return list[0] ? { ...list[0] } : null;
   }
@@ -140,6 +194,12 @@ export class MemoryStore implements GmailStore {
   }
   async setDefaultAccount(companyId: string, id: string) {
     for (const row of this.accounts.values()) if (row.company_id === companyId) row.is_default = row.id === id;
+  }
+  async setAccountClient(companyId: string, id: string, patch: { clientKind: string | null; clientRef: string | null; fromName?: string | null }) {
+    const row = this.accounts.get(id);
+    if (!row || row.company_id !== companyId) return;
+    Object.assign(row, { client_kind: patch.clientRef ? patch.clientKind : null, client_ref: patch.clientRef, from_name: patch.fromName ?? null });
+    if (patch.clientRef) row.is_default = false;
   }
   async tryLockSync(accountId: string) {
     if (this.locks.has(accountId)) return false;
@@ -200,6 +260,9 @@ export class MemoryStore implements GmailStore {
       draft: null,
       send_error: null,
       bounce: row.bounce ?? null,
+      reply_to_addr: row.replyToAddr ?? null,
+      map_state: null,
+      map_id: null,
     });
     return true;
   }
@@ -226,6 +289,8 @@ export class MemoryStore implements GmailStore {
       client_kind: write.clientKind,
       client_ref: write.clientRef,
       reply_to: write.replyTo,
+      map_state: write.mapState ?? row.map_state,
+      map_id: write.mapId ?? row.map_id,
       triaged_at: nowIso(),
     });
   }
@@ -411,6 +476,166 @@ export class MemoryStore implements GmailStore {
   async crmClients() {
     return [...this.crm];
   }
+  async crmContact(companyId: string, id: string) {
+    void companyId;
+    return this.crm.find((c) => c.kind === "contact" && c.id === id) ?? null;
+  }
+
+  // client mail mappings
+  maps: ClientMapRow[] = [];
+  private mapSeq = 0;
+  async listClientMaps(companyId: string) {
+    return this.maps.filter((map) => map.company_id === companyId).map((map) => ({ ...map }));
+  }
+  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }) {
+    this.mapSeq += 1;
+    const map: ClientMapRow = { id: `map_${this.mapSeq}`, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, created_by: row.createdBy, created_at: nowIso() };
+    this.maps.push(map);
+    return { ...map };
+  }
+  async deleteClientMap(companyId: string, id: string) {
+    const before = this.maps.length;
+    this.maps = this.maps.filter((map) => !(map.company_id === companyId && map.id === id));
+    return this.maps.length < before;
+  }
+  async unmappedSummary(companyId: string, _days = 30) {
+    void _days;
+    const groups = new Map<string, { n: number; last_at: string | null; sample_id: string | null }>();
+    for (const m of this.messages.values()) {
+      if (m.company_id !== companyId || m.map_state !== "needs_mapping") continue;
+      const domain = (m.from_addr?.email ?? "").split("@")[1] ?? "";
+      const g = groups.get(domain) ?? { n: 0, last_at: null, sample_id: null };
+      g.n += 1;
+      const at = m.received_at ?? m.created_at;
+      if (!g.last_at || at > g.last_at) Object.assign(g, { last_at: at, sample_id: m.id });
+      groups.set(domain, g);
+    }
+    return [...groups.entries()].map(([domain, g]) => ({ domain, ...g })).sort((a, b) => b.n - a.n);
+  }
+  async flaggedMessages(companyId: string, _days: number, limit: number) {
+    return [...this.messages.values()].filter((m) => m.company_id === companyId && m.direction === "inbound" && m.map_state === "needs_mapping").slice(0, limit).map((m) => ({ ...m }));
+  }
+
+  // sender domain checks
+  domainChecks = new Map<string, DomainCheckRow>();
+  async getDomainCheck(companyId: string, domain: string) {
+    const row = this.domainChecks.get(`${companyId}:${domain.toLowerCase()}`);
+    return row ? { ...row } : null;
+  }
+  async listDomainChecks(companyId: string) {
+    return [...this.domainChecks.values()].filter((row) => row.company_id === companyId).sort((a, b) => a.domain.localeCompare(b.domain)).map((row) => ({ ...row }));
+  }
+  async upsertDomainCheck(row: DomainCheckRow) {
+    this.domainChecks.set(`${row.company_id}:${row.domain.toLowerCase()}`, { ...row, domain: row.domain.toLowerCase() });
+  }
+
+  // erasure
+  async crmContactEmails(companyId: string, contactId: string) {
+    void companyId;
+    return (this.crm.find((c) => c.kind === "contact" && c.id === contactId)?.emails ?? []).map((e) => e.toLowerCase());
+  }
+  private involves(m: MessageRow, emails: string[]): boolean {
+    const set = new Set(emails.map((e) => e.toLowerCase()));
+    return Boolean(m.from_addr && set.has(m.from_addr.email.toLowerCase())) || Boolean(m.reply_to_addr && set.has(m.reply_to_addr.email.toLowerCase())) || [...(m.to_addrs ?? []), ...(m.cc_addrs ?? []), ...(m.bcc_addrs ?? [])].some((a) => set.has(a.email.toLowerCase()));
+  }
+  async messagesInvolving(companyId: string, emails: string[]) {
+    return [...this.messages.values()]
+      .filter((m) => m.company_id === companyId && this.involves(m, emails))
+      .map((m) => ({ id: m.id, account_id: m.account_id, gmail_thread_id: m.gmail_thread_id, status: m.status, direction: m.direction }));
+  }
+  async threadIssueIds(_companyId: string, threadIds: string[]) {
+    const ids: string[] = [];
+    for (const [key, issue] of this.threadIssues) {
+      const thread = key.slice(key.indexOf(":") + 1);
+      if (issue && threadIds.includes(thread)) ids.push(issue);
+    }
+    return ids;
+  }
+  decisionsLog: Array<{ company_id: string; subject_id: string }> = [];
+  async deleteDecisionsFor(companyId: string, messageIds: string[]) {
+    const before = this.decisionsLog.length;
+    this.decisionsLog = this.decisionsLog.filter((d) => !(d.company_id === companyId && messageIds.includes(d.subject_id)));
+    return before - this.decisionsLog.length;
+  }
+  async deleteMessages(companyId: string, ids: string[]) {
+    let n = 0;
+    for (const id of ids) if (this.messages.get(id)?.company_id === companyId && this.messages.delete(id)) n += 1;
+    return n;
+  }
+  async sendKeysTo(companyId: string, emails: string[]) {
+    const set = new Set(emails.map((e) => e.toLowerCase()));
+    return [...this.sends.values()]
+      .filter((s) => s.company_id === companyId && [...(s.to_addrs ?? []), ...((s.request as { cc?: Array<{ email: string }> }).cc ?? []), ...((s.request as { bcc?: Array<{ email: string }> }).bcc ?? [])].some((a) => set.has(a.email.toLowerCase())))
+      .map((s) => s.key);
+  }
+  async redactSends(companyId: string, keys: string[]) {
+    let n = 0;
+    for (const key of keys) {
+      const row = this.sends.get(key);
+      if (!row || row.company_id !== companyId) continue;
+      Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
+      n += 1;
+    }
+    return n;
+  }
+  async scrubInboxResults(_companyId: string, keys: string[]) {
+    void _companyId;
+    let n = 0;
+    for (const key of keys) {
+      const result = this.inboxResults.get(key);
+      if (!result) continue;
+      const { error: _error, suppressed: _suppressed, ...rest } = result as Record<string, unknown>;
+      void _error;
+      void _suppressed;
+      this.inboxResults.set(key, rest);
+      n += 1;
+    }
+    return n;
+  }
+  leadOutbox: Array<{ company_id: string; key: string; payload: Record<string, unknown> }> = [];
+  async deleteLeadOutbox(companyId: string, emails: string[]) {
+    const set = new Set(emails.map((e) => e.toLowerCase()));
+    const before = this.leadOutbox.length;
+    this.leadOutbox = this.leadOutbox.filter((row) => !(row.company_id === companyId && typeof row.payload.email === "string" && set.has(row.payload.email.toLowerCase())));
+    return before - this.leadOutbox.length;
+  }
+  async blankCrmProjection(companyId: string, contactId: string | null, emails: string[]) {
+    void companyId;
+    const set = new Set(emails.map((e) => e.toLowerCase()));
+    let n = 0;
+    for (const c of this.crm) {
+      if (c.kind !== "contact") continue;
+      if ((contactId && c.id === contactId) || c.emails.some((e) => set.has(e.toLowerCase()))) {
+        Object.assign(c, { name: "", emails: [], accountIds: [] });
+        n += 1;
+      }
+    }
+    return n;
+  }
+  async eraseSuppression(input: { companyId: string; email: string; hash: string; scope: "marketing" | "all" }) {
+    const email = input.email.trim().toLowerCase();
+    let replaced = 0;
+    let scope = input.scope;
+    for (const [key, row] of [...this.suppressions]) {
+      if (row.company_id === input.companyId && row.email === email) {
+        if (row.scope === "all") scope = "all";
+        this.suppressions.delete(key);
+        replaced += 1;
+      }
+    }
+    const marker = markerEmail(input.hash);
+    const key = `${input.companyId}:${marker}:`;
+    const existing = this.suppressions.get(key);
+    const now = nowIso();
+    if (existing) Object.assign(existing, { scope: existing.scope === "all" || scope === "all" ? "all" : "marketing", erased_at: now, updated_at: now });
+    else this.suppressions.set(key, { company_id: input.companyId, email: marker, scope, reason: "manual", source: "partnersinbiz.mailbox", detail: "Erased on request: only a hash of the address is kept", sender_key: "", email_hash: input.hash, erased_at: now, created_at: now, updated_at: now });
+    return { replaced };
+  }
+  async erasedMarkers(companyId: string) {
+    const map = new Map<string, string>();
+    for (const row of this.suppressions.values()) if (row.company_id === companyId && row.email_hash && row.erased_at) map.set(row.email_hash, row.erased_at);
+    return map;
+  }
 }
 
 export const CO = "co-1";
@@ -443,6 +668,7 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
     ...config,
   };
   let issueSeq = 0;
+  const state = new Map<string, unknown>();
   const tables: Store = { outbox: [] };
   const generic = createFakeDb(tables, {
     namespace: NAMESPACE,
@@ -503,7 +729,15 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
       },
       requestWakeup: async (id: string) => void wakeups.push(id),
     },
-    state: { get: async () => "/_plugins/11111111-2222-3333-4444-555555555555/ui/", set: async () => undefined },
+    // Real company state for the Mailbox's own keys (the unsubscribe proxy proof); every other key still answers with the UI base.
+    state: {
+      get: async (key: { namespace?: string }) => {
+        const stored = state.get(JSON.stringify(key));
+        if (stored !== undefined) return stored;
+        return key.namespace === "mailbox-unsubscribe" ? null : "/_plugins/11111111-2222-3333-4444-555555555555/ui/";
+      },
+      set: async (key: { namespace?: string }, value: unknown) => void state.set(JSON.stringify(key), JSON.parse(JSON.stringify(value))),
+    },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   } as unknown as PluginContext;
   return { ctx, tables, emitted, issues, wakeups, inbox, decisions, config: fullConfig };

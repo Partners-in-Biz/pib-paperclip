@@ -4,6 +4,8 @@
  * of statements).
  */
 import { loadMailboxConfig, privateR2, r2Configured } from "./config.js";
+import { companyPrefix, delegationAsk } from "./delegations.js";
+import { sendingDomain } from "./dns.js";
 import { MailboxError } from "./domain.js";
 import { ATTACHMENT_MAX_BYTES, decodeText, downloadAttachment, isTextAttachment, storeAttachment, TEXT_MAX_BYTES } from "./gmail/attachments.js";
 import type { Env } from "./gmail/env.js";
@@ -29,14 +31,29 @@ async function accountIdFor(env: Env, companyId: string, account: string | null 
   return found.id;
 }
 
+/** The agent's name for an ask card; its id when it cannot be read (the card works either way). */
+async function agentLabel(env: Env, companyId: string, agentId: string): Promise<string | null> {
+  try {
+    const agent = (await env.ctx.agents.get(agentId, companyId)) as unknown as { name?: unknown } | null;
+    return typeof agent?.name === "string" && agent.name ? agent.name : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Every account an agent can use, the default sender, each account's state, and this agent's delegation on it. */
 export async function listMailboxes(env: Env, companyId: string, agentId: string) {
   const accounts = await env.store.listAccounts(companyId);
   const fallback = await env.store.defaultAccount(companyId);
   const items = [];
+  const needsAccess = (await Promise.all(accounts.filter((a) => a.status !== "disconnected").map(async (a) => !(await delegation(env, a.id, agentId))?.canRead))).some(Boolean);
+  const prefix = needsAccess ? await companyPrefix(env.ctx, companyId) : null;
+  const name = needsAccess ? await agentLabel(env, companyId, agentId) : null;
   for (const account of accounts) {
     const grant = await delegation(env, account.id, agentId);
     const gmail = Boolean(account.token_sealed) && (account.status === "connected" || account.status === "needs_reconnect");
+    const domain = sendingDomain(account.address);
+    const domainCheck = domain ? await env.store.getDomainCheck(companyId, domain).catch(() => null) : null;
     items.push({
       accountId: account.id,
       address: account.address,
@@ -54,6 +71,13 @@ export async function listMailboxes(env: Env, companyId: string, agentId: string
       mayRead: Boolean(grant?.canRead),
       mayDraft: Boolean(grant?.canDraft),
       maySend: Boolean(grant?.canSend) && gmail && account.status === "connected",
+      /** The client this mailbox belongs to: it sends only that client's mail. Null: the company's own. */
+      client: account.client_ref ? { kind: account.client_kind, ref: account.client_ref } : null,
+      fromName: account.from_name,
+      /** Mail authentication of the mailbox's domain from the last daily check (null: not checked, or a free-mail domain). */
+      domainHealth: domainCheck ? { domain: domainCheck.domain, status: domainCheck.status, healthy: domainCheck.status === "healthy", checkedAt: domainCheck.checked_at } : null,
+      /** No read access yet: pass this to partnersinbiz.cockpit:ask-owner; the owner's yes grants it and checks it, and you are woken with it in place. */
+      askToOwner: grant?.canRead || account.status === "disconnected" ? null : delegationAsk({ accountId: account.id, address: account.address, agentId, agentName: name, prefix }),
     });
   }
   const usable = items.some((item) => item.mayDraft || item.mayRead);
@@ -63,7 +87,7 @@ export async function listMailboxes(env: Env, companyId: string, agentId: string
     accounts: items,
     next: usable
       ? "Use an accountId where mayDraft is true with create-draft; send-draft only where maySend is true. Mail other plugins send goes from the default account."
-      : "You have no delegation on any mailbox. Ask the owner once with partnersinbiz.cockpit:ask-owner to give you access in Mailbox → Mailboxes → Give an agent access (read and draft).",
+      : "You have no delegation on any mailbox. Call partnersinbiz.cockpit:ask-owner once with the askToOwner card of the mailbox you need: when the owner says yes the Mailbox gives you read and draft access and checks it, and you are woken with it in place. Do not ask again.",
   };
 }
 
@@ -79,7 +103,7 @@ export async function getAttachment(env: Env, companyId: string, agentId: string
   const grant = await delegation(env, row.account_id, agentId);
   if (!grant?.canRead) {
     const box = (await env.store.getAccount(companyId, row.account_id))?.address ?? row.account_id;
-    throw new MailboxError(`You may not read ${box}. Ask the owner once (partnersinbiz.cockpit:ask-owner) to give you access in Mailbox → Mailboxes → Give an agent access (Setup lists it too).`);
+    throw new MailboxError(`You may not read ${box}. Call list-mailboxes: that mailbox carries an askToOwner card. Pass it to partnersinbiz.cockpit:ask-owner once; the owner's yes grants the access and you are woken with it in place.`);
   }
   const meta = (row.attachments ?? []).find((a) => a.attachmentId === attachmentId);
   if (!meta) throw new MailboxError("That attachment is not on this message. get-message lists each attachmentId.");

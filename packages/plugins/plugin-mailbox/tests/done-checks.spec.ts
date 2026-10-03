@@ -19,7 +19,7 @@ function message(id: string, extra: Partial<MessageRow> = {}): MessageRow {
     gmail_message_id: `g-${id}`, gmail_thread_id: "th-1", rfc_message_id: null, in_reply_to: null, refs: [], from_addr: { email: "ada@acme.test", name: "Ada" },
     to_addrs: [], cc_addrs: [], bcc_addrs: [], snippet: "", labels: [], attachments: [], bulk: false, received_at: ago(60), triage: null, triaged_at: ago(59),
     category: "client", urgency: 2, needs_reply: 0.9, phishing: 0, client_kind: null, client_ref: null, reply_to: null, sent_context: null, send_key: null, draft: null,
-    send_error: null, bounce: null, ...extra,
+    send_error: null, bounce: null, reply_to_addr: null, map_state: null, map_id: null, ...extra,
   };
 }
 

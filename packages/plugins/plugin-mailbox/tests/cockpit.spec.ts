@@ -89,6 +89,7 @@ describe("Mailbox cockpit snapshot", () => {
       ["mailbox:send-queue", "ok"],
       ["mailbox:lead-handoff", "ok"],
       ["job:sync-mailbox", "ok"],
+      ["job:check-domain-health", "ok"],
       ["job:setup-status", "ok"],
     ]);
   });
@@ -116,14 +117,15 @@ describe("Mailbox cockpit snapshot", () => {
     expect(snap.activity.map((a) => a.text)).toEqual(["Triaged 12 new messages in the last day", 'Sent "Invoice INV-7" for Billing', 'Sent "Re: hello"']);
     expect(snap.quality.find((q) => q.key === "triage_corrected_rate")).toMatchObject({ value: "15% (6 of 40)", raw: 0.15, tone: "warn" });
     expect(snap.quality.find((q) => q.key === "send_failures")).toMatchObject({ value: "1 of 10", tone: "bad" });
-    expect(sql.length).toBeLessThanOrEqual(6);
+    // The counts, the accounts, the sends, the triage stats, and the two reads the domain checks and unmapped client mail need.
+    expect(sql.length).toBeLessThanOrEqual(8);
   });
 
   it("one failing query does not break the snapshot", async () => {
     const { harness } = await boot({ counts: COUNTS, accounts: [], fail: /AS needs_reply/ });
     const snap = await cockpitSnapshot(harness.ctx, CO, NOW);
     expect(snap.kpis).toEqual([]);
-    expect(snap.health.map((h) => h.key)).toEqual(["mailbox:lead-handoff", "job:sync-mailbox", "job:setup-status"]);
+    expect(snap.health.map((h) => h.key)).toEqual(["mailbox:lead-handoff", "job:sync-mailbox", "job:check-domain-health", "job:setup-status"]);
   });
 
   it("a connected account with no sync for over 30 minutes is bad; a recent error is a warning", () => {
@@ -201,6 +203,25 @@ describe("lead.captured hand-off", () => {
     await syncAccount(env, await loaded(), account, await run());
     expect(leads(host.emitted)).toHaveLength(1);
     expect([...host.issues.values()]).toHaveLength(0);
+  });
+
+  it("a lead that arrives in a client's own mailbox goes to the CRM in the client's scope with the sender as the person; the company's own mailbox is unchanged", async () => {
+    const { gmail, env, account, loaded, run, host } = setup();
+    Object.assign(account, { client_kind: "company", client_ref: "crm-ahs" });
+    gmail.addMessage({ id: "c1m", headers: { From: "Ann Smith <ann@newco.co.za>", To: "peet@partnersinbiz.online", Subject: "Website quote?" }, snippet: "Can you quote us for a new site?" });
+    await syncAccount(env, await loaded(), account, await run());
+    expect(leads(host.emitted).map((e) => e.payload)).toEqual([expect.objectContaining({ key: "mail:c1m", source: "email", email: "ann@newco.co.za", name: "Ann Smith", clientKind: "company", clientRef: "crm-ahs" })]);
+    // A contact as the client (the page lets a person be the client too).
+    const person = setup();
+    Object.assign(person.account, { client_kind: "contact", client_ref: "crm-contact-9" });
+    person.gmail.addMessage({ id: "p1", headers: { From: "Bob <bob@newco.co.za>", To: "peet@partnersinbiz.online", Subject: "Website quote?" }, snippet: "Can you quote us for a new site?" });
+    await syncAccount(person.env, await person.loaded(), person.account, await person.run());
+    expect(leads(person.host.emitted)[0]!.payload).toMatchObject({ clientKind: "contact", clientRef: "crm-contact-9" });
+    // The company's own mailbox: the same mail is the company's own lead (the earlier test), with no client scope.
+    const own = setup();
+    own.gmail.addMessage({ id: "o1", headers: { From: "Ann Smith <ann@newco.co.za>", To: "peet@partnersinbiz.online", Subject: "Website quote?" }, snippet: "Can you quote us for a new site?" });
+    await syncAccount(own.env, await own.loaded(), own.account, await own.run());
+    expect(leads(own.host.emitted)[0]!.payload).toMatchObject({ clientKind: null, clientRef: null });
   });
 
   it("does not emit when the sender is already a CRM contact", async () => {

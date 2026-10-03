@@ -14,6 +14,7 @@ function withMessage(ctx: ReturnType<typeof setup>, attachments = [{ attachmentI
     from_addr: { email: "bank@fnb.co.za", name: "FNB" }, to_addrs: [], cc_addrs: [], bcc_addrs: [], snippet: "", labels: [], attachments, bulk: false,
     received_at: new Date().toISOString(), triage: null, triaged_at: null, category: "bank_statement", urgency: null, needs_reply: null, phishing: null,
     client_kind: null, client_ref: null, reply_to: null, sent_context: null, send_key: null, draft: null, send_error: null, bounce: null,
+    reply_to_addr: null, map_state: null, map_id: null,
   });
 }
 
@@ -100,7 +101,7 @@ describe("get-attachment", () => {
   it("needs read access, a listed attachment, and a connected mailbox", async () => {
     const ctx = setup();
     withMessage(ctx);
-    await expect(getAttachment(ctx.env, CO, "agent-x", "gm_acc-1_m1", "att-1")).rejects.toThrow(/You may not read peet@partnersinbiz\.online\. Ask the owner once/);
+    await expect(getAttachment(ctx.env, CO, "agent-x", "gm_acc-1_m1", "att-1")).rejects.toThrow(/You may not read peet@partnersinbiz\.online\. Call list-mailboxes: that mailbox carries an askToOwner card/);
     ctx.store.delegate("acc-1", "agent-x");
     await expect(getAttachment(ctx.env, CO, "agent-x", "gm_acc-1_m1", "nope")).rejects.toThrow(/get-message lists each attachmentId/);
     ctx.store.accounts.get("acc-1")!.status = "needs_reconnect";

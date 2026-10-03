@@ -6,6 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   companyRoles,
   isSecretRef,
+  knownCompanyIds,
   moduleOfPlugin,
   pluginUiBase,
   publishSetupStatus,
@@ -19,13 +20,14 @@ import { gmailRedirectUri, loadMailboxConfig, r2Configured } from "./config.js";
 import type { GmailStore } from "./db.js";
 import type { AccountRow } from "./gmail/types.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
+import { proofIsFresh, readProxyProof } from "./unsubscribe.js";
 
 const SETTINGS_FALLBACK = "/company/settings/instance/plugins";
 /** A connected account whose last sync is older than this counts as unhealthy. */
 export const SYNC_HEALTHY_MS = 10 * 60_000;
 const KNOWN = { scopeKind: "instance" as const, namespace: "mailbox-setup", stateKey: "known-companies" };
 
-type AccountSource = Pick<GmailStore, "listAccounts"> & Partial<Pick<GmailStore, "delegationFor">>;
+type AccountSource = Pick<GmailStore, "listAccounts"> & Partial<Pick<GmailStore, "delegationFor" | "hasDelegationRemoval" | "listDomainChecks">>;
 
 export async function settingsHref(ctx: PluginContext): Promise<{ href: string; uuid: string | null; uiBase: string | null }> {
   const uiBase = await pluginUiBase(ctx);
@@ -76,6 +78,8 @@ export async function knownCompanies(ctx: PluginContext): Promise<string[]> {
   } catch {
     // ignore
   }
+  // Every company any kit entry point (skills, bootstrap, tools) has served.
+  ids.push(...(await knownCompanyIds(ctx)));
   return [...new Set(ids.filter(Boolean))];
 }
 
@@ -227,7 +231,8 @@ export async function setupStatus(ctx: PluginContext, companyId: string, store: 
   });
 
   // 6. The Account Manager answers client mail: it needs read and draft access (a one-time grant).
-  const manager = (await companyRoles(ctx, companyId))?.team?.["account-manager"]?.agentId ?? null;
+  const roles = await companyRoles(ctx, companyId);
+  const manager = roles?.team?.["account-manager"]?.agentId ?? null;
   const sender = defaultAccount ?? connected[0] ?? null;
   const grant = manager && sender && store.delegationFor ? await store.delegationFor(sender.id, manager).catch(() => null) : null;
   const delegated = Boolean(grant?.can_read && grant.can_draft);
@@ -254,7 +259,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string, store: 
   });
 
   // 7. The Bookkeeper imports bank statements that arrive by mail: it needs read access (no drafting).
-  const bookkeeper = (await companyRoles(ctx, companyId))?.team?.bookkeeper?.agentId ?? null;
+  const bookkeeper = roles?.team?.bookkeeper?.agentId ?? null;
   const bookGrant = bookkeeper && sender && store.delegationFor ? await store.delegationFor(sender.id, bookkeeper).catch(() => null) : null;
   const bookRead = Boolean(bookGrant?.can_read);
   items.push({
@@ -279,7 +284,91 @@ export async function setupStatus(ctx: PluginContext, companyId: string, store: 
     agentNext: "The Bookkeeper fetches statements with get-attachment and imports them in Accounting.",
   });
 
-  // 8. Private storage for attachments (optional).
+  // 8. The Operator reviews mail across the company (and asked for access five times when nothing gave it): it gets read and draft by default.
+  const operator = roles?.operatorAgentId ?? null;
+  const opGrant = operator && sender && store.delegationFor ? await store.delegationFor(sender.id, operator).catch(() => null) : null;
+  const opRemoved = operator && sender && store.hasDelegationRemoval ? await store.hasDelegationRemoval(sender.id, operator).catch(() => false) : false;
+  const opDelegated = Boolean(opGrant?.can_read && opGrant.can_draft);
+  const autoMode = loaded.config.autoDelegate;
+  items.push({
+    key: "operator_delegation",
+    title: "Let the Operator read and draft mail",
+    status: !operator ? "optional" : opDelegated ? "done" : opRemoved ? "optional" : "missing",
+    required: Boolean(operator) && !opRemoved,
+    detail: !operator
+      ? "Once an Operator is staffed in Setup → Team it gets read and draft access (never sending) on the company's own mailboxes by itself."
+      : opDelegated
+        ? `The Operator can read and draft on ${sender!.address}${opGrant?.can_send ? " and send" : ", never send"}.`
+        : opRemoved
+          ? "You removed the Operator's access, so it stays off until you give it again."
+          : !sender
+            ? "Connect Gmail first; the Operator then gets read and draft access by itself."
+            : autoMode === "off"
+              ? `Automatic access is switched off in the Mailbox settings, so the Operator cannot read or draft on ${sender.address} until you allow it.`
+              : `The Operator gets read and draft access on ${sender.address} within a few minutes; click to do it now.`,
+    href: operator ? "/mailbox?tab=mailboxes" : teamSetupPath("operator"),
+    hrefLabel: operator ? "Open Mailboxes" : "Open Setup → Team",
+    blockedBy: connected.length > 0 ? undefined : ["gmail"],
+    action: operator && sender && !opDelegated && !opRemoved
+      ? { plugin: PLUGIN_ID, key: "mailbox.create-delegation", params: { accountId: sender.id, agentId: operator }, label: "Allow read and draft" }
+      : null,
+    agentNext: "The Operator reads the inbox in its daily review and drafts replies; sending stays with a person.",
+  });
+
+  // 9. Mail authentication of the domains the company sends from (SPF, DKIM, DMARC): checked daily; fixes are DNS records someone adds once.
+  const domainRows = store.listDomainChecks ? await store.listDomainChecks(companyId).catch(() => []) : [];
+  const domainProblems = domainRows.filter((row) => row.status === "bad" || row.status === "warn");
+  const worstDomain = domainRows.find((row) => row.status === "bad") ?? domainProblems[0] ?? null;
+  const worstReport = (worstDomain?.result ?? {}) as { problems?: Array<{ severity: string; message: string; fix: string }> };
+  const worstProblem = worstReport.problems?.find((problem) => problem.severity !== "info") ?? null;
+  items.push({
+    key: "sender_domain",
+    title: "Sender domain mail authentication (SPF, DKIM, DMARC)",
+    status: domainRows.length === 0 ? "optional" : domainProblems.length === 0 ? "done" : "missing",
+    required: false,
+    detail: domainRows.length === 0
+      ? "Checked every day for each domain a mailbox sends from. Until a mailbox is connected there is nothing to check."
+      : domainProblems.length === 0
+        ? `${domainRows.map((row) => row.domain).join(", ")}: SPF, DKIM and DMARC are in place.`
+        : `${domainProblems.map((row) => `${row.domain} (${row.status})`).join(", ")}. ${worstProblem?.message ?? ""}`.trim(),
+    href: "/mailbox?tab=mailboxes",
+    hrefLabel: "Open sender domains",
+    steps: domainProblems.length === 0 ? undefined : [
+      "A person who controls the domain's DNS adds the records. The Operator or Account Manager can list exactly which with the check-sender-domain tool.",
+      worstProblem?.fix ?? "Open Mailboxes → Sender domains for the records to add.",
+      "DNS changes can take a few hours to show; the daily check, or Check now on the Mailboxes tab, confirms them.",
+    ],
+    agentNext: "Campaigns send from a domain only when it is healthy; the Cockpit shows each domain's status.",
+  });
+
+  // 10. One-click unsubscribe links (optional). "Done" only while the Mailbox has proved that the reverse proxy passes the request
+  // address on: without that rule a one-click unsubscribe is acknowledged by the host and recorded by nobody.
+  const unsubSet = hasValue(raw, "unsubscribe.secret") && Boolean(loaded.config.publicBaseUrl);
+  const proof = unsubSet ? await readProxyProof(ctx, companyId) : null;
+  const unsubLive = unsubSet && proofIsFresh(proof, now);
+  const proxyStep = "First, ask whoever runs the server to add the reverse proxy rule from the Mailbox README (it passes the request address of /webhooks/unsubscribe on to the plugin). Without it a one-click unsubscribe would do nothing, so the Mailbox keeps the link off until it has checked this.";
+  items.push({
+    key: "unsubscribe",
+    title: "One-click unsubscribe links (optional, admin)",
+    status: unsubLive ? "done" : "optional",
+    required: false,
+    detail: unsubLive
+      ? `Marketing mail to one recipient carries an https unsubscribe link next to the mailto one. The Mailbox checks every hour that the reverse proxy still passes the request address on (last passed ${proof!.at.slice(0, 16).replace("T", " ")} UTC).`
+      : unsubSet
+        ? `Not active yet: ${proof && !proof.ok ? proof.detail ?? "the last check failed." : proof?.ok ? "the last passed check is more than 6 hours old." : "the Mailbox has not checked the reverse proxy yet (it does so every hour)."} Marketing mail carries the mailto unsubscribe only, which works.`
+        : "Optional. Gmail and Yahoo show an Unsubscribe button for mail with a one-click link; without it recipients reply \"unsubscribe\" instead, which also works.",
+    href: settings,
+    hrefLabel: "Open settings",
+    steps: unsubLive ? undefined : [
+      proxyStep,
+      ...(unsubSet ? [] : ["In the Mailbox settings, find One-click unsubscribe and pick or create a Paperclip secret of 16 or more random characters, then click Save Configuration."]),
+      "The Mailbox then tests the rule itself every hour (or press Check now). The https link goes into marketing mail only after that test passes.",
+    ],
+    action: unsubSet && !unsubLive ? { plugin: PLUGIN_ID, key: "mailbox.check-unsubscribe-proxy", label: "Check now" } : null,
+    agentNext: "Marketing mail carries List-Unsubscribe-Post, and a click suppresses the address for that sender.",
+  });
+
+  // 11. Private storage for attachments (optional).
   const r2 = r2Configured(raw);
   items.push({
     key: "attachments",

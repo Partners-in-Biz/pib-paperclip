@@ -46,7 +46,7 @@ describe("Mailbox setup status", () => {
   it("an unconfigured company: settings missing, Gmail missing, the rest waits on Gmail", async () => {
     const status = await setupStatus(harnessCtx({}), CO, new MemoryStore(), NOW);
     expect(status).toMatchObject({ plugin: "partnersinbiz.mailbox", module: "mailbox", title: "Mailbox", version: PLUGIN_VERSION });
-    expect(status.items.map((row) => row.key)).toEqual(["settings", "gmail", "default_account", "jev", "sync", "delegation", "bookkeeper_delegation", "attachments"]);
+    expect(status.items.map((row) => row.key)).toEqual(["settings", "gmail", "default_account", "jev", "sync", "delegation", "bookkeeper_delegation", "operator_delegation", "sender_domain", "unsubscribe", "attachments"]);
     expect(item(status, "delegation")).toMatchObject({ status: "optional", required: false, href: "/setup?section=team#team-account-manager" });
     expect(item(status, "attachments")).toMatchObject({ status: "optional", required: false });
     const settings = item(status, "settings");
