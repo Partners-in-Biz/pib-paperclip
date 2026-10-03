@@ -220,6 +220,7 @@ export const TEAM_ROLES: TeamRole[] = [
     required: true,
     setupItemKey: "bookkeeper",
     skills: withOs(teamSkillKey(PIB_PLUGINS.accounting, "bookkeeping")),
+    extraSkills: [teamSkillKey(PIB_PLUGINS.billing, "invoice-draft")],
     actions: pluginActions("accounting", "accounting.resync-agent"),
     pagePath: "/accounting",
   },

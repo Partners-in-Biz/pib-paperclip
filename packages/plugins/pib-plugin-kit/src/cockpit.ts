@@ -258,7 +258,7 @@ export function registerRoleWatch(ctx: PluginContext): void {
     if (!companyId || !payload) return;
     try {
       const current = (await ctx.state.get(ROLES_STATE(companyId))) as RolesPayload | null;
-      if (current?.updatedAt && payload.updatedAt && current.updatedAt > payload.updatedAt) return;
+      if (current?.updatedAt && payload.updatedAt && Date.parse(current.updatedAt) > Date.parse(payload.updatedAt)) return;
       await ctx.state.set(ROLES_STATE(companyId), payload);
     } catch (error) {
       ctx.logger.info("Roles update failed", { error: error instanceof Error ? error.message : String(error) });
