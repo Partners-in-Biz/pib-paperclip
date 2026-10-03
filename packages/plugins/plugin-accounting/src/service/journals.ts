@@ -33,7 +33,8 @@ import {
 import { dayLabel } from "../domain/dates.js";
 import { AccountingError, isIsoDate, monthOf, todayIso } from "../domain/util.js";
 import { ensureBook, loadChart, roleAccount } from "./books.js";
-import { actorRecord, approverFor, BOOK_CURRENCY, closeIssue, commentOn, errorMessage, money, newId, openIssue, ORIGIN, reopenForPerson, requireUser, withLock, type Actor } from "./common.js";
+import { actorRecord, BOOK_CURRENCY, closeIssue, commentOn, errorMessage, money, newId, reopenForPerson, requireUser, withLock, type Actor } from "./common.js";
+import { openLedgerApproval, reviewGate } from "./review.js";
 
 export interface PostInput {
   sourceKey: string;
@@ -344,33 +345,35 @@ export async function requestDraftApproval(ctx: PluginContext, companyId: string
   if (draft.status !== "draft") throw new AccountingError("Approval was already requested for this journal", "conflict");
   await checkDraft(ctx, companyId, draft);
   const total = draft.lines.reduce((s, l) => s + Number(l.debitMinor ?? 0), 0);
-  const approver = await approverFor(ctx, companyId, actor);
-  const issue = await openIssue(ctx, {
+  const issue = await openLedgerApproval(ctx, {
     companyId,
+    kind: "draft",
+    subjectId: draft.id,
+    actor,
     title: `Approve journal: ${draft.memo || "manual journal"} (${money(total)})`,
     description: [
       `A manual journal dated ${dayLabel(draft.date)} is waiting for approval. It was prepared by ${actor.kind === "agent" ? "the Bookkeeper" : "a board user"}.`,
       "",
       draftSummary(draft),
       "",
-      "To approve, mark this issue done yourself, or open **Accounting → Journals → Drafts** and click **Approve and post**. Only a person can approve: if an agent closes it, it opens again for you.",
+      "To approve, mark this issue done yourself, or open **Accounting → Journals → Drafts** and click **Approve and post**. Only a person can approve: if an agent closes it, it opens again for you. The Reviewer checks it first when there is one.",
       "To refuse it, cancel this issue.",
     ].join("\n"),
-    originKind: ORIGIN,
     originId: `draft:${draft.id}`,
-  }, { assigneeUserId: approver });
+  });
   await db.setDraftStatus(ctx.db, companyId, draft.id, ["draft"], { status: "pending_approval", approvalIssueId: issue.id, error: null });
   return (await db.getDraft(ctx.db, companyId, draft.id))!;
 }
 
 /** A person approves: the draft posts as a manual journal. */
-export async function approveDraft(ctx: PluginContext, companyId: string, draftId: string, actor: Actor, via: "page" | "issue" = "page"): Promise<{ draft: db.DraftRow; journal: Journal | null }> {
+export async function approveDraft(ctx: PluginContext, companyId: string, draftId: string, actor: Actor, via: "page" | "issue" = "page", options: { overrideReview?: boolean } = {}): Promise<{ draft: db.DraftRow; journal: Journal | null }> {
   const userId = requireUser(actor, "approve a journal");
   const draft = await db.getDraft(ctx.db, companyId, draftId);
   if (!draft) throw new AccountingError("Draft not found", "not_found");
   if (draft.status === "posted" && draft.journalId) return { draft, journal: await db.journalById(ctx.db, companyId, draft.journalId) };
   if (draft.status === "draft") throw new AccountingError("Request approval first. A manual journal posts only after its approval issue.", "conflict");
   if (draft.status !== "pending_approval") throw new AccountingError(`This journal is ${draft.status}`, "conflict");
+  const gate = await reviewGate(ctx, companyId, "draft", draft.id, { via, userId, override: options.overrideReview });
   try {
     const { journal } = await postJournal(ctx, companyId, {
       sourceKey: `manual:${draft.id}`,
@@ -385,6 +388,7 @@ export async function approveDraft(ctx: PluginContext, companyId: string, draftI
       allowSoftClosed: true,
     });
     await db.setDraftStatus(ctx.db, companyId, draft.id, ["draft", "pending_approval"], { status: "posted", approvedBy: userId, journalId: journal.id, error: null });
+    await gate.confirm();
     if (via === "page") await closeIssue(ctx, companyId, draft.approvalIssueId, "done", `Approved and posted as ${journal.number}.`);
     else if (draft.approvalIssueId) await commentOn(ctx, companyId, draft.approvalIssueId, `Posted as ${journal.number}.`);
     return { draft: (await db.getDraft(ctx.db, companyId, draft.id))!, journal };

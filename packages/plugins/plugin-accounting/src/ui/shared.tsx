@@ -359,3 +359,45 @@ export function StatusPill({ status, label }: { status: string; label?: string }
   const text = label ?? words(status);
   return <Pill tone={statusTone(status)} dot size="sm">{text.charAt(0).toUpperCase() + text.slice(1)}</Pill>;
 }
+
+/**
+ * The Reviewer's pass on a ledger approval (manual journal, reconciliation, VAT201). The owner's Approve is offered
+ * only after a pass; ticking "Approve without the Reviewer" approves it as it is, and that is recorded on the issue.
+ */
+export interface ReviewInfo {
+  state: "not_required" | "pending" | "passed" | "changes_needed" | "waived";
+  canApprove: boolean;
+  findings: string | null;
+  reviewedAt: string | null;
+  waivedBy: string | null;
+}
+
+export function reviewText(review: ReviewInfo | null | undefined): { label: string; tone: "ok" | "warn" | "bad" | "info" | "neutral" } | null {
+  if (!review || review.state === "not_required") return null;
+  if (review.state === "passed") return { label: "Reviewer passed it", tone: "ok" };
+  if (review.state === "pending") return { label: "With the Reviewer", tone: "warn" };
+  if (review.state === "changes_needed") return { label: "Reviewer asked for changes", tone: "bad" };
+  return { label: "Approved without the Reviewer", tone: "neutral" };
+}
+
+export function ReviewBadge({ review }: { review: ReviewInfo | null | undefined }) {
+  const text = reviewText(review);
+  if (!text) return null;
+  return <span title={review?.findings ?? undefined}><Pill tone={text.tone} dot size="sm">{text.label}</Pill></span>;
+}
+
+/** The "approve anyway" tick, shown only while the Reviewer has not passed it. Returns whether Approve may be clicked. */
+export function ReviewOverride({ review, checked, onChange }: { review: ReviewInfo | null | undefined; checked: boolean; onChange: (value: boolean) => void }) {
+  if (!review || review.canApprove) return null;
+  return (
+    <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, color: tokens.muted }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      Approve without the Reviewer{review.findings ? ` (it said: ${review.findings.slice(0, 120)})` : ""}
+    </label>
+  );
+}
+
+/** True while the owner's click is not offered yet. */
+export function approveBlocked(review: ReviewInfo | null | undefined, override: boolean): boolean {
+  return Boolean(review && !review.canApprove && !override);
+}

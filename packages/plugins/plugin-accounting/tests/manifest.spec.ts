@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ASK_OWNER_TOOL, COMPANY_OS_HIRE_SKILL, LEDGER_SOURCES, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
+import { ZA_CHART } from "../src/domain/chart.js";
 import manifest from "../src/manifest.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import { SKILL_CANONICAL_KEY, SKILL_SLUG, SKILLS } from "../src/skills.js";
@@ -38,11 +39,17 @@ describe("manifest", () => {
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.3.8");
+    expect(manifest.version).toBe("0.4.0");
   });
 
-  it("schedules redeliver, month-end and FX jobs", () => {
-    expect(manifest.jobs?.map((j) => j.jobKey)).toEqual(["redeliver", "month-end", "fx-rates"]);
+  it("schedules redeliver, month-end, FX and the all-company skill sync", () => {
+    expect(manifest.jobs?.map((j) => j.jobKey)).toEqual(["redeliver", "month-end", "fx-rates", "sync-skills-all"]);
+  });
+
+  it("adds no capability for 0.4: the Reviewer pass, compact tools and erasure need none", () => {
+    expect(manifest.capabilities).not.toContain("webhooks.receive");
+    expect(manifest.capabilities).not.toContain("issue.relations.read");
+    expect(manifest.database?.coreReadTables).toEqual(["issues"]);
   });
 
   it("settings: VAT category, year end, Jev and a private R2 block with secret refs", () => {
@@ -64,8 +71,8 @@ describe("manifest", () => {
   it("ships the tools the Bookkeeper needs for the whole monthly cycle", () => {
     expect(ACCOUNTING_TOOLS.map((t) => t.name).sort()).toEqual(
       [
-        "accept-categorisation", "balance-sheet", "create-manual-journal", "gl", "import-statement", "list-accounts", "list-bank-accounts", "list-bank-lines",
-        "mark-not-needed", "mark-statement-email", "pdf-statements", "period-close-checklist", "pnl", "prepare-reconciliation", "prepare-vat201", "suggest-categorisation", "trial-balance", "vat-summary",
+        "accept-categorisation", "accept-categorisations", "balance-sheet", "create-manual-journal", "gl", "import-statement", "list-accounts", "list-bank-accounts", "list-bank-lines",
+        "mark-not-needed", "mark-statement-email", "pdf-statements", "period-close-checklist", "pnl", "prepare-reconciliation", "prepare-vat201", "record-review", "suggest-categorisation", "trial-balance", "vat-summary",
       ].sort(),
     );
     for (const tool of ACCOUNTING_TOOLS) expect(manifest.tools?.some((t) => t.name === tool.name)).toBe(true);
@@ -87,6 +94,25 @@ describe("manifest", () => {
     expect(props("import-statement").format!.enum).toEqual(["auto", "csv", "ofx", "mt940"]);
     expect(props("list-bank-lines").status!.enum).toEqual(["unreconciled", "matching", "reconciled", "excluded"]);
     expect(props("accept-categorisation").taxCode!.enum).toContain("za_std_15");
+    expect(props("record-review").verdict!.enum).toEqual(["pass", "changes_needed"]);
+    expect(props("record-review").kind!.enum).toEqual(["journal", "reconciliation", "vat201"]);
+  });
+
+  it("the skill stays within the 18,000 character budget and keeps the PDF procedure in a reference", () => {
+    expect(SKILLS[0]!.markdown!.length).toBeLessThanOrEqual(18_000);
+    expect(SKILLS[0]!.files?.map((f) => f.path)).toEqual(["references/pdf-statements.md"]);
+    expect(SKILLS[0]!.files![0]!.content).toContain("Prove the first statement before the rest");
+    expect(SKILLS[0]!.markdown).toContain("references/pdf-statements.md");
+  });
+
+  it("says honestly that Billing posts no Stripe fee and that the Bookkeeper books it from the payout (skill and chart)", () => {
+    const skill = SKILLS[0]!.markdown!;
+    expect(skill).toMatch(/Billing posts no Stripe fee/);
+    expect(skill).toMatch(/Dr 6120 Bank charges \/ Cr 1020/);
+    expect(skill).not.toMatch(/fee is already posted/i);
+    const clearing = ZA_CHART.find((a) => a.code === "1020")!;
+    expect(clearing.description).toMatch(/Stripe's does not/);
+    expect(clearing.description).not.toMatch(/already posted/i);
   });
 
   it("the managed skill has a unique pib- slug and the hire role points at it", () => {

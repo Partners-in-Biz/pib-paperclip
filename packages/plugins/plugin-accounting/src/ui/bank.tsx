@@ -20,6 +20,10 @@ import {
   words,
   type BankAccount,
   StatusPill,
+  approveBlocked,
+  ReviewBadge,
+  ReviewOverride,
+  type ReviewInfo,
 } from "./shared.js";
 
 type Suggestion =
@@ -112,6 +116,7 @@ interface BankSnapshot {
   reconciliations: Reconciliation[];
   counts: Record<string, number>;
   statementEmails?: StatementEmail[];
+  reviews?: Record<string, ReviewInfo>;
 }
 
 /** Whole days since an ISO time (0 for today or an unreadable time). */
@@ -209,6 +214,8 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
   const [catForm, setCatForm] = useState({ accountCode: "", taxCode: "", memo: "" });
   const [matchKey, setMatchKey] = useState("");
   const [excludeNote, setExcludeNote] = useState("");
+  /** Reconciliations whose owner ticked "Approve without the Reviewer". */
+  const [override, setOverride] = useState<Record<string, boolean>>({});
 
   const accounts = data.accounts;
   const narrow = useIsNarrow();
@@ -501,12 +508,14 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                 }, "Approval requested. A board user approves it here or by marking the issue done.")}>Request approval</Button>
               ) : null}
               {prepared.reconciliation.status === "pending_approval" ? (
-                <Button type="button" disabled={busy !== ""} onClick={() => void run("rec", async () => {
-                  const r = (await approveRec({ reconciliationId: prepared.reconciliation.id })) as Reconciliation;
+                <Button type="button" disabled={busy !== "" || approveBlocked(snap?.reviews?.[prepared.reconciliation.id], override[prepared.reconciliation.id] === true)} onClick={() => void run("rec", async () => {
+                  const r = (await approveRec({ reconciliationId: prepared.reconciliation.id, overrideReview: override[prepared.reconciliation.id] === true })) as Reconciliation;
                   setPrepared({ ...prepared, reconciliation: r });
                   await refreshAll();
                 }, "Approved and locked.")}>Approve and lock</Button>
               ) : null}
+              <ReviewBadge review={snap?.reviews?.[prepared.reconciliation.id]} />
+              <ReviewOverride review={snap?.reviews?.[prepared.reconciliation.id]} checked={override[prepared.reconciliation.id] === true} onChange={(value) => setOverride({ ...override, [prepared.reconciliation.id]: value })} />
               {prepared.reconciliation.approvalIssueId ? <span style={{ fontSize: 12 }}>Approval: <IssueLink id={prepared.reconciliation.approvalIssueId} /></span> : null}
             </Row>
           </div>
@@ -518,13 +527,13 @@ export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: 
                 <Td>{`${formatShortDate(r.periodStart)} to ${formatShortDate(r.periodEnd)}`}</Td>
                 <Td right>{formatMoney(r.closingMinor)}</Td>
                 <Td right>{formatMoney(r.differenceMinor)}</Td>
-                <Td><StatusPill status={r.status} /></Td>
+                <Td><StatusPill status={r.status} /> <ReviewBadge review={snap?.reviews?.[r.id]} /></Td>
                 <Td>
                   {r.status === "pending_approval" ? (
-                    <Button type="button" style={{ ...small, marginRight: 6 }} disabled={busy !== ""} onClick={() => {
+                    <Button type="button" style={{ ...small, marginRight: 6 }} disabled={busy !== "" || approveBlocked(snap?.reviews?.[r.id], override[r.id] === true)} onClick={() => {
                       if (!window.confirm(`Approve and lock ${r.periodStart} to ${r.periodEnd}? Its lines can no longer change.`)) return;
                       void run("rec", async () => {
-                        await approveRec({ reconciliationId: r.id });
+                        await approveRec({ reconciliationId: r.id, overrideReview: override[r.id] === true });
                         setPrepared(null);
                         await refreshAll();
                       }, "Approved and locked.");

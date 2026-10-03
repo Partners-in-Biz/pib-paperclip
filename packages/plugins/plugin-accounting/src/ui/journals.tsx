@@ -5,6 +5,7 @@ import { readableDates } from "../domain/dates.js";
 import type { LoadResult } from "./overview.js";
 import {
   AccountSelect,
+  approveBlocked,
   Banner,
   centsToInput,
   Details,
@@ -13,10 +14,13 @@ import {
   kindLabel,
   memoText,
   Muted,
+  ReviewBadge,
+  ReviewOverride,
   Row,
   small,
   sourceName,
   StatusPill,
+  type ReviewInfo,
   Table,
   TAX_OPTIONS,
   taxLabel,
@@ -362,10 +366,15 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
   const cancel = usePluginAction("accounting.cancel-draft");
   const { busy, run } = useRunner(onMessage);
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
+  const [reviews, setReviews] = useState<Record<string, ReviewInfo>>({});
+  /** Drafts whose owner ticked "Approve without the Reviewer". */
+  const [override, setOverride] = useState<Record<string, boolean>>({});
   const [editor, setEditor] = useState<{ id: string | null; date: string; memo: string; lines: EditLine[] } | null>(null);
 
   async function refresh() {
-    setDrafts(((await list({})) as { drafts: Draft[] }).drafts);
+    const r = (await list({})) as { drafts: Draft[]; reviews?: Record<string, ReviewInfo> };
+    setDrafts(r.drafts);
+    setReviews(r.reviews ?? {});
   }
   useEffect(() => {
     void run("load", refresh);
@@ -404,11 +413,14 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
           </>
         ) : null}
         {d.status === "pending_approval" ? (
-          <Button type="button" style={narrow ? undefined : small} disabled={busy !== ""} onClick={() => void run("approve", async () => {
-            const r = (await approve({ draftId: d.id })) as { journal: { number: string } | null };
-            await refresh();
-            return r;
-          }, (r) => `Approved and posted as ${r.journal?.number ?? "a journal"}.`)}>Approve and post</Button>
+          <>
+            <Button type="button" style={narrow ? undefined : small} disabled={busy !== "" || approveBlocked(reviews[d.id], override[d.id] === true)} onClick={() => void run("approve", async () => {
+              const r = (await approve({ draftId: d.id, overrideReview: override[d.id] === true })) as { journal: { number: string } | null };
+              await refresh();
+              return r;
+            }, (r) => `Approved and posted as ${r.journal?.number ?? "a journal"}.`)}>Approve and post</Button>
+            <ReviewOverride review={reviews[d.id]} checked={override[d.id] === true} onChange={(value) => setOverride({ ...override, [d.id]: value })} />
+          </>
         ) : null}
         <Button type="button" variant="secondary" style={narrow ? undefined : small} disabled={busy !== ""} onClick={() => void run("cancel", async () => { await cancel({ draftId: d.id }); await refresh(); }, "Cancelled.")}>Cancel</Button>
       </div>
@@ -437,6 +449,7 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12.5, color: tokens.muted }}>
                 <StatusPill status={d.status} label={statusLabel(d.status)} />
+                <ReviewBadge review={reviews[d.id]} />
                 <span>{formatDate(d.date)}</span>
                 {d.createdBy?.kind === "agent" ? <span>Prepared by an agent</span> : null}
                 {d.approvalIssueId ? <IssueLink id={d.approvalIssueId} label="Approval issue" /> : null}
@@ -457,7 +470,7 @@ function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onM
                 {d.createdBy?.kind === "agent" ? <div style={{ fontSize: 12, color: tokens.muted }}>Prepared by an agent</div> : null}
               </Td>
               <Td right>{formatMoney(draftTotal(d))}</Td>
-              <Td><StatusPill status={d.status} label={statusLabel(d.status)} /></Td>
+              <Td><StatusPill status={d.status} label={statusLabel(d.status)} /> <ReviewBadge review={reviews[d.id]} /></Td>
               <Td>{d.approvalIssueId ? <IssueLink id={d.approvalIssueId} label="Open issue" /> : "—"}</Td>
               <Td>{actions(d)}</Td>
             </tr>

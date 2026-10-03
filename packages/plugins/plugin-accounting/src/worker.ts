@@ -25,9 +25,11 @@ import {
   pluginEvent,
   redeliver,
   checkDoneOnUpdate,
+  registerCompanyBootstrap,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
+  registerSkillSyncJob,
   rememberPluginUiBase,
   SecretResolver,
   startHire,
@@ -37,6 +39,9 @@ import {
   unlinkAgent,
 } from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot, publishCockpitThrottled, recordChainCheck } from "./service/cockpit.js";
+import { acceptMany, acceptOne, listBankLinesTool, requestedAccountCode } from "./service/compact.js";
+import { registerAccountingErasure } from "./service/privacy.js";
+import { recordReview, reviewViews } from "./service/review.js";
 import * as db from "./db.js";
 import { ROLE_LABELS } from "./domain/chart.js";
 import { AccountingError, addMonths, monthOf, todayIso } from "./domain/util.js";
@@ -233,10 +238,13 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.close-checklist": (ctx, companyId, _a, p) => closeChecklist(ctx, companyId, optStr(p, "month") ?? undefined),
 
   // Manual journals
-  "accounting.drafts": async (ctx, companyId) => ({ drafts: await db.listDrafts(ctx.db, companyId, ["draft", "pending_approval"]) }),
+  "accounting.drafts": async (ctx, companyId) => {
+    const drafts = await db.listDrafts(ctx.db, companyId, ["draft", "pending_approval"]);
+    return { drafts, reviews: await reviewViews(ctx, companyId, "draft", drafts.map((d) => d.id)) };
+  },
   "accounting.save-draft": (ctx, companyId, actor, p) => saveDraft(ctx, companyId, { id: optStr(p, "id"), date: p.date, memo: p.memo, currency: p.currency, fxRate: p.fxRate, lines: p.lines }, actor),
   "accounting.request-draft-approval": (ctx, companyId, actor, p) => requestDraftApproval(ctx, companyId, str(p, "draftId"), actor),
-  "accounting.approve-draft": (ctx, companyId, actor, p) => approveDraft(ctx, companyId, str(p, "draftId"), actor),
+  "accounting.approve-draft": (ctx, companyId, actor, p) => approveDraft(ctx, companyId, str(p, "draftId"), actor, "page", { overrideReview: p.overrideReview === true }),
   "accounting.cancel-draft": (ctx, companyId, _a, p) => cancelDraft(ctx, companyId, str(p, "draftId"), optStr(p, "reason")),
 
   // Rejected postings
@@ -263,7 +271,7 @@ const ACTIONS: Record<string, Handler> = {
       // Statement emails from the Mailbox still waiting to be imported (the Cockpit's "Statements to import").
       db.listStatementEmails(ctx.db, companyId, ["received"], 20),
     ]);
-    return { bankAccounts, statements, rules, reconciliations, counts, statementEmails };
+    return { bankAccounts, statements, rules, reconciliations, counts, statementEmails, reviews: await reviewViews(ctx, companyId, "reconciliation", reconciliations.map((r) => r.id)) };
   },
   "accounting.save-bank-account": (ctx, companyId, actor, p) => {
     requireUser(actor, "add or change a bank account");
@@ -291,7 +299,7 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.delete-rule": async (ctx, companyId, _a, p) => ({ deleted: await db.deleteRule(ctx.db, companyId, str(p, "ruleId")) }),
   "accounting.prepare-reconciliation": (ctx, companyId, actor, p) => prepareReconciliation(ctx, companyId, actor, p),
   "accounting.request-reconciliation-approval": (ctx, companyId, actor, p) => requestReconciliationApproval(ctx, companyId, actor, str(p, "reconciliationId")),
-  "accounting.approve-reconciliation": (ctx, companyId, actor, p) => approveReconciliation(ctx, companyId, actor, str(p, "reconciliationId")),
+  "accounting.approve-reconciliation": (ctx, companyId, actor, p) => approveReconciliation(ctx, companyId, actor, str(p, "reconciliationId"), "page", { overrideReview: p.overrideReview === true }),
   "accounting.open-reconciliation": (ctx, companyId, _a, p) => viewReconciliation(ctx, companyId, str(p, "reconciliationId")),
   "accounting.discard-reconciliation": (ctx, companyId, actor, p) => discardReconciliation(ctx, companyId, actor, str(p, "reconciliationId")),
 
@@ -299,11 +307,12 @@ const ACTIONS: Record<string, Handler> = {
   "accounting.vat": async (ctx, companyId) => {
     await ensureBook(ctx, companyId);
     const periods = await vatPeriods(ctx, companyId);
-    return { ...periods, returns: await db.listVatReturns(ctx.db, companyId), labels: VAT_FIELD_LABELS, fields: VAT_FIELDS, manualFields: MANUAL_VAT_FIELDS };
+    const returns = await db.listVatReturns(ctx.db, companyId);
+    return { ...periods, returns, reviews: await reviewViews(ctx, companyId, "vat", returns.map((r) => r.id)), labels: VAT_FIELD_LABELS, fields: VAT_FIELDS, manualFields: MANUAL_VAT_FIELDS };
   },
   "accounting.prepare-vat": (ctx, companyId, actor, p) => prepareVatReturn(ctx, companyId, actor, { periodStart: p.periodStart, periodEnd: p.periodEnd, adjustments: p.adjustments }),
   "accounting.request-vat-approval": (ctx, companyId, actor, p) => requestVatApproval(ctx, companyId, actor, str(p, "returnId")),
-  "accounting.approve-vat": (ctx, companyId, actor, p) => approveVatReturn(ctx, companyId, actor, str(p, "returnId")),
+  "accounting.approve-vat": (ctx, companyId, actor, p) => approveVatReturn(ctx, companyId, actor, str(p, "returnId"), "page", { overrideReview: p.overrideReview === true }),
   "accounting.vat-csv": (ctx, companyId, _a, p) => vatCsv(ctx, companyId, str(p, "returnId")),
 
   // Reports
@@ -472,34 +481,25 @@ async function dispatchTool(ctx: PluginContext, name: string, p: Record<string, 
       return prepareReconciliationTool(ctx, companyId, actor, p);
     case "prepare-vat201":
       return prepareVat201Tool(ctx, companyId, actor, { periodStart: p.periodStart, periodEnd: p.periodEnd, date: p.date, requestApproval: p.requestApproval });
-    case "list-bank-lines": {
-      const lines = await db.listBankLines(ctx.db, companyId, {
-        bankAccountId: optStr(p, "bankAccountId"),
-        statuses: optStr(p, "status") ? [optStr(p, "status")!] : null,
-        from: optStr(p, "from"),
-        to: optStr(p, "to"),
-        limit: Math.min(Number(p.limit ?? 100), 500),
-      });
-      return {
-        lines: lines.map((l) => ({
-          id: l.id,
-          bankAccountId: l.bankAccountId,
-          date: l.date,
-          amountMinor: l.amountMinor,
-          description: l.description,
-          reference: l.reference,
-          counterparty: l.counterparty,
-          status: l.status,
-          note: l.note,
-          suggestions: l.suggestions.map((s, index) => ({ index, ...s })),
-        })),
-      };
-    }
+    case "list-bank-lines":
+      return listBankLinesTool(ctx, companyId, { status: optStr(p, "status"), bankAccountId: optStr(p, "bankAccountId"), from: optStr(p, "from"), to: optStr(p, "to"), limit: p.limit, ids: p.ids, compact: p.compact, fields: p.fields });
     case "suggest-categorisation":
       return refreshSuggestions(ctx, companyId, { bankAccountId: optStr(p, "bankAccountId"), lineIds: Array.isArray(p.lineIds) ? p.lineIds.map(String) : null, useJev: true });
-    case "accept-categorisation":
-      if (optStr(p, "accountCode")) return categorise(ctx, companyId, actor, { lineId: p.lineId, accountCode: p.accountCode, taxCode: p.taxCode, memo: p.memo });
-      return acceptSuggestion(ctx, companyId, actor, { lineId: p.lineId, index: p.index });
+    case "accept-categorisation": {
+      // One line, a short answer. A refusal is an error here (as before); `full` returns the whole line.
+      if (p.full === true) {
+        const accountCode = requestedAccountCode(p.accountCode);
+        if (accountCode) return categorise(ctx, companyId, actor, { lineId: p.lineId, accountCode, taxCode: p.taxCode, memo: p.memo });
+        return acceptSuggestion(ctx, companyId, actor, { lineId: p.lineId, index: p.index });
+      }
+      const outcome = await acceptOne(ctx, companyId, actor, { lineId: p.lineId, index: p.index, accountCode: p.accountCode, taxCode: p.taxCode, memo: p.memo });
+      if (!outcome.ok) throw new AccountingError(outcome.error, (outcome.code as ConstructorParameters<typeof AccountingError>[1]) ?? "invalid");
+      return outcome;
+    }
+    case "accept-categorisations":
+      return acceptMany(ctx, companyId, actor, p.lines);
+    case "record-review":
+      return recordReview(ctx, companyId, actor, { kind: p.kind, id: p.id, verdict: p.verdict, findings: p.findings });
     case "trial-balance":
       return runReport(ctx, companyId, "trial_balance", p);
     case "pnl":
@@ -575,8 +575,18 @@ function safely(ctx: PluginContext, label: string, fn: (event: PluginEvent) => P
   };
 }
 
+/**
+ * An event for an approval issue that is no longer the one its subject waits on. After a Reviewer send-back and a
+ * re-request, the old issue is cancelled and the row points at the new one, but both carry the same `originId`, and
+ * the host publishes `issue.updated` for the plugin's own cancel (and for an agent that then "closes this issue").
+ * Matching by `originId` alone would read that as the new request being withdrawn, or an agent closing it.
+ */
+export function isRetiredApprovalIssue(row: { approvalIssueId: string | null }, issueId: string): boolean {
+  return Boolean(row.approvalIssueId) && row.approvalIssueId !== issueId;
+}
+
 /** Approval issues: a person marking one done approves; cancelling it withdraws the request. */
-async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
+export async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   const issueId = event.entityId;
   if (!issueId) return;
   const issue = await ctx.issues.get(issueId, event.companyId).catch(() => null);
@@ -593,14 +603,20 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   if (colon < 0) return;
   const kind = issue.originId.slice(0, colon);
   const id = issue.originId.slice(colon + 1);
+  const retired = () => {
+    ctx.logger.info("Ignored an event for a retired approval issue", { issueId, kind, status });
+  };
   if (kind === "draft") {
     const draft = await db.getDraft(ctx.db, event.companyId, id);
+    if (draft && isRetiredApprovalIssue(draft, issueId)) return retired();
     if (draft) await onDraftIssue(ctx, event.companyId, draft, status, actor);
   } else if (kind === "reconciliation") {
     const rec = await db.getReconciliation(ctx.db, event.companyId, id);
+    if (rec && isRetiredApprovalIssue(rec, issueId)) return retired();
     if (rec) await onReconciliationIssue(ctx, event.companyId, rec, status, actor);
   } else if (kind === "vat") {
     const ret = await db.getVatReturn(ctx.db, event.companyId, id);
+    if (ret && isRetiredApprovalIssue(ret, issueId)) return retired();
     if (ret) await onVatIssue(ctx, event.companyId, ret, status, actor);
   }
 }
@@ -731,8 +747,10 @@ const plugin = definePlugin({
       await onIssueUpdated(ctx, e);
       await checkDoneOnUpdate(ctx, doneChecks, e);
     }));
-    ctx.events.on("company.created", safely(ctx, "Skill sync", (e) => skillSync!.ensure(e.companyId)));
+    // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.
+    registerCompanyBootstrap(ctx, { syncer: skillSync });
     registerHireWatch(ctx, [{ role: BOOKKEEPER_ROLE, onLinked: onBookkeeperLinked(ctx, syncSkills) }]);
+    registerAccountingErasure(ctx);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
 
@@ -747,6 +765,8 @@ const plugin = definePlugin({
         ctx.logger.info("Accounting month-end", await monthEndJob(ctx));
       }),
     );
+    // Every company's skills, not only the one a call comes from (Q7-2): a company that never opens Accounting still gets them.
+    registerSkillSyncJob(ctx, skillSync, { companyIds: () => db.bookCompanies(ctx.db), isEnabled: (companyId) => isModuleEnabled(ctx, companyId, PLUGIN_ID), plugin: PLUGIN_ID });
     ctx.jobs.register("fx-rates", () =>
       trackJob(ctx, "fx-rates", async () => {
         ctx.logger.info("FX rates stored", await fetchRates(ctx));

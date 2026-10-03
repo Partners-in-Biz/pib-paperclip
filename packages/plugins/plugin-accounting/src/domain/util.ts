@@ -11,6 +11,7 @@ export type AccountingErrorCode =
   | "not_found"
   | "conflict"
   | "forbidden"
+  | "review_pending"
   | "not_configured";
 
 export class AccountingError extends Error {

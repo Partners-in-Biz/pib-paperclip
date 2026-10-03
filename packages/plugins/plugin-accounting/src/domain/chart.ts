@@ -8,7 +8,7 @@
 import { ACCOUNT_ROLES, type AccountRole } from "@partnersinbiz/pib-plugin-kit";
 import { AccountingError } from "./util.js";
 
-export const CHART_TEMPLATE_ID = "za-ifrs-sme-v1";
+export const CHART_TEMPLATE_ID = "za-ifrs-sme-v2";
 
 export const ACCOUNT_TYPES = ["asset", "liability", "equity", "income", "expense"] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -99,6 +99,7 @@ export const ZA_CHART: ChartAccountSeed[] = [
   // Assets
   { code: "1000", name: "Bank – current account", subtype: "bank", system: true },
   { code: "1010", name: "Petty cash", subtype: "cash", system: true },
+  { code: "1020", name: "Payment provider clearing (PayFast, Stripe)", subtype: "current_asset", description: "Card and online payments Billing recorded from PayFast or Stripe, until the provider pays them out to the bank. Billing posts each confirmed payment here in full. The payout bank line is categorised to this account (no VAT). Billing posts the provider's fee only when its notification carries one (PayFast's does, Stripe's does not): what a Stripe payout leaves on this account is the fee, which the Bookkeeper books to bank charges by manual journal." },
   { code: "1100", name: "Accounts receivable (trade debtors)", subtype: "receivable", system: true },
   { code: "1150", name: "Allowance for doubtful debts", subtype: "current_asset" },
   { code: "1200", name: "Prepayments and other receivables", subtype: "current_asset" },

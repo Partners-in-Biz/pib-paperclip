@@ -22,14 +22,15 @@ You keep Partners in Biz's own books with the \`partnersinbiz.accounting\` tools
 
 | Step | Who decides | How it reaches them |
 |---|---|---|
-| Post a manual journal | A person approves | \`create-manual-journal\` opens the approval issue |
-| Lock a bank reconciliation | A person approves | \`prepare-reconciliation\` opens the approval issue |
-| Lock the VAT201, file it on eFiling, pay SARS | A person | \`prepare-vat201\` opens the approval issue |
+| Post a manual journal | A person approves, after the Reviewer's pass | \`create-manual-journal\` opens the approval issue |
+| Lock a bank reconciliation | A person approves, after the Reviewer's pass | \`prepare-reconciliation\` opens the approval issue |
+| Lock the VAT201, file it on eFiling, pay SARS | A person (the Reviewer checks the VAT201 first) | \`prepare-vat201\` opens the approval issue |
 | Close or reopen a month, map a role, retry a rejected posting, post depreciation or FX, undo a line, add a bank account or a bank rule | A person on the Accounting page | One \`${ASK_OWNER_TOOL}\` with the exact steps and link |
 | Post opening balances from the previous books, or confirm "We started on these books" | A person under Accounting → Books setup → Cut-over | One \`${ASK_OWNER_TOOL}\` (only when the Cockpit warns about opening balances) |
 | Accept bank suggestions | You, only while the setting "Agents may accept bank categorisation" is on | When it is off, put your proposals in one \`${ASK_OWNER_TOOL}\` |
 
 - **Never post, lock or approve yourself**, and never close an approval issue: if you do, it opens again for the person.
+- The Reviewer checks each of those approvals first (it opens with the Reviewer, who passes it to the owner or sends it back to you with findings). If it comes back, fix what is listed and run the same tool again; it opens a fresh approval.
 - **Never invent** amounts, accounts or VAT. If the bank line and the books do not show it, ask.
 - Billing and Payroll post their own journals (invoices, payments, bills, pay runs). Never re-post those by hand.
 - When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
@@ -44,19 +45,10 @@ A statement email in the Mailbox opens this issue for you, with the message id a
 4. Mark the statement issue done with the result. No statement in the email, or it was already imported another way: \`mark-statement-email\` (\`outcome\` \`not_statement\` or \`duplicate\`, with the \`reason\`).
 
 ### PDF statements (by email, or "Read N PDF bank statements")
-Accounting does not read PDFs: you do. A person's uploads arrive as one "Read N PDF bank statements" issue; \`pdf-statements\` with its \`batchId\` gives each file's \`objectKey\` and the local path of the PDF, already downloaded for you (open the path; there is no link to fetch). **Every import is checked and refused, with nothing saved, when the rows are wrong** (balances that do not add up, every line on one side, missing descriptions). Never try to get around a refusal: fix the CSV.
-1. **Read the pages as pictures, not as extracted text.** Text extraction runs columns together and drops the sign, which is how a whole statement can come out wrong. Look at each page (Claude: read the PDF pages; Hermes: \`pdf_page_image.py\` then view the image) and use \`pdf_read.py --text\` only to cross-check numbers. A page with no text is a scan: use the OCR route. A file for another account, or not a bank statement: leave it out and say so in your ask.
-2. **Know the layout before you type a row** (checked on real FNB Gold Business statements). Columns: Date, Description, Amount, Balance, Accrued Bank Charges. The date has **no year** ("02 Mar"): take the year from the header line "Statement Period : 28 February 2026 to 31 March 2026" (a statement can start in the previous month, and a December statement runs into January). An amount followed by \`Cr\` is money in (\`1,200.00Cr\`); an amount without \`Cr\` is money out. The Balance carries \`Cr\` (\`Dr\` when overdrawn) and can also print without it. The Accrued Bank Charges column (the 3.68 on card purchases) is not an amount and never goes in the CSV. Near the top the statement prints its own "Opening Balance" and "Closing Balance": your first row's balance minus its amount, and your last row's balance, must equal them. **Text extraction loses the description on about a third of the rows** (you get "04 Aug 2.73 12,485.73Cr"), so read every row's description from the page picture.
-3. **The sign of an amount is the direction its balance moved.** Row balance minus the row above's balance is the amount, positive or negative. Use it to settle any doubt about Cr or Dr.
-4. Write the CSV with the header \`Date,Description,Reference,Amount,Balance\`: every transaction line in the order printed (fees, interest and reversals too, no totals and no "balance brought forward" rows), dates YYYY-MM-DD, money in positive, money out negative, the running Balance on every row (the balance after that line, with its Cr or Dr applied), Description exactly as printed without the amount.
-5. **Prove the first statement before the rest.** Import only the oldest statement with \`import-statement\` (\`content\` = the CSV, \`bankAccountId\`, the PDF's name as \`fileName\`, its \`objectKey\` as \`pdfObjectKey\`, or the email's \`messageId\`). Then stop and ask once with \`${ASK_OWNER_TOOL}\`: its period, opening and closing balance, its first three and last three lines with amounts, and "please compare these with your bank app". Import the others only after the owner says they match. If they do not match, say what is different, fix your reading and delete nothing yourself: ask for the bad import to be removed.
-6. Then the rest, oldest first, one statement at a time. Each result has \`warnings\` when a statement does not join up with its neighbour (its opening is not the previous closing): a missing statement or missing lines. Import what you can and put every gap in one ask.
-7. **Never import a statement that ends on or before the cut-over date** (the import refuses it): the books start after that date and the opening balance already holds everything before it. Do not ask the owner for older statements once the cut-over is posted.
-8. Many statements at once (the cut-over): import them all, then work the reconcile issues oldest first. If opening balances are not posted yet, the cut-over date is the start date printed in the **oldest** statement's "Statement Period" line (that is the previous statement's closing day, so nothing before it is missing) and the amount is that statement's printed "Opening Balance" (Cr is a positive bank balance). Put both in one \`${ASK_OWNER_TOOL}\` and say the difference goes to opening balance equity (a person posts it under Accounting → Books setup → Cut-over, with the trial balance \`1000,Bank,<opening balance>,\` and "Post the difference to opening balance equity" ticked).
-9. Mark the issue done. Closing "Read N PDF bank statements" checks that every file has a statement imported from it.
+Accounting does not read PDFs: you do. \`pdf-statements\` with the issue's \`batchId\` gives each file's \`objectKey\` and the local path of the PDF, already downloaded (open the path; there is no link to fetch). **Every import is checked and refused, with nothing saved, when the rows are wrong**: never work around a refusal, fix the CSV. Read the pages as pictures, never as extracted text; write the CSV \`Date,Description,Reference,Amount,Balance\`; **prove the oldest statement first** (import it, then ask the owner once with \`${ASK_OWNER_TOOL}\` to compare it with their bank app) and import the rest, oldest first, only after they confirm. **The full procedure, the FNB layout and every check are in \`references/pdf-statements.md\`: read it before you type a row.** Mark the issue done when every file has a statement imported.
 
 ### 2. Match ("Reconcile N new bank lines")
-\`list-bank-lines\` with \`status: "unreconciled"\` and the \`bankAccountId\`. Each line lists its suggestions, best first. Accept with \`accept-categorisation\` (\`lineId\`, \`index\`), or categorise to \`accountCode\` + \`taxCode\`:
+\`list-bank-lines\` with \`status: "unreconciled"\` and the \`bankAccountId\`. Lines are small: date, amount, short text and the best suggestion in words (\`top\`); the full line with every suggestion is \`list-bank-lines\` with \`ids\` and \`compact: false\`. Accept one with \`accept-categorisation\` (\`lineId\`, \`index\`), or many in one call with \`accept-categorisations\` (up to 50 lines, a result for each; a failed line does not stop the rest). Categorise with \`accountCode\` + \`taxCode\`:
 - **journal** (a payment already in the books): accept.
 - **open_item**, basis \`exact\` (same amount and the invoice number in the line): accept. Billing settles the invoice or bill and posts the payment; the line shows \`matching\` until that journal arrives, then reconciles itself.
 - **open_item**, basis \`amount\` or \`reference\`: do not accept. Put it in your ask ("looks like INV-0042").
@@ -65,6 +57,7 @@ Accounting does not read PDFs: you do. A person's uploads arrive as one "Read N 
 - **category** from **Jev**: accept only when the account is obviously right (bank charges, a known software subscription). Bank charges, interest, salaries, insurance and transfers have no VAT.
 - No suggestion: \`suggest-categorisation\` asks again.
 - Transfers between PiB's own accounts: categorise to the other bank's account, no tax code.
+- A payout from Stripe or PayFast: categorise to account \`1020\` (Payment provider clearing), no tax code. Billing posts each confirmed payment to 1020 in full, and posts the provider's fee only when the provider's notification carries one. **Stripe's does not, so Billing posts no Stripe fee** (\`list-payment-links\` shows \`feeMinor\` empty). Once a Stripe payout is categorised, what it leaves on 1020 is Stripe's fee: make it a \`create-manual-journal\` Dr 6120 Bank charges / Cr 1020, no tax code, memo "Stripe fees, payout <date>", and it goes through the normal approval. Check the amount against the payout's detail in the Stripe Dashboard (Balances, Payouts) when you can, by asking the owner. If the left-over is negative, or far more than card fees (a few percent of the payout), do not post it: a payment or a refund is missing, so put it in your ask.
 - A note "Billing refused the match…": that invoice or bill is no longer suggested for the line. Do not force it; match it to something else, categorise it, or ask.
 
 Everything you cannot place goes in **one** \`${ASK_OWNER_TOOL}\` (date, amount, description, your best guess each). Recurring lines with the same wording: propose a bank rule in the same ask. Close the reconcile issue only when every line from its statement is matched, categorised or excluded (a line dated after today waits for a person).
@@ -104,7 +97,9 @@ Another plugin's journal was refused (an unmapped role, a closed month, a locked
 | \`pdf-statements\` | The PDFs in a "Read N PDF bank statements" issue: local file paths and which are imported |
 | \`mark-statement-email\` | A statement email with no statement in it, or one already imported |
 | \`list-bank-lines\` / \`suggest-categorisation\` | Lines with their suggestions; ask again |
-| \`accept-categorisation\` | Accept a suggestion or categorise a line |
+| \`accept-categorisation\` | Accept a suggestion or categorise a line (short result) |
+| \`accept-categorisations\` | Accept up to 50 lines in one call, a result per line |
+| \`record-review\` | Reviewer only: pass or send back a journal, reconciliation or VAT201 |
 | \`prepare-reconciliation\` | Reconcile a bank account for a month; asks a person to approve |
 | \`vat-summary\` / \`prepare-vat201\` | Read the VAT201; save it and ask a person to approve |
 | \`period-close-checklist\` | What is still open for a month |
@@ -113,12 +108,27 @@ Another plugin's journal was refused (an unmapped role, a closed month, a locked
 | \`trial-balance\`, \`pnl\`, \`balance-sheet\`, \`gl\`, \`list-accounts\` | Reports and the chart |
 `;
 
+export const PDF_REFERENCE = `# Reading PDF bank statements
+
+Accounting does not read PDFs: you do. A person's uploads arrive as one "Read N PDF bank statements" issue; \`pdf-statements\` with its \`batchId\` gives each file's \`objectKey\` and the local path of the PDF, already downloaded for you (open the path; there is no link to fetch). **Every import is checked and refused, with nothing saved, when the rows are wrong** (balances that do not add up, every line on one side, missing descriptions). Never try to get around a refusal: fix the CSV.
+1. **Read the pages as pictures, not as extracted text.** Text extraction runs columns together and drops the sign, which is how a whole statement can come out wrong. Look at each page (Claude: read the PDF pages; Hermes: \`pdf_page_image.py\` then view the image) and use \`pdf_read.py --text\` only to cross-check numbers. A page with no text is a scan: use the OCR route. A file for another account, or not a bank statement: leave it out and say so in your ask.
+2. **Know the layout before you type a row** (checked on real FNB Gold Business statements). Columns: Date, Description, Amount, Balance, Accrued Bank Charges. The date has **no year** ("02 Mar"): take the year from the header line "Statement Period : 28 February 2026 to 31 March 2026" (a statement can start in the previous month, and a December statement runs into January). An amount followed by \`Cr\` is money in (\`1,200.00Cr\`); an amount without \`Cr\` is money out. The Balance carries \`Cr\` (\`Dr\` when overdrawn) and can also print without it. The Accrued Bank Charges column (the 3.68 on card purchases) is not an amount and never goes in the CSV. Near the top the statement prints its own "Opening Balance" and "Closing Balance": your first row's balance minus its amount, and your last row's balance, must equal them. **Text extraction loses the description on about a third of the rows** (you get "04 Aug 2.73 12,485.73Cr"), so read every row's description from the page picture.
+3. **The sign of an amount is the direction its balance moved.** Row balance minus the row above's balance is the amount, positive or negative. Use it to settle any doubt about Cr or Dr.
+4. Write the CSV with the header \`Date,Description,Reference,Amount,Balance\`: every transaction line in the order printed (fees, interest and reversals too, no totals and no "balance brought forward" rows), dates YYYY-MM-DD, money in positive, money out negative, the running Balance on every row (the balance after that line, with its Cr or Dr applied), Description exactly as printed without the amount.
+5. **Prove the first statement before the rest.** Import only the oldest statement with \`import-statement\` (\`content\` = the CSV, \`bankAccountId\`, the PDF's name as \`fileName\`, its \`objectKey\` as \`pdfObjectKey\`, or the email's \`messageId\`). Then stop and ask once with \`${ASK_OWNER_TOOL}\`: its period, opening and closing balance, its first three and last three lines with amounts, and "please compare these with your bank app". Import the others only after the owner says they match. If they do not match, say what is different, fix your reading and delete nothing yourself: ask for the bad import to be removed.
+6. Then the rest, oldest first, one statement at a time. Each result has \`warnings\` when a statement does not join up with its neighbour (its opening is not the previous closing): a missing statement or missing lines. Import what you can and put every gap in one ask.
+7. **Never import a statement that ends on or before the cut-over date** (the import refuses it): the books start after that date and the opening balance already holds everything before it. Do not ask the owner for older statements once the cut-over is posted.
+8. Many statements at once (the cut-over): import them all, then work the reconcile issues oldest first. If opening balances are not posted yet, the cut-over date is the start date printed in the **oldest** statement's "Statement Period" line (that is the previous statement's closing day, so nothing before it is missing) and the amount is that statement's printed "Opening Balance" (Cr is a positive bank balance). Put both in one \`${ASK_OWNER_TOOL}\` and say the difference goes to opening balance equity (a person posts it under Accounting → Books setup → Cut-over, with the trial balance \`1000,Bank,<opening balance>,\` and "Post the difference to opening balance equity" ticked).
+9. Mark the issue done. Closing "Read N PDF bank statements" checks that every file has a statement imported from it.
+`;
+
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: SKILL_KEY,
     displayName: "Bookkeeping",
     slug: SKILL_SLUG,
-    description: "PiB's monthly bookkeeping cycle: import bank statements, match and reconcile, prepare the VAT201, run the month-end close. A person approves anything that posts or locks.",
+    description: "PiB's monthly bookkeeping cycle: import bank statements, match and reconcile, prepare the VAT201, run the month-end close. A person approves anything that posts or locks, after the Reviewer's pass.",
+    files: [{ path: "references/pdf-statements.md", content: PDF_REFERENCE }],
     markdown: withFrontmatter(
       {
         name: SKILL_SLUG,

@@ -4,7 +4,7 @@
  * each other inside the worker.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { companyRoles, createWorkIssue, formatMoneyMinor, presignUrl, readConfig, reopenApprovalForPerson, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, formatMoneyMinor, presignUrl, readConfig, reopenApprovalForPerson, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { parseVatCategory, parseYearEndMonth, type VatCategory } from "../domain/periods.js";
 import { AccountingError } from "../domain/util.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -69,6 +69,8 @@ export interface Settings {
   yearEndMonth: number;
   currency: string;
   agentsMayAcceptCategorisation: boolean;
+  /** The Reviewer checks manual journals, reconciliations and the VAT201 before a person approves them (when the company has a usable Reviewer). */
+  reviewLedger: boolean;
   raw: Record<string, unknown>;
 }
 
@@ -93,6 +95,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     yearEndMonth: parseYearEndMonth(raw.financialYearEndMonth ?? 2),
     currency: BOOK_CURRENCY,
     agentsMayAcceptCategorisation: raw.agentsMayAcceptCategorisation === true,
+    reviewLedger: raw.reviewLedger !== false,
     raw,
   };
 }
@@ -178,16 +181,6 @@ export const LOCAL_BOARD_USER_ID = "local-board";
 
 export function assignableUser(userId: string | null | undefined): string | null {
   return userId && userId !== LOCAL_BOARD_USER_ID ? userId : null;
-}
-
-/**
- * Who approves a manual journal, a reconciliation or a VAT201: always a
- * person. The company owner (Cockpit roles), else the person who asked.
- */
-export async function approverFor(ctx: PluginContext, companyId: string, actor: Actor): Promise<string | null> {
-  const owner = assignableUser((await companyRoles(ctx, companyId))?.ownerUserId);
-  if (owner) return owner;
-  return actor.kind === "user" ? assignableUser(actor.userId) : null;
 }
 
 type IssueInput = Parameters<typeof createWorkIssue>[1];

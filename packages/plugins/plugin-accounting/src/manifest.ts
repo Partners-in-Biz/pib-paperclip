@@ -1,5 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
+import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE, SKILL_SYNC_JOB } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { ACCOUNTING_TOOLS } from "./tools.js";
@@ -28,6 +28,12 @@ const instanceConfigSchema: JsonSchema = {
       description: "Let the Bookkeeper accept bank suggestions and categorise lines itself (an invoice or bill match only when it is exact). Off: it proposes, and a person accepts every line.",
       default: false,
     },
+    reviewLedger: {
+      type: "boolean",
+      title: "Reviewer checks ledger approvals first",
+      description: "On: a manual journal, bank reconciliation or VAT201 goes to the Reviewer before the owner, who sees the Reviewer's pass and approves last (needs a Reviewer in Setup → Team and 'Review work before a person approves' on). Off: they go straight to the owner.",
+      default: true,
+    },
     jev: jevConfigSchema() as unknown as JsonSchema,
     r2: {
       type: "object",
@@ -48,7 +54,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.8",
+  version: "0.4.0",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",
@@ -103,6 +109,7 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Stores the day's reference rates to ZAR from frankfurter.app.",
       schedule: "30 16 * * *",
     },
+    { ...SKILL_SYNC_JOB },
   ],
   skills: SKILLS,
   ui: {

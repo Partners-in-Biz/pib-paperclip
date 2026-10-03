@@ -1848,3 +1848,138 @@ export async function getMark(db: Db, companyId: string, mark: string): Promise<
 export async function clearMark(db: Db, companyId: string, mark: string): Promise<void> {
   await db.execute(`DELETE FROM ${N}.job_marks WHERE company_id = $1 AND mark = $2`, [companyId, mark]);
 }
+
+// ---------------------------------------------------------------------------
+// The Reviewer's pass on a ledger approval (journal draft, reconciliation, VAT201)
+// ---------------------------------------------------------------------------
+
+export type ReviewKind = "draft" | "reconciliation" | "vat";
+export type ReviewState = "not_required" | "pending" | "passed" | "changes_needed" | "waived";
+
+export interface ReviewRow {
+  companyId: string;
+  kind: ReviewKind;
+  subjectId: string;
+  issueId: string | null;
+  state: ReviewState;
+  preparedBy: Record<string, unknown> | null;
+  reviewer: Record<string, unknown> | null;
+  findings: string | null;
+  requestedAt: string | null;
+  reviewedAt: string | null;
+  waivedBy: string | null;
+}
+
+function mapReview(r: Record<string, unknown>): ReviewRow {
+  return {
+    companyId: String(r.company_id),
+    kind: String(r.kind) as ReviewKind,
+    subjectId: String(r.subject_id),
+    issueId: str(r.issue_id),
+    state: String(r.state) as ReviewState,
+    preparedBy: (r.prepared_by ?? null) as Record<string, unknown> | null,
+    reviewer: (r.reviewer ?? null) as Record<string, unknown> | null,
+    findings: str(r.findings),
+    requestedAt: iso(r.requested_at),
+    reviewedAt: iso(r.reviewed_at),
+    waivedBy: str(r.waived_by),
+  };
+}
+
+const REVIEW_COLUMNS = "company_id, kind, subject_id, issue_id, state, prepared_by, reviewer, findings, requested_at, reviewed_at, waived_by";
+
+/** A new approval request starts a fresh review (an earlier pass or send-back for the same subject is replaced). */
+export async function startReview(db: Db, row: { companyId: string; kind: ReviewKind; subjectId: string; issueId: string | null; state: ReviewState; preparedBy: Record<string, unknown> | null }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${N}.approval_reviews (company_id, kind, subject_id, issue_id, state, prepared_by)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     ON CONFLICT (company_id, kind, subject_id)
+     DO UPDATE SET issue_id = EXCLUDED.issue_id, state = EXCLUDED.state, prepared_by = EXCLUDED.prepared_by, reviewer = NULL, findings = NULL,
+                   requested_at = now(), reviewed_at = NULL, waived_by = NULL`,
+    [row.companyId, row.kind, row.subjectId, row.issueId, row.state, json(row.preparedBy)],
+  );
+}
+
+export async function getReview(db: Db, companyId: string, kind: ReviewKind, subjectId: string): Promise<ReviewRow | null> {
+  const rows = await db.query<Record<string, unknown>>(`SELECT ${REVIEW_COLUMNS} FROM ${N}.approval_reviews WHERE company_id = $1 AND kind = $2 AND subject_id = $3`, [companyId, kind, subjectId]);
+  return rows[0] ? mapReview(rows[0]) : null;
+}
+
+export async function reviewsFor(db: Db, companyId: string, kind: ReviewKind, subjectIds: string[]): Promise<Map<string, ReviewRow>> {
+  if (subjectIds.length === 0) return new Map();
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT ${REVIEW_COLUMNS} FROM ${N}.approval_reviews WHERE company_id = $1 AND kind = $2 AND subject_id IN (SELECT jsonb_array_elements_text($3::jsonb))`,
+    [companyId, kind, json(subjectIds)],
+  );
+  return new Map(rows.map((r) => [String(r.subject_id), mapReview(r)]));
+}
+
+/** Review rows still waiting on the Reviewer (pending or sent back), oldest first. */
+export async function openReviews(db: Db, companyId: string): Promise<ReviewRow[]> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT ${REVIEW_COLUMNS} FROM ${N}.approval_reviews WHERE company_id = $1 AND state IN ('pending', 'changes_needed') ORDER BY requested_at LIMIT 200`,
+    [companyId],
+  );
+  return rows.map(mapReview);
+}
+
+/** Move a review from one of the states in `from` to another. Returns false when it was not in one of them. */
+export async function setReview(
+  db: Db,
+  companyId: string,
+  kind: ReviewKind,
+  subjectId: string,
+  from: ReviewState[],
+  patch: { state: ReviewState; reviewer?: Record<string, unknown> | null; findings?: string | null; waivedBy?: string | null },
+): Promise<boolean> {
+  const res = await db.execute(
+    `UPDATE ${N}.approval_reviews
+        SET state = $4, reviewer = COALESCE($5::jsonb, reviewer), findings = COALESCE($6, findings), waived_by = COALESCE($7, waived_by), reviewed_at = now()
+      WHERE company_id = $1 AND kind = $2 AND subject_id = $3 AND state IN (SELECT jsonb_array_elements_text($8::jsonb))`,
+    [companyId, kind, subjectId, patch.state, patch.reviewer ? json(patch.reviewer) : null, patch.findings ?? null, patch.waivedBy ?? null, json(from)],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Erasure of one person (POPIA): what the books may drop, and what they must keep
+// ---------------------------------------------------------------------------
+
+/** Closed receivables and payables of one client lose the name and the payer references they carry. Open ones (money still owed) stay. */
+export async function anonymiseClosedOpenItems(db: Db, companyId: string, clientKind: string, clientRef: string): Promise<number> {
+  const res = await db.execute(
+    `UPDATE ${N}.open_items SET counterparty_name = '[erased]', refs = '[]'::jsonb
+      WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND outstanding_minor = 0 AND counterparty_name <> '[erased]'`,
+    [companyId, clientKind, clientRef],
+  );
+  return res.rowCount ?? 0;
+}
+
+export async function countOpenItemsStillOwed(db: Db, companyId: string, clientKind: string, clientRef: string): Promise<number> {
+  const rows = await db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM ${N}.open_items WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND outstanding_minor > 0`,
+    [companyId, clientKind, clientRef],
+  );
+  return num(rows[0]?.n);
+}
+
+/** Posted journals that name the client on a line (kept: accounting records, and the audit hash chain forbids editing them). */
+export async function countJournalsForClient(db: Db, companyId: string, clientKind: string, clientRef: string): Promise<number> {
+  const rows = await db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM ${N}.journals WHERE company_id = $1 AND lines @> $2::jsonb`,
+    [companyId, json([{ clientKind, clientRef }])],
+  );
+  return num(rows[0]?.n);
+}
+
+/** Bank lines whose text carries one of these (an email or a phone number). Never edited here: they are statement records. */
+export async function countBankLinesMentioning(db: Db, companyId: string, needles: string[]): Promise<number> {
+  const list = needles.filter((x) => x.length >= 5);
+  if (list.length === 0) return 0;
+  const rows = await db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM ${N}.bank_lines
+      WHERE company_id = $1 AND EXISTS (SELECT 1 FROM jsonb_array_elements_text($2::jsonb) AS needle WHERE lower(description || ' ' || COALESCE(counterparty, '') || ' ' || COALESCE(reference, '')) LIKE '%' || lower(needle) || '%')`,
+    [companyId, json(list)],
+  );
+  return num(rows[0]?.n);
+}

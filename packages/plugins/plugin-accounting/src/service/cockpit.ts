@@ -21,6 +21,7 @@ import {
   jobHealth,
   outboxHealth,
   publishCockpitSnapshot,
+  rolesCopyHealth,
   type CockpitSnapshot,
   type FlowStageReport,
   type Tone,
@@ -36,6 +37,7 @@ import { bookkeeper } from "./agent.js";
 import { loadChart } from "./books.js";
 import { BOOK_CURRENCY, errorMessage, readSettings } from "./common.js";
 import { verifyJournalChain } from "./journals.js";
+import { REVIEW_KINDS, stalledReviews } from "./review.js";
 import { computeForPeriod } from "./vat.js";
 
 const N = NAMESPACE;
@@ -299,6 +301,15 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
         : { key: "hash_chain", title: "Journal audit chain", status: "bad", detail: chain.problem ?? `The chain breaks at journal ${chain.firstBadSeq ?? "?"}.`, since: chain.at, href: `${PAGE}?tab=journals`, fix: "Someone changed a posted journal outside the plugin. Stop posting and ask the accountant to compare against the last accountant pack." });
   });
 
+  await part("approval routing", async () => {
+    const copy = await rolesCopyHealth(ctx, companyId);
+    if (copy) snap.health.push(copy);
+    const stalled = await stalledReviews(ctx, companyId);
+    snap.health.push(stalled.length > 0
+      ? { key: "review_stalled", title: "Ledger approvals waiting on the Reviewer", status: "warn", detail: `${plural(stalled.length, "ledger approval")} (${stalled.slice(0, 3).map((r) => REVIEW_KINDS[r.kind].label).join(", ")}) has been with the Reviewer for over a day, so the owner is not asked yet.`, href: stalled[0]?.issueId ? issueHref(stalled[0].issueId) : PAGE, fix: "Open the issue: the Reviewer should record its verdict (record-review). If the Reviewer is paused, approve it yourself on the Accounting page (tick Approve without the Reviewer), or fix the Reviewer in Setup → Team.", since: stalled[0]?.requestedAt ?? null }
+      : { key: "review_stalled", title: "Ledger approvals waiting on the Reviewer", status: "ok" });
+  });
+
   if (book) {
     snap.health.push(book.openingJournalId || book.cutoverDate
       ? { key: "opening_balances", title: "Opening balances", status: "ok" }
@@ -310,24 +321,30 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   // ── Waiting on a person ─────────────────────────────────────────────────
   await part("approvals", async () => {
     const drafts = await ctx.db.query<{ id: string; memo: string; approval_issue_id: string; updated_at: unknown }>(
-      `SELECT id, memo, approval_issue_id, updated_at FROM ${N}.journal_drafts
-        WHERE company_id = $1 AND status = 'pending_approval' AND approval_issue_id IS NOT NULL ORDER BY updated_at LIMIT 25`,
+      `SELECT id, memo, approval_issue_id, updated_at FROM ${N}.journal_drafts d
+        WHERE d.company_id = $1 AND d.status = 'pending_approval' AND d.approval_issue_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${N}.approval_reviews w WHERE w.company_id = d.company_id AND w.kind = 'draft' AND w.subject_id = d.id AND w.state IN ('pending', 'changes_needed'))
+        ORDER BY updated_at LIMIT 25`,
       [companyId],
     );
     for (const d of drafts) {
       snap.waiting.push({ key: `approval:${d.approval_issue_id}`, title: `Approve manual journal${d.memo ? `: ${d.memo.slice(0, 60)}` : ""}`, why: "A manual journal changes the books; a board user approves it.", href: issueHref(d.approval_issue_id), issueId: d.approval_issue_id, kind: "money", since: iso(d.updated_at) });
     }
     const recs = await ctx.db.query<{ approval_issue_id: string; period_start: unknown; period_end: unknown; updated_at: unknown }>(
-      `SELECT approval_issue_id, period_start::text AS period_start, period_end::text AS period_end, updated_at FROM ${N}.reconciliations
-        WHERE company_id = $1 AND status = 'pending_approval' AND approval_issue_id IS NOT NULL ORDER BY updated_at LIMIT 25`,
+      `SELECT approval_issue_id, period_start::text AS period_start, period_end::text AS period_end, updated_at FROM ${N}.reconciliations r
+        WHERE r.company_id = $1 AND r.status = 'pending_approval' AND r.approval_issue_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${N}.approval_reviews w WHERE w.company_id = r.company_id AND w.kind = 'reconciliation' AND w.subject_id = r.id AND w.state IN ('pending', 'changes_needed'))
+        ORDER BY updated_at LIMIT 25`,
       [companyId],
     );
     for (const r of recs) {
       snap.waiting.push({ key: `approval:${r.approval_issue_id}`, title: `Approve bank reconciliation ${dayText(String(r.period_start))} to ${dayText(String(r.period_end))}`, why: "Approving locks the bank lines for the period; a board user signs it off.", href: issueHref(r.approval_issue_id), issueId: r.approval_issue_id, kind: "money", since: iso(r.updated_at) });
     }
     const vats = await ctx.db.query<{ approval_issue_id: string; period_start: unknown; period_end: unknown; updated_at: unknown }>(
-      `SELECT approval_issue_id, period_start::text AS period_start, period_end::text AS period_end, updated_at FROM ${N}.vat_returns
-        WHERE company_id = $1 AND status = 'pending_approval' AND approval_issue_id IS NOT NULL ORDER BY updated_at LIMIT 25`,
+      `SELECT approval_issue_id, period_start::text AS period_start, period_end::text AS period_end, updated_at FROM ${N}.vat_returns v
+        WHERE v.company_id = $1 AND v.status = 'pending_approval' AND v.approval_issue_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${N}.approval_reviews w WHERE w.company_id = v.company_id AND w.kind = 'vat' AND w.subject_id = v.id AND w.state IN ('pending', 'changes_needed'))
+        ORDER BY updated_at LIMIT 25`,
       [companyId],
     );
     for (const v of vats) {

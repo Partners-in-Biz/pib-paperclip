@@ -17,7 +17,8 @@ import { vatDueDate } from "../domain/trends.js";
 import { AccountingError, addDays, addMonths, decimal, firstDayOfMonth, monthOf, requireDate, todayIso } from "../domain/util.js";
 import { computeVatReturn, MANUAL_VAT_FIELDS, VAT_FIELD_LABELS, VAT_FIELDS, type ManualVatField, type VatSourceLine } from "../domain/vat.js";
 import { booksStartFor, loadChart, roleAccount } from "./books.js";
-import { actorRecord, approverFor, closeIssue, commentOn, money, newId, openIssue, ORIGIN, readSettings, reopenForPerson, requireUser, type Actor } from "./common.js";
+import { actorRecord, closeIssue, commentOn, money, newId, readSettings, reopenForPerson, requireUser, type Actor } from "./common.js";
+import { openLedgerApproval, retireOldApprovalIssue, reviewGate } from "./review.js";
 
 export interface VatPeriodRow {
   start: string;
@@ -127,9 +128,11 @@ export async function requestVatApproval(ctx: PluginContext, companyId: string, 
   const { vatReturn, warnings } = await prepareVatReturn(ctx, companyId, actor, { periodStart: ret.periodStart, periodEnd: ret.periodEnd, adjustments: ret.adjustments });
   const b = vatReturn.boxes;
   const settings = await readSettings(ctx, companyId);
-  const approver = await approverFor(ctx, companyId, actor);
-  const issue = await openIssue(ctx, {
+  const issue = await openLedgerApproval(ctx, {
     companyId,
+    kind: "vat",
+    subjectId: ret.id,
+    actor,
     title: `Approve VAT201 for ${periodLabel(ret.periodStart, ret.periodEnd)} (${Number(b.f20) >= 0 ? "pay" : "refund"} ${money(Math.abs(Number(b.f20 ?? 0)))})`,
     description: [
       `VAT return (VAT201) for ${settings.legalName || "the company"}${settings.vatNumber ? ` (VAT ${settings.vatNumber})` : ""}, ${periodLabel(ret.periodStart, ret.periodEnd)}. Prepared by ${actor.kind === "agent" ? "the Bookkeeper" : "a board user"}.`,
@@ -139,22 +142,24 @@ export async function requestVatApproval(ctx: PluginContext, companyId: string, 
       ...["f1", "f1A", "f2", "f2A", "f3", "f4", "f4A", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20"].map((f) => `| ${VAT_FIELD_LABELS[f as keyof typeof VAT_FIELD_LABELS]} | ${money(Number(b[f] ?? 0))} |`),
       "",
       warnings.length ? `Check first:\n${warnings.map((w) => `- ${w}`).join("\n")}\n` : "",
-      "Approving locks the period: nothing dated inside it can post afterwards. To approve, mark this issue done yourself, or approve it under **Accounting → Reports & VAT → VAT**. Only a person can approve: if an agent closes it, it opens again for you. Filing on SARS eFiling and paying stay with you.",
+      "Approving locks the period: nothing dated inside it can post afterwards. To approve, mark this issue done yourself, or approve it under **Accounting → Reports & VAT → VAT**. Only a person can approve: if an agent closes it, it opens again for you. Filing on SARS eFiling and paying stay with you. The Reviewer checks it first when there is one.",
     ].join("\n"),
     priority: "high",
-    originKind: ORIGIN,
     originId: `vat:${ret.id}`,
-  }, { assigneeUserId: approver });
+  });
   await db.setVatStatus(ctx.db, companyId, ret.id, "draft", { status: "pending_approval", approvalIssueId: issue.id });
+  // After a Reviewer send-back the old approval issue is retired, once the row points at the new one (see requestReconciliationApproval).
+  await retireOldApprovalIssue(ctx, companyId, ret.approvalIssueId, issue.id);
   return (await db.getVatReturn(ctx.db, companyId, ret.id))!;
 }
 
-export async function approveVatReturn(ctx: PluginContext, companyId: string, actor: Actor, id: string, via: "page" | "issue" = "page") {
+export async function approveVatReturn(ctx: PluginContext, companyId: string, actor: Actor, id: string, via: "page" | "issue" = "page", options: { overrideReview?: boolean } = {}) {
   const userId = requireUser(actor, "approve a VAT return");
   const ret = await db.getVatReturn(ctx.db, companyId, id);
   if (!ret) throw new AccountingError("VAT return not found", "not_found");
   if (ret.status === "locked") return ret;
   if (ret.status !== "pending_approval") throw new AccountingError("Request approval first", "conflict");
+  const gate = await reviewGate(ctx, companyId, "vat", ret.id, { via, userId, override: options.overrideReview });
   // The numbers must not have moved since approval was requested.
   const current = await computeForPeriod(ctx, companyId, ret.periodStart, ret.periodEnd, readAdjustments(ret.adjustments));
   const changed = VAT_FIELDS.filter((f) => Number(ret.boxes[f] ?? 0) !== current.boxes[f]);
@@ -164,6 +169,7 @@ export async function approveVatReturn(ctx: PluginContext, companyId: string, ac
     throw new AccountingError(`Postings changed the return since approval was requested (fields ${changed.map((f) => f.slice(1)).join(", ")}). Prepare it again.`, "conflict");
   }
   await db.setVatStatus(ctx.db, companyId, ret.id, "pending_approval", { status: "locked", approvedBy: userId, lock: true });
+  await gate.confirm();
   if (via === "page") await closeIssue(ctx, companyId, ret.approvalIssueId, "done", "Approved and locked.");
   else if (ret.approvalIssueId) await commentOn(ctx, companyId, ret.approvalIssueId, "Approved and locked.");
   return (await db.getVatReturn(ctx.db, companyId, ret.id))!;

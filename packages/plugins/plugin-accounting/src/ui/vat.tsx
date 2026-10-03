@@ -4,7 +4,7 @@ import { Button, CompactRows, Field, Input, Pill, SectionCard, Stamp, formatDate
 import { periodLabel, readableDates } from "../domain/dates.js";
 import type { LoadResult } from "./overview.js";
 import { vatCategoryText, vatPeriodState } from "./series.js";
-import { Banner, centsToInput, Details, download, IssueLink, Muted, Row, small, statusTone, Table, taxLabel, Td, toCents, today, useRunner } from "./shared.js";
+import { approveBlocked, Banner, centsToInput, Details, download, IssueLink, Muted, ReviewBadge, ReviewOverride, Row, small, statusTone, Table, taxLabel, Td, toCents, today, useRunner, type ReviewInfo } from "./shared.js";
 
 interface VatReturn {
   id: string;
@@ -35,6 +35,7 @@ interface VatData {
   hidden?: number;
   periods: VatPeriod[];
   returns: VatReturn[];
+  reviews?: Record<string, ReviewInfo>;
   labels: Record<string, string>;
   fields: string[];
   manualFields: string[];
@@ -58,6 +59,7 @@ export function VatTab({ data, onMessage }: { data: LoadResult; onMessage: (m: s
   const [warnings, setWarnings] = useState<string[]>([]);
   const [adj, setAdj] = useState<Record<string, string>>({});
   const [allFields, setAllFields] = useState(false);
+  const [override, setOverride] = useState(false);
   const detailRef = useRef<HTMLDivElement>(null);
 
   async function refresh() {
@@ -181,7 +183,9 @@ export function VatTab({ data, onMessage }: { data: LoadResult; onMessage: (m: s
             ) : null}
             {ret?.status === "pending_approval" ? (
               <Row>
-                <Button type="button" disabled={busy !== ""} onClick={() => void run("approve", async () => { setRet((await approve({ returnId: ret.id })) as VatReturn); await refresh(); }, "Approved and locked.")}>Approve and lock</Button>
+                <Button type="button" disabled={busy !== "" || approveBlocked(vat.reviews?.[ret.id], override)} onClick={() => void run("approve", async () => { setRet((await approve({ returnId: ret.id, overrideReview: override })) as VatReturn); setOverride(false); await refresh(); }, "Approved and locked.")}>Approve and lock</Button>
+                <ReviewBadge review={vat.reviews?.[ret.id]} />
+                <ReviewOverride review={vat.reviews?.[ret.id]} checked={override} onChange={setOverride} />
                 {ret.approvalIssueId ? <span style={{ fontSize: 12.5 }}><IssueLink id={ret.approvalIssueId} label="Open the approval issue" /></span> : null}
               </Row>
             ) : null}

@@ -74,13 +74,20 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
     name: "list-bank-lines",
     displayName: "List bank lines",
     description:
-      "Bank statement lines with their suggestions (best first): journal (a payment already in the books), open_item (an invoice or bill; basis exact, amount or reference) or category (from a bank rule or Jev). A note says why a line is waiting, e.g. Billing refused a match.",
+      "Bank statement lines, small by default: each line is its id, date, amount, a short description, status and the best suggestion in words (top), plus how many more there are. Suggestions come from a payment already in the books, an invoice or bill (basis exact, amount or reference) or a category (bank rule or Jev). A note says why a line is waiting, e.g. Billing refused a match. For the full line with every suggestion pass ids and compact false; for chosen columns pass fields.",
     parametersSchema: schema([], {
       status: { type: "string", enum: ["unreconciled", "matching", "reconciled", "excluded"], description: "Only lines in this state. unreconciled = still to match or categorise; matching = sent to Billing, waiting for its payment journal." },
       bankAccountId: { type: "string", description: "Only this bank account (id from list-bank-accounts)." },
       from: date("First statement date to include"),
       to: date("Last statement date to include"),
-      limit: { type: "integer", minimum: 1, maximum: 500, description: "At most this many lines (default 100).", default: 100 },
+      limit: { type: "integer", minimum: 1, maximum: 200, description: "At most this many lines (default 50; at most 50 when compact is false). Says more: true when there are others.", default: 50 },
+      ids: { type: "array", items: { type: "string" }, maxItems: 50, description: "Only these bank line ids (from an earlier list), e.g. to read their full detail with compact false." },
+      compact: { type: "boolean", description: "true (default): the small line described above. false: the full line with every suggestion (index, kind, basis, account, confidence), at most 50 lines.", default: true },
+      fields: {
+        type: "array",
+        items: { type: "string", enum: ["id", "bankAccountId", "date", "amountMinor", "description", "reference", "counterparty", "balanceMinor", "status", "note", "suggestions", "match"] },
+        description: "Return exactly these fields for each line instead of the compact line (suggestions gives all of them, with index).",
+      },
     }),
   },
   {
@@ -96,13 +103,52 @@ export const ACCOUNTING_TOOLS: PluginToolDeclaration[] = [
     name: "accept-categorisation",
     displayName: "Accept categorisation",
     description:
-      "Accept one of a bank line's suggestions (by index, default 0), or categorise the line to accountCode (+ taxCode). A category or journal match reconciles the line; an invoice or bill match goes to Billing, which settles it and posts the payment. Agents may do this only when the Accounting setting allows it, and may accept an invoice or bill match only when it is exact (same amount and the number in the bank line).",
+      "Accept one of a bank line's suggestions (by index, default 0), or categorise the line to accountCode (+ taxCode). A category or journal match reconciles the line; an invoice or bill match goes to Billing, which settles it and posts the payment. Returns a short result (status, what it was matched to, the journal number). Agents may do this only when the Accounting setting allows it, and may accept an invoice or bill match only when it is exact (same amount and the number in the bank line). For many lines use accept-categorisations.",
     parametersSchema: schema(["lineId"], {
       lineId: { type: "string", description: "Bank line id from list-bank-lines." },
       index: { type: "integer", minimum: 0, description: "Which suggestion to accept (0 = the first, best one). Ignored when accountCode is given.", default: 0 },
       accountCode: { type: "string", description: "Categorise to this account code (from list-accounts) instead of accepting a suggestion." },
       taxCode: taxCode("VAT code with accountCode. Leave out for no VAT (bank charges, interest, salaries, insurance, transfers)."),
       memo: { type: "string", maxLength: 200, description: "Journal memo with accountCode (default: the bank line's description)." },
+      full: { type: "boolean", description: "true returns the whole bank line as it is now (large). Default false: the short result.", default: false },
+    }),
+  },
+  {
+    name: "accept-categorisations",
+    displayName: "Accept many categorisations",
+    description:
+      "Accept up to 50 bank lines in one call, each with its own choice: a suggestion by index (default 0) or an accountCode (+ taxCode). The lines are handled one after the other and a line that fails (not allowed, already reconciled, unknown account) does not stop the rest. Returns accepted, failed and one result per line (ok, status, what it was matched to, or the error). The same rules as accept-categorisation apply to every line.",
+    parametersSchema: schema(["lines"], {
+      lines: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        description: "The lines to accept, at most 50.",
+        items: {
+          type: "object",
+          required: ["lineId"],
+          properties: {
+            lineId: { type: "string", description: "Bank line id from list-bank-lines." },
+            index: { type: "integer", minimum: 0, description: "Which suggestion to accept (default 0, the best one). Ignored when accountCode is given." },
+            accountCode: { type: "string", description: "Categorise this line to this account code (from list-accounts) instead of accepting a suggestion." },
+            taxCode: taxCode("VAT code with accountCode. Leave out for no VAT."),
+            memo: { type: "string", maxLength: 200, description: "Journal memo with accountCode (default: the bank line's description)." },
+          },
+          additionalProperties: false,
+        },
+      },
+    }),
+  },
+  {
+    name: "record-review",
+    displayName: "Record Reviewer verdict",
+    description:
+      "Reviewer only. Record your verdict on a manual journal, bank reconciliation or VAT201 approval you were asked to check (the issue names the kind and id). pass hands the issue to the approver and shows the pass to them; changes_needed withdraws the request and sends it back to the Bookkeeper with your findings. You cannot review what you prepared, and you never approve, post or lock anything yourself.",
+    parametersSchema: schema(["kind", "id", "verdict"], {
+      kind: { type: "string", enum: ["journal", "reconciliation", "vat201"], description: "What you reviewed: journal (a manual journal draft), reconciliation or vat201." },
+      id: { type: "string", description: "The draft, reconciliation or VAT return id written in the approval issue." },
+      verdict: { type: "string", enum: ["pass", "changes_needed"], description: "pass: nothing wrong. changes_needed: something must be fixed first (say what in findings)." },
+      findings: { type: "string", maxLength: 1500, description: "What you checked and found, one line per problem. Required for changes_needed." },
     }),
   },
   {

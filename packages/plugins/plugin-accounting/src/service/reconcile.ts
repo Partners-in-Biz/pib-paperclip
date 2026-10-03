@@ -11,7 +11,8 @@ import { reconciliationSummary, type ReconciliationSummary } from "../domain/rec
 import { AccountingError, addDays, addMonths, lastDayOfMonth, monthOf, requireDate, requireMonth, todayIso } from "../domain/util.js";
 import { resolveBankAccount } from "./bank.js";
 import { loadChart } from "./books.js";
-import { actorRecord, approverFor, closeIssue, commentOn, money, newId, openIssue, ORIGIN, reopenForPerson, requireUser, type Actor } from "./common.js";
+import { actorRecord, closeIssue, commentOn, money, newId, reopenForPerson, requireUser, type Actor } from "./common.js";
+import { openLedgerApproval, retireOldApprovalIssue, reviewGate } from "./review.js";
 
 export interface PreparedReconciliation {
   reconciliation: db.ReconciliationRow;
@@ -128,9 +129,11 @@ export async function requestReconciliationApproval(ctx: PluginContext, companyI
     closingMinor: rec.closingMinor,
   });
   if (!summary.ready) throw new AccountingError(summary.blockers.join(" "), "conflict");
-  const approver = await approverFor(ctx, companyId, actor);
-  const issue = await openIssue(ctx, {
+  const issue = await openLedgerApproval(ctx, {
     companyId,
+    kind: "reconciliation",
+    subjectId: rec.id,
+    actor,
     title: `Approve bank reconciliation: ${bank.name} ${rec.periodStart} to ${rec.periodEnd}`,
     description: [
       `| | |`,
@@ -142,22 +145,25 @@ export async function requestReconciliationApproval(ctx: PluginContext, companyI
       `| Ledger balance of ${bank.accountCode} | ${money(summary.glBalanceMinor)} |`,
       "",
       `Prepared by ${actor.kind === "agent" ? "the Bookkeeper" : "a board user"}. Every line is reconciled or excluded, and the statement difference is zero. Approving locks these lines.`,
-      "To approve, mark this issue done yourself, or approve it under **Accounting → Bank → Reconcile**. Only a person can approve: if an agent closes it, it opens again for you. To refuse, cancel this issue; the reconciliation goes back to draft.",
+      "To approve, mark this issue done yourself, or approve it under **Accounting → Bank → Reconcile**. Only a person can approve: if an agent closes it, it opens again for you. The Reviewer checks it first when there is one. To refuse, cancel this issue; the reconciliation goes back to draft.",
     ].join("\n"),
     priority: "high",
-    originKind: ORIGIN,
     originId: `reconciliation:${rec.id}`,
-  }, { assigneeUserId: approver });
+  });
   await db.setReconciliationStatus(ctx.db, companyId, rec.id, "draft", { status: "pending_approval", approvalIssueId: issue.id });
+  // After a Reviewer send-back this is a fresh request: the old approval issue is retired. Only now that the row points at
+  // the new issue: the cancel is announced as an event, and one that finds the row still on the old issue would undo this request.
+  await retireOldApprovalIssue(ctx, companyId, rec.approvalIssueId, issue.id);
   return (await db.getReconciliation(ctx.db, companyId, rec.id))!;
 }
 
-export async function approveReconciliation(ctx: PluginContext, companyId: string, actor: Actor, id: string, via: "page" | "issue" = "page"): Promise<db.ReconciliationRow> {
+export async function approveReconciliation(ctx: PluginContext, companyId: string, actor: Actor, id: string, via: "page" | "issue" = "page", options: { overrideReview?: boolean } = {}): Promise<db.ReconciliationRow> {
   const userId = requireUser(actor, "approve a reconciliation");
   const rec = await db.getReconciliation(ctx.db, companyId, id);
   if (!rec) throw new AccountingError("Reconciliation not found", "not_found");
   if (rec.status === "locked") return rec;
   if (rec.status !== "pending_approval") throw new AccountingError("Request approval first", "conflict");
+  const gate = await reviewGate(ctx, companyId, "reconciliation", rec.id, { via, userId, override: options.overrideReview });
   const lines = await db.listBankLines(ctx.db, companyId, { bankAccountId: rec.bankAccountId, from: rec.periodStart, to: rec.periodEnd, limit: 5000 });
   const summary = reconciliationSummary({ openingMinor: rec.openingMinor, closingMinor: rec.closingMinor, lines, glBalanceMinor: rec.glBalanceMinor });
   if (!summary.ready) {
@@ -167,6 +173,7 @@ export async function approveReconciliation(ctx: PluginContext, companyId: strin
   }
   await db.lockLinesToReconciliation(ctx.db, companyId, rec.bankAccountId, rec.periodStart, rec.periodEnd, rec.id);
   await db.setReconciliationStatus(ctx.db, companyId, rec.id, "pending_approval", { status: "locked", approvedBy: userId, lock: true });
+  await gate.confirm();
   if (via === "page") await closeIssue(ctx, companyId, rec.approvalIssueId, "done", "Approved and locked.");
   else if (rec.approvalIssueId) await commentOn(ctx, companyId, rec.approvalIssueId, "Approved and locked.");
   return (await db.getReconciliation(ctx.db, companyId, rec.id))!;

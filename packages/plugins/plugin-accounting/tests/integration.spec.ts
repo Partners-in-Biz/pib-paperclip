@@ -701,6 +701,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
     const run = { companyId: W, agentId: "a-1", runId: "r-1", projectId: "p-1" };
     const toolParams: Record<string, unknown> = {
       "accept-categorisation": { lineId: "missing" },
+      "accept-categorisations": { lines: [{ lineId: "missing" }] },
       gl: { accountCode: "1100" },
       "create-manual-journal": { date: "2026-09-21", memo: "Accrual", lines: [{ accountCode: "6100", debitMinor: 1_000_00 }, { accountCode: "2300", creditMinor: 1_000_00 }] },
       "import-statement": { bankAccountId: bank.id, content: fixture("statement.ofx"), fileName: "sep.ofx", messageId: "m-tools" },
@@ -712,6 +713,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
       const result = await harness.executeTool<{ error?: string; data?: unknown }>(tool.name, toolParams[tool.name] ?? {}, run);
       if (tool.name === "accept-categorisation") expect(result.error).toMatch(/not found/);
       else if (tool.name === "pdf-statements") expect(result.error).toMatch(/No PDF batch with that id/);
+      else if (tool.name === "record-review") expect(result.error).toMatch(/kind is journal/);
       else expect(result.error, tool.name).toBeUndefined();
     }
     const tb = await harness.executeTool<{ data: { balanced: boolean } }>("trial-balance", {}, run);
@@ -757,7 +759,7 @@ describe.skipIf(!available)("Accounting on real Postgres", () => {
   it("setup status: nothing configured yet", async () => {
     const S = "co-setup";
     const status = await setupStatus(ctx, S);
-    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.3.8" });
+    expect(status).toMatchObject({ plugin: "partnersinbiz.accounting", module: "accounting", title: "Accounting", version: "0.4.0" });
     expect(Date.parse(status.checkedAt)).not.toBeNaN();
     const items = byKey(status.items);
     expect(status.items[0]!.key).toBe("settings");
