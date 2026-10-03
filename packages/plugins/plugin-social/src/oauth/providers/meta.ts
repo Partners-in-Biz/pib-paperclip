@@ -443,7 +443,7 @@ export const instagramProvider: SocialProvider = {
     return { url: `https://www.instagram.com/oauth/authorize?${qs.toString()}` };
   },
   async exchange(env, params): Promise<ExchangeResult> {
-    const code = requireCode(params, "Instagram");
+    const code = requireCode(params, "Instagram").replace(/#_$/, "");
     const raw = await postForm<{ access_token?: string; user_id?: string | number; data?: Array<{ access_token?: string; user_id?: string | number }> }>(
       "https://api.instagram.com/oauth/access_token",
       { client_id: env.app.clientId, client_secret: env.app.clientSecret ?? "", grant_type: "authorization_code", redirect_uri: env.redirectUri, code },
@@ -456,7 +456,13 @@ export const instagramProvider: SocialProvider = {
       grant_type: "ig_exchange_token",
       client_secret: env.app.clientSecret ?? "",
       access_token: first.access_token,
-    }, "Instagram long-lived token");
+    }, "Instagram long-lived token").catch((error) => {
+      // Meta answers a wrong app secret with "Unsupported request - method type: get".
+      if (error instanceof ProviderHttpError && error.status === 400 && /unsupported request/i.test(error.message)) {
+        throw new Error(`${error.message}. Check the Instagram app secret: it is the one under Instagram > API setup with Instagram login, not the Meta app secret. Or connect this account through Facebook instead.`);
+      }
+      throw error;
+    });
     const accessToken = long.access_token ?? first.access_token;
     const expiresAt = expiresAtFrom(long.expires_in) ?? new Date(Date.now() + 60 * DAY).toISOString();
     const me = await metaGet<{ id?: string; user_id?: string | number; username?: string; name?: string; profile_picture_url?: string }>(
