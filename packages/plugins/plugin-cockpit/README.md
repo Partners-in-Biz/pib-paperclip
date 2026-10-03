@@ -6,7 +6,7 @@ One place to run the company: what waits on you, what the agents did, money, pip
 - Namespace: `plugin_cockpit_b8a99e8b16` (slug `cockpit`)
 - Page: `/<company>/cockpit` (tabs Overview, Flows `?tab=flows`, Profile `?tab=profile` and Memory `?tab=memory`) · sidebar "Cockpit" (order 5, above Setup; its count turns red for money or legal) · dashboard widget "Company today". The team is staffed in **Setup → Team** (`/setup?section=team`); an old `?tab=team` link is sent there.
 - Settings must be saved once per company: the jobs **and** the event handling (answers to questions, onboarding, the CRM client copy) only act for companies with saved Cockpit settings. The exception is `company.created`: the new-company bootstrap works without them.
-- Version 0.5.3 (migrations 001 to 007). 0.5.3: a comment step satisfies an expected POST to the comments endpoint. 0.5.2: the skill-eval grader accepts a plan whose strings contain literal line breaks.
+- Version 0.5.4 (migrations 001 to 007). 0.5.4: the Operator, Reviewer and company-os skills now state the three rules the first live skill evals found missing (plugin bug goes to the owner, review reads the profile first, UI work is photographed before it closes); baselines recorded in evals/results.json. 0.5.3: a comment step satisfies an expected POST to the comments endpoint. 0.5.2: the skill-eval grader accepts a plan whose strings contain literal line breaks.
 
 ## How it works
 

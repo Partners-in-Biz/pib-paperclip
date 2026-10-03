@@ -5,7 +5,7 @@
  * baseline, and the gate the deploy asks ("no skill version ships if a golden
  * scenario regressed"). The grader and the gate rule are tested in eval-model.spec.ts.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { evalMarker, evalPrompt, scenarioHash, skillContentHash, type Scenario } from "../src/eval-model.js";
 import { scenariosFor } from "../src/eval-scenarios.js";
 import { candidateSlugFor, listResults, markBaseline, ownSkills } from "../src/evals.js";
@@ -14,6 +14,12 @@ import { saveTeam } from "../src/roles.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
 import { installedLikeHost, type InstalledCopy } from "./helpers/host-skills.js";
+
+// The committed gate file (evals/results.json) grows with every recorded baseline; these tests describe the harness, so they run against an empty one.
+vi.mock("../src/eval-scenarios.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/eval-scenarios.js")>()),
+  RESULTS_FILE: { version: 1, enforce: false, minPassRate: 0.8, skills: {} },
+}));
 
 const available = await embeddedAvailable();
 const d = available ? describe : describe.skip;
