@@ -81,6 +81,8 @@ function evalExpr(raw: string, params: unknown[], row?: Row): unknown {
   if (/^-?\d+(\.\d+)?$/.test(expr)) return Number(expr);
   if ((m = /^'((?:[^']|'')*)'(?:::\w+)?$/.exec(expr))) return m[1]!.replace(/''/g, "'");
   if (row && (m = /^EXCLUDED\.(\w+)$/i.exec(expr))) return row[m[1]!];
+  // `count = count + 1`: a counter bumped in SQL.
+  if (row && (m = /^(?:\w+\.)?(\w+)\s*\+\s*(\d+)$/.exec(expr)) && m[1]! in row) return Number(row[m[1]!]) + Number(m[2]);
   if (row && (m = /^(?:\w+\.)?(\w+)$/.exec(expr)) && m[1]! in row) return row[m[1]!];
   throw new Error(`fake db: unsupported expression "${expr}"`);
 }

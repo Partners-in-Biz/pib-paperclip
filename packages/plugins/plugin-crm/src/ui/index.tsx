@@ -70,6 +70,12 @@ import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LIFECYCLE_LABEL
 import { AccountManagerBox, type HireView } from "./agent.js";
 import { ProjectsCard, WebsitesCard, type ConnectResult, type ProjectView, type SiteView } from "./sites.js";
 import { ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
+import { LeadFormsCard } from "./leads.js";
+import { ClientCareCard } from "./care.js";
+import { careVisible, type CareView } from "./care-view.js";
+import type { CreatedLeadForm, LeadFormView } from "./leads-view.js";
+import type { ChecklistResult } from "./checklist-view.js";
+import { NewClientCard } from "./new-client.js";
 import { crmTabBadges, dealClientLabel, dealsByStage, displayText, followUpDue, moduleInstalled, parseMoneyInput, toggleOwned, type CrmTab } from "./crm-view.js";
 import { DealSheet, type DealView } from "./deal.js";
 import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts.js";
@@ -1049,10 +1055,13 @@ interface WorkspaceData {
   options?: { companies: Array<{ id: string; name: string }>; contacts: Array<{ id: string; name: string }> };
   profile?: ClientProfileView | null;
   clientLeads?: ClientLeadView[];
+  leadForms?: LeadFormView[];
   sites?: SiteView[];
   projects?: ProjectView[];
   projectOptions?: ProjectView[];
   connectorDownload?: string | null;
+  /** Client care: health, cases, requests, reports, sites, feedback, sensitivity (null when it could not be read). */
+  care?: CareView | null;
 }
 
 /** What `GET /api/plugins/<key>/api/client-summary` returns for one client. */
@@ -1105,6 +1114,22 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   const checkSite = usePluginAction("crm.check-client-site");
   const linkProject = usePluginAction("crm.link-client-project");
   const unlinkProject = usePluginAction("crm.unlink-client-project");
+  const createLeadForm = usePluginAction("crm.create-lead-endpoint");
+  const updateLeadForm = usePluginAction("crm.update-lead-source");
+  const rotateLeadForm = usePluginAction("crm.rotate-lead-key");
+  const makeLeadSecret = usePluginAction("crm.make-lead-secret");
+  const startNewClient = usePluginAction("crm.start-new-client");
+  // Client care: one hook per page action the care card runs (`crm.<tool name>`).
+  const careActions: Record<string, ReturnType<typeof usePluginAction>> = {
+    "open-support-case": usePluginAction("crm.open-support-case"),
+    "update-support-case": usePluginAction("crm.update-support-case"),
+    "create-client-action": usePluginAction("crm.create-client-action"),
+    "update-client-action": usePluginAction("crm.update-client-action"),
+    "build-client-report": usePluginAction("crm.build-client-report"),
+    "send-client-report": usePluginAction("crm.send-client-report"),
+    "set-site-monitoring": usePluginAction("crm.set-site-monitoring"),
+    "set-client-sensitivity": usePluginAction("crm.set-client-sensitivity"),
+  };
   // Only installed modules get a card, like the workspace tabs; nothing shows while that is unknown.
   const contributions = useUiContributions();
   const sources = WORK_SOURCES.filter((source) => moduleInstalled(contributions, source.pluginKey) === true);
@@ -1379,12 +1404,68 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             />
           ) : null}
           {company || companies.length === 0 ? (
+            <LeadFormsCard
+              forms={data.leadForms ?? []}
+              sites={(data.sites ?? []).map((site) => ({ id: site.id, url: site.url, label: site.label }))}
+              onCreate={async (params) => {
+                setMessage("");
+                try {
+                  const result = (await createLeadForm({ client: `${client.kind}:${client.id}`, ...params })) as CreatedLeadForm;
+                  await refresh();
+                  setMessage(result.created ? "Lead form made" : "That form already exists");
+                  return result;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
+              onUpdate={(params, success) => run(() => updateLeadForm(params), success)}
+              onSecret={async (sourceId) => {
+                setMessage("");
+                try {
+                  const result = (await makeLeadSecret({ sourceId })) as { serverSecret?: string; serverSecretNote?: string };
+                  await refresh();
+                  setMessage("Signing secret made. It is shown once: copy it now.");
+                  return result;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
+              onRotate={async (sourceId, serverSecret) => {
+                setMessage("");
+                try {
+                  const result = (await rotateLeadForm({ sourceId, serverSecret })) as { serverSecret?: string; serverSecretNote?: string; oldKeyValidUntil?: string };
+                  await refresh();
+                  setMessage(`New key made. The old one works until ${result.oldKeyValidUntil?.slice(0, 10) ?? "next week"}: put the new snippet on the site before then.`);
+                  return result;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
+            />
+          ) : null}
+          {company || companies.length === 0 ? (
             <ProjectsCard
               projects={data.projects ?? []}
               options={data.projectOptions ?? []}
               projectLinkProps={(path) => navigation.linkProps(path)}
               onLink={(projectId) => run(() => linkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project linked")}
               onUnlink={(projectId) => run(() => unlinkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project unlinked")}
+            />
+          ) : null}
+          {company || companies.length === 0 ? (
+            <NewClientCard
+              onLoad={async () => {
+                setMessage("");
+                try {
+                  return (await startNewClient({ client: `${client.kind}:${client.id}` })) as ChecklistResult;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
             />
           ) : null}
 
@@ -1520,6 +1601,14 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
             </Form>
             <ActivityTimeline items={data.activities ?? []} limit={12} />
           </SectionCard>
+
+          {(company || companies.length === 0) && careVisible(data.care) ? (
+            <ClientCareCard
+              care={data.care!}
+              clientRef={`${client.kind}:${client.id}`}
+              onRun={(action, params, success) => run(() => careActions[action]!(params), success)}
+            />
+          ) : null}
 
           {company || companies.length === 0 ? <ClientLeadsCard leads={data.clientLeads ?? []} /> : null}
 

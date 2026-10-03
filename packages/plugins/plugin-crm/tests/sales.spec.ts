@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkDuplicates, checkPipeline } from "../src/done-checks.js";
-import { openDuplicateCheck, openHygieneReport, openPipelineCheck, openPipelineSummary } from "../src/sales.js";
+import { CARE_EVENT_KIND } from "../src/care-clients.js";
+import { idleDeals, openDuplicateCheck, openHygieneReport, openPipelineCheck, openPipelineSummary } from "../src/sales.js";
 import type { Route, Row, Store } from "./helpers/fake-db.js";
 import { boot, CO, contact, crmIssues, deal, seed } from "./helpers/crm.js";
 
@@ -13,7 +14,8 @@ const IDLE: Route = [/LEFT JOIN LATERAL/, (p, s) => {
   return mine(s.deals, p)
     .filter((d) => (s.pipeline_stages ?? []).find((st) => st.id === d.stage_id)?.kind === "open")
     .map((d) => {
-      const acts = (s.activities ?? []).filter((a) => [d.id, d.contact_id, d.account_id].includes(a.record_id)).map((a) => Date.parse(String(a.created_at)));
+      // `$4` is the kind the care features log their own bookkeeping as: it is not contact with the client.
+      const acts = (s.activities ?? []).filter((a) => [d.id, d.contact_id, d.account_id].includes(a.record_id) && a.kind !== p[3]).map((a) => Date.parse(String(a.created_at)));
       const last = Math.max(Date.parse(String(d.updated_at)), ...acts);
       return { ...d, last_at: new Date(last).toISOString() };
     })
@@ -57,6 +59,19 @@ describe("daily pipeline check", () => {
   it("opens nothing when every deal is moving", async () => {
     const { harness } = await boot({ store: store({ deals: [deal("busy", "SEO retainer", { updated_at: new Date().toISOString() })] }), routes: [IDLE] });
     expect(await openPipelineCheck(harness.ctx, CO)).toBeNull();
+  });
+
+  it("the care features' own bookkeeping on the client is not contact: a quiet deal stays quiet, a call or note wakes it", async () => {
+    const s = store();
+    s.activities = [{ id: "ce1", company_id: CO, record_type: "company", record_id: "acme", kind: "care_event", body: "Monthly report sent to the client.", created_at: new Date().toISOString() }];
+    const { harness, db } = await boot({ store: s, routes: [IDLE] });
+    expect((await idleDeals(harness.ctx, CO)).map((d) => d.id)).toEqual(["quiet"]);
+    // The query itself names the kind, so the real database leaves them out too (the route above only follows its parameters).
+    const sql = db.log.queries.find((q) => /LEFT JOIN LATERAL/.test(q.sql))!;
+    expect(sql.sql).toMatch(/x\.kind <> \$4/);
+    expect(sql.params[3]).toBe(CARE_EVENT_KIND);
+    s.activities.push({ id: "n1", company_id: CO, record_type: "company", record_id: "acme", kind: "note", body: "Spoke to the client", created_at: new Date().toISOString() });
+    expect(await idleDeals(harness.ctx, CO)).toEqual([]);
   });
 
   it("closing checks no deal is still quiet", async () => {

@@ -25,6 +25,15 @@ export async function companyPrefix(ctx: PluginContext, companyId: string): Prom
   }
 }
 
+/** The company's own name as its clients know it ("Partners in Biz", "Partners in Apps"), or null when unknown: it signs every email to a client. */
+export async function brandName(ctx: PluginContext, companyId: string): Promise<string | null> {
+  try {
+    return (await ctx.companies.get(companyId))?.name?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** A Paperclip path, with the company prefix when known: `/PIB/crm?client=company:<id>`. */
 export function pagePath(prefix: string | null, path: string): string {
   const clean = path.startsWith("/") ? path : `/${path}`;

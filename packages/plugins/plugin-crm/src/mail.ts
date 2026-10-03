@@ -75,6 +75,7 @@ import {
   type SequenceDelivery,
   type SequenceStepDraft,
 } from "./domain.js";
+import { isCanaryContact } from "./canary-flag.js";
 import { jevConfigFor, LEAD_QUESTIONS, leadScoreState, REPLY_QUESTIONS, replyState, scoreValue } from "./jev.js";
 import type { LeadScore } from "./lead-levels.js";
 import { emitSuppressed } from "./handoffs.js";
@@ -116,7 +117,7 @@ export async function contactAssignee(
  */
 export async function openIssueOnce(
   ctx: PluginContext,
-  input: { companyId: string; originId: string; legacyOriginId?: string | null; title: string; description: string; assignee: Assignee; wakeReason: string },
+  input: { companyId: string; originId: string; legacyOriginId?: string | null; title: string; description: string; assignee: Assignee; wakeReason: string; projectId?: string | null; priority?: "low" | "medium" | "high" | "critical" },
 ): Promise<string> {
   for (const originId of [input.originId, input.legacyOriginId].filter((id): id is string => Boolean(id))) {
     try {
@@ -126,23 +127,32 @@ export async function openIssueOnce(
       // Listing is a best-effort guard; create below.
     }
   }
-  const issue = await createWorkIssue(ctx, {
+  const create = (projectId: string | null | undefined) => createWorkIssue(ctx, {
     companyId: input.companyId,
     title: input.title,
     description: input.description,
     originKind: ORIGIN,
     originId: input.originId,
+    ...(projectId ? { projectId } : {}),
+    ...(input.priority ? { priority: input.priority } : {}),
     ...input.assignee,
     wakeReason: input.wakeReason,
   });
-  return issue.id;
+  try {
+    return (await create(input.projectId)).id;
+  } catch (error) {
+    // The client's project may be gone or archived: the work still has to reach someone, so it opens without a project.
+    if (!input.projectId) throw error;
+    ctx.logger.info("CRM issue opened without its project", { originId: input.originId, projectId: input.projectId, error: message(error) });
+    return (await create(null)).id;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Replies
 // ---------------------------------------------------------------------------
 
-function asMailReceived(payload: unknown): MailReceived | null {
+export function asMailReceived(payload: unknown): MailReceived | null {
   const body = asRecord(payload);
   const from = asRecord(body.from);
   if (typeof body.messageId !== "string" || !body.messageId) return null;
@@ -581,6 +591,21 @@ export async function sendSequenceStep(
       sourceKey: `suppressed:${enrollment.id}:${step.position}`,
     });
     return "stopped";
+  }
+  // The canary client's journey runs for real in every other way, but nothing leaves: the step is recorded as a dry run.
+  if (isCanaryContact(contact)) {
+    const steps = await listSteps(ctx, enrollment.sequenceId);
+    await saveEnrollment(ctx, advanceEnrollment({ ...enrollment, sendingKey: null }, steps, new Date()));
+    await insertActivityOnce(ctx, {
+      companyId: enrollment.companyId,
+      recordType: "contact",
+      recordId: contact.id,
+      kind: "email_sent",
+      body: `Canary dry run: the email for step ${step.position} (${step.title}) was NOT sent.`,
+      meta: { dryRun: true },
+      sourceKey: `dryrun:${enrollment.id}:${step.position}`,
+    });
+    return "sent";
   }
   const to = contact.emails.find((email) => email.includes("@"));
   if (!to) {

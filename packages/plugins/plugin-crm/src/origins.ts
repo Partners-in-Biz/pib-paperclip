@@ -34,6 +34,32 @@ export const CRM_ORIGINS = {
   duplicates: "crm:duplicates:",
   /** `crm:hygiene:<date>`: the Monday CRM hygiene report (CRM Data Steward; a report, never checked). */
   hygiene: "crm:hygiene:",
+  /** `crm:client-lead:<lead key>`: a lead that came in on a client's own form (Inbound Qualifier hands it to the client). */
+  clientLead: "crm:client-lead:",
+  /** `crm:service-onboard:<kind>:<client id>:<service>:<yyyymmdd>`: start a service a customer bought (the role that owns it). */
+  serviceOnboard: "crm:service-onboard:",
+  /** `crm:client-report:<kind>:<client id>:<YYYY-MM>`: write and send the month's report for a client (Account Manager). */
+  clientReport: "crm:client-report:",
+  /** `crm:support-case:<case id>`: work a support case that did not come by mail (mail cases use the Mailbox's Reply-needed issue). */
+  supportCase: "crm:support-case:",
+  /** `crm:support-breach:<case id>:<first|resolution>`: a support SLA ran out (escalation for the Account Manager). */
+  supportBreach: "crm:support-breach:",
+  /** `crm:client-action-stale:<action id>`: a client has not answered a request after the reminders. */
+  clientActionStale: "crm:client-action-stale:",
+  /** `crm:churn-risk:<kind>:<client id>:<YYYY-MM>`: a customer's health score is in the risk band. */
+  churnRisk: "crm:churn-risk:",
+  /** `crm:msg-failed:<approval id>`: an approved email to a client could not be sent. */
+  msgFailed: "crm:msg-failed:",
+  /** `crm:site-down:<site id>:<episode>`: a client's website is down (Delivery Lead). */
+  siteDown: "crm:site-down:",
+  /** `crm:site-tls:<site id>:<expiry date>`: a certificate is about to expire (Delivery Lead). */
+  siteTls: "crm:site-tls:",
+  /** `crm:site-domain:<site id>:<expiry date>`: a domain is about to expire (Delivery Lead). */
+  siteDomain: "crm:site-domain:",
+  /** `crm:feedback-low:<feedback id>`: a client gave a low NPS or CSAT score (Account Manager). */
+  feedbackLow: "crm:feedback-low:",
+  /** `crm:approval:<approval id>`: an email to a client, or an erasure, that a person decides (never checked). */
+  approval: "crm:approval:",
 } as const;
 
 export const originFor = {
@@ -49,6 +75,17 @@ export const originFor = {
   pipelineSummary: (date: string) => `${CRM_ORIGINS.pipelineSummary}${date}`,
   duplicates: (date: string) => `${CRM_ORIGINS.duplicates}${date}`,
   hygiene: (date: string) => `${CRM_ORIGINS.hygiene}${date}`,
+  clientLead: (leadKey: string) => `${CRM_ORIGINS.clientLead}${leadKey}`,
+  clientReport: (kind: string, clientId: string, period: string) => `${CRM_ORIGINS.clientReport}${kind}:${clientId}:${period}`,
+  supportCase: (caseId: string) => `${CRM_ORIGINS.supportCase}${caseId}`,
+  supportBreach: (caseId: string, which: "first" | "resolution") => `${CRM_ORIGINS.supportBreach}${caseId}:${which}`,
+  clientActionStale: (actionId: string) => `${CRM_ORIGINS.clientActionStale}${actionId}`,
+  churnRisk: (kind: string, clientId: string, period: string) => `${CRM_ORIGINS.churnRisk}${kind}:${clientId}:${period}`,
+  msgFailed: (approvalId: string) => `${CRM_ORIGINS.msgFailed}${approvalId}`,
+  feedbackLow: (feedbackId: string) => `${CRM_ORIGINS.feedbackLow}${feedbackId}`,
+  siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
+  siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
+  siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
 };
 
 /** The ids issues had before 0.5.0 (a step issue's was the bare enrollment id). */
@@ -62,7 +99,7 @@ export const LEGACY_ORIGINS = {
 };
 
 /** Work the CRM hands to agents (not approvals or hires), old and new ids. */
-export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene):/;
+export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain):/;
 
 /** Lead follow-ups, old and new ids. */
 export function isLeadFollowUp(originId: string | null | undefined): boolean {

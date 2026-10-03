@@ -67,14 +67,14 @@ describe("CRM setup status", () => {
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit", "plugin.state.read"]));
     expect(manifest.version).toBe(PLUGIN_VERSION);
-    expect(PLUGIN_VERSION).toBe("0.11.0");
+    expect(PLUGIN_VERSION).toBe("0.13.0");
   });
 
   it("an unconfigured company: settings missing, the rest optional, settings link falls back to the plugin list", async () => {
     const { harness } = await boot({ config: {}, rows: false });
     const status = await setupStatus(harness.ctx, CO);
     expect(status).toMatchObject({ plugin: "partnersinbiz.crm", module: "crm", title: "CRM", version: PLUGIN_VERSION });
-    expect(status.items.map((row) => row.key)).toEqual(["settings", "agent", "jev", "clients", "shared", "mailbox"]);
+    expect(status.items.map((row) => row.key)).toEqual(["settings", "agent", "jev", "clients", "shared", "mailbox", "client-reports", "site-monitoring", "data-processing"]);
     expect(item(status, "settings")).toMatchObject({ status: "missing", required: true, href: "/company/settings/instance/plugins" });
     expect(item(status, "jev")).toMatchObject({ status: "optional", required: false });
     expect(item(status, "jev").detail).toMatch(/lead scoring and reply classification/);

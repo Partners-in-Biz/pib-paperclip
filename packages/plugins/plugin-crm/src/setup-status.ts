@@ -19,8 +19,12 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { ACCOUNT_MANAGER_ROLE, AM_NAME } from "./agent.js";
+import { careSetupItems } from "./care-setup.js";
 import { listSequences, sequenceDelivery, table } from "./db.js";
+import { installSteps } from "./lead-embed.js";
+import { activeLeadSources, NO_URLS_NOTE, turnstileReady, urlsFor, leadsConfig } from "./lead-capture.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
+import { crmLink, refOf } from "./refs.js";
 import { heldLeadStats } from "./store.js";
 import { crmCompanyIds } from "./sync.js";
 
@@ -141,6 +145,8 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     agentNext: "Scores new leads and sorts sequence replies (interested, not now, unsubscribe) on its own.",
   });
 
+  items.push(...(await leadFormItems(ctx, companyId, settings)));
+
   const hasClients = await companyHasClients(ctx, companyId);
   items.push({
     key: "clients",
@@ -196,6 +202,9 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     agentNext: "Agent-owned sequences send their emails without a person opening each step.",
   });
 
+  // Client care: the monthly report, website monitoring and the data-processing register.
+  items.push(...(await careSetupItems(ctx, companyId, { amLinked: items.find((item) => item.key === "agent")?.status === "done", mailboxOn }).catch(() => [])));
+
   return {
     plugin: PLUGIN_ID,
     module: moduleOfPlugin(PLUGIN_ID),
@@ -204,6 +213,58 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     items,
     checkedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * One item per active lead form ("Install the lead form on <site>", with the exact snippet in its steps),
+ * and the optional spam-protection item. Nothing for a company with no lead forms.
+ */
+export async function leadFormItems(ctx: PluginContext, companyId: string, settingsHref: string): Promise<SetupItem[]> {
+  const sources = await activeLeadSources(ctx, companyId).catch(() => []);
+  if (sources.length === 0) return [];
+  const urls = await urlsFor(ctx, companyId).catch(() => null);
+  const items: SetupItem[] = [];
+  for (const source of sources) {
+    const site = source.siteUrl ? source.siteUrl.replace(/^https?:\/\//, "") : null;
+    const clientRef = source.clientKind && source.clientRef ? refOf(source.clientKind, source.clientRef) : null;
+    const taking = source.acceptedCount > 0;
+    items.push({
+      key: `lead-form:${source.id}`,
+      title: site ? `Install the lead form on ${site}` : `Install the lead form: ${source.label}`,
+      status: taking ? "done" : "missing",
+      required: false,
+      detail: taking
+        ? `Taking leads: ${source.acceptedCount} so far${source.lastSubmissionAt ? `, the last on ${dayLabel(source.lastSubmissionAt)}` : ""}.`
+        : `Waiting for the first lead: the snippet is not on the page yet, or nobody has sent a test enquiry.${clientRef ? " A lead through this form is the client's, kept on their CRM page." : ""}`,
+      href: clientRef ? crmLink(null, source.clientKind!, source.clientRef!) : "/crm",
+      hrefLabel: clientRef ? "Open the client page" : "Open CRM",
+      steps: taking ? undefined : urls ? installSteps({ publicKey: source.publicKey, label: source.label, consentText: source.consentText, privacyUrl: source.privacyUrl, successMessage: source.successMessage, turnstileSiteKey: source.turnstileSiteKey }, urls, source.siteUrl) : [NO_URLS_NOTE],
+      agentNext: "Once the first lead arrives, the Inbound Qualifier gets every lead from this form (a client's go to the client through an issue in their project) and answers within a working day. The agent installs the snippet through the client's repo project when the site has one.",
+    });
+  }
+  const ready = await turnstileReady(ctx, companyId).catch(() => false);
+  const site = (await leadsConfig(ctx, companyId).catch(() => null))?.turnstileSiteKey ?? null;
+  items.push({
+    key: "turnstile",
+    title: "Spam protection for lead forms (optional)",
+    status: ready ? "done" : "optional",
+    required: false,
+    detail: ready
+      ? "Cloudflare Turnstile is on for new and rotated lead forms."
+      : site
+        ? "The Turnstile site key is saved but the secret is not, so the check is off. Add the secret."
+        : "Lead forms already have a honeypot, rate limits, a throwaway-email block and one lead per email a day. Turnstile adds a bot check.",
+    href: settingsHref,
+    hrefLabel: "Open settings",
+    steps: ready ? undefined : [
+      "Open https://dash.cloudflare.com/?to=/:account/turnstile and add a widget (free). Add the hostname the Paperclip board is served from (paperclip.partnersinbiz.online). Choose Managed.",
+      "Copy the widget's site key and secret key.",
+      "In Paperclip, create a secret for the secret key (Company settings → Secrets).",
+      "In the CRM settings, under Lead forms, paste the site key and pick the secret. Click Save Configuration.",
+    ],
+    agentNext: "New lead forms carry the check from then on. For forms already installed, list-lead-sources shows a warning: the agent rotates their key and installs the new snippet.",
+  });
+  return items;
 }
 
 /** The Account Manager, staffed in Setup → Team (kit TEAM_ROLES `account-manager`, item key `agent`). */

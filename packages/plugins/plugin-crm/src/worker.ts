@@ -184,6 +184,18 @@ import {
 import { closeStands, CRM_DONE_CHECKS, doneCheckIssue } from "./done-checks.js";
 import { originFor } from "./origins.js";
 import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
+import { clientLeadForms, createLeadEndpoint, handleLeadWebhook, listLeadSourcesTool, makeLeadSecret, retryClientLeadIssues, rotateLeadKey, updateLeadSource } from "./lead-capture.js";
+import { purgeHits } from "./lead-store.js";
+import { cleanupCanary, ensureCanaryClient } from "./canary.js";
+import { onCareApprovalIssue, onCareSendResult } from "./care-approvals.js";
+import { CARE_TOOL_NAMES, clientCareView, isCareTool, runCareTool } from "./care-dispatch.js";
+import { onMailForCare, runClientCareJob, runClientHealthJob, runMonthlyReportJob, runSiteMonitorJob } from "./care-jobs.js";
+import { registerClientSignals } from "./client-signals.js";
+import { registerPrivacy } from "./privacy.js";
+import { reemitSensitivity, sensitivityOf } from "./register.js";
+import { onReplyIssueUpdated } from "./support.js";
+import { startNewClient } from "./new-client.js";
+import { backfillServices, onServiceStepIssue, runServicesCheck } from "./service-onboarding.js";
 import {
   findRecords,
   getClientProfileTool,
@@ -192,6 +204,7 @@ import {
   listDealsTool,
   listSequencesTool,
   listStagesTool,
+  parseClientRef,
   pickProfile,
   updateClientProfile,
 } from "./lookup.js";
@@ -241,6 +254,9 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // What the other modules say about a client (for the report and the health score), and the erasure and consent hand-offs.
+    registerClientSignals(ctx);
+    registerPrivacy(ctx);
     const registerAction = (
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
@@ -296,6 +312,22 @@ const plugin = definePlugin({
     registerAction("crm.link-client-project", async (params, context) => linkClientProject(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.unlink-client-project", async (params, context) => unlinkClientProject(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
+    // Lead forms (public lead capture), starting a new client, and the canary client.
+    registerAction("crm.create-lead-endpoint", async (params, context) => createLeadEndpoint(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.rotate-lead-key", async (params, context) => rotateLeadKey(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.make-lead-secret", async (params, context) => makeLeadSecret(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.list-lead-sources", async (params, context) => listLeadSourcesTool(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.update-lead-source", async (params, context) => updateLeadSource(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.start-new-client", async (params, context) => startNewClient(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    registerAction("crm.find-records", async (params, context) => findRecords(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.create-canary-client", async (_params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context)));
+    registerAction("crm.cleanup-canary", async (params, context) => cleanupCanary(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.run-services-check", async (_params, context) => runServicesCheck(ctx, new Date(), { companyId: requireCompany(context) }));
+    registerAction("crm.normalize-services", async (_params, context) => ({ saved: await backfillServices(ctx, requireCompany(context)) }));
+    // Client care (reports, support, client requests, monitoring, privacy): every care tool is also a page action, `crm.<tool name>`.
+    for (const name of CARE_TOOL_NAMES) {
+      registerAction(`crm.${name}`, async (params, context) => runCareTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
+    }
 
     // The CRM's roles (Setup → Team calls these; kit TEAM_ROLES "account-manager" and the sales roles, picked by `params.role`).
     registerAction("crm.hire-options", async (params, context) => {
@@ -360,14 +392,50 @@ const plugin = definePlugin({
       await trackJob(ctx, "held-leads", async () => {
         const result = await processHeldLeads(ctx);
         if (result.processed || result.failed) ctx.logger.info("CRM held leads", result);
+        const clientIssues = await retryClientLeadIssues(ctx);
+        if (clientIssues) ctx.logger.info("CRM client lead issues opened", { opened: clientIssues });
+      });
+    });
+    ctx.jobs.register("services-check", async () => {
+      await trackJob(ctx, "services-check", async () => {
+        const result = await runServicesCheck(ctx);
+        if (result.opened || result.backfilled || result.started) ctx.logger.info("CRM services check", result);
+      });
+    });
+    ctx.jobs.register("site-monitor", async () => {
+      await trackJob(ctx, "site-monitor", async () => {
+        const result = await runSiteMonitorJob(ctx);
+        if (result.down) ctx.logger.info("CRM site monitor", { ...result });
+      });
+    });
+    ctx.jobs.register("client-care", async () => {
+      await trackJob(ctx, "client-care", async () => {
+        const result = await runClientCareJob(ctx);
+        if (result.breaches || result.reminders || result.settled || result.reports) ctx.logger.info("CRM client care", { ...result });
+      });
+    });
+    ctx.jobs.register("client-health", async () => {
+      await trackJob(ctx, "client-health", async () => {
+        const result = await runClientHealthJob(ctx);
+        if (result.alerts) ctx.logger.info("CRM client health", { ...result });
+      });
+    });
+    ctx.jobs.register("client-report-monthly", async () => {
+      await trackJob(ctx, "client-report-monthly", async () => {
+        const result = await runMonthlyReportJob(ctx);
+        ctx.logger.info("CRM monthly client reports", { ...result });
       });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.received), async (event) => {
       // Replies are ignored while the CRM module is switched off for the company.
       if (event.companyId && !(await isModuleEnabled(ctx, event.companyId, PLUGIN_ID))) return;
       await onMailReceived(ctx, event);
+      // A reply to one of our client emails, or a support request that becomes a case.
+      await onMailForCare(ctx, event);
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
+    // The Mailbox's answer for an approved email to a client (keys crm:msg:...); sequence emails (crm:seq:...) are handled above.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onCareSendResult(ctx, event));
     ctx.jobs.register("emit-recent", () => trackJob(ctx, "emit-recent", () => emitForAllCompanies(ctx, 1800)));
     ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
     ctx.jobs.register("sales-daily", async () => {
@@ -384,6 +452,8 @@ const plugin = definePlugin({
     });
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
+        // First, so a failing step below can never leave the lead form's request log to grow.
+        await purgeHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
         await linkPendingHires(ctx);
         await reemitAllHandoffs(ctx);
         await publishAllSetupStatus(ctx);
@@ -422,6 +492,12 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok", message: "CRM plugin ready" };
+  },
+
+  /** The public lead form (`POST /api/plugins/partnersinbiz.crm/webhooks/lead`). Throws a plain message when the sender can fix something. */
+  async onWebhook(input) {
+    if (!pluginCtx) throw new Error("The lead form is not ready yet. Please try again in a minute.");
+    await handleLeadWebhook(pluginCtx, input);
   },
 
   async onApiRequest(input) {
@@ -596,8 +672,11 @@ async function dispatch(
       return listStagesTool(ctx, viewer);
     case "list-sequences":
       return listSequencesTool(ctx, viewer);
-    case "get-client-profile":
-      return getClientProfileTool(ctx, viewer, body);
+    case "get-client-profile": {
+      const profile = await getClientProfileTool(ctx, viewer, body);
+      // How sensitive the client's data is, and what it must stay off (client care: the data-processing register).
+      return { ...profile, sensitivity: await sensitivityOf(ctx, viewer.companyId, parseClientRef(body.client)) };
+    }
     case "update-client-profile":
       return updateClientProfile(ctx, viewer, body, source);
     case "set-email-status":
@@ -616,8 +695,23 @@ async function dispatch(
       return listClientProjectsTool(ctx, viewer, body);
     case "link-client-project":
       return linkClientProject(ctx, viewer, body);
+    case "create-lead-endpoint":
+      return createLeadEndpoint(ctx, viewer, body, source);
+    case "rotate-lead-key":
+      return rotateLeadKey(ctx, viewer, body, source);
+    case "list-lead-sources":
+      return listLeadSourcesTool(ctx, viewer, body);
+    case "update-lead-source":
+      return updateLeadSource(ctx, viewer, body, source);
+    case "start-new-client":
+      return startNewClient(ctx, viewer, body, source);
+    case "create-canary-client":
+      return ensureCanaryClient(ctx, viewer);
+    case "cleanup-canary":
+      return cleanupCanary(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
+      if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
 }
@@ -863,19 +957,23 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       accountId: deal.accountId,
     }));
 
-  const [activities, profileRecord, clientLeads, sitesAndProjects] = await Promise.all([
+  const [activities, profileRecord, clientLeads, sitesAndProjects, leadForms, care] = await Promise.all([
     listActivities(ctx, ref.kind, ref.id, 50),
     getClientProfile(ctx, viewer.companyId, ref.kind, ref.id).catch(() => null),
     listClientLeads(ctx, viewer.companyId, ref.kind, ref.id, 20).catch(() => []),
     clientSitesAndProjects(ctx, viewer, ref, (account ?? contact)!.name),
+    clientLeadForms(ctx, viewer.companyId, ref).catch(() => []),
+    clientCareView(ctx, viewer.companyId, ref).catch(() => null),
   ]);
   return {
     ...base,
     found: true as const,
+    care,
     company: account,
     contact,
     profile: profileRecord ? { ...pickProfile(profileRecord), humanOwned: profileRecord.humanOwned, updatedAt: profileRecord.updatedAt } : null,
     clientLeads,
+    leadForms,
     ...sitesAndProjects,
     contacts,
     companies,
@@ -1812,7 +1910,11 @@ async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | nu
       if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await emitChanges(ctx, companyId, sinceSeconds);
       await emitSites(ctx, companyId, sinceSeconds);
-      if (sinceSeconds == null) await recordFullShare(ctx, companyId);
+      if (sinceSeconds == null) {
+        await recordFullShare(ctx, companyId);
+        // Which clients are sensitive, said again every night for whoever missed it.
+        await reemitSensitivity(ctx, companyId).catch(() => 0);
+      }
     } catch (error) {
       ctx.logger.info("CRM change broadcast skipped", {
         companyId,
@@ -1876,6 +1978,12 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   if (!issue) return;
   // An approval issue for email sending: approved when a board user marks it done.
   if (await onApprovalIssue(ctx, event, issue.status)) return;
+  // An approval for an email to a client, or an erasure: a person decides.
+  if (await onCareApprovalIssue(ctx, event, issue.status)) return;
+  // A Mailbox Reply-needed issue: the support case on its thread is answered when it is done.
+  await onReplyIssueUpdated(ctx, event.companyId, { id: issue.id, status: issue.status, originId: issue.originId ?? null }).catch(() => false);
+  // A service step: done (its proof was checked above) means the service is started.
+  if (await onServiceStepIssue(ctx, event.companyId, { id: issue.id, status: issue.status, originId: issue.originId ?? null })) return;
   if (issue.status !== "done") return;
   const enrollment = await enrollmentByIssue(ctx, issue.id);
   if (!enrollment) return;

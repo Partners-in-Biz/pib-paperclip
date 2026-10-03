@@ -50,6 +50,7 @@ import {
 import { asRecord, asStringList, table } from "./db.js";
 import { CrmError, type Viewer } from "./domain.js";
 import { sendHandoff } from "./handoffs.js";
+import { deleteSiteMonitorOf } from "./monitor.js";
 import { parseClientRef, requireClient } from "./lookup.js";
 import { companyPrefix, pagePath, refOf, type ClientKind } from "./refs.js";
 
@@ -229,7 +230,20 @@ async function writeSite(ctx: PluginContext, site: SiteRecord, createdBy: string
 }
 
 async function removeSite(ctx: PluginContext, companyId: string, id: string): Promise<void> {
+  // The site's monitoring row and uptime history go with it: left behind, a removed site would still be counted (and shown) as down.
+  await deleteSiteMonitorOf(ctx, companyId, [id]);
   await ctx.db.execute(`DELETE FROM ${table(ctx, "client_sites")} WHERE company_id = $1 AND id = $2`, [companyId, id]);
+}
+
+/** Every website of one client with its change log, sign-off state and monitoring (a client being erased). Returns how many sites went. */
+export async function deleteSitesOfClient(ctx: PluginContext, companyId: string, kind: ClientKind, ref: string): Promise<number> {
+  const sites = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "client_sites")} WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 LIMIT 200`, [companyId, kind, ref]);
+  for (const site of sites) {
+    await ctx.db.execute(`DELETE FROM ${table(ctx, "site_changes")} WHERE company_id = $1 AND site_id = $2`, [companyId, site.id]);
+    await ctx.db.execute(`DELETE FROM ${table(ctx, "site_signoff")} WHERE company_id = $1 AND site_id = $2`, [companyId, site.id]);
+    await removeSite(ctx, companyId, site.id);
+  }
+  return sites.length;
 }
 
 async function recordChange(

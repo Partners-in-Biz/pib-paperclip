@@ -1,5 +1,7 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
+import { CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
+import { CARE_REFERENCE_FILES, CLIENT_CARE_SECTION } from "./skills-care.js";
 import { DATA_STEWARD_SKILL, DEAL_DESK_SKILL, INBOUND_QUALIFY_SKILL, SALES_LEAD_SKILL } from "./skills-sales.js";
 import { CLIENT_SITES_SKILL, IOS_RELEASE_SKILL } from "./skills-sites.js";
 
@@ -10,7 +12,7 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 ## Find the client first
 - \`find-records\` by name, email, domain, phone or tag before you create anything. Create only when nothing matches, then link people to their company with \`link-contact\`.
 - \`get-company\` / \`get-contact\` give the profile, people, open deals, the last 10 activities and \`workspaceLinks\` to each module's client workspace.
-- \`get-client-profile\` says how to talk for the client (brand voice, audience, services they buy, website, booking link, banned words, tone). Read it before you write anything for or to them.
+- \`get-client-profile\` says how to talk for the client (brand voice, audience, services they buy from a fixed list, website, booking link, banned words, tone) and holds their brand kit (logo key, colours, fonts, tone examples) and proposal references. Read it before you write anything for or to them.
 - "Record is not visible": stop. Never invent a substitute record.
 
 ## Keeping records
@@ -25,17 +27,35 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 2. **Qualified.** Set lifecycle \`prospect\` and \`create-deal\` with the value and the client. Fix a deal later with \`update-deal\` (title, value, its client, its stage): a deal without its client or value cannot be quoted, and the CRM overview lists it.
 3. **Proposal.** Move the deal to the Proposal stage (\`list-stages\`, \`move-deal\`). Draft the quote in Billing (\`pib-invoice-draft\`) with the deal id, so the customer's acceptance closes the deal. A person approves sending.
 4. **Won.** When the customer accepts, Billing tells the CRM and the deal moves to won; or move it yourself (\`move-deal\` to \`won\`). The CRM sets lifecycle \`customer\`, logs the win and tells Billing and the Cockpit. On a first win the Cockpit opens onboarding.
-5. **Onboarding** (the Cockpit's onboarding issue). Fill the whole client profile (\`update-client-profile\`) from the proposal, your notes and their website. Then open one hand-off issue per module for the role that owns it, titled \`Hand-off: <what> (company:<id>)\`: social accounts to connect (the owner does the logins), the SEO sprint, the retainer or first invoice, campaigns. Log each hand-off on the client.
-6. **Monthly client report** (first week of the month, per customer). For that client only, pull: Billing (invoices sent and paid, what is overdue), SEO (positions and the audit summary), Social (account analytics and the performance review), Campaigns (sends, opens, replies) and the CRM (deals, activity). Write 5-8 plain lines: results, what we did, what is next. Draft the email in the Mailbox for approval and log it on the client.
+5. **Onboarding** (the Cockpit's onboarding issue on a first win). Fill the whole client profile (\`update-client-profile\`) from the proposal, your notes and their website, with the services they bought from the fixed list. Then open one hand-off issue per module for the role that owns it, titled \`Hand-off: <what> (company:<id>)\`: social accounts to connect (the owner does the logins), the SEO sprint, the retainer or first invoice, campaigns. Log each hand-off on the client. A service added to a customer later opens its own step (see Services below).
+6. **Monthly client report** (the CRM opens it on the 1st, per customer): "Monthly report <client> <YYYY-MM>" arrives with the numbers gathered. Record what is missing, write the summary, \`send-client-report\` for approval, then close. Detail: \`references/client-report.md\`.
 7. **Offboarding.** Set lifecycle \`churned\` (that stops their sequences), move open deals to lost, then open a hand-off issue for each module that still works for them (stop the SEO sprint, disconnect or pause social, end the retainer). Log it.
 
+## Services, the brand kit and proposals
+- **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
+- **Brand kit** (\`update-client-profile\`): logoKey (an R2 key inside this company's folder, such as social/<company id>/logo.png: the CRM keeps the key only), primaryColor, secondaryColor, accentColor (hex), fonts, toneExamples (short pieces in their voice). Use them for anything made for the client.
+- **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). There is no e-sign: a person gets the signed copy by email or in person and logs it on the client.
+
+## Starting a new client
+\`start-new-client\` (client, optionally projectId and services) links the project and returns what is still to do for the Delivery Lead and for you: project and git workspace, the development branch rule, the agent guide, website, lead form, brand kit, one step per service, one grant ask, billing. The project and repo are made by the ops tool new-client-project.py, which then calls \`crm.link-client-project\`. Details and the contract: \`references/new-client.md\`.
+
+${CLIENT_CARE_SECTION}
+## The canary client
+Acceptance runs use one internal test client (\`create-canary-client\`, \`cleanup-canary\`). Anything flagged canary is a draft or a dry run: no real send, post, invoice or payment, and its address ends @canary.invalid. Rules and the journey: \`references/canary.md\`.
+
 ## Leads from a client's own channels
-A message to a client's own social account or mailbox is that client's lead. The CRM keeps it on the client's page (Leads from their channels), never as our contact. Never add those people to our CRM, sequences or campaigns (POPIA); the client's work in Social answers them.
+A message to a client's own social account, mailbox or website form is that client's lead. The CRM keeps it on the client's page (Leads from their channels), never as our contact. Never add those people to our CRM, sequences or campaigns (POPIA); the client's work in Social answers them.
 
 ## Closing CRM issues
 When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
 - **Link the won deal to its client:** the deal has a company or contact (\`update-deal\`).
 - **Pick the deal for an accepted quote:** \`move-deal\` the deal it closes to won, with the issue's \`quoteId\`.
+- **Start a service** (a step for a service a customer bought): proof logged on the client since the step opened (\`log-activity\` with the link or id).
+- **A client's lead** (from the client's website form): something logged on the client since it came in, saying what you did with it.
+- **Monthly report:** sent after a person approved it, or skipped with a reason.
+- **Support case, or a missed target:** the case is answered (first response recorded) or resolved with what you did.
+- **A client has not answered:** the outcome is recorded (\`update-client-action\`).
+- **Churn risk, or an unhappy client:** your follow-up is logged on the client since the issue opened.
 `;
 
 export const CRM_OUTBOUND_SKILL = `# CRM outbound: leads, sequences and marketing email
@@ -44,7 +64,12 @@ export const CRM_OUTBOUND_SKILL = `# CRM outbound: leads, sequences and marketin
 Social and the Mailbox hand leads to the CRM; each opens one "Follow up lead" issue for you with the message, the inbox item or Gmail message id and who replies.
 - **Social DM or comment:** the Social agent replies in the Social inbox. Do not reply to it yourself.
 - **Email:** you draft the reply in the Mailbox in the same thread (\`pib-mailbox-draft\`); a person approves sending.
+- **Our website form:** the issue carries the phone, the message, the page and campaign tags, and whether they ticked the marketing box. Draft the reply to the address they gave. Ticked: they agreed to hear from us. Not ticked: write only about their enquiry.
+- **A client's website form** is the client's lead, not ours: it is on the client's CRM page and the issue (in the client's project) says to check it is real, get it to the client in a Mailbox draft a person approves, and log it on the client. Never add that person to our contacts, sequences or campaigns.
 - **Your part, within one working day:** qualify, \`log-activity\`, set the next action, \`create-deal\` when they want a quote, lifecycle \`prospect\` once qualified.
+
+## Lead forms (taking enquiries from a website)
+\`create-lead-endpoint\` makes a form for a client (or for us) and returns its snippet; \`list-lead-sources\` shows how each is doing and warns about one that never took a lead; \`rotate-lead-key\` swaps a key (the old one works 7 days); \`update-lead-source\` pauses, resumes or rewords a form (only a person switches one off for good). The snippet goes on the client's site through their repo project, never by hand on the live site. The marketing tick box is separate from the enquiry, starts unticked and must say who will email them. A signing secret for a client's own server is a credential: only a person makes it (Lead forms card), so put a Needs-you item on the client; you never see or ask for it. Spam protection, server requests and troubleshooting: \`references/lead-capture.md\`.
 
 ## Sequences
 - Find one with \`list-sequences\`; \`enroll-contact\` once per contact per sequence.
@@ -83,9 +108,15 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: "pib-crm-records",
     description: "Find clients, keep CRM records right, and run the client lifecycle from lead to offboarding.",
     markdown: withFrontmatter(
-      { name: "pib-crm-records", description: "Find clients (company:<id> / contact:<id>), keep CRM records and client profiles right, and run the client lifecycle: lead, qualified, proposal, won, onboarding, monthly report, offboarding." },
+      { name: "pib-crm-records", description: "Find clients (company:<id> / contact:<id>), keep CRM records and client profiles right, and run the client lifecycle: lead, qualified, proposal, won, onboarding, monthly report, offboarding, and client care: support cases, requests to clients, health, privacy." },
       CRM_RECORDS_SKILL,
     ),
+    files: [
+      { path: "references/services.md", content: SERVICES_REFERENCE },
+      { path: "references/new-client.md", content: NEW_CLIENT_REFERENCE },
+      { path: "references/canary.md", content: CANARY_REFERENCE },
+      ...CARE_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
+    ],
   },
   {
     skillKey: "crm-outbound",
@@ -96,6 +127,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { name: "pib-crm-outbound", description: "Follow up leads (who replies to what), run CRM sequences and replies, merge tokens, and the POPIA, opt-out and sender rules for every marketing email." },
       CRM_OUTBOUND_SKILL,
     ),
+    files: [{ path: "references/lead-capture.md", content: LEAD_CAPTURE_REFERENCE }],
   },
   salesSkill("sales-lead", "pib-sales-lead", "Sales Lead", "Run the pipeline: chase stale deals, keep every open deal owned and moving, and write the weekly pipeline summary.", SALES_LEAD_SKILL),
   salesSkill("inbound-qualify", "pib-inbound-qualify", "Inbound qualifying", "Answer new leads the same day, qualify them (need, budget, timeline, decision maker) and hand qualified deals on.", INBOUND_QUALIFY_SKILL),

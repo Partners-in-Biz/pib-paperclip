@@ -125,6 +125,11 @@ export const CRM_MUTATIONS = new Set([
   "crm.link-contact",
   "crm.set-human-owned",
   "crm.delete-company",
+  // The canary client is a real record while it exists: share it, and its removal, with the other modules.
+  "create-canary-client",
+  "crm.create-canary-client",
+  "cleanup-canary",
+  "crm.cleanup-canary",
   // A won deal makes its client a customer: share the new lifecycle now.
   "move-deal",
   "crm.move-deal",

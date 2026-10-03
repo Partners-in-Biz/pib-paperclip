@@ -385,6 +385,7 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   email_suppressed: "Opted out",
   email_status: "Email status",
   note: "Note",
+  care_event: "Client care",
   call: "Call",
   meeting: "Meeting",
   message: "Message",
@@ -403,6 +404,7 @@ const ACTIVITY_LOOK: Record<string, { tone: ToneInput; icon?: LucideIcon }> = {
   email_suppressed: { tone: "warn", icon: CircleAlert },
   email_status: { tone: "warn", icon: CircleAlert },
   note: { tone: "neutral", icon: MessageSquare },
+  care_event: { tone: "info", icon: MessageSquare },
 };
 
 export function activityItems(items: ActivityLike[]): TimelineItem[] {
@@ -412,11 +414,11 @@ export function activityItems(items: ActivityLike[]): TimelineItem[] {
     return {
       id: item.id,
       at: item.createdAt,
-      title: item.kind === "deal_moved" || item.kind === "note" ? item.body : label,
-      detail: item.kind === "deal_moved" || item.kind === "note" ? undefined : <span style={{ whiteSpace: "pre-wrap", color: tokens.fg }}>{item.body}</span>,
+      title: item.kind === "deal_moved" || item.kind === "note" || item.kind === "care_event" ? item.body : label,
+      detail: item.kind === "deal_moved" || item.kind === "note" || item.kind === "care_event" ? undefined : <span style={{ whiteSpace: "pre-wrap", color: tokens.fg }}>{item.body}</span>,
       meta: (
         <>
-          {item.kind === "deal_moved" || item.kind === "note" ? <Pill size="sm" tone={look.tone}>{label}</Pill> : null}
+          {item.kind === "deal_moved" || item.kind === "note" || item.kind === "care_event" ? <Pill size="sm" tone={look.tone}>{label}</Pill> : null}
           {item.threadId ? <a href={`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(item.threadId)}`} target="_blank" rel="noreferrer" style={{ color: tokens.primary, fontWeight: 600 }}>Open in Gmail ↗</a> : null}
         </>
       ),

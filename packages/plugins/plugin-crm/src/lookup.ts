@@ -24,11 +24,17 @@ import {
 } from "./db.js";
 import { canSeeRecord, CrmError, DEAL_STATUSES, FIND_KINDS, FIND_MAX, LIFECYCLES, type AccountDraft, type ContactDraft, type DealDraft, type Lifecycle, type Viewer } from "./domain.js";
 import { companyPrefix, crmLink, refOf, workspaceLinks, type ClientKind } from "./refs.js";
+import { CANARY_RULES, isCanaryAccount, isCanaryContact, isCanaryId } from "./canary-flag.js";
+import { consentSummary } from "./consent.js";
+import { onServicesChanged } from "./service-onboarding.js";
+import { diffServices, normalizeServices, SERVICE_KEYS } from "./services.js";
 import {
+  CORE_PROFILE_FIELDS,
   EMPTY_PROFILE,
   getClientProfile,
   listClientLeads,
   PROFILE_FIELDS,
+  PROPOSAL_FIELDS,
   saveClientProfile,
   type ClientProfile,
   type ClientProfileRecord,
@@ -67,6 +73,14 @@ async function visible(ctx: PluginContext, viewer: Viewer) {
   const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
   const contactIds = new Set(visibleContacts.map((row) => row.id));
   return { accounts: visibleAccounts, contacts: visibleContacts, deals: visibleDeals, links: links.filter((link) => contactIds.has(link.contactId)) };
+}
+
+/** The clients this viewer may see, loaded once: for a list that must check many of them. */
+export async function visibleClients(ctx: PluginContext, viewer: Viewer): Promise<{ has: (kind: ClientKind, id: string) => boolean }> {
+  const records = await visible(ctx, viewer);
+  const companies = new Set(records.accounts.map((row) => row.id));
+  const contacts = new Set(records.contacts.map((row) => row.id));
+  return { has: (kind, id) => (kind === "company" ? companies.has(id) : contacts.has(id)) };
 }
 
 async function stageMap(ctx: PluginContext, companyId: string) {
@@ -231,26 +245,49 @@ async function recentActivity(ctx: PluginContext, kind: ClientKind, id: string, 
 
 function profileOut(record: ClientProfileRecord | null) {
   const profile: ClientProfile = record ? pickProfile(record) : { ...EMPTY_PROFILE };
-  return { ...profile, missing: missingProfileFields(profile) };
+  return { ...profile, missing: missingProfileFields(profile), missingBrand: missingBrandFields(profile), missingProposal: missingProposalFields(profile) };
 }
 
 export function pickProfile(record: ClientProfile): ClientProfile {
   return {
-    brandVoice: record.brandVoice,
-    audience: record.audience,
-    services: record.services,
-    website: record.website,
-    bookingLink: record.bookingLink,
-    bannedWords: record.bannedWords,
-    toneNotes: record.toneNotes,
+    brandVoice: record.brandVoice ?? null,
+    audience: record.audience ?? null,
+    services: record.services ?? [],
+    servicesOther: record.servicesOther ?? [],
+    website: record.website ?? null,
+    bookingLink: record.bookingLink ?? null,
+    bannedWords: record.bannedWords ?? [],
+    toneNotes: record.toneNotes ?? null,
+    logoKey: record.logoKey ?? null,
+    primaryColor: record.primaryColor ?? null,
+    secondaryColor: record.secondaryColor ?? null,
+    accentColor: record.accentColor ?? null,
+    fonts: record.fonts ?? [],
+    toneExamples: record.toneExamples ?? [],
+    scopeTemplateRef: record.scopeTemplateRef ?? null,
+    termsRef: record.termsRef ?? null,
   };
 }
 
+function fieldFilled(profile: ClientProfile, field: ProfileField): boolean {
+  // Services the vocabulary does not know are kept as text: something was entered, so it is not missing.
+  if (field === "services") return profile.services.length > 0 || (profile.servicesOther?.length ?? 0) > 0;
+  const value = profile[field];
+  return Array.isArray(value) ? value.length > 0 : Boolean(value);
+}
+
+/** The core profile fields still empty (the original seven). The brand kit and proposal fields have their own lists. */
 export function missingProfileFields(profile: ClientProfile): ProfileField[] {
-  return PROFILE_FIELDS.filter((field) => {
-    const value = profile[field];
-    return Array.isArray(value) ? value.length === 0 : !value;
-  });
+  return CORE_PROFILE_FIELDS.filter((field) => !fieldFilled(profile, field));
+}
+
+/** What a brand kit needs to be usable: the logo, the main colour, the fonts and examples of the tone. */
+export function missingBrandFields(profile: ClientProfile): ProfileField[] {
+  return (["logoKey", "primaryColor", "fonts", "toneExamples"] as const).filter((field) => !fieldFilled(profile, field));
+}
+
+export function missingProposalFields(profile: ClientProfile): ProfileField[] {
+  return PROPOSAL_FIELDS.filter((field) => !fieldFilled(profile, field));
 }
 
 export async function getCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -283,6 +320,7 @@ export async function getCompany(ctx: PluginContext, viewer: Viewer, params: Rec
     tags: account.tags,
     ...(Object.keys(account.custom).length ? { custom: account.custom } : {}),
     ...(account.humanOwned.length ? { humanOwned: account.humanOwned } : {}),
+    ...(isCanaryAccount(account) ? { canary: true, canaryRules: CANARY_RULES } : {}),
     profile: profileOut(profile),
     people,
     openDeals: open.map((deal) => dealSummary(deal, stages)),
@@ -311,6 +349,8 @@ export async function getContact(ctx: PluginContext, viewer: Viewer, params: Rec
     listSequences(ctx, viewer.companyId).catch(() => []),
   ]);
   const sequenceName = new Map(sequences.map((row) => [row.id, row.name]));
+  // What the person agreed to (a form's marketing tick box), one line each: who may email them, for what, and when.
+  const consent = contact.emails[0] ? await consentSummary(ctx, viewer.companyId, contact.emails[0]).catch(() => []) : [];
   return {
     ref: refOf("contact", contact.id),
     id: contact.id,
@@ -324,6 +364,8 @@ export async function getContact(ctx: PluginContext, viewer: Viewer, params: Rec
     ...(contact.leadScore ? { leadScore: { fit: contact.leadScore.fit, intent: contact.leadScore.intent, urgency: contact.leadScore.urgency } } : {}),
     ...(Object.keys(contact.custom).length ? { custom: contact.custom } : {}),
     ...(contact.humanOwned.length ? { humanOwned: contact.humanOwned } : {}),
+    ...(isCanaryContact(contact) ? { canary: true, canaryRules: CANARY_RULES } : {}),
+    ...(consent.length ? { consent } : {}),
     companies,
     // A contact with no company is a client in their own right (a sole trader).
     profile: companies.length === 0 || profile ? profileOut(profile) : null,
@@ -443,8 +485,68 @@ function urlField(value: unknown, field: string): string | null {
   }
 }
 
-/** Parses the fields present in `params` (absent = unchanged, null or "" = clear). */
-export function profilePatch(params: Record<string, unknown>): Partial<ClientProfile> {
+/** `#RGB` or `#RRGGBB` (the `#` is optional), saved as `#RRGGBB` in capitals. */
+export function colorField(value: unknown, field: string): string | null {
+  const text = textField(value, field);
+  if (!text) return null;
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(text);
+  if (!match) throw new CrmError(`${field} must be a hex colour such as #1A73E8`);
+  const hex = match[1]!.length === 3 ? match[1]!.split("").map((digit) => digit + digit).join("") : match[1]!;
+  return `#${hex.toUpperCase()}`;
+}
+
+/**
+ * The logo is an R2 object key inside this company's folder, as the module that
+ * stored it names it (for example `social/<company id>/logo.png`): the CRM keeps the key only.
+ */
+export function logoKeyField(value: unknown, companyId: string | undefined): string | null {
+  const text = textField(value, "logoKey");
+  if (!text) return null;
+  const shaped = /^[a-z0-9][a-z0-9-]{0,30}\/[A-Za-z0-9-]{1,64}\/[A-Za-z0-9._\/-]{1,200}$/.test(text) && !text.includes("..") && !text.includes("//");
+  if (!shaped || (companyId && text.split("/")[1] !== companyId)) {
+    throw new CrmError(`logoKey must be an R2 object key inside this company's folder, such as social/${companyId ?? "<company id>"}/logo.png`);
+  }
+  return text;
+}
+
+/** A reference to a document: a Billing or docs id, a repo path or a link. No spaces, no control characters. */
+export function refField(value: unknown, field: string): string | null {
+  const text = textField(value, field);
+  if (!text) return null;
+  if (text.length > 300 || !/^[A-Za-z0-9:/._#?&=%@+~-]+$/.test(text)) throw new CrmError(`${field} must be a document id, path or link (no spaces), 300 characters at most`);
+  return text;
+}
+
+const FONT_MAX = 6;
+const TONE_EXAMPLES_MAX = 8;
+const TONE_EXAMPLE_CHARS = 400;
+
+/** Font family names, as a font picker writes them (`Inter`, `Playfair Display`). */
+function fontsField(value: unknown): string[] {
+  const names = listField(value, "fonts");
+  if (names.length > FONT_MAX) throw new CrmError(`fonts has too many items (${FONT_MAX} at most)`);
+  const bad = names.find((name) => !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$/.test(name));
+  if (bad) throw new CrmError(`Not a font name: ${bad}`);
+  return names;
+}
+
+/** Short pieces written in the client's voice, so an agent can match the tone. Each is kept whole (commas inside are fine). */
+function toneExamplesField(value: unknown): string[] {
+  if (value == null) return [];
+  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(/\n+/) : null;
+  if (!items || items.some((item) => typeof item !== "string")) throw new CrmError("toneExamples must be a list of text");
+  const clean = (items as string[]).map((item) => item.trim()).filter(Boolean);
+  if (clean.length > TONE_EXAMPLES_MAX) throw new CrmError(`toneExamples has too many items (${TONE_EXAMPLES_MAX} at most)`);
+  if (clean.some((item) => item.length > TONE_EXAMPLE_CHARS)) throw new CrmError(`Each tone example is ${TONE_EXAMPLE_CHARS} characters at most`);
+  return clean;
+}
+
+/**
+ * Parses the fields present in `params` (absent = unchanged, null or "" = clear).
+ * `services` stays as sent here; `normalizePatchServices` maps it to the vocabulary.
+ * `companyId` lets `logoKey` be checked against the company's own R2 folder.
+ */
+export function profilePatch(params: Record<string, unknown>, companyId?: string): Partial<ClientProfile> {
   const patch: Partial<ClientProfile> = {};
   if ("brandVoice" in params) patch.brandVoice = textField(params.brandVoice, "brandVoice");
   if ("audience" in params) patch.audience = textField(params.audience, "audience");
@@ -453,7 +555,22 @@ export function profilePatch(params: Record<string, unknown>): Partial<ClientPro
   if ("bookingLink" in params) patch.bookingLink = urlField(params.bookingLink, "bookingLink");
   if ("bannedWords" in params) patch.bannedWords = listField(params.bannedWords, "bannedWords");
   if ("toneNotes" in params) patch.toneNotes = textField(params.toneNotes, "toneNotes");
+  if ("logoKey" in params) patch.logoKey = logoKeyField(params.logoKey, companyId);
+  if ("primaryColor" in params) patch.primaryColor = colorField(params.primaryColor, "primaryColor");
+  if ("secondaryColor" in params) patch.secondaryColor = colorField(params.secondaryColor, "secondaryColor");
+  if ("accentColor" in params) patch.accentColor = colorField(params.accentColor, "accentColor");
+  if ("fonts" in params) patch.fonts = fontsField(params.fonts);
+  if ("toneExamples" in params) patch.toneExamples = toneExamplesField(params.toneExamples);
+  if ("scopeTemplateRef" in params) patch.scopeTemplateRef = refField(params.scopeTemplateRef, "scopeTemplateRef");
+  if ("termsRef" in params) patch.termsRef = refField(params.termsRef, "termsRef");
   return patch;
+}
+
+/** The vocabulary form of a patch's `services`: keys in `services`, anything else as text in `servicesOther`. */
+export function normalizePatchServices(patch: Partial<ClientProfile>): Partial<ClientProfile> {
+  if (!patch.services) return patch;
+  const { services, other } = normalizeServices(patch.services);
+  return { ...patch, services, servicesOther: other };
 }
 
 function isEmpty(value: unknown): boolean {
@@ -471,16 +588,24 @@ export function applyProfilePatch(current: ClientProfileRecord | null, patch: Pa
   const changed: ProfileField[] = [];
   for (const field of PROFILE_FIELDS) {
     if (!(field in patch)) continue;
-    const next = patch[field];
-    if (source === "agent" && owned.has(field) && !isEmpty(profile[field])) {
-      if (JSON.stringify(next) !== JSON.stringify(profile[field])) refused.push(field);
+    // A service list and the text that maps to no service travel together.
+    const services = field === "services";
+    const next = services ? { services: patch.services ?? [], other: patch.servicesOther ?? profile.servicesOther } : patch[field];
+    const now = services ? { services: profile.services, other: profile.servicesOther } : profile[field];
+    if (source === "agent" && owned.has(field) && (services ? !isEmpty(profile.services) || !isEmpty(profile.servicesOther) : !isEmpty(profile[field]))) {
+      if (JSON.stringify(next) !== JSON.stringify(now)) refused.push(field);
       continue;
     }
-    if (JSON.stringify(next) === JSON.stringify(profile[field])) continue;
-    (profile as unknown as Record<string, unknown>)[field] = next;
+    if (JSON.stringify(next) === JSON.stringify(now)) continue;
+    if (services) {
+      profile.services = patch.services ?? [];
+      profile.servicesOther = patch.servicesOther ?? profile.servicesOther;
+    } else {
+      (profile as unknown as Record<string, unknown>)[field] = next;
+    }
     changed.push(field);
     if (source === "human") {
-      if (isEmpty(next)) owned.delete(field);
+      if (isEmpty(next) || (services && isEmpty(profile.services) && isEmpty(profile.servicesOther))) owned.delete(field);
       else owned.add(field);
     }
   }
@@ -506,7 +631,9 @@ export async function getClientProfileTool(ctx: PluginContext, viewer: Viewer, p
     profile: out,
     humanOwned: record?.humanOwned ?? [],
     updatedAt: record?.updatedAt ?? null,
+    ...(isCanaryId(client.id) ? { canary: true, canaryRules: CANARY_RULES } : {}),
     ...(out.missing.length ? { next: `Missing: ${out.missing.join(", ")}. Fill them from the proposal, discovery notes and their website with update-client-profile.` } : {}),
+    ...(out.missingBrand.length ? { brandKitNext: `Brand kit still missing: ${out.missingBrand.join(", ")} (update-client-profile). The logo is an R2 key of an image already stored for this company.` } : {}),
   };
 }
 
@@ -524,14 +651,17 @@ export function profileOwnership(value: unknown): ProfileField[] {
 export async function updateClientProfile(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const client = parseClientRef(params.client);
   const name = await requireClient(ctx, viewer, client);
-  const patch = profilePatch(params);
+  const patch = normalizePatchServices(profilePatch(params, viewer.companyId));
   const ownership = source === "human" && params.humanOwned !== undefined ? profileOwnership(params.humanOwned) : null;
   if (Object.keys(patch).length === 0 && !ownership) throw new CrmError("Send at least one profile field to change");
   const current = await getClientProfile(ctx, viewer.companyId, client.kind, client.id);
+  const servicesBefore = current?.services ?? [];
   const result = applyProfilePatch(current, patch, source);
   // A person's lock toggles set the list outright.
   if (ownership) result.humanOwned = ownership;
-  if (result.changed.length > 0 || (source === "human" && JSON.stringify(result.humanOwned) !== JSON.stringify(current?.humanOwned ?? []))) {
+  // A row written before the vocabulary is saved in its mapped form by any save.
+  const legacy = Boolean(current && !current.servicesNormalizedAt);
+  if (result.changed.length > 0 || legacy || (source === "human" && JSON.stringify(result.humanOwned) !== JSON.stringify(current?.humanOwned ?? []))) {
     await saveClientProfile(ctx, {
       companyId: viewer.companyId,
       clientKind: client.kind,
@@ -541,12 +671,23 @@ export async function updateClientProfile(ctx: PluginContext, viewer: Viewer, pa
       updatedBy: viewer.agentId ? `agent:${viewer.agentId}` : viewer.userId ? `user:${viewer.userId}` : null,
     });
   }
+  const servicesDiff = diffServices(servicesBefore, result.profile.services);
+  // The services changed: tell the other modules, and start what was added (a customer's new service opens its onboarding step).
+  const serviceSteps = result.changed.includes("services") || (legacy && patch.services !== undefined)
+    ? await onServicesChanged(ctx, { companyId: viewer.companyId, client, name, services: result.profile.services, diff: servicesDiff }).catch((error) => {
+      ctx.logger.info("CRM service hand-off deferred", { client: refOf(client.kind, client.id), error: error instanceof Error ? error.message : String(error) });
+      return null;
+    })
+    : null;
+  const unmapped = patch.services ? result.profile.servicesOther : [];
   return {
     client: refOf(client.kind, client.id),
     name,
-    profile: { ...result.profile, missing: missingProfileFields(result.profile) },
+    profile: { ...result.profile, missing: missingProfileFields(result.profile), missingBrand: missingBrandFields(result.profile), missingProposal: missingProposalFields(result.profile) },
     changed: result.changed,
     refused: result.refused,
     humanOwned: result.humanOwned,
+    ...(unmapped.length ? { unmappedServices: unmapped, servicesNote: `These are not in the services list, so they are kept as text only: ${unmapped.join(", ")}. The services are: ${SERVICE_KEYS.join(", ")}.` } : {}),
+    ...(serviceSteps && (serviceSteps.opened.length || serviceSteps.covered.length) ? { serviceSteps } : {}),
   };
 }

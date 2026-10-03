@@ -1,6 +1,9 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersinbiz/pib-plugin-kit/client-sites";
 import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
+import { SOURCE_STATUSES } from "./lead-form.js";
+import { CARE_TOOLS } from "./care-tools.js";
+import { SERVICE_KEYS, SERVICES } from "./services.js";
 
 /**
  * The CRM's agent tools. Every parameter has a description, and an enum where
@@ -104,24 +107,115 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     name: "get-client-profile",
     displayName: "Get client profile",
     description:
-      "How to talk for a client: brand voice, audience, services they buy from us, website, booking link, banned words and tone notes, plus which fields are still missing. Read it before you write anything for or to the client.",
+      "How to talk for a client: brand voice, audience, services they buy from us (from a fixed list), website, booking link, banned words and tone notes, plus the brand kit (logo key, colours, fonts, tone examples) and the proposal references (scope template, standard terms), and which fields are still missing. Read it before you write anything for or to the client.",
     parametersSchema: schema(["client"], { client: P.client }),
   },
   {
     name: "update-client-profile",
     displayName: "Update client profile",
     description:
-      "Fill in or change a client's profile (during onboarding and whenever you learn more). Only the fields you send change; send null or an empty value to clear one. A field a person set is kept: you may only fill it while it is empty.",
+      "Fill in or change a client's profile (during onboarding and whenever you learn more). Only the fields you send change; send null or an empty value to clear one. A field a person set is kept: you may only fill it while it is empty. services take keys from a fixed list; other wording is mapped when it can be and kept as text otherwise. Adding a service for a customer opens that service's onboarding step. The brand kit (logo key, colours, fonts, tone examples) and the proposal references live here too.",
     parametersSchema: schema(["client"], {
       client: P.client,
       brandVoice: text("How the client sounds, in 1-3 sentences, e.g. warm, plain South African English, no jargon."),
       audience: text("Who they sell to: the people, where they are and what they care about."),
-      services: textList("What they buy from us, e.g. SEO retainer, social media management, website."),
+      services: {
+        type: "array",
+        items: { type: "string" },
+        description: `What they buy from us. Use these keys: ${SERVICE_KEYS.join(", ")} (${SERVICES.map((service) => `${service.key} = ${service.label}`).join("; ")}). Send the whole list: it replaces the current one.`,
+      } as JsonSchema,
       website: text("Their website, e.g. https://acme.co.za."),
       bookingLink: text("Where their customers book or enquire, e.g. a Calendly or contact page link."),
       bannedWords: textList("Words and phrases never to use for them."),
       toneNotes: text("Anything else about tone: emoji, formality, words they prefer, topics to avoid."),
+      logoKey: text("Brand kit: the R2 object key of the client's logo, inside this company's folder, e.g. social/<company id>/acme-logo.png. The CRM keeps the key only."),
+      primaryColor: text("Brand kit: the main brand colour as hex, e.g. #1A73E8."),
+      secondaryColor: text("Brand kit: the second brand colour as hex."),
+      accentColor: text("Brand kit: the accent colour as hex."),
+      fonts: textList("Brand kit: font family names, headings first, e.g. Playfair Display, Inter (6 at most)."),
+      toneExamples: textList("Brand kit: 2-8 short pieces written the way the client wants to sound (a caption, a greeting, a sign-off), each under 400 characters."),
+      scopeTemplateRef: text("Proposals: a reference to the client's scope-of-work template (a document id, a repo path or a link)."),
+      termsRef: text("Proposals: a reference to the client's standard terms (a document id, a repo path or a link)."),
     }),
+  },
+  // -------------------------------------------------------------------------
+  // Lead forms (public lead capture)
+  // -------------------------------------------------------------------------
+  {
+    name: "create-lead-endpoint",
+    displayName: "Create a lead form",
+    description:
+      "Make a lead form that takes enquiries from a website: it returns the form's key, the snippet to install on the site and a curl test. A lead that arrives through a client's form is THE CLIENT'S lead: kept on their CRM page, handed to them through an issue in their project, never added to our contacts. With no client the form is ours and its leads follow the normal lead flow. Asking again with the same client and label returns the same form (no new key). Putting the snippet on a client's site is a change to that site: do it through the client's repo project, not by hand on the live site. A server-to-server signing secret (for the client's own server, e.g. WordPress PHP) is a credential: only a person makes it, on the client's Lead forms card, so put a Needs-you item on the client when one is needed.",
+    parametersSchema: schema([], {
+      client: text("The client the form belongs to: company:<id> or contact:<id>. Leave out for our own form."),
+      label: text("A short name, e.g. Contact form or Quote request (the same label for the same client returns the same form)."),
+      siteId: text("One of the client's registered websites (list-client-sites). Only with client."),
+      siteUrl: text("The page address the form goes on, when the site is not registered."),
+      consentText: text("The wording next to the marketing tick box. Default: the client (or we) may email news and offers, with an unsubscribe line. Must say who will email them."),
+      privacyUrl: text("A link to the privacy policy shown under the form."),
+      successMessage: text("What the visitor reads after sending (default: Thank you, we will be in touch)."),
+    }),
+  },
+  {
+    name: "rotate-lead-key",
+    displayName: "Rotate a lead form key",
+    description:
+      "Give a lead form a new key. The old key keeps working for 7 days so the snippet on the site can be swapped without losing leads. Use it after a key leaked, or to turn on spam protection that was set up after the snippet was installed. It never makes a signing secret: only a person does that, on the client's Lead forms card.",
+    parametersSchema: schema(["sourceId"], {
+      sourceId: text("The form (from list-lead-sources)."),
+    }),
+  },
+  {
+    name: "list-lead-sources",
+    displayName: "List lead forms",
+    description:
+      "Every lead form (or one client's), with its key, snippet, status, how many leads it took and the last one, and any warning (no lead yet, the old key about to stop). The signing secret is never shown.",
+    parametersSchema: schema([], {
+      client: text("Only this client's forms: company:<id> or contact:<id>."),
+      ownOnly: bool("true: only our own forms."),
+    }),
+  },
+  {
+    name: "update-lead-source",
+    displayName: "Update a lead form",
+    description:
+      "Change a lead form's wording, or pause it (status paused: it stops taking leads) and resume it (status active). Only a person can switch a form off for good (status revoked); put that on Needs you.",
+    parametersSchema: schema(["sourceId"], {
+      sourceId: text("The form (from list-lead-sources)."),
+      label: text("A new short name."),
+      consentText: text("The wording next to the marketing tick box."),
+      privacyUrl: text("A link to the privacy policy."),
+      successMessage: text("What the visitor reads after sending."),
+      status: oneOf(SOURCE_STATUSES, "active: takes leads. paused: stops for now. revoked: off for good (a person only)."),
+    }),
+  },
+  // -------------------------------------------------------------------------
+  // New clients, and the canary client
+  // -------------------------------------------------------------------------
+  {
+    name: "start-new-client",
+    displayName: "Start a new client",
+    description:
+      "Start a new client or check where one stands. Links a Paperclip project to the client when you pass projectId, sets the services when you list them, and returns the checklist of what is still to do (project and git workspace, the development branch rule, the agent guide, website, lead form, brand kit, one step per service) with who does each. The project and its repo are created by the ops tool new-client-project.py, which then calls the board action crm.link-client-project; this tool shows what remains.",
+    parametersSchema: schema(["client"], {
+      client: P.client,
+      projectId: text("A Paperclip project that belongs to this client (from list-client-projects): it is linked now."),
+      services: { type: "array", items: { type: "string" }, description: `The services the client bought: ${SERVICE_KEYS.join(", ")}.` } as JsonSchema,
+    }),
+  },
+  {
+    name: "create-canary-client",
+    displayName: "Create the canary client",
+    description:
+      "For the acceptance agent's test journeys (every agent with CRM tools can call it, so other agents leave it alone). Finds or creates the internal canary client (PiB Canary Co): a company, a contact whose address ends @canary.invalid (no mail system can deliver to it) and a canary lead form, all flagged. Use it to run lead, qualify, quote, invoice and payment proof without touching a real client. Everything outward for it is a draft or a dry run. Asking again returns the same client.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: "cleanup-canary",
+    displayName: "Clean up the canary client",
+    description:
+      "For the acceptance agent only after its test journey (needs confirm true). Remove the canary client's own records (company, flagged contacts, deals, leads, lead forms, notes). It never touches a record that is not flagged canary. Quotes and invoices other modules hold for it are theirs to remove.",
+    parametersSchema: schema(["confirm"], { confirm: bool("Must be true: this deletes records.") }),
   },
   // -------------------------------------------------------------------------
   // Websites and projects
@@ -739,4 +833,5 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       contactId: P.contactId,
     }),
   },
+  ...CARE_TOOLS,
 ];

@@ -187,7 +187,7 @@ describe("CRM cockpit snapshot", () => {
       ["contacts_follow_up", "0"],
       ["active_sequences", "0"],
     ]);
-    expect(snap.health.map((h) => h.key)).toEqual(["job:open-due-steps", "job:redeliver-mail", "job:held-leads", "job:emit-recent", "job:emit-all", "job:setup-status", "outbox", "held-leads"]);
+    expect(snap.health.map((h) => h.key)).toEqual(["job:open-due-steps", "job:redeliver-mail", "job:held-leads", "job:emit-recent", "job:emit-all", "job:setup-status", "job:services-check", "job:site-monitor", "job:client-care", "job:client-health", "job:client-report-monthly", "outbox", "held-leads", "support:sla", "client-actions", "clients:health", "client-reports", "privacy:consent-gaps"]);
     expect(snap.health.every((h) => h.status === "ok")).toBe(true);
     // The role this plugin staffs, unstaffed so far.
     expect(snap.team).toEqual([

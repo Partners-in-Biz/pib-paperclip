@@ -26,10 +26,13 @@ import {
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamReport } from "./agent.js";
+import { CARE_EVENT_KIND } from "./care-clients.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { isLeadFollowUp, isReplyWork } from "./origins.js";
 import { knownCompanies } from "./setup-status.js";
+import { activeLeadSources } from "./lead-capture.js";
 import { heldLeadStats } from "./store.js";
+import { careHealth, careWaiting } from "./care-jobs.js";
 
 const HREF = "/crm";
 const ORIGIN = `plugin:${PLUGIN_ID}`;
@@ -43,6 +46,11 @@ export const CRM_JOBS: Array<{ key: string; title: string; every: number }> = [
   { key: "emit-recent", title: "Share recent client changes", every: 15 },
   { key: "emit-all", title: "Share all clients (nightly)", every: 1440 },
   { key: "setup-status", title: "Setup and cockpit report", every: 60 },
+  { key: "services-check", title: "Start the services customers bought", every: 1440 },
+  { key: "site-monitor", title: "Check client websites", every: 5 },
+  { key: "client-care", title: "Client care", every: 15 },
+  { key: "client-health", title: "Score customer health", every: 1440 },
+  { key: "client-report-monthly", title: "Monthly client reports", every: 44_640 },
 ];
 
 function t(ctx: PluginContext, name: string): string {
@@ -110,7 +118,7 @@ export const LEAD_STUCK_DAYS = 2;
 export const DEAL_IDLE_DAYS = 14;
 
 /** Work issues the waiting list shows while no agent holds them (origin ids before and after 0.5.0). */
-export const FOLLOW_UP_ORIGINS = "^(reply|lead|handoff|quote|won|crm:(reply|lead-followup|sequence-refused|quote-deal|won-client)):";
+export const FOLLOW_UP_ORIGINS = "^(reply|lead|handoff|quote|won|crm:(reply|lead-followup|sequence-refused|quote-deal|won-client|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain)):";
 /** Lead follow-up issues (origin ids before and after 0.5.0). */
 export const LEAD_FOLLOW_UP_ORIGINS = "^(lead|crm:lead-followup):";
 
@@ -201,12 +209,13 @@ export async function dealOpenReport(
          SELECT max(x.created_at) AS last_at
            FROM ${t(ctx, "activities")} x
           WHERE x.company_id = d.company_id
+            AND x.kind <> $3
             AND ((x.record_type = 'deal' AND x.record_id = d.id)
               OR (x.record_type = 'contact' AND x.record_id = d.contact_id)
               OR (x.record_type = 'company' AND x.record_id = d.account_id))
        ) a ON true
       WHERE d.company_id = $1 AND s.kind = 'open'`,
-    [companyId, DEAL_IDLE_DAYS],
+    [companyId, DEAL_IDLE_DAYS, CARE_EVENT_KIND],
   );
   const row = rows[0];
   const idle = n(row?.idle);
@@ -281,10 +290,14 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   for (const job of CRM_JOBS) snap.health.push(await jobHealth(ctx, job.key, job.title, job.every));
   snap.health.push(await outboxHealth(ctx, companyId));
   snap.health.push(await part(ctx, "held-leads", () => heldLeadsHealth(ctx, companyId), { key: "held-leads", title: "Leads waiting for the CRM", status: "ok" } as HealthCheck));
+  const forms = await part(ctx, "lead-forms", () => leadFormsHealth(ctx, companyId), null as HealthCheck | null);
+  if (forms) snap.health.push(forms);
   // The Account Manager this plugin staffs; the Cockpit shares it in roles.updated so every plugin can route work to it.
   snap.team = await part(ctx, "team", () => teamReport(ctx, companyId), [{ role: "account-manager", agentId: null, status: null }] as TeamMemberReport[]);
 
+  snap.health.push(...(await careHealth(ctx, companyId)));
   snap.waiting = await part(ctx, "waiting", () => waitingItems(ctx, companyId), [] as WaitingItem[]);
+  snap.waiting.push(...(await careWaiting(ctx, companyId)));
   snap.activity = await part(ctx, "activity", () => activityItems(ctx, companyId), [] as ActivityItem[]);
   snap.quality = await part(ctx, "quality", () => qualityMetrics(ctx, companyId, counts), [] as QualityMetric[]);
 
@@ -309,6 +322,26 @@ export async function heldLeadsHealth(ctx: PluginContext, companyId: string): Pr
     href: "/setup",
     fix: "Switch the CRM on in Setup and save its settings once (Settings → Plugins → CRM). The held leads are then added within 10 minutes.",
     since: stats.oldest,
+  };
+}
+
+/** How long a lead form may take no lead before it is worth a look: it was probably never installed. */
+export const LEAD_FORM_QUIET_DAYS = 7;
+
+/** Lead forms that never took a lead: warn (the snippet is probably not installed). Nothing for a company with no forms. */
+export async function leadFormsHealth(ctx: PluginContext, companyId: string, now = Date.now()): Promise<HealthCheck | null> {
+  const sources = await activeLeadSources(ctx, companyId);
+  if (sources.length === 0) return null;
+  const quiet = sources.filter((source) => source.acceptedCount === 0 && source.createdAt && now - Date.parse(source.createdAt) > LEAD_FORM_QUIET_DAYS * DAY_MS);
+  if (quiet.length === 0) return { key: "lead-forms", title: "Lead forms", status: "ok", detail: `${plural(sources.length, "lead form")} active.` };
+  return {
+    key: "lead-forms",
+    title: "Lead forms",
+    status: "warn",
+    detail: `${plural(quiet.length, "lead form")} took no lead in ${LEAD_FORM_QUIET_DAYS} days or more: ${quiet.slice(0, 3).map((source) => source.label).join(", ")}${quiet.length > 3 ? "…" : ""}.`,
+    href: HREF,
+    fix: "The snippet is probably not on the site yet. list-lead-sources has each form's snippet; install it through the client's repo project and send one test enquiry.",
+    since: quiet.map((source) => source.createdAt).filter((at): at is string => Boolean(at)).sort()[0] ?? null,
   };
 }
 

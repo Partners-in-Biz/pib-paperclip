@@ -10,6 +10,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue, formatMoneyMinor, isModuleEnabled } from "@partnersinbiz/pib-plugin-kit";
+import { CARE_EVENT_KIND } from "./care-clients.js";
 import { DEAL_IDLE_DAYS } from "./cockpit.js";
 import { findDuplicateContacts, table } from "./db.js";
 import { duplicateGroups } from "./domain.js";
@@ -43,7 +44,10 @@ interface IdleDealRow {
   last_at: string;
 }
 
-/** Open deals with nothing logged on them, their contact or their company, and no change, for `DEAL_IDLE_DAYS` (the Cockpit's "stuck" rule). */
+/**
+ * Open deals with nothing logged on them, their contact or their company, and no change, for `DEAL_IDLE_DAYS` (the Cockpit's "stuck" rule).
+ * The care features' own bookkeeping (`care_event`: a report sent, a case opened) is not contact with the client, so it does not count.
+ */
 export async function idleDeals(ctx: PluginContext, companyId: string, limit = 25): Promise<IdleDeal[]> {
   const rows = await ctx.db.query<IdleDealRow>(
     `SELECT d.id, d.title, d.amount_minor, d.currency, d.contact_id, d.account_id,
@@ -54,6 +58,7 @@ export async function idleDeals(ctx: PluginContext, companyId: string, limit = 2
          SELECT max(x.created_at) AS last_at
            FROM ${table(ctx, "activities")} x
           WHERE x.company_id = d.company_id
+            AND x.kind <> $4
             AND ((x.record_type = 'deal' AND x.record_id = d.id)
               OR (x.record_type = 'contact' AND x.record_id = d.contact_id)
               OR (x.record_type = 'company' AND x.record_id = d.account_id))
@@ -62,7 +67,7 @@ export async function idleDeals(ctx: PluginContext, companyId: string, limit = 2
         AND GREATEST(d.updated_at, COALESCE(a.last_at, d.updated_at)) < now() - make_interval(days => $2::int)
       ORDER BY last_at ASC
       LIMIT $3`,
-    [companyId, DEAL_IDLE_DAYS, limit],
+    [companyId, DEAL_IDLE_DAYS, limit, CARE_EVENT_KIND],
   );
   return rows.map((row) => ({
     id: row.id,

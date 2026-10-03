@@ -61,6 +61,23 @@ export async function teamAssignee(ctx: PluginContext, companyId: string, role: 
   return {};
 }
 
+const DELIVERY_LEAD_NAME = /^delivery lead$/i;
+
+/**
+ * Work about a client's website or code: the Delivery Lead (a live agent found by its name; it is not a kit
+ * role), else the Account Manager, then the Operator, then the owner, so nothing is left unassigned.
+ */
+export async function deliveryLeadAssignee(ctx: PluginContext, companyId: string): Promise<Assignee> {
+  try {
+    const agents = await ctx.agents.list({ companyId, limit: 200 });
+    const lead = agents.find((agent) => DELIVERY_LEAD_NAME.test(String(agent.name ?? "").trim()) && roleAgentUsable(String(agent.status ?? "")));
+    if (lead) return { assigneeAgentId: String(lead.id) };
+  } catch {
+    // no agent list: the team route below still finds someone
+  }
+  return teamAssignee(ctx, companyId, "account-manager");
+}
+
 /**
  * Work about a contact or deal: its explicit owner when set (an agent that can
  * work, or a person), else the team route. `team` mode skips the owner.

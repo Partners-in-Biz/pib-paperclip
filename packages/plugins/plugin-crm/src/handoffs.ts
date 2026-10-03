@@ -59,11 +59,13 @@ import {
   table,
 } from "./db.js";
 import { LOCAL_BOARD_USER_ID, stageStopsEnrollments, type AccountDraft, type ContactDraft, type DealDraft, type EmailStatus } from "./domain.js";
+import { deleteCareDataOfClient } from "./care-store.js";
+import { deleteLeadDataOfClient } from "./lead-store.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { LEGACY_ORIGINS, originFor } from "./origins.js";
 import { companyPrefix, crmLink, pagePath, refOf, type ClientKind } from "./refs.js";
 import { teamAssignee } from "./routing.js";
-import { recentHandoffs, recordHandoff } from "./store.js";
+import { deleteServiceSteps, recentHandoffs, recordHandoff } from "./store.js";
 
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
@@ -607,7 +609,7 @@ export async function setEmailStatus(
 
 /**
  * Deletes a CRM company (a person's action): its links, shares, facts,
- * activities, profile and client leads go; its deals stay, unlinked; its
+ * activities, profile, client leads, lead forms (and what they logged), consent on its list and service steps go; its deals stay, unlinked; its
  * people stay as contacts. Emits `company.deleted`.
  */
 export async function deleteCompanyRecord(ctx: PluginContext, companyId: string, account: AccountDraft): Promise<{ deleted: true; id: string; people: number; deals: number }> {
@@ -620,6 +622,11 @@ export async function deleteCompanyRecord(ctx: PluginContext, companyId: string,
   await ctx.db.execute(`DELETE FROM ${table(ctx, "activities")} WHERE company_id = $1 AND record_type = 'company' AND record_id = $2`, [companyId, account.id]);
   await ctx.db.execute(`DELETE FROM ${table(ctx, "client_profiles")} WHERE company_id = $1 AND client_kind = 'company' AND client_ref = $2`, [companyId, account.id]);
   await ctx.db.execute(`DELETE FROM ${table(ctx, "client_leads")} WHERE company_id = $1 AND client_kind = 'company' AND client_ref = $2`, [companyId, account.id]);
+  // The client's lead forms go with it: a form left behind would keep taking visitors' names and addresses for a client nobody looks after.
+  await deleteLeadDataOfClient(ctx, companyId, "company", account.id);
+  await deleteServiceSteps(ctx, companyId, "company", account.id);
+  // The client's care data (reports, requests, cases, feedback, health, sensitivity, monitoring) goes with it.
+  await deleteCareDataOfClient(ctx, companyId, { kind: "company", id: account.id });
   await ctx.db.execute(`DELETE FROM ${table(ctx, "companies")} WHERE company_id = $1 AND id = $2`, [companyId, account.id]);
   // People who worked there are re-shared so the other modules drop the link.
   for (const link of links) await ctx.db.execute(`UPDATE ${table(ctx, "contacts")} SET updated_at = now() WHERE id = $1`, [link.contactId]);

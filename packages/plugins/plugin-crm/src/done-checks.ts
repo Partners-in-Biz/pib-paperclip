@@ -7,6 +7,15 @@
  * work was finished another way (the contact opted out, the sequence stopped,
  * the deal was moved), so an agent is never trapped.
  *
+ * Two rules cover the work added in 0.12.0: a client's form lead (something logged
+ * on the client since it came in) and a service step (proof logged on the client).
+ *
+ * The care work added in 0.13.0 follows the same rule: a monthly report (sent after approval, or skipped with a
+ * reason), a support case or breach (the case is answered or resolved), a client who has not answered (the request
+ * is recorded), a churn risk or a low score (a follow-up logged on the client), and a site, certificate or domain
+ * problem (looked at again: the site checks once more when its last check is old, which is the one place a check
+ * here may touch the network).
+ *
  * No rule: the sequence email approval (only a person decides; an agent's
  * close is reopened for the approver), the refused-sequence hand-off (a
  * judgement call), and the Monday pipeline summary and hygiene report
@@ -14,11 +23,19 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { DoneCheckIssue, DoneCheckResult, DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
-import { asRecord, contactCompanyLinks, enrollmentById, findDuplicateContacts, getContact, getDeal, listDeals, listSteps, stageKind, table } from "./db.js";
+import { clientContacts, clientInfo } from "./care-clients.js";
+import { actionResolved } from "./client-actions.js";
+import { siteIssueResolved } from "./monitor.js";
+import { reportIssueResolved } from "./report.js";
+import { breachResolved, caseIssueResolved } from "./support.js";
+import { getFeedback } from "./care-store.js";
+import { asRecord, contactCompanyLinks, enrollmentById, findDuplicateContacts, getAccount, getContact, getDeal, listDeals, listSteps, stageKind, table } from "./db.js";
 import { ACTIVITY_KINDS, duplicateGroups, type ContactDraft, type DealDraft } from "./domain.js";
 import { clientDeals } from "./handoffs.js";
 import { CRM_ORIGINS, parseStepRef } from "./origins.js";
 import { idleDeals } from "./sales.js";
+import { parseServiceStep, serviceLabel } from "./services.js";
+import { getClientLead, getClientProfile } from "./store.js";
 
 /** Timeline entries that show someone worked the client: logged with `log-activity`, a sequence email sent, a deal moved or won. */
 export const WORK_KINDS: string[] = [...ACTIVITY_KINDS, "email_sent", "deal_moved", "deal_won"];
@@ -223,6 +240,56 @@ export async function checkDuplicates(ctx: PluginContext, issue: DoneCheckIssue)
   return { done: false, missing: groups.slice(0, 10).map((g) => `${g.email} is still on ${g.contacts.length} contacts (${g.contacts.map((c) => `\`${c.id}\``).join(", ")}): merge them with \`merge-contacts\`.`) };
 }
 
+/** A client's form lead: something is logged on the client since the lead came in (handed to them, or recorded as spam). */
+export async function checkClientLead(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const lead = await getClientLead(ctx, issue.companyId, (issue.originId ?? "").slice(CRM_ORIGINS.clientLead.length));
+  if (!lead) return DONE;
+  const client = lead.clientKind === "company" ? await getAccount(ctx, lead.clientRef) : await getContact(ctx, lead.clientRef);
+  // The client is gone: nobody to hand it to.
+  if (!client || client.companyId !== issue.companyId) return DONE;
+  if (await workLoggedSince(ctx, issue.companyId, [lead.clientRef], openedAt(issue))) return DONE;
+  return {
+    done: false,
+    missing: [`Nothing is logged on \`${lead.clientKind}:${lead.clientRef}\` since this lead came in: say what you did with it (handed to the client in a Mailbox draft, or why it is not a real enquiry) with \`log-activity\`.`],
+  };
+}
+
+/** A service step: proof is logged on the client since the step opened (or the service is no longer on the profile). */
+export async function checkServiceStep(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const step = parseServiceStep(issue.originId);
+  if (!step) return DONE;
+  const profile = await getClientProfile(ctx, issue.companyId, step.kind, step.clientId);
+  // Removed from the client's services, or the client is gone: nothing to prove.
+  if (!profile || !profile.services.includes(step.service)) return DONE;
+  if (await workLoggedSince(ctx, issue.companyId, [step.clientId], openedAt(issue))) return DONE;
+  return {
+    done: false,
+    missing: [`Nothing is logged on \`${step.kind}:${step.clientId}\` since this step opened: log the proof that ${serviceLabel(step.service)} is running (a link or an id, or what the client still has to give) with \`log-activity\`, then close this issue.`],
+  };
+}
+
+/** A churn-risk or low-score issue: a follow-up is logged on the client (or its people) since the issue opened. */
+async function followUpLogged(ctx: PluginContext, issue: DoneCheckIssue, kind: "company" | "contact", clientId: string, what: string): Promise<DoneCheckResult> {
+  const info = await clientInfo(ctx, issue.companyId, { kind, id: clientId });
+  // The client is gone, or no longer a customer: nothing to follow up.
+  if (!info || info.lifecycle !== "customer") return DONE;
+  const people = await clientContacts(ctx, issue.companyId, { kind, id: clientId });
+  if (await workLoggedSince(ctx, issue.companyId, [clientId, ...people.map((person) => person.id)], openedAt(issue))) return DONE;
+  return { done: false, missing: [`Nothing is logged on \`${kind}:${clientId}\` since this issue opened: ${what} Log it with \`log-activity\`, then close this issue.`] };
+}
+
+/** Churn risk: the follow-up with the customer is logged. */
+export async function checkChurnRisk(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const m = /^crm:churn-risk:(company|contact):([^:]+):/.exec(issue.originId ?? "");
+  return m ? followUpLogged(ctx, issue, m[1] as "company" | "contact", m[2]!, "say what you did to win them back (a call, a fix, a review).") : DONE;
+}
+
+/** A low NPS or CSAT score: the follow-up with the client is logged. */
+export async function checkFeedbackLow(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const feedback = await getFeedback(ctx, issue.companyId, (issue.originId ?? "").slice(CRM_ORIGINS.feedbackLow.length));
+  return feedback ? followUpLogged(ctx, issue, feedback.client.kind, feedback.client.id, "say how you followed up on their low score (a call, a fix).") : DONE;
+}
+
 /** One rule per kind of work the CRM hands to agents. */
 export const CRM_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: CRM_ORIGINS.leadFollowUp, label: "Lead follow-up", check: (issue, ctx) => checkLeadFollowUp(ctx, issue) },
@@ -233,6 +300,17 @@ export const CRM_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: CRM_ORIGINS.quoteDeal, label: "Deal for an accepted quote", check: (issue, ctx) => checkQuoteDeal(ctx, issue) },
   { originPrefix: CRM_ORIGINS.pipelineCheck, label: "Quiet deals", check: (issue, ctx) => checkPipeline(ctx, issue) },
   { originPrefix: CRM_ORIGINS.duplicates, label: "Duplicate contacts", check: (issue, ctx) => checkDuplicates(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.clientLead, label: "A client's lead", check: (issue, ctx) => checkClientLead(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.serviceOnboard, label: "Start a service", check: (issue, ctx) => checkServiceStep(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.clientReport, label: "Monthly client report", check: (issue, ctx) => reportIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.supportCase, label: "Support case", check: (issue, ctx) => caseIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.supportBreach, label: "Support target ran out", check: (issue, ctx) => breachResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.clientActionStale, label: "A client has not answered", check: (issue, ctx) => actionResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.churnRisk, label: "Churn risk", check: (issue, ctx) => checkChurnRisk(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.feedbackLow, label: "Unhappy client", check: (issue, ctx) => checkFeedbackLow(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.siteDown, label: "Site down", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.siteTls, label: "Certificate about to expire", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.siteDomain, label: "Domain about to expire", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
 ];
 
 /** The host issue as the kit's done-check sees it. */

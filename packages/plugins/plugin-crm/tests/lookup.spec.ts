@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyProfilePatch, profilePatch } from "../src/lookup.js";
+import { EMPTY_PROFILE } from "../src/store.js";
 import { BOARD, CO, boot, seed, tool, toolRaw } from "./helpers/crm.js";
 
 describe("find-records", () => {
@@ -54,7 +55,8 @@ describe("get-company and get-contact", () => {
     expect(acme.openDeals).toEqual([expect.objectContaining({ id: "d-acme", stage: "Proposal", status: "open", client: "company:acme", contact: "contact:ada", amountMinor: 100_000 })]);
     expect(acme.activities).toHaveLength(10);
     expect(acme.activities[0]).toMatchObject({ kind: "note", text: "Note 11" });
-    expect(acme.profile).toMatchObject({ brandVoice: "Warm and plain", services: ["SEO retainer"], missing: ["audience", "bookingLink", "bannedWords", "toneNotes"] });
+    // The row was written before the services list: "SEO retainer" is read as the seo service.
+    expect(acme.profile).toMatchObject({ brandVoice: "Warm and plain", services: ["seo"], servicesOther: [], missing: ["audience", "bookingLink", "bannedWords", "toneNotes"] });
     expect(acme.workspaceLinks).toEqual({
       crm: "/PIB/crm?client=company%3Aacme",
       social: "/PIB/social?client=company%3Aacme",
@@ -143,7 +145,7 @@ describe("the client profile", () => {
     expect((await toolRaw(harness, "update-client-profile", { client: "company:acme" })).error).toMatch(/at least one profile field/);
     expect((await toolRaw(harness, "get-client-profile", { client: "company:foreign" })).error).toMatch(/not visible/);
     expect(profilePatch({ services: "a, b,, a" })).toEqual({ services: ["a", "b"] });
-    const agentFill = applyProfilePatch({ ...{ brandVoice: null, audience: null, services: [], website: null, bookingLink: null, bannedWords: [], toneNotes: null }, id: "x", companyId: CO, clientKind: "company", clientRef: "acme", humanOwned: ["brandVoice"], updatedBy: null, updatedAt: null }, { brandVoice: "Filled while empty" }, "agent");
+    const agentFill = applyProfilePatch({ ...EMPTY_PROFILE, id: "x", companyId: CO, clientKind: "company", clientRef: "acme", humanOwned: ["brandVoice"], updatedBy: null, updatedAt: null, servicesNormalizedAt: null }, { brandVoice: "Filled while empty" }, "agent");
     expect(agentFill).toMatchObject({ changed: ["brandVoice"], refused: [] });
   });
 

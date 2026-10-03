@@ -40,6 +40,9 @@ New leads arrive as CRM issues assigned to you (a form, an email, a social messa
    - **No answer:** set the next step (\`update-contact\` nextActionKind \`email\`, nextActionDueAt in 3 working days). After three tries, log it and close.
 5. Mark the lead issue done.
 
+## Website form leads
+A lead from our own form carries the phone, the message, the page and the campaign tags (which campaign works matters: log it). The marketing box starts unticked: ticked means they agreed to hear from us, not ticked means write only about their enquiry. A lead from a CLIENT's form is the client's: its issue is in the client's project; check it is real (spam and tests are logged as such), get it to the client in a Mailbox draft a person approves, and log what you did on the client (\`log-activity\` on \`company:<id>\`). Never add that person to our CRM.
+
 ## Rules
 - A lead from a client's own channel belongs to that client (POPIA): never add them to our CRM.
 - Anyone who asks to stop: \`set-email-status\` unsubscribed at once.

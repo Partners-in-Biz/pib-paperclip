@@ -131,8 +131,55 @@ export function seed(): Store {
     held_leads: [],
     client_profiles: [],
     client_leads: [],
+    client_projects: [],
+    lead_sources: [],
+    lead_hits: [],
+    lead_captures: [],
+    consent_records: [],
+    service_onboarding: [],
     // The agent's run is on behalf of the owner (the host resolves a responsible user for every run).
     heartbeat_runs: [{ id: "run-1", company_id: CO, agent_id: "agent-1", responsible_user_id: "local-board" }],
+  };
+}
+
+/**
+ * Makes the harness's issue documents behave like the live host (read from server/dist/services/documents.js): creating a document
+ * whose key already exists is a conflict, because the host wants the latest revision id and the SDK cannot send one; deleting a
+ * missing document is a no-op; a locked document can be neither deleted nor replaced. The SDK's own test harness updates freely,
+ * which is why a rebuild that only upserts passed every test and failed live.
+ */
+export function liveHostDocuments(harness: ReturnType<typeof createTestHarness>) {
+  const docs = harness.ctx.issues.documents;
+  const upsert = docs.upsert.bind(docs);
+  const remove = docs.delete.bind(docs);
+  const bodies = new Map<string, string>();
+  const locked = new Set<string>();
+  const idOf = (issueId: string, key: string) => `${issueId}|${key}`;
+  docs.upsert = async (input) => {
+    const id = idOf(input.issueId, input.key);
+    if (locked.has(id)) throw new Error("Document is locked");
+    if (bodies.has(id)) throw new Error("Document update requires baseRevisionId. GET the current document, read its body and latestRevisionId, then set baseRevisionId to that latestRevisionId when updating.");
+    // Taken at once, like the host's unique key: a second create that starts before the first one finished conflicts too.
+    bodies.set(id, input.body);
+    try {
+      return await upsert(input);
+    } catch (error) {
+      bodies.delete(id);
+      throw error;
+    }
+  };
+  docs.delete = async (issueId, key, companyId) => {
+    const id = idOf(issueId, key);
+    if (locked.has(id)) throw new Error("Document is locked");
+    bodies.delete(id);
+    await remove(issueId, key, companyId);
+  };
+  return {
+    /** The body now stored under a key, or null. */
+    bodyOf: (issueId: string, key: string) => bodies.get(idOf(issueId, key)) ?? null,
+    /** A person locked the document. */
+    lock: (issueId: string, key: string) => void locked.add(idOf(issueId, key)),
+    unlock: (issueId: string, key: string) => void locked.delete(idOf(issueId, key)),
   };
 }
 
@@ -144,19 +191,23 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
   harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never] });
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
-    coreReadTables: ["heartbeat_runs", "issues"],
+    coreReadTables: ["heartbeat_runs", "issues", "cost_events"],
     routes: [...(options.routes ?? []), ...ROUTES],
     defaults: {
       outbox: { status: "pending", attempts: 0, last_error: null, result: null },
       handoffs: { created_at: new Date(NOW).toISOString() },
       activities: { created_at: new Date(NOW).toISOString() },
       contacts: { email_status: "ok", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() },
+      // Column defaults of migration 009 that the inserts rely on.
+      lead_sources: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null },
+      client_leads: { phone: null, meta: {}, issue_id: null },
     },
   });
   (harness.ctx as unknown as { db: typeof db }).db = db;
+  const documents = liveHostDocuments(harness);
   await plugin.definition.setup(harness.ctx);
   const emit = vi.spyOn(harness.ctx.events, "emit");
-  return { harness, store, db, emit };
+  return { harness, store, db, emit, documents };
 }
 
 export type Harness = Awaited<ReturnType<typeof boot>>["harness"];

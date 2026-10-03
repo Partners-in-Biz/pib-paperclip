@@ -32,7 +32,7 @@ const FLOW_ROUTES: Route[] = [
     const lastTouch = (d: Row) => Math.max(
       Date.parse(d.updated_at),
       ...(s.activities ?? [])
-        .filter((a) => a.company_id === d.company_id && ((a.record_type === "deal" && a.record_id === d.id) || (a.record_type === "contact" && a.record_id === d.contact_id) || (a.record_type === "company" && a.record_id === d.account_id)))
+        .filter((a) => a.company_id === d.company_id && a.kind !== p[2] && ((a.record_type === "deal" && a.record_id === d.id) || (a.record_type === "contact" && a.record_id === d.contact_id) || (a.record_type === "company" && a.record_id === d.account_id)))
         .map((a) => Date.parse(a.created_at)),
     );
     return [{ open: String(open.length), idle: String(open.filter((d) => lastTouch(d) < cutoff).length), oldest: open.map((d) => d.created_at).sort()[0] ?? null }];
@@ -142,6 +142,17 @@ describe("deal.open: open deals and their value", () => {
       currency: "ZAR",
       oldestDays: 40,
     });
+  });
+
+  it("a care event logged on the client does not keep its deal alive (the Cockpit and the daily check use the same rule)", async () => {
+    const store = dealStore();
+    store.activities = [...store.activities!, { id: "ce1", company_id: CO, record_type: "contact", record_id: "grace", kind: "care_event", body: "Monthly report sent.", created_at: ago(1 * DAY) }];
+    const { harness, db } = await boot({ store, routes: FLOW_ROUTES });
+    const before = await dealOpenReport(harness.ctx, CO, null);
+    expect(before.stuck).toBe(1);
+    const sql = db.log.queries.find((q) => /LEFT JOIN LATERAL/.test(q.sql))!;
+    expect(sql.sql).toMatch(/x\.kind <> \$3/);
+    expect(sql.params[2]).toBe("care_event");
   });
 
   it("without the money query it still counts, with no amount", async () => {

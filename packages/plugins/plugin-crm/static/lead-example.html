@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Lead form example</title>
+<style>
+  body { font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2933; max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 24px; }
+  h2 { font-size: 18px; margin-top: 32px; }
+  pre { background: #f4f6f8; border: 1px solid #d9dee3; border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 13px; }
+  code { font-size: 13px; }
+  .note { color: #5f6b7a; }
+</style>
+</head>
+<body>
+<h1>Lead form on a page</h1>
+<p class="note">This is a copy of what a client's page looks like with the form on it. The key below is a placeholder, so sending this form shows the error a wrong key gives. Your real snippet comes from <code>create-lead-endpoint</code> or <code>list-lead-sources</code>.</p>
+
+<h2>The form</h2>
+<script async src="lead.js" data-pib-lead="pibl_aaaaaaaaaaaaaaaaaaaaaaaa" data-success="Thank you. We have your message."></script>
+
+<h2>The snippet</h2>
+<pre>&lt;script async src="https://YOUR-PAPERCLIP-HOST/_plugins/UUID/ui/lead.js"
+        data-pib-lead="pibl_YOUR_KEY"&gt;&lt;/script&gt;</pre>
+<p class="note">Optional attributes: <code>data-consent</code> (the wording by the tick box), <code>data-privacy</code> (a link), <code>data-success</code> (the thank-you), <code>data-accent</code> (#RRGGBB), <code>data-fields</code> (name,email,phone,company,message), <code>data-target</code> (a CSS selector).</p>
+
+<h2>From the client's own server</h2>
+<pre>curl -sS -X POST 'https://YOUR-PAPERCLIP-HOST/api/plugins/partnersinbiz.crm/webhooks/lead' \
+  -H 'content-type: application/json' \
+  -d '{"key":"pibl_YOUR_KEY","name":"Jane Smith","email":"jane@example.com","message":"Hello"}'</pre>
+<p class="note">A browser on another site cannot post to that address directly (the host sends no CORS headers), which is why the page form lives in an iframe. A server can. A server that should skip the browser checks signs each request with a signing secret. A person makes that secret on the client's Lead forms card in the CRM (it is shown once); an agent never sees it.</p>
+</body>
+</html>
