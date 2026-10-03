@@ -87,6 +87,16 @@ export async function fetchCompanyAgents(companyId: string): Promise<TeamAgent[]
   }
 }
 
+/** The raw agent records (permissions, reporting line, adapter settings), for the bootstrap. Null when the list cannot be read. */
+export async function fetchCompanyAgentsRaw(companyId: string): Promise<unknown[] | null> {
+  try {
+    const body = await getJson(`/api/companies/${enc(companyId)}/agents`);
+    return Array.isArray(body) ? body : body && typeof body === "object" && Array.isArray((body as { data?: unknown }).data) ? (body as { data: unknown[] }).data : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The company's board members, for "Who gets the daily brief". Null when they cannot be read. */
 export async function fetchBoardUsers(companyId: string): Promise<BoardUser[] | null> {
   try {

@@ -1,7 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -28,7 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: VERSION,
   displayName: "Setup",
-  description: "Guided setup per company: hire its agents (Team), choose the modules it uses, see what each plugin still needs, fix it with deep links or Do it for me, and copy setup from another company.",
+  description: "Guided setup per company: hire its agents (Team), choose the modules it uses, see what each plugin still needs, fix it with deep links or Do it for me, copy setup from another company, and bring a new company up in one run (New company) from the team template pack.",
   author: "Partners in Biz",
   categories: ["workspace", "automation"],
   instanceConfigSchema,
@@ -43,6 +43,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.read",
     "issues.create",
     "issues.update",
+    // The hire tasks Setup opens for the CEO must wake it: a plugin-created issue wakes nobody by itself.
+    "issues.wakeup",
     "plugin.state.read",
     "plugin.state.write",
     "api.routes.register",
@@ -78,6 +80,15 @@ const manifest: PaperclipPluginManifestV1 = {
       routeKey: "modules",
       method: "GET",
       path: "/modules",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
+    },
+    {
+      // Read by the ops scripts (new-company.py): GET /api/plugins/partnersinbiz.setup/api/templates?companyId=
+      routeKey: "templates",
+      method: "GET",
+      path: "/templates",
       auth: "board",
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },

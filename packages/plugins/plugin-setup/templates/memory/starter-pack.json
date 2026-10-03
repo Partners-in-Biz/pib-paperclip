@@ -1,0 +1,320 @@
+{
+  "format": "pib-company-memory",
+  "version": 1,
+  "exportedAt": "2026-10-03T00:00:00.000Z",
+  "companyId": "pib-starter-pack",
+  "_pack": {
+    "name": "PiB starter memory pack",
+    "version": 1,
+    "status": "candidate",
+    "needsOwnerOk": true,
+    "builtFrom": "Company-wide facts in the live Partners in Biz Cockpit store (read-only SELECT on 2026-10-03): the 7 pinned ones, then the unpinned rule, warning and preference facts of areas other than accounting. Only facts about how the platform and its tools behave were kept; every fact about a client, a person, a price, a bank line, an issue number, a repo or this company's own books was left out. No secrets: every text was read by eye and checked against the Cockpit's secret filter.",
+    "howToUse": "Off by default. The owner reads these facts, then approves this exact version in Setup -> New company -> Memory starter pack. Only then can the bootstrap import it (Cockpit memory.import: company-wide facts only, exact duplicates skipped, nothing already in the company is changed).",
+    "reviewNotes": [
+      "Each fact is a lesson learned on one company's platform. Confirm it is still true before approving: the platform changed on 2026-10-03 (ask effects, health rules), and a fact may have become stale.",
+      "Pinned means always in the brief for its area. Only the two that are pinned in the live store are pinned here."
+    ]
+  },
+  "facts": [
+    {
+      "text": "Call partnersinbiz.* plugin tools as MCP tools, not through POST /api/plugins/tools/execute: that endpoint skips the tool gateway's checks and audit. If an MCP tool call fails, report it on the Cockpit health issue.",
+      "kind": "rule",
+      "area": "general",
+      "pinned": true,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mkr8xmkt58f",
+        "origin": "person",
+        "createdAt": "2026-09-28",
+        "pinnedLive": true,
+        "adapted": "dropped the date, named the Cockpit health issue"
+      }
+    },
+    {
+      "text": "Any owner comment on an issue with an open question card is recorded as the answer and closes the ask, even when it is about something else. After an owner reply, check they answered what you asked; re-ask if not.",
+      "kind": "warning",
+      "area": "operations",
+      "pinned": true,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mrjqvdcte69",
+        "origin": "tool",
+        "createdAt": "2026-09-28",
+        "pinnedLive": true,
+        "adapted": "dropped the issue number and the example"
+      }
+    },
+    {
+      "text": "An agent cannot set an unblockDescriptor naming the owner or the board. To block on a human, link the issue that holds the ask-owner ask via blockedByIssueIds, then set the status to blocked.",
+      "kind": "rule",
+      "area": "operations",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mqz3b5y56fx",
+        "origin": "tool",
+        "createdAt": "2026-09-30",
+        "pinnedLive": false,
+        "adapted": "reworded"
+      }
+    },
+    {
+      "text": "An issue Paperclip auto-blocked after run recovery cannot be PATCHed by the Operator (\"Agent cannot resolve another owner's recovery action\"); a comment still reaches the assignee.",
+      "kind": "warning",
+      "area": "operations",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mh5fza7hxzx",
+        "origin": "harvest",
+        "createdAt": "2026-10-03",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    },
+    {
+      "text": "A blocked issue cannot be set to cancelled through the agent API even after its blocker is cancelled, and clearing blockedByIssueIds in the same PATCH does not help; it needs an operator override.",
+      "kind": "warning",
+      "area": "operations",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mqdtnc7rafk",
+        "origin": "harvest",
+        "createdAt": "2026-10-03",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    },
+    {
+      "text": "After an issue moves to another agent, agents cannot edit its documents (\"cannot mutate another agent's issue\"). Keep your logs and notes on the issue you own.",
+      "kind": "rule",
+      "area": "general",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mgwj0jz3hzy",
+        "origin": "harvest",
+        "createdAt": "2026-10-01",
+        "pinnedLive": false,
+        "adapted": "dropped the issue number"
+      }
+    },
+    {
+      "text": "The server rejects a child issue assigned to the parent's creator (delegation_cycle): the Planner assigns implementation subtasks directly to the Developer or Senior Developer, not back through the Delivery Lead.",
+      "kind": "rule",
+      "area": "general",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mccb3nvprtn",
+        "origin": "harvest",
+        "createdAt": "2026-10-01",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    },
+    {
+      "text": "A developer never merges their own PR. The merge goes to the Delivery Lead (or as the repo guide says) through a child issue, and the source issue blocks on it.",
+      "kind": "rule",
+      "area": "general",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mfq5n06v88f",
+        "origin": "harvest",
+        "createdAt": "2026-10-01",
+        "pinnedLive": false,
+        "adapted": "generalised the role names"
+      }
+    },
+    {
+      "text": "crm:find-records can miss a record when the query is a domain with its TLD (\"example.co.za\" returned nothing while \"Example\" found the company). Search the bare name before concluding a client is not in the CRM.",
+      "kind": "warning",
+      "area": "crm",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mh1vzpyab8d",
+        "origin": "tool",
+        "createdAt": "2026-09-30",
+        "pinnedLive": false,
+        "adapted": "replaced the client's domain with an example"
+      }
+    },
+    {
+      "text": "Create-company redacts the stored domain in its response, so verify domains in the CRM UI if it matters.",
+      "kind": "warning",
+      "area": "crm",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mrbcptgmyhc",
+        "origin": "harvest",
+        "createdAt": "2026-10-01",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    },
+    {
+      "text": "A site repo workspace can be shared with concurrent runs that switch branches and commit mid-run. Push by refspec, never git add -A, and stage only your own files.",
+      "kind": "warning",
+      "area": "seo",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mmvtper88va",
+        "origin": "harvest",
+        "createdAt": "2026-09-29",
+        "pinnedLive": false,
+        "adapted": "dropped the repo name"
+      }
+    },
+    {
+      "text": "partnersinbiz.seo:run-pagespeed single lab runs (about 25 s) can exceed the tool gateway cap and time out. Use the thread-recorded gate (warm median over at least 5 runs) for close-out instead of re-firing single runs.",
+      "kind": "warning",
+      "area": "seo",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mpjq2h40hps",
+        "origin": "harvest",
+        "createdAt": "2026-10-01",
+        "pinnedLive": false,
+        "adapted": "dropped the issue number"
+      }
+    },
+    {
+      "text": "Draft X and Instagram as separate posts: the first comment and the platform text differ.",
+      "kind": "preference",
+      "area": "social",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "mgn5fnvwnwb",
+        "origin": "harvest",
+        "createdAt": "2026-10-03",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    },
+    {
+      "text": "Repurpose drafts for a platform with no connected account can be created (with a handoffKey) but fail validation until the account is attached.",
+      "kind": "rule",
+      "area": "social",
+      "pinned": false,
+      "status": "active",
+      "clientRef": null,
+      "_source": {
+        "factId": "m1m9v8m5qyr",
+        "origin": "harvest",
+        "createdAt": "2026-10-03",
+        "pinnedLive": false,
+        "adapted": "none"
+      }
+    }
+  ],
+  "_excluded": [
+    {
+      "factId": "mp2apgshzyp",
+      "reason": "this company's own books (cut-over date and bank balance)"
+    },
+    {
+      "factId": "m167nkptz3j",
+      "reason": "client names and payer mappings"
+    },
+    {
+      "factId": "mmg67fntwwg",
+      "reason": "this company's own ledger decisions"
+    },
+    {
+      "factId": "mcjyfcxq8ab",
+      "reason": "points at the payer-to-client mapping of this company's books"
+    },
+    {
+      "factId": "msjv09s7tjm",
+      "reason": "this company's own ledger decisions"
+    },
+    {
+      "factId": "mgyc34f1129",
+      "reason": "this company's own ledger question"
+    },
+    {
+      "factId": "mkkvk95sw4k",
+      "reason": "names this company's mailbox and issue numbers"
+    },
+    {
+      "factId": "m1jrv0pf9v7",
+      "reason": "names this company's issue numbers"
+    },
+    {
+      "factId": "mwj3aqb9vds",
+      "reason": "likely stale after the Wave 3 ask-effect change (an answered grant ask now creates the delegation)"
+    },
+    {
+      "factId": "mg5tafv8mbt",
+      "reason": "describes a Cockpit gap that the Wave 3 Cockpit change is meant to close"
+    },
+    {
+      "factId": "mnvb01qrq0g",
+      "reason": "stale: the Developer moved off Hermes on 2026-10-02"
+    },
+    {
+      "factId": "mdp987mwhg9",
+      "reason": "names this company's mail domain"
+    },
+    {
+      "factId": "mjhec4yjprj",
+      "reason": "about one repo's branches"
+    },
+    {
+      "factId": "m2b5janps8w",
+      "reason": "about one repo's branches"
+    },
+    {
+      "factId": "mtmrb39psrn",
+      "reason": "a preference about one project's money paths"
+    },
+    {
+      "factId": "m8xbnjca6k3",
+      "reason": "performance measurements of one site"
+    },
+    {
+      "factId": "m35rdwcydxs",
+      "reason": "a script path on this server for one site's measurements"
+    },
+    {
+      "factId": "mb1z16n0hke",
+      "reason": "a server-specific security note (backup contents), not a rule for new companies"
+    },
+    {
+      "factId": "mbhsgmt2aer",
+      "reason": "tied to this company's Google connectors and one document"
+    },
+    {
+      "factId": "mgp4d2p7w23",
+      "reason": "about one site repo's CI"
+    },
+    {
+      "factId": "mjqxpc9t4tq",
+      "reason": "about one site repo's production branch"
+    },
+    {
+      "factId": "m7bse8t7jdy",
+      "reason": "a defect on one client page"
+    }
+  ]
+}

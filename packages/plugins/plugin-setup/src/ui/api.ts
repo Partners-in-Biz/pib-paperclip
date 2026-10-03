@@ -133,3 +133,27 @@ export async function savePluginConfig(pluginId: string, companyId: string, conf
   });
   if (!res.ok) throw errorFrom(await readJson(res), `Could not save settings (${res.status})`);
 }
+
+export interface CompanyInfoLite {
+  name: string;
+  prefix: string | null;
+  /** The company asks the board to approve every new agent; null when the record does not say. */
+  requireApproval: boolean | null;
+}
+
+/** One company's name, issue prefix and hire-approval rule. Null when it cannot be read. */
+export async function fetchCompanyInfo(companyId: string): Promise<CompanyInfoLite | null> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}`, { credentials: "include", headers: { accept: "application/json" } });
+    const body = await readJson(res);
+    if (!res.ok || !body || typeof body !== "object") return null;
+    const row = ("data" in (body as object) && (body as { data?: unknown }).data && typeof (body as { data?: unknown }).data === "object" ? (body as { data: Record<string, unknown> }).data : (body as Record<string, unknown>));
+    return {
+      name: typeof row.name === "string" ? row.name : companyId,
+      prefix: typeof row.issuePrefix === "string" ? row.issuePrefix : null,
+      requireApproval: typeof row.requireBoardApprovalForNewAgents === "boolean" ? row.requireBoardApprovalForNewAgents : null,
+    };
+  } catch {
+    return null;
+  }
+}

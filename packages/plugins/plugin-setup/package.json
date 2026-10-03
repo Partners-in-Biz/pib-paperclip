@@ -1,16 +1,17 @@
 {
   "name": "@partnersinbiz/plugin-setup",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
-  "description": "Partners in Biz guided setup. Hire the company's agents (Team), pick the modules it uses, see what each plugin still needs, fix it with deep links or \"Do it for me\", and copy setup from another company.",
+  "description": "Partners in Biz guided setup. Hire the company's agents (Team), pick the modules it uses, see what each plugin still needs, fix it with deep links or \"Do it for me\", copy setup from another company, and bring a new company up in one run (New company) from the versioned team template pack.",
   "files": [
     "dist",
     "migrations",
+    "templates",
     "README.md"
   ],
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "node ./scripts/embed-templates.mjs && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
     "test": "vitest run --config ./vitest.config.ts",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"

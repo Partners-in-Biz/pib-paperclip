@@ -1,0 +1,499 @@
+{
+  "pack": "pib-standard-team",
+  "version": 1,
+  "updated": "2026-10-03",
+  "description": "The agents a PiB company has that are not kit team roles: the CEO, the dev team (Delivery Lead, Planner, Plan Critic, Senior Developer, Developer, Code Reviewer, Mac Builder), the Growth Marketing Lead (who also holds the Social role), the Summarizer and the Wiki Maintainer. Taken from the live Partners in Biz agents on 2026-10-03 and cleaned up. The kit TEAM_ROLES (Operator, Reviewer, Account Manager, SEO, Social, Bookkeeper, Payroll Clerk and the sales roles) are NOT in this pack: they are staffed in Setup -> Team.",
+  "variables": {
+    "company": "The company's name.",
+    "prefix": "The company's issue prefix, used in /<prefix>/agents/<url-key> links.",
+    "owner": "The board owner's name, or 'the company owner'.",
+    "ceo": "The CEO agent's name, or 'the CEO'.",
+    "ceoLink": "A link to the CEO agent, or 'the CEO'.",
+    "wikiRoot": "The company wiki folder (only the Wiki Maintainer uses it)."
+  },
+  "sharedBlocks": [
+    "execution-contract",
+    "dev-conventions"
+  ],
+  "templates": [
+    {
+      "key": "ceo",
+      "name": "CEO",
+      "title": "CEO",
+      "role": "ceo",
+      "icon": "crown",
+      "group": "core",
+      "capabilities": "Owner's main point of contact: understands requests, hires and delegates (executes the Hire tasks Setup opens), proposes and coordinates further work.",
+      "reportsTo": null,
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 300,
+        "maxConcurrentRuns": 3
+      },
+      "desiredSkills": [
+        "paperclipai/paperclip/paperclip",
+        "paperclipai/paperclip/paperclip-board",
+        "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+        "paperclipai/paperclip/paperclip-create-agent",
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "ceo",
+      "match": {
+        "names": [
+          "CEO"
+        ],
+        "titles": [
+          "CEO",
+          "Chief Executive Officer"
+        ],
+        "roles": [
+          "ceo"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "With no CEO in the company nobody can execute a Hire task: a person creates this agent first (Agents -> New agent, or `new-company.py --create-ceo`).",
+        "The company wizard builds a generic CEO with the host's default instructions; replace them with this file.",
+        "Live (2026-10-03): the PiB agent has dangerouslySkipPermissions, graceSec 15 and maxTurnsPerRun 1000. The pack asks for a turn cap of 300 and does not set dangerouslySkipPermissions: copy the adapter conventions of the company's other claude_local agents."
+      ]
+    },
+    {
+      "key": "delivery-lead",
+      "name": "Delivery Lead",
+      "title": "Delivery Lead",
+      "role": "general",
+      "icon": "package",
+      "group": "dev-team",
+      "capabilities": "Turns incoming requests into Paperclip tasks, routes them to the right dev-team agent, chases stalled work and merges passed PRs into development; makes no technical decisions.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 200,
+        "maxConcurrentRuns": 3
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "delivery-lead",
+      "match": {
+        "names": [
+          "Delivery Lead"
+        ],
+        "titles": [
+          "Delivery Lead"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": []
+    },
+    {
+      "key": "planner",
+      "name": "Planner",
+      "title": "Planner / Architect",
+      "role": "engineer",
+      "icon": "brain",
+      "group": "dev-team",
+      "capabilities": "Writes specs and breaks them into acceptance-criteria-tagged tasks for the dev team, gated by the Plan Critic before implementation starts.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-fable-5-1",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 200,
+        "maxConcurrentRuns": 3
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "planner",
+      "match": {
+        "names": [
+          "Planner"
+        ],
+        "titles": [
+          "Planner / Architect",
+          "Planner"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "The live Planner's model was set by a board user on 2026-09-29. If the company's Claude plan does not offer claude-fable-5-1, use claude-sonnet-5-5 and say so in the hire comment.",
+        "The Plan Critic must run on a different model family from the Planner: keep them apart."
+      ]
+    },
+    {
+      "key": "plan-critic",
+      "name": "Plan Critic",
+      "title": "Plan Critic",
+      "role": "general",
+      "icon": "microscope",
+      "group": "dev-team",
+      "capabilities": "One-shot gate that critiques each plan once for failure modes, missing edge cases and over-engineering, then hands it back to the Planner.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "hermes_local",
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "hermes": {
+          "provider": "nous",
+          "model": "deepseek/deepseek-v4-flash-0731"
+        },
+        "effort": "low",
+        "timeoutSec": 1800,
+        "maxTurnsPerRun": 100,
+        "maxConcurrentRuns": 3
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "plan-critic",
+      "match": {
+        "names": [
+          "Plan Critic"
+        ],
+        "titles": [
+          "Plan Critic"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "Runs on Hermes (a different model family from the Planner) on purpose. On claude_local the independence is lost: say so in the hire comment if Hermes is not available.",
+        "A hermes_local agent needs the tools:use grant to recall company memory (owner decision pending, see the grants list)."
+      ]
+    },
+    {
+      "key": "senior-developer",
+      "name": "Senior Developer",
+      "title": "Senior Software Engineer",
+      "role": "engineer",
+      "icon": "code",
+      "group": "dev-team",
+      "capabilities": "Implements hard and escalated dev tasks: architecture, migrations, concurrency, security and debugging.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 300,
+        "maxConcurrentRuns": 3
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "senior-developer",
+      "match": {
+        "names": [
+          "Senior Developer"
+        ],
+        "titles": [
+          "Senior Software Engineer",
+          "Senior Developer"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": []
+    },
+    {
+      "key": "developer",
+      "name": "Developer",
+      "title": "Software Engineer",
+      "role": "engineer",
+      "icon": "hammer",
+      "group": "dev-team",
+      "capabilities": "Implements easy, clearly specified dev tasks; escalates to the Senior Developer after 2 failed attempts or 1 failed review.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 250,
+        "maxConcurrentRuns": 4
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "developer",
+      "match": {
+        "names": [
+          "Developer"
+        ],
+        "titles": [
+          "Software Engineer",
+          "Developer"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "Do not run this agent on hermes_local: Hermes runs of this role aborted in repo workspaces yet reported success (company memory, 2026-10-01). The live Developer moved to claude_local on 2026-10-02."
+      ]
+    },
+    {
+      "key": "code-reviewer",
+      "name": "Code Reviewer",
+      "title": "Reviewer / Verifier",
+      "role": "qa",
+      "icon": "bug",
+      "group": "dev-team",
+      "capabilities": "Reviews dev-team diffs for correctness and security and verifies them with a real run (tests, app, API), never reviewing its own work.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSec": 3600,
+        "maxTurnsPerRun": 200,
+        "maxConcurrentRuns": 4
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "code-reviewer",
+      "match": {
+        "names": [
+          "Code Reviewer"
+        ],
+        "titles": [
+          "Reviewer / Verifier"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": true,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "Named Code Reviewer so it is never confused with the Cockpit's Reviewer (outward-facing work)."
+      ]
+    },
+    {
+      "key": "mac-builder",
+      "name": "Mac Builder",
+      "title": "iOS build and release (Mac)",
+      "role": "engineer",
+      "icon": "wrench",
+      "group": "dev-team",
+      "capabilities": "Xcode builds, archive and export, TestFlight upload and simulator checks on the company's Mac build host; releases need the owner's approval.",
+      "reportsTo": "delivery-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-sonnet-5-5",
+        "effort": "low",
+        "timeoutSec": 5400,
+        "maxTurnsPerRun": 150,
+        "maxConcurrentRuns": 1
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-crm/ios-release",
+        "paperclipai/paperclip/paperclip",
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "mac-builder",
+      "match": {
+        "names": [
+          "Mac Builder"
+        ],
+        "titles": [
+          "iOS build and release (Mac)"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": false,
+      "requires": {
+        "modules": [],
+        "environment": "A 'Mac build host' environment (Settings -> Environments) whose SSH key is a secret of THIS company; the host refuses cross-company secrets."
+      },
+      "notes": [
+        "Off by default: only a company that ships iOS apps needs it, and it needs its own Mac environment and SSH key (owner step).",
+        "The live agent runs the Claude CLI engine through the Mac environment (engine cli, command claude); copy those adapter keys from an existing Mac Builder."
+      ]
+    },
+    {
+      "key": "growth-marketing-lead",
+      "name": "Growth Marketing Lead",
+      "title": "Growth Marketing Lead",
+      "role": "general",
+      "icon": "target",
+      "group": "marketing",
+      "capabilities": "Owns ICP, positioning, channel strategy and weekly pipeline reporting; also the company's Social agent: plans, drafts, schedules and publishes approved posts and runs the Growth Lab.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "fromKitRole": "social"
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-social/social-publish",
+        "plugin/partnersinbiz-social/social-content",
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "kitRole": "social",
+      "file": "growth-marketing-lead",
+      "match": {
+        "names": [
+          "Growth Marketing Lead"
+        ],
+        "titles": [
+          "Growth Marketing Lead"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": false,
+      "requires": {
+        "modules": [
+          "social"
+        ]
+      },
+      "notes": [
+        "Holds the kit Social role: hire it through the Social plugin's own hire (Setup does this) so it is linked and wired. Use this template instead of the plain Social agent only when the company wants a growth lead who also does social.",
+        "Without this template, Setup -> Team staffs a plain Social agent from the kit role."
+      ]
+    },
+    {
+      "key": "summarizer",
+      "name": "Summarizer",
+      "title": "Summarizer",
+      "role": "general",
+      "icon": "sparkles",
+      "group": "support",
+      "capabilities": "Writes short, human-readable Markdown status summaries into project, workspaces-overview, project-workspace and execution-workspace summary slots on demand.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-haiku-4-5",
+        "effort": "low",
+        "timeoutSec": 1800,
+        "maxTurnsPerRun": 60,
+        "maxConcurrentRuns": 2
+      },
+      "desiredSkills": [
+        "paperclipai/bundled/paperclip-operations/summarize-status"
+      ],
+      "file": "summarizer",
+      "match": {
+        "names": [
+          "Summarizer"
+        ],
+        "titles": [
+          "Summarizer"
+        ]
+      },
+      "provisioning": "host",
+      "defaultOn": false,
+      "requires": {
+        "modules": []
+      },
+      "notes": [
+        "Paperclip's own built-in reporting agent (its instructions say so). Hire it from this entry when the company wants status summaries; it cannot create agents or skills (permissions off)."
+      ]
+    },
+    {
+      "key": "wiki-maintainer",
+      "name": "Wiki Maintainer",
+      "title": "LLM Wiki Maintainer",
+      "role": "general",
+      "icon": "lightbulb",
+      "group": "support",
+      "capabilities": "Ingests source material, maintains local wiki pages, answers cited questions and runs wiki lint and maintenance through the LLM Wiki plugin tools.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "hermes_local",
+        "claude_local"
+      ],
+      "runProfile": {
+        "model": "claude-haiku-4-5",
+        "hermes": {
+          "provider": "nous",
+          "model": "deepseek/deepseek-v4-flash-0731"
+        },
+        "effort": "low",
+        "timeoutSec": 1800,
+        "maxTurnsPerRun": 100,
+        "maxConcurrentRuns": 2
+      },
+      "desiredSkills": [
+        "plugin/paperclipai-plugin-llm-wiki/wiki-maintainer",
+        "plugin/paperclipai-plugin-llm-wiki/wiki-ingest",
+        "plugin/paperclipai-plugin-llm-wiki/wiki-query",
+        "plugin/paperclipai-plugin-llm-wiki/wiki-lint",
+        "plugin/paperclipai-plugin-llm-wiki/paperclip-distill",
+        "plugin/paperclipai-plugin-llm-wiki/index-refresh"
+      ],
+      "file": "wiki-maintainer",
+      "match": {
+        "names": [
+          "Wiki Maintainer"
+        ],
+        "titles": [
+          "LLM Wiki Maintainer"
+        ],
+        "roles": [
+          "knowledge-maintainer"
+        ]
+      },
+      "provisioning": "plugin",
+      "defaultOn": false,
+      "requires": {
+        "modules": [
+          "memory"
+        ]
+      },
+      "notes": [
+        "The LLM Wiki plugin provisions this agent when the company wiki is set up (Setup -> Company wiki -> Set up company memory), and the Company wiki step does that before any hire task is needed. The adapter and model stay a person's step: use this entry's run profile and set the model key.",
+        "The role in a hire request must be one the host's agent-hires accepts, so this entry hires with `general`. The agent the LLM Wiki plugin makes carries the role `knowledge-maintainer` (the host's agent-hires would reject it); `match.roles` keeps that value only to recognise that agent.",
+        "The instructions carry the company wiki folder: it is `<instance>/companies/<companyId>/wiki`, and the plugin writes it into the agent's own AGENTS.md. Do not hand-copy the live file."
+      ]
+    }
+  ]
+}

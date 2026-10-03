@@ -25,6 +25,8 @@ export interface FinishSetupInput {
   installed: Record<string, InstalledPlugin> | null;
   /** Company issue prefix for links, e.g. `PIB`. */
   prefix: string | null;
+  /** Extra markdown for the end of the issue (the New company bootstrap's list of grants only a person can give). */
+  extra?: string | null;
 }
 
 export interface FinishSetupMissing {
@@ -115,6 +117,7 @@ export function finishSetupContent(input: FinishSetupInput): FinishSetupContent 
     lines.push("", `## ${MODULES[section.module].title} (${progress.done} of ${progress.total} done)`, "");
     for (const item of section.missing) lines.push(itemLine(item, input.prefix));
   }
+  if (input.extra && input.extra.trim()) lines.push("", input.extra.trim());
   lines.push("", "This issue updates itself and closes when everything required is done.");
   return {
     title: `Finish setup: ${setupLeftLabel(summary.requiredLeft)}`,

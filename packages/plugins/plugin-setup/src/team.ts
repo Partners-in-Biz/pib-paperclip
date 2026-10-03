@@ -10,6 +10,7 @@
  * - guided mode walks the missing required roles first;
  * - the partial `cockpit.save-team` payloads.
  */
+import { agentRunProfileProblems, type RunProfile } from "@partnersinbiz/pib-plugin-kit/run-profile";
 import {
   activeTeamRoles,
   TEAM_INACTIVE_STATUSES,
@@ -53,6 +54,13 @@ export interface TeamAgent {
   role: string | null;
   status: string;
   urlKey: string | null;
+  /** Who it reports to (from the company agent list; absent on a plugin's hire summary). */
+  reportsTo?: string | null;
+  /** `permissions.canCreateAgents`; null when the record does not say. */
+  canCreateAgents?: boolean | null;
+  /** The adapter and its settings, from the company agent list (secrets are references there, never values). */
+  adapterType?: string | null;
+  adapterConfig?: Record<string, unknown> | null;
 }
 
 export interface TeamHire {
@@ -164,6 +172,8 @@ export function parseTeamAgent(raw: unknown): TeamAgent | null {
   const row = rec(raw);
   const id = str(row?.id);
   if (!row || !id) return null;
+  const permissions = rec(row.permissions);
+  const config = rec(row.adapterConfig);
   return {
     id,
     name: str(row.name) ?? "Agent",
@@ -171,6 +181,10 @@ export function parseTeamAgent(raw: unknown): TeamAgent | null {
     role: str(row.role),
     status: str(row.status) ?? "",
     urlKey: str(row.urlKey),
+    ...(row.reportsTo !== undefined ? { reportsTo: str(row.reportsTo) } : {}),
+    ...(typeof permissions?.canCreateAgents === "boolean" ? { canCreateAgents: permissions.canCreateAgents } : {}),
+    ...(str(row.adapterType) ? { adapterType: str(row.adapterType) } : {}),
+    ...(config ? { adapterConfig: config } : {}),
   };
 }
 
@@ -226,7 +240,18 @@ function byId(agents: TeamAgent[] | null | undefined): Map<string, TeamAgent> {
 function enrich(agent: TeamAgent | null, known: Map<string, TeamAgent>): TeamAgent | null {
   if (!agent) return null;
   const listed = known.get(agent.id);
-  return listed ? { ...agent, urlKey: listed.urlKey ?? agent.urlKey, title: agent.title ?? listed.title, role: agent.role ?? listed.role } : agent;
+  return listed
+    ? {
+      ...agent,
+      urlKey: listed.urlKey ?? agent.urlKey,
+      title: agent.title ?? listed.title,
+      role: agent.role ?? listed.role,
+      ...(listed.reportsTo !== undefined ? { reportsTo: listed.reportsTo } : {}),
+      ...(listed.canCreateAgents !== undefined ? { canCreateAgents: listed.canCreateAgents } : {}),
+      ...(listed.adapterType ? { adapterType: listed.adapterType } : {}),
+      ...(listed.adapterConfig ? { adapterConfig: listed.adapterConfig } : {}),
+    }
+    : agent;
 }
 
 // ---------------------------------------------------------------------------
@@ -750,12 +775,12 @@ export function cockpitConflict(input: { kind: CockpitRoleKind; agentId: string 
 // Address: `?section=team#team-<role>`
 // ---------------------------------------------------------------------------
 
-export type SetupSection = "team" | "modules" | "checklist";
+export type SetupSection = "team" | "modules" | "checklist" | "new-company";
 
 /** Which section the address asks for, and the element to scroll to. */
 export function setupFocus(search: string | null | undefined, hash: string | null | undefined): { section: SetupSection | null; anchor: string | null } {
   const value = new URLSearchParams(search ?? "").get("section");
-  const section = value === "team" || value === "modules" || value === "checklist" ? value : null;
+  const section = value === "team" || value === "modules" || value === "checklist" || value === "new-company" ? value : null;
   const raw = (hash ?? "").replace(/^#/, "");
   let anchor: string | null = null;
   try {
@@ -771,4 +796,32 @@ export function setupFocus(search: string | null | undefined, hash: string | nul
 /** The role a `#team-<role>` anchor names, if any. */
 export function anchorRole(anchor: string | null | undefined): string | null {
   return anchor && anchor.startsWith("team-") && anchor !== OWNER_ANCHOR ? anchor.slice("team-".length) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Run profile (Q8-7, Q9-7): what each role should run with, and what a live agent lacks
+// ---------------------------------------------------------------------------
+
+/** "Sonnet" / "Haiku" / "Opus" / "Fable" from a model id, else the id. */
+export function modelLabel(model: string): string {
+  const family = /(sonnet|haiku|opus|fable)/i.exec(model);
+  return family ? family[1]!.charAt(0).toUpperCase() + family[1]!.slice(1).toLowerCase() : model;
+}
+
+/** One line: "Sonnet · 60 min per run · up to 3 at once". */
+export function runProfileText(profile: Pick<RunProfile, "model" | "timeoutSec" | "maxConcurrentRuns" | "hermes">): string {
+  const minutes = Math.round(profile.timeoutSec / 60);
+  const model = profile.hermes ? `${modelLabel(profile.model)} (or ${modelLabel(profile.hermes.model)} on Hermes)` : modelLabel(profile.model);
+  return `${model} · ${minutes} min per run · up to ${profile.maxConcurrentRuns} at once`;
+}
+
+/**
+ * What a linked agent lacks of a run profile (no pinned model, no timeout, no
+ * turn cap), from its adapter settings in the company agent list. Empty when the
+ * settings are unknown (a plugin's hire summary carries none) so nothing is
+ * claimed that was not read.
+ */
+export function runProfileProblemsFor(agent: TeamAgent | null | undefined): string[] {
+  if (!agent || !agent.adapterConfig) return [];
+  return agentRunProfileProblems({ id: agent.id, name: agent.name, status: agent.status, adapterType: agent.adapterType ?? null, adapterConfig: agent.adapterConfig });
 }

@@ -40,6 +40,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { missingAgentSkills } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import type { ModuleKey } from "../kit-setup.js";
+import { defaultHireAssignee, hiringLine, pickHiringAgent, teamAgentCandidate, type HiringPick } from "../hiring.js";
 import {
   agentDetail,
   agentPath,
@@ -68,6 +69,8 @@ import {
   roleHealth,
   roleLoadError,
   rowOpenByDefault,
+  runProfileProblemsFor,
+  runProfileText,
   skillLabel,
   skillNames,
   TEAM_ANCHOR,
@@ -126,6 +129,8 @@ export interface TeamController {
   agents: TeamAgent[] | null;
   users: BoardUser[] | null;
   cockpit: CockpitTeam | null;
+  /** Who does this company's hiring (CEO by role or title, else the head of the org chart); null until the agents are read (Q7-4). */
+  hiring: HiringPick | null;
   /** The first load finished. */
   loaded: boolean;
   loading: boolean;
@@ -485,12 +490,15 @@ export function useTeam(input: {
     await saveSettings("review", reviewPatch(on), { reviewOutward: on }, done);
   }
 
+  const hiring = useMemo(() => (agents ? pickHiringAgent(agents.map(teamAgentCandidate)) : null), [agents]);
+
   return {
     roles,
     states,
     agents,
     users,
     cockpit,
+    hiring,
     loaded,
     loading,
     me,
@@ -747,6 +755,7 @@ export function TeamRoleRow({ state, open, highlight, busy, note, linkFor, now, 
               {attentionLines(state).map((line) => <li key={line}>{line}</li>)}
             </ul>
           ) : null}
+          <RunProfileLine state={state} />
           {buttons.length ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{buttons}</div> : null}
           {role.extraSkills?.length && agent && state.extras?.length ? (
             <ExtraSkills extras={state.extras} role={role} busy={busy === "extras"} onAttach={onAttachExtras} />
@@ -754,6 +763,27 @@ export function TeamRoleRow({ state, open, highlight, busy, note, linkFor, now, 
         </div>
       ) : null}
       {note ? <TeamNote note={note} onDismiss={onDismissNote} /> : null}
+    </div>
+  );
+}
+
+/**
+ * The run profile a role should have (model, run time, how many at once) and, for a
+ * linked agent whose settings were read, what it lacks. A plugin cannot change an
+ * agent's settings: the fix is the agent's Configuration (or the server's
+ * new-company script), so the line says what to set and never claims it did.
+ */
+export function RunProfileLine({ state }: { state: TeamRoleState }) {
+  const profile = state.role.runProfile;
+  const problems = runProfileProblemsFor(state.agent);
+  return (
+    <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+      <span style={muted}>Run profile: {runProfileText(profile)}.</span>
+      {problems.length ? (
+        <span style={{ fontSize: 12.5, lineHeight: 1.5, color: tone("warn").fg }}>
+          {state.agent?.name ?? "The agent"} runs without it ({problems.join("; ")}). Open its Configuration and set the model, a run timeout and the turn cap above: a plugin cannot change agent settings.
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -820,6 +850,24 @@ export function TeamSettings({ users, me, ownerUserId, reviewOutward, reviewer, 
   );
 }
 
+/**
+ * Who does the hiring, and, when nobody can, the problem and the fix (Q7-4). Hire
+ * tasks go to the agent that hires; without one they would sit unread.
+ */
+export function HiringNotice({ hiring }: { hiring: HiringPick | null }) {
+  if (!hiring) return null;
+  if (!hiring.agent) {
+    return (
+      <div role="status" data-testid="no-hiring-agent" style={{ display: "grid", gap: 6, padding: "10px 12px", borderRadius: 12, border: `1px solid ${tone("bad").border}`, background: tone("bad").soft, minWidth: 0 }}>
+        <strong style={{ fontSize: 13.5 }}>Nobody can do this company's hiring yet</strong>
+        <span style={{ fontSize: 13, lineHeight: 1.5 }}>{hiring.problem}</span>
+        <span style={{ fontSize: 13, lineHeight: 1.5 }}><strong>Fix:</strong> {hiring.fix}</span>
+      </div>
+    );
+  }
+  return <span data-testid="hiring-agent" style={muted}>{hiringLine(hiring)} Hire tasks go to it by default.</span>;
+}
+
 /** The Team section at the top of the Setup page (`#team`, `?section=team`). */
 export function TeamSection({ team, linkFor, focusAnchor, now }: { team: TeamController; linkFor: LinkPropsFor; focusAnchor?: string | null; now?: number }) {
   const [open, setOpen] = useState<Partial<Record<TeamRoleKey, boolean>>>({});
@@ -858,6 +906,7 @@ export function TeamSection({ team, linkFor, focusAnchor, now }: { team: TeamCon
       )}
     >
       <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        <HiringNotice hiring={team.hiring} />
         {team.roles.map((role) => {
           const state = team.states[role.key] ?? emptyRoleState(role);
           const health = roleHealth(state);
@@ -1073,12 +1122,16 @@ function RemoveAgentModal({ team, role }: { team: TeamController; role: TeamRole
 export function TeamDialogs({ team }: { team: TeamController }) {
   const dialog = team.dialog;
   const hire = dialog?.kind === "hire" ? dialog : null;
+  // The agent that does the hiring is the default (Setup's rule: CEO by role or title, else the head of the org chart), even when the plugin's own default is someone else.
+  const hiringAgent = team.hiring?.agent ?? null;
   const assignees: TaskAssigneeOption[] = hire
     ? [
       ...(team.me ? [{ kind: "user" as const, id: team.me, name: "Me" }] : []),
       ...hire.options.agents.map((agent) => ({ kind: "agent" as const, id: agent.id, name: agent.name, detail: agentDetail(agent), status: agent.status })),
+      ...(hiringAgent && !hire.options.agents.some((agent) => agent.id === hiringAgent.id) ? [{ kind: "agent" as const, id: hiringAgent.id, name: hiringAgent.name, detail: hiringAgent.title ?? undefined, status: hiringAgent.status }] : []),
     ]
     : [];
+  const defaultAssigneeId = defaultHireAssignee(team.hiring, hire?.options.defaultAssigneeAgentId);
   return (
     <>
       <NewTaskDialog
@@ -1087,7 +1140,7 @@ export function TeamDialogs({ team }: { team: TeamController }) {
         initialTitle={hire?.options.draft.title ?? ""}
         initialDescription={hire?.options.draft.description ?? ""}
         assignees={assignees}
-        defaultAssignee={hire?.options.defaultAssigneeAgentId ? `agent:${hire.options.defaultAssigneeAgentId}` : undefined}
+        defaultAssignee={defaultAssigneeId ? `agent:${defaultAssigneeId}` : undefined}
         note={hire ? `Give it to the agent that hires for this company (usually the CEO), or to yourself. When the new agent appears, the ${pluginName(hire.role)} plugin links it, grants its tools and sets up its work.` : undefined}
         onClose={team.closeDialog}
         onCreate={team.createHire}

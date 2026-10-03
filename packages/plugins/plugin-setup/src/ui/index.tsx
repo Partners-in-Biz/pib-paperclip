@@ -7,7 +7,7 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, SectionCard, Select, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, Rocket, SectionCard, Select, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, SETUP_PLUGIN, setupLeftLabel, type ModuleKey, type SetupItem, type SetupSummary } from "../kit-setup.js";
 import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupSummary } from "../finish-issue.js";
@@ -20,12 +20,13 @@ import { fetchCompanies, fetchPluginConfig, runPluginAction, savePluginConfig, t
 import { Card, Chip, ItemLink, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
 import { onSetupChanged, sharedRequest, useSetupData, viewsSummary, type LoadResult, type ModuleView, type SetupData } from "./data.js";
 import { runMemorySetup } from "./memory-client.js";
+import { NewCompanySection } from "./new-company.js";
 import { GuideOwnerStep, GuideTeamStep, ownerStepNeeded, scrollToAnchor, TeamDialogs, TeamSection, useTeam, withTeamScroll, type TeamController } from "./team.js";
 
 export { resolveModuleViews, viewsSummary } from "./data.js";
 export { GuideOwnerStep, GuideTeamStep, TeamNote, TeamRoleRow, TeamSettings } from "./team.js";
 
-type TabId = "team" | "checklist" | "modules";
+type TabId = "team" | "checklist" | "modules" | "new-company";
 
 function useLinkFor(): LinkPropsFor {
   const navigation = useHostNavigation();
@@ -45,9 +46,11 @@ export function moduleAnchor(hash: string | null | undefined): ModuleKey | null 
 
 /** The tabs the page shows, and the one it opens on: Team comes first once the modules are chosen. */
 export function setupTabs(input: { firstVisit: boolean; showTeam: boolean; requested: string | null }): { ids: TabId[]; active: TabId } {
-  const ids: TabId[] = input.firstVisit
+  // New company is always last: it is the one-run path for a company that has nothing yet, and the home of the team template pack.
+  const lead: TabId[] = input.firstVisit
     ? (input.showTeam ? ["modules", "team"] : ["modules"])
     : [...(input.showTeam ? (["team"] as TabId[]) : []), "checklist", "modules"];
+  const ids: TabId[] = [...lead, "new-company"];
   const requested = ids.find((id) => id === input.requested);
   return { ids, active: requested ?? ids[0]! };
 }
@@ -250,7 +253,9 @@ export function SetupPage({ context }: PluginPageProps) {
             ? { id, label: "Team", icon: Users, count: teamCount.needYou || null, countTone: "bad" }
             : id === "checklist"
               ? { id, label: "Checklist", icon: ListChecks, count: counted?.summary.requiredLeft || null, countTone: "warn" }
-              : { id, label: "Modules", icon: Blocks })}
+              : id === "new-company"
+                ? { id, label: "New company", icon: Rocket }
+                : { id, label: "Modules", icon: Blocks })}
           active={tab}
           onChange={(id) => selectTab(id as TabId)}
         />
@@ -259,6 +264,10 @@ export function SetupPage({ context }: PluginPageProps) {
       {data.loading && !data.load ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
 
       {tab === "team" && showTeam ? <TeamSection team={team} linkFor={linkFor} focusAnchor={focus.anchor} /> : null}
+
+      {tab === "new-company" && data.load ? (
+        <NewCompanySection data={data} team={team} companyId={companyId} linkFor={linkFor} onChanged={async () => { await data.reload(); await team.reload(); }} />
+      ) : null}
 
       {tab === "modules" && draft ? (
         <ModulesStep
@@ -270,6 +279,7 @@ export function SetupPage({ context }: PluginPageProps) {
           onChange={setDraft}
           onSave={doSaveModules}
           onCopy={firstVisit ? () => setCopyOpen(true) : undefined}
+          onNewCompany={firstVisit ? () => selectTab("new-company") : undefined}
         />
       ) : null}
 
@@ -328,7 +338,7 @@ function installedReport(installed: Record<string, PluginRecordLite> | null) {
 // Modules
 // ---------------------------------------------------------------------------
 
-export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChange, onSave, onCopy }: {
+export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChange, onSave, onCopy, onNewCompany }: {
   draft: ModuleChoice;
   installed: Record<string, PluginRecordLite> | null;
   firstVisit: boolean;
@@ -338,6 +348,8 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
   onSave: () => void;
   /** First visit only (later it sits under the summary): copy another company's setup instead. */
   onCopy?: () => void;
+  /** First visit only: set the whole company up in one run instead. */
+  onNewCompany?: () => void;
 }) {
   const hint = crmHint(draft);
   return (
@@ -346,6 +358,7 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
       icon={Blocks}
       actions={(
         <>
+          {onNewCompany ? <Button type="button" variant="secondary" onClick={onNewCompany}>Set up in one run</Button> : null}
           {onCopy ? <Button type="button" variant="secondary" onClick={onCopy}>Copy from another company</Button> : null}
           <Button type="button" onClick={onSave} disabled={busy || (!dirty && !firstVisit)}>{busy ? "Saving…" : firstVisit ? "Save and continue" : "Save modules"}</Button>
         </>

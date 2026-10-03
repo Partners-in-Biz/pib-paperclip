@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
@@ -28,13 +29,14 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.5.0");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
-    for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
+    for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
     }
     expect(manifest.ui?.slots?.map((slot) => slot.type)).toEqual(["page", "sidebar", "dashboardWidget"]);
     expect(manifest.apiRoutes?.[0]).toMatchObject({ routeKey: "modules", path: "/modules", auth: "board", companyResolution: { from: "query", key: "companyId" } });
+    expect(manifest.apiRoutes?.[1]).toMatchObject({ routeKey: "templates", method: "GET", path: "/templates", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } });
     expect(manifest.jobs?.find((job) => job.jobKey === JOBS.weeklyFinishSetup)?.schedule).toBe("0 5 * * 1");
   });
 
@@ -43,6 +45,16 @@ describe("manifest and migration", () => {
     const statements = splitSqlStatements(sql);
     expect(statements).toHaveLength(3);
     for (const statement of statements) validateMigrationStatement(statement, NAMESPACE);
+  });
+
+  it("passes the host migration guard with the New company tables (002), and 001 is untouched", () => {
+    const sql = readFileSync(new URL("../migrations/002_bootstrap.sql", import.meta.url), "utf8");
+    const statements = splitSqlStatements(sql);
+    expect(statements).toHaveLength(4);
+    for (const statement of statements) validateMigrationStatement(statement, NAMESPACE);
+    expect(statements.map((statement) => /CREATE TABLE \S+\.(\w+)/.exec(statement)![1])).toEqual(["bootstrap_runs", "template_hires", "starter_pack_approvals", "starter_pack_imports"]);
+    // An applied migration is never edited: its checksum would no longer match.
+    expect(createHash("sha256").update(readFileSync(new URL("../migrations/001_setup.sql", import.meta.url), "utf8")).digest("hex")).toBe("87e5d679e5e488b19fa02a871154377abee8fb4477513eb313b96ac36ccbf483");
   });
 });
 
@@ -93,7 +105,8 @@ describe("module choice", () => {
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
     expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup].sort());
-    expect([...handlers.keys()].sort()).toEqual(Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`).sort());
+    // The status feeds, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
+    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), "company.created", "company.updated", "project.created"].sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
     expect(load).toMatchObject({ modules: expect.objectContaining({ payroll: false }), updatedBy: "user-9", installed: { [PIB_PLUGINS.crm]: { id: "crm-uuid", status: "ready" } } });
   });

@@ -9,11 +9,20 @@ export interface FakeIssue {
   description: string;
   status: string;
   assigneeUserId?: string | null;
+  assigneeAgentId?: string | null;
   originKind?: string;
   originId?: string | null;
 }
 
-export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string> } = {}) {
+export interface FakeCompany {
+  name?: string;
+  issuePrefix?: string;
+  defaultResponsibleUserId?: string | null;
+  requireBoardApprovalForNewAgents?: boolean;
+}
+
+export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string>; companies?: Record<string, FakeCompany>; wakeFails?: boolean } = {}) {
+  const wakes: Array<{ issueId: string; companyId: string; reason?: string }> = [];
   const store: Store = {};
   const db = createFakeDb(store, { namespace: NAMESPACE });
   const emitted: Array<{ name: string; companyId: string; payload: unknown }> = [];
@@ -46,7 +55,12 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
         state.set(stateKey(key), value);
       },
     },
-    companies: { get: async (companyId: string) => (options.prefixes?.[companyId] ? { id: companyId, issuePrefix: options.prefixes[companyId] } : null) },
+    companies: {
+      get: async (companyId: string) => {
+        if (options.companies?.[companyId]) return { id: companyId, ...options.companies[companyId] };
+        return options.prefixes?.[companyId] ? { id: companyId, issuePrefix: options.prefixes[companyId] } : null;
+      },
+    },
     issues: {
       create: async (input: Omit<FakeIssue, "id" | "status"> & { status?: string }) => {
         seq += 1;
@@ -56,15 +70,24 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
       },
       get: async (id: string, companyId: string) => {
         const issue = issues.get(id);
-        return issue && issue.companyId === companyId ? { ...issue } : null;
+        return issue && issue.companyId === companyId ? { ...issue, identifier: `${options.prefixes?.[companyId] ?? options.companies?.[companyId]?.issuePrefix ?? "ISS"}-${id.replace("issue-", "")}` } : null;
       },
+      list: async (filter: { companyId: string; originKind?: string; originId?: string; limit?: number }) =>
+        [...issues.values()]
+          .filter((issue) => issue.companyId === filter.companyId && (!filter.originKind || issue.originKind === filter.originKind) && (!filter.originId || issue.originId === filter.originId))
+          .slice(0, filter.limit ?? 50)
+          .map((issue) => ({ ...issue })),
       update: async (id: string, patch: Partial<FakeIssue>, companyId: string) => {
         const issue = issues.get(id);
         if (!issue || issue.companyId !== companyId) throw new Error("issue not found");
         Object.assign(issue, patch);
         return { ...issue };
       },
-      requestWakeup: async () => ({ queued: true }),
+      requestWakeup: async (issueId: string, companyId: string, input?: { reason?: string }) => {
+        if (options.wakeFails) throw new Error("issues.wakeup is not allowed");
+        wakes.push({ issueId, companyId, reason: input?.reason });
+        return { queued: true };
+      },
     },
   } as unknown as PluginContext;
 
@@ -72,7 +95,7 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
     for (const fn of handlers.get(name) ?? []) await fn({ eventId: "e", eventType: name as PluginEvent["eventType"], occurredAt: new Date().toISOString(), companyId: "", payload: null, ...event } as PluginEvent);
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, issues, state, configs, fire };
+  return { ctx, store, db, emitted, handlers, actions, jobs, issues, state, configs, fire, wakes };
 }
 
 export function fixedClock(iso: string) {

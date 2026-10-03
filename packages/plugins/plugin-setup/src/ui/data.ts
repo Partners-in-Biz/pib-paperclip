@@ -27,6 +27,8 @@ export interface LoadResult {
   installed: Record<string, { id: string; status?: string | null }> | null;
   /** The one setup count from the stored statuses (older workers do not send it). */
   summary?: SetupSummary | null;
+  /** Where the New company bootstrap stands (older workers do not send it). */
+  bootstrap?: { status: string; updatedAt: string } | null;
 }
 
 export type StatusSource = "live" | "stored" | "stand-in";

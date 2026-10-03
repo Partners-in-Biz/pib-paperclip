@@ -7,10 +7,12 @@ import { createHash } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { moduleOfPlugin, MODULES, SETUP_EVENTS, type ModulesPayload, type SetupStatus, type SetupSummary } from "./kit-setup.js";
+import { currentGrants, grantsMarkdown } from "./bootstrap.js";
 import {
   clearFinishIssue,
   getChoice,
   getFinishIssue,
+  getRun,
   listChoices,
   listStatuses,
   saveChoice,
@@ -290,11 +292,17 @@ async function refreshIssue(
   clock: Clock,
 ): Promise<RefreshResult> {
   const statuses = Object.fromEntries((await listStatuses(ctx, companyId)).map((row) => [row.pluginKey, row.status]));
+  const prefix = await companyPrefix(ctx, companyId);
+  // The New company bootstrap's one list of grants only a person can give rides on the issue.
+  const run = await getRun(ctx, companyId).catch(() => null);
+  // The list is a snapshot of the last owner-list step: what a plugin now reports done is left out.
+  const grants = run ? currentGrants(run.grants, statuses) : [];
   const input = {
     modules: choice.modules,
     statuses,
     installed: await readInstalled(ctx),
-    prefix: await companyPrefix(ctx, companyId),
+    prefix,
+    extra: grants.length ? grantsMarkdown(grants, prefix) : null,
   };
   const summary = finishSetupSummary(input);
   const content = finishSetupContent(input);
@@ -322,6 +330,13 @@ async function refreshIssue(
   }
   if (!options.allowCreate) return { action: "none", issueId: null, missing: content.missing.length, summary };
   if (!(await weeklyIssueOn(ctx, companyId))) return { action: "skipped", reason: "weekly issue switched off", summary };
+  // A new company already has the owner's "Set up <company>" issue (opened at company.created): reuse it, so the owner has one issue, not two.
+  const adopted = await adoptSetupIssue(ctx, companyId);
+  if (adopted) {
+    await ctx.issues.update(adopted, { title: content.title, description: content.description }, companyId);
+    await saveFinishIssue(ctx, { companyId, issueId: adopted, fingerprint: print, missingCount: content.missing.length }, now);
+    return { action: "updated", issueId: adopted, missing: content.missing.length, summary };
+  }
   const created = await createWorkIssue(ctx, {
     companyId,
     title: content.title,
@@ -332,6 +347,16 @@ async function refreshIssue(
   });
   await saveFinishIssue(ctx, { companyId, issueId: created.id, fingerprint: print, missingCount: content.missing.length }, now);
   return { action: "created", issueId: created.id, missing: content.missing.length, summary };
+}
+
+/** The open "Set up <company>" issue the kit opened at company.created (originId `company-setup`), or null. */
+export async function adoptSetupIssue(ctx: PluginContext, companyId: string): Promise<string | null> {
+  try {
+    const found = (await ctx.issues.list({ companyId, originKind: `plugin:${PLUGIN_ID}` as never, originId: "company-setup", limit: 3 })) as Array<{ id: string; status?: string }>;
+    return found.find((issue) => !CLOSED.has(String(issue.status)))?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Weekly job: every company with a saved module choice and saved Setup settings. */
@@ -361,12 +386,13 @@ export async function weeklyFinishSetup(ctx: PluginContext, clock: Clock = syste
 
 export async function loadSetup(ctx: PluginContext, companyId: string, params: Record<string, unknown> = {}) {
   if (params.installed) await rememberInstalled(ctx, params.installed);
-  const [choice, statuses, issue, saved, installed] = await Promise.all([
+  const [choice, statuses, issue, saved, installed, run] = await Promise.all([
     getChoice(ctx, companyId),
     listStatuses(ctx, companyId),
     getFinishIssue(ctx, companyId),
     configSaved(ctx, companyId),
     readInstalled(ctx),
+    getRun(ctx, companyId).catch(() => null),
   ]);
   return {
     modules: choice?.modules ?? null,
@@ -376,6 +402,8 @@ export async function loadSetup(ctx: PluginContext, companyId: string, params: R
     finishIssueId: issue?.issueId ?? null,
     settingsSaved: saved,
     installed,
+    // Where the New company bootstrap stands (null: the plugin never saw this company, or it predates the bootstrap).
+    bootstrap: run ? { status: run.status, updatedAt: run.updatedAt } : null,
     // The one setup count (kit setupSummary): the sidebar badge and the Cockpit show it as it is.
     summary: choice
       ? finishSetupSummary({ modules: choice.modules, statuses: Object.fromEntries(statuses.map((row) => [row.pluginKey, row.status])), installed })

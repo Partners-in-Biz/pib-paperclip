@@ -229,10 +229,12 @@ describe("one setup count everywhere", () => {
 
 describe("page layout", () => {
   it("puts Team first once the modules are chosen, then the checklist and the modules", () => {
-    expect(setupTabs({ firstVisit: false, showTeam: true, requested: null })).toEqual({ ids: ["team", "checklist", "modules"], active: "team" });
+    expect(setupTabs({ firstVisit: false, showTeam: true, requested: null })).toEqual({ ids: ["team", "checklist", "modules", "new-company"], active: "team" });
     expect(setupTabs({ firstVisit: false, showTeam: true, requested: "checklist" }).active).toBe("checklist");
-    expect(setupTabs({ firstVisit: false, showTeam: false, requested: "team" })).toEqual({ ids: ["checklist", "modules"], active: "checklist" });
-    expect(setupTabs({ firstVisit: true, showTeam: false, requested: "checklist" })).toEqual({ ids: ["modules"], active: "modules" });
+    expect(setupTabs({ firstVisit: false, showTeam: false, requested: "team" })).toEqual({ ids: ["checklist", "modules", "new-company"], active: "checklist" });
+    expect(setupTabs({ firstVisit: true, showTeam: false, requested: "checklist" })).toEqual({ ids: ["modules", "new-company"], active: "modules" });
+    // New company is last everywhere, and a link can open it (`?section=new-company`).
+    expect(setupTabs({ firstVisit: true, showTeam: true, requested: "new-company" })).toEqual({ ids: ["modules", "team", "new-company"], active: "new-company" });
     expect(moduleAnchor("#module-seo")).toBe("seo");
     expect(moduleAnchor("#team-operator")).toBeNull();
     expect(moduleAnchor("#module-nope")).toBeNull();
