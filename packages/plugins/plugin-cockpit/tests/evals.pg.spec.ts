@@ -333,12 +333,12 @@ d("skill evals (Postgres)", () => {
   describe("report", () => {
     it("shows each skill's pass count on the current text, what failed and why, and the committed gate", async () => {
       const w = await make();
-      await recordAll(w, [scenarios[2]!.id]);
+      await recordAll(w, [scenarios[2]!.id, scenarios[3]!.id]);
       const out = await call(w, { action: "report", skill: SKILL });
       const report = out.data.skills[0];
       expect(report).toMatchObject({ skill: SKILL, hash: info.hash, scenarios: scenarios.length });
-      expect(report.current.passed).toBe(scenarios.length - 1);
-      expect(report.failing).toHaveLength(1);
+      expect(report.current.passed).toBe(scenarios.length - 2);
+      expect(report.failing).toHaveLength(2);
       expect(report.failing[0].scenarioId).toBe(scenarios[2]!.id);
       expect(report.failing[0].checks.length).toBeGreaterThan(0);
       expect(report.gate.status).toBe("below-threshold");
@@ -346,7 +346,7 @@ d("skill evals (Postgres)", () => {
       expect(report.committed.reason).toContain("not enforced yet");
       expect(report.baseline).toBeNull();
       expect(report.history).toHaveLength(1);
-      expect(out.content).toContain(`${SKILL}: ${scenarios.length - 1} of ${scenarios.length} pass on ${info.hash} (no baseline)`);
+      expect(out.content).toContain(`${SKILL}: ${scenarios.length - 2} of ${scenarios.length} pass on ${info.hash} (no baseline)`);
     });
 
     it("with no skill named it covers every skill that has scenarios", async () => {

@@ -231,6 +231,8 @@ When "Review outward-facing work before I approve" is on, every outward-facing a
 - Titles, meta descriptions, canonicals, robots and sitemap changes are right for the site.
 - No broken links, no removed content without a redirect, no noindex on live pages by mistake.
 - Checks pass (CI, preview deploy) and the preview shows the change.
+- Evidence has a clean \`page-diff\` for every changed page. A table, ranking, form, image, internal link or structured data it lists as lost is restored or named as removed on purpose. No page-diff, no approval.
+- A new page for a keyword: the task shows \`page-for-keyword\` said create. If it said optimise or merge, the change belongs on the existing page.
 - Content changes: facts right, brand voice, the target keyword used naturally, no duplicate pages.
 - No pricing, legal, terms or privacy text changed; flag anything that could affect the live site's design or function.
 

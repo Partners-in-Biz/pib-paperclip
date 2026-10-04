@@ -124,7 +124,7 @@ d("propose-skill-change (Postgres)", () => {
     const anchor = operator.markdown.split("\n").find((l) => l.startsWith("## Never"))!;
     const paragraph = Array.from({ length: 6 }, (_, i) => `+Line ${i}: a rule that costs every run tokens, ${"x".repeat(60)}`).join("\n");
     const over = await propose(w, { skill: "pib-operator", diff: ["@@ @@", ` ${anchor}`, paragraph].join("\n") });
-    expect(over.error).toContain("over its 17950 budget");
+    expect(over.error).toContain("over its 18950 budget");
     const big = Array.from({ length: 30 }, (_, i) => `+Rule ${i}: ${"y".repeat(70)}`).join("\n");
     const fast = await propose(w, { diff: ["@@ @@", ` ${ANCHOR}`, big].join("\n") });
     expect(fast.error).toContain("one change may add at most");

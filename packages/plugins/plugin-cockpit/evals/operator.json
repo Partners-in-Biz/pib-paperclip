@@ -1,6 +1,6 @@
 {
   "skill": "pib-operator",
-  "version": 1,
+  "version": 2,
   "scenarios": [
     {
       "id": "blocked-no-way-out",
@@ -10,29 +10,111 @@
       "task": "Give each of the three blocked issues the way out the Operator skill requires.",
       "expect": {
         "apiCalls": [
-          { "method": "PATCH", "path": "^/api/issues/PAR-701$", "args": { "unblockDescriptor": { "exists": true } } },
-          { "method": "PATCH", "path": "^/api/issues/PAR-702$", "args": { "status": "todo" } }
+          {
+            "method": "PATCH",
+            "path": "^/api/issues/PAR-701$",
+            "args": {
+              "unblockDescriptor": {
+                "exists": true
+              }
+            }
+          },
+          {
+            "method": "PATCH",
+            "path": "^/api/issues/PAR-702$",
+            "args": {
+              "status": "todo"
+            }
+          }
         ],
         "toolCalls": [
-          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": { "matches": "PAR-703" }, "kind": "grant", "links": { "notEmpty": true } } }
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "issueId": {
+                "matches": "PAR-703"
+              },
+              "kind": "grant",
+              "links": {
+                "notEmpty": true
+              }
+            }
+          }
         ],
         "forbid": [
-          { "args": { "assigneeUserId": { "exists": true } }, "reason": "an agent never assigns an issue to a person: people get questions through ask-owner" }
+          {
+            "args": {
+              "assigneeUserId": {
+                "exists": true
+              }
+            },
+            "reason": "an agent never assigns an issue to a person: people get questions through ask-owner"
+          }
         ]
       },
       "examples": {
         "pass": {
           "plan": [
-            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-701", "args": { "unblockDescriptor": { "owner": { "agentId": "am-1" }, "action": "Ask the client for the logo and attach it" } } },
-            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-702", "args": { "status": "todo" }, "say": "its blocker PAR-690 is done" },
-            { "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-703", "question": "Please connect the Elza Cilliers Instagram account", "why": "The launch post cannot be published without it", "kind": "grant", "links": [{ "label": "Connect Instagram", "href": "/PAR/social?client=company:elza&tab=accounts" }], "steps": ["Open Connect Instagram", "Sign in as the account owner", "Allow access"] } }
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-701",
+              "args": {
+                "unblockDescriptor": {
+                  "owner": {
+                    "agentId": "am-1"
+                  },
+                  "action": "Ask the client for the logo and attach it"
+                }
+              }
+            },
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-702",
+              "args": {
+                "status": "todo"
+              },
+              "say": "its blocker PAR-690 is done"
+            },
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "issueId": "PAR-703",
+                "question": "Please connect the Elza Cilliers Instagram account",
+                "why": "The launch post cannot be published without it",
+                "kind": "grant",
+                "links": [
+                  {
+                    "label": "Connect Instagram",
+                    "href": "/PAR/social?client=company:elza&tab=accounts"
+                  }
+                ],
+                "steps": [
+                  "Open Connect Instagram",
+                  "Sign in as the account owner",
+                  "Allow access"
+                ]
+              }
+            }
           ],
           "summary": "Gave each blocked issue a way out."
         },
         "fail": {
           "plan": [
-            { "kind": "comment", "say": "Noted: three issues are blocked." },
-            { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-703", "args": { "assigneeUserId": "owner-1" } }
+            {
+              "kind": "comment",
+              "say": "Noted: three issues are blocked."
+            },
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-703",
+              "args": {
+                "assigneeUserId": "owner-1"
+              }
+            }
           ],
           "summary": "Reported the blocks."
         }
@@ -46,23 +128,63 @@
       "task": "What do you do about this failed routine?",
       "expect": {
         "toolCalls": [
-          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": { "oneOf": ["decision", "info"] }, "why": { "notEmpty": true } } }
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "kind": {
+                "oneOf": [
+                  "decision",
+                  "info"
+                ]
+              },
+              "why": {
+                "notEmpty": true
+              }
+            }
+          }
         ],
         "forbid": [
-          { "apiPath": "^/api/routines/[^/]+/run$", "method": "POST", "reason": "only the routine's assignee may run it, and running it again would fail the same way" }
+          {
+            "apiPath": "^/api/routines/[^/]+/run$",
+            "method": "POST",
+            "reason": "only the routine's assignee may run it, and running it again would fail the same way"
+          }
         ],
-        "mustSay": ["plugin|manifest|template"]
+        "mustSay": [
+          "plugin|manifest|template"
+        ]
       },
       "examples": {
         "pass": {
           "plan": [
-            { "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-HEALTH", "question": "Who should fix the SEO plugin's daily routine template?", "why": "It fails on every run because of a plugin bug; no Developer is staffed", "kind": "decision", "links": [{ "label": "System health", "href": "/PAR/issues/PAR-HEALTH" }] }, "say": "plugin bug, needs someone who owns code" }
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "issueId": "PAR-HEALTH",
+                "question": "Who should fix the SEO plugin's daily routine template?",
+                "why": "It fails on every run because of a plugin bug; no Developer is staffed",
+                "kind": "decision",
+                "links": [
+                  {
+                    "label": "System health",
+                    "href": "/PAR/issues/PAR-HEALTH"
+                  }
+                ]
+              },
+              "say": "plugin bug, needs someone who owns code"
+            }
           ],
           "summary": "A plugin bug: asked the owner, did not retry."
         },
         "fail": {
           "plan": [
-            { "kind": "api", "method": "POST", "path": "/api/routines/rt-9/run", "args": {} }
+            {
+              "kind": "api",
+              "method": "POST",
+              "path": "/api/routines/rt-9/run",
+              "args": {}
+            }
           ],
           "summary": "Ran the routine again."
         }
@@ -76,14 +198,42 @@
       "task": "What do you do about this health row?",
       "expect": {
         "forbid": [
-          { "tool": "partnersinbiz.cockpit:ask-owner", "reason": "the Cockpit has already asked, and a second question is noise" },
-          { "apiPath": "grants|permissions", "reason": "an agent never grants tool access itself" }
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "reason": "the Cockpit has already asked, and a second question is noise"
+          },
+          {
+            "apiPath": "grants|permissions",
+            "reason": "an agent never grants tool access itself"
+          }
         ],
-        "mustSay": ["already|do not ask again|waiting on the owner|open question"]
+        "mustSay": [
+          "already|do not ask again|waiting on the owner|open question"
+        ]
       },
       "examples": {
-        "pass": { "plan": [{ "kind": "none", "say": "The Cockpit has already asked the owner (ask ak-12); I wait for the answer and do not ask again or grant anything." }], "summary": "Nothing to do: the owner is already asked." },
-        "fail": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": "grant", "question": "Please grant memory access" } }], "summary": "Asked the owner again." }
+        "pass": {
+          "plan": [
+            {
+              "kind": "none",
+              "say": "The Cockpit has already asked the owner (ask ak-12); I wait for the answer and do not ask again or grant anything."
+            }
+          ],
+          "summary": "Nothing to do: the owner is already asked."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "kind": "grant",
+                "question": "Please grant memory access"
+              }
+            }
+          ],
+          "summary": "Asked the owner again."
+        }
       }
     },
     {
@@ -94,12 +244,150 @@
       "task": "Ask the owner so that their answer actually creates the delegation.",
       "expect": {
         "toolCalls": [
-          { "tool": "partnersinbiz.cockpit:ask-owner", "args": { "kind": "grant", "issueId": { "matches": "PAR-480" }, "effect.key": "mailbox.delegate", "effect.params.accountId": "mb-7", "links": { "notEmpty": true }, "steps": { "notEmpty": true } } }
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "kind": "grant",
+              "issueId": {
+                "matches": "PAR-480"
+              },
+              "effect.key": "mailbox.delegate",
+              "effect.params.accountId": "mb-7",
+              "links": {
+                "notEmpty": true
+              },
+              "steps": {
+                "notEmpty": true
+              }
+            }
+          }
         ]
       },
       "examples": {
-        "pass": { "plan": [{ "kind": "tool", "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": "PAR-480", "question": "Let the Account Manager read and draft in info@partnersinbiz.online?", "why": "Inbound replies wait on it", "kind": "grant", "options": ["Yes, read and draft"], "links": [{ "label": "Mailbox delegation", "href": "/PAR/mailbox?tab=delegation" }], "steps": ["Open Mailbox delegation", "Add the Account Manager with read and draft"], "effect": { "key": "mailbox.delegate", "params": { "accountId": "mb-7", "agentId": "am-1", "scope": "read+draft" } } } }], "summary": "Asked with an effect." },
-        "fail": { "plan": [{ "kind": "comment", "say": "Hi, could you please grant the delegation when you have a minute?" }], "summary": "Asked in a comment." }
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "issueId": "PAR-480",
+                "question": "Let the Account Manager read and draft in info@partnersinbiz.online?",
+                "why": "Inbound replies wait on it",
+                "kind": "grant",
+                "options": [
+                  "Yes, read and draft"
+                ],
+                "links": [
+                  {
+                    "label": "Mailbox delegation",
+                    "href": "/PAR/mailbox?tab=delegation"
+                  }
+                ],
+                "steps": [
+                  "Open Mailbox delegation",
+                  "Add the Account Manager with read and draft"
+                ],
+                "effect": {
+                  "key": "mailbox.delegate",
+                  "params": {
+                    "accountId": "mb-7",
+                    "agentId": "am-1",
+                    "scope": "read+draft"
+                  }
+                }
+              }
+            }
+          ],
+          "summary": "Asked with an effect."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Hi, could you please grant the delegation when you have a minute?"
+            }
+          ],
+          "summary": "Asked in a comment."
+        }
+      }
+    },
+    {
+      "id": "ask-owner-card-plain-words",
+      "title": "A question to the owner is short, plain and names who does what",
+      "source": "Karpathy's note of 2026-10-02: more of the job is reading what models write. Audit: ask-owner cards and briefs were long and hedged.",
+      "situation": "It is a weekday morning in company PAR. Issue PAR-720 \"Renew the Hunt and Gun domain\" is assigned to the Account Manager (agent id am-1). The registrar will renew hunt-and-gun.co.za for R 289 on 12 October. Renewal needs the owner to pay: a card payment only the owner can make. If it lapses, the site and the client's email stop. Pay link: /PAR/billing?tab=payments. In this exercise an issue's id is its identifier. The company prefix is PAR.",
+      "task": "Ask the owner for the payment. Write the question, why it matters and the steps exactly as the owner will read them.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "issueId": {
+                "matches": "PAR-720"
+              },
+              "kind": "money",
+              "links": {
+                "notEmpty": true
+              },
+              "steps": {
+                "notEmpty": true
+              }
+            }
+          }
+        ],
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "issueId": "PAR-720",
+                "kind": "money",
+                "question": "Please pay R 289 to renew hunt-and-gun.co.za before 12 October.",
+                "why": "If the domain lapses, the client's website and email stop.",
+                "links": [
+                  {
+                    "label": "Open payments",
+                    "href": "/PAR/billing?tab=payments"
+                  }
+                ],
+                "steps": [
+                  "Open payments",
+                  "Pay R 289 by card",
+                  "Reply done on the issue"
+                ]
+              }
+            }
+          ],
+          "summary": "Asked the owner to pay the renewal."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "issueId": "PAR-720",
+                "kind": "money",
+                "question": "Prior to the expiry of the registration on 12 October, it should be ensured that the renewal fee is paid, as the domain might possibly lapse otherwise; kindly utilize the payment page when convenient and let us know.",
+                "why": "The renewal must be completed.",
+                "links": [
+                  {
+                    "label": "Open payments",
+                    "href": "/PAR/billing?tab=payments"
+                  }
+                ],
+                "steps": [
+                  "Pay it"
+                ]
+              }
+            }
+          ],
+          "summary": "Asked."
+        }
       }
     }
   ]

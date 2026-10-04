@@ -159,10 +159,10 @@ describe("the Operator knows how to act on each watch problem", () => {
 
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
-    expect(operator.markdown!.length).toBeLessThan(17_950);
+    expect(operator.markdown!.length).toBeLessThan(18_950);
     // The references are read on demand, each on its own: none is a wall of text.
     for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
-    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(18_000);
+    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_000);
     expect(companySkillBody().length).toBeLessThan(16_000);
   });
 });

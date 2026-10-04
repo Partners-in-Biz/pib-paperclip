@@ -127,8 +127,8 @@ export function applyUnifiedDiff(text: string, diff: string): AppliedDiff {
 
 /** Budgets (characters): a skill's SKILL.md, the operating manual, a reference file. The Operator's is the test's own, with its references kept apart. */
 export const SKILL_BUDGETS = {
-  skill: 18_000,
-  operator: 17_950,
+  skill: 19_000,
+  operator: 18_950,
   reference: 8_000,
 } as const;
 

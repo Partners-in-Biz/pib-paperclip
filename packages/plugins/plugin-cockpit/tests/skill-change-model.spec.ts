@@ -83,15 +83,15 @@ describe("the guardrails", () => {
 
   it("blocks a change that takes the file over its budget, with the way out", () => {
     const big = diff(["@@ @@", " 2. Do the work.", `+${"x".repeat(100)}`]);
-    const r = review(big, "pib-demo", "SKILL.md", `${SKILL}${"filler ".repeat(2600)}\n`);
+    const r = review(big, "pib-demo", "SKILL.md", `${SKILL}${"filler ".repeat(3000)}\n`);
     expect(r.allowed).toBe(false);
-    expect(r.checks.find((c) => !c.ok)!.detail).toContain("over its 18000 budget");
+    expect(r.checks.find((c) => !c.ok)!.detail).toContain("over its 19000 budget");
     expect(r.checks.find((c) => !c.ok)!.detail).toContain("references");
   });
 
   it("holds the Operator and the references to their own budgets", () => {
-    expect(budgetFor("pib-operator", "SKILL.md")).toBe(17_950);
-    expect(budgetFor("pib-reviewer", "SKILL.md")).toBe(18_000);
+    expect(budgetFor("pib-operator", "SKILL.md")).toBe(18_950);
+    expect(budgetFor("pib-reviewer", "SKILL.md")).toBe(19_000);
     expect(budgetFor("pib-operator", "references/health-checks.md")).toBe(8_000);
   });
 

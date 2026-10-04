@@ -17,6 +17,7 @@
  * scenario expects. No model judges a model: every check is a plain rule.
  */
 import { createHash } from "node:crypto";
+import { writingFindings } from "@partnersinbiz/pib-plugin-kit";
 
 export class EvalError extends Error {}
 
@@ -63,6 +64,8 @@ export interface ScenarioExpect {
   forbid?: Forbid[];
   mustSay?: string[];
   mustNotSay?: string[];
+  /** Grade the plain-writing rules (kit `writingFindings`) on what the plan says to a person: comment text, the summary, and an ask-owner's question, why and steps. */
+  plainWriting?: boolean;
   /** The plan may not be longer than this (a skill that makes an agent flail is a worse skill). */
   maxSteps?: number;
 }
@@ -147,7 +150,7 @@ export function parseScenarioFile(raw: unknown, slugs: readonly string[], knownT
     const e = isRecord(s.expect) ? s.expect : null;
     if (!e) return bad(`${label}: expect is required`);
     const calls = [...((e.toolCalls as unknown[]) ?? []), ...((e.apiCalls as unknown[]) ?? [])];
-    const hasRule = calls.length > 0 || ((e.forbid as unknown[]) ?? []).length > 0 || ((e.mustSay as unknown[]) ?? []).length > 0 || ((e.mustNotSay as unknown[]) ?? []).length > 0;
+    const hasRule = calls.length > 0 || ((e.forbid as unknown[]) ?? []).length > 0 || ((e.mustSay as unknown[]) ?? []).length > 0 || ((e.mustNotSay as unknown[]) ?? []).length > 0 || e.plainWriting === true;
     if (!hasRule) bad(`${label}: it expects nothing, so it could never fail`);
     for (const [i2, t] of ((e.toolCalls as unknown[]) ?? []).entries()) {
       if (!isRecord(t) || typeof t.tool !== "string" || !TOOL_RE.test(t.tool)) bad(`${label}: toolCalls ${i2 + 1} needs a tool as partnersinbiz.<plugin>:<tool>`);
@@ -434,6 +437,11 @@ export function gradeAnswer(s: Scenario, output: string): Graded {
   const text = allText(plan, summary);
   for (const p of e.mustSay ?? []) checks.push({ ok: new RegExp(p, "i").test(text), detail: `It says ${p}` });
   for (const p of e.mustNotSay ?? []) { const says = new RegExp(p, "i").test(text); checks.push({ ok: !says, detail: says ? `It says ${p}, which it must not` : `It does not say ${p}` }); }
+  if (e.plainWriting) {
+    const said = [summary, ...plan.flatMap((step) => (step.kind === "comment" ? [step.say ?? ""] : step.kind === "tool" && /:ask-owner$/.test(step.tool ?? "") ? [String(step.args?.question ?? ""), String(step.args?.why ?? ""), ...stringsIn(step.args?.steps)] : []))].join("\n");
+    const found = writingFindings(said);
+    checks.push({ ok: found.length === 0, detail: found.length === 0 ? "It writes in plain words" : `Plain writing: ${found.slice(0, 3).map((f) => `${f.rule} (${f.excerpt})`).join("; ")}` });
+  }
   if (e.maxSteps !== undefined) checks.push({ ok: plan.length <= e.maxSteps, detail: `The plan has at most ${e.maxSteps} steps (it has ${plan.length})` });
   return { passed: checks.every((c) => c.ok), checks, steps: plan.length };
 }
