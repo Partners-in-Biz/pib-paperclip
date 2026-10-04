@@ -5,37 +5,64 @@
   "skills": {
     "pib-operator": {
       "baseline": {
-        "hash": "c16ce8b8ed65bb24",
+        "hash": "e6048ca7afad1eb6",
         "passRate": 1,
         "scenarios": {
           "blocked-no-way-out": true,
           "routine-failed-plugin-bug": true,
           "memory-grant-already-asked": true,
-          "delegation-ask-with-effect": true
+          "delegation-ask-with-effect": true,
+          "ask-owner-card-plain-words": true
         },
-        "measuredAt": "2026-10-04T00:29:37.044Z",
+        "measuredAt": "2026-10-04T17:28:30.607Z",
         "runs": [
-          "791bf98e-9d53-4f1b-a22f-c04fa6a5b0db",
-          "24392b79-8cea-41c1-bae2-60473fa3ca2b",
-          "d8840231-7775-487c-a43b-dee47a664199",
-          "df3ac42d-4e23-4c4f-a319-dd9f34d48ca5"
+          "72018b7e-4811-4d49-810e-3916443635cb",
+          "1eeaf32b-2bd7-417e-865c-e839e4a135a3",
+          "a69b20dd-caab-469d-b0c9-fcf8673635a0",
+          "8bd9e7f8-1491-407b-acbb-514b62bb82d4",
+          "001a4271-081b-4dcf-943e-c7a0e71c9b91",
+          "a65c42bd-7ec1-4666-8a18-c125ba24fc09",
+          "131819c8-971d-48c8-aadd-7f6da2aad467",
+          "9d977b08-99aa-4239-a421-133ea77f3d89",
+          "c6fd99f7-17f7-41c1-b62f-81d3422600c5",
+          "1c7f007c-b025-4e36-a042-b19b9b423662",
+          "169d1690-c9b4-4201-a1d0-e7822abbf1ad",
+          "355c17a1-a8ca-44c6-8c4e-b7f70cd6bfe2",
+          "7d3d847f-079a-4aa1-8541-82159647216d",
+          "72ea0d65-7834-447f-8bdb-2d6e6640e03e",
+          "8481b1c4-6696-400c-801d-3d34bdfddc83"
         ]
       }
     },
     "pib-reviewer": {
       "baseline": {
-        "hash": "919732cb7226fc62",
+        "hash": "6ddad127e1fd2349",
         "passRate": 1,
         "scenarios": {
           "pass-and-hand-over": true,
           "changes-needed-with-the-fix": true,
           "late-review-of-outward-approval": true
         },
-        "measuredAt": "2026-10-04T00:29:37.237Z",
+        "measuredAt": "2026-10-04T17:28:30.630Z",
         "runs": [
-          "ac593b8e-e6a3-42c1-bd83-7a4989dd4fd1",
-          "778b5af4-320a-414a-8362-b29e4ed95390",
-          "b3b4fba2-0798-48cf-b76c-a443398fde4c"
+          "04119a95-16f5-416b-a954-fc63868a1331",
+          "38027bb0-12e6-4eb5-bff5-8130b56460ce",
+          "77d6d256-b0a4-4aba-a3eb-26da8a82e697",
+          "11e17db7-3478-43e7-a066-4c4c381812cd",
+          "3c74e700-c5fa-4404-b850-eac62990c7b3",
+          "77dff1b5-c870-4900-b1cd-5d3e72deee3c",
+          "847f47fe-65d4-4560-8290-84db1b4d1bc3",
+          "af00e9a4-cccd-4796-a892-4113e0e44c6b",
+          "18df2096-26f0-4bf6-9eb8-def5131ea7a2",
+          "0fd3a67b-77a9-4a81-9113-8c89a3542c67",
+          "a2f6677a-0270-4f80-b723-67197672bb9a",
+          "78a93712-4a7c-429b-b269-2e4c0c2700eb",
+          "1bcefcbf-31a3-4faf-9d9a-b0df686717a4",
+          "a9065dfc-92de-4eff-bafb-e648a1c001ed",
+          "514d0e9b-223a-489e-aee3-ba9b6baa8940",
+          "30db6cd0-b28e-48e2-97d1-b8a3f76b0dfd",
+          "ec23c68e-8ec9-48c4-a971-9a1db2c216fa",
+          "8c812873-db0d-40a1-b8ea-4cec0ac9a5f0"
         ]
       }
     },
