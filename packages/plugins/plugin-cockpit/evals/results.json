@@ -5,78 +5,77 @@
   "skills": {
     "pib-operator": {
       "baseline": {
-        "hash": "eaeeaf8107b6ed9c",
-        "passRate": 0.75,
+        "hash": "c16ce8b8ed65bb24",
+        "passRate": 1,
         "scenarios": {
           "blocked-no-way-out": true,
-          "routine-failed-plugin-bug": false,
+          "routine-failed-plugin-bug": true,
           "memory-grant-already-asked": true,
           "delegation-ask-with-effect": true
         },
-        "measuredAt": "2026-10-03T22:31:18.416Z",
+        "measuredAt": "2026-10-04T00:29:37.044Z",
         "runs": [
-          "3e070dd2-dec5-482a-b986-d5c40271f44d",
-          "eda31e69-f538-456c-b292-b4dfd89fabac",
-          "18bfd3cc-8f0c-4bac-b642-22c586499945",
-          "93d20ea3-22d0-4ed3-872a-db0e1daf5287",
-          "e2e4af2a-01b3-4098-a766-015ccdef7d13",
-          "4e383773-4255-4a45-9a23-3e01aebc811f",
-          "72d89952-5f21-42b5-9c9e-62294a6bc50d",
-          "9db7dcba-9b68-46ef-8d48-c638b8179590",
-          "27d83301-7930-4c0b-b79a-8e603d79e9d2",
-          "f39a582e-c621-49dd-8ace-7ecfa6a0b162",
-          "a978830c-537b-4343-abcc-26eb2e301585",
-          "3f407786-7055-47dc-a4dc-feb46d6dd361"
+          "791bf98e-9d53-4f1b-a22f-c04fa6a5b0db",
+          "24392b79-8cea-41c1-bae2-60473fa3ca2b",
+          "d8840231-7775-487c-a43b-dee47a664199",
+          "df3ac42d-4e23-4c4f-a319-dd9f34d48ca5"
         ]
       }
     },
     "pib-reviewer": {
       "baseline": {
-        "hash": "fbf2e7f0b257fe32",
-        "passRate": 0.6666666666666666,
+        "hash": "919732cb7226fc62",
+        "passRate": 1,
         "scenarios": {
-          "pass-and-hand-over": false,
+          "pass-and-hand-over": true,
           "changes-needed-with-the-fix": true,
           "late-review-of-outward-approval": true
         },
-        "measuredAt": "2026-10-03T22:31:18.610Z",
+        "measuredAt": "2026-10-04T00:29:37.237Z",
         "runs": [
-          "346521d9-317d-4d98-8154-33203c11b507",
-          "52b31e6b-9a03-4546-b9ba-48fab55faa53",
-          "9d7df988-e69e-41e0-85df-dd62ee220aa8",
-          "c3ddcb11-2dc6-4d2f-95d2-6119d51a56b4",
-          "446f9756-5a17-4876-be82-df409d86c8f6",
-          "685b21b8-c911-4d8d-9037-7c88a84d4d04",
-          "5b714828-fe84-4c11-a50a-6815dbd72409",
-          "8f3cb98d-d2fb-409b-b108-61f6075831a9",
-          "1a340edf-c602-4009-80bb-49667eb3945e"
+          "ac593b8e-e6a3-42c1-bd83-7a4989dd4fd1",
+          "778b5af4-320a-414a-8362-b29e4ed95390",
+          "b3b4fba2-0798-48cf-b76c-a443398fde4c"
         ]
       }
     },
     "pib-company-os": {
       "baseline": {
-        "hash": "6b55cc956a38b459",
-        "passRate": 0.75,
+        "hash": "fa8c7b5b5f05eff3",
+        "passRate": 1,
         "scenarios": {
           "invoice-through-approval": true,
           "login-only-the-owner-can-give": true,
           "handoff-to-the-owning-role": true,
-          "look-at-the-page-you-changed": false
+          "look-at-the-page-you-changed": true
         },
-        "measuredAt": "2026-10-03T22:31:18.902Z",
+        "measuredAt": "2026-10-04T00:29:37.495Z",
         "runs": [
-          "0e6d9021-9a48-44e3-80b3-9c95a655a4dc",
-          "ddb90236-3d3b-4b07-96a5-53442844376b",
-          "7c34b280-e26b-434b-9275-d91fe2012870",
-          "079a4ac5-5d26-443a-b716-4cdc63a7ec75",
-          "8ace0be1-736e-4b3d-b9ba-8607a6dbbdd2",
-          "6ec945fe-0b45-4f04-bf38-fdb00e1d91d2",
-          "91ef654e-ef07-450e-ae57-d58b7f3a48a0",
-          "0951481d-a48f-4370-bb71-4ebb3a7095bd",
-          "50f7346b-a668-40cf-97dd-efdd53f12275",
-          "a9bb029d-6cb1-4661-b766-3c5f7ae07388",
-          "7161c7fb-b76d-4d1e-ba66-2d951d3a8c7c",
-          "0b75bfe5-b2ed-4174-afe4-506b11520fad"
+          "b98eee59-1112-4469-ae74-f4fb5af8ea34",
+          "566cb35f-e123-41b0-b4f7-b013bd54359e",
+          "f51a321a-1603-4aa3-a45f-6397d9640aa3",
+          "207e6029-5771-41b5-9903-74264ba52fe7"
+        ]
+      }
+    },
+    "pib-acceptance": {
+      "baseline": {
+        "hash": "ddf8845393d36f2a",
+        "passRate": 1,
+        "scenarios": {
+          "refuses-a-real-client": true,
+          "reports-a-failure-without-working-around-it": true
+        },
+        "measuredAt": "2026-10-04T00:29:37.848Z",
+        "runs": [
+          "d7e90600-e1db-4a39-953a-276f568ad989",
+          "82c609e6-bd56-483e-a9c1-fb96dc5b66d5",
+          "3314dcee-1080-4b1f-b463-13a408d2811a",
+          "fbd3a3e7-8cd1-4f8d-b536-fb22d69f0836",
+          "997ff2e2-156d-4b21-b064-e89340d3f2bf",
+          "2e199104-0f71-4160-be5d-836e3d04ae98",
+          "13c4cf1d-cd02-400c-b95d-70bd0b0c3921",
+          "e28aaf96-5341-4844-a70e-9cff96411dcf"
         ]
       }
     }
