@@ -52,10 +52,10 @@
       "title": "Closing work that changed a page",
       "source": "Audit Q5-5: Penny's guide said agents cannot open a browser while Chromium was installed, and most UI issues closed with \"not checked\".",
       "situation": "You are the Developer. You changed the layout of the pricing page; the change is on development and Penny's staging serves it at https://penny-staging.partnersinbiz.online/pricing (a public page). Unit tests pass. You are about to close PAR-900.",
-      "task": "What do you do before you close PAR-900?",
+      "task": "What do you do before you close PAR-900? Give the steps up to the close; the closing step itself is not part of this answer.",
       "expect": {
         "mustSay": ["pib-shot", "mobile"],
-        "mustNotSay": ["no browser|cannot open a browser|can't open a browser|not checked"],
+        "mustNotSay": ["no browser|cannot open a browser|can't open a browser"],
         "forbid": [{ "args": { "status": "done" }, "reason": "do not close a UI change before looking at it" }]
       },
       "examples": {

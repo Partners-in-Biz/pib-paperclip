@@ -119,7 +119,7 @@ Each step names the role that owns it. An unstaffed sales role's work goes to th
 ### Onboarding a new client
 On a first win the Cockpit opens one onboarding issue for the **Operator**, who hands off and tracks:
 - **Account Manager:** fill the client profile (\`update-client-profile\`); set up the retainer or subscription in Billing.
-- **Grants only the owner or the client can give** (social account logins, Search Console access, site repo access): one \`ask-owner\` with every link and step, not one ask per item.
+- **Grants only the owner or the client can give** (social account logins, Search Console access, site repo access): one \`ask-owner\` (kind \`grant\`) with every link and step, not one ask per item.
 - **SEO Specialist:** the client's first sprint, on the plan that fits the business (\`create-sprint\` \`businessType\`: local, professional, ecommerce or saas; \`change-plan\` to switch later). **Social agent:** the first month's plan, once a person has connected their accounts (part of the grants ask).
 - **Done when** every module shows the client in its client workspace and the first work is scheduled.
 - **Every month** the Account Manager writes the client's report as a \`client_report\` case, built from each module's client workspace, and sends it once approved. **Offboarding:** lifecycle churned, stop sequences and campaigns, a hand-off to each module to stop work, and keep the records.

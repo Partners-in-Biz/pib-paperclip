@@ -433,7 +433,7 @@ export function gradeAnswer(s: Scenario, output: string): Graded {
   }
   const text = allText(plan, summary);
   for (const p of e.mustSay ?? []) checks.push({ ok: new RegExp(p, "i").test(text), detail: `It says ${p}` });
-  for (const p of e.mustNotSay ?? []) checks.push({ ok: !new RegExp(p, "i").test(text), detail: `It does not say ${p}` });
+  for (const p of e.mustNotSay ?? []) { const says = new RegExp(p, "i").test(text); checks.push({ ok: !says, detail: says ? `It says ${p}, which it must not` : `It does not say ${p}` }); }
   if (e.maxSteps !== undefined) checks.push({ ok: plan.length <= e.maxSteps, detail: `The plan has at most ${e.maxSteps} steps (it has ${plan.length})` });
   return { passed: checks.every((c) => c.ok), checks, steps: plan.length };
 }
