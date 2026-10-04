@@ -13,12 +13,18 @@
  *
  * Each issue's origin id is `billing:<kind>:<id>` (`WORK_ORIGINS`); when an
  * agent closes one, its done check (`donechecks.ts`) looks at the outcome.
+ *
+ * None of this is ever opened for the canary client (`canary.ts`, 0.7.1): the acceptance journeys rehearse the
+ * whole lead to cash chain on it, and a won canary deal woke a real agent that converted the quote at the same
+ * moment as the journey's own step. A rehearsal opens no issue and wakes nobody; the drafts and overdue lists
+ * leave the canary's documents out, so their done checks do too.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, HANDOFF_EVENTS, PIB_PLUGINS, pluginEvent, receiveOnce, type DealWon, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso } from "./balances.js";
 import { billingSettings, dunningStages, type BillingSettings } from "./config.js";
 import { draftedForDeal } from "./accepted-store.js";
+import { isCanaryCustomer, isCanaryRef, isCanarySql } from "./canary.js";
 import { asObject, getQuote, table } from "./db.js";
 import { daysPastDue } from "./domain.js";
 import { optedOutClients, requestStage, sentStages } from "./dunning.js";
@@ -31,6 +37,9 @@ export const DEAL_WON_EVENT = pluginEvent(PIB_PLUGINS.crm, HANDOFF_EVENTS.dealWo
 
 /** A draft counts as waiting once it is this old. */
 export const DRAFT_AGE_HOURS = 24;
+
+/** Why an event for the canary client opens no issue (kept in the hand-off's stored result). */
+export const CANARY_SKIPPED = "the canary (test) client: a rehearsal opens no issue and wakes nobody";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -70,13 +79,17 @@ export interface DraftItem {
   note: string;
 }
 
-/** Invoices and quotes drafted over a day ago with no send approval open. */
+/**
+ * Invoices and quotes drafted over a day ago with no send approval open. The canary client's are left out: its journey never sends
+ * what it drafts (the Cockpit cancels its send request when the run ends), so they would sit here and wake a real agent next morning.
+ */
 export async function draftsWaiting(ctx: PluginContext, companyId: string, olderThanHours = DRAFT_AGE_HOURS): Promise<DraftItem[]> {
   const invoices = await ctx.db.query<{ id: string; number: string; customer: unknown; customer_kind: string; customer_ref: string; total_minor: string | number; currency: string; created_at: unknown; recurring_id: string | null; subscription_id: string | null; quote_id: string | null; deal_id: string | null; approval_issue_id: string | null }>(
     `SELECT i.id, i.number, i.customer, i.customer_kind, i.customer_ref, i.total_minor, i.currency, i.created_at, i.recurring_id, i.subscription_id, i.quote_id, i.deal_id, i.approval_issue_id
        FROM ${table(ctx, "invoices")} i
       WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
         AND i.created_at < now() - ($2 || ' hours')::interval
+        AND NOT (${isCanarySql("i")})
         AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "recurring_invoices")} r WHERE r.template_invoice_id = i.id AND r.is_active = true)
       ORDER BY i.created_at LIMIT 100`,
     [companyId, String(olderThanHours)],
@@ -86,6 +99,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
        FROM ${table(ctx, "quotes")} q
       WHERE q.company_id = $1 AND q.status = 'draft' AND q.pending_action IS NULL AND COALESCE(q.delivery_status, '') <> 'queued'
         AND q.created_at < now() - ($2 || ' hours')::interval
+        AND NOT (${isCanarySql("q")})
       ORDER BY q.created_at LIMIT 100`,
     [companyId, String(olderThanHours)],
   );
@@ -95,6 +109,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
        FROM ${table(ctx, "quotes")} q
       WHERE q.company_id = $1 AND q.status = 'accepted' AND q.converted_invoice_id IS NULL
         AND COALESCE(q.accepted_at, q.updated_at) < now() - ($2 || ' hours')::interval
+        AND NOT (${isCanarySql("q")})
       ORDER BY q.created_at LIMIT 100`,
     [companyId, String(olderThanHours)],
   );
@@ -230,6 +245,8 @@ export async function overdueInvoices(ctx: PluginContext, companyId: string, set
   const automatic = settings.dunning?.enabled === true;
   const items: OverdueItem[] = [];
   for (const b of open) {
+    // The canary's invoice is a rehearsal: no one is asked to chase a test client (nor does its done check wait on it).
+    if (isCanaryCustomer(b.invoice)) continue;
     const dueAt = iso(b.invoice.due_at);
     if (b.outstandingMinor <= 0 || !dueAt || Date.parse(dueAt) >= now.getTime()) continue;
     const days = daysPastDue(dueAt, now);
@@ -354,9 +371,11 @@ export async function quoteForReply(ctx: PluginContext, companyId: string, mail:
 }
 
 /** A customer answered a quote email: one issue per quote for the Account Manager, with the reply and the next steps. */
-export async function openQuoteReplyIssue(ctx: PluginContext, companyId: string, mail: MailReceived, quoteId: string): Promise<{ quoteId: string; issueId: string | null }> {
+export async function openQuoteReplyIssue(ctx: PluginContext, companyId: string, mail: MailReceived, quoteId: string): Promise<{ quoteId: string; issueId: string | null; skipped?: string }> {
   const quote = await getQuote(ctx, quoteId);
   if (!quote || quote.company_id !== companyId) return { quoteId, issueId: null };
+  // A quote to the canary was never emailed (its address cannot receive), so a "reply" is not a customer: nobody is asked to answer it.
+  if (isCanaryCustomer(quote)) return { quoteId, issueId: null, skipped: CANARY_SKIPPED };
   const prefix = await companyPrefix(ctx, companyId);
   const name = nameOf(quote.customer, quote.customer_ref);
   const client = clientRef(quote.customer_kind, quote.customer_ref);
@@ -409,6 +428,12 @@ export async function onDealWon(ctx: PluginContext, event: PluginEvent): Promise
 }
 
 export async function openDealWonIssue(ctx: PluginContext, companyId: string, deal: DealWon): Promise<Record<string, unknown>> {
+  // The acceptance journeys win a deal on the canary client when they accept its quote and then convert that quote themselves. An issue
+  // here woke a real agent that converted it first, so the journey's own step failed ("Only an accepted quote can be converted").
+  if (isCanaryRef(deal.clientRef)) {
+    ctx.logger.info("Billing left a won deal on the canary client alone", { dealId: deal.dealId });
+    return { dealId: deal.dealId, skipped: CANARY_SKIPPED };
+  }
   const quotes = await ctx.db.query<{ id: string; number: string; status: string; converted_invoice_id: string | null }>(
     `SELECT id, number, status, converted_invoice_id FROM ${table(ctx, "quotes")} WHERE company_id = $1 AND deal_id = $2 ORDER BY created_at DESC`,
     [companyId, deal.dealId],

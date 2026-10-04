@@ -5,12 +5,14 @@
  * most one reminder per invoice: the latest stage that is due and not sent
  * yet (a missed earlier stage is skipped, never sent late in a burst). A
  * unique (invoice, stage) row makes sure a stage is sent once. Invoices
- * waiting on a proof-of-payment check, and clients who opted out, get none.
+ * waiting on a proof-of-payment check, clients who opted out and the canary
+ * (test) client get none.
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, type SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
+import { isCanaryCustomer } from "./canary.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2, type BillingSettings, type DunningStage, type PrivateR2 } from "./config.js";
 import { asObject, table } from "./db.js";
 import { docFileName, renderDocument } from "./documents.js";
@@ -52,6 +54,8 @@ export function planReminders(input: {
   for (const balance of input.balances) {
     const invoice = balance.invoice;
     if (!DUNNABLE.has(invoice.status) || balance.outstandingMinor <= 0) continue;
+    // The canary client is never chased, automatically or by "Send now": its reminder would be a row of a rehearsal in the real list.
+    if (isCanaryCustomer(invoice)) continue;
     // A payment dated in the future is on the invoice: a person checks that date before anyone chases the customer.
     if ((balance.futurePaidMinor ?? 0) > 0) continue;
     if (input.optedOut.has(`${invoice.customer_kind}:${invoice.customer_ref}`)) continue;

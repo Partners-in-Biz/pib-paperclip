@@ -27,6 +27,8 @@ Never tell a customer an invoice is paid until \`invoice-detail\` shows status \
 
 These issues update themselves, reopen when new work arrives and close when nothing is left. Mark one done only when its list is handled. When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those. If only a person can finish something (the owner must cancel a draft or decide on a debt), leave the issue blocked and say who must do what.
 
+None of these is opened for the canary (test) client (an id starting \`canary-\`): a rehearsal on it opens no issue and wakes nobody, so the acceptance journey drafts, converts and asks to send its own quote and invoice with no competing work. Its explicit tool calls (such as its send request) work as for any client.
+
 ## 1. The client
 
 - Every quote and invoice is for a CRM client: \`customerKind\` (\`company\` or \`contact\` for a person or sole trader) plus \`customerRef\`, the CRM id. Look the client up in the CRM first (\`partnersinbiz.crm:find-records\`); create it there (\`create-company\` / \`create-contact\`) only when it truly does not exist. Never use a name as an id.

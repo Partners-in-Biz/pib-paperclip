@@ -4,10 +4,14 @@
  * every 15 minutes for recent changes and nightly for everything still open
  * (plus what closed in the last few days), like the CRM projection.
  * Accounting upserts by key and keeps the newest `updatedAt`.
+ *
+ * The canary client's invoices are never sent to Accounting (0.7.1): they are not on the books (nothing posts a journal for them), so a
+ * real bank line must never be matched to one, which would ask a person to settle a test invoice.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { OPEN_ITEM_EVENTS, type OpenItemUpserted } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
+import { isCanaryCustomer, isCanarySql } from "./canary.js";
 import { asObject, table } from "./db.js";
 
 export interface BillBalanceRow {
@@ -103,7 +107,7 @@ async function emitItem(ctx: PluginContext, companyId: string, item: OpenItemUps
 /** Emit one invoice (drafts are not receivables yet). */
 export async function emitInvoiceItem(ctx: PluginContext, invoiceId: string): Promise<void> {
   const balance = await invoiceBalance(ctx, invoiceId);
-  if (!balance || balance.invoice.status === "draft") return;
+  if (!balance || balance.invoice.status === "draft" || isCanaryCustomer(balance.invoice)) return;
   await emitItem(ctx, balance.invoice.company_id, receivableItem(balance));
 }
 
@@ -121,10 +125,10 @@ export async function emitBillItem(ctx: PluginContext, billId: string): Promise<
 export async function emitOpenItems(ctx: PluginContext, companyId: string, sinceSeconds: number | null): Promise<number> {
   const window = sinceSeconds == null ? 3 * 86_400 : Math.max(60, Math.floor(sinceSeconds));
   const recent = await ctx.db.query<{ id: string }>(
-    `SELECT id FROM ${table(ctx, "invoices")}
-      WHERE company_id = $1 AND status <> 'draft'
-        AND (updated_at > now() - make_interval(secs => $2::int)
-             OR ($3::boolean AND status IN ('sent', 'viewed', 'overdue', 'partially_paid', 'payment_pending_verification')))`,
+    `SELECT i.id FROM ${table(ctx, "invoices")} i
+      WHERE i.company_id = $1 AND i.status <> 'draft' AND NOT (${isCanarySql("i")})
+        AND (i.updated_at > now() - make_interval(secs => $2::int)
+             OR ($3::boolean AND i.status IN ('sent', 'viewed', 'overdue', 'partially_paid', 'payment_pending_verification')))`,
     [companyId, window, sinceSeconds == null],
   );
   let count = 0;

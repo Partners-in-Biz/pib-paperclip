@@ -25,6 +25,7 @@ import {
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
 import { AS_AT_CUTOFF_SQL, asAtDate, invoiceBalances, iso, statusAsAtToday } from "./balances.js";
+import { isCanaryCustomer, isCanarySql } from "./canary.js";
 import { billingSettings } from "./config.js";
 import { stuckAcceptances } from "./accepted-store.js";
 import { asObject, table } from "./db.js";
@@ -139,7 +140,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
       openCount += 1;
       addTo(outstanding, b.invoice.currency, b.outstandingMinor);
       const due = iso(b.invoice.due_at);
-      if (statusAsAtToday(b) === "overdue" || (due && Date.parse(due) < now)) {
+      // The canary's invoice is counted as owed but never as overdue: "stuck" is what the Operator wakes agents for, and nobody chases a test client.
+      if (!isCanaryCustomer(b.invoice) && (statusAsAtToday(b) === "overdue" || (due && Date.parse(due) < now))) {
         overdueCount += 1;
         addTo(overdue, b.invoice.currency, b.outstandingMinor);
         oldestOverdue = Math.max(oldestOverdue, daysPastDue(due, new Date(now)));
@@ -242,15 +244,16 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   await part("drafts", async () => {
     // Drafts nobody asked to send yet (the Account Manager's daily "Drafts to send" issue lists the ones over a day old).
+    // A canary draft is counted but is never "over a day old": the daily issue leaves it out, and the Operator wakes agents for what is stuck.
     const rows = await ctx.db.query<{ kind: "invoice" | "quote"; currency: string; count: string; stale: string; total: string; oldest_stale: unknown }>(
-      `SELECT kind, currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day')::text AS stale,
-              COALESCE(sum(total_minor), 0)::text AS total, min(created_at) FILTER (WHERE created_at < now() - interval '1 day') AS oldest_stale FROM (
-         SELECT 'invoice' AS kind, i.currency, i.created_at, i.total_minor FROM ${table(ctx, "invoices")} i
+      `SELECT kind, currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day' AND NOT canary)::text AS stale,
+              COALESCE(sum(total_minor), 0)::text AS total, min(created_at) FILTER (WHERE created_at < now() - interval '1 day' AND NOT canary) AS oldest_stale FROM (
+         SELECT 'invoice' AS kind, i.currency, i.created_at, i.total_minor, ${isCanarySql("i")} AS canary FROM ${table(ctx, "invoices")} i
           WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
             AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "recurring_invoices")} r WHERE r.template_invoice_id = i.id AND r.is_active = true)
          UNION ALL
-         SELECT 'quote' AS kind, currency, created_at, total_minor FROM ${table(ctx, "quotes")}
-          WHERE company_id = $1 AND status = 'draft' AND pending_action IS NULL AND COALESCE(delivery_status, '') <> 'queued'
+         SELECT 'quote' AS kind, q.currency, q.created_at, q.total_minor, ${isCanarySql("q")} AS canary FROM ${table(ctx, "quotes")} q
+          WHERE q.company_id = $1 AND q.status = 'draft' AND q.pending_action IS NULL AND COALESCE(q.delivery_status, '') <> 'queued'
        ) d GROUP BY kind, currency`,
       [companyId],
     );
@@ -305,7 +308,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
           WHERE i.company_id = $1 AND i.pending_action = 'send' AND i.approval_issue_id IS NOT NULL
          UNION ALL
          SELECT 'quote.sent' AS stage, q.currency, q.total_minor,
-                (COALESCE(q.sent_at, q.updated_at) < now() - interval '14 days'
+                (COALESCE(q.sent_at, q.updated_at) < now() - interval '14 days' AND NOT (${isCanarySql("q")})
                   AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "work_issues")} w WHERE w.company_id = q.company_id AND w.kind = 'quote_reply' AND w.subject_id = q.id)) AS stuck,
                 COALESCE(q.sent_at, q.updated_at) AS since FROM ${table(ctx, "quotes")} q
           WHERE q.company_id = $1 AND q.status = 'sent' AND q.pending_action IS NULL AND (q.valid_until IS NULL OR q.valid_until >= now())
