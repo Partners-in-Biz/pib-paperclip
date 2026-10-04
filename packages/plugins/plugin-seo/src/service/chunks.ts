@@ -5,8 +5,10 @@
  * the one before it closes. The parent task is completed only after every group is finished; the agent is woken on it
  * when the last group closes, to check the site as a whole.
  *
- * A sprint that was running before this version keeps working: a task that already has an issue and no groups is left
- * alone unless its agent starts it (start-task) or calls `split-task`.
+ * Off unless a person switched page groups on for the sprint (service/switches.ts): then nothing is split and the sitemap is
+ * never read. A sprint that was running before this version keeps working: a task that already has an issue and no groups
+ * is left alone unless its agent starts it (start-task) or calls `split-task`, and only with the switch on. Groups that are
+ * already open when the switch goes off are finished as planned.
  */
 import { randomUUID } from "node:crypto";
 import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
@@ -29,6 +31,7 @@ import {
   type GroupPlan,
 } from "../engine/chunks.js";
 import { branchFor, isCodeTask } from "../engine/site-change.js";
+import { offMessage } from "../engine/switches.js";
 import { decideAssignee, TERMINAL_TASK_STATUSES, type AgentAvailability } from "../engine/sprint.js";
 import { addDays } from "../engine/time.js";
 import { resolveAgent } from "./agent.js";
@@ -36,6 +39,7 @@ import { assignableUser, bool, cockpitPath, companyInfo, errorMessage, num, reqS
 import { loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
+import { requireOn } from "./switches.js";
 import { siteCopyFor, taskCopy, taskProjectId } from "./tasks.js";
 
 export interface SplitPlan {
@@ -128,7 +132,8 @@ function recentlyChecked(task: Pick<db.SprintTask, "evidence">, now: Date): bool
  * the agent when there is a plan) and then calls `openGroups`.
  */
 export async function planForNewIssue(env: Env, sprint: db.Sprint, task: db.SprintTask, assignedToAgent: boolean): Promise<SplitPlan | null> {
-  if (!assignedToAgent || !isSiteWideTask(task) || task.owner !== "agent") return null;
+  // Off unless a person switched page groups on for this sprint: the issue opens whole and the sitemap is not read.
+  if (!sprint.chunksEnabled || !assignedToAgent || !isSiteWideTask(task) || task.owner !== "agent") return null;
   try {
     const existing = await db.listChunks(env.ctx.db, task.companyId, task.id);
     if (existing.some((c) => c.status === "queued" || c.status === "open")) return null;
@@ -369,6 +374,7 @@ export async function splitTaskTool(env: Env, companyId: string, actor: Actor, p
     return { taskId: task.id, split: true, alreadySplit: true, progress: chunkProgress(existing), next: chunkBlocker(existing) ?? "Every group is finished: check the site as a whole and complete the task." };
   }
   const { sprint } = await loadSprintContext(env, companyId, task.sprintId);
+  requireOn(sprint, "chunks", offMessage("chunks"));
   const urls = strList(params, "urls", { max: MAX_SPLIT_PAGES, itemMax: 1000 }).map((u) => urlParam(u, sprint.siteUrl));
   const size = num(params, "size", { integer: true, min: 5, max: 50 });
   const { plan, pages, reason, reliable } = await planSplit(env, sprint, task, { size, urls });
@@ -397,11 +403,12 @@ export async function splitTaskTool(env: Env, companyId: string, actor: Actor, p
 export async function splitOnStart(env: Env, task: db.SprintTask): Promise<{ groups: number; pages: number; firstGroupIssueId: string | null } | null> {
   if (!isSiteWideTask(task) || task.owner !== "agent" || !task.issueId || (TERMINAL_TASK_STATUSES as string[]).includes(task.status)) return null;
   try {
+    // Off unless a person switched page groups on for this sprint: a task that is started is worked whole, and the sitemap is not read.
+    const sprint = await db.getSprint(env.ctx.db, task.companyId, task.sprintId);
+    if (!sprint?.chunksEnabled) return null;
     if (recentlyChecked(task, env.now())) return null;
     const existing = (await db.listChunks(env.ctx.db, task.companyId, task.id)).filter((c) => c.parentIssueId === task.issueId);
     if (existing.length > 0) return null;
-    const sprint = await db.getSprint(env.ctx.db, task.companyId, task.sprintId);
-    if (!sprint) return null;
     const { plan, pages, size, reliable } = await planSplit(env, sprint, task);
     if (plan || reliable) await rememberDecision(env, task, env.now(), { pages, size, groups: plan?.groups.length ?? 0 });
     if (!plan) return null;

@@ -217,6 +217,26 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
   return closed;
 }
 
+/**
+ * A person switched an extra off: its optional lines are over. Closed without a check and without handing any task back
+ * (no wake), with the reason as the note. Returns how many were closed.
+ */
+export async function closeNeedsYouItems(env: Env, info: CompanyInfo, sprint: db.Sprint, keys: string[], by: string, note: string): Promise<number> {
+  const digest = await currentDigest(env, info, sprint, "read");
+  if (!digest) return 0;
+  let closed = 0;
+  const items = digest.items.map((item) => {
+    if (item.status !== "open" || !keys.includes(item.key)) return item;
+    closed += 1;
+    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: by, note };
+  });
+  if (closed === 0) return 0;
+  const next = { ...digest, items };
+  await db.upsertNeedsYou(env.ctx.db, next);
+  await syncDigestIssue(env, info, sprint, next);
+  return closed;
+}
+
 /** Hand waiting tasks back: human tasks complete, agent tasks go back to the agent (todo + wake). */
 async function continueTasks(env: Env, sprint: db.Sprint, taskIds: string[], by: string, note?: string | null): Promise<number> {
   if (taskIds.length === 0) return 0;

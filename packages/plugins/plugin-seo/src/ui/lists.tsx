@@ -47,6 +47,7 @@ import {
   useIsNarrow,
 } from "@partnersinbiz/pib-plugin-ui";
 import { plural } from "../engine/plain.js";
+import { extraOn } from "./extras.js";
 import { RawDetails, fmt, pct, shortUrl, small, top } from "./parts.js";
 import { backlinkSegments, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone } from "./series.js";
 import type { Backlink, CallFn, Content, Finding, GeoSummary, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle } from "./types.js";
@@ -646,9 +647,12 @@ export function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; cal
   const narrow = useIsNarrow();
   const [finding, setFinding] = useState<Finding | null>(null);
   const bySeverity = bundle.findings.reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc; }, {});
+  // AI search and Google Analytics show their cards and columns only where a person switched them on for this sprint.
+  const geoOn = extraOn(bundle, "geo");
+  const ga4On = extraOn(bundle, "ga4");
   return (
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <GeoCard geo={bundle.geo} sprintId={bundle.sprint.sprintId} call={call} working={working} />
+      {geoOn ? <GeoCard geo={bundle.geo} sprintId={bundle.sprint.sprintId} call={call} working={working} /> : null}
       <SectionCard title="Open findings" subtitle={bundle.findings.length ? `${plural(bundle.findings.length, "problem")} from the site checks; each clears when a re-run no longer finds it` : "Site checks record problems here"} icon={HeartPulse} tone={(bySeverity.critical ?? 0) + (bySeverity.high ?? 0) ? "bad" : bundle.findings.length ? "warn" : "ok"}>
         {bundle.findings.length ? <StackedBar title="Open findings by severity" segments={severitySegments(bundle.findings)} height={10} /> : null}
         {bundle.findings.length === 0 ? (
@@ -691,8 +695,8 @@ export function AuditsTab({ bundle, call, working }: { bundle: SprintBundle; cal
               { key: "rankings", header: "On page one", render: (v) => { const r = v as { top10?: number; tracked?: number }; return `${r.top10 ?? 0} of ${r.tracked ?? 0}`; } },
               { key: "authority", header: "Live links (sites)", render: (v) => { const a = v as { liveBacklinks?: number; referringDomains?: number }; return `${a.liveBacklinks ?? 0} (${a.referringDomains ?? 0})`; } },
               { key: "content", header: "Live content", render: (v) => fmt((v as { live?: number }).live ?? 0, 0) },
-              { key: "geo", header: "AI-search readiness", render: (v) => { const score = ((v ?? {}) as { score?: number | null }).score; return typeof score === "number" ? `${score}/100` : "—"; } },
-              { key: "analytics", header: "Organic visits (4 weeks)", render: (v) => { const n = ((v ?? {}) as { organicSessions?: number }).organicSessions; return typeof n === "number" ? fmt(n, 0) : "—"; } },
+              ...(geoOn ? [{ key: "geo", header: "AI-search readiness", render: (v: unknown) => { const score = ((v ?? {}) as { score?: number | null }).score; return typeof score === "number" ? `${score}/100` : "—"; } }] : []),
+              ...(ga4On ? [{ key: "analytics", header: "Organic visits (4 weeks)", render: (v: unknown) => { const n = ((v ?? {}) as { organicSessions?: number }).organicSessions; return typeof n === "number" ? fmt(n, 0) : "—"; } }] : []),
             ]}
             rows={bundle.snapshots}
           />

@@ -11,9 +11,9 @@ import { PLAYBOOKS, playbookFor } from "../src/templates/playbooks.js";
 import { SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 
 describe("Outrank-90 template", () => {
-  it("has the original 42 tasks with unique stable keys (the GEO tasks are added per plan in plans.ts)", () => {
+  it("has the original 42 tasks with unique stable keys (the GEO tasks are an add-on a person switches on, not part of the plan)", () => {
     expect(TEMPLATE_ID).toBe("outrank-90");
-    expect(TEMPLATE_VERSION).toBe(5);
+    expect(TEMPLATE_VERSION).toBe(4);
     expect(OUTRANK_90.tasks).toHaveLength(42);
     const keys = OUTRANK_90.tasks.map((t) => t.templateKey);
     expect(new Set(keys).size).toBe(42);

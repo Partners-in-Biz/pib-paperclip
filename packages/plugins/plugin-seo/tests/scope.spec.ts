@@ -232,12 +232,12 @@ describe("create-sprint scope", () => {
     const { harness, executes } = await boot([]);
     const client = await harness.executeTool<{ data?: Row; error?: string }>("create-sprint", { siteUrl: "https://jo.co.za", client: "contact:ct-1" }, { companyId: "co-1" });
     expect(client.data).toMatchObject({ businessType: "local", plan: "Local service business" });
-    // 46 tasks of the local plan plus the eight GEO tasks every plan carries from version 5.
-    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90-local", tasks: 54 });
+    // The 46 tasks of the local plan: the AI-search tasks are an add-on a person switches on, so a new sprint has none.
+    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90-local", tasks: 46 });
     expect(seeded(executes).domains).toEqual(expect.arrayContaining(["business.google.com", "snupit.co.za"]));
     const own = await harness.executeTool<{ data?: Row }>("create-sprint", { siteUrl: "https://partnersinbiz.online" }, { companyId: "co-1" });
     expect(own.data).toMatchObject({ businessType: "saas" });
-    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90", tasks: 50 });
+    expect(seeded(executes)).toMatchObject({ templateId: "outrank-90", tasks: 42 });
     const firm = await harness.executeTool<{ data?: Row }>("create-sprint", { siteUrl: "https://acme.co.za", client: "company:crm-1", businessType: "professional" }, { companyId: "co-1" });
     expect(firm.data).toMatchObject({ businessType: "professional", plan: "Professional services" });
     expect(seeded(executes).templateId).toBe("outrank-90-professional");

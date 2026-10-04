@@ -22,6 +22,7 @@ import { ensureProject, linkPendingHire, resolveAgent } from "./agent.js";
 import { ga4Daily } from "./analytics.js";
 import { healChunks } from "./chunks.js";
 import { ensureMonthlyGeoTask, scheduledGeo } from "./geo.js";
+import { addGeoTasks, withCurrentSwitches } from "./switches.js";
 import { savePageHealth } from "./checks.js";
 import { companyInfo, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { clockFor } from "./context.js";
@@ -249,6 +250,10 @@ export async function runDailyForSprint(
   if (psWarning) warnings.push(psWarning);
   if (bingWarning) warnings.push(bingWarning);
 
+  // The daily job works its sprints one after the other: a person may have switched an extra while this one waited. From here on
+  // (the snapshot, the extras, the due tasks) the run follows the switches as they are now.
+  sprint = await withCurrentSwitches(env, sprint);
+
   let snapshotDay: number | null = null;
   if (clock.day >= 0) {
     try {
@@ -260,14 +265,19 @@ export async function runDailyForSprint(
 
   // AI-search readiness (the baseline audit, a refresh every 4 weeks, a daily re-check while the firewall item is open),
   // Google Analytics (the weekly numbers, or the property search) and the monthly AI re-check after day 90.
+  // Each is off unless a person switched it on for this sprint (service/switches.ts): off, none of it runs, creates or fetches anything.
   let geoAudited = false;
-  try {
-    geoAudited = (await scheduledGeo(env, info, sprint, clock.day)).audited;
-    await ensureMonthlyGeoTask(env, info, sprint);
-  } catch (error) {
-    warnings.push(`AI search: ${errorMessage(error)}`);
+  if (sprint.geoEnabled) {
+    try {
+      // The switch adds the tasks itself; this puts back any it could not (idempotent on the task key).
+      if (sprint.seededAt) await addGeoTasks(env, sprint);
+      geoAudited = (await scheduledGeo(env, info, sprint, clock.day)).audited;
+      await ensureMonthlyGeoTask(env, info, sprint);
+    } catch (error) {
+      warnings.push(`AI search: ${errorMessage(error)}`);
+    }
   }
-  if (clock.day >= 1) {
+  if (sprint.ga4Enabled && clock.day >= 1) {
     const ga4Warning = await ga4Daily(env, info, sprint);
     if (ga4Warning) warnings.push(ga4Warning);
   }

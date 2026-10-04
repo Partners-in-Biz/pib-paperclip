@@ -18,6 +18,8 @@ export interface CompletionFacts {
   geoAuditAgeDays?: number | null;
   /** Distinct (question, assistant) answers sampled in the last 14 days. */
   aiSamplesRecent?: number;
+  /** AI search is switched off for the sprint: the tools a GEO task needs refuse, so the audit and samples it asks for cannot be made. */
+  geoOff?: boolean;
 }
 
 /** A geo-audit must be this recent (days) when a GEO task closes, so its result is on record. */
@@ -44,6 +46,8 @@ function geoAuditBlocker(facts: CompletionFacts): string | null {
 }
 
 export function completionBlocker(taskType: string, facts: CompletionFacts, templateKey?: string | null): string | null {
+  // A GEO task left open after AI search was switched off can be closed or skipped: its tools refuse, so the audit it asks for cannot be made.
+  if (facts.geoOff && taskType.startsWith("geo-")) return null;
   switch (taskType) {
     case "post-repurpose": {
       const needed = socialPostsNeeded(templateKey);

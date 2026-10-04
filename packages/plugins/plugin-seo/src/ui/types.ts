@@ -56,9 +56,28 @@ export type SprintSummary = {
   health: { score?: number; signals?: Array<{ type: string; severity: string }> };
   lastDailyOn: string | null;
   notes: string | null;
+  /** The extras a person switched on for this sprint; all off until then (engine/switches.ts). */
+  switches?: { geo: boolean; ga4: boolean; chunks: boolean };
   site?: SiteLink;
   tasks?: SprintNumbers;
   next?: NextTask | null;
+};
+
+/** One extra (AI search, Google Analytics, page groups): its plain words, whether it is on, and who changed it last (service/switches.ts). */
+export type SwitchState = {
+  key: "geo" | "ga4" | "chunks";
+  label: string;
+  /** One sentence: what turning it on adds. */
+  adds: string;
+  detail: string;
+  /** A one-time step it needs first, or null. */
+  needs: string | null;
+  /** What turning it off does. */
+  off: string;
+  enabled: boolean;
+  changedBy: string | null;
+  changedAt: string | null;
+  effect: Record<string, unknown> | null;
 };
 
 export type ScopeClient = { kind: "company" | "contact"; id: string; name: string; domain: string | null; email: string | null; known: boolean };
@@ -108,6 +127,8 @@ export type LoadResult = {
   setup: SetupItem[];
   /** The SEO routines and the page's last schedule report (own page only). */
   routines?: RoutineRef[];
+  /** What new sprints of this company start with: the extras, all off unless a person turned one on. */
+  newSprintExtras?: SwitchState[];
   /** The page's scope: null = the SEO home (our own sites and every client's). */
   scope: string | null;
   client: ScopeClient | null;
@@ -235,8 +256,10 @@ export type SprintBundle = {
   projects: ProjectOption[];
   /** AI-search readiness and sampled AI answers. */
   geo?: GeoSummary | null;
-  /** Google Analytics (GA4): connection and the last weeks. */
+  /** Google Analytics (GA4): connection and the last weeks; present only where a person switched it on. */
   analytics?: AnalyticsView;
+  /** The three extras with their state, for the Extras section on the Integrations tab. */
+  extras?: SwitchState[];
   /** Site-wide tasks split into page groups, with their progress. */
   pageGroups?: PageGroups[];
   /** What the copy may claim about how the client's business works. */

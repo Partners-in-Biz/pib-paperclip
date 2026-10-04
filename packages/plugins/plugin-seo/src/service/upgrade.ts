@@ -7,19 +7,14 @@
  *   blocked on a person are retried with the new tools;
  * - version 4: the w5/w6 repurpose tasks stop drafting social posts (the
  *   Social agent owns repurposing): they mark the post live and link the
- *   Social drafts, with no sign-off;
- * - version 5: the GEO (AI search) workstream: the plan's eight GEO tasks are
- *   added to every sprint seeded before it, whatever its plan. Nothing that
- *   exists is touched, so a sprint in the middle of its plan keeps working.
+ *   Social drafts, with no sign-off.
  */
-import { randomUUID } from "node:crypto";
 import * as db from "../db.js";
 import { taskIssueDescription, taskIssueTitle } from "../engine/copy.js";
 import { isCodeTask } from "../engine/site-change.js";
 import { decideAssignee, TERMINAL_TASK_STATUSES, type AgentAvailability } from "../engine/sprint.js";
-import { dueDayFor, templateTask, TEMPLATE_V3_CHANGES, TEMPLATE_V4_CHANGES, TEMPLATE_VERSION } from "../templates/outrank-90.js";
-import { TEMPLATE_V5_ADDED } from "../templates/geo.js";
-import { businessTypeOf, planOf } from "../templates/plans.js";
+import { templateTask, TEMPLATE_V3_CHANGES, TEMPLATE_V4_CHANGES, TEMPLATE_VERSION } from "../templates/outrank-90.js";
+import { businessTypeOf } from "../templates/plans.js";
 import { plural } from "../engine/plain.js";
 import { assignableUser, cockpitPath, errorMessage, type CompanyInfo, type Env } from "./common.js";
 import { sprintCopy } from "./context.js";
@@ -31,38 +26,6 @@ export interface UpgradeResult {
   rewritten: number;
   reassigned: number;
   retried: number;
-  /** GEO tasks added (version 5). */
-  added?: number;
-}
-
-/** The GEO tasks of the sprint's plan that the sprint does not have yet (version 5). */
-export async function addGeoTasks(env: Env, sprint: db.Sprint): Promise<number> {
-  const plan = planOf(sprint.templateId);
-  const have = new Set((await db.listTasks(env.ctx.db, sprint.companyId, sprint.id)).map((t) => t.templateKey).filter(Boolean));
-  const wanted = plan.tasks.filter((t) => TEMPLATE_V5_ADDED.includes(t.templateKey) && !have.has(t.templateKey));
-  if (wanted.length === 0) return 0;
-  return db.insertTasks(
-    env.ctx.db,
-    wanted.map((t) => ({
-      id: randomUUID(),
-      companyId: sprint.companyId,
-      sprintId: sprint.id,
-      templateKey: t.templateKey,
-      week: t.week,
-      phase: t.phase,
-      dueDay: dueDayFor(t.week, t.dueDay),
-      focus: t.focus,
-      title: t.title,
-      description: null,
-      taskType: t.taskType,
-      owner: t.owner,
-      autopilotEligible: t.autopilotEligible,
-      playbookKey: t.playbook,
-      source: "template" as const,
-      parentOptimizationId: null,
-      context: null,
-    })),
-  );
 }
 
 const CHANGED = new Set<string>(TEMPLATE_V3_CHANGES);
@@ -106,20 +69,13 @@ function blockedOnPerson(task: db.SprintTask): boolean {
   return task.owner === "agent" && task.status === "blocked" && task.issueStatus === "blocked";
 }
 
-function geoUpgradeNote(added: number): string {
-  return `Plan v${TEMPLATE_VERSION} adds ${plural(added, "task")} for AI search (GEO): crawler access, llms.txt, organisation data, sampled AI answers, answer blocks and brand consistency. Nothing that was already open changed.`;
-}
-
 export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.Sprint, agent: AgentAvailability): Promise<UpgradeResult> {
   const result: UpgradeResult = { upgraded: false, rewritten: 0, reassigned: 0, retried: 0 };
   if (!sprint.seededAt || sprint.templateVersion >= TEMPLATE_VERSION) return result;
-  // Version 5 adds the GEO tasks to every plan (idempotent on the task key).
-  const added = sprint.templateVersion < 5 ? await addGeoTasks(env, sprint) : 0;
   // The v3/v4 rewrites are for the software plan's older tasks; the other plans start on the current version.
   if (businessTypeOf(sprint.templateId) !== "saas") {
     await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { template_version: TEMPLATE_VERSION });
-    if (added > 0 && sprint.rootIssueId) await commentOn(env, sprint.companyId, sprint.rootIssueId, geoUpgradeNote(added));
-    return { ...result, upgraded: true, added };
+    return { ...result, upgraded: true };
   }
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
   for (const original of tasks) {
@@ -175,14 +131,13 @@ export async function upgradeSprintPlan(env: Env, info: CompanyInfo, sprint: db.
   }
   await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { template_version: TEMPLATE_VERSION });
   result.upgraded = true;
-  result.added = added;
-  // One comment, so the sprint's thread grows by one note, not two.
-  const notes = [
-    result.rewritten > 0 || result.retried > 0
-      ? `Plan upgraded to Outrank-90 v${TEMPLATE_VERSION}: ${plural(result.rewritten, "task")} rewritten (${plural(result.reassigned, "open issue")} reassigned to the SEO Specialist), ${plural(result.retried, "blocked task")} retried. Repurposing posts for social is the Social agent's job; the SEO tasks mark posts live and link the drafts. What still needs a person is batched in one weekly **Needs you** issue.`
-      : null,
-    added > 0 ? geoUpgradeNote(added) : null,
-  ].filter(Boolean);
-  if (sprint.rootIssueId && notes.length > 0) await commentOn(env, sprint.companyId, sprint.rootIssueId, notes.join(" "));
+  if (sprint.rootIssueId && (result.rewritten > 0 || result.retried > 0)) {
+    await commentOn(
+      env,
+      sprint.companyId,
+      sprint.rootIssueId,
+      `Plan upgraded to Outrank-90 v${TEMPLATE_VERSION}: ${plural(result.rewritten, "task")} rewritten (${plural(result.reassigned, "open issue")} reassigned to the SEO Specialist), ${plural(result.retried, "blocked task")} retried. Repurposing posts for social is the Social agent's job; the SEO tasks mark posts live and link the drafts. What still needs a person is batched in one weekly **Needs you** issue.`,
+    );
+  }
   return result;
 }

@@ -15,6 +15,8 @@ function botTable(kind: "search" | "user" | "training"): string {
 
 export const GEO_DOC = `# AI search (GEO)
 
+**Off until a person switches it on for a sprint** (SEO page → the sprint → Integrations → Extras; \`get-switches\` and \`today\` show it). On a sprint where it is off there are no GEO tasks, the plugin audits nothing, and \`geo-audit\` (with a sprintId), \`record-ai-mentions\` and \`list-ai-mentions\` refuse or say it is off: do not work around that, and never try to switch it on. Switching it off marks the unfinished GEO tasks not needed.
+
 GEO is making a site readable and quotable by AI answer engines (ChatGPT, Claude, Perplexity, Google AI Overviews and AI Mode, Copilot, Gemini). Two different things, never mixed up in a report:
 
 - **Readiness**: what can be verified on the site. \`geo-audit\` measures it (score 0–100).
@@ -22,11 +24,11 @@ GEO is making a site readable and quotable by AI answer engines (ChatGPT, Claude
 
 The plugin has no account with any AI provider and calls none of them. It never invents a result: the audit reads the site, and an answer is recorded only as you report it, with the evidence.
 
-## The workstream (in every plan, from plan version 5)
+## The workstream (added to a sprint when a person switches AI search on; it belongs to no plan)
 
 ${GEO_TASKS.map((t) => `- \`${t.templateKey}\` (week ${t.week}${t.dueDay ? `, day ${t.dueDay}` : ""}): ${t.title}`).join("\n")}
 - After day 90 (compounding) the daily run opens one monthly re-check task a month (\`geo-recheck:<yyyy-mm>\`, the week-8 playbook).
-- The plugin audits by itself on the first daily run, then every 4 weeks, daily while a firewall item is open, and for every snapshot older than a week. Findings are category \`geo\`; a re-run closes the ones it no longer reports.
+- While AI search is on, the plugin audits by itself on the first daily run after it was switched on, then every 4 weeks, daily while a firewall item is open, and for every snapshot older than a week. Findings are category \`geo\`; a re-run closes the ones it no longer reports.
 
 ## geo-audit: what is scored (weights, out of 100; a check that could not run is left out, not counted as a failure)
 
@@ -106,6 +108,8 @@ AI systems cross-check the site against its profiles and directory listings. Fix
 
 export const ANALYTICS_DOC = `# Google Analytics (GA4), read only
 
+**Off until a person switches it on for a sprint** (SEO page → the sprint → Integrations → Extras; \`get-switches\` and \`today\` show it), and it needs two one-time Google steps first (the Analytics APIs enabled for the project, the property's owner adding the service account as a Viewer). On a sprint where it is off the plugin makes no Google Analytics call at all, and \`connect-ga4\` refuses: do not work around that, and never try to switch it on.
+
 The plugin reads GA4 with the same Google service account as Search Console (scope analytics.readonly, a separate token). It never writes to a property. Numbers are per ISO week (Monday first), the last 13 completed weeks on the first pull and the last 3 refreshed every morning.
 
 ## What is pulled
@@ -153,6 +157,8 @@ const kinds = Object.entries(SITE_WIDE)
   .join("\n");
 
 export const PAGE_GROUPS_DOC = `# Page groups (site-wide tasks)
+
+**Off until a person switches it on for a sprint** (SEO page → the sprint → Integrations → Extras; \`get-switches\` and \`today\` show it). On a sprint where it is off nothing is split and \`split-task\` refuses: work a site-wide task whole, as before. Page groups that are already open when it is switched off are finished as planned.
 
 A task that means "every page" (a title and description for every page, alt text on every image, noindex for every private page, a canonical on every page) cannot be done well in one run on a site with hundreds of pages. The plugin splits it into **page groups**: child issues of the task's issue, each with a list of pages, opened one at a time.
 

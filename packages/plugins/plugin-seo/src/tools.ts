@@ -87,7 +87,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Sprints",
     name: "create-sprint",
     displayName: "Create SEO sprint",
-    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it.",
+    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations; AI search, Google Analytics and page groups start off, a person turns them on), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it.",
     parametersSchema: schema(["siteUrl"], {
       siteUrl: text("The site, e.g. https://example.co.za"),
       ...clientProps('Who the sprint is for: "company:<CRM company id>" or "contact:<CRM contact id>" (a sole trader). Omit for Partners in Biz\'s own sites.'),
@@ -100,6 +100,13 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Sprints", name: "get-sprint", displayName: "Get SEO sprint", description: "One sprint with integrations, keyword counts, page health, snapshots and scoreboard.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  {
+    group: "Sprints",
+    name: "get-switches",
+    displayName: "Which extras are on",
+    description: "Read only. The extras a person can switch on per sprint (AI search, Google Analytics, page groups), which are on for a sprint (or for every sprint in a scope) and what new sprints start with. All are off until a person turns them on; you cannot change them, and the tools of an extra that is off refuse and change nothing.",
+    parametersSchema: schema([], { sprintId: text("Sprint id: its switches and who changed them. Omit for every sprint (narrow with client)"), ...clientProps(CLIENT_FILTER) }),
+  },
   { group: "Sprints", name: "today", displayName: "Today's SEO plan", description: "What to do now: due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps, per sprint with its client. Omit sprintId for every active sprint (narrow with client).", parametersSchema: schema([], { sprintId, ...clientProps(CLIENT_FILTER) }) },
   { group: "Sprints", name: "set-autopilot", displayName: "Set sprint autopilot", description: "off: tasks go to the owner. safe: agent works its tasks; publish/send/deploy tasks need sign-off. full: no sign-off. Agents may only lower it.", parametersSchema: schema(["sprintId", "mode"], { sprintId, mode: choice(AUTOPILOT_MODES, "New autopilot mode; agents may only lower it") }) },
   {
@@ -201,7 +208,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "split-task",
     displayName: "Split a site-wide task into page groups",
     description:
-      "A site-wide task (a title and description for every page, alt text, noindex, canonicals) on a site with more pages than one run can do well is split into child issues of N pages, opened one at a time; the plugin does this when the task's issue opens or when you start-task it. Call it yourself on an open task that was not split. After it splits the task, end your run: the pages are the group issues' work, you are woken on the task when the last group is done, and complete-task then checks the site as a whole.",
+      "Only on a sprint a person switched page groups on for (get-switches); otherwise it refuses and changes nothing. A site-wide task (a title and description for every page, alt text, noindex, canonicals) on a site with more pages than one run can do well is split into child issues of N pages, opened one at a time; the plugin does this when the task's issue opens or when you start-task it. Call it yourself on an open task that was not split. After it splits the task, end your run: the pages are the group issues' work, you are woken on the task when the last group is done, and complete-task then checks the site as a whole.",
     parametersSchema: schema(["taskId"], {
       taskId,
       size: int("Pages per group, 5 to 50 (default by task type: 10 for titles and alt text, 25 for canonicals, 40 for noindex)"),
@@ -660,7 +667,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "geo-audit",
     displayName: "AI-search readiness audit",
     description:
-      "Check whether AI answer engines can read and quote the site: which AI crawlers robots.txt allows (search, user and training bots; training is the client's choice and not scored), whether the server refuses them, llms.txt, Organization data and sameAs links, answer blocks and FAQ coverage, snippet limits, and name and phone consistency across profiles and directory listings. Returns a 0-100 readiness score with its sections, findings and next steps. With sprintId it records the audit and its findings (a re-run closes what it no longer reports, but never what it could not check this time) and keeps the firewall item on Needs you in step; a server refusal counts only when a second request repeats it next to an ordinary one. With only a url (any site) nothing is recorded and no bot user agent is sent. Readiness is not how often AI assistants mention the business: sample that with record-ai-mentions.",
+      "Only on a sprint a person switched AI search on for (get-switches); with a sprintId on any other sprint it refuses, reads nothing and changes nothing. Check whether AI answer engines can read and quote the site: which AI crawlers robots.txt allows (search, user and training bots; training is the client's choice and not scored), whether the server refuses them, llms.txt, Organization data and sameAs links, answer blocks and FAQ coverage, snippet limits, and name and phone consistency across profiles and directory listings. Returns a 0-100 readiness score with its sections, findings and next steps. With sprintId it records the audit and its findings (a re-run closes what it no longer reports, but never what it could not check this time) and keeps the firewall item on Needs you in step; a server refusal counts only when a second request repeats it next to an ordinary one. With only a url (any site) nothing is recorded and no bot user agent is sent. Readiness is not how often AI assistants mention the business: sample that with record-ai-mentions.",
     parametersSchema: schema([], {
       sprintId: text("Sprint id: audits the sprint's site and records the result"),
       url: text("A page on the sprint's site; or, without sprintId, any site's address (nothing is recorded then)"),
@@ -674,7 +681,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "record-ai-mentions",
     displayName: "Record sampled AI answers",
     description:
-      "Record what you saw when you asked an AI assistant or a search tool the questions customers ask: whether the answer named the business or listed one of its pages as a source, with the evidence, and which competitors it named. Only record answers you really obtained with a tool of yours; never fill a gap with what an assistant would probably say. A mention or citation without a short quote or source URLs (one on the site for a citation) is refused. The same question on the same assistant on the same day replaces that day's row.",
+      "Only on a sprint a person switched AI search on for (get-switches); otherwise it refuses. Record what you saw when you asked an AI assistant or a search tool the questions customers ask: whether the answer named the business or listed one of its pages as a source, with the evidence, and which competitors it named. Only record answers you really obtained with a tool of yours; never fill a gap with what an assistant would probably say. A mention or citation without a short quote or source URLs (one on the site for a citation) is refused. The same question on the same assistant on the same day replaces that day's row.",
     parametersSchema: schema(["sprintId", "samples"], {
       sprintId,
       samples: {
@@ -705,7 +712,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "list-ai-mentions",
     displayName: "List sampled AI answers",
     description:
-      "The AI answers sampled for the sprint: the rate at which the business was named or cited (the latest answer per question and assistant), the trend from the first sampling day to the latest, the competitors named instead, and suggested questions to ask when fewer than 10 are sampled. A handful of samples is a signal, not a measurement.",
+      "Needs AI search switched on for the sprint (get-switches); otherwise it says it is off. The AI answers sampled for the sprint: the rate at which the business was named or cited (the latest answer per question and assistant), the trend from the first sampling day to the latest, the competitors named instead, and suggested questions to ask when fewer than 10 are sampled. A handful of samples is a signal, not a measurement.",
     parametersSchema: schema(["sprintId"], { sprintId, limit: int("Questions to return (default 30, at most 100)") }),
   },
 
@@ -715,7 +722,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "connect-ga4",
     displayName: "Connect Google Analytics (GA4)",
     description:
-      "Connect the sprint to its Google Analytics 4 property (read only, through the same Google service account as Search Console) and pull the last 13 weeks. Without propertyId it finds the property by the site's address once the property's owner has added the service account as a Viewer. A propertyId must be this site's (one of its web streams has the site's address): the service account can read other clients' properties, so an id that is not this site's is refused, and you never try ids you were not given by this site's owner. When a one-time grant is missing (the Google Analytics APIs enabled for the project, or the Viewer access) it goes on the sprint's Needs you digest with the exact steps and, for a client, the email to send; the plugin retries every morning, so carry on with other work.",
+      "Only on a sprint a person switched Google Analytics on for (get-switches); otherwise it refuses, calls Google not at all and changes nothing. Connect the sprint to its Google Analytics 4 property (read only, through the same Google service account as Search Console) and pull the last 13 weeks. Without propertyId it finds the property by the site's address once the property's owner has added the service account as a Viewer. A propertyId must be this site's (one of its web streams has the site's address): the service account can read other clients' properties, so an id that is not this site's is refused, and you never try ids you were not given by this site's owner. When a one-time grant is missing (the Google Analytics APIs enabled for the project, or the Viewer access) it goes on the sprint's Needs you digest with the exact steps and, for a client, the email to send; the plugin retries every morning, so carry on with other work.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       propertyId: text("GA4 property ID (a number, Admin → Property settings). Must be this site's, from its owner, never guessed. Omit it to find the property by the site's address"),
@@ -726,7 +733,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "list-ga4-summary",
     displayName: "GA4 organic traffic and key events",
     description:
-      "Weekly sessions, engaged sessions and key events from GA4, the Organic Search channel, and how much organic traffic and how many key events landed on the pages this sprint made or targets (live content, keyword targets, approved optimizations) against every other page. Also AI-assistant referrals, key events by name and top sources. Use it in the weekly review and the day-90 report; never quote a number it did not return.",
+      "Needs Google Analytics switched on for the sprint (get-switches); otherwise it says it is off. Weekly sessions, engaged sessions and key events from GA4, the Organic Search channel, and how much organic traffic and how many key events landed on the pages this sprint made or targets (live content, keyword targets, approved optimizations) against every other page. Also AI-assistant referrals, key events by name and top sources. Use it in the weekly review and the day-90 report; never quote a number it did not return.",
     parametersSchema: schema(["sprintId"], { sprintId, weeks: int("Weeks to return (default 8, at most 26)") }),
   },
 

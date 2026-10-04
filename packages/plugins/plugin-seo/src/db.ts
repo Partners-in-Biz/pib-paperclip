@@ -54,6 +54,11 @@ function json<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
+/** A boolean column as the host returns it (true, or the text "t" / "true"); anything else, including a missing column, is false. */
+function flag(value: unknown): boolean {
+  return value === true || value === "t" || value === "true";
+}
+
 function strList(value: unknown): string[] {
   const list = json<unknown[]>(value, []);
   return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
@@ -195,6 +200,10 @@ export interface Sprint {
   changePolicy: ChangePolicy;
   /** Google / Bing / IndexNow verification and indexing follow-up state. */
   verification: Record<string, unknown>;
+  /** The 0.23.0 extras, each off until a person switches it on for this sprint (engine/switches.ts). */
+  geoEnabled: boolean;
+  ga4Enabled: boolean;
+  chunksEnabled: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -203,7 +212,7 @@ const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, c
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
   last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, client_project_id, site_access, site_id, repo_url, default_branch, framework,
-  hosting, change_policy, verification, created_at, updated_at`;
+  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
   return {
@@ -245,6 +254,10 @@ function sprintFrom(row: Row): Sprint {
     hosting: s(row.hosting),
     changePolicy: (CHANGE_POLICIES as readonly string[]).includes(String(row.change_policy)) ? (String(row.change_policy) as ChangePolicy) : "merge_seo_scope",
     verification: json<Record<string, unknown>>(row.verification, {}),
+    // Only a real true switches an extra on: a missing or odd value is off.
+    geoEnabled: flag(row.geo_enabled),
+    ga4Enabled: flag(row.ga4_enabled),
+    chunksEnabled: flag(row.chunks_enabled),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -296,6 +309,9 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   hosting: "text",
   change_policy: "text",
   verification: "jsonb",
+  geo_enabled: "bool",
+  ga4_enabled: "bool",
+  chunks_enabled: "bool",
   updated_at: "ts",
 };
 
@@ -322,6 +338,16 @@ export async function listSprints(db: SeoDb, companyId: string, filter: { status
 export async function getSprint(db: SeoDb, companyId: string, id: string): Promise<Sprint | null> {
   const rows = await db.query(`SELECT ${SPRINT_SELECT} FROM ${t("sprints")} WHERE id = $1 AND company_id = $2 LIMIT 1`, [id, companyId]);
   return rows[0] ? sprintFrom(rows[0]) : null;
+}
+
+/**
+ * The three extras' switches as they are right now (one small read), or null when the sprint is gone. The daily run uses it
+ * to follow a switch a person flipped while the sprint waited in the queue.
+ */
+export async function getSprintSwitches(db: SeoDb, companyId: string, id: string): Promise<{ geo: boolean; ga4: boolean; chunks: boolean } | null> {
+  const rows = await db.query(`SELECT geo_enabled, ga4_enabled, chunks_enabled FROM ${t("sprints")} WHERE id = $1 AND company_id = $2 LIMIT 1`, [id, companyId]);
+  const row = rows[0];
+  return row ? { geo: flag(row.geo_enabled), ga4: flag(row.ga4_enabled), chunks: flag(row.chunks_enabled) } : null;
 }
 
 /** Sprints the jobs work on, across companies (company ids come from our rows). */
@@ -355,11 +381,13 @@ export async function insertSprint(db: SeoDb, sprint: {
   autopilotMode: AutopilotMode;
   ownerUserId: string | null;
   notes: string | null;
+  /** The extras the sprint starts with; all off unless a person chose otherwise (service/switches.ts). */
+  switches?: { geo: boolean; ga4: boolean; chunks: boolean };
 }): Promise<void> {
   await db.execute(
     `INSERT INTO ${t("sprints")} (id, company_id, name, site_url, site_name, client_kind, client_ref, client_name, status, start_date,
-       template_id, template_version, autopilot_mode, owner_user_id, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12::int, $13, $14, $15)`,
+       template_id, template_version, autopilot_mode, owner_user_id, notes, geo_enabled, ga4_enabled, chunks_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12::int, $13, $14, $15, $16::boolean, $17::boolean, $18::boolean)`,
     [
       sprint.id,
       sprint.companyId,
@@ -376,6 +404,9 @@ export async function insertSprint(db: SeoDb, sprint: {
       sprint.autopilotMode,
       sprint.ownerUserId,
       sprint.notes,
+      sprint.switches?.geo === true,
+      sprint.switches?.ga4 === true,
+      sprint.switches?.chunks === true,
     ],
   );
 }
@@ -1722,6 +1753,7 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
   liveContentWithSocial: number;
   geoAuditAgeDays: number | null;
   aiSamplesRecent: number;
+  geoOff: boolean;
 }> {
   const rows = await db.query(
     `SELECT
@@ -1732,7 +1764,8 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
        (SELECT max(a.day) FROM ${t("audit_snapshots")} a WHERE a.sprint_id = $1) AS latest_day,
        (SELECT count(*)::int FROM ${t("content")} c WHERE c.sprint_id = $1 AND c.status = 'live' AND jsonb_array_length(COALESCE(c.social_post_ids, '[]'::jsonb)) > 0) AS live_social,
        (SELECT (current_date - max(g.audited_on)) FROM ${t("geo_audits")} g WHERE g.sprint_id = $1) AS geo_age,
-       (SELECT count(DISTINCT (m.query_key, m.engine))::int FROM ${t("ai_mentions")} m WHERE m.sprint_id = $1 AND m.sampled_on >= current_date - 14) AS ai_samples`,
+       (SELECT count(DISTINCT (m.query_key, m.engine))::int FROM ${t("ai_mentions")} m WHERE m.sprint_id = $1 AND m.sampled_on >= current_date - 14) AS ai_samples,
+       (SELECT NOT x.geo_enabled FROM ${t("sprints")} x WHERE x.id = $1) AS geo_off`,
     [sprintId],
   );
   const row = rows[0] ?? {};
@@ -1745,6 +1778,7 @@ export async function completionFacts(db: SeoDb, sprintId: string): Promise<{
     liveContentWithSocial: Number(row.live_social ?? 0),
     geoAuditAgeDays: n(row.geo_age),
     aiSamplesRecent: Number(row.ai_samples ?? 0),
+    geoOff: flag(row.geo_off),
   };
 }
 
@@ -2776,4 +2810,89 @@ export async function releaseChunk(db: SeoDb, companyId: string, id: string): Pr
     `UPDATE ${t("task_chunks")} SET status = 'queued', opened_at = NULL, updated_at = now() WHERE id = $1 AND company_id = $2 AND status = 'open' AND issue_id IS NULL`,
     [id, companyId],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Switches for the 0.23.0 extras (engine/switches.ts): what a company's new sprints start with, and the trail of changes
+// ---------------------------------------------------------------------------
+
+export type SwitchFeatureKey = "geo" | "ga4" | "chunks";
+
+export interface CompanySwitches {
+  geo: boolean;
+  ga4: boolean;
+  chunks: boolean;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+/** What a company's NEW sprints start with. No row: everything off. */
+export async function getCompanySwitches(db: SeoDb, companyId: string): Promise<CompanySwitches> {
+  const rows = await db.query(
+    `SELECT geo_default, ga4_default, chunks_default, updated_by, updated_at FROM ${t("company_switches")} WHERE company_id = $1 LIMIT 1`,
+    [companyId],
+  );
+  const row = rows[0];
+  return {
+    geo: flag(row?.geo_default),
+    ga4: flag(row?.ga4_default),
+    chunks: flag(row?.chunks_default),
+    updatedBy: s(row?.updated_by),
+    updatedAt: iso(row?.updated_at),
+  };
+}
+
+const DEFAULT_COLUMN: Record<SwitchFeatureKey, string> = { geo: "geo_default", ga4: "ga4_default", chunks: "chunks_default" };
+
+export async function setCompanySwitch(db: SeoDb, companyId: string, feature: SwitchFeatureKey, enabled: boolean, by: string): Promise<void> {
+  const column = DEFAULT_COLUMN[feature];
+  await db.execute(
+    `INSERT INTO ${t("company_switches")} (company_id, ${column}, updated_by) VALUES ($1, $2::boolean, $3)
+     ON CONFLICT (company_id) DO UPDATE SET ${column} = EXCLUDED.${column}, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [companyId, enabled, by],
+  );
+}
+
+export interface SwitchLogRow {
+  id: string;
+  sprintId: string | null;
+  feature: SwitchFeatureKey;
+  scope: "sprint" | "company";
+  enabled: boolean;
+  changedBy: string;
+  effect: Record<string, unknown>;
+  createdAt: string | null;
+}
+
+function switchLogFrom(row: Row): SwitchLogRow {
+  return {
+    id: String(row.id),
+    sprintId: s(row.sprint_id),
+    feature: String(row.feature) as SwitchFeatureKey,
+    scope: String(row.scope) === "company" ? "company" : "sprint",
+    enabled: flag(row.enabled),
+    changedBy: String(row.changed_by ?? ""),
+    effect: json<Record<string, unknown>>(row.effect, {}),
+    createdAt: iso(row.created_at),
+  };
+}
+
+export async function insertSwitchLog(db: SeoDb, row: { id: string; companyId: string; sprintId: string | null; feature: SwitchFeatureKey; scope: "sprint" | "company"; enabled: boolean; changedBy: string; effect: Record<string, unknown> }): Promise<void> {
+  await db.execute(
+    `INSERT INTO ${t("switch_log")} (id, company_id, sprint_id, feature, scope, enabled, changed_by, effect) VALUES ($1, $2, $3, $4, $5, $6::boolean, $7, $8::jsonb)`,
+    [row.id, row.companyId, row.sprintId, row.feature, row.scope, row.enabled, row.changedBy, jsonParam(row.effect)],
+  );
+}
+
+/** The latest change per extra for one sprint (sprintId) or for the company's defaults (null): who, when, and what it did. */
+export async function latestSwitchChanges(db: SeoDb, companyId: string, sprintId: string | null): Promise<SwitchLogRow[]> {
+  const rows = await db.query(
+    sprintId
+      ? `SELECT DISTINCT ON (feature) id, sprint_id, feature, scope, enabled, changed_by, effect, created_at FROM ${t("switch_log")}
+          WHERE company_id = $1 AND sprint_id = $2 ORDER BY feature, created_at DESC`
+      : `SELECT DISTINCT ON (feature) id, sprint_id, feature, scope, enabled, changed_by, effect, created_at FROM ${t("switch_log")}
+          WHERE company_id = $1 AND scope = 'company' ORDER BY feature, created_at DESC`,
+    sprintId ? [companyId, sprintId] : [companyId],
+  );
+  return rows.map(switchLogFrom);
 }

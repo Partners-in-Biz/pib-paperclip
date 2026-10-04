@@ -28,6 +28,7 @@ import {
   type GeoSnapshot,
   type StoredGeoAudit,
 } from "../engine/geo.js";
+import { offMessage } from "../engine/switches.js";
 import { isRunning, sprintClock } from "../engine/sprint.js";
 import { daysBetween } from "../engine/time.js";
 import { phaseForWeek } from "../templates/outrank-90.js";
@@ -37,6 +38,7 @@ import { actorId, bool, companyInfo, errorMessage, num, reqStr, SeoError, str, s
 import { requireSprint } from "./context.js";
 import { addNeedsYou, isPersonLabel, lastNeedsYouItem, PLUGIN_CHECK_BY, resolveNeedsYou } from "./needs-you.js";
 import { recordCheckFindings } from "./checks.js";
+import { requireOn } from "./switches.js";
 
 /** An audit this recent is reused for a snapshot instead of fetching the site again. */
 export const SNAPSHOT_REUSE_DAYS = 7;
@@ -94,6 +96,8 @@ export interface AuditOutcome {
  * did not answer) is returned but not stored.
  */
 export async function auditSprint(env: Env, info: CompanyInfo, sprint: db.Sprint, opts: { source: "tool" | "snapshot" | "scheduled"; pages?: string[]; deadlineMs?: number; store?: boolean }): Promise<AuditOutcome> {
+  // The one place that reads the client's site for AI search: never for a sprint a person has not switched it on for.
+  requireOn(sprint, "geo", offMessage("geo"));
   const input = await sprintAuditInput(env, sprint);
   const result = await runGeoAudit(env.site, { ...input, ...(opts.pages?.length ? { pages: opts.pages } : {}), ...(opts.deadlineMs ? { deadlineMs: opts.deadlineMs } : {}) });
   const evaluated = GEO_SECTIONS.some((s) => result.breakdown[s].evaluated);
@@ -205,6 +209,7 @@ export async function geoAuditTool(env: Env, companyId: string, actor: Actor, pa
     return geoAuditView({ result, audit: null, previous: null, change: null, stored: null }, { dryRun: true });
   }
   const sprint = await requireSprint(env, companyId, sprintId);
+  requireOn(sprint, "geo", offMessage("geo"));
   const site = url ? urlParam(url, sprint.siteUrl) : sprint.siteUrl;
   if (hostOf(site) !== hostOf(sprint.siteUrl)) throw new SeoError("url must be on the sprint's own site. Audit another site without sprintId.");
   const pages = strList(params, "pages", { max: 8, itemMax: 500 }).map((p) => urlParam(p, sprint.siteUrl));
@@ -223,6 +228,7 @@ function mentionView(rows: db.AiMentionRow[]) {
 
 export async function recordAiMentionsTool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  requireOn(sprint, "geo", offMessage("geo"));
   const info = await companyInfo(env, companyId);
   const parsed = parseMentionSamples(params.samples, { today: info.today, siteHost: hostOf(sprint.siteUrl) });
   if (parsed.samples.length === 0) throw new SeoError(`Nothing was recorded. ${parsed.errors.join(" ")}`);
@@ -260,6 +266,7 @@ export async function recordAiMentionsTool(env: Env, companyId: string, actor: A
 
 export async function listAiMentionsTool(env: Env, companyId: string, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  if (!sprint.geoEnabled) return { sprintId: sprint.id, siteName: sprint.siteName, enabled: false, next: offMessage("geo") };
   const rows = await db.listMentions(env.ctx.db, companyId, sprint.id);
   const stats = mentionStats(rows);
   const latest = latestSamples(rows);
@@ -313,7 +320,7 @@ export { geoLine };
 
 /** An open geo_firewall item is re-checked each day; otherwise an audit older than SCHEDULED_AUDIT_DAYS (or none yet) is refreshed. */
 export async function scheduledGeo(env: Env, info: CompanyInfo, sprint: db.Sprint, day: number): Promise<{ audited: boolean; change: GeoChange | null }> {
-  if (day < 0 || !isRunning(sprint.status)) return { audited: false, change: null };
+  if (day < 0 || !isRunning(sprint.status) || !sprint.geoEnabled) return { audited: false, change: null };
   const latest = await db.latestGeoAudit(env.ctx.db, sprint.companyId, sprint.id);
   const age = latest ? daysBetween(latest.auditedOn, info.today) : null;
   const firewallOpen = (await db.openNeedsYouDigests(env.ctx.db, sprint.companyId)).some((d) => d.sprintId === sprint.id && d.items.some((i) => i.key === "geo_firewall" && i.status === "open"));
@@ -329,7 +336,7 @@ export async function scheduledGeo(env: Env, info: CompanyInfo, sprint: db.Sprin
  */
 export async function ensureMonthlyGeoTask(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<string | null> {
   const clock = sprintClock(sprint.startDate, info.today);
-  if (clock.runningStatus !== "compounding" || !isRunning(sprint.status) || !sprint.seededAt) return null;
+  if (!sprint.geoEnabled || clock.runningStatus !== "compounding" || !isRunning(sprint.status) || !sprint.seededAt) return null;
   const month = info.today.slice(0, 7);
   const id = randomUUID();
   const inserted = await db.insertTasks(env.ctx.db, [{

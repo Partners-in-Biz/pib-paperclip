@@ -43,8 +43,9 @@ export async function captureSnapshot(
     homeHealth,
     taskStats,
   });
-  // The AI-search readiness score and the GA4 organic numbers ride along: a failure in either leaves its part empty, never the snapshot.
-  const [geo, analytics] = await Promise.all([geoForSnapshot(env, info, sprint), ga4ForSnapshot(env, sprint)]);
+  // The AI-search readiness score and the GA4 organic numbers ride along only where a person switched them on (a failure in
+  // either leaves its part empty, never the snapshot); an extra that is off adds nothing and fetches nothing.
+  const [geo, analytics] = await Promise.all([sprint.geoEnabled ? geoForSnapshot(env, info, sprint) : {}, sprint.ga4Enabled ? ga4ForSnapshot(env, sprint) : {}]);
   const id = randomUUID();
   const created = await db.insertSnapshot(env.ctx.db, {
     id,
@@ -102,7 +103,7 @@ export async function auditSummaryTool(env: Env, companyId: string, params: Para
   const trafficOf = (s: db.Snapshot | undefined) => (s ? (s.traffic as { impressions?: number; clicks?: number; avgPosition?: number | null }) : null);
   return {
     sprintId: sprint.id,
-    snapshots: snapshots.map((s) => ({ snapshotId: s.id, day: s.day, kind: s.kind, capturedOn: s.capturedOn, source: s.source, traffic: s.traffic, rankings: s.rankings, authority: s.authority, content: s.content, geo: s.geo, analytics: s.analytics, notes: s.notes })),
+    snapshots: snapshots.map((s) => ({ snapshotId: s.id, day: s.day, kind: s.kind, capturedOn: s.capturedOn, source: s.source, traffic: s.traffic, rankings: s.rankings, authority: s.authority, content: s.content, ...(sprint.geoEnabled ? { geo: s.geo } : {}), ...(sprint.ga4Enabled ? { analytics: s.analytics } : {}), notes: s.notes })),
     change: first && last && first !== last ? { fromDay: first.day, toDay: last.day, from: trafficOf(first), to: trafficOf(last) } : null,
     openFindings: findings.length,
     bySeverity,

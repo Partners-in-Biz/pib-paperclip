@@ -19,6 +19,7 @@ import {
   type TaskStatus,
 } from "../engine/sprint.js";
 import { dueDayFor, OUTRANK_90, phaseForWeek } from "../templates/outrank-90.js";
+import { isGeoTemplateKey } from "../templates/geo.js";
 import {
   actorId,
   actorLabel,
@@ -173,7 +174,8 @@ export async function materialiseDueTasks(
 ): Promise<{ created: number; remaining: number; errors: string[] }> {
   if (!mc.sprint.rootIssueId) return { created: 0, remaining: 0, errors: ["Sprint has no root issue yet"] };
   const tasks = await db.listTasks(env.ctx.db, mc.sprint.companyId, mc.sprint.id, { status: ["not_started"] });
-  let due = selectDueTasks(tasks, mc.day);
+  // An AI-search task is never opened for a sprint with AI search off (the switch retires them; this holds even if one is left over).
+  let due = selectDueTasks(tasks, mc.day).filter((task) => mc.sprint.geoEnabled || !isGeoTemplateKey(task.templateKey));
   if (opts.onlyTaskIds) {
     const only = new Set(opts.onlyTaskIds);
     due = due.filter((task) => only.has(task.id));

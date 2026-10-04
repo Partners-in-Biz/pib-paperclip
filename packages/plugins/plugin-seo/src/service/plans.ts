@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import * as db from "../db.js";
 import { BUSINESS_TYPES, businessTypeOf, planFor, type BusinessType, type PlanVariant } from "../templates/plans.js";
 import { dueDayFor, TEMPLATE_VERSION } from "../templates/outrank-90.js";
+import { isGeoTemplateKey } from "../templates/geo.js";
 import { actorId, actorLabel, companyInfo, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, clockFor, requireSprint } from "./context.js";
 import { commentOn, patchIssue } from "./issues.js";
@@ -69,6 +70,8 @@ export function planChange(input: { sprint: Pick<db.Sprint, "id" | "companyId">;
   const keep: db.SprintTask[] = [];
   for (const task of input.tasks) {
     if (task.source !== "template" || !task.templateKey) continue;
+    // The AI-search tasks belong to no plan (a person switched them on for this sprint): changing the plan never retires them.
+    if (isGeoTemplateKey(task.templateKey)) continue;
     const target = planKeys.get(task.templateKey);
     const untouched = task.status === "not_started" && !task.issueId;
     if (target) {

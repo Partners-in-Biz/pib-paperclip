@@ -143,7 +143,8 @@ function proposalCopy(o: db.Optimization): ProposalCopy {
 
 /** The week's numbers beyond rankings: GA4 organic traffic and key events, and AI-search readiness. Empty without either. */
 export async function weeklyNumbers(env: Env, sprint: db.Sprint): Promise<string[]> {
-  const [traffic, geo] = await Promise.all([ga4Line(env, sprint), geoSummary(env, sprint).catch(() => null)]);
+  // Each line only where a person switched its extra on for this sprint.
+  const [traffic, geo] = await Promise.all([ga4Line(env, sprint), sprint.geoEnabled ? geoSummary(env, sprint).catch(() => null) : Promise.resolve(null)]);
   return [traffic, geo && (geo.score != null || geo.mentions) ? `${geoLine(geo)}.` : null].filter((line): line is string => Boolean(line));
 }
 

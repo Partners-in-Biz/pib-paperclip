@@ -235,7 +235,7 @@ export function SeoPage({ context }: PluginPageProps) {
           onChanged={refresh}
         />
       ) : (
-        <SprintHome data={data} client={client} onOpen={openSummary} onCreate={() => setCreating(true)} onStartPlan={setStarting} />
+        <SprintHome data={data} client={client} onOpen={openSummary} onCreate={() => setCreating(true)} onStartPlan={setStarting} onChanged={refresh} onMessage={setMessage} />
       )}
       {data ? (
         <CreateSprintModal

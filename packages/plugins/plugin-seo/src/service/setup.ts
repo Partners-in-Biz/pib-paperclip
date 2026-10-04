@@ -59,7 +59,7 @@ export async function sprintSetupFacts(env: Env, sprint: db.Sprint, prefix: stri
     property: gsc?.status === "connected" ? gsc.propertyUrl : null,
     gscVia: integrationAuth(gsc),
     bingVerified: bing?.status === "enabled",
-    ga4: { propertyId: ga4Id, connected: ga4?.status === "connected" && Boolean(ga4Id), lastError: ga4?.lastError ?? null, lastPullOn: typeof ga4?.settings.pulledOn === "string" ? ga4.settings.pulledOn : null },
+    ga4: { enabled: sprint.ga4Enabled, propertyId: ga4Id, connected: ga4?.status === "connected" && Boolean(ga4Id), lastError: ga4?.lastError ?? null, lastPullOn: typeof ga4?.settings.pulledOn === "string" ? ga4.settings.pulledOn : null },
   };
 }
 

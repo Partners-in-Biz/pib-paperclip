@@ -38,9 +38,10 @@ import { suggestBusinessType } from "../engine/business-type.js";
 import { fixPlurals, lowerFirst, plural } from "../engine/plain.js";
 import { BUSINESS_TYPES, PLANS, type BusinessType } from "../templates/plans.js";
 import { readCrmProfile } from "./crm-profile.js";
+import { ExtrasChoices, ExtrasList } from "./extras.js";
 import { StatePill, quietLink, shortUrl, small, type LinkProps } from "./parts.js";
 import { TEAM_SETUP_HREF } from "./role-skills.js";
-import type { LoadResult, ScopeClient, SprintSummary } from "./types.js";
+import type { LoadResult, ScopeClient, SprintSummary, SwitchState } from "./types.js";
 import { nextLine, sprintBadge, sprintStatusText, tasksLine } from "./words.js";
 
 const RUNNING = ["pre_launch", "active", "compounding"];
@@ -100,18 +101,54 @@ function sumNumbers(sprints: SprintSummary[]) {
   return out;
 }
 
+/**
+ * What new sprints of this company start with (the SEO home only). Every extra is off until a person turns it on; this
+ * never changes a sprint that is running: those are switched one by one on their own Integrations tab.
+ */
+function NewSprintExtras({ data, onChanged, onMessage }: { data: LoadResult; onChanged: () => Promise<void>; onMessage: (m: string) => void }) {
+  const callAction = usePluginAction("seo.call");
+  const [busy, setBusy] = useState<string | null>(null);
+  async function set(feature: SwitchState["key"], enabled: boolean) {
+    setBusy(feature);
+    try {
+      const result = (await callAction({ tool: "set-switch", params: { scope: "company", feature, enabled } })) as { note?: string };
+      await onChanged();
+      if (result?.note) onMessage(result.note);
+    } catch (error) {
+      onMessage(errorText(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <details style={{ fontSize: 13 }}>
+      <summary style={{ cursor: "pointer", color: tokens.muted, minHeight: 32 }}>Extras for new sprints (all off unless you turn them on)</summary>
+      <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+        <span style={{ color: tokens.muted }}>
+          AI search, Google Analytics and page groups are off for every sprint. What you set here is only what a sprint created from now on starts with; running sprints keep their own setting (turn those on one by one, on the sprint's Integrations tab).
+        </span>
+        <ExtrasList states={data.newSprintExtras ?? []} subject="company" serviceAccountReady={Boolean(data.settings.serviceAccountEmail)} busy={busy} onSet={set} />
+      </div>
+    </details>
+  );
+}
+
 export function SprintHome({
   data,
   client,
   onOpen,
   onCreate,
   onStartPlan,
+  onChanged,
+  onMessage,
 }: {
   data: LoadResult;
   client: ScopeClient | null;
   onOpen: (sprint: SprintSummary) => void;
   onCreate: () => void;
   onStartPlan: (sprint: SprintSummary) => void;
+  onChanged: () => Promise<void>;
+  onMessage: (m: string) => void;
 }) {
   const nav = useHostNavigation();
   const narrow = useIsNarrow();
@@ -171,6 +208,7 @@ export function SprintHome({
       {groups.map((group) => (
         <SprintGroup key={group.key} group={group} narrow={narrow} onOpen={onOpen} onStartPlan={onStartPlan} linkFor={nav.linkProps} />
       ))}
+      {client ? null : <NewSprintExtras data={data} onChanged={onChanged} onMessage={onMessage} />}
       {archived.length > 0 ? (
         <details style={{ fontSize: 13 }}>
           <summary style={{ cursor: "pointer", color: tokens.muted, minHeight: 32 }}>Archived sprints ({archived.length})</summary>
@@ -344,6 +382,7 @@ export function CreateSprintModal({ open, data, client, companyId, onClose, onCr
   const [owner, setOwner] = useState<"me" | "none">("me");
   const [mode, setMode] = useState(data.settings.defaultAutopilotMode);
   const [notes, setNotes] = useState("");
+  const [extras, setExtras] = useState<Record<SwitchState["key"], boolean>>({ geo: false, ga4: false, chunks: false });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const chosen: ClientRef | null = fixedClient ?? (forClient === "own" ? null : parseClientParam(forClient));
@@ -362,6 +401,8 @@ export function CreateSprintModal({ open, data, client, companyId, onClose, onCr
     setOwner("me");
     setMode(data.settings.defaultAutopilotMode);
     setNotes("");
+    // Everything off, or what the company chose for new sprints.
+    setExtras({ geo: false, ga4: false, chunks: false, ...Object.fromEntries((data.newSprintExtras ?? []).map((e) => [e.key, e.enabled])) });
     setError("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -425,6 +466,8 @@ export function CreateSprintModal({ open, data, client, companyId, onClose, onCr
         owner,
         autopilotMode: mode,
         notes: notes || undefined,
+        // The person's own choice (only a person can make it): off unless ticked.
+        switches: extras,
       })) as { sprintId: string; issuesOpened: number; warnings: string[]; plan?: string };
       const warnings = result.warnings.map(fixPlurals).join(" ");
       await onCreated(result.sprintId, chosen, `Sprint created on the ${lowerFirst(result.plan ?? plan?.label ?? "90-day")} plan: ${plural(result.issuesOpened, "task")} opened.${warnings ? ` ${warnings}` : ""}`);
@@ -480,6 +523,14 @@ export function CreateSprintModal({ open, data, client, companyId, onClose, onCr
           <option value="full">Full: the agent finishes its tasks</option>
           <option value="off">Off: every task goes to the owner</option>
         </Select>
+      </Field>
+      <Field label="Extras (off unless you turn them on)">
+        <ExtrasChoices
+          states={data.newSprintExtras ?? []}
+          chosen={extras}
+          onChange={(key, value) => setExtras((current) => ({ ...current, [key]: value }))}
+          serviceAccountReady={Boolean(data.settings.serviceAccountEmail)}
+        />
       </Field>
       <Field label="Notes for the agent (site access, who deploys)"><TextArea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. WordPress admin access via 1Password 'Client site'; the developer deploys code changes" /></Field>
       {error ? <p style={{ margin: 0, color: tokens.destructive, fontSize: 13 }}>{error}</p> : null}

@@ -70,14 +70,15 @@ describe("planning page groups", () => {
     expect(groupSizeFor("custom")).toBe(10);
   });
 
-  it("has steps, a goal and evidence for every site-wide type, and the plan's playbooks tell the agent about groups", () => {
+  it("has steps, a goal and evidence for every site-wide type; the plan's playbooks say nothing about groups (a split task's own issues carry that)", () => {
     for (const [type, kind] of Object.entries(SITE_WIDE)) {
       expect(kind.steps.length, type).toBeGreaterThanOrEqual(3);
       expect(kind.goal.length, type).toBeGreaterThan(40);
       expect(kind.done, type).toBeTruthy();
     }
+    // Page groups are off unless a person switched them on, so the playbook of a task that is never split must not mention them.
     for (const key of ["w0-meta-tags", "w1-alt-text", "w1-noindex", "w1-canonical-check"]) {
-      expect(PLAYBOOKS[key]!.steps.join(" "), key).toMatch(/splits this task into page groups/);
+      expect(PLAYBOOKS[key]!.steps.join(" "), key).not.toMatch(/page group/i);
     }
   });
 });

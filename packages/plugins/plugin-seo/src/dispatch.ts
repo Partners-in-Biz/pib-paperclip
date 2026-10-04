@@ -22,6 +22,7 @@ import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
 import * as snapshots from "./service/snapshots.js";
 import * as sprints from "./service/sprints.js";
+import * as switches from "./service/switches.js";
 import * as tasks from "./service/tasks.js";
 import * as thread from "./service/thread.js";
 
@@ -32,6 +33,8 @@ export const HANDLERS: Record<string, Handler> = {
   "list-sprints": (env, c, _a, p) => sprints.listSprintsTool(env, c, p),
   "create-sprint": (env, c, a, p) => sprints.createSprint(env, c, a, p),
   "get-sprint": (env, c, _a, p) => sprints.getSprintTool(env, c, p),
+  // Read only: which extras (AI search, Google Analytics, page groups) a person switched on. Changing one is page-only (below).
+  "get-switches": (env, c, _a, p) => switches.getSwitchesTool(env, c, p),
   today: (env, c, _a, p) => sprints.todayTool(env, c, p),
   "set-autopilot": (env, c, a, p) => sprints.setAutopilot(env, c, a, p),
   "update-sprint": (env, c, a, p) => sprints.updateSprintTool(env, c, a, p),
@@ -136,6 +139,8 @@ export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "approve-site-writes": (env, c, a, p) => signoff.approveSiteWrites(env, c, a, p),
   "add-redesign": (env, c, a, p) => redesign.addRedesign(env, c, a, p),
   "set-client-facts": (env, c, a, p) => facts.setClientFacts(env, c, a, p),
+  // A signed-in person turns an extra on or off (the handler checks the actor itself and records who).
+  "set-switch": (env, c, a, p) => switches.setSwitchTool(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {

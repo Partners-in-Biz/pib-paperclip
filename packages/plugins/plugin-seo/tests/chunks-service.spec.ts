@@ -11,7 +11,7 @@ import { reply } from "./helpers/geo-site.js";
 import { memTables } from "./helpers/mem-db.js";
 import { resolveNeedsYou } from "../src/service/needs-you.js";
 import { groupBlockedItem } from "../src/engine/chunks.js";
-import { executed, needsYouRoutes, savedNeedsYouItems, seoHost, sprintRoutes, taskRow, type Row } from "./helpers/seo-host.js";
+import { executed, needsYouRoutes, savedNeedsYouItems, seoHost, sprintRoutes, sprintRoutesOff, taskRow, type Row } from "./helpers/seo-host.js";
 
 const agent = { kind: "agent" as const, agentId: "agent-1", runId: "run-1", responsibleUserId: null };
 const person = { kind: "user" as const, userId: "user-1" };
@@ -38,9 +38,9 @@ const chunkRow = (seq: number, status: string, extra: Row = {}): Row => ({
 });
 
 /** A host with the two tables in memory, the sprint, and the issues API reporting the statuses the test gives. */
-function host(input: { tasks?: Row[]; chunks?: Row[]; site?: SiteFetcher; issueStatus?: Record<string, string> } = {}) {
+function host(input: { tasks?: Row[]; chunks?: Row[]; site?: SiteFetcher; issueStatus?: Record<string, string>; pageGroupsOff?: boolean } = {}) {
   const mem = memTables({ sprint_tasks: input.tasks ?? [], task_chunks: input.chunks ?? [] });
-  const h = seoHost({ routes: [...mem.routes, ...sprintRoutes], site: input.site ?? siteWith(null).fetcher });
+  const h = seoHost({ routes: [...mem.routes, ...(input.pageGroupsOff ? sprintRoutesOff : sprintRoutes)], site: input.site ?? siteWith(null).fetcher });
   mem.attach(h);
   h.ctx.issues.get = (async (id: string) => ({ id, status: input.issueStatus?.[id] ?? "todo", identifier: `PIB-${id}` })) as never;
   return { ...h, mem };
@@ -83,6 +83,22 @@ describe("opening a site-wide task on a big site", () => {
     expect(executed(h, /INSERT INTO plugin_seo_8099f8879a\.task_chunks/)[0]!.sql).toContain("ON CONFLICT (parent_issue_id, seq) DO NOTHING");
     // The decision is remembered on the task so start-task does not read the sitemap again.
     expect(h.mem.tasks[0]!.evidence).toMatchObject({ split: { checkedOn: "2026-10-03", pages: 57, size: 10, groups: 6 } });
+  });
+
+  it("opens it as one issue when page groups are switched off for the sprint, and does not read the site's sitemap", async () => {
+    const site = siteWith(57);
+    const off = host({ tasks: [altTask()], site: site.fetcher, pageGroupsOff: true });
+    await openNew(off);
+    expect(off.created).toHaveLength(1);
+    expect(String(off.created[0]!.input.description)).not.toContain("This task is split");
+    expect(off.wakeups).toEqual([off.created[0]!.id]); // the agent is woken on the whole task, as before 0.23.0
+    expect(off.mem.chunks).toHaveLength(0);
+    expect(site.calls).toEqual([]);
+    expect(off.mem.tasks[0]!.evidence ?? {}).not.toHaveProperty("split");
+    // The same task and site with page groups on is split (so this test fails if the gate goes).
+    const on = host({ tasks: [altTask()], site: siteWith(57).fetcher });
+    await openNew(on);
+    expect(on.mem.chunks).toHaveLength(6);
   });
 
   it("opens a small site's task exactly as before: one issue, the agent woken", async () => {

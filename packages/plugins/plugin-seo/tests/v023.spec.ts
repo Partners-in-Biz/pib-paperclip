@@ -9,18 +9,19 @@ import { plainError, plainWarning } from "../src/engine/plain.js";
 import { buildSetupChecklist, type SetupFacts } from "../src/engine/setup.js";
 import { SITE_WIDE } from "../src/engine/chunks.js";
 import { companyInfo } from "../src/service/common.js";
-import { addGeoTasks, upgradeSprintPlan } from "../src/service/upgrade.js";
+import { upgradeSprintPlan } from "../src/service/upgrade.js";
+import { addGeoTasks } from "../src/service/switches.js";
 import { ANALYTICS_DOC, GEO_DOC, PAGE_GROUPS_DOC } from "../src/skill-docs.js";
 import { OUTRANK_DOC, SKILL_BODY, SKILLS, TOOLS_DOC } from "../src/skills.js";
-import { GEO_CODE_TYPES, GEO_AUDIT_TYPES, GEO_TASK_KEYS, GEO_TASKS, TEMPLATE_V5_ADDED } from "../src/templates/geo.js";
+import { GEO_CODE_TYPES, GEO_AUDIT_TYPES, GEO_TASK_KEYS, GEO_TASKS } from "../src/templates/geo.js";
 import { BUSINESS_TYPES, PLANS } from "../src/templates/plans.js";
 import { dueDayFor, TEMPLATE_VERSION } from "../src/templates/outrank-90.js";
 import { PLAYBOOKS } from "../src/templates/playbooks.js";
 import { SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 import { executed, seoHost, sprintRoutes, taskRow, type Route } from "./helpers/seo-host.js";
 
-describe("the GEO tasks in every plan", () => {
-  it("carries the same eight tasks in all four plans, due where the plan says", () => {
+describe("the GEO tasks (an add-on a person switches on, in no plan)", () => {
+  it("are eight tasks, due where the add-on says, and no plan carries them", () => {
     expect(GEO_TASKS.map((t) => [t.templateKey, t.week, t.dueDay ?? null])).toEqual([
       ["w0-geo-crawlers", 0, null],
       ["w1-geo-llms-txt", 1, null],
@@ -31,16 +32,16 @@ describe("the GEO tasks in every plan", () => {
       ["w8-geo-recheck", 8, null],
       ["w13-geo-recheck", 13, 90],
     ]);
+    for (const task of GEO_TASKS) expect(task, task.templateKey).toMatchObject({ owner: "agent", autopilotEligible: true, focus: "AI search" });
+    // Plans are what they were before 0.23.0: a new sprint, a plan change or a plan upgrade can never add these tasks.
     for (const type of BUSINESS_TYPES) {
       const plan = PLANS[type];
-      for (const task of GEO_TASKS) expect(plan.tasks.find((t) => t.templateKey === task.templateKey), `${type} ${task.templateKey}`).toMatchObject({ taskType: task.taskType, owner: "agent", autopilotEligible: true, focus: "AI search" });
-      expect(plan.tasks.filter((t) => GEO_TASK_KEYS.includes(t.templateKey))).toHaveLength(8);
+      expect(plan.tasks.filter((t) => GEO_TASK_KEYS.includes(t.templateKey)), type).toEqual([]);
       expect(plan.tasks.map((t) => t.week)).toEqual([...plan.tasks.map((t) => t.week)].sort((a, b) => a - b));
     }
-    expect([PLANS.saas, PLANS.local, PLANS.professional, PLANS.ecommerce].map((p) => p.tasks.length)).toEqual([50, 54, 54, 53]);
+    expect([PLANS.saas, PLANS.local, PLANS.professional, PLANS.ecommerce].map((p) => p.tasks.length)).toEqual([42, 46, 46, 45]);
     expect(dueDayFor(13, 90)).toBe(90);
-    expect(TEMPLATE_VERSION).toBe(5);
-    expect(TEMPLATE_V5_ADDED).toEqual(GEO_TASK_KEYS);
+    expect(TEMPLATE_VERSION).toBe(4);
   });
 
   it("has a playbook for each, naming the tools that exist, the honest limits and the client's policy", () => {
@@ -105,14 +106,13 @@ describe("closing a GEO task needs its evidence on record", () => {
   });
 });
 
-describe("existing sprints get the GEO tasks from the daily run, and nothing else changes", () => {
+describe("switching AI search on adds the GEO tasks; the daily plan upgrade never does", () => {
   const sprint = async (h: ReturnType<typeof seoHost>, extra: Partial<db.Sprint> = {}) => ({ ...(await db.getSprint(h.env.ctx.db, "co-1", "sp-1"))!, ...extra });
   const has = (keys: string[]): Route => [/FROM plugin_seo_8099f8879a\.sprint_tasks/, () => keys.map((k, i) => taskRow({ id: `t-${i}`, template_key: k }))];
 
-  it("adds the eight tasks of the sprint's plan, with the plan's due days, in one idempotent insert", async () => {
+  it("adds the eight tasks, with their due days, in one idempotent insert", async () => {
     const h = seoHost({ routes: sprintRoutes });
-    const s = await sprint(h, { templateVersion: 4 });
-    expect(await addGeoTasks(h.env, s)).toBe(1); // the fake database reports one row; the statement carries all eight
+    expect(await addGeoTasks(h.env, await sprint(h))).toEqual({ added: 1, revived: 0 }); // the fake database reports one row; the statement carries all eight
     const [insert] = executed(h, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/);
     expect(insert!.sql).toContain("ON CONFLICT (sprint_id, template_key) WHERE template_key IS NOT NULL DO NOTHING");
     const rows = Array.from({ length: insert!.params.length / 17 }, (_, i) => insert!.params.slice(i * 17, (i + 1) * 17));
@@ -128,34 +128,21 @@ describe("existing sprints get the GEO tasks from the daily run, and nothing els
     const keys = Array.from({ length: insert!.params.length / 17 }, (_, i) => insert!.params[i * 17 + 3]);
     expect(keys).toEqual(["w1-geo-entity", "w2-geo-baseline", "w4-geo-answers", "w6-geo-brand", "w8-geo-recheck", "w13-geo-recheck"]);
     const full = seoHost({ routes: [has(GEO_TASK_KEYS), ...sprintRoutes] });
-    expect(await addGeoTasks(full.env, await sprint(full))).toBe(0);
+    expect(await addGeoTasks(full.env, await sprint(full))).toEqual({ added: 0, revived: 0 });
     expect(executed(full, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/)).toHaveLength(0);
   });
 
-  it("brings a sprint on version 4 to version 5 without touching an open issue, and says so once on its root issue", async () => {
-    const h = seoHost({ routes: [has(["w0-meta-tags"]), ...sprintRoutes] });
-    const info = await companyInfo(h.env, "co-1");
-    const result = await upgradeSprintPlan(h.env, info, await sprint(h, { templateVersion: 4 }), { id: "agent-1", status: "idle" });
-    expect(result).toMatchObject({ upgraded: true, added: 1 });
-    expect(executed(h, /UPDATE plugin_seo_8099f8879a\.sprints SET/).some((u) => u.params.includes(5))).toBe(true);
-    expect(h.updates).toEqual([]); // no issue was changed
-    expect(h.wakeups).toEqual([]);
-    expect(h.comments).toHaveLength(1);
-    expect(h.comments[0]).toMatchObject({ id: "root-1" });
-    expect(h.comments[0]!.body).toMatch(/Plan v5 adds 1 task for AI search \(GEO\)/);
-    expect(h.comments[0]!.body).toContain("Nothing that was already open changed");
-    // A sprint already on version 5 is left alone.
-    const current = seoHost({ routes: sprintRoutes });
-    expect((await upgradeSprintPlan(current.env, info, await sprint(current, { templateVersion: 5 }), null)).upgraded).toBe(false);
-    expect(current.executes).toHaveLength(0);
-  });
-
-  it("does it for the software plan too, in the same pass as its older rewrites", async () => {
+  it("the plan upgrade of a sprint on an older plan version adds no GEO task and says nothing about AI search", async () => {
     const h = seoHost({ routes: [has(["w0-meta-tags"]), ...sprintRoutes] });
     const info = await companyInfo(h.env, "co-1");
     const result = await upgradeSprintPlan(h.env, info, await sprint(h, { templateVersion: 3, templateId: "outrank-90" }), { id: "agent-1", status: "idle" });
     expect(result.upgraded).toBe(true);
-    expect(executed(h, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/).some((e) => e.params.includes("w0-geo-crawlers"))).toBe(true);
+    expect(executed(h, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/)).toHaveLength(0);
+    expect(h.comments.map((c) => c.body).join(" ")).not.toMatch(/AI search|GEO/);
+    // A sprint on the current version (every live sprint) is not touched at all.
+    const current = seoHost({ routes: sprintRoutes });
+    expect((await upgradeSprintPlan(current.env, info, await sprint(current, { templateVersion: 4 }), null)).upgraded).toBe(false);
+    expect(current.executes).toHaveLength(0);
   });
 });
 
@@ -222,7 +209,7 @@ describe("Google Analytics in the checklist and in plain words", () => {
   const item = (f: SetupFacts) => buildSetupChecklist(f).find((i) => i.key === "ga4_property")!;
 
   it("is optional, done once connected, and gives the exact steps and links until then", () => {
-    const todo = item(facts({ propertyId: null, connected: false, lastError: null, lastPullOn: null }));
+    const todo = item(facts({ enabled: true, propertyId: null, connected: false, lastError: null, lastPullOn: null }));
     expect(todo.status).toBe("warn");
     expect(todo.label).toContain("optional");
     expect(todo.detail).toContain("paperclip-seo@example.iam.gserviceaccount.com");
@@ -230,10 +217,10 @@ describe("Google Analytics in the checklist and in plain words", () => {
     expect(todo.steps.join(" ")).toContain("paperclip-seo@example.iam.gserviceaccount.com");
     expect(todo.links.map((l) => l.url).join(" ")).toMatch(/analyticsdata\.googleapis\.com/);
     expect(todo.next).toMatch(/attributes organic traffic and key events to this sprint's pages/);
-    const done = item(facts({ propertyId: "222222222", connected: true, lastError: null, lastPullOn: "2026-10-03" }));
+    const done = item(facts({ enabled: true, propertyId: "222222222", connected: true, lastError: null, lastPullOn: "2026-10-03" }));
     expect(done).toMatchObject({ status: "done", steps: [], links: [] });
     expect(done.detail).toContain("222222222");
-    expect(item(facts({ propertyId: "1", connected: false, lastError: "no access", lastPullOn: null })).detail).toContain("no access");
+    expect(item(facts({ enabled: true, propertyId: "1", connected: false, lastError: "no access", lastPullOn: null })).detail).toContain("no access");
     expect(buildSetupChecklist({ ...facts(undefined), sprint: { ...facts(undefined).sprint!, ga4: undefined } }).some((i) => i.key === "ga4_property")).toBe(false);
   });
 

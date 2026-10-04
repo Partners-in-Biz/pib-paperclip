@@ -17,7 +17,8 @@
  * A sprint stores its plan as `template_id` (`outrank-90` is the software
  * plan, so every sprint created before the variants keeps working as it is).
  * Tasks with the same template key mean the same work in every plan (and share
- * one playbook); a plan can give a shared task its own title.
+ * one playbook); a plan can give a shared task its own title. The AI-search (GEO)
+ * tasks are in no plan: a person switches them on per sprint (templates/geo.ts).
  */
 import { GEO_TASKS } from "./geo.js";
 import {
@@ -79,7 +80,7 @@ const EXTRA_TASKS: SeoTaskTemplate[] = [
   extra({ templateKey: "w10-local-press", week: 10, focus: "Backlinks", title: "Pitch a local news site or community blog a story", taskType: "guest-post-pitch", autopilotEligible: false }),
 ];
 
-const CATALOG = new Map<string, SeoTaskTemplate>([...OUTRANK_90.tasks, ...EXTRA_TASKS, ...GEO_TASKS].map((t) => [t.templateKey, t]));
+const CATALOG = new Map<string, SeoTaskTemplate>([...OUTRANK_90.tasks, ...EXTRA_TASKS].map((t) => [t.templateKey, t]));
 
 type PlanItem = string | [key: string, title: string];
 
@@ -113,8 +114,6 @@ function foundation(schemaTitle: string, noindexTitle: string): PlanItem[] {
 }
 
 const KEYWORD_TAIL: PlanItem[] = ["w2-keyword-bucket", "w2-keyword-prioritize", "w2-keyword-record"];
-/** The GEO (AI search) workstream: the same eight tasks in every plan (templates/geo.ts). */
-const GEO: PlanItem[] = GEO_TASKS.map((t) => t.templateKey);
 const AUTHORITY: PlanItem[] = ["w11-stuck-pages", "w11-update-stuck"];
 const DAY_90: PlanItem[] = ["w13-audit-metrics", "w13-audit-report", "w13-audit-announce"];
 
@@ -194,7 +193,6 @@ export const ECOMMERCE_SOURCES: DirectorySeed[] = [
 
 const SAAS_PLAN: PlanVariant = {
   ...OUTRANK_90,
-  tasks: byWeek([...OUTRANK_90.tasks, ...GEO_TASKS]),
   businessType: "saas",
   label: "Software (SaaS)",
   summary: "The software launch plan: comparison and feature pages, G2, Product Hunt and SaaS directories.",
@@ -237,7 +235,6 @@ const LOCAL_PLAN: PlanVariant = {
     ...AUTHORITY,
     ["w12-cluster-pick", "Pick one local topic for a small cluster of posts"],
     ["w12-cluster-publish", "Publish 3–5 supporting posts around the guide, all linked"],
-    ...GEO,
     ...DAY_90,
   ])),
 };
@@ -278,7 +275,6 @@ const PROFESSIONAL_PLAN: PlanVariant = {
     ...AUTHORITY,
     "w12-cluster-pick",
     ["w12-cluster-publish", "Publish 3–5 supporting posts around the guide, all linked"],
-    ...GEO,
     ...DAY_90,
   ])),
 };
@@ -318,7 +314,6 @@ const ECOMMERCE_PLAN: PlanVariant = {
     ...AUTHORITY,
     "w12-cluster-pick",
     ["w12-cluster-publish", "Publish 3–5 supporting guides around the buying guide, all linked"],
-    ...GEO,
     ...DAY_90,
   ])),
 };
@@ -355,9 +350,12 @@ export function planTask(templateId: string | null | undefined, templateKey: str
   return planOf(templateId).tasks.find((t) => t.templateKey === templateKey);
 }
 
-/** Every task template any plan uses, once per key (for the skill reference and the playbook checks). */
+/**
+ * Every task template any plan uses, once per key, and the AI-search add-on's (for the skill reference and the playbook
+ * checks). The add-on is listed here only so its playbooks are documented: no plan seeds it (templates/geo.ts).
+ */
 export function allPlanTasks(): SeoTaskTemplate[] {
-  return [...CATALOG.values()];
+  return [...CATALOG.values(), ...GEO_TASKS];
 }
 
 /** Default when nobody chose: a local service business for a client, the software plan for our own sites. */

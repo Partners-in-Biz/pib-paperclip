@@ -49,6 +49,8 @@ import { materialiseDueTasks } from "./tasks.js";
 import { groupViews } from "./chunks.js";
 import { geoSummary } from "./geo.js";
 import { ga4Line } from "./analytics.js";
+import { addGeoTasks, logStartingSwitches, requireGoogleKeyFor, startingSwitches } from "./switches.js";
+import { switchesOf } from "../engine/switches.js";
 import { loadServiceAccount } from "./google-access.js";
 import { needsYouView } from "./needs-you.js";
 import { playbookSummary } from "./playbook.js";
@@ -102,7 +104,14 @@ export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVarian
       discoveredVia: "template",
     })),
   );
-  for (const [provider, status] of [["gsc", "disconnected"], ["pagespeed", "enabled"], ["bing", "disabled"], ["ga4", "disconnected"]] as const) {
+  // Google Analytics gets its row only when a person switched it on for this sprint.
+  const integrations: Array<{ provider: "gsc" | "pagespeed" | "bing" | "ga4"; status: string }> = [
+    { provider: "gsc", status: "disconnected" },
+    { provider: "pagespeed", status: "enabled" },
+    { provider: "bing", status: "disabled" },
+    ...(sprint.ga4Enabled ? [{ provider: "ga4" as const, status: "disconnected" }] : []),
+  ];
+  for (const { provider, status } of integrations) {
     await db.ensureIntegration(env.ctx.db, { id: randomUUID(), companyId: sprint.companyId, sprintId: sprint.id, provider, status });
   }
   await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, {
@@ -110,7 +119,9 @@ export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVarian
     template_id: plan.id,
     template_version: TEMPLATE_VERSION,
   });
-  return { tasks, backlinks };
+  // The AI-search tasks are an add-on: only a sprint a person switched AI search on for gets them.
+  const geo = sprint.geoEnabled ? await addGeoTasks(env, sprint) : { added: 0, revived: 0 };
+  return { tasks: tasks + geo.added, backlinks };
 }
 
 /** Create the sprint's root issue in the SEO project if it is missing. */
@@ -174,6 +185,10 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   const ownerUserId = ownerParam === "none" ? null : ownerParam ?? (await responsibleUser(env, companyId, actor));
   const clock = sprintClock(startDate, info.today);
   const plan = planFor(businessTypeParam(params, Boolean(client)));
+  // The extras (AI search, Google Analytics, page groups) start off, or as the company's default for new sprints, or as the
+  // person creating the sprint chose: an agent cannot choose them.
+  const start = await startingSwitches(env, companyId, actor, params);
+  if (start.explicit.ga4 === true) await requireGoogleKeyFor(info);
   const id = randomUUID();
   await db.insertSprint(env.ctx.db, {
     id,
@@ -191,7 +206,9 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     autopilotMode,
     ownerUserId,
     notes: str(params, "notes", { max: 4000 }) ?? null,
+    switches: start.switches,
   });
+  await logStartingSwitches(env, companyId, id, start, actor).catch((error: unknown) => env.ctx.logger.info("SEO switch trail not written for a new sprint", { sprintId: id, error: errorMessage(error) }));
   let sprint = await requireSprint(env, companyId, id);
   // The client's one WordPress site at this URL with a connected Connector: link it now (best effort, never fails creation).
   let wordpressLinked: string | null = null;
@@ -250,6 +267,7 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     issuesOpened: materialised.created,
     issuesPending: materialised.remaining,
     warnings,
+    switches: switchesOf(sprint),
     siteAccess: sprint.siteAccess,
     ...(wordpressLinked ? { wordpressSite: wordpressLinked } : {}),
     next: wordpressLinked
@@ -315,6 +333,8 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     health: sprint.health,
     lastDailyOn: sprint.lastDailyOn,
     notes: sprint.notes,
+    /** The extras a person switched on for this sprint (AI search, Google Analytics, page groups); all off until then. */
+    switches: switchesOf(sprint),
     site: siteLinkView(sprint),
     ...(overview ? { tasks: overview.numbers, next: overview.next } : {}),
   };
@@ -331,6 +351,7 @@ export async function listSprintsTool(env: Env, companyId: string, params: Param
 export async function getSprintTool(env: Env, companyId: string, params: Params) {
   const ctx = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
   const overview = (await sprintOverviews(env.ctx.db, companyId, [ctx.sprint], ctx.info.today, await resolveAgent(env, companyId))).get(ctx.sprint.id);
+  const on = switchesOf(ctx.sprint);
   const [integrations, keywords, health, snapshots] = await Promise.all([
     db.listIntegrations(env.ctx.db, companyId, ctx.sprint.id),
     db.listKeywords(env.ctx.db, companyId, ctx.sprint.id),
@@ -340,12 +361,12 @@ export async function getSprintTool(env: Env, companyId: string, params: Params)
   return {
     ...sprintView(ctx.sprint, ctx.info.today, overview),
     cockpit: cockpitPath(ctx.info, ctx.sprint),
-    integrations: integrations.map(integrationView),
+    integrations: integrations.filter((i) => i.provider !== "ga4" || on.ga4).map(integrationView),
     keywords: { tracked: keywords.length, top10: keywords.filter((k) => (k.currentPosition ?? 999) <= 10).length, priority: keywords.filter((k) => k.isPriority).map((k) => k.phrase) },
     pageHealth: health.map((h) => ({ url: h.url, strategy: h.strategy, performance: h.performance, seo: h.seo, lcpMs: h.lcpMs, cls: h.cls, inpMs: h.inpMs, source: h.source, pulledOn: h.pulledOn })),
-    snapshots: snapshots.map((s) => ({ day: s.day, kind: s.kind, capturedOn: s.capturedOn, traffic: s.traffic, rankings: s.rankings, geo: s.geo, analytics: s.analytics })),
-    // AI-search readiness and how often sampled AI answers named the business (geo-audit, record-ai-mentions).
-    geo: await geoSummary(env, ctx.sprint).catch(() => null),
+    snapshots: snapshots.map((s) => ({ day: s.day, kind: s.kind, capturedOn: s.capturedOn, traffic: s.traffic, rankings: s.rankings, ...(on.geo ? { geo: s.geo } : {}), ...(on.ga4 ? { analytics: s.analytics } : {}) })),
+    // AI-search readiness and how often sampled AI answers named the business (geo-audit, record-ai-mentions): only where a person switched AI search on.
+    ...(on.geo ? { geo: await geoSummary(env, ctx.sprint).catch(() => null) } : {}),
     scoreboard: ctx.sprint.scoreboard,
   };
 }
@@ -459,13 +480,15 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (blocked.length > 0) next.push(`${plural(blocked.length, "task")} ${blocked.length === 1 ? "is" : "are"} blocked; what they need is on Needs you — do not redo them.`);
   if (needsYou && needsYou.open.length > 0) next.push(`${plural(needsYou.open.length, "item")} ${needsYou.open.length === 1 ? "waits" : "wait"} on a person in Needs you${needsYou.issueIdentifier ? ` (${needsYou.issueIdentifier})` : ""}: ${needsYou.open.map((i) => i.title).slice(0, 4).join("; ")}.`);
   if (proposals.length > 0) next.push(`${plural(proposals.length, "optimization proposal")} ${proposals.length === 1 ? "waits" : "wait"} for approval.`);
-  const geo = await geoSummary(env, sprint).catch(() => null);
+  // AI search and Google Analytics are lines in the next steps only where a person switched them on for this sprint.
+  const on = switchesOf(sprint);
+  const geo = on.geo ? await geoSummary(env, sprint).catch(() => null) : null;
   if (geo && (geo.score != null || geo.mentions)) next.push(`${geoLine(geo)}. geo-audit refreshes it; record-ai-mentions adds sampled AI answers.`);
-  const ga4 = integrations.find((i) => i.provider === "ga4");
-  if (ga4?.status === "connected") {
+  const ga4 = on.ga4 ? integrations.find((i) => i.provider === "ga4") : undefined;
+  if (on.ga4 && ga4?.status === "connected") {
     const line = await ga4Line(env, sprint);
     if (line) next.push(line);
-  } else if (sa.key && gsc?.status === "connected") {
+  } else if (on.ga4 && sa.key && gsc?.status === "connected") {
     next.push("Google Analytics is not connected: connect-ga4 finds the property by the site's address; the one-time grant it may need is on Needs you (optional).");
   }
   for (const a of announcements.filter((row) => row.status === "stuck").slice(0, 3)) next.push(announcementLine(a));
@@ -505,7 +528,9 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     doneToday: doneRecently.filter((t) => (t.completedAt ?? "") >= since).map((t) => t.title),
     upcoming: tasks.filter((t) => t.dueDay != null && t.dueDay > clock.day).slice(0, 5).map(brief),
     proposals: proposals.map((p) => ({ optimizationId: p.id, hypothesis: p.hypothesis, signal: p.signalType, severity: p.severity })),
-    integrations: integrations.map(integrationView),
+    integrations: integrations.filter((i) => i.provider !== "ga4" || on.ga4).map(integrationView),
+    // What a person switched on for this sprint; work only the extras that are on.
+    switches: on,
     siteRepo: siteLinkView(sprint, wpSite),
     serviceAccountEmail: sa.key?.clientEmail ?? null,
     playbook: { version: playbook.version, pending: playbook.pending, read: "Call get-playbook with this sprintId before working its tasks and follow it." },

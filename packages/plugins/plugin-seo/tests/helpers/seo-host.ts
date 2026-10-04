@@ -25,7 +25,13 @@ export const SPRINT: Row = {
   health: {}, scoreboard: {}, today: {}, current_day: 32, current_week: 5, current_phase: 2, last_daily_on: null, last_weekly_on: null,
   audit_days_done: [0], seeded_at: "2026-09-01T00:00:00Z", created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
   site_project_id: "proj-site", site_access: "repo", repo_url: "https://github.com/pib/acme", default_branch: "main", change_policy: "merge_seo_scope", verification: {}, client_project_id: "proj-client",
+  // AI search, Google Analytics and page groups are ON here so the tests of those features exercise them; a real sprint starts
+  // with all three off (tests/switches.spec.ts uses SPRINT_OFF for that).
+  geo_enabled: true, ga4_enabled: true, chunks_enabled: true,
 };
+
+/** The same sprint as a real one starts: every extra off until a person switches it on. */
+export const SPRINT_OFF: Row = { ...SPRINT, geo_enabled: false, ga4_enabled: false, chunks_enabled: false };
 
 export function taskRow(extra: Row = {}): Row {
   return {
@@ -140,6 +146,9 @@ export function integrationRow(provider: string, extra: Row = {}): Row {
 
 /** The standard routes: the sprint, and nothing else. Tests add their own in front. */
 export const sprintRoutes: Route[] = [[/FROM plugin_seo_8099f8879a\.sprints WHERE id = \$1/, () => [SPRINT]]];
+
+/** The sprint with every extra off, as a real one starts. */
+export const sprintRoutesOff: Route[] = [[/FROM plugin_seo_8099f8879a\.sprints WHERE id = \$1/, () => [SPRINT_OFF]]];
 
 export function executed(host: { executes: Array<{ sql: string; params: unknown[] }> }, pattern: RegExp) {
   return host.executes.filter((e) => pattern.test(e.sql));

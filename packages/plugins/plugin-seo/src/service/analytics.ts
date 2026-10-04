@@ -19,6 +19,7 @@ import {
   type WeekRow,
 } from "../engine/analytics.js";
 import { ga4AccessItem, ga4ApiItem } from "../engine/items.js";
+import { offMessage } from "../engine/switches.js";
 import { daysBetween } from "../engine/time.js";
 import { discoverGa4Property, fetchGa4Weeks, GA4_SCOPE, Ga4Error, ga4StreamHosts, parseGa4PropertyId, probeGa4Property, propertyName, siteHostOf, streamsMatchSite, type Ga4Discovery } from "../integrations/ga4.js";
 import { serviceAccountToken } from "../integrations/google-sa.js";
@@ -26,6 +27,7 @@ import { actorId, companyInfo, errorMessage, num, reqStr, SeoError, str, type Ac
 import { requireSprint } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
+import { requireOn } from "./switches.js";
 
 /** The first pull reaches back this many completed weeks (a quarter of history before the sprint is the baseline). */
 export const BACKFILL_WEEKS = 13;
@@ -118,6 +120,8 @@ export async function pullGa4(env: Env, info: CompanyInfo, sprint: db.Sprint, in
  * returned: candidates are only properties for this site.
  */
 export async function connectGa4(env: Env, info: CompanyInfo, sprint: db.Sprint, opts: { propertyId?: string | null; allowMismatch?: boolean; confirmedBy?: string | null } = {}): Promise<Ga4Connect> {
+  // Every Google call for a sprint's analytics starts here: none for a sprint a person has not switched it on for.
+  requireOn(sprint, "ga4", offMessage("ga4"));
   const integration = await ga4Integration(env, sprint);
   const wasConnected = integration.status === "connected";
   const access = await ga4Access(env, info);
@@ -216,6 +220,7 @@ async function pagesOf(env: Env, sprint: db.Sprint) {
 
 /** The GA4 summary of a sprint from the stored weeks; null while no week has been pulled. */
 export async function ga4Summary(env: Env, sprint: db.Sprint, opts: { weeks?: number } = {}): Promise<AnalyticsSummary | null> {
+  if (!sprint.ga4Enabled) return null;
   const weeks = await db.listGa4Weeks(env.ctx.db, sprint.companyId, sprint.id, opts.weeks ?? 26);
   if (weeks.length === 0) return null;
   const integration = await db.getIntegration(env.ctx.db, sprint.companyId, sprint.id, "ga4");
@@ -256,6 +261,8 @@ export async function ga4Connected(env: Env, sprint: db.Sprint): Promise<boolean
  * Needs you item open. Returns a warning for the daily record, or null. Never throws.
  */
 export async function ga4Daily(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<string | null> {
+  // Off unless a person switched it on for this sprint: no look-up, no pull, no Needs you line, no Google call at all.
+  if (!sprint.ga4Enabled) return null;
   try {
     const sa = await loadServiceAccount(info);
     if (!sa.key) return null;
@@ -282,6 +289,7 @@ export async function ga4Daily(env: Env, info: CompanyInfo, sprint: db.Sprint): 
 
 export async function connectGa4Tool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  requireOn(sprint, "ga4", offMessage("ga4"));
   const info = await companyInfo(env, companyId);
   const raw = str(params, "propertyId", { max: 300 });
   let propertyId: string | null = null;
@@ -319,6 +327,7 @@ export async function connectGa4Tool(env: Env, companyId: string, actor: Actor, 
 
 export async function listGa4SummaryTool(env: Env, companyId: string, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  if (!sprint.ga4Enabled) return { sprintId: sprint.id, enabled: false, connected: false, weeks: [], next: offMessage("ga4") };
   const integration = await db.getIntegration(env.ctx.db, companyId, sprint.id, "ga4");
   const view = ga4View(integration);
   const summary = await ga4Summary(env, sprint, { weeks: num(params, "weeks", { integer: true, min: 1, max: 26 }) ?? 8 });

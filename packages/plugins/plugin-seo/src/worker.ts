@@ -56,6 +56,8 @@ import { onBuildIssueUpdated } from "./service/build.js";
 import { ga4Summary, ga4View } from "./service/analytics.js";
 import { groupViews, onChunkIssueUpdated, openIdleGroups } from "./service/chunks.js";
 import { geoSummary } from "./service/geo.js";
+import { companySwitchViews, sprintSwitchViews } from "./service/switches.js";
+import { switchesOf } from "./engine/switches.js";
 import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from "./service/jobs.js";
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
@@ -321,6 +323,8 @@ function registerActions(e: Env) {
       routines,
       skillKey: SKILL_CANONICAL_KEY,
       scope: scopeParamValue(scope),
+      // What new sprints of this company start with (the extras, all off unless a person turned one on).
+      newSprintExtras: (await companySwitchViews(e, companyId).catch(() => null))?.views ?? [],
       client: scope
         ? {
             kind: scope.kind,
@@ -373,10 +377,13 @@ function registerActions(e: Env) {
       // Chart series: Search Console clicks and impressions of tracked keywords per day.
       db.sprintTraffic(ctx.db, companyId, sprintId).catch(() => []),
     ]);
-    const [geo, analytics, groups] = await Promise.all([
-      geoSummary(e, sprint).catch(() => null),
-      ga4Summary(e, sprint, { weeks: 13 }).catch(() => null),
+    // The extras a person switched on show their numbers; the others show nothing but the switch (extras below).
+    const on = switchesOf(sprint);
+    const [geo, analytics, groups, extras] = await Promise.all([
+      on.geo ? geoSummary(e, sprint).catch(() => null) : Promise.resolve(null),
+      on.ga4 ? ga4Summary(e, sprint, { weeks: 13 }).catch(() => null) : Promise.resolve(null),
       groupViews(e, companyId, sprintId).catch(() => new Map()),
+      sprintSwitchViews(e, sprint),
     ]);
     const [needsYou, setup, projects, wordpressSites, wpSite, playbook, overviews, timed] = await Promise.all([
       needsYouView(e, info, sprint).catch(() => null),
@@ -401,14 +408,17 @@ function registerActions(e: Env) {
       keywords: keywords.map((k) => ({ ...k, history: (byKeyword[k.id] ?? []).slice(-60) })),
       backlinks,
       content,
-      snapshots,
+      // An extra that is off shows none of its numbers, even from a time it was on.
+      snapshots: snapshots.map((snap) => ({ ...snap, geo: on.geo ? snap.geo : {}, analytics: on.ga4 ? snap.analytics : {} })),
       findings,
       optimizations,
-      integrations: integrations.map(integrationView),
+      integrations: integrations.filter((i) => i.provider !== "ga4" || on.ga4).map(integrationView),
       // AI-search readiness and sampled AI answers; the GA4 weekly numbers; the page groups of split tasks.
       geo,
-      analytics: { ...ga4View(integrations.find((i) => i.provider === "ga4") ?? null), summary: analytics ? { weeks: analytics.weeks, last4: analytics.last4, change: analytics.change, organicShare: analytics.organicShare, attribution: analytics.attribution, keyEvents: analytics.keyEvents, aiReferrals: analytics.aiReferrals } : null },
+      ...(on.ga4 ? { analytics: { ...ga4View(integrations.find((i) => i.provider === "ga4") ?? null), summary: analytics ? { weeks: analytics.weeks, last4: analytics.last4, change: analytics.change, organicShare: analytics.organicShare, attribution: analytics.attribution, keyEvents: analytics.keyEvents, aiReferrals: analytics.aiReferrals } : null } } : {}),
       pageGroups: [...groups.values()],
+      // The three extras with their plain words, state and who changed them last (turned on or off from the Integrations tab).
+      extras,
       pageHealth: health,
       traffic,
       previews,

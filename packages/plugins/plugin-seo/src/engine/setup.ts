@@ -57,8 +57,8 @@ export interface SetupFacts {
     property: string | null;
     gscVia: "service_account" | "oauth" | null;
     bingVerified: boolean;
-    /** Google Analytics (GA4, read only): the property id once connected, and whether the daily pull works. */
-    ga4?: { propertyId: string | null; connected: boolean; lastError: string | null; lastPullOn: string | null };
+    /** Google Analytics (GA4, read only): whether a person switched it on for the sprint, the property id once connected, and whether the daily pull works. */
+    ga4?: { enabled: boolean; propertyId: string | null; connected: boolean; lastError: string | null; lastPullOn: string | null };
   };
 }
 
@@ -258,20 +258,24 @@ export function buildSetupChecklist(f: SetupFacts): SetupItem[] {
     });
     if (s.ga4) {
       const g = s.ga4;
+      const email = f.serviceAccount.email;
+      const connected = g.enabled && g.connected;
       items.push({
         key: "ga4_property",
         label: "Google Analytics (GA4, optional)",
-        status: g.connected ? "done" : "warn",
-        detail: g.connected
+        status: connected ? "done" : "warn",
+        detail: connected
           ? `Property ${g.propertyId}: weekly sessions, organic traffic and key events are pulled${g.lastPullOn ? ` (last ${g.lastPullOn})` : ""}.`
-          : g.lastError
-            ? `Not connected: ${g.lastError}`
-            : f.serviceAccount.email
-              ? `Not connected: the property owner adds ${f.serviceAccount.email} as a Viewer once. The agent finds the property by the site's address, or takes its ID.`
-              : "Not connected: needs the Google service account key first.",
-        steps: g.connected ? [] : ga4Steps(f.serviceAccount.email),
-        links: g.connected ? [] : [{ label: "Google Analytics", url: ANALYTICS_URL }, { label: "Enable Data API", url: GA4_DATA_API_URL }, { label: "Enable Admin API", url: GA4_ADMIN_API_URL }],
-        next: "Pulls sessions, engaged sessions, key events, organic landing pages and source / medium every week, attributes organic traffic and key events to this sprint's pages, and shows them in the weekly review and the snapshots.",
+          : !g.enabled
+            ? `Off for this sprint: nothing is read from Google Analytics until a person turns it on (SEO page → this sprint → Integrations → Extras). It is not set up yet either: ${email ? `the Analytics APIs are enabled once for our Google Cloud project, and the property's owner adds ${email} as a Viewer.` : "it needs the Google service account key, the Analytics APIs enabled once, and the property's owner adding the service account as a Viewer."}`
+            : g.lastError
+              ? `On, not connected: ${g.lastError}`
+              : email
+                ? `On, not connected yet: the property owner adds ${email} as a Viewer once. The agent finds the property by the site's address, or takes its ID.`
+                : "On, not connected: needs the Google service account key first.",
+        steps: connected ? [] : ga4Steps(email),
+        links: connected ? [] : [{ label: "Google Analytics", url: ANALYTICS_URL }, { label: "Enable Data API", url: GA4_DATA_API_URL }, { label: "Enable Admin API", url: GA4_ADMIN_API_URL }],
+        next: "Once a person switches it on and the Google steps are done: pulls sessions, engaged sessions, key events, organic landing pages and source / medium every week, attributes organic traffic and key events to this sprint's pages, and shows them in the weekly review and the snapshots.",
       });
     }
     items.push({

@@ -1,11 +1,14 @@
 /**
- * The GEO (AI search) workstream every 90-day plan carries from template version 5: eight tasks that make a site
- * readable by AI answer engines (ChatGPT, Claude, Perplexity, Google AI Overviews, Copilot), say who the business is,
- * and check whether the answers name it. Their playbooks are in playbooks.ts; the checks and tools are in
- * checks/geo.ts and service/geo.ts.
+ * The GEO (AI search) workstream: eight tasks that make a site readable by AI answer engines (ChatGPT, Claude,
+ * Perplexity, Google AI Overviews, Copilot), say who the business is, and check whether the answers name it. Their
+ * playbooks are in playbooks.ts; the checks and tools are in checks/geo.ts and service/geo.ts.
  *
- * Week 0 and 1 are one-time setup; weeks 2, 8 and 13 sample AI answers against a baseline; after day 90 the weekly
- * job opens a monthly re-check (`geo-recheck:<yyyy-mm>`, see service/geo.ts).
+ * It is an add-on, not part of any plan: `plans.ts` never lists these tasks, so no plan, seed or plan change can add them.
+ * They reach a sprint only when a person switches AI search on for it (`service/switches.ts` adds them, and closes the
+ * unfinished ones when it is switched off).
+ *
+ * Week 0 and 1 are one-time setup; weeks 2, 8 and 13 sample AI answers against a baseline; after day 90 the daily run
+ * opens a monthly re-check (`geo-recheck:<yyyy-mm>`, see service/geo.ts) while the switch is on.
  */
 import { phaseForWeek, type SeoTaskTemplate } from "./outrank-90.js";
 
@@ -26,9 +29,6 @@ export const GEO_TASKS: SeoTaskTemplate[] = [
 
 export const GEO_TASK_KEYS: string[] = GEO_TASKS.map((t) => t.templateKey);
 
-/** Template keys added in version 5 (existing sprints get them from the daily run's plan upgrade). */
-export const TEMPLATE_V5_ADDED = GEO_TASK_KEYS;
-
 /** Task types whose work is a change to the site (they open in the site project). The other GEO types are research and records. */
 export const GEO_CODE_TYPES = ["geo-crawler-access", "geo-llms-txt", "geo-entity-schema", "geo-answer-blocks"] as const;
 
@@ -42,4 +42,9 @@ export function monthlyGeoKey(month: string): string {
 
 export function isMonthlyGeoKey(key: string | null | undefined): boolean {
   return Boolean(key && /^geo-recheck:\d{4}-\d{2}$/.test(key));
+}
+
+/** Whether a task key belongs to the AI-search add-on: its eight tasks and the monthly re-checks. No plan owns these keys. */
+export function isGeoTemplateKey(key: string | null | undefined): boolean {
+  return Boolean(key && (GEO_TASK_KEYS.includes(key) || isMonthlyGeoKey(key)));
 }

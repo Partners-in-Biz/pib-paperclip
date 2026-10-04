@@ -42,7 +42,7 @@ export function workBranchFromPolicy(policy: unknown): string | null {
 export const SEO_SCOPE: Record<string, string> = {
   head_metadata: "`<head>` metadata: title, meta description, canonical, robots meta, Open Graph / Twitter tags (Next.js `metadata` / `generateMetadata`).",
   json_ld: "JSON-LD structured data blocks (Organization, WebSite, FAQPage, Product, LocalBusiness …), including fixes such as a broken WebSite SearchAction.",
-  sitemap_robots: "sitemap.xml / `app/sitemap.ts`, robots.txt / `app/robots.ts` and llms.txt. On WordPress: extra robots.txt lines (`wp-robots`) and the sitemap settings (`wp-sitemap`).",
+  sitemap_robots: "sitemap.xml / `app/sitemap.ts` and robots.txt / `app/robots.ts`. On WordPress: extra robots.txt lines (`wp-robots`) and the sitemap settings (`wp-sitemap`).",
   verification_file: "Search engine verification and key files: the google-site-verification meta tag or HTML file, the msvalidate.01 meta tag or BingSiteAuth.xml, the IndexNow key file. On WordPress with a Connector 1.2+: `wp-verify` (meta tags and root files, nothing written to disk).",
   image_alt: "Image alt text.",
   internal_links: "Internal links and their anchor text inside existing copy.",
@@ -267,7 +267,8 @@ export const CODE_TASK_TYPES = new Set([
   "reviews-display",
   "area-pages",
   "collection-pages",
-  // The GEO (AI search) workstream's site changes (templates/geo.ts GEO_CODE_TYPES; tests keep them equal).
+  // The GEO (AI search) workstream's site changes (templates/geo.ts GEO_CODE_TYPES; tests keep them equal). Only sprints a person
+  // switched AI search on for have such tasks; the scope of an llms.txt is stated in that playbook, not in the scope list above.
   "geo-crawler-access",
   "geo-llms-txt",
   "geo-entity-schema",
