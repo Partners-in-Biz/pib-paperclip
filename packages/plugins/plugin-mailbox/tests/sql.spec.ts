@@ -10,8 +10,28 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–007 untouched and adds 008", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql"]);
+  it("keeps 001–008 untouched and adds 009", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql"]);
+  });
+
+  it("009 adds the send-only account kind, the provider fields on a send, and the domain, day, event and soft-bounce tables, and edits nothing that ran", () => {
+    const sql = readFileSync(new URL("009_esp_send_only_accounts.sql", migrationsDir), "utf8");
+    for (const table of ["esp_domains", "esp_domain_days", "esp_events", "esp_recipient_health"]) expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.${table}`);
+    // A send-only account waits as pending; the status list is replaced by dropping and re-adding the constraint, never by editing 003.
+    expect(sql).toContain("DROP CONSTRAINT accounts_status");
+    expect(sql).toContain("CHECK (status IN ('manual', 'connected', 'needs_reconnect', 'disconnected', 'pending'))");
+    expect(readFileSync(new URL("003_gmail.sql", migrationsDir), "utf8")).toContain("CHECK (status IN ('manual', 'connected', 'needs_reconnect', 'disconnected'))");
+    for (const column of ["reply_to text", "provider text", "provider_message_id text", "delivery_status text", "delivery jsonb NOT NULL DEFAULT"]) expect(sql).toContain(column);
+    // The domain is the key of its row, one provider id per company, and a delivery or message and kind is recorded once.
+    expect(sql).toContain("PRIMARY KEY (company_id, domain)");
+    expect(sql).toContain("CREATE UNIQUE INDEX esp_domains_provider_id");
+    expect(sql).toContain("PRIMARY KEY (company_id, event_id)");
+    expect(sql).toContain("CREATE UNIQUE INDEX esp_events_dedupe");
+    expect(sql).toContain("PRIMARY KEY (company_id, domain, day)");
+    expect(sql).toContain("CHECK (status IN ('not_started', 'pending', 'verified', 'failed', 'temporary_failure', 'unknown'))");
+    // No row of an earlier table is rewritten, and no secret has a column.
+    expect(sql).not.toMatch(/\bapi_key\b|\bsecret\b|\btoken\b/i);
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
   });
 
   it("008 adds delegation provenance and removals, client mailboxes, per-sender do-not-email rows with erased markers, client mail maps and domain checks", () => {
@@ -207,7 +227,69 @@ describe("runtime SQL passes the host guard", () => {
     await s.eraseSuppression({ companyId: c, email: "A@b.co", hash: "h".repeat(64), scope: "all" });
     await s.erasedMarkers(c);
     await s.markSendSent("k", { gmailMessageId: "g", gmailThreadId: "t", rfcMessageId: "<r>", accountId: "a", fromAddress: "x@y.co", skipped: [{ email: "c@d.co", scope: "marketing", reason: "unsubscribed" }] });
-    expect(calls.length).toBeGreaterThan(90);
+    // 0.6.0: the email provider's accounts, domains, daily counts, webhook events and soft bounces.
+    const now = new Date().toISOString();
+    await s.insertEspAccount({ id: "e1", companyId: c, provider: "resend", address: "hello@updates.client.co.za", status: "pending", fromName: "Client", replyTo: "team@client.co.za", clientKind: "company", clientRef: "crm-1", createdBy: "user-1" });
+    await s.setAccountStatus(c, "e1", "connected");
+    await s.setAccountReplyTo(c, "e1", null);
+    await s.getEspDomain(c, "updates.client.co.za");
+    await s.listEspDomains(c);
+    await s.upsertEspDomain({ company_id: c, domain: "updates.client.co.za", provider: "resend", provider_domain_id: "d1", region: "eu-west-1", status: "pending", records: [], return_path_host: "send.updates.client.co.za", dkim_selector: "resend", spf_include: "amazonses.com", client_kind: "company", client_ref: "crm-1", account_id: "e1", created_by: "user-1", verified_at: null, checked_at: now, verify_asked_at: null, first_sent_at: null, last_sent_at: null, warmup_exempt: false, daily_cap_override: null, reputation: null, created_at: now, updated_at: now });
+    await s.patchEspDomain(c, "updates.client.co.za", { status: "verified", records: [], verified_at: now, checked_at: now, verify_asked_at: now, warmup_exempt: true, daily_cap_override: 300, reputation: { sent: 1 }, account_id: "e1", client_kind: null, client_ref: null, return_path_host: "h", dkim_selector: "resend", spf_include: "x" });
+    await s.patchEspDomain(c, "updates.client.co.za", {});
+    await s.reserveEspSends(c, "updates.client.co.za", "2026-10-03", 3, 50);
+    await s.reserveEspSends(c, "updates.client.co.za", "2026-10-03", 3, null);
+    await s.releaseEspSends(c, "updates.client.co.za", "2026-10-03", 3);
+    await s.noteEspSend(c, "updates.client.co.za", now, false);
+    await s.espDayRows(c, "updates.client.co.za", "2026-09-27");
+    for (const field of ["delivered", "hard_bounces", "soft_bounces", "complaints", "opened", "clicked", "failed"] as const) await s.bumpEspDay(c, "updates.client.co.za", "2026-10-03", field, 1);
+    await s.recordEspEvent({ companyId: c, eventId: "msg_1", dedupeKey: "e:email.bounced:a@b.co", provider: "resend", type: "email.bounced", emailId: "e", recipient: "a@b.co", domain: "updates.client.co.za", sendKey: "k", detail: { bounceType: "Permanent" } });
+    await s.forgetEspEvent(c, "msg_1");
+    await s.purgeEspHistory(c, now, "2026-08-01");
+    await s.patchSendDelivery(c, "k", { maybeAcceptedAt: now });
+    await s.patchSendDelivery(c, "k", { maybeAcceptedAt: null, gen: 1 });
+    await s.recipientHealth(c, ["a@b.co"]);
+    await s.recipientHealth(c, []);
+    await s.recordSoftBounce(c, "A@b.co", now, 14);
+    await s.setBackoff(c, "a@b.co", now);
+    await s.setBackoff(c, "a@b.co", null);
+    await s.clearRecipientHealth(c, "a@b.co");
+    await s.sendByProviderMessage(c, "resend", "mail-1");
+    await s.markSendSentProvider("k", { provider: "resend", providerMessageId: "mail-1", accountId: "e1", fromAddress: "hello@updates.client.co.za", skipped: [] });
+    await s.setSendDelivery(c, "k", "delivered", { delivered_at: now });
+    await s.markDraftSentProvider(c, "d", { context: input.context, sendKey: "k", fromAddress: "hello@updates.client.co.za" });
+    await s.eraseEspRecipients(c, ["a@b.co"]);
+    await s.eraseEspRecipients(c, []);
+    await expect(s.bumpEspDay(c, "d", "2026-10-03", "sent; DROP TABLE x" as never, 1)).rejects.toThrow(/Unknown day counter/);
+    expect(calls.length).toBeGreaterThan(130);
+  });
+
+  it("keeps the provider rules the unit tests rely on in the SQL itself", async () => {
+    const { db, calls } = guardedDb();
+    const s = new SqlStore(db);
+    const c = "co-1";
+    await s.reserveEspSends(c, "d.co", "2026-10-03", 3, 50);
+    await s.recordEspEvent({ companyId: c, eventId: "m", dedupeKey: "k", provider: "resend", type: "email.delivered", emailId: null, recipient: "A@B.co", domain: null, sendKey: null, detail: {} });
+    await s.recordSoftBounce(c, "a@b.co", new Date().toISOString(), 14);
+    await s.espDayRows(c, "d.co", "2026-09-27");
+    await s.eraseEspRecipients(c, ["a@b.co"]);
+    await s.upsertEspDomain({ company_id: c, domain: "d.co", provider: "resend", provider_domain_id: "d1", region: null, status: "pending", records: [], return_path_host: null, dkim_selector: null, spf_include: null, client_kind: null, client_ref: null, account_id: null, created_by: null, verified_at: null, checked_at: null, verify_asked_at: null, first_sent_at: null, last_sent_at: null, warmup_exempt: false, daily_cap_override: null, reputation: null, created_at: "", updated_at: "" });
+    const sql = (needle: string) => calls.map((x) => x.sql).find((text) => text.includes(needle)) ?? "";
+    // The cap is checked inside the statement, on the insert AND on the update, so two sends at once cannot both pass it.
+    const reserve = sql("esp_domain_days AS d");
+    expect(reserve).toContain("WHERE $5::int IS NULL OR $4::int <= $5::int");
+    expect(reserve).toContain("DO UPDATE SET sent = d.sent + $4::int WHERE $5::int IS NULL OR d.sent + $4::int <= $5::int");
+    // A delivery already seen, by its id or by message and kind, is not recorded twice (no conflict target: either unique index).
+    expect(sql(`INSERT INTO ${NAMESPACE}.esp_events`)).toContain("ON CONFLICT DO NOTHING");
+    // Soft bounces older than the window are forgotten, in the statement.
+    expect(sql("esp_recipient_health AS h")).toContain("make_interval(days => $4::int)");
+    // Every read and delete of provider data is scoped to the company.
+    expect(sql("FROM plugin_mailbox_319145c88b.esp_domain_days")).toContain("WHERE company_id = $1");
+    expect(sql(`DELETE FROM ${NAMESPACE}.esp_events WHERE company_id = $1`)).toContain("recipient = ANY");
+    expect(sql(`DELETE FROM ${NAMESPACE}.esp_recipient_health`)).toContain("company_id = $1");
+    // Refreshing a domain from the provider never overwrites its send history or a person's settings.
+    const upsert = sql(`INSERT INTO ${NAMESPACE}.esp_domains`);
+    for (const column of ["first_sent_at", "last_sent_at", "warmup_exempt", "daily_cap_override"]) expect(upsert.slice(upsert.indexOf("DO UPDATE"))).not.toContain(column);
   });
 
   it("keeps the rules the unit tests rely on in the SQL itself", async () => {

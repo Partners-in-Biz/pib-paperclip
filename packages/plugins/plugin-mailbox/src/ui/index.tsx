@@ -56,7 +56,7 @@ import {
 import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
-import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, domainFacts, domainStatusLabel, domainTone, draftRecipients, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping } from "./view.js";
+import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, dnsRecordLine, domainFacts, domainStatusLabel, domainTone, draftRecipients, espCapLine, espReputationLine, espStatusLabel, espStatusTone, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping } from "./view.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
 
@@ -95,6 +95,32 @@ interface Account {
   client_kind?: string | null;
   client_ref?: string | null;
   from_name?: string | null;
+  /** `email-provider`: a send-only account of the email provider (worker 0.6.0+); everything else is Gmail. */
+  kind?: string;
+  reply_to?: string | null;
+}
+interface DnsInstruction { type: string; host: string; hostInZone: string; value: string; priority: number | null; purpose: string; status: string }
+interface EspDomainView {
+  domain: string;
+  status: string;
+  ready: boolean;
+  account: { id: string; address: string; fromName: string | null; replyTo: string | null; status: string } | null;
+  client: { kind: string; ref: string; name: string | null } | null;
+  region: string | null;
+  verifiedAt: string | null;
+  checkedAt: string | null;
+  cap: { cap: number; day: number | null; warming: boolean; source: string; sentToday: number; remaining: number };
+  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }> } | null;
+  dns: { zone: string; records: DnsInstruction[]; dmarc: DnsInstruction | null; steps: string[]; whoAddsIt: string; afterwards: string } | null;
+}
+/** The email provider's state and sending domains (worker 0.6.0+). */
+interface EspOverview {
+  enabled: boolean;
+  ready: { domains: boolean; sending: boolean };
+  blockers: string[];
+  webhookUrl: string | null;
+  providerState: { code: string | null; detail: string | null; at: string } | null;
+  domains: EspDomainView[];
 }
 interface Delegation { id: string; account_id: string; agent_id: string; can_read?: boolean; can_draft?: boolean; can_send: boolean; source?: string }
 interface DomainProblem { severity: string; message: string; fix: string }
@@ -160,6 +186,8 @@ interface Snapshot {
   domains?: DomainRow[];
   /** Client mail mappings and the sender domains of mail waiting for one (worker 0.5.0+). */
   clientMaps?: ClientMapOverview | null;
+  /** The email provider and its sending domains (worker 0.6.0+). */
+  esp?: EspOverview | null;
 }
 interface InboxMessage {
   id: string;
@@ -211,7 +239,7 @@ interface NamedAgent { id: string; name: string; status: string }
 
 const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
 type TabId = (typeof TAB_IDS)[number];
-type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | null;
+type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | "esp-domain" | "esp-limits" | null;
 type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
 
 const URGENCY_NAMES = ["Can wait", "Normal", "Soon", "Urgent"];
@@ -442,6 +470,9 @@ export function MailboxPage({ context }: PluginPageProps) {
   const addClientMap = usePluginAction("mailbox.add-client-map");
   const removeClientMap = usePluginAction("mailbox.remove-client-map");
   const loadCrmClients = usePluginAction("mailbox.crm-clients");
+  const addSendingDomain = usePluginAction("mailbox.add-sending-domain");
+  const refreshSendingDomain = usePluginAction("mailbox.refresh-sending-domain");
+  const setSendingDomain = usePluginAction("mailbox.set-sending-domain");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
@@ -479,6 +510,10 @@ export function MailboxPage({ context }: PluginPageProps) {
   const [mapForm, setMapForm] = useState({ matchType: "sender_domain", pattern: "", client: "", note: "" });
   const [bindTarget, setBindTarget] = useState<Account | null>(null);
   const [bindClient, setBindClient] = useState("");
+  const [espForm, setEspForm] = useState({ domain: "", fromAddress: "", fromName: "", replyTo: "", client: "", region: "" });
+  const [espAdded, setEspAdded] = useState<EspDomainView | null>(null);
+  const [limitsFor, setLimitsFor] = useState<EspDomainView | null>(null);
+  const [limits, setLimits] = useState({ exempt: false, cap: "" });
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
@@ -564,6 +599,53 @@ export function MailboxPage({ context }: PluginPageProps) {
     }
   }
 
+  async function openEspDomain() {
+    setEspForm({ domain: "", fromAddress: "", fromName: "", replyTo: "", client: "", region: "" });
+    setEspAdded(null);
+    setCreate("esp-domain");
+    await ensureClients();
+  }
+  async function addEspDomain() {
+    setMessage("");
+    setBusy(true);
+    try {
+      const [clientKind, clientRef] = espForm.client ? espForm.client.split(":") : [undefined, undefined];
+      const result = (await addSendingDomain({
+        domain: espForm.domain.trim(),
+        fromAddress: espForm.fromAddress.trim() || undefined,
+        fromName: espForm.fromName.trim() || undefined,
+        replyTo: espForm.replyTo.trim() || undefined,
+        clientKind,
+        clientRef,
+        region: espForm.region || undefined,
+      })) as EspDomainView;
+      setEspAdded(result);
+      await refresh();
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function checkEspDomain(domain: string) {
+    setMessage("");
+    setBusy(true);
+    try {
+      await refreshSendingDomain({ domain });
+      await refresh();
+      setMessage(`Asked the email provider to look at the DNS of ${domain} again.`);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  function openLimits(row: EspDomainView) {
+    setLimitsFor(row);
+    setLimits({ exempt: row.cap.source === "established", cap: row.cap.source === "override" ? String(row.cap.cap) : "" });
+    setCreate("esp-limits");
+  }
+
   const settings = snapshot?.settings;
   const readiness = connectReadiness(settings);
   const missing = missingTechnical(settings);
@@ -633,7 +715,9 @@ export function MailboxPage({ context }: PluginPageProps) {
   };
 
   const accounts = snapshot?.accounts ?? [];
-  const gmailAccounts = accounts.filter((a) => a.status !== "manual" || a.has_credential);
+  // A send-only account of the email provider has no inbox, no sync and no sign-in: it is shown with its domain, not with Gmail.
+  const gmailAccounts = accounts.filter((a) => a.kind !== "email-provider" && (a.status !== "manual" || a.has_credential));
+  const esp = snapshot?.esp ?? null;
   const otherMailboxes = accounts.filter((a) => a.status === "manual" && !a.has_credential);
   const connectedCount = gmailAccounts.filter((a) => a.status === "connected").length;
   const gmailProblem = gmailAccounts.length === 0 || gmailAccounts.some((a) => a.status !== "connected" || Boolean(a.last_error));
@@ -1124,10 +1208,10 @@ export function MailboxPage({ context }: PluginPageProps) {
             title="Agents with access"
             subtitle="Agents read and draft mail on the mailboxes you give them. Sending stays with a person unless you allow it."
             icon={Bot}
-            actions={accounts.length ? <Button type="button" variant={connectedCount && !(snapshot?.delegations ?? []).length ? "primary" : "secondary"} onClick={() => setCreate("delegation")}>Give an agent access</Button> : undefined}
+            actions={gmailAccounts.length || otherMailboxes.length ? <Button type="button" variant={connectedCount && !(snapshot?.delegations ?? []).length ? "primary" : "secondary"} onClick={() => setCreate("delegation")}>Give an agent access</Button> : undefined}
           >
             {(snapshot?.delegations ?? []).length === 0 ? (
-              <Muted>{accounts.length ? "No agent has access yet. The Operator gets read and draft access on the company's own mailboxes by itself; an agent that asks and is answered yes gets it too." : "Connect Gmail first, then give agents access."}</Muted>
+              <Muted>{gmailAccounts.length || otherMailboxes.length ? "No agent has access yet. The Operator gets read and draft access on the company's own mailboxes by itself; an agent that asks and is answered yes gets it too." : "Connect Gmail first, then give agents access."}</Muted>
             ) : narrow ? (
               <CompactRows
                 label="Agents with access"
@@ -1157,6 +1241,54 @@ export function MailboxPage({ context }: PluginPageProps) {
                 }))}
                 emptyMessage="No agent has access yet."
               />
+            )}
+          </SectionCard>
+          <SectionCard
+            id="email-provider"
+            title="Email provider (Resend)"
+            subtitle="A second, send-only way to send: mail goes out as a client's own verified domain, with bounce and complaint handling and a daily cap that ramps up for a new domain. Gmail stays the default and the only inbox."
+            icon={Send}
+            tone={esp?.providerState ? "bad" : (esp?.domains ?? []).some((row) => row.status === "failed") ? "warn" : undefined}
+            actions={esp?.ready.domains ? <Button type="button" variant="secondary" onClick={() => void openEspDomain()}>Add a sending domain</Button> : undefined}
+          >
+            {!esp || (!esp.enabled && esp.domains.length === 0) ? (
+              <Muted>Off. Switching it on is a one-time owner job with three steps (a Resend account and API key, the webhook for bounces and complaints, then a domain): the Setup checklist has each one with its link and steps.</Muted>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {esp.providerState ? <div style={{ fontSize: 13, color: tone("bad").fg, overflowWrap: "anywhere" }}>{esp.providerState.code === "quota" ? "Resend says the sending quota is used up" : "Resend refused the Mailbox's API key"}{esp.providerState.detail ? `: ${esp.providerState.detail}` : ""}. Mail through the provider waits and is tried again.</div> : null}
+                {!esp.ready.sending ? <div style={{ fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" }}>{esp.blockers.join(" ")} Nothing is sent through the provider until this is done.</div> : null}
+                {esp.webhookUrl && esp.ready.domains && !esp.ready.sending ? <div style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere" }}>Webhook address for Resend: {esp.webhookUrl}</div> : null}
+                {esp.domains.length === 0 ? <Muted>No sending domain yet. An agent adds one for a client with add-sending-domain, or add it here.</Muted> : esp.domains.map((row) => (
+                  <div key={row.domain} style={{ display: "grid", gap: 6, padding: "10px 12px", border: `1px solid ${row.status === "failed" ? tone("bad").border : tokens.border}`, borderRadius: 10, minWidth: 0 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                        <strong style={{ fontSize: 14, ...breakAnywhere }}>{row.domain}</strong>
+                        <Pill size="sm" tone={espStatusTone(row)} dot>{espStatusLabel(row)}</Pill>
+                        {row.client ? <Chip>{`For ${row.client.name ?? row.client.ref}`}</Chip> : <Chip>The company's own</Chip>}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={() => void checkEspDomain(row.domain)}>Check now</Button>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={() => openLimits(row)}>Limits</Button>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>
+                      {row.account ? `Sends as ${row.account.fromName ? `${row.account.fromName} ` : ""}<${row.account.address}>` : "No account yet"}
+                      {row.account?.replyTo ? ` · replies go to ${row.account.replyTo}` : " · no reply-to: replies are lost"}
+                    </span>
+                    {row.ready ? <span style={{ fontSize: 12, color: tokens.muted }}>{espCapLine(row)} · {espReputationLine(row)}</span> : null}
+                    {(row.reputation?.problems ?? []).map((problem) => <div key={problem.message} style={{ fontSize: 12.5, color: tone("bad").fg, overflowWrap: "anywhere" }}>{problem.message}</div>)}
+                    {row.dns ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <span style={{ fontSize: 12.5, overflowWrap: "anywhere" }}>{row.dns.whoAddsIt}</span>
+                        {[...row.dns.records, ...(row.dns.dmarc ? [row.dns.dmarc] : [])].map((record) => (
+                          <code key={`${record.type}-${record.host}-${record.value}`} style={{ fontSize: 12, padding: "4px 6px", borderRadius: 6, background: tokens.secondary, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{dnsRecordLine(record)}</code>
+                        ))}
+                        <span style={{ fontSize: 12, color: tokens.muted }}>{row.dns.afterwards}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
             )}
           </SectionCard>
           <SectionCard
@@ -1489,7 +1621,7 @@ export function MailboxPage({ context }: PluginPageProps) {
         <Field label="Mailbox">
           <Select value={accountId} onChange={(event) => setAccountId(event.target.value)} required>
             <option value="">Choose a mailbox…</option>
-            {accounts.map((account) => <option key={account.id} value={account.id}>{account.address}</option>)}
+            {accounts.filter((account) => account.kind !== "email-provider").map((account) => <option key={account.id} value={account.id}>{account.address}</option>)}
           </Select>
         </Field>
         <Field label="Agent">
@@ -1518,7 +1650,7 @@ export function MailboxPage({ context }: PluginPageProps) {
         <Field label="From">
           <Select value={accountId} onChange={(event) => setAccountId(event.target.value)} required>
             <option value="">Choose a mailbox…</option>
-            {accounts.map((account) => <option key={account.id} value={account.id}>{account.address}{canSendFrom(account) ? "" : " (not connected to Gmail)"}</option>)}
+            {accounts.filter((account) => account.kind !== "email-provider").map((account) => <option key={account.id} value={account.id}>{account.address}{canSendFrom(account) ? "" : " (not connected to Gmail)"}</option>)}
           </Select>
         </Field>
         <Field label="To"><Input value={draftTo} onChange={(event) => setDraftTo(event.target.value)} placeholder="name@example.com, other@example.com" /></Field>
@@ -1556,6 +1688,71 @@ export function MailboxPage({ context }: PluginPageProps) {
             )}
           </div>
         ) : null}
+      </Modal>
+
+      <Modal open={create === "esp-domain"} title="Add a sending domain" description="Registers the domain at the email provider and lists the DNS records to add. Nothing is sent and no DNS is changed: whoever controls the domain (the owner, or the client or their web host) adds the records." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>{espAdded ? "Close" : "Cancel"}</Button>
+          {espAdded ? null : <Button type="button" disabled={busy || !espForm.domain.trim()} onClick={() => void addEspDomain()}>Add the domain</Button>}
+        </>
+      )}>
+        {espAdded ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <strong>{espAdded.domain}</strong>
+              <Pill size="sm" tone={espStatusTone(espAdded)} dot>{espStatusLabel(espAdded)}</Pill>
+            </div>
+            {espAdded.dns ? (
+              <>
+                <span style={{ fontSize: 13, overflowWrap: "anywhere" }}>{espAdded.dns.whoAddsIt}</span>
+                <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6, fontSize: 13, lineHeight: 1.45 }}>
+                  {espAdded.dns.steps.map((step) => <li key={step} style={{ overflowWrap: "anywhere" }}>{step}</li>)}
+                </ol>
+                <Muted>{espAdded.dns.afterwards}</Muted>
+              </>
+            ) : <Muted>The provider has already verified this domain: it is ready to send.</Muted>}
+          </div>
+        ) : (
+          <>
+            <Field label="Domain"><Input value={espForm.domain} onChange={(event) => setEspForm({ ...espForm, domain: event.target.value })} placeholder="updates.client.co.za" /></Field>
+            <Muted>Use a subdomain: it keeps the client's sending reputation apart from their main mail and leaves their existing records alone.</Muted>
+            <Field label="Client">
+              <Select value={espForm.client} onChange={(event) => setEspForm({ ...espForm, client: event.target.value })}>
+                <option value="">The company's own domain</option>
+                {crmClients.map((c) => <option key={c.ref} value={c.ref}>{c.name}{c.kind === "contact" ? " (person)" : ""}</option>)}
+              </Select>
+            </Field>
+            <Field label="From address (optional)"><Input value={espForm.fromAddress} onChange={(event) => setEspForm({ ...espForm, fromAddress: event.target.value })} placeholder={espForm.domain.trim() ? `hello@${espForm.domain.trim()}` : "hello@updates.client.co.za"} /></Field>
+            <Field label="Sender name (optional)"><Input value={espForm.fromName} onChange={(event) => setEspForm({ ...espForm, fromName: event.target.value })} placeholder="The client's name" /></Field>
+            <Field label="Replies go to"><Input value={espForm.replyTo} onChange={(event) => setEspForm({ ...espForm, replyTo: event.target.value })} placeholder="team@client.co.za" /></Field>
+            <Muted>A send-only address has no inbox, so replies need an address somebody reads.</Muted>
+            <Field label="Region">
+              <Select value={espForm.region} onChange={(event) => setEspForm({ ...espForm, region: event.target.value })}>
+                <option value="">Default (us-east-1)</option>
+                <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                <option value="sa-east-1">sa-east-1 (São Paulo)</option>
+                <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+              </Select>
+            </Field>
+          </>
+        )}
+      </Modal>
+
+      <Modal open={create === "esp-limits"} title={limitsFor ? `Limits for ${limitsFor.domain}` : "Limits"} description="A new domain's daily cap ramps up over 13 days (50, 100, 200 ... 8,000) so mailbox providers learn to trust it. Only a person can lift that: mark a domain as already established if it has sent real volume before, or give it a cap of its own." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
+          <Button type="button" disabled={busy || !limitsFor} onClick={() => {
+            const cap = limits.cap.trim();
+            void run(() => setSendingDomain({ domain: limitsFor!.domain, warmupExempt: limits.exempt, dailyCap: cap ? Number(cap) : null }), "The limits were saved");
+          }}>Save</Button>
+        </>
+      )}>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+          <input type="checkbox" checked={limits.exempt} onChange={(event) => setLimits({ ...limits, exempt: event.target.checked })} />
+          This domain is already established: no warm-up
+        </label>
+        <Field label="Own daily cap (optional)"><Input value={limits.cap} onChange={(event) => setLimits({ ...limits, cap: event.target.value.replace(/[^0-9]/g, "") })} placeholder="Leave empty to use the schedule" /></Field>
+        {limitsFor ? <Muted>{espCapLine(limitsFor)}. {espReputationLine(limitsFor)}.</Muted> : null}
       </Modal>
 
       <Modal open={create === "client-map"} title="Map client mail" description="Mail matching this rule is filed under the client, and its leads go to the CRM as that client's." onClose={() => setCreate(null)} footer={(

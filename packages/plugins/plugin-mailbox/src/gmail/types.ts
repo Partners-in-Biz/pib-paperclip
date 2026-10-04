@@ -16,7 +16,8 @@ export interface BounceInfo {
   rfcIds: string[];
 }
 
-export type AccountStatus = "manual" | "connected" | "needs_reconnect" | "disconnected";
+/** `pending`: a send-only account whose domain is not verified at the provider yet. */
+export type AccountStatus = "manual" | "connected" | "needs_reconnect" | "disconnected" | "pending";
 
 export interface AccountRow {
   id: string;
@@ -42,6 +43,8 @@ export interface AccountRow {
   client_ref: string | null;
   /** Display name for mail sent from this mailbox (a request's `fromName` wins). */
   from_name: string | null;
+  /** Where replies go when a request names none: a send-only account has no inbox of its own. */
+  reply_to: string | null;
   created_at: string;
 }
 
@@ -265,6 +268,11 @@ export interface SendRow {
   updated_at: string;
   /** Recipients left out because they are on the do-not-email list. */
   skipped?: SkippedRecipient[] | null;
+  /** The email provider that took the message (empty for Gmail), its id for it, and what happened to it afterwards. */
+  provider?: string | null;
+  provider_message_id?: string | null;
+  delivery_status?: string | null;
+  delivery?: Record<string, unknown> | null;
 }
 
 export interface SendRecordInput {

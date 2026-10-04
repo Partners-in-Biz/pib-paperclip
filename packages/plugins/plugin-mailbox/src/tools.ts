@@ -133,7 +133,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "check-sender-domain",
     displayName: "Check a sender domain",
     description:
-      "Reads the DNS of a domain mail is sent from (public DNS, nothing is changed): MX, SPF with its lookup count, DKIM at the usual selectors, DMARC. Returns healthy, warn or bad with each problem and its fix, sendReady, and the exact records to add for a new client domain (onboarding). DNS is edited by the person who controls the domain: hand them the steps with one partnersinbiz.cockpit:ask-owner, then check again. By default the domain is also watched every day.",
+      "Reads the DNS of a domain mail is sent from (public DNS, nothing is changed): MX, SPF with its lookup count, DKIM at the usual selectors, DMARC. Returns healthy, warn or bad with each problem and its fix, sendReady, and the exact records to add for a new client domain (onboarding). A domain at the email provider is judged on the provider's records and its status at the provider is read again first. DNS is edited by the person who controls the domain: hand them the steps with one partnersinbiz.cockpit:ask-owner, then check again. By default the domain is also watched every day.",
     parametersSchema: schema([], {
       domain: str("The domain to check, e.g. client.co.za (or use address)."),
       address: str("A sender address; its domain is checked."),
@@ -141,6 +141,31 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       watch: { type: "boolean", description: "Keep checking this domain every day and report problems on the Cockpit (default true)." },
       clientKind: { type: "string", enum: ["company", "contact"], description: "With clientRef: the client this domain belongs to (kept with the check)." },
       clientRef: str("The CRM id of that client."),
+    }),
+  },
+  {
+    name: "add-sending-domain",
+    displayName: "Add a sending domain",
+    description:
+      "Lets mail go out as a client's own domain through the email provider (Resend), beside Gmail. Registers the domain at the provider, creates its send-only account (a From address, with a reply-to somebody reads) and returns the EXACT DNS records to add, in order, and who adds them. DNS is edited by the owner, or the client or their web host, never by an agent: put the steps in ONE partnersinbiz.cockpit:ask-owner, wait, then run check-sender-domain. Marketing from the domain is held to a daily cap that ramps up for the first 13 days. Needs the provider switched on and its API key saved (the Setup item Email provider); without them it says what the owner must do. Use a subdomain (updates.client.co.za): it keeps the client's reputation apart from their main mail. Calling it again for the same domain only returns where it stands.",
+    parametersSchema: schema(["domain"], {
+      domain: str("The domain to send as, e.g. updates.client.co.za."),
+      fromAddress: str("The From address, on that domain. Default hello@<domain>."),
+      fromName: str("The name shown as the sender, e.g. the client's name. Default: the client's name from the CRM."),
+      replyTo: str("Where replies go: an address somebody reads, usually the client's own. A send-only address has no inbox, so without one replies are lost."),
+      clientKind: { type: "string", enum: ["company", "contact"], description: "With clientRef: the client this domain sends for. The domain then sends only that client's mail, with that client's do-not-email list." },
+      clientRef: str("The CRM id of that client (find it with partnersinbiz.crm:find-records). Leave out for the company's own domain."),
+      region: { type: "string", enum: ["us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"], description: "The provider's region for the domain (default us-east-1). It cannot be changed later." },
+    }),
+  },
+  {
+    name: "list-sending-domains",
+    displayName: "List sending domains",
+    description:
+      "The company's domains at the email provider: status (not_started, pending, verified, failed), whether mail may go out now, the send-only account, the records still to add, today's cap and warm-up day (and what is left of it), and the last 7 days' bounce and complaint rates against the limits (2% and 0.1%). refresh: true asks the provider to look at the DNS again first (at most every 6 hours per domain; the Mailbox also does it every hour).",
+    parametersSchema: schema([], {
+      domain: str("One domain. Omit for every sending domain."),
+      refresh: { type: "boolean", description: "Ask the provider to verify the DNS again before answering." },
     }),
   },
   {
@@ -178,7 +203,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
   {
     name: "mail-status",
     displayName: "Mail send status",
-    description: "Status of a send another plugin asked for, by its key: sending, sent, failed or retrying, with the Gmail ids, the error, and any recipients left out as suppressed.",
+    description: "Status of a send another plugin asked for, by its key: sending, sent, failed or retrying, with the Gmail or provider ids, the error, any recipients left out as suppressed, and, for mail the email provider took, what happened to it afterwards (delivered, delayed, bounced, complained).",
     parametersSchema: schema(["key"], { key: str("The send request key, e.g. billing:invoice:<id>:send.") }),
   },
 ];

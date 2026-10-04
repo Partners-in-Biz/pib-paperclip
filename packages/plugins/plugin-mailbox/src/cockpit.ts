@@ -19,10 +19,12 @@ import {
   type QualityMetric,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
-import { loadMailboxConfig } from "./config.js";
+import { espReadiness, loadMailboxConfig } from "./config.js";
 import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
 import { SqlStore } from "./db.js";
 import { domainHealthChecks } from "./domain-health.js";
+import { readEspState } from "./esp/runtime.js";
+import { dailyCap, utcDay } from "./esp/warmup.js";
 import type { DomainCheckRow } from "./gmail/types.js";
 import { TRIAGE_PURPOSE } from "./gmail/triage.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -120,7 +122,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string, now
   const accounts = await part(ctx, "accounts", async () => {
     return ctx.db.query<AccountHealthRow>(
       `SELECT id, address, status, last_sync_at::text AS last_sync_at, last_error, alert_issue_id, connected_at::text AS connected_at, updated_at::text AS updated_at
-         FROM ${t(ctx, "accounts")} WHERE company_id = $1 AND status IN ('connected', 'needs_reconnect') ORDER BY created_at`,
+         FROM ${t(ctx, "accounts")} WHERE company_id = $1 AND provider = 'gmail' AND status IN ('connected', 'needs_reconnect') ORDER BY created_at`,
       [companyId],
     );
   }, null as AccountHealthRow[] | null);
@@ -145,6 +147,10 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string, now
   // Mail authentication of each sending domain (SPF, DKIM, DMARC, MX) and client mail nobody has mapped yet.
   const store = new SqlStore(ctx.db);
   snap.health.push(...domainHealthChecks(await part(ctx, "domains", () => store.listDomainChecks(companyId), [] as DomainCheckRow[]), now));
+  // The email provider (0.6.0): the key, the webhook, a domain at its daily cap. Reputation problems come with the domain's own check above.
+  const esp = await part(ctx, "esp", () => espHealth(ctx, companyId, store, now), { kpis: [] as CockpitKpi[], health: [] as HealthCheck[] });
+  snap.kpis.push(...esp.kpis);
+  snap.health.push(...esp.health);
   const unmapped = await part(ctx, "unmapped", () => store.unmappedSummary(companyId, 30), [] as Awaited<ReturnType<SqlStore["unmappedSummary"]>>);
   const flagged = unmapped.reduce((sum, row) => sum + Number(row.n), 0);
   if (flagged > 0) {
@@ -299,4 +305,64 @@ export async function publishAllCockpit(ctx: PluginContext): Promise<number> {
     }
   }
   return published;
+}
+
+/** The email provider's key and webhook, and a domain whose daily cap is used up. Nothing here calls the provider. */
+export async function espHealth(ctx: PluginContext, companyId: string, store: Pick<SqlStore, "listEspDomains" | "espDayRows">, now: number): Promise<{ kpis: CockpitKpi[]; health: HealthCheck[] }> {
+  const out = { kpis: [] as CockpitKpi[], health: [] as HealthCheck[] };
+  const loaded = await loadMailboxConfig(ctx, companyId);
+  const config = loaded.config.esp;
+  const domains = await store.listEspDomains(companyId);
+  // A company that never set the provider up has nothing to report.
+  if (!config.enabled && !config.hasApiKey && domains.length === 0) return out;
+  const readiness = espReadiness(config);
+  const state = await readEspState(ctx, companyId);
+  const HREF_ESP = "/mailbox?tab=mailboxes";
+  if (state && !state.ok) {
+    out.health.push({
+      key: "mailbox:esp",
+      title: "Email provider",
+      status: "bad",
+      detail: state.code === "quota" ? `Resend says the sending quota is used up${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.` : `Resend refused the Mailbox's API key${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.`,
+      href: HREF_ESP,
+      fix: state.code === "quota" ? "Upgrade the Resend plan or wait for the quota to reset (daily quotas reset at midnight UTC)." : "Create a new Resend API key with Full access, save it as a Paperclip secret and pick it in the Mailbox settings, Email provider.",
+      since: state.at,
+    });
+  } else if (domains.length > 0 && !readiness.sending) {
+    out.health.push({ key: "mailbox:esp", title: "Email provider", status: "warn", detail: readiness.blockers.join(" "), href: HREF_ESP, fix: "Finish the Setup items for the email provider: nothing is sent through it until they are done." });
+  } else {
+    // Sends went through the provider but no delivery event has come back: the webhook is not reaching the Mailbox.
+    const rows = await ctx.db.query<{ sent: string; events: string }>(
+      `SELECT (SELECT count(*) FROM ${t(ctx, "send_requests")} WHERE company_id = $1 AND provider IS NOT NULL AND status = 'sent' AND sent_at >= now() - interval '3 days' AND sent_at < now() - interval '1 hour')::text AS sent,
+              (SELECT count(*) FROM ${t(ctx, "esp_events")} WHERE company_id = $1 AND received_at >= now() - interval '3 days')::text AS events`,
+      [companyId],
+    );
+    const sent = n(rows[0]?.sent);
+    const events = n(rows[0]?.events);
+    out.health.push(
+      sent > 0 && events === 0
+        ? { key: "mailbox:esp", title: "Email provider", status: "warn", detail: `${sent} message${sent === 1 ? "" : "s"} went out through the provider in the last 3 days but no delivery event has come back, so bounces and complaints are not being seen.`, href: HREF_ESP, fix: "Check the Resend webhook: its Endpoint URL, that it is enabled, and that its signing secret is the one saved in the Mailbox settings (resend.com/webhooks shows recent deliveries and their answers)." }
+        : { key: "mailbox:esp", title: "Email provider", status: "ok" },
+    );
+  }
+  const today = utcDay(now);
+  let sentToday = 0;
+  for (const row of domains.filter((entry) => entry.status === "verified")) {
+    const days = await store.espDayRows(companyId, row.domain, today);
+    const used = days.find((day) => day.day === today)?.sent ?? 0;
+    sentToday += used;
+    const cap = dailyCap(row, config.steadyDailyCap, now);
+    if (used >= cap.cap) {
+      out.health.push({
+        key: `mailbox:esp-cap:${row.domain}`,
+        title: `Daily send cap: ${row.domain}`,
+        status: "warn",
+        detail: `${used} of ${cap.cap} recipients today${cap.warming ? ` (warm-up day ${cap.day})` : ""}: marketing mail from this domain waits until tomorrow (UTC). Transactional mail is not held back.`,
+        href: HREF_ESP,
+        fix: cap.warming ? "This is the warm-up ramp protecting the domain's reputation: it grows every day. A person can mark a domain as already established on the Mailboxes tab." : "Raise the steady daily cap in the Mailbox settings, or give this domain its own cap on the Mailboxes tab.",
+      });
+    }
+  }
+  if (domains.length > 0) out.kpis.push({ key: "esp_sent_today", label: "Sent through the email provider today", value: String(sentToday), raw: sentToday, tone: "neutral", href: HREF_ESP, group: "delivery" });
+  return out;
 }

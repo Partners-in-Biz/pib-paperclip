@@ -16,8 +16,10 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
-import { gmailRedirectUri, loadMailboxConfig, r2Configured } from "./config.js";
+import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, r2Configured } from "./config.js";
 import type { GmailStore } from "./db.js";
+import { dnsInstructions, requiredRecords } from "./esp/domains.js";
+import { readEspState } from "./esp/runtime.js";
 import type { AccountRow } from "./gmail/types.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { proofIsFresh, readProxyProof } from "./unsubscribe.js";
@@ -27,7 +29,7 @@ const SETTINGS_FALLBACK = "/company/settings/instance/plugins";
 export const SYNC_HEALTHY_MS = 10 * 60_000;
 const KNOWN = { scopeKind: "instance" as const, namespace: "mailbox-setup", stateKey: "known-companies" };
 
-type AccountSource = Pick<GmailStore, "listAccounts"> & Partial<Pick<GmailStore, "delegationFor" | "hasDelegationRemoval" | "listDomainChecks">>;
+type AccountSource = Pick<GmailStore, "listAccounts"> & Partial<Pick<GmailStore, "delegationFor" | "hasDelegationRemoval" | "listDomainChecks" | "listEspDomains">>;
 
 export async function settingsHref(ctx: PluginContext): Promise<{ href: string; uuid: string | null; uiBase: string | null }> {
   const uiBase = await pluginUiBase(ctx);
@@ -388,6 +390,9 @@ export async function setupStatus(ctx: PluginContext, companyId: string, store: 
     agentNext: "get-attachment returns a download link for any file.",
   });
 
+  // 12-14. The email provider (Resend), optional: a second, send-only way to send as a client's own domain. Three one-time owner steps, each with its deep link.
+  items.push(...(await emailProviderItems(ctx, companyId, loaded, store, settings, settingsDone)));
+
   return {
     plugin: PLUGIN_ID,
     module: moduleOfPlugin(PLUGIN_ID),
@@ -412,4 +417,100 @@ export async function publishAllSetupStatus(ctx: PluginContext, store: AccountSo
     }
   }
   return published;
+}
+
+/**
+ * The email provider's three setup items. All optional: Gmail keeps working without them. The owner does each once; what the
+ * agent does afterwards is in each item's `agentNext`.
+ * - **Account and key**: a Resend account, a full-access API key saved as a Paperclip secret, and the switch in the Mailbox settings.
+ * - **Webhook**: the endpoint in Resend and its signing secret saved as a Paperclip secret. Without it nothing is sent through the
+ *   provider, because bounces and complaints would be missed.
+ * - **A sending domain**: registered by an agent (add-sending-domain) or a person; its DNS records are added by whoever controls the
+ *   DNS (the owner, or the client or their web host). The item lists the exact records while a domain waits.
+ */
+async function emailProviderItems(ctx: PluginContext, companyId: string, loaded: Awaited<ReturnType<typeof loadMailboxConfig>>, store: AccountSource, settings: string, settingsDone: boolean): Promise<SetupItem[]> {
+  const esp = loaded.config.esp;
+  const readiness = espReadiness(esp);
+  const webhookUrl = espWebhookUrl(loaded.config.publicBaseUrl);
+  const state = await readEspState(ctx, companyId);
+  const refused = Boolean(state && !state.ok);
+  const domains = store.listEspDomains ? await store.listEspDomains(companyId).catch(() => []) : [];
+  const verified = domains.filter((row) => row.status === "verified");
+  const waiting = domains.filter((row) => row.status !== "verified");
+  const items: SetupItem[] = [];
+
+  const accountDone = readiness.domains && !refused;
+  items.push({
+    key: "esp_account",
+    title: "Email provider: a Resend account and API key (optional, owner)",
+    status: accountDone ? "done" : refused ? "blocked" : "optional",
+    required: false,
+    detail: refused
+      ? `Resend ${state!.code === "quota" ? "says the sending quota is used up" : "refused the Mailbox's API key"}${state!.detail ? ` (${state!.detail})` : ""}. Mail through the provider waits and is tried again; Gmail is not affected.`
+      : accountDone
+        ? "The provider is switched on and its API key is saved. Agents can register a client's sending domain."
+        : !esp.enabled && esp.hasApiKey
+          ? "The API key is saved but the provider is switched off in the Mailbox settings."
+          : "Optional. Lets the Mailbox send as a client's own verified domain through Resend, with bounce and complaint handling, instead of only from one Gmail account. Gmail stays the default.",
+    href: settings,
+    hrefLabel: "Open settings",
+    steps: accountDone
+      ? undefined
+      : [
+        ...(esp.hasApiKey ? [] : [
+          "Create a Resend account at https://resend.com/signup (or sign in at https://resend.com/login).",
+          "Open https://resend.com/api-keys, click Create API Key, choose Full access (the Mailbox adds domains as well as sending), and copy the key once.",
+          "In Paperclip, create a secret for it (Settings, Secrets), then open the Mailbox settings, find Email provider, and pick that secret under Resend API key.",
+        ]),
+        "In the same section tick Switch the email provider on, then click Save Configuration.",
+        ...(refused ? ["If Resend refused the key, create a new one and pick the new secret: the old one is revoked or restricted to sending only."] : []),
+      ],
+    blockedBy: settingsDone ? undefined : ["settings"],
+    agentNext: "An agent registers a client's sending domain with add-sending-domain and gets the exact DNS records to hand over.",
+  });
+
+  const webhookDone = readiness.domains && esp.hasWebhookSecret;
+  items.push({
+    key: "esp_webhook",
+    title: "Email provider: the webhook for bounces and complaints (optional, owner)",
+    status: webhookDone ? "done" : readiness.domains ? "missing" : "optional",
+    required: false,
+    detail: webhookDone
+      ? "Resend's delivery events are verified with the saved signing secret: hard bounces and complaints go on the do-not-email list, soft bounces back off, and each domain's bounce and complaint rate is watched."
+      : readiness.domains
+        ? "Until this is set, nothing is sent through the provider (a bounce or complaint would be missed). It takes two minutes."
+        : "Comes after the account and API key.",
+    href: settings,
+    hrefLabel: "Open settings",
+    steps: webhookDone
+      ? undefined
+      : [
+        `At https://resend.com/webhooks click Add Webhook and set the Endpoint URL to ${webhookUrl ?? "<your Paperclip public address>/api/plugins/partnersinbiz.mailbox/webhooks/resend (save the Public base URL in the Mailbox settings first)"}.`,
+        "Tick these events: email.delivered, email.bounced, email.complained, email.delivery_delayed, email.failed, email.opened, email.clicked, email.suppressed, domain.updated. Click Add.",
+        "Open the webhook and copy its Signing Secret (it starts with whsec_). In Paperclip create a secret for it.",
+        "In the Mailbox settings, Email provider, pick that secret under Resend webhook signing secret and click Save Configuration.",
+      ],
+    blockedBy: readiness.domains ? undefined : ["esp_account"],
+    agentNext: "Bounces and complaints become do-not-email entries, delivery results show in mail-status, and a domain whose hard bounce rate reaches 2% or complaint rate 0.1% (7 days) is held back for marketing.",
+  });
+
+  const first = waiting[0] ?? null;
+  const instructions = first ? dnsInstructions({ ...first, records: requiredRecords(first.records).filter((record) => record.status !== "verified") }) : null;
+  items.push({
+    key: "esp_domain",
+    title: "Email provider: a sending domain (a client's own, or ours)",
+    status: verified.length > 0 && waiting.length === 0 ? "done" : first ? (readiness.domains ? "missing" : "blocked") : "optional",
+    required: false,
+    detail: first
+      ? `${waiting.map((row) => `${row.domain} (${row.status === "failed" ? "failed: its records are wrong" : "waiting for DNS records"})`).join(", ")}.${verified.length ? ` Ready: ${verified.map((row) => row.domain).join(", ")}.` : ""}`
+      : verified.length > 0
+        ? `Ready: ${verified.map((row) => row.domain).join(", ")}. Mail can go out as ${verified.length === 1 ? "it" : "them"}; each domain's daily cap ramps up over its first 13 days.`
+        : "Optional. An agent registers a client's domain (a subdomain such as updates.client.co.za is best); the DNS records then go to whoever controls the domain.",
+    href: "/mailbox?tab=mailboxes",
+    hrefLabel: "Open sending domains",
+    steps: first && instructions ? [`For ${first.domain}: ${instructions.whoAddsIt}`, ...instructions.steps, "The Mailbox asks Resend to verify every hour, so nothing more is needed once the records are in; Check now on the Mailboxes tab does it at once."] : undefined,
+    blockedBy: readiness.sending ? undefined : ["esp_account", "esp_webhook"],
+    agentNext: "Once the provider has verified the domain its send-only account becomes ready, the daily domain check watches it, and Campaigns and the other plugins can send as the client.",
+  });
+  return items;
 }

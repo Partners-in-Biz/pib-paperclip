@@ -15,6 +15,14 @@ export class GmailUnavailable extends MailboxError {
   }
 }
 
+/** The email provider cannot be used right now (its key is refused, its quota is used up); nothing was stored, the sender retries. */
+export class EspUnavailable extends MailboxError {
+  constructor(message: string) {
+    super(message);
+    this.name = "EspUnavailable";
+  }
+}
+
 /** Over the per-minute send limit; nothing was stored, the sender retries. */
 export class SendThrottled extends MailboxError {
   constructor(message: string) {

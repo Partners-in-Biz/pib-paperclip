@@ -42,7 +42,7 @@ describe("Mailbox skill", () => {
   it("stays within the skill budget, with the reference material in the skill's files", () => {
     // The kit contract fails a skill over 18,000 characters; the new material lives in references the agent opens when needed.
     expect(SKILLS[0]!.markdown!.length).toBeLessThanOrEqual(18_000);
-    expect(SKILLS[0]!.files!.map((file) => file.path)).toEqual(["references/sender-domains.md", "references/client-mail.md", "references/privacy.md"]);
+    expect(SKILLS[0]!.files!.map((file) => file.path)).toEqual(["references/sender-domains.md", "references/client-mail.md", "references/privacy.md", "references/email-provider.md"]);
     for (const file of SKILLS[0]!.files ?? []) {
       expect(SKILLS[0]!.markdown!, file.path).toContain(file.path);
       expect(file.content.length, file.path).toBeGreaterThan(300);
@@ -53,7 +53,7 @@ describe("Mailbox skill", () => {
     expect(MAILBOX_DRAFT_SKILL).toMatch(/carries `askToOwner`\. Pass it to `partnersinbiz\.cockpit:ask-owner` once, unchanged/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/do not ask again, and do not ask in a comment/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/Access a person removed stays removed/);
-    expect(MAILBOX_DRAFT_SKILL).toMatch(/Before a campaign goes out from a domain it must be healthy; the Mailbox itself blocks nothing/);
+    expect(MAILBOX_DRAFT_SKILL).toMatch(/Before a campaign goes out from a domain it must be healthy\. Through Gmail the Mailbox itself blocks nothing; a domain at the email provider is held back when its check is bad/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/Never call a domain healthy without a check/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/find the client with `partnersinbiz\.crm:find-records` first/);
     expect(MAILBOX_DRAFT_SKILL).toMatch(/You never erase mail yourself/);

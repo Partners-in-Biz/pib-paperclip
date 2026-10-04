@@ -1,9 +1,9 @@
 {
   "name": "@partnersinbiz/plugin-mailbox",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
-  "description": "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it.",
+  "description": "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it. Optionally a second, send-only way to send through an email provider (Resend) as a client's own verified domain.",
   "files": [
     "dist",
     "migrations",

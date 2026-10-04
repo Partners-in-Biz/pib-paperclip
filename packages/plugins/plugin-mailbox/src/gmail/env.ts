@@ -1,7 +1,17 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GmailStore } from "../db.js";
 import type { DnsResolver } from "../dns.js";
+import type { HttpFetch } from "../esp/resend.js";
+import type { EmailProvider, EspProviderKey } from "../esp/types.js";
 import type { FetchLike } from "./api.js";
+
+/** The email provider's seams: tests pass a mock provider (and a fake fetch); production builds Resend over the host's guarded fetch. */
+export interface EspEnv {
+  /** HTTP for the provider API; the host's `ctx.http.fetch` when absent. */
+  fetch?: HttpFetch;
+  /** Builds the provider from the saved API key; Resend when absent. */
+  provider?: (key: EspProviderKey, apiKey: string) => EmailProvider;
+}
 
 /** Everything the Gmail logic needs; tests swap the store and fetch. */
 export interface Env {
@@ -16,6 +26,8 @@ export interface Env {
   tokenCache: Map<string, { token: string; expiresAt: number }>;
   /** DNS over HTTPS for the sender domain checks; the public resolvers through the host's guarded fetch when absent (tests pass a fake). */
   dns?: DnsResolver;
+  /** The email provider's seams (see `EspEnv`). */
+  esp?: EspEnv;
 }
 
 export function createEnv(ctx: PluginContext, store: GmailStore, overrides: Partial<Omit<Env, "ctx" | "store">> = {}): Env {
@@ -27,6 +39,7 @@ export function createEnv(ctx: PluginContext, store: GmailStore, overrides: Part
     now: overrides.now ?? (() => Date.now()),
     tokenCache: overrides.tokenCache ?? new Map(),
     dns: overrides.dns,
+    esp: overrides.esp,
   };
 }
 

@@ -6,6 +6,8 @@
  */
 import { randomUUID } from "node:crypto";
 import type { MailAddress, MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
+import type { EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "./esp/types.js";
+import { ESP_DAY_FIELDS } from "./esp/types.js";
 import { erasureHash, markerEmail } from "./hash.js";
 import type {
   AccountRow,
@@ -70,6 +72,48 @@ export type AccountPatch = Partial<{
   alert_issue_id: string | null;
   is_default: boolean;
 }>;
+
+/** What can change on a provider domain after it exists. */
+export type EspDomainPatch = Partial<{
+  status: EspDomainRow["status"];
+  records: EspDomainRow["records"];
+  return_path_host: string | null;
+  dkim_selector: string | null;
+  spf_include: string | null;
+  client_kind: string | null;
+  client_ref: string | null;
+  account_id: string | null;
+  verified_at: string | null;
+  checked_at: string | null;
+  verify_asked_at: string | null;
+  warmup_exempt: boolean;
+  daily_cap_override: number | null;
+  reputation: Record<string, unknown> | null;
+}>;
+
+const ESP_DOMAIN_PATCH_CASTS: Record<keyof EspDomainPatch, string> = {
+  status: "",
+  records: "::jsonb",
+  return_path_host: "",
+  dkim_selector: "",
+  spf_include: "",
+  client_kind: "",
+  client_ref: "",
+  account_id: "",
+  verified_at: "::timestamptz",
+  checked_at: "::timestamptz",
+  verify_asked_at: "::timestamptz",
+  warmup_exempt: "::boolean",
+  daily_cap_override: "::int",
+  reputation: "::jsonb",
+};
+
+const ESP_DOMAIN_COLUMNS =
+  "company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at, verify_asked_at, first_sent_at, last_sent_at, warmup_exempt, daily_cap_override, reputation, created_at, updated_at";
+
+const ESP_DAY_COLUMNS = "company_id, domain, day, sent, delivered, hard_bounces, soft_bounces, complaints, opened, clicked, failed";
+
+const HEALTH_COLUMNS = "company_id, email, soft_bounces, first_soft_at, last_soft_at, backoff_until";
 
 export interface SentFields {
   gmailMessageId: string;
@@ -173,6 +217,43 @@ export interface GmailStore {
   getDomainCheck(companyId: string, domain: string): Promise<DomainCheckRow | null>;
   listDomainChecks(companyId: string): Promise<DomainCheckRow[]>;
   upsertDomainCheck(row: DomainCheckRow): Promise<void>;
+  // email provider (send-only accounts, their domains, daily counts and webhook events)
+  /** A send-only account for a provider domain: pending until the domain is verified. */
+  insertEspAccount(row: { id: string; companyId: string; provider: string; address: string; status: "pending" | "connected"; fromName: string | null; replyTo: string | null; clientKind: string | null; clientRef: string | null; createdBy: string | null }): Promise<void>;
+  setAccountStatus(companyId: string, id: string, status: AccountRow["status"]): Promise<void>;
+  setAccountReplyTo(companyId: string, id: string, replyTo: string | null): Promise<void>;
+  getEspDomain(companyId: string, domain: string): Promise<EspDomainRow | null>;
+  listEspDomains(companyId: string): Promise<EspDomainRow[]>;
+  /** Creates the row, or refreshes what the provider says about it; never touches the send history or a person's settings. */
+  upsertEspDomain(row: EspDomainRow): Promise<void>;
+  patchEspDomain(companyId: string, domain: string, patch: EspDomainPatch): Promise<void>;
+  /** Takes `count` recipients of the day's cap in one step. `cap` null counts without limiting. False when the cap would be passed. */
+  reserveEspSends(companyId: string, domain: string, day: string, count: number, cap: number | null): Promise<boolean>;
+  releaseEspSends(companyId: string, domain: string, day: string, count: number): Promise<void>;
+  /** A message went out: the domain's last send, and its first (day one of the warm-up) when it had none or went cold. */
+  noteEspSend(companyId: string, domain: string, atIso: string, restartWarmup: boolean): Promise<void>;
+  espDayRows(companyId: string, domain: string, sinceDay: string): Promise<EspDayRow[]>;
+  bumpEspDay(companyId: string, domain: string, day: string, field: EspDayField, count: number): Promise<void>;
+  /** Records a webhook delivery once. False when it (or the same message and kind) was seen before. */
+  recordEspEvent(input: EspEventInput): Promise<boolean>;
+  /** Takes a delivery back out when applying it failed, so the provider's retry applies it. */
+  forgetEspEvent(companyId: string, eventId: string): Promise<void>;
+  /** Retention: this company's delivery events received before `beforeIso` and daily counts before `beforeDay` (a UTC day). */
+  purgeEspHistory(companyId: string, beforeIso: string, beforeDay: string): Promise<{ events: number; days: number }>;
+  recipientHealth(companyId: string, emails: string[]): Promise<RecipientHealthRow[]>;
+  /** Counts a soft bounce (soft bounces older than the window are forgotten) and returns the address's row. */
+  recordSoftBounce(companyId: string, email: string, atIso: string, windowDays: number): Promise<RecipientHealthRow>;
+  setBackoff(companyId: string, email: string, untilIso: string | null): Promise<void>;
+  clearRecipientHealth(companyId: string, email: string): Promise<void>;
+  sendByProviderMessage(companyId: string, provider: string, providerMessageId: string): Promise<SendRow | null>;
+  markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }): Promise<void>;
+  setSendDelivery(companyId: string, key: string, status: string, detail: Record<string, unknown>): Promise<void>;
+  /** Merges notes into a send's `delivery` detail WITHOUT touching its `delivery_status` (which only the provider's events move). A key set to null is cleared. */
+  patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>): Promise<void>;
+  /** A draft the email provider took: sent, with no Gmail ids. */
+  markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }): Promise<void>;
+  /** The provider events and soft-bounce rows about these addresses (erasure). */
+  eraseEspRecipients(companyId: string, emails: string[]): Promise<number>;
   // erasure
   crmContactEmails(companyId: string, contactId: string): Promise<string[]>;
   messagesInvolving(companyId: string, emails: string[]): Promise<Array<{ id: string; account_id: string; gmail_thread_id: string | null; status: string; direction: string }>>;
@@ -193,13 +274,13 @@ export interface GmailStore {
 }
 
 const ACCOUNT_COLUMNS =
-  "id, company_id, provider, address, status, token_sealed, token_expires_at, scopes, history_id, last_sync_at, last_error, sync_stats, connected_by_user_id, connected_at, alert_issue_id, is_default, label_ids, owner_user_id, client_kind, client_ref, from_name, created_at";
+  "id, company_id, provider, address, status, token_sealed, token_expires_at, scopes, history_id, last_sync_at, last_error, sync_stats, connected_by_user_id, connected_at, alert_issue_id, is_default, label_ids, owner_user_id, client_kind, client_ref, from_name, reply_to, created_at";
 
 const MESSAGE_COLUMNS =
   "id, company_id, account_id, subject, body, direction, status, created_at, read_at, gmail_message_id, gmail_thread_id, rfc_message_id, in_reply_to, refs, from_addr, to_addrs, cc_addrs, bcc_addrs, snippet, labels, attachments, bulk, received_at, triage, triaged_at, category, urgency, needs_reply, phishing, client_kind, client_ref, reply_to, sent_context, send_key, draft, send_error, bounce, reply_to_addr, map_state, map_id";
 
 const SEND_COLUMNS =
-  "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at, skipped";
+  "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at, skipped, provider, provider_message_id, delivery_status, delivery";
 
 const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, sender_key, email_hash, erased_at, created_at, updated_at";
 
@@ -250,6 +331,7 @@ function normaliseAccount(row: AccountRow): AccountRow {
     client_kind: row.client_kind ?? null,
     client_ref: row.client_ref ?? null,
     from_name: row.from_name ?? null,
+    reply_to: row.reply_to ?? null,
   };
 }
 
@@ -282,6 +364,10 @@ function normaliseSend(row: SendRow): SendRow {
     updated_at: iso(row.updated_at) ?? "",
     to_addrs: row.to_addrs ?? [],
     skipped: row.skipped ?? [],
+    provider: row.provider ?? null,
+    provider_message_id: row.provider_message_id ?? null,
+    delivery_status: row.delivery_status ?? null,
+    delivery: row.delivery ?? {},
   };
 }
 
@@ -298,6 +384,27 @@ function normaliseDomainCheck(row: DomainCheckRow): DomainCheckRow {
     status_since: iso(row.status_since) ?? "",
     dmarc_none_since: iso(row.dmarc_none_since),
   };
+}
+
+function normaliseEspDomain(row: EspDomainRow): EspDomainRow {
+  return {
+    ...row,
+    records: Array.isArray(row.records) ? row.records : [],
+    verified_at: iso(row.verified_at),
+    checked_at: iso(row.checked_at),
+    verify_asked_at: iso(row.verify_asked_at),
+    first_sent_at: iso(row.first_sent_at),
+    last_sent_at: iso(row.last_sent_at),
+    warmup_exempt: Boolean(row.warmup_exempt),
+    daily_cap_override: row.daily_cap_override == null ? null : Number(row.daily_cap_override),
+    reputation: row.reputation ?? null,
+    created_at: iso(row.created_at) ?? "",
+    updated_at: iso(row.updated_at) ?? "",
+  };
+}
+
+function normaliseHealth(row: RecipientHealthRow): RecipientHealthRow {
+  return { ...row, soft_bounces: Number(row.soft_bounces), first_soft_at: iso(row.first_soft_at) ?? "", last_soft_at: iso(row.last_soft_at) ?? "", backoff_until: iso(row.backoff_until) };
 }
 
 function normaliseMap(row: ClientMapRow): ClientMapRow {
@@ -1057,7 +1164,7 @@ export class SqlStore implements GmailStore {
     let changed = 0;
     for (let at = 0; at < keys.length; at += 500) {
       const res = await this.db.execute(
-        `UPDATE ${this.t("send_requests")} SET to_addrs = '[]'::jsonb, subject = '[erased on request]', skipped = '[]'::jsonb,
+        `UPDATE ${this.t("send_requests")} SET to_addrs = '[]'::jsonb, subject = '[erased on request]', skipped = '[]'::jsonb, delivery = '{}'::jsonb,
            error = CASE WHEN error IS NULL THEN NULL ELSE '[erased on request]' END, request = jsonb_build_object('key', key, 'erased', true), updated_at = now()
           WHERE company_id = $1 AND key = ANY(${textArray(2)})`,
         [companyId, json(keys.slice(at, at + 500))],
@@ -1117,6 +1224,216 @@ export class SqlStore implements GmailStore {
       [companyId],
     );
     return new Map(rows.map((row) => [row.email_hash, iso(row.erased_at) ?? ""]));
+  }
+
+  // ── email provider ──────────────────────────────────────────────────────
+
+  async insertEspAccount(row: { id: string; companyId: string; provider: string; address: string; status: "pending" | "connected"; fromName: string | null; replyTo: string | null; clientKind: string | null; clientRef: string | null; createdBy: string | null }): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO ${this.t("accounts")} (id, company_id, provider, address, status, owner_user_id, client_kind, client_ref, from_name, reply_to, connected_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $5::text = 'connected' THEN now() ELSE NULL END)`,
+      [row.id, row.companyId, row.provider, row.address, row.status, row.createdBy, row.clientRef ? row.clientKind : null, row.clientRef, row.fromName, row.replyTo],
+    );
+  }
+
+  async setAccountStatus(companyId: string, id: string, status: AccountRow["status"]): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("accounts")} SET status = $3, connected_at = CASE WHEN $3::text = 'connected' AND connected_at IS NULL THEN now() ELSE connected_at END, updated_at = now()
+        WHERE id = $1 AND company_id = $2`,
+      [id, companyId, status],
+    );
+  }
+
+  async setAccountReplyTo(companyId: string, id: string, replyTo: string | null): Promise<void> {
+    await this.db.execute(`UPDATE ${this.t("accounts")} SET reply_to = $3, updated_at = now() WHERE id = $1 AND company_id = $2`, [id, companyId, replyTo]);
+  }
+
+  async getEspDomain(companyId: string, domain: string): Promise<EspDomainRow | null> {
+    const rows = await this.db.query<EspDomainRow>(`SELECT ${ESP_DOMAIN_COLUMNS} FROM ${this.t("esp_domains")} WHERE company_id = $1 AND domain = $2`, [companyId, domain.toLowerCase()]);
+    return rows[0] ? normaliseEspDomain(rows[0]) : null;
+  }
+
+  async listEspDomains(companyId: string): Promise<EspDomainRow[]> {
+    const rows = await this.db.query<EspDomainRow>(`SELECT ${ESP_DOMAIN_COLUMNS} FROM ${this.t("esp_domains")} WHERE company_id = $1 ORDER BY domain`, [companyId]);
+    return rows.map(normaliseEspDomain);
+  }
+
+  async upsertEspDomain(row: EspDomainRow): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO ${this.t("esp_domains")} (company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz, $16::timestamptz)
+       ON CONFLICT (company_id, domain) DO UPDATE SET provider_domain_id = EXCLUDED.provider_domain_id, region = EXCLUDED.region, status = EXCLUDED.status, records = EXCLUDED.records,
+         return_path_host = EXCLUDED.return_path_host, dkim_selector = EXCLUDED.dkim_selector, spf_include = EXCLUDED.spf_include,
+         verified_at = COALESCE(EXCLUDED.verified_at, ${this.t("esp_domains")}.verified_at), checked_at = EXCLUDED.checked_at, updated_at = now()`,
+      [
+        row.company_id,
+        row.domain.toLowerCase(),
+        row.provider,
+        row.provider_domain_id,
+        row.region,
+        row.status,
+        json(row.records),
+        row.return_path_host,
+        row.dkim_selector,
+        row.spf_include,
+        row.client_ref ? row.client_kind : null,
+        row.client_ref,
+        row.account_id,
+        row.created_by,
+        row.verified_at,
+        row.checked_at,
+      ],
+    );
+  }
+
+  async patchEspDomain(companyId: string, domain: string, patch: EspDomainPatch): Promise<void> {
+    const sets: string[] = [];
+    const params: unknown[] = [companyId, domain.toLowerCase()];
+    for (const [key, value] of Object.entries(patch) as Array<[keyof EspDomainPatch, unknown]>) {
+      if (!(key in ESP_DOMAIN_PATCH_CASTS) || value === undefined) continue;
+      const cast = ESP_DOMAIN_PATCH_CASTS[key];
+      params.push(cast === "::jsonb" ? json(value) : value);
+      sets.push(`${key} = $${params.length}${cast}`);
+    }
+    if (sets.length === 0) return;
+    await this.db.execute(`UPDATE ${this.t("esp_domains")} SET ${sets.join(", ")}, updated_at = now() WHERE company_id = $1 AND domain = $2`, params);
+  }
+
+  async reserveEspSends(companyId: string, domain: string, day: string, count: number, cap: number | null): Promise<boolean> {
+    // One statement, so two sends at once cannot both pass the cap: the first insert, or the update, only happens while the day stays within it.
+    const res = await this.db.execute(
+      `INSERT INTO ${this.t("esp_domain_days")} AS d (company_id, domain, day, sent)
+       SELECT $1::text, $2::text, $3::text, $4::int WHERE $5::int IS NULL OR $4::int <= $5::int
+       ON CONFLICT (company_id, domain, day) DO UPDATE SET sent = d.sent + $4::int WHERE $5::int IS NULL OR d.sent + $4::int <= $5::int`,
+      [companyId, domain.toLowerCase(), day, count, cap],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async releaseEspSends(companyId: string, domain: string, day: string, count: number): Promise<void> {
+    await this.db.execute(`UPDATE ${this.t("esp_domain_days")} SET sent = GREATEST(sent - $4::int, 0) WHERE company_id = $1 AND domain = $2 AND day = $3`, [companyId, domain.toLowerCase(), day, count]);
+  }
+
+  async noteEspSend(companyId: string, domain: string, atIso: string, restartWarmup: boolean): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("esp_domains")} SET first_sent_at = CASE WHEN first_sent_at IS NULL OR $3::boolean THEN $4::timestamptz ELSE first_sent_at END, last_sent_at = $4::timestamptz, updated_at = now()
+        WHERE company_id = $1 AND domain = $2`,
+      [companyId, domain.toLowerCase(), restartWarmup, atIso],
+    );
+  }
+
+  async espDayRows(companyId: string, domain: string, sinceDay: string): Promise<EspDayRow[]> {
+    const rows = await this.db.query<EspDayRow>(
+      `SELECT ${ESP_DAY_COLUMNS} FROM ${this.t("esp_domain_days")} WHERE company_id = $1 AND domain = $2 AND day >= $3 ORDER BY day`,
+      [companyId, domain.toLowerCase(), sinceDay],
+    );
+    return rows.map((row) => ({ ...row, sent: Number(row.sent), delivered: Number(row.delivered), hard_bounces: Number(row.hard_bounces), soft_bounces: Number(row.soft_bounces), complaints: Number(row.complaints), opened: Number(row.opened), clicked: Number(row.clicked), failed: Number(row.failed) }));
+  }
+
+  async bumpEspDay(companyId: string, domain: string, day: string, field: EspDayField, count: number): Promise<void> {
+    // The column comes from a fixed list, never from the caller's text.
+    if (!ESP_DAY_FIELDS.includes(field)) throw new Error("Unknown day counter");
+    await this.db.execute(
+      `INSERT INTO ${this.t("esp_domain_days")} AS d (company_id, domain, day, ${field}) VALUES ($1, $2, $3, $4::int)
+       ON CONFLICT (company_id, domain, day) DO UPDATE SET ${field} = d.${field} + $4::int`,
+      [companyId, domain.toLowerCase(), day, count],
+    );
+  }
+
+  async recordEspEvent(input: EspEventInput): Promise<boolean> {
+    const res = await this.db.execute(
+      `INSERT INTO ${this.t("esp_events")} (company_id, event_id, dedupe_key, provider, event_type, email_id, recipient, domain, send_key, detail)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+       ON CONFLICT DO NOTHING`,
+      [input.companyId, input.eventId.slice(0, 200), input.dedupeKey.slice(0, 400), input.provider, input.type.slice(0, 80), input.emailId, input.recipient.toLowerCase(), input.domain, input.sendKey, json(input.detail)],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async forgetEspEvent(companyId: string, eventId: string): Promise<void> {
+    await this.db.execute(`DELETE FROM ${this.t("esp_events")} WHERE company_id = $1 AND event_id = $2`, [companyId, eventId.slice(0, 200)]);
+  }
+
+  async purgeEspHistory(companyId: string, beforeIso: string, beforeDay: string): Promise<{ events: number; days: number }> {
+    const events = await this.db.execute(`DELETE FROM ${this.t("esp_events")} WHERE company_id = $1 AND received_at < $2::timestamptz`, [companyId, beforeIso]);
+    const days = await this.db.execute(`DELETE FROM ${this.t("esp_domain_days")} WHERE company_id = $1 AND day < $2`, [companyId, beforeDay]);
+    return { events: events.rowCount ?? 0, days: days.rowCount ?? 0 };
+  }
+
+  async recipientHealth(companyId: string, emails: string[]): Promise<RecipientHealthRow[]> {
+    const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (wanted.length === 0) return [];
+    const rows = await this.db.query<RecipientHealthRow>(
+      `SELECT ${HEALTH_COLUMNS} FROM ${this.t("esp_recipient_health")} WHERE company_id = $1 AND email = ANY(${textArray(2)})`,
+      [companyId, json(wanted)],
+    );
+    return rows.map(normaliseHealth);
+  }
+
+  async recordSoftBounce(companyId: string, email: string, atIso: string, windowDays: number): Promise<RecipientHealthRow> {
+    const address = email.trim().toLowerCase();
+    await this.db.execute(
+      `INSERT INTO ${this.t("esp_recipient_health")} AS h (company_id, email, soft_bounces, first_soft_at, last_soft_at) VALUES ($1, $2, 1, $3::timestamptz, $3::timestamptz)
+       ON CONFLICT (company_id, email) DO UPDATE SET
+         soft_bounces = CASE WHEN h.last_soft_at < $3::timestamptz - make_interval(days => $4::int) THEN 1 ELSE h.soft_bounces + 1 END,
+         first_soft_at = CASE WHEN h.last_soft_at < $3::timestamptz - make_interval(days => $4::int) THEN $3::timestamptz ELSE h.first_soft_at END,
+         last_soft_at = $3::timestamptz`,
+      [companyId, address, atIso, windowDays],
+    );
+    const rows = await this.recipientHealth(companyId, [address]);
+    return rows[0] ?? { company_id: companyId, email: address, soft_bounces: 1, first_soft_at: atIso, last_soft_at: atIso, backoff_until: null };
+  }
+
+  async setBackoff(companyId: string, email: string, untilIso: string | null): Promise<void> {
+    await this.db.execute(`UPDATE ${this.t("esp_recipient_health")} SET backoff_until = $3::timestamptz WHERE company_id = $1 AND email = $2`, [companyId, email.trim().toLowerCase(), untilIso]);
+  }
+
+  async clearRecipientHealth(companyId: string, email: string): Promise<void> {
+    await this.db.execute(`DELETE FROM ${this.t("esp_recipient_health")} WHERE company_id = $1 AND email = $2`, [companyId, email.trim().toLowerCase()]);
+  }
+
+  async sendByProviderMessage(companyId: string, provider: string, providerMessageId: string): Promise<SendRow | null> {
+    const rows = await this.db.query<SendRow>(
+      `SELECT ${SEND_COLUMNS} FROM ${this.t("send_requests")} WHERE company_id = $1 AND provider = $2 AND provider_message_id = $3 LIMIT 1`,
+      [companyId, provider, providerMessageId],
+    );
+    return rows[0] ? normaliseSend(rows[0]) : null;
+  }
+
+  async markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("send_requests")} SET status = 'sent', permanent = false, error = NULL, provider = $2, provider_message_id = $3, account_id = $4, from_address = $5,
+         skipped = $6::jsonb, sent_at = now(), updated_at = now()
+        WHERE key = $1`,
+      [key, fields.provider, fields.providerMessageId, fields.accountId, fields.fromAddress, json(fields.skipped ?? [])],
+    );
+  }
+
+  async setSendDelivery(companyId: string, key: string, status: string, detail: Record<string, unknown>): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("send_requests")} SET delivery_status = $3, delivery = delivery || $4::jsonb, updated_at = now() WHERE company_id = $1 AND key = $2`,
+      [companyId, key, status, json(detail)],
+    );
+  }
+
+  async patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>): Promise<void> {
+    await this.db.execute(`UPDATE ${this.t("send_requests")} SET delivery = delivery || $3::jsonb, updated_at = now() WHERE company_id = $1 AND key = $2`, [companyId, key, json(detail)]);
+  }
+
+  async markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("messages")} SET status = 'sent', from_addr = $3::jsonb, sent_context = $4::jsonb, send_key = $5, send_error = NULL, received_at = now(), triaged_at = now(), updated_at = now()
+        WHERE id = $1 AND company_id = $2`,
+      [id, companyId, json({ email: fields.fromAddress }), json(fields.context), fields.sendKey],
+    );
+  }
+
+  async eraseEspRecipients(companyId: string, emails: string[]): Promise<number> {
+    const wanted = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (wanted.length === 0) return 0;
+    const events = await this.db.execute(`DELETE FROM ${this.t("esp_events")} WHERE company_id = $1 AND recipient = ANY(${textArray(2)})`, [companyId, json(wanted)]);
+    const health = await this.db.execute(`DELETE FROM ${this.t("esp_recipient_health")} WHERE company_id = $1 AND email = ANY(${textArray(2)})`, [companyId, json(wanted)]);
+    return (events.rowCount ?? 0) + (health.rowCount ?? 0);
   }
 
   // ── delegations, drafts, templates (existing tools) ─────────────────────

@@ -27,6 +27,13 @@
  *   add, in order, and what the agent does after.
  *
  * Nothing here edits DNS. A failed lookup is `unreadable`, never "missing".
+ *
+ * A domain registered at the email provider (0.6.0) is judged on what the provider needs, not on what Gmail needs:
+ * its SPF is at the provider's return-path host (`send.<domain>`, an MX and a TXT), its DKIM key at the provider's
+ * selector (`resend._domainkey.<domain>`), and DMARC is read as usual. A domain with no Gmail mailbox is not asked for
+ * an MX or an SPF record of its own. The last 7 days of what the domain sent and what bounced or drew complaints are
+ * merged into the stored report as problems (`esp_bounce_rate`, `esp_complaint_rate`, which hold marketing back), so
+ * the Cockpit, `mail.domain.health` and the Mailbox's own sender check read one answer.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { type HealthCheck } from "@partnersinbiz/pib-plugin-kit";
@@ -35,6 +42,8 @@ import type { GmailStore } from "./db.js";
 import { errorMessage } from "./gmail/env.js";
 import { isFreeMailDomain } from "./free-mail.js";
 import type { AccountRow, DomainCheckRow, DomainStatus } from "./gmail/types.js";
+import { isEspProvider, type ProviderDomainStatus } from "./esp/types.js";
+import { REPUTATION_WINDOW_DAYS, reputationOf, utcDay, DAY_MS, type ReputationReport } from "./esp/warmup.js";
 
 export const DOMAIN_HEALTH_EVENT = "mail.domain.health";
 /** DMARC `p=none` is a monitoring step; after this many days of sending it is a warning. */
@@ -56,6 +65,8 @@ export interface DomainProblem {
   message: string;
   /** What to do, one or two sentences. */
   fix: string;
+  /** Set on a problem that holds MARKETING back from this domain (a bad reputation); the others, when `bad`, hold every send back. */
+  blocks?: "marketing";
 }
 
 export interface MxReport {
@@ -101,6 +112,27 @@ export interface DmarcReport {
   inheritedFrom: string | null;
 }
 
+/** What the email provider needs of a domain, read from DNS. */
+export interface EspReport {
+  providerStatus: ProviderDomainStatus;
+  /** The return-path host the provider's SPF and MX records are at. */
+  returnPathHost: string;
+  spf: SpfReport;
+  /** The provider's include is in the SPF record. */
+  spfAuthorisesProvider: boolean;
+  mx: MxReport;
+  dkim: DkimReport;
+  selector: string;
+}
+
+/** What `checkDomain` needs to know about a provider domain. */
+export interface EspCheck {
+  returnPathHost: string | null;
+  dkimSelector: string | null;
+  spfInclude: string | null;
+  providerStatus: ProviderDomainStatus;
+}
+
 export interface DomainReport {
   domain: string;
   checkedAt: string;
@@ -116,6 +148,8 @@ export interface DomainReport {
   unreadable: boolean;
   /** `dig` commands to run by hand when part of the DNS could not be read. */
   manual: string[];
+  /** Present for a domain registered at the email provider. */
+  esp?: EspReport | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +322,10 @@ async function readDmarc(resolver: DnsResolver, domain: string): Promise<DmarcRe
 }
 
 export interface CheckOptions {
+  /** The domain is registered at the email provider: judge it on the provider's records. */
+  esp?: EspCheck | null;
+  /** The last 7 days of what the domain sent (merged in as problems). */
+  reputation?: ReputationReport | null;
   selectors?: string[];
   now?: number;
   /** Whether a mailbox receives mail at this domain (a missing MX is then bad, not only a warning). */
@@ -301,14 +339,39 @@ export interface CheckOptions {
 
 /** Reads the DNS of one domain and judges it. Never throws: a failed lookup is `unreadable`. */
 export async function checkDomain(resolver: DnsResolver, domain: string, options: CheckOptions = {}): Promise<DomainReport> {
-  const selectors = options.selectors?.length ? options.selectors : [...DEFAULT_DKIM_SELECTORS];
-  const [mx, spf, dkim, dmarc] = await Promise.all([
+  const esp = options.esp ?? null;
+  const espOnly = esp !== null && options.gmail !== true;
+  const espSelector = esp?.dkimSelector ?? "resend";
+  // A domain only the provider sends for has one DKIM selector worth reading; the usual list is for a domain with a mail provider of its own.
+  const selectors = espOnly ? [espSelector] : options.selectors?.length ? options.selectors : [...DEFAULT_DKIM_SELECTORS];
+  const unreadableSpf = (): SpfReport => ({ state: "unreadable", record: null, all: null, lookups: 0, lookupsApprox: false, includes: [], authorisesGoogle: false });
+  const returnPathHost = esp ? esp.returnPathHost ?? `send.${domain}` : null;
+  const [mx, spf, dkim, dmarc, espReads] = await Promise.all([
     readMx(resolver, domain).catch((): MxReport => ({ state: "unreadable", hosts: [], provider: null })),
-    readSpf(resolver, domain).catch((): SpfReport => ({ state: "unreadable", record: null, all: null, lookups: 0, lookupsApprox: false, includes: [], authorisesGoogle: false })),
+    readSpf(resolver, domain).catch(unreadableSpf),
     readDkim(resolver, domain, selectors).catch((): DkimReport => ({ state: "unreadable", found: [], selectors: [] })),
     readDmarc(resolver, domain).catch((): DmarcReport => ({ state: "unreadable", record: null, policy: null, subdomainPolicy: null, pct: null, rua: [], inheritedFrom: null })),
+    esp && returnPathHost
+      ? Promise.all([
+        readSpf(resolver, returnPathHost).catch(unreadableSpf),
+        readMx(resolver, returnPathHost).catch((): MxReport => ({ state: "unreadable", hosts: [], provider: null })),
+        espOnly ? Promise.resolve(null) : readDkim(resolver, domain, [espSelector]).catch((): DkimReport => ({ state: "unreadable", found: [], selectors: [] })),
+      ])
+      : Promise.resolve(null),
   ]);
-  return evaluateDomain({ domain, mx, spf, dkim, dmarc, selectors }, options);
+  const espParts = esp && returnPathHost && espReads
+    ? {
+      providerStatus: esp.providerStatus,
+      returnPathHost,
+      spf: espReads[0],
+      spfAuthorisesProvider: esp.spfInclude ? espReads[0].includes.includes(esp.spfInclude) : espReads[0].state === "ok",
+      mx: espReads[1],
+      // When only the provider sends for the domain the one DKIM read above is the provider's.
+      dkim: espReads[2] ?? dkim,
+      selector: espSelector,
+    } satisfies EspReport
+    : null;
+  return evaluateDomain({ domain, mx, spf, dkim, dmarc, selectors, esp: espParts }, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -326,17 +389,26 @@ function earliest(...values: Array<string | null | undefined>): string | null {
   return times.length ? new Date(Math.min(...times)).toISOString() : null;
 }
 
-export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfReport; dkim: DkimReport; dmarc: DmarcReport; selectors: string[] }, options: CheckOptions = {}): DomainReport {
+export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfReport; dkim: DkimReport; dmarc: DmarcReport; selectors: string[]; esp?: EspReport | null }, options: CheckOptions = {}): DomainReport {
   const now = options.now ?? Date.now();
   const { domain, mx, spf, dkim, dmarc } = parts;
+  const esp = parts.esp ?? null;
+  // Only the email provider sends for this domain: Gmail's records (an MX, SPF with Google, a DKIM key at the usual selectors) are not asked of it.
+  const espOnly = esp !== null && options.gmail !== true;
   const problems: DomainProblem[] = [];
-  const add = (code: string, severity: Severity, message: string, fix: string) => problems.push({ code, severity, message, fix });
+  const add = (code: string, severity: Severity, message: string, fix: string, blocks?: "marketing") => problems.push({ code, severity, message, fix, ...(blocks ? { blocks } : {}) });
 
-  if (mx.state === "missing") {
+  if (esp) addEspProblems(esp, domain, add);
+
+  if (espOnly) {
+    // nothing of Gmail's is asked of a domain only the provider sends for
+  } else if (mx.state === "missing") {
     add("mx_missing", options.hasMailbox ? "bad" : "warn", `${domain} has no MX record, so mail to it (replies, bounces) has nowhere to go.`, `Add the mail provider's MX records at the domain's DNS provider (Google Workspace: ASPMX.L.GOOGLE.COM and its alternates, or the single SMTP.GOOGLE.COM record).`);
   }
 
-  if (spf.state === "missing") {
+  if (espOnly) {
+    // the provider's SPF is at its return-path host, judged above
+  } else if (spf.state === "missing") {
     add("spf_missing", "bad", `${domain} has no SPF record: receivers cannot tell that Google may send for it, and mail is more likely to land in spam or bounce.`, options.gmail === false ? "Add a TXT record at the domain: v=spf1 include:<your provider> ~all." : "Add a TXT record at the domain (host @): v=spf1 include:_spf.google.com ~all. Keep exactly one SPF record.");
   } else if (spf.state === "multiple") {
     add("spf_multiple", "bad", `${domain} has more than one SPF record. Receivers treat that as an error and ignore all of them.`, "Merge them into one record: one v=spf1 line with every include, ending in ~all or -all.");
@@ -352,7 +424,9 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
     }
   }
 
-  if (dkim.state === "missing") {
+  if (espOnly) {
+    // the provider's DKIM key is judged above
+  } else if (dkim.state === "missing") {
     add("dkim_missing", "bad", `No DKIM key was found at the usual selectors (${parts.selectors.slice(0, 6).join(", ")}…), so mail from ${domain} is not signed as the domain.`, "Google Workspace: Admin console → Apps → Google Workspace → Gmail → Authenticate email → pick the domain → Generate new record (2048-bit) → add the TXT record it shows → Start authentication. If a provider already signs with another selector, pass it as a selector when you check.");
   } else if (dkim.state === "ok") {
     const weak = dkim.selectors.filter((selector) => selector.state === "found" && selector.keyBits !== null && selector.keyBits < 2048);
@@ -373,14 +447,24 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
     add("dmarc_pct", "info", `DMARC enforces for only ${dmarc.pct}% of mail.`, "Raise pct to 100 once the reports are clean.");
   }
 
-  const unreadable = mx.state === "unreadable" || spf.state === "unreadable" || dkim.state === "unreadable" || dmarc.state === "unreadable";
+  for (const problem of options.reputation?.problems ?? []) add(problem.code, problem.severity, problem.message, problem.fix, problem.blocks);
+
+  const espUnreadable = esp !== null && (esp.spf.state === "unreadable" || esp.dkim.state === "unreadable");
+  const unreadable = espOnly
+    ? dmarc.state === "unreadable" || espUnreadable
+    : mx.state === "unreadable" || spf.state === "unreadable" || dkim.state === "unreadable" || dmarc.state === "unreadable" || espUnreadable;
   if (unreadable) {
     add("dns_unreadable", "warn", `Part of ${domain}'s DNS could not be read (the resolver did not answer), so those checks say nothing either way.`, "It is retried on the next daily run. To check by hand, run the dig commands in this report.");
   }
 
-  const allUnreadable = mx.state === "unreadable" && spf.state === "unreadable" && dkim.state === "unreadable" && dmarc.state === "unreadable";
+  const allUnreadable = espOnly
+    ? esp!.spf.state === "unreadable" && esp!.dkim.state === "unreadable" && dmarc.state === "unreadable"
+    : mx.state === "unreadable" && spf.state === "unreadable" && dkim.state === "unreadable" && dmarc.state === "unreadable";
   const status: DomainStatus = allUnreadable ? "unknown" : problems.some((p) => p.severity === "bad") ? "bad" : problems.some((p) => p.severity === "warn") ? "warn" : "healthy";
-  const sendReady = spf.state === "ok" && dkim.state === "ok" && (dmarc.state === "monitor" || dmarc.state === "enforced");
+  const dmarcPresent = dmarc.state === "monitor" || dmarc.state === "enforced";
+  const sendReady = espOnly
+    ? esp!.spf.state === "ok" && esp!.spfAuthorisesProvider && esp!.dkim.state === "ok" && dmarcPresent && esp!.providerStatus === "verified"
+    : spf.state === "ok" && dkim.state === "ok" && dmarcPresent && (esp ? esp.spf.state === "ok" && esp.dkim.state === "ok" && esp.providerStatus === "verified" : true);
   return {
     domain,
     checkedAt: new Date(now).toISOString(),
@@ -392,8 +476,31 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
     sendReady,
     problems,
     unreadable,
-    manual: unreadable ? digCommands(domain, parts.selectors) : [],
+    manual: unreadable ? [...digCommands(domain, parts.selectors), ...(esp ? [`dig +short TXT ${esp.returnPathHost}`, `dig +short MX ${esp.returnPathHost}`] : [])] : [],
+    ...(esp ? { esp } : {}),
   };
+}
+
+/** The problems of a provider domain: not verified yet, SPF and MX at the return-path host, the DKIM key. */
+function addEspProblems(esp: EspReport, domain: string, add: (code: string, severity: Severity, message: string, fix: string, blocks?: "marketing") => void): void {
+  if (esp.providerStatus === "failed") {
+    add("esp_verification_failed", "bad", `The email provider could not verify ${domain}: the DNS records it asked for are missing or wrong.`, "Compare the records at the DNS host with the ones the Mailbox lists for this domain (list-sending-domains), fix them, then check the domain again.");
+  } else if (esp.providerStatus !== "verified" && esp.providerStatus !== "unknown") {
+    add("esp_waiting_for_dns", "warn", `The email provider has not verified ${domain} yet: it is waiting for its DNS records.`, "Add the records the Mailbox lists for this domain (list-sending-domains) at the DNS host. DNS can take a few hours; the Mailbox asks the provider to look again every hour.");
+  }
+  if (esp.spf.state === "missing") {
+    add("esp_spf_missing", "bad", `${esp.returnPathHost} has no SPF record: mail from the email provider would fail SPF for ${domain}.`, `Add the provider's SPF TXT record at ${esp.returnPathHost} (list-sending-domains shows its value).`);
+  } else if (esp.spf.state === "multiple") {
+    add("esp_spf_multiple", "bad", `${esp.returnPathHost} has more than one SPF record, which receivers treat as an error.`, "Merge them into one record.");
+  } else if (esp.spf.state === "ok" && !esp.spfAuthorisesProvider) {
+    add("esp_spf_wrong", "bad", `The SPF record at ${esp.returnPathHost} does not include the email provider.`, "Replace it with the value the provider gave (list-sending-domains).");
+  }
+  if (esp.mx.state === "missing") {
+    add("esp_return_mx_missing", "warn", `${esp.returnPathHost} has no MX record, so bounces cannot come back to the provider and SPF will not align with ${domain}.`, `Add the provider's MX record at ${esp.returnPathHost} (list-sending-domains shows it).`);
+  }
+  if (esp.dkim.state === "missing") {
+    add("esp_dkim_missing", "bad", `No DKIM key was found at ${esp.selector}._domainkey.${domain}, so the provider's mail is not signed as ${domain}.`, `Add the provider's DKIM TXT record at ${esp.selector}._domainkey.${domain} (list-sending-domains shows its value).`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +518,8 @@ export interface SenderDomainHealth {
   sendReady: boolean;
   /** One line per problem, worst first. */
   reasons: string[];
+  /** The problems themselves (a send-side caller needs to tell what holds marketing back from what holds every send back). */
+  problems: Array<{ code: string; severity: Severity; message: string; blocks?: "marketing" }>;
   checkedAt: string | null;
   /** The last check is older than 48 hours. */
   stale: boolean;
@@ -432,11 +541,25 @@ export async function senderDomainHealth(store: Pick<GmailStore, "getDomainCheck
   const domain = sendingDomain(addressOrDomain) ?? addressOrDomain.trim().toLowerCase();
   const row = await store.getDomainCheck(companyId, domain);
   const report = row ? reportOf(row) : null;
-  if (!row || !report) return { domain, known: false, status: "unknown", healthy: false, sendReady: false, reasons: ["This domain has not been checked yet."], checkedAt: null, stale: true };
+  if (!row || !report) return { domain, known: false, status: "unknown", healthy: false, sendReady: false, reasons: ["This domain has not been checked yet."], problems: [], checkedAt: null, stale: true };
   const checked = Date.parse(row.checked_at);
   const stale = !Number.isFinite(checked) || now - checked > DOMAIN_CHECK_STALE_HOURS * 3_600_000;
-  const reasons = [...report.problems].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]).map((problem) => problem.message);
-  return { domain, known: true, status: row.status, healthy: row.status === "healthy", sendReady: Boolean(report.sendReady), reasons, checkedAt: row.checked_at, stale };
+  const sorted = [...report.problems].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  const reasons = sorted.map((problem) => problem.message);
+  const problems = sorted.map((problem) => ({ code: problem.code, severity: problem.severity, message: problem.message, ...(problem.blocks ? { blocks: problem.blocks } : {}) }));
+  return { domain, known: true, status: row.status, healthy: row.status === "healthy", sendReady: Boolean(report.sendReady), reasons, problems, checkedAt: row.checked_at, stale };
+}
+
+/** Problems of a domain's Gmail side (its own MX, its SPF with Google, a DKIM key at the usual selectors). They say nothing about mail the email provider signs and sends with its own records. */
+const GMAIL_SIDE_CODES: ReadonlySet<string> = new Set(["mx_missing", "spf_missing", "spf_multiple", "spf_plus_all", "spf_no_policy", "spf_lookups", "spf_not_google", "dkim_missing", "dkim_weak_key"]);
+
+/**
+ * Whether this problem holds back a send through the email provider: a bad DNS record of the provider's own (or DMARC) holds every
+ * send back, a bad bounce or complaint record holds only marketing back, and a Gmail-side problem of a domain that Gmail also uses
+ * (PiB's own domain has no Google SPF yet) holds nothing back, because the provider signs with its own records.
+ */
+export function holdsProviderSend(problem: Pick<SenderDomainHealth["problems"][number], "code" | "severity" | "blocks">, marketing: boolean): boolean {
+  return problem.severity === "bad" && !GMAIL_SIDE_CODES.has(problem.code) && (problem.blocks === "marketing" ? marketing : true);
 }
 
 /** The event other modules project (`plugin.partnersinbiz.mailbox.mail.domain.health`): ids and statuses, no mail content. */
@@ -477,8 +600,12 @@ export function domainHealthEvent(row: DomainCheckRow, mailboxes: string[]): Dom
 
 export interface SendingDomain {
   domain: string;
-  /** Mailboxes (addresses) at this domain. */
+  /** Addresses at this domain mail is sent from: Gmail mailboxes and the provider's send-only accounts. */
   mailboxes: string[];
+  /** A Gmail mailbox receives mail at this domain (a send-only account does not). */
+  receives?: boolean;
+  /** Registered at the email provider: judged on the provider's records. */
+  esp?: EspCheck | null;
   gmail: boolean;
   sendingSince: string | null;
   source: "account" | "manual";
@@ -487,14 +614,17 @@ export interface SendingDomain {
 }
 
 /** The domains a company sends from: its mailboxes' (never a free-mail domain) plus the ones watched on purpose. */
-export async function sendingDomains(store: Pick<GmailStore, "listAccounts" | "listDomainChecks">, companyId: string): Promise<SendingDomain[]> {
+export async function sendingDomains(store: Pick<GmailStore, "listAccounts" | "listDomainChecks"> & Partial<Pick<GmailStore, "listEspDomains">>, companyId: string): Promise<SendingDomain[]> {
   const byDomain = new Map<string, SendingDomain>();
   for (const account of (await store.listAccounts(companyId)) as AccountRow[]) {
     if (account.status === "disconnected") continue;
     const domain = sendingDomain(account.address);
     if (!domain || isFreeMailDomain(domain)) continue;
-    const entry = byDomain.get(domain) ?? { domain, mailboxes: [], gmail: false, sendingSince: null, source: "account" as const, clientKind: null, clientRef: null };
+    const entry = byDomain.get(domain) ?? { domain, mailboxes: [], receives: false, gmail: false, sendingSince: null, source: "account" as const, clientKind: null, clientRef: null };
     entry.mailboxes.push(account.address);
+    // A send-only account has no inbox: it does not make the domain one that receives mail.
+    const sendOnly = isEspProvider(account.provider);
+    entry.receives = Boolean(entry.receives) || !sendOnly;
     entry.gmail = entry.gmail || account.provider === "gmail";
     entry.sendingSince = earliest(entry.sendingSince, account.connected_at, account.created_at);
     entry.clientKind = entry.clientKind ?? account.client_kind;
@@ -503,7 +633,16 @@ export async function sendingDomains(store: Pick<GmailStore, "listAccounts" | "l
   }
   for (const row of await store.listDomainChecks(companyId)) {
     if (row.source !== "manual" || byDomain.has(row.domain)) continue;
-    byDomain.set(row.domain, { domain: row.domain, mailboxes: [], gmail: false, sendingSince: null, source: "manual", clientKind: row.client_kind, clientRef: row.client_ref });
+    byDomain.set(row.domain, { domain: row.domain, mailboxes: [], receives: false, gmail: false, sendingSince: null, source: "manual", clientKind: row.client_kind, clientRef: row.client_ref });
+  }
+  // A domain registered at the email provider is judged on the provider's records, whether or not a Gmail mailbox is on it too.
+  for (const row of store.listEspDomains ? await store.listEspDomains(companyId) : []) {
+    const entry = byDomain.get(row.domain) ?? { domain: row.domain, mailboxes: [], receives: false, gmail: false, sendingSince: row.created_at, source: "account" as const, clientKind: row.client_kind, clientRef: row.client_ref };
+    entry.esp = { returnPathHost: row.return_path_host, dkimSelector: row.dkim_selector, spfInclude: row.spf_include, providerStatus: row.status };
+    entry.sendingSince = earliest(entry.sendingSince, row.first_sent_at, row.created_at);
+    entry.clientKind = entry.clientKind ?? row.client_kind;
+    entry.clientRef = entry.clientRef ?? row.client_ref;
+    byDomain.set(row.domain, entry);
   }
   return [...byDomain.values()].sort((a, b) => a.domain.localeCompare(b.domain));
 }
@@ -519,14 +658,19 @@ export interface DomainRunEnv {
 export async function checkAndStore(env: DomainRunEnv, companyId: string, target: SendingDomain, options: { selectors?: string[]; announce?: boolean } = {}): Promise<DomainReport> {
   const existing = await env.store.getDomainCheck(companyId, target.domain);
   const now = env.now();
+  // A provider domain also carries the last 7 days of what it sent and what came back.
+  const reputation = target.esp ? reputationOf(await env.store.espDayRows(companyId, target.domain, utcDay(now - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS)), target.domain, now) : null;
   const report = await checkDomain(env.dns, target.domain, {
     selectors: options.selectors,
     now,
-    hasMailbox: target.mailboxes.length > 0,
+    hasMailbox: target.receives ?? target.mailboxes.length > 0,
     gmail: target.gmail,
+    esp: target.esp ?? null,
+    reputation,
     dmarcNoneSince: existing?.dmarc_none_since ?? null,
     sendingSince: target.sendingSince,
   });
+  if (reputation) await env.store.patchEspDomain(companyId, target.domain, { reputation: reputation as unknown as Record<string, unknown> }).catch(() => undefined);
   const nowIso = new Date(now).toISOString();
   const row: DomainCheckRow = {
     company_id: companyId,
@@ -554,6 +698,43 @@ export async function checkAndStore(env: DomainRunEnv, companyId: string, target
     }
   }
   return report;
+}
+
+/** Problem codes that come from a domain's sending record rather than its DNS. */
+export const REPUTATION_CODES: ReadonlySet<string> = new Set(["esp_bounce_rate", "esp_complaint_rate"]);
+
+/**
+ * Re-judges a provider domain's last 7 days (no DNS) and merges the result into its stored check. Called after each hard
+ * bounce or complaint, so a domain that has just crossed a limit is held back at once, not at tomorrow's daily check, and
+ * again when the daily job runs. When the set of reputation problems changes the check gets a new time (so the
+ * `mail.domain.health` event is new to the projections that keep the newest) and is announced.
+ */
+export async function applyReputation(env: DomainRunEnv, companyId: string, domain: string): Promise<{ reputation: ReputationReport; changed: boolean }> {
+  const now = env.now();
+  const rows = await env.store.espDayRows(companyId, domain, utcDay(now - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS));
+  const reputation = reputationOf(rows, domain, now);
+  await env.store.patchEspDomain(companyId, domain, { reputation: reputation as unknown as Record<string, unknown> });
+  const row = await env.store.getDomainCheck(companyId, domain);
+  const report = row ? reportOf(row) : null;
+  if (!row || !report) return { reputation, changed: false };
+  const before = report.problems.filter((problem) => REPUTATION_CODES.has(problem.code)).map((problem) => problem.code).sort().join(",");
+  const after = reputation.problems.map((problem) => problem.code).sort().join(",");
+  if (before === after) return { reputation, changed: false };
+  const problems: DomainProblem[] = [...report.problems.filter((problem) => !REPUTATION_CODES.has(problem.code)), ...reputation.problems];
+  const status: DomainStatus = row.status === "unknown" ? "unknown" : problems.some((p) => p.severity === "bad") ? "bad" : problems.some((p) => p.severity === "warn") ? "warn" : "healthy";
+  const nowIso = new Date(now).toISOString();
+  const next: DomainCheckRow = { ...row, status, result: { ...report, problems, status } as unknown as Record<string, unknown>, checked_at: nowIso, status_since: status === row.status ? row.status_since : nowIso };
+  await env.store.upsertDomainCheck(next);
+  const target = (await sendingDomains(env.store, companyId)).find((entry) => entry.domain === domain);
+  const event = domainHealthEvent(next, target?.mailboxes ?? []);
+  if (event) {
+    try {
+      await env.ctx.events.emit(DOMAIN_HEALTH_EVENT, companyId, event as unknown as Record<string, unknown>);
+    } catch (error) {
+      env.ctx.logger.info("mail.domain.health emit failed", { domain, error: errorMessage(error) });
+    }
+  }
+  return { reputation, changed: true };
 }
 
 /** Daily job body for one company: every sending domain. A failing domain never stops the others. */

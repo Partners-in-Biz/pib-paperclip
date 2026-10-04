@@ -104,7 +104,7 @@ describe("a one-click unsubscribe", () => {
 describe("the webhook in the worker", () => {
   it("is declared with its capability, answers a delivery without a token with nothing, and a good token through the host SQL guard", async () => {
     expect(manifest.capabilities).toContain("webhooks.receive");
-    expect(manifest.webhooks!.map((w) => w.endpointKey)).toEqual(["unsubscribe"]);
+    expect(manifest.webhooks!.map((w) => w.endpointKey)).toEqual(["resend", "unsubscribe"]);
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20), unsubscribe: { secret: SECRET } } });
     const executed: string[] = [];
     const db = {

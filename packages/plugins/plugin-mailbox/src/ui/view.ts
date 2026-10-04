@@ -137,3 +137,52 @@ export function domainFacts(row: { mx: string | null; spf: string | null; dkim: 
   const word = (state: string | null) => (state === null ? "not read" : state === "ok" || state === "enforced" ? "ok" : state === "monitor" ? "monitoring" : state);
   return `MX ${word(row.mx)} · SPF ${word(row.spf)} · DKIM ${word(row.dkim)} · DMARC ${row.dmarc === "none" ? "monitoring (p=none)" : row.dmarc === "quarantine" || row.dmarc === "reject" ? `p=${row.dmarc}` : word(row.dmarc)}`;
 }
+
+// ---------------------------------------------------------------------------
+// The email provider (0.6.0): sending domains and their limits
+// ---------------------------------------------------------------------------
+
+export interface EspDomainLike {
+  status: string;
+  ready: boolean;
+  cap: { cap: number; day: number | null; warming: boolean; source: string; sentToday: number; remaining: number };
+  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }> } | null;
+}
+
+/** Page wording for a provider domain: ready, waiting for DNS records, or its records are wrong. */
+export function espStatusLabel(row: Pick<EspDomainLike, "status" | "ready">): string {
+  if (row.ready) return "Ready to send";
+  if (row.status === "verified") return "Verified, account not connected";
+  if (row.status === "failed") return "Records wrong";
+  if (row.status === "temporary_failure") return "Could not read the DNS";
+  return "Waiting for DNS records";
+}
+
+export function espStatusTone(row: Pick<EspDomainLike, "status" | "ready">): "ok" | "warn" | "bad" | "neutral" {
+  if (row.ready) return "ok";
+  return row.status === "failed" ? "bad" : "warn";
+}
+
+/** "12 of 50 today · warm-up day 1", "300 of 300 today · set by a person", "0 of 10,000 today". */
+export function espCapLine(row: Pick<EspDomainLike, "cap">): string {
+  const { cap, sentToday, day, warming, source } = row.cap;
+  const used = `${sentToday.toLocaleString("en-ZA")} of ${cap.toLocaleString("en-ZA")} today`;
+  if (warming && day) return `${used} · warm-up day ${day} of 13`;
+  if (source === "override") return `${used} · set by a person`;
+  if (source === "established") return `${used} · marked as established`;
+  return used;
+}
+
+const percent = (rate: number | null) => (rate === null ? "0%" : `${(rate * 100).toFixed(rate < 0.01 ? 2 : 1)}%`);
+
+/** The last 7 days against the limits: "2 bounced (2.0%, limit 2%) · 0 complaints (0%, limit 0.1%) of 100 sent". */
+export function espReputationLine(row: Pick<EspDomainLike, "reputation">): string {
+  const rep = row.reputation;
+  if (!rep || rep.sent === 0) return "Nothing sent in the last 7 days";
+  return `${rep.hardBounces} bounced (${percent(rep.bounceRate)}, limit 2%) · ${rep.complaints} complaint${rep.complaints === 1 ? "" : "s"} (${percent(rep.complaintRate)}, limit 0.1%) of ${rep.sent.toLocaleString("en-ZA")} sent in 7 days`;
+}
+
+/** A DNS record as one line a person can read out or paste: `MX  send.updates.client.co.za  10  feedback-smtp...`. */
+export function dnsRecordLine(record: { type: string; host: string; priority: number | null; value: string }): string {
+  return [record.type, record.host, ...(record.priority != null ? [String(record.priority)] : []), record.value].join("  ");
+}

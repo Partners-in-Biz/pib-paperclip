@@ -142,6 +142,15 @@ describe("a mailbox that belongs to a client", () => {
     expect(await act("mailbox.set-default", { accountId: "acc-1" })).toEqual({ id: "acc-1", isDefault: true });
   });
 
+  it("a send-only provider address is never the default mailbox, even a connected company-owned one: the default stays a Gmail account", async () => {
+    const sendOnly = account("acc-esp", "hello@mail.partnersinbiz.online", { provider: "resend", token_sealed: null });
+    const { act, executed } = await boot({ accounts: [own, sendOnly] });
+    await expect(act("mailbox.set-default", { accountId: "acc-esp" })).rejects.toThrow(/send-only provider address is never the default mailbox.*the default is a Gmail account/);
+    expect(executed.some((e) => e.sql.includes("is_default = (id = $2)"))).toBe(false);
+    // The Gmail account still can.
+    expect(await act("mailbox.set-default", { accountId: "acc-1" })).toEqual({ id: "acc-1", isDefault: true });
+  });
+
   it("the page's list of clients for the pickers comes from the CRM copy", async () => {
     const { act } = await boot({ accounts: [own] });
     expect(await act("mailbox.crm-clients", {})).toEqual({ clients: [] });

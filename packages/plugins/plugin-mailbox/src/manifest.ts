@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
-import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
+import { DOMAIN_JOB_KEY, ESP_ENDPOINT, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -12,7 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Mailbox",
   description:
-    "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it.",
+    "The company's Gmail hub: connect Gmail, sync and triage the inbox, and send mail for every PiB plugin. Agents draft on delegated mailboxes; sending stays off unless the delegation allows it. Optionally a second, send-only way to send through an email provider (Resend) as a client's own verified domain.",
   author: "Partners in Biz",
   categories: ["connector"],
   instanceConfigSchema,
@@ -37,7 +37,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
     // The public one-click unsubscribe address (RFC 8058).
     "webhooks.receive",
-    // DNS over HTTPS for the sender domain checks.
+    // DNS over HTTPS for the sender domain checks, and the email provider's API (off until the owner switches it on).
     "http.outbound",
     "secrets.read-ref",
     "plugin.state.read",
@@ -70,6 +70,11 @@ const manifest: PaperclipPluginManifestV1 = {
     },
   ],
   webhooks: [
+    {
+      endpointKey: ESP_ENDPOINT,
+      displayName: "Email provider events",
+      description: "POST /api/plugins/partnersinbiz.mailbox/webhooks/resend: the email provider's delivery events (delivered, bounced, complained, delayed, failed, opened, clicked, domain changes), signed with Svix. A delivery is believed only when its signature matches a company's saved webhook signing secret (and is under five minutes old); anything else is refused and changes nothing.",
+    },
     {
       endpointKey: UNSUBSCRIBE_ENDPOINT,
       displayName: "One-click unsubscribe",

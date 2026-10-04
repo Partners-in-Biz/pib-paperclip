@@ -7,6 +7,7 @@ import { loadMailboxConfig, privateR2, r2Configured } from "./config.js";
 import { companyPrefix, delegationAsk } from "./delegations.js";
 import { sendingDomain } from "./dns.js";
 import { MailboxError } from "./domain.js";
+import { isEspProvider } from "./esp/types.js";
 import { ATTACHMENT_MAX_BYTES, decodeText, downloadAttachment, isTextAttachment, storeAttachment, TEXT_MAX_BYTES } from "./gmail/attachments.js";
 import type { Env } from "./gmail/env.js";
 import type { MessageRow } from "./gmail/types.js";
@@ -46,38 +47,49 @@ export async function listMailboxes(env: Env, companyId: string, agentId: string
   const accounts = await env.store.listAccounts(companyId);
   const fallback = await env.store.defaultAccount(companyId);
   const items = [];
-  const needsAccess = (await Promise.all(accounts.filter((a) => a.status !== "disconnected").map(async (a) => !(await delegation(env, a.id, agentId))?.canRead))).some(Boolean);
+  // A send-only account has no inbox to read, so nobody needs read access to it.
+  const needsAccess = (await Promise.all(accounts.filter((a) => a.status !== "disconnected" && !isEspProvider(a.provider)).map(async (a) => !(await delegation(env, a.id, agentId))?.canRead))).some(Boolean);
   const prefix = needsAccess ? await companyPrefix(env.ctx, companyId) : null;
   const name = needsAccess ? await agentLabel(env, companyId, agentId) : null;
   for (const account of accounts) {
     const grant = await delegation(env, account.id, agentId);
-    const gmail = Boolean(account.token_sealed) && (account.status === "connected" || account.status === "needs_reconnect");
+    const sendOnly = isEspProvider(account.provider);
+    const gmail = !sendOnly && Boolean(account.token_sealed) && (account.status === "connected" || account.status === "needs_reconnect");
     const domain = sendingDomain(account.address);
     const domainCheck = domain ? await env.store.getDomainCheck(companyId, domain).catch(() => null) : null;
     items.push({
       accountId: account.id,
       address: account.address,
       status: account.status,
+      /** `gmail`, or `email-provider`: a send-only address on a verified domain (no inbox, nothing to read). */
+      kind: sendOnly ? "email-provider" : "gmail",
       isDefault: fallback?.id === account.id,
       lastSyncAt: account.last_sync_at,
-      problem: account.status === "needs_reconnect"
-        ? "Gmail must be reconnected by a person on the Mailbox page."
-        : account.status === "disconnected"
-          ? "Disconnected."
-          : !gmail
-            ? "Not connected to Gmail: drafts are sent by a person."
-            : null,
+      replyTo: account.reply_to,
+      problem: sendOnly
+        ? account.status === "pending"
+          ? "Waiting for the domain's DNS records to be verified: list-sending-domains shows the records still to add."
+          : account.status === "disconnected"
+            ? "Disconnected."
+            : null
+        : account.status === "needs_reconnect"
+          ? "Gmail must be reconnected by a person on the Mailbox page."
+          : account.status === "disconnected"
+            ? "Disconnected."
+            : !gmail
+              ? "Not connected to Gmail: drafts are sent by a person."
+              : null,
       delegation: grant ? { read: grant.canRead, draft: grant.canDraft, send: grant.canSend } : null,
       mayRead: Boolean(grant?.canRead),
       mayDraft: Boolean(grant?.canDraft),
-      maySend: Boolean(grant?.canSend) && gmail && account.status === "connected",
+      maySend: Boolean(grant?.canSend) && (gmail || sendOnly) && account.status === "connected",
       /** The client this mailbox belongs to: it sends only that client's mail. Null: the company's own. */
       client: account.client_ref ? { kind: account.client_kind, ref: account.client_ref } : null,
       fromName: account.from_name,
       /** Mail authentication of the mailbox's domain from the last daily check (null: not checked, or a free-mail domain). */
       domainHealth: domainCheck ? { domain: domainCheck.domain, status: domainCheck.status, healthy: domainCheck.status === "healthy", checkedAt: domainCheck.checked_at } : null,
       /** No read access yet: pass this to partnersinbiz.cockpit:ask-owner; the owner's yes grants it and checks it, and you are woken with it in place. */
-      askToOwner: grant?.canRead || account.status === "disconnected" ? null : delegationAsk({ accountId: account.id, address: account.address, agentId, agentName: name, prefix }),
+      askToOwner: grant?.canRead || account.status === "disconnected" || sendOnly ? null : delegationAsk({ accountId: account.id, address: account.address, agentId, agentName: name, prefix }),
     });
   }
   const usable = items.some((item) => item.mayDraft || item.mayRead);

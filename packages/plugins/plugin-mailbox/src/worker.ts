@@ -45,7 +45,7 @@ import {
   type MailSendRequested,
   type RolesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
-import { gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig } from "./config.js";
+import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig, type LoadedConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
 import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
 import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
@@ -63,6 +63,10 @@ import {
   type DomainRunEnv,
   type SendingDomain,
 } from "./domain-health.js";
+import { addSendingDomain, refreshPendingDomains, refreshSendingDomain, sendingDomainView, dnsInstructions, type SendingDomainView } from "./esp/domains.js";
+import { readEspState } from "./esp/runtime.js";
+import { isEspProvider, type EspDomainRow } from "./esp/types.js";
+import { ESP_ENDPOINT, handleEspWebhook } from "./esp/webhook.js";
 import { eraseSubject, onConsentRecorded } from "./erasure.js";
 import { isFreeMailDomain } from "./free-mail.js";
 import { handleUnsubscribeWebhook, probeCompanies, probeUnsubscribeProxy, probeUrl } from "./unsubscribe.js";
@@ -145,6 +149,8 @@ const plugin = definePlugin({
     user("mailbox.set-default", async (companyId, _userId, params) => {
       const account = await requireStore().getAccount(companyId, requiredString(params, "accountId"));
       if (!account || account.status !== "connected") throw new MailboxError("Only a connected Gmail account can be the default");
+      // A send-only provider address is chosen by name or by the owner's "prefer the provider for invoices" setting; it is never the default mailbox.
+      if (isEspProvider(account.provider)) throw new MailboxError("A send-only provider address is never the default mailbox: the default is a Gmail account. To send invoices from the provider, set \"Mail the provider takes when no sender is named\" to transactional in the Mailbox settings.");
       if (account.client_ref) throw new MailboxError("A mailbox that belongs to a client is never the default sender: it sends only that client's mail");
       await requireStore().setDefaultAccount(companyId, account.id);
       return { id: account.id, isDefault: true };
@@ -159,6 +165,45 @@ const plugin = definePlugin({
     // A mailbox belongs to a client (or back to the company): it then sends only that client's mail, with its own opt-out list.
     user("mailbox.set-account-client", (companyId, _userId, params) => setAccountClient(companyId, params));
     user("mailbox.check-domain", (companyId, _userId, params) => checkSenderDomain(companyId, params));
+    // The email provider's sending domains: registered by a person here, or by an agent with add-sending-domain (both only hand out DNS records; nobody here edits DNS).
+    user("mailbox.add-sending-domain", async (companyId, userId, params) => {
+      const loaded = await loadMailboxConfig(ctx, companyId);
+      const kind = optionalString(params, "clientKind");
+      const { created, view } = await addSendingDomain(requireEnv(), companyId, {
+        domain: requiredString(params, "domain"),
+        fromAddress: optionalString(params, "fromAddress") ?? null,
+        fromName: optionalString(params, "fromName") ?? null,
+        replyTo: optionalString(params, "replyTo") ?? null,
+        clientKind: kind === "contact" ? "contact" : kind === "company" ? "company" : null,
+        clientRef: optionalString(params, "clientRef") ?? null,
+        region: optionalString(params, "region") ?? null,
+        createdBy: userId,
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+      });
+      return { created, ...view };
+    });
+    user("mailbox.sending-domains", (companyId, _userId, params) => sendingDomainsOverview(ctx, companyId, optionalString(params, "domain"), false));
+    user("mailbox.refresh-sending-domain", async (companyId, _userId, params) => {
+      const domain = requiredString(params, "domain");
+      const loaded = await loadMailboxConfig(ctx, companyId);
+      await refreshSendingDomain(requireEnv(), loaded, companyId, domain, { verify: true, force: true });
+      return sendingDomainsOverview(ctx, companyId, domain, false);
+    });
+    // Only a person decides that a domain is already established (no warm-up) or gives it a cap of its own: an agent must not lift its own limit.
+    user("mailbox.set-sending-domain", async (companyId, _userId, params) => {
+      const domain = sendingDomain(requiredString(params, "domain")) ?? "";
+      const row = await requireStore().getEspDomain(companyId, domain);
+      if (!row) throw new MailboxError(`${domain} is not a sending domain of the email provider`);
+      const patch: Parameters<SqlStore["patchEspDomain"]>[2] = {};
+      if (typeof params.warmupExempt === "boolean") patch.warmup_exempt = params.warmupExempt;
+      if ("dailyCap" in params) {
+        const cap = params.dailyCap === null || params.dailyCap === "" ? null : Number(params.dailyCap);
+        if (cap !== null && (!Number.isInteger(cap) || cap < 0 || cap > 1_000_000)) throw new MailboxError("dailyCap must be a whole number from 1 to 1000000, or empty to use the schedule");
+        patch.daily_cap_override = cap === 0 ? null : cap;
+      }
+      await requireStore().patchEspDomain(companyId, domain, patch);
+      return sendingDomainsOverview(ctx, companyId, domain, false);
+    });
     // "Check now" for the one-click unsubscribe link: the Mailbox posts to its own address and records whether the proxy passed the token on.
     user("mailbox.check-unsubscribe-proxy", (companyId) => checkUnsubscribeProxy(companyId));
     user("mailbox.client-maps", (companyId) => clientMapOverview(requireStore(), companyId));
@@ -240,6 +285,12 @@ const plugin = definePlugin({
   /** The public one-click unsubscribe address (RFC 8058). A bad or missing token changes nothing and says nothing. */
   async onWebhook(input: PluginWebhookInput): Promise<void> {
     if (!env) return;
+    // The email provider's delivery events: signed (Svix); a delivery that does not verify throws, so the host answers with an error and the provider retries.
+    if (input.endpointKey === ESP_ENDPOINT) {
+      const result = await handleEspWebhook(env, input);
+      env.ctx.logger.info("Provider webhook handled", { outcome: result.outcome });
+      return;
+    }
     const outcome = await handleUnsubscribeWebhook(env, input);
     env.ctx.logger.info("Unsubscribe webhook handled", { outcome });
   },
@@ -340,6 +391,26 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       const data = await removeClientMap(requireStore(), run.companyId, requiredString(body, "mapId"));
       return { content: data.removed ? "Mapping removed" : "No mapping with that id", data };
     }
+    if (name === "add-sending-domain") {
+      const e = requireEnv();
+      const loaded = await loadMailboxConfig(ctx, run.companyId);
+      const { created, view } = await addSendingDomain(e, run.companyId, {
+        domain: requiredString(body, "domain"),
+        fromAddress: optionalString(body, "fromAddress") ?? null,
+        fromName: optionalString(body, "fromName") ?? null,
+        replyTo: optionalString(body, "replyTo") ?? null,
+        clientKind: optionalString(body, "clientKind") === "contact" ? "contact" : optionalString(body, "clientKind") === "company" ? "company" : null,
+        clientRef: optionalString(body, "clientRef") ?? null,
+        region: optionalString(body, "region") ?? null,
+        createdBy: `agent:${run.agentId}`,
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+      });
+      return { content: `${view.domain}: ${view.ready ? "ready to send" : view.status === "verified" ? "verified" : "waiting for DNS records"}${created ? " (registered now)" : ""}`, data: { created, ...view } };
+    }
+    if (name === "list-sending-domains") {
+      const data = await sendingDomainsOverview(ctx, run.companyId, optionalString(body, "domain"), body.refresh === true);
+      return { content: `${data.domains.length} sending domain(s)`, data };
+    }
     if (name === "mail-status") {
       const row = await requireStore().getSend(run.companyId, requiredString(body, "key"));
       if (!row) return { content: "No send request with that key", data: { key: body.key, status: "unknown" } };
@@ -385,6 +456,9 @@ function accountView(account: AccountRow) {
     client_kind: account.client_kind,
     client_ref: account.client_ref,
     from_name: account.from_name,
+    reply_to: account.reply_to,
+    /** `gmail`, or `email-provider` for a send-only account (no inbox, no sync, no sign-in). */
+    kind: isEspProvider(account.provider) ? "email-provider" : "gmail",
   };
 }
 
@@ -464,6 +538,7 @@ async function load(ctx: PluginContext, companyId: string, params: Record<string
     daily: shapeDaily(dailyRows, DAILY_DAYS),
     domains: domains.map(domainView),
     clientMaps,
+    esp: await sendingDomainsOverview(ctx, companyId, undefined, false).catch(() => null),
   };
 }
 
@@ -557,6 +632,7 @@ function sendView(row: SendRow) {
     subject: row.subject,
     gmailMessageId: row.gmail_message_id,
     threadId: row.gmail_thread_id,
+    ...(row.provider ? { provider: row.provider, providerMessageId: row.provider_message_id, deliveryStatus: row.delivery_status, delivery: row.delivery ?? {} } : {}),
     sentAt: row.sent_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -593,7 +669,7 @@ async function syncNow(companyId: string, accountId: string | undefined) {
   const s = requireStore();
   const accounts = accountId
     ? [await s.getAccount(companyId, accountId)].filter((a): a is AccountRow => Boolean(a))
-    : (await s.listAccounts(companyId)).filter((a) => a.status === "connected");
+    : (await s.listAccounts(companyId)).filter((a) => a.status === "connected" && a.token_sealed);
   if (accounts.length === 0) throw new MailboxError("No connected Gmail account to sync");
   const loaded = await loadMailboxConfig(e.ctx, companyId);
   // Kept small so the action returns quickly; the 2-minute job does the rest.
@@ -612,6 +688,8 @@ async function syncNow(companyId: string, accountId: string | undefined) {
 // ---------------------------------------------------------------------------
 
 async function createAccount(companyId: string, ownerUserId: string | null, params: Record<string, unknown>) {
+  // A send-only account is made by registering its domain (it needs a verified domain behind it), never by hand.
+  if (isEspProvider(optionalString(params, "provider")?.toLowerCase())) throw new MailboxError("An email provider account is created by adding its sending domain (add-sending-domain, or Add a sending domain on the Mailboxes tab).");
   const id = randomUUID();
   await requireStore().insertLegacyAccount({
     id,
@@ -665,16 +743,20 @@ async function setAccountClient(companyId: string, params: Record<string, unknow
   const fromName = optionalString(params, "fromName") ?? null;
   if (!clientRef) {
     await s.setAccountClient(companyId, account.id, { clientKind: null, clientRef: null, fromName });
+    if (isEspProvider(account.provider)) await s.patchEspDomain(companyId, sendingDomain(account.address) ?? "", { client_kind: null, client_ref: null });
     return { id: account.id, client: null };
   }
   const clientKind = params.clientKind === "contact" ? "contact" : "company";
   const found = clientKind === "company" ? await s.crmCompany(companyId, clientRef) : await s.crmContact(companyId, clientRef);
   if (!found) throw new MailboxError(`The CRM has no ${clientKind} ${clientRef} in this company`);
   const otherOwn = (await s.listAccounts(companyId)).filter((a) => a.id !== account.id && !a.client_ref && a.token_sealed && (a.status === "connected" || a.status === "needs_reconnect"));
-  if (!account.client_ref && otherOwn.length === 0) {
+  // The company keeps at least one Gmail mailbox of its own; a send-only account of the email provider is not one.
+  if (!isEspProvider(account.provider) && !account.client_ref && otherOwn.length === 0) {
     throw new MailboxError("This is the company's only mailbox with Gmail. Connect another one for the company before giving this one to a client, or nothing would send for the company.");
   }
   await s.setAccountClient(companyId, account.id, { clientKind, clientRef, fromName: fromName ?? found.name });
+  // The provider domain sends for the same client as its account: the daily cap, the reputation and the opt-outs are that client's.
+  if (isEspProvider(account.provider)) await s.patchEspDomain(companyId, sendingDomain(account.address) ?? "", { client_kind: clientKind, client_ref: clientRef });
   // No agent gets a client's mailbox automatically: what the defaults gave while it was still the company's goes. A person's own grant stays.
   const droppedDefaults = await s.deleteDefaultDelegations(companyId, account.id);
   return { id: account.id, droppedDefaultAccess: droppedDefaults, client: { kind: clientKind, ref: clientRef, name: found.name } };
@@ -714,6 +796,16 @@ async function checkSenderDomain(companyId: string, params: Record<string, unkno
     return { domain, status: "unknown" as const, applicable: false, note: `${domain} is a free mail service: Google, Microsoft or Yahoo authenticate its mail themselves. Mail authentication applies to a company's own domain.` };
   }
   const loaded = await loadMailboxConfig(requireEnv().ctx, companyId);
+  // A domain at the email provider: the provider's own status first (it is asked to look at the DNS again, at most every 6 hours).
+  let provider: { status: string; error?: string } | null = null;
+  const espBefore = await s.getEspDomain(companyId, domain);
+  if (espBefore) {
+    try {
+      provider = { status: (await refreshSendingDomain(requireEnv(), loaded, companyId, domain, { verify: true })).status };
+    } catch (error) {
+      provider = { status: espBefore.status, error: errorMessage(error) };
+    }
+  }
   const known = (await sendingDomains(s, companyId)).find((entry) => entry.domain === domain);
   const accounts = (await s.listAccounts(companyId)).filter((account) => sendingDomain(account.address) === domain && account.status !== "disconnected");
   const clientKind = params.clientKind === "contact" ? "contact" : params.clientKind === "company" ? "company" : null;
@@ -734,8 +826,11 @@ async function checkSenderDomain(companyId: string, params: Record<string, unkno
     }
     report = await checkAndStore(env2, companyId, target, { selectors });
   }
-  const guide = onboardingGuide(domain, report, { gmail: target.gmail || target.mailboxes.length === 0, reportsMailbox: accounts[0]?.address ?? null });
+  const espRow = await s.getEspDomain(companyId, domain);
+  const guide = espRow ? espOnboarding(espRow, report, accounts[0]?.address ?? null) : onboardingGuide(domain, report, { gmail: target.gmail || target.mailboxes.length === 0, reportsMailbox: accounts[0]?.address ?? null });
   return {
+    /** The email provider's own status of the domain (only for a domain registered there). */
+    provider,
     domain,
     applicable: true,
     status: report.status,
@@ -751,6 +846,63 @@ async function checkSenderDomain(companyId: string, params: Record<string, unkno
     unreadable: report.unreadable,
     manual: report.manual,
     onboarding: guide,
+  };
+}
+
+/** The onboarding of a domain at the email provider: the records the provider has not verified yet, and what is already right. */
+function espOnboarding(row: EspDomainRow, report: DomainReport, reportsMailbox: string | null) {
+  const pending = row.status === "verified" ? [] : row.records.filter((record) => record.status !== "verified");
+  const instructions = dnsInstructions({ ...row, records: pending }, { report, reportsMailbox });
+  const alreadyDone = row.records.filter((record) => record.status === "verified" && record.record.toUpperCase() !== "TRACKING").map((record) => `${record.record} ${record.type} at ${record.fqdn}`);
+  const nothing = pending.length === 0 && !instructions.dmarc;
+  return {
+    steps: nothing ? ["Nothing to add: the provider has verified every record."] : instructions.steps,
+    dig: report.manual,
+    alreadyDone,
+    records: instructions.records,
+    dmarc: instructions.dmarc,
+    whoAddsIt: instructions.whoAddsIt,
+    afterwards: instructions.afterwards,
+  };
+}
+
+/** The company's sending domains at the email provider, for `list-sending-domains` and the Mailboxes tab. `refresh` asks the provider to verify first. */
+async function sendingDomainsOverview(ctx: PluginContext, companyId: string, domain: string | undefined, refresh: boolean) {
+  const e = requireEnv();
+  const s = requireStore();
+  const loaded: LoadedConfig = await loadMailboxConfig(ctx, companyId);
+  const config = loaded.config.esp;
+  const readiness = espReadiness(config);
+  const wanted = domain ? sendingDomain(domain) ?? domain.toLowerCase() : null;
+  const errors: Record<string, string> = {};
+  if (refresh && readiness.domains) {
+    for (const row of (await s.listEspDomains(companyId)).filter((entry) => !wanted || entry.domain === wanted)) {
+      try {
+        await refreshSendingDomain(e, loaded, companyId, row.domain, { verify: true });
+      } catch (error) {
+        errors[row.domain] = errorMessage(error);
+      }
+    }
+  }
+  const rows = (await s.listEspDomains(companyId)).filter((entry) => !wanted || entry.domain === wanted);
+  const accounts = await s.listAccounts(companyId);
+  const checks = await s.listDomainChecks(companyId).catch(() => []);
+  const views: SendingDomainView[] = [];
+  for (const row of rows) {
+    const report = (checks.find((check) => check.domain === row.domain)?.result ?? null) as Pick<DomainReport, "dmarc"> | null;
+    views.push(await sendingDomainView(e, config, row, accounts.find((account) => account.id === row.account_id) ?? null, report?.dmarc ? report : null));
+  }
+  const state = await readEspState(ctx, companyId);
+  return {
+    enabled: config.enabled,
+    ready: { domains: readiness.domains, sending: readiness.sending },
+    blockers: readiness.blockers,
+    webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl),
+    /** What the provider last answered about the Mailbox's key: set when it was refused or the quota is used up. */
+    providerState: state && !state.ok ? { code: state.code, detail: state.detail, at: state.at } : null,
+    domains: views,
+    ...(Object.keys(errors).length ? { refreshErrors: errors } : {}),
+    note: "Mail goes out as a domain only once the provider has verified it. A domain's daily cap ramps up for its first 13 days; a bounce or complaint rate over 2% or 0.1% (7 days) holds its marketing back.",
   };
 }
 
@@ -770,6 +922,7 @@ async function runAllDomainChecks(ctx: PluginContext): Promise<void> {
   for (const companyId of await knownCompanies(ctx)) {
     try {
       if (!(await configSaved(ctx, companyId)) || !(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
+      await purgeProviderHistory(ctx, companyId);
       const loaded = await loadMailboxConfig(ctx, companyId);
       if (!loaded.config.domainChecks) continue;
       const summary = await runDomainChecks(domainEnv(), companyId, { selectors: selectorsFor(loaded.config.dkimSelectors, undefined) });
@@ -777,6 +930,17 @@ async function runAllDomainChecks(ctx: PluginContext): Promise<void> {
     } catch (error) {
       ctx.logger.info("Sender domain checks skipped", { companyId, error: errorMessage(error) });
     }
+  }
+}
+
+/** Provider history is kept 90 days (events) and 60 days (daily counts): the reputation window is 7. Per company, like every other job step. Never throws. */
+async function purgeProviderHistory(ctx: PluginContext, companyId: string): Promise<void> {
+  try {
+    const now = requireEnv().now();
+    const purged = await requireStore().purgeEspHistory(companyId, new Date(now - 90 * 86_400_000).toISOString(), new Date(now - 60 * 86_400_000).toISOString().slice(0, 10));
+    if (purged.events > 0 || purged.days > 0) ctx.logger.info("Provider history purged", { companyId, ...purged });
+  } catch (error) {
+    ctx.logger.info("Provider history not purged", { companyId, error: errorMessage(error) });
   }
 }
 
@@ -789,7 +953,10 @@ async function hourlyHousekeeping(ctx: PluginContext): Promise<void> {
   }
   for (const companyId of await knownCompanies(ctx)) {
     try {
-      if (await configSaved(ctx, companyId)) await reannounceDomainChecks(domainEnv(), companyId);
+      if (!(await configSaved(ctx, companyId))) continue;
+      await reannounceDomainChecks(domainEnv(), companyId);
+      // A sending domain waiting for its DNS records is looked at again at the provider (it asks for a fresh verification at most every 6 hours).
+      if (await isModuleEnabled(ctx, companyId, PLUGIN_ID)) await refreshPendingDomains(requireEnv(), companyId);
     } catch {
       // the next hour tries again
     }
@@ -857,7 +1024,9 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
   const account = await s.getAccount(companyId, row.account_id);
   const gmailReady = Boolean(account?.token_sealed) && (account?.status === "connected" || account?.status === "needs_reconnect");
-  if (!gmailReady) {
+  // A send-only account of the email provider sends through the provider, under the same delegation and the same rules.
+  const providerReady = Boolean(account && isEspProvider(account.provider) && account.status === "connected");
+  if (!gmailReady && !providerReady) {
     await s.setDraftStatus(companyId, row.id, "queued", null);
     return { id: row.id, status: "queued" as const, note: "Gmail is not connected for this mailbox, so a person must send it." };
   }

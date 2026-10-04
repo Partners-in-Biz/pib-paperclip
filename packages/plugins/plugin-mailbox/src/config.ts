@@ -5,7 +5,8 @@
  * Secrets are secret-refs resolved per call with the kit `SecretResolver`.
  */
 import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
-import { jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { isSecretRef, jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { DEFAULT_STEADY_CAP } from "./esp/warmup.js";
 
 /** Same Google Cloud Web client as SEO and YouTube. */
 export const DEFAULT_GOOGLE_CLIENT_ID = "430887310034-6hc826irms25pf22ou7qi22s70gbm79k.apps.googleusercontent.com";
@@ -118,6 +119,23 @@ export const instanceConfigSchema: JsonSchema = {
         secret: secretField("Unsubscribe link secret", "A Paperclip secret of 16 or more random characters that signs the unsubscribe links. Changing it invalidates links already sent."),
       },
     },
+    esp: {
+      type: "object",
+      title: "Email provider (Resend), optional",
+      description:
+        "A second way to send, beside Gmail: a send-only account for each domain the provider is allowed to send as (a client's own domain, or PiB's). Off until it is switched on here AND the API key is saved. Sending also needs the webhook signing secret, so bounces and complaints are never missed. Gmail stays the default sender; nothing changes for mail that names no provider account.",
+      properties: {
+        enabled: { type: "boolean", title: "Switch the email provider on", description: "Off by default. With it on, the Mailbox can register sending domains and send from them once their DNS records are in place.", default: false },
+        provider: { type: "string", title: "Provider", enum: ["resend"], default: "resend" },
+        apiKey: secretField("Resend API key", "A Paperclip secret holding a Resend API key with full access (it registers domains as well as sending): resend.com, API Keys, Create API Key."),
+        webhookSecret: secretField("Resend webhook signing secret", "A Paperclip secret holding the signing secret (whsec_...) of the Resend webhook that points at this Paperclip: resend.com, Webhooks. Without it nothing is sent through the provider."),
+        ratePerSecond: { type: "integer", title: "Requests per second", description: "Most requests per second the Mailbox makes to the provider (Resend allows 10 by default, shared by every key of the team).", default: 4, minimum: 1, maximum: 10 },
+        steadyDailyCap: { type: "integer", title: "Daily cap once a domain is warmed up", description: "Most recipients one domain is handed to the provider per UTC day after its warm-up (the first 13 days ramp up from 50). A person can give one domain its own cap.", default: DEFAULT_STEADY_CAP, minimum: 1, maximum: 1000000 },
+        prefer: { type: "string", title: "Mail the provider takes when no sender is named", enum: ["gmail", "transactional"], default: "gmail", description: "gmail (default): mail that names no sender goes out from the default Gmail account. transactional: invoices, payslips and replies that name no sender go from the company's own provider account when it is ready (marketing always goes from the sender it names, or the client's own domain when the client has one)." },
+        defaultFrom: { type: "string", title: "The company's own provider address", description: "The send-only address (on a domain you registered) that transactional mail uses when the setting above is transactional. Empty: the oldest ready company-owned provider account." },
+        batch: { type: "boolean", title: "Send messages that arrive together in one request", description: "Off by default. Up to 100 messages without attachments go in one provider request. A batch the provider did not answer is never sent again message by message, so a person checks the provider's log for those.", default: false },
+      },
+    },
   },
 };
 
@@ -142,6 +160,68 @@ export interface MailboxConfig {
   /** Open reply issues for mail that needs an answer (default on). */
   replyIssues: boolean;
   sendRatePerMinute: number;
+  /** The email provider block (0.6.0). */
+  esp: EspConfig;
+}
+
+/** The `esp` settings. A secret's presence is read without resolving it (the host allows 30 secret resolves a minute per company). */
+export interface EspConfig {
+  enabled: boolean;
+  provider: "resend";
+  hasApiKey: boolean;
+  hasWebhookSecret: boolean;
+  ratePerSecond: number;
+  steadyDailyCap: number;
+  prefer: "gmail" | "transactional";
+  defaultFrom: string | null;
+  batch: boolean;
+}
+
+export const DEFAULT_ESP_RATE = 4;
+
+function hasSecret(value: unknown): boolean {
+  return typeof value === "string" ? value.trim().length > 0 : isSecretRef(value) && Boolean(value.secretId);
+}
+
+export function parseEspConfig(raw: Record<string, unknown>): EspConfig {
+  const esp = (raw.esp && typeof raw.esp === "object" && !Array.isArray(raw.esp) ? raw.esp : {}) as Record<string, unknown>;
+  const rate = Number(esp.ratePerSecond);
+  const cap = Number(esp.steadyDailyCap);
+  const from = typeof esp.defaultFrom === "string" ? esp.defaultFrom.trim().toLowerCase() : "";
+  return {
+    enabled: esp.enabled === true,
+    provider: "resend",
+    hasApiKey: hasSecret(esp.apiKey),
+    hasWebhookSecret: hasSecret(esp.webhookSecret),
+    ratePerSecond: Number.isInteger(rate) && rate >= 1 && rate <= 10 ? rate : DEFAULT_ESP_RATE,
+    steadyDailyCap: Number.isInteger(cap) && cap >= 1 && cap <= 1_000_000 ? cap : DEFAULT_STEADY_CAP,
+    prefer: esp.prefer === "transactional" ? "transactional" : "gmail",
+    defaultFrom: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from) ? from : null,
+    batch: esp.batch === true,
+  };
+}
+
+export interface EspReadiness {
+  /** Domains may be registered and checked (switched on, API key saved). */
+  domains: boolean;
+  /** Mail may be sent (also the webhook signing secret, so no bounce or complaint is missed). */
+  sending: boolean;
+  /** What is missing, in words, in the order to do it. */
+  blockers: string[];
+}
+
+/** The address the provider's webhook points at: the host's public webhook route for this plugin. Null until the public base URL is saved. */
+export function espWebhookUrl(publicBaseUrl: string | null): string | null {
+  return publicBaseUrl ? `${publicBaseUrl.replace(/\/$/, "")}/api/plugins/partnersinbiz.mailbox/webhooks/resend` : null;
+}
+
+export function espReadiness(config: EspConfig): EspReadiness {
+  const blockers: string[] = [];
+  if (!config.enabled) blockers.push("The email provider is switched off in the Mailbox settings.");
+  if (!config.hasApiKey) blockers.push("The Resend API key is not saved as a Paperclip secret in the Mailbox settings.");
+  const domains = config.enabled && config.hasApiKey;
+  if (domains && !config.hasWebhookSecret) blockers.push("The Resend webhook signing secret is not saved: until it is, nothing is sent through the provider, because bounces and complaints would be missed.");
+  return { domains, sending: domains && config.hasWebhookSecret, blockers };
 }
 
 export function parseLabelPrefix(value: unknown): string {
@@ -190,6 +270,7 @@ export function parseMailboxConfig(raw: Record<string, unknown>): MailboxConfig 
     triageAssignee: parseTriageAssignee(raw.triageIssueAssignee),
     replyIssues: raw.replyIssues !== false,
     sendRatePerMinute: Number.isInteger(rate) && rate >= 1 && rate <= 250 ? rate : DEFAULT_SEND_RATE,
+    esp: parseEspConfig(raw),
   };
 }
 
@@ -264,6 +345,24 @@ export function validateMailboxConfig(raw: Record<string, unknown>): { ok: boole
   }
   if (typeof raw.encryptionKey === "string" && raw.encryptionKey.trim()) {
     warnings.push("The token encryption key was typed as plain text. Pick a Paperclip secret instead.");
+  }
+  const esp = raw.esp;
+  if (esp != null && (typeof esp !== "object" || Array.isArray(esp))) {
+    errors.push("The email provider settings are not valid");
+  } else if (esp) {
+    const block = esp as Record<string, unknown>;
+    for (const [key, label] of [["apiKey", "Resend API key"], ["webhookSecret", "Resend webhook signing secret"]] as const) {
+      if (typeof block[key] === "string" && String(block[key]).trim()) warnings.push(`The ${label} was typed as plain text. Pick a Paperclip secret instead.`);
+    }
+    if (block.ratePerSecond != null && block.ratePerSecond !== "") {
+      const rate = Number(block.ratePerSecond);
+      if (!Number.isInteger(rate) || rate < 1 || rate > 10) errors.push("Requests per second must be a whole number from 1 to 10");
+    }
+    if (block.steadyDailyCap != null && block.steadyDailyCap !== "") {
+      const cap = Number(block.steadyDailyCap);
+      if (!Number.isInteger(cap) || cap < 1 || cap > 1_000_000) errors.push("The daily cap must be a whole number from 1 to 1000000");
+    }
+    if (typeof block.defaultFrom === "string" && block.defaultFrom.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(block.defaultFrom.trim())) errors.push("The company's own provider address is not an email address");
   }
   return { ok: errors.length === 0, errors, warnings };
 }

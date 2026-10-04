@@ -13,35 +13,36 @@
  *   suppressed address and carry List-Unsubscribe; any send leaves out hard
  *   bounces. No recipient left → `failed`, `permanent: true`, with the
  *   `suppressed` addresses so the sender stops for good.
+ * - Which sender takes a request (`pick-sender.ts`): the account its `from` names, else the company's default
+ *   Gmail account. A request whose sender is a send-only account of the email provider (0.6.0) goes to
+ *   `esp/send.ts` instead, which answers with the same `mail.send.result`; nothing changes for a request that names
+ *   no provider account.
  */
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, MAIL_EVENTS, OWN_SENDER, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
+import { isModuleEnabled, MAIL_EVENTS, OWN_SENDER, receiveOnce, type MailAddress, type MailAttachmentRef, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
-import { senderDomainHealth } from "../domain-health.js";
-import { sendingDomain } from "../dns.js";
 import { GmailUnavailable, MailboxError, SendThrottled } from "../domain.js";
+import { performEspSend } from "../esp/send.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { pickSender } from "../pick-sender.js";
+import { AttachmentError, domainWarnings, downloadAttachments, failed, MAX_ATTACHMENT_BYTES, resultFromRow, type SendOptions, type SendResult } from "../send-shared.js";
 import { accountScopeProblem, accountSenderKey, cleanDisplayName, effectiveReplyTo, parseReplyTo, parseUnsubscribeUrl, senderScopeWarnings } from "../sender.js";
 import { ownOneClickUrl } from "../unsubscribe.js";
-import { getMessageMetadata, getThreadMetadata, GmailApiError, listMessages, modifyMessage, sendRaw, type FetchLike } from "./api.js";
+import { getMessageMetadata, getThreadMetadata, GmailApiError, listMessages, modifyMessage, sendRaw } from "./api.js";
 import { errorMessage, type Env } from "./env.js";
 import { headerMap, parseMessageIds, toMailAddress } from "./headers.js";
 import { ensureLabelIds } from "./labels.js";
-import { buildMime, htmlToText, messageIdFor, type MimeAttachment } from "./mime.js";
+import { buildMime, htmlToText, messageIdFor } from "./mime.js";
 import { messageRowId } from "./sync.js";
 import { withGmail } from "./tokens.js";
 import { checkSuppression, listUnsubscribeHeader } from "../suppression.js";
 import type { AccountRow, SendContext, SendRecordInput, SendRow, SkippedRecipient } from "./types.js";
 
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const SUFFIX = `.${MAIL_EVENTS.sendRequested}`;
+// Kept importable from here: the attachment download, the answer a send gives and the options it takes live in `send-shared.ts`.
+export { AttachmentError, downloadAttachments, domainWarnings, MAX_ATTACHMENT_BYTES, resultFromRow };
+export type { SendOptions, SendResult };
 
-export class AttachmentError extends Error {
-  constructor(message: string, readonly permanent: boolean) {
-    super(message);
-    this.name = "AttachmentError";
-  }
-}
+const SUFFIX = `.${MAIL_EVENTS.sendRequested}`;
 
 /** `plugin.partnersinbiz.billing.mail.send.requested` → `partnersinbiz.billing`. */
 export function senderOf(eventType: string): string | null {
@@ -141,74 +142,6 @@ export function normaliseRequest(payload: unknown, sender: string): { request: M
   return { request, problem: problems[0] ?? null };
 }
 
-/**
- * A send result; `suppressed` lists recipients left out because they are on the do-not-email list; `warnings`
- * says what is wrong with the sending domain's mail authentication (marketing sends only; it never blocks one).
- */
-export type SendResult = MailSendResult & { suppressed?: SkippedRecipient[]; warnings?: string[] };
-
-export function resultFromRow(row: SendRow): SendResult {
-  const skipped = row.skipped ?? [];
-  return {
-    key: row.key,
-    status: row.status === "sent" ? "sent" : "failed",
-    messageId: row.gmail_message_id,
-    threadId: row.gmail_thread_id,
-    sentAt: row.sent_at,
-    error: row.status === "sent" ? null : row.error,
-    permanent: row.status === "sent" ? false : row.permanent,
-    context: row.context,
-    ...(skipped.length ? { suppressed: skipped } : {}),
-  };
-}
-
-function failed(request: MailSendRequested, error: string, suppressed?: SkippedRecipient[]): SendResult {
-  return { key: request.key, status: "failed", messageId: null, threadId: null, sentAt: null, error, permanent: true, context: request.context, ...(suppressed?.length ? { suppressed } : {}) };
-}
-
-async function pickAccount(env: Env, companyId: string, from: string | null | undefined): Promise<AccountRow | null> {
-  if (from) {
-    const email = toMailAddress(from)?.email;
-    if (!email) return null;
-    const account = await env.store.findAccountByAddress(companyId, email);
-    return account && account.token_sealed && (account.status === "connected" || account.status === "needs_reconnect") ? account : null;
-  }
-  return env.store.defaultAccount(companyId);
-}
-
-async function fetchAttachment(fetchImpl: FetchLike, ref: MailAttachmentRef): Promise<Uint8Array> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
-  let res: Response;
-  try {
-    res = await fetchImpl(ref.url, { method: "GET", signal: controller.signal });
-  } catch (error) {
-    throw new AttachmentError(`Attachment ${ref.filename} could not be downloaded: ${errorMessage(error)}`, false);
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) {
-    const permanent = res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
-    throw new AttachmentError(`Attachment ${ref.filename} could not be downloaded (HTTP ${res.status})${permanent ? "; the link may have expired" : ""}`, permanent);
-  }
-  return new Uint8Array(await res.arrayBuffer());
-}
-
-export async function downloadAttachments(fetchImpl: FetchLike, refs: MailAttachmentRef[]): Promise<MimeAttachment[]> {
-  const out: MimeAttachment[] = [];
-  let total = 0;
-  for (const ref of refs) {
-    if (typeof ref.bytes === "number" && total + ref.bytes > MAX_ATTACHMENT_BYTES) {
-      throw new AttachmentError("Attachments are larger than Gmail allows (25 MB)", true);
-    }
-    const content = await fetchAttachment(fetchImpl, ref);
-    total += content.byteLength;
-    if (total > MAX_ATTACHMENT_BYTES) throw new AttachmentError("Attachments are larger than Gmail allows (25 MB)", true);
-    out.push({ filename: ref.filename, mime: ref.mime, content });
-  }
-  return out;
-}
-
 interface Threading {
   threadId: string | null;
   inReplyTo: string | null;
@@ -269,14 +202,6 @@ function isPermanentGmail(error: unknown): boolean {
   return error instanceof GmailApiError && !error.retryable && !error.reconnect && (error.status === 400 || error.status === 413 || error.status === 404);
 }
 
-export interface SendOptions {
-  sourcePlugin: string;
-  /** Manual retry or a draft: a failed request may be sent again. */
-  force?: boolean;
-  /** Draft sends update the draft row instead of adding one. */
-  draftRowId?: string;
-}
-
 /** Send one request. Throws on transient trouble; returns `failed` only when retrying will not help. */
 export async function performSend(env: Env, companyId: string, request: MailSendRequested, options: SendOptions, problem: string | null = null): Promise<SendResult> {
   const before = await env.store.getSend(companyId, request.key);
@@ -284,7 +209,10 @@ export async function performSend(env: Env, companyId: string, request: MailSend
   if (before?.status === "failed" && before.permanent && !options.force) return resultFromRow(before);
 
   const loaded = await loadMailboxConfig(env.ctx, companyId);
-  const account = await pickAccount(env, companyId, request.from);
+  const picked = await pickSender(env, loaded, companyId, request);
+  // A send-only account of the email provider is sent by its own path (the same answer, the same rules around it).
+  if (picked.kind === "esp") return performEspSend(env, loaded, { account: picked.account!, domain: picked.domain }, request, options, before, problem);
+  const account = picked.account;
   const record: SendRecordInput = {
     key: request.key,
     companyId,
@@ -354,19 +282,6 @@ export async function performSend(env: Env, companyId: string, request: MailSend
   // Gmail has the message now. A failure below leaves the claim in place (never "retrying"), so a
   // later delivery finds the sent message by its Message-ID instead of sending it again.
   return finishSent(env, loaded, sender, outgoing, options, sent, rfcMessageId, skipped, [...(await domainWarnings(env, sender, outgoing)), ...senderScopeWarnings(sender, outgoing)]);
-}
-
-/** What is wrong with the sending domain's mail authentication, for a marketing send. Reads the last stored check; never blocks, never throws. */
-export async function domainWarnings(env: Pick<Env, "store" | "now">, account: Pick<AccountRow, "company_id" | "address">, request: Pick<MailSendRequested, "marketing">): Promise<string[]> {
-  if (request.marketing !== true) return [];
-  try {
-    const domain = sendingDomain(account.address);
-    if (!domain) return [];
-    const health = await senderDomainHealth(env.store, account.company_id, domain, env.now());
-    return health.known && (health.status === "bad" || health.status === "warn") ? health.reasons.slice(0, 3) : [];
-  } catch {
-    return [];
-  }
 }
 
 async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string, senderKey: string = OWN_SENDER) {

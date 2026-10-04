@@ -96,3 +96,38 @@ describe("sender domains and client mail on the page", () => {
     expect(Object.keys(MAP_TYPE_NAMES)).toEqual(["sender_domain", "sender_address", "recipient_domain", "recipient_address"]);
   });
 });
+
+describe("the email provider on the page", () => {
+  const cap = (over: Partial<{ cap: number; day: number | null; warming: boolean; source: string; sentToday: number; remaining: number }> = {}) => ({ cap: 50, day: 1, warming: true, source: "warm-up", sentToday: 12, remaining: 38, ...over });
+
+  it("says in words whether a domain is ready, waiting for records, or wrong", async () => {
+    const { espStatusLabel, espStatusTone } = await import("../src/ui/view.js");
+    expect([espStatusLabel({ status: "verified", ready: true }), espStatusTone({ status: "verified", ready: true })]).toEqual(["Ready to send", "ok"]);
+    expect([espStatusLabel({ status: "pending", ready: false }), espStatusTone({ status: "pending", ready: false })]).toEqual(["Waiting for DNS records", "warn"]);
+    expect([espStatusLabel({ status: "not_started", ready: false }), espStatusLabel({ status: "temporary_failure", ready: false })]).toEqual(["Waiting for DNS records", "Could not read the DNS"]);
+    expect([espStatusLabel({ status: "failed", ready: false }), espStatusTone({ status: "failed", ready: false })]).toEqual(["Records wrong", "bad"]);
+    expect(espStatusLabel({ status: "verified", ready: false })).toBe("Verified, account not connected");
+  });
+
+  it("shows today's cap with where it comes from", async () => {
+    const { espCapLine } = await import("../src/ui/view.js");
+    expect(espCapLine({ cap: cap() })).toBe("12 of 50 today · warm-up day 1 of 13");
+    expect(espCapLine({ cap: cap({ cap: 10_000, day: 14, warming: false, source: "steady", sentToday: 0 }) })).toMatch(/^0 of 10.000 today$/);
+    expect(espCapLine({ cap: cap({ cap: 300, day: null, warming: false, source: "override", sentToday: 300 }) })).toMatch(/300 of 300 today · set by a person/);
+    expect(espCapLine({ cap: cap({ source: "established", warming: false, day: null }) })).toMatch(/marked as established/);
+  });
+
+  it("puts the last 7 days next to the limits", async () => {
+    const { espReputationLine } = await import("../src/ui/view.js");
+    expect(espReputationLine({ reputation: null })).toBe("Nothing sent in the last 7 days");
+    expect(espReputationLine({ reputation: { sent: 0, hardBounces: 0, complaints: 0, bounceRate: null, complaintRate: null, problems: [] } })).toBe("Nothing sent in the last 7 days");
+    expect(espReputationLine({ reputation: { sent: 100, hardBounces: 2, complaints: 1, bounceRate: 0.02, complaintRate: 0.01, problems: [] } })).toBe("2 bounced (2.0%, limit 2%) · 1 complaint (1.0%, limit 0.1%) of 100 sent in 7 days");
+    expect(espReputationLine({ reputation: { sent: 2000, hardBounces: 0, complaints: 2, bounceRate: 0, complaintRate: 0.001, problems: [] } })).toMatch(/0 bounced \(0\.00%, limit 2%\) · 2 complaints \(0\.10%, limit 0\.1%\)/);
+  });
+
+  it("writes a DNS record as one line a person can read out", async () => {
+    const { dnsRecordLine } = await import("../src/ui/view.js");
+    expect(dnsRecordLine({ type: "MX", host: "send.updates.client.co.za", priority: 10, value: "feedback-smtp.eu-west-1.amazonses.com" })).toBe("MX  send.updates.client.co.za  10  feedback-smtp.eu-west-1.amazonses.com");
+    expect(dnsRecordLine({ type: "TXT", host: "_dmarc.updates.client.co.za", priority: null, value: "v=DMARC1; p=none" })).toBe("TXT  _dmarc.updates.client.co.za  v=DMARC1; p=none");
+  });
+});

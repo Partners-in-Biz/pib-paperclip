@@ -29,7 +29,7 @@ describe("manifest", () => {
   });
 
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.version).toBe("0.6.0");
     for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "issue.comments.create", "ui.page.register", "agents.read", "webhooks.receive"]) {
       expect(manifest.capabilities).toContain(cap);
     }
@@ -39,14 +39,14 @@ describe("manifest", () => {
       expect.objectContaining({ jobKey: "check-domain-health", schedule: "17 5 * * *" }),
     ]);
     // The public one-click unsubscribe address (RFC 8058) and the capability the host needs to serve it.
-    expect(manifest.webhooks).toEqual([expect.objectContaining({ endpointKey: "unsubscribe" })]);
+    expect(manifest.webhooks).toEqual([expect.objectContaining({ endpointKey: "resend" }), expect.objectContaining({ endpointKey: "unsubscribe" })]);
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board" }),
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
     const props = (manifest.instanceConfigSchema as { properties: Record<string, Record<string, unknown>> }).properties;
-    for (const key of ["publicBaseUrl", "encryptionKey", "google", "jev", "labelPrefix", "triageIssueAssignee", "sendRatePerMinute", "replyIssues", "r2", "autoDelegate", "domainChecks", "dkimSelectors", "unsubscribe"]) expect(props).toHaveProperty(key);
+    for (const key of ["publicBaseUrl", "encryptionKey", "google", "jev", "labelPrefix", "triageIssueAssignee", "sendRatePerMinute", "replyIssues", "r2", "autoDelegate", "domainChecks", "dkimSelectors", "unsubscribe", "esp"]) expect(props).toHaveProperty(key);
     expect((props.unsubscribe!.properties as Record<string, Record<string, unknown>>).secret).toMatchObject({ format: "secret-ref" });
     expect(props.autoDelegate).toMatchObject({ enum: ["operator", "operator+roles", "off"], default: "operator" });
     expect((props.r2!.properties as Record<string, Record<string, unknown>>).secretAccessKey).toMatchObject({ format: "secret-ref" });
@@ -57,7 +57,7 @@ describe("manifest", () => {
 
   it("keeps every existing tool name and adds the new ones", () => {
     const names = manifest.tools!.map((t) => t.name);
-    for (const name of ["create-draft", "send-draft", "list-inbox", "mark-read", "create-email-template", "list-email-templates", "list-threads", "search-mail", "get-message", "correct-triage", "mail-status", "list-mailboxes", "get-attachment", "check-sender-domain", "sender-domain-health", "map-client-mail", "list-client-mail-maps", "remove-client-mail-map"]) {
+    for (const name of ["create-draft", "send-draft", "list-inbox", "mark-read", "create-email-template", "list-email-templates", "list-threads", "search-mail", "get-message", "correct-triage", "mail-status", "list-mailboxes", "get-attachment", "check-sender-domain", "sender-domain-health", "map-client-mail", "list-client-mail-maps", "remove-client-mail-map", "add-sending-domain", "list-sending-domains"]) {
       expect(names).toContain(name);
     }
     const draft = manifest.tools!.find((t) => t.name === "create-draft")!.parametersSchema as { required: string[] };

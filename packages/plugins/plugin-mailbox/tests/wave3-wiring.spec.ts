@@ -193,6 +193,22 @@ describe("the daily domain job and the hourly housekeeping", () => {
     expect(written.filter((w) => w.sql.includes("domain_checks"))).toEqual([]);
   });
 
+  it("keeps the provider's old history trimmed one company at a time, each statement inside its own company (also when the domain checks are off)", async () => {
+    for (const config of [{}, { domainChecks: false }]) {
+      const { harness, written } = await boot(config);
+      await harness.runJob("check-domain-health");
+      const purges = written.filter((w) => /DELETE FROM \S+\.(esp_events|esp_domain_days)/.test(w.sql));
+      expect(purges.map((w) => /esp_events/.test(w.sql))).toEqual([true, false]);
+      for (const purge of purges) {
+        expect(purge.sql).toMatch(/WHERE company_id = \$1 AND /);
+        expect(purge.params[0]).toBe(CO);
+      }
+      // 90 days of events and 60 days of daily counts.
+      expect(Date.now() - Date.parse(String(purges[0]!.params[1]))).toBeGreaterThan(89 * 86_400_000);
+      expect(String(purges[1]!.params[1])).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
   it("keeps the managed skills of every known company up to date, not only the one a call comes from", async () => {
     const { harness } = await boot();
     await harness.runJob("setup-status");

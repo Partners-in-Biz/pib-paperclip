@@ -54,7 +54,16 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - A person erased on request leaves only a hash behind so they are never mailed again. You never erase mail yourself: the CRM runs an approved erasure (\`references/privacy.md\`).
 
 ## Sender domains
-Mail from a domain with no SPF, DKIM or DMARC bounces or lands in spam. \`check-sender-domain\` reads the DNS of a domain (SPF, DKIM, DMARC, MX; nothing is changed) and returns healthy, warn or bad with each problem and fix, plus the exact records to add for a new client domain. \`sender-domain-health\` returns the last stored check of every sending domain. Before a campaign goes out from a domain it must be healthy; the Mailbox itself blocks nothing. DNS is edited by whoever controls the domain, so hand them the \`onboarding\` steps in one \`partnersinbiz.cockpit:ask-owner\`, then check again when they say it is done. Never call a domain healthy without a check. Details: \`references/sender-domains.md\`.
+Mail from a domain with no SPF, DKIM or DMARC bounces or lands in spam. \`check-sender-domain\` reads the DNS of a domain (SPF, DKIM, DMARC, MX; nothing is changed) and returns healthy, warn or bad with each problem and fix, plus the exact records to add for a new client domain. \`sender-domain-health\` returns the last stored check of every sending domain. Before a campaign goes out from a domain it must be healthy. Through Gmail the Mailbox itself blocks nothing; a domain at the email provider is held back when its check is bad (see Email provider). DNS is edited by whoever controls the domain, so hand them the \`onboarding\` steps in one \`partnersinbiz.cockpit:ask-owner\`, then check again when they say it is done. Never call a domain healthy without a check. Details: \`references/sender-domains.md\`.
+
+## Email provider: sending as a client's own domain
+Gmail is the default sender and the only inbox. For a client's mail to go out as the client's own verified domain the Mailbox can also send through an email provider (Resend): a send-only account (no inbox) on a domain the provider has verified.
+- \`add-sending-domain\` (\`domain\`, \`clientKind\`/\`clientRef\`, \`replyTo\`) registers the domain and returns the EXACT DNS records and who adds them. **DNS is never yours to edit.** Put the steps in ONE \`partnersinbiz.cockpit:ask-owner\` for the owner, or the client or their web host, wait, then run \`check-sender-domain\`. If it says the provider is not ready, pass the owner steps it gives to the owner in that single ask: you cannot create the account or the key.
+- \`list-sending-domains\`: status, records still to add, today's cap and warm-up day, the 7-day bounce and complaint rates. A domain is ready only when the provider verified it and \`check-sender-domain\` is not bad.
+- A request names the account in \`from\` like any identity (\`list-mailboxes\` shows \`kind: email-provider\`). A client's marketing goes from that client's own account and is never moved to Gmail or to another client's domain; if it cannot send it fails and says why. Invoices and other transactional mail may prefer the provider when the owner chose so, and Gmail takes them when it cannot.
+- The Mailbox enforces: nothing goes out from a domain the provider has not verified or whose check is bad; marketing needs an https one-click unsubscribe link; a new domain's marketing is capped per day (50, then 100, 200 ... up to the steady cap over 13 days; transactional is never held back); a hard bounce puts the address on the list for all mail, a complaint on that SENDER's marketing list, a soft bounce pauses marketing to it 6, 24, then 72 hours; a domain at 2% hard bounces or 0.1% complaints over 7 days is held back for marketing.
+- Never send a test through the provider, and never use it to get round an approval: campaign launches, sequences and invoices keep the approval gates of the plugin that asks. \`mail-status\` shows what happened to a message the provider took (delivered, bounced, complained).
+Details and troubleshooting: \`references/email-provider.md\`.
 
 ## Client mail sent to us
 A client's website form or a BCC copy that arrives in a company mailbox is the client's, not the company's own lead. \`list-client-mail-maps\` shows the mappings and the sender domains of mail that looks like a client's but is not mapped; \`map-client-mail\` maps a domain or address to a client (find the client with \`partnersinbiz.crm:find-records\` first), and \`remove-client-mail-map\` undoes one. Mapped mail is filed under the client and its leads go to the CRM in the client's scope. Details: \`references/client-mail.md\`.
@@ -118,20 +127,60 @@ export const PRIVACY_REFERENCE = `# Erasure, consent and the do-not-email list
 - Agents never erase mail or edit the list to undo an opt-out. If someone asks to be forgotten, say the request goes through the CRM and the owner approves it.
 `;
 
+export const EMAIL_PROVIDER_REFERENCE = `# The email provider (Resend)
+
+## What it is for
+Everything sent through the Mailbox used to leave from one Gmail account. The provider is a second kind of account, **send-only**: a From address on a domain the client owns, signed with that domain's own DKIM key, so the client's reputation is the client's, an opt-out or complaint lands on the client's list, and volume is not limited by one Gmail account. Gmail is still the default and the only way to read mail.
+
+## Who does what
+| Step | Who | How |
+|---|---|---|
+| Resend account, full-access API key, webhook and its signing secret | the owner, once | the Setup items "Email provider": each has its link and steps |
+| Register a client's domain | an agent | \`add-sending-domain\` |
+| Add the DNS records | the owner, or the client or their web host | the steps \`add-sending-domain\` returns, handed over in one \`partnersinbiz.cockpit:ask-owner\` |
+| Verification | the provider, then the Mailbox | the Mailbox asks every hour; \`check-sender-domain\` asks now |
+| Sending | the plugin that asks (Campaigns, CRM, Billing, Payroll...) | a \`mail.send.requested\` with \`from\` set to the account's address, or none |
+
+## The records
+Resend asks for an MX and a TXT (SPF) on its return-path host \`send.<domain>\`, a TXT (DKIM) at \`resend._domainkey.<domain>\`, and you add a DMARC TXT at \`_dmarc.<domain>\` (start at \`p=none\`) when the domain has none. A subdomain such as \`updates.client.co.za\` keeps the client's reputation apart from their main mail and does not touch their existing records. The records are added in the DNS zone of the registered domain; the result lists both the full host and the host to type in that zone.
+
+## Statuses
+| \`status\` | Meaning | What to do |
+|---|---|---|
+| \`not_started\`, \`pending\` | the provider has not seen the records yet | wait (hours), or ask who adds DNS whether they did; nothing is sent |
+| \`temporary_failure\` | the provider could not read the DNS this time | it retries; ask again later |
+| \`failed\` | a record is missing or wrong | compare the DNS host with the records in \`list-sending-domains\`; the person fixes it |
+| \`verified\` | ready: the account is connected | the daily check watches it |
+
+## Caps and reputation
+Day 1 is the UTC day of the first send. Caps for marketing: 50, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000, then the steady cap (default 10,000). A domain idle for 30 days starts again. Only a person can mark a domain as already established or give it its own cap. Over the cap marketing is deferred and tried again (the sender retries for about three days). Over any 7 days, 2% hard bounces (judged from 100 recipients) or 0.1% complaints (judged from 1,000 recipients; under those, three hard bounces or two complaints) hold the domain's marketing back until the window clears, and Campaigns will not launch from it. Fix the cause (where the list came from, who it was sent to), do not wait it out and repeat it.
+
+## What a delivery event does
+Delivered: counted. Delayed: noted, nothing suppressed. Hard bounce (Permanent): the address is suppressed for ALL mail. Soft bounce (Transient or Undetermined): marketing to the address waits 6, 24, then 72 hours; the third in 14 days suppresses its marketing. Complaint: suppressed for marketing on the sender's list (a client's, or the company's own). A message to several recipients does not say which one an event is about, so it suppresses nobody (marketing is one recipient per message). Events about a domain the company did not register, or a message the Mailbox did not send (another app on the same provider team), are ignored. The Mailbox announces each result as \`mail.delivery\` for any plugin that records it; the send's own \`mail.send.result\` stays the one answer the sender settles on.
+
+## When something does not send
+- "not verified" / "not ready": the Setup items or the DNS are not done: say so, do not retry in a loop.
+- "refused the Mailbox's API key": the owner makes a new full-access key; sends wait and are tried again.
+- "marketing needs an https one-click unsubscribe link": the unsubscribe secret and the reverse-proxy rule are not set up, and the request carried no link of its own.
+- "did not answer an earlier attempt": the provider never answered and the retry window passed; look in the provider's log (resend.com, Emails) before sending it again, because it may have been delivered. A refused key or a used-up quota is different: nothing was taken, the send simply waits and goes once that is fixed.
+- Never send from Gmail as the client to get round any of these: the client's mail does not leave as the company.
+`;
+
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: "mailbox-draft",
     displayName: "Mailbox",
     slug: "pib-mailbox-draft",
-    description: "Read, draft, send and route company mail on delegated Gmail mailboxes; attachments, the do-not-email list, sender domain checks and client mail.",
+    description: "Read, draft, send and route company mail on delegated Gmail mailboxes; attachments, the do-not-email list, sender domain checks, client mail, and sending as a client's own domain through the email provider.",
     markdown: withFrontmatter(
-      { name: "pib-mailbox-draft", description: "Read, draft and send email on delegated Gmail mailboxes, fetch attachments, know where each kind of inbound mail goes, respect the do-not-email list, check a sender domain's SPF, DKIM and DMARC, and file client mail under its client. Send only when the delegation allows it." },
+      { name: "pib-mailbox-draft", description: "Read, draft and send email on delegated Gmail mailboxes, fetch attachments, know where each kind of inbound mail goes, respect the do-not-email list, check a sender domain's SPF, DKIM and DMARC, file client mail under its client, and register a client's sending domain at the email provider (the DNS records go to the owner or the client; DNS is never edited by an agent). Send only when the delegation allows it." },
       MAILBOX_DRAFT_SKILL,
     ),
     files: [
       { path: "references/sender-domains.md", content: SENDER_DOMAINS_REFERENCE },
       { path: "references/client-mail.md", content: CLIENT_MAIL_REFERENCE },
       { path: "references/privacy.md", content: PRIVACY_REFERENCE },
+      { path: "references/email-provider.md", content: EMAIL_PROVIDER_REFERENCE },
     ],
   },
 ];

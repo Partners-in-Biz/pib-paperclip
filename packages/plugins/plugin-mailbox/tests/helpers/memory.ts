@@ -4,7 +4,8 @@
  */
 import { vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { AccountPatch, GmailStore, SentFields } from "../../src/db.js";
+import type { AccountPatch, EspDomainPatch, GmailStore, SentFields } from "../../src/db.js";
+import type { EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "../../src/esp/types.js";
 import { createEnv, type Env } from "../../src/gmail/env.js";
 import type {
   AccountRow,
@@ -150,6 +151,7 @@ export class MemoryStore implements GmailStore {
       client_kind: null,
       client_ref: null,
       from_name: null,
+      reply_to: null,
       created_at: nowIso(),
       ...partial,
     };
@@ -376,6 +378,10 @@ export class MemoryStore implements GmailStore {
       sent_at: null,
       created_at: nowIso(),
       updated_at: nowIso(),
+      provider: null,
+      provider_message_id: null,
+      delivery_status: null,
+      delivery: {},
     };
   }
   async claimSend(input: SendRecordInput, force: boolean) {
@@ -529,6 +535,159 @@ export class MemoryStore implements GmailStore {
     this.domainChecks.set(`${row.company_id}:${row.domain.toLowerCase()}`, { ...row, domain: row.domain.toLowerCase() });
   }
 
+  // email provider
+  espDomains = new Map<string, EspDomainRow>();
+  /** `company:domain:day` → one UTC day of counts. */
+  espDays = new Map<string, EspDayRow>();
+  espEvents: Array<EspEventInput & { received_at: string }> = [];
+  health = new Map<string, RecipientHealthRow>();
+
+  async insertEspAccount(row: { id: string; companyId: string; provider: string; address: string; status: "pending" | "connected"; fromName: string | null; replyTo: string | null; clientKind: string | null; clientRef: string | null; createdBy: string | null }) {
+    this.addAccount({ id: row.id, company_id: row.companyId, address: row.address, provider: row.provider, status: row.status, from_name: row.fromName, reply_to: row.replyTo, client_kind: row.clientRef ? row.clientKind : null, client_ref: row.clientRef, owner_user_id: row.createdBy, connected_at: row.status === "connected" ? nowIso() : null });
+  }
+  async setAccountStatus(companyId: string, id: string, status: AccountRow["status"]) {
+    const row = this.accounts.get(id);
+    if (row && row.company_id === companyId) {
+      row.status = status;
+      if (status === "connected" && !row.connected_at) row.connected_at = nowIso();
+    }
+  }
+  async setAccountReplyTo(companyId: string, id: string, replyTo: string | null) {
+    const row = this.accounts.get(id);
+    if (row && row.company_id === companyId) row.reply_to = replyTo;
+  }
+  async getEspDomain(companyId: string, domain: string) {
+    const row = this.espDomains.get(`${companyId}:${domain.toLowerCase()}`);
+    return row ? structuredClone(row) : null;
+  }
+  async listEspDomains(companyId: string) {
+    return [...this.espDomains.values()].filter((row) => row.company_id === companyId).sort((a, b) => a.domain.localeCompare(b.domain)).map((row) => structuredClone(row));
+  }
+  async upsertEspDomain(row: EspDomainRow) {
+    const key = `${row.company_id}:${row.domain.toLowerCase()}`;
+    const have = this.espDomains.get(key);
+    const now = nowIso();
+    if (!have) {
+      this.espDomains.set(key, { ...structuredClone(row), domain: row.domain.toLowerCase(), client_kind: row.client_ref ? row.client_kind : null, first_sent_at: null, last_sent_at: null, warmup_exempt: false, daily_cap_override: null, reputation: null, verify_asked_at: null, created_at: now, updated_at: now });
+      return;
+    }
+    Object.assign(have, { provider_domain_id: row.provider_domain_id, region: row.region, status: row.status, records: structuredClone(row.records), return_path_host: row.return_path_host, dkim_selector: row.dkim_selector, spf_include: row.spf_include, verified_at: row.verified_at ?? have.verified_at, checked_at: row.checked_at, updated_at: now });
+  }
+  async patchEspDomain(companyId: string, domain: string, patch: EspDomainPatch) {
+    const row = this.espDomains.get(`${companyId}:${domain.toLowerCase()}`);
+    if (!row) return;
+    for (const [key, value] of Object.entries(patch)) if (value !== undefined) (row as unknown as Record<string, unknown>)[key] = value;
+    row.updated_at = nowIso();
+  }
+  private dayRow(companyId: string, domain: string, day: string): EspDayRow {
+    const key = `${companyId}:${domain.toLowerCase()}:${day}`;
+    let row = this.espDays.get(key);
+    if (!row) {
+      row = { company_id: companyId, domain: domain.toLowerCase(), day, sent: 0, delivered: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0, opened: 0, clicked: 0, failed: 0 };
+      this.espDays.set(key, row);
+    }
+    return row;
+  }
+  async reserveEspSends(companyId: string, domain: string, day: string, count: number, cap: number | null) {
+    const row = this.dayRow(companyId, domain, day);
+    if (cap !== null && row.sent + count > cap) return false;
+    row.sent += count;
+    return true;
+  }
+  async releaseEspSends(companyId: string, domain: string, day: string, count: number) {
+    const row = this.espDays.get(`${companyId}:${domain.toLowerCase()}:${day}`);
+    if (row) row.sent = Math.max(0, row.sent - count);
+  }
+  async noteEspSend(companyId: string, domain: string, atIso: string, restartWarmup: boolean) {
+    const row = this.espDomains.get(`${companyId}:${domain.toLowerCase()}`);
+    if (!row) return;
+    if (!row.first_sent_at || restartWarmup) row.first_sent_at = atIso;
+    row.last_sent_at = atIso;
+  }
+  async espDayRows(companyId: string, domain: string, sinceDay: string) {
+    return [...this.espDays.values()].filter((row) => row.company_id === companyId && row.domain === domain.toLowerCase() && row.day >= sinceDay).sort((a, b) => a.day.localeCompare(b.day)).map((row) => ({ ...row }));
+  }
+  async bumpEspDay(companyId: string, domain: string, day: string, field: EspDayField, count: number) {
+    this.dayRow(companyId, domain, day)[field] += count;
+  }
+  async recordEspEvent(input: EspEventInput) {
+    if (this.espEvents.some((event) => event.companyId === input.companyId && (event.eventId === input.eventId || event.dedupeKey === input.dedupeKey))) return false;
+    this.espEvents.push({ ...input, recipient: input.recipient.toLowerCase(), received_at: nowIso() });
+    return true;
+  }
+  async forgetEspEvent(companyId: string, eventId: string) {
+    this.espEvents = this.espEvents.filter((event) => !(event.companyId === companyId && event.eventId === eventId));
+  }
+  async purgeEspHistory(companyId: string, beforeIso: string, beforeDay: string) {
+    const events = this.espEvents.length;
+    this.espEvents = this.espEvents.filter((event) => event.companyId !== companyId || event.received_at >= beforeIso);
+    let days = 0;
+    for (const [key, row] of [...this.espDays]) {
+      if (row.company_id === companyId && row.day < beforeDay) {
+        this.espDays.delete(key);
+        days += 1;
+      }
+    }
+    return { events: events - this.espEvents.length, days };
+  }
+  async recipientHealth(companyId: string, emails: string[]) {
+    const wanted = new Set(emails.map((email) => email.trim().toLowerCase()));
+    return [...this.health.values()].filter((row) => row.company_id === companyId && wanted.has(row.email)).map((row) => ({ ...row }));
+  }
+  async recordSoftBounce(companyId: string, email: string, atIso: string, windowDays: number) {
+    const address = email.trim().toLowerCase();
+    const key = `${companyId}:${address}`;
+    const have = this.health.get(key);
+    const cold = have && Date.parse(have.last_soft_at) < Date.parse(atIso) - windowDays * 86_400_000;
+    const row: RecipientHealthRow = !have || cold
+      ? { company_id: companyId, email: address, soft_bounces: 1, first_soft_at: atIso, last_soft_at: atIso, backoff_until: have && !cold ? have.backoff_until : null }
+      : { ...have, soft_bounces: have.soft_bounces + 1, last_soft_at: atIso };
+    this.health.set(key, row);
+    return { ...row };
+  }
+  async setBackoff(companyId: string, email: string, untilIso: string | null) {
+    const row = this.health.get(`${companyId}:${email.trim().toLowerCase()}`);
+    if (row) row.backoff_until = untilIso;
+  }
+  async clearRecipientHealth(companyId: string, email: string) {
+    this.health.delete(`${companyId}:${email.trim().toLowerCase()}`);
+  }
+  async sendByProviderMessage(companyId: string, provider: string, providerMessageId: string) {
+    const row = [...this.sends.values()].find((s) => s.company_id === companyId && s.provider === provider && s.provider_message_id === providerMessageId);
+    return row ? { ...row } : null;
+  }
+  async markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }) {
+    const row = this.sends.get(key);
+    if (!row) return;
+    Object.assign(row, { status: "sent", permanent: false, error: null, provider: fields.provider, provider_message_id: fields.providerMessageId, account_id: fields.accountId, from_address: fields.fromAddress, skipped: fields.skipped ?? [], sent_at: nowIso() });
+  }
+  async setSendDelivery(companyId: string, key: string, status: string, detail: Record<string, unknown>) {
+    const row = this.sends.get(key);
+    if (row && row.company_id === companyId) Object.assign(row, { delivery_status: status, delivery: { ...(row.delivery ?? {}), ...detail } });
+  }
+  async patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>) {
+    const row = this.sends.get(key);
+    if (row && row.company_id === companyId) row.delivery = { ...(row.delivery ?? {}), ...detail };
+  }
+  async markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }) {
+    const row = this.messages.get(id);
+    if (!row || row.company_id !== companyId) return;
+    Object.assign(row, { status: "sent", from_addr: { email: fields.fromAddress }, sent_context: fields.context, send_key: fields.sendKey, send_error: null });
+  }
+  async eraseEspRecipients(companyId: string, emails: string[]) {
+    const wanted = new Set(emails.map((email) => email.trim().toLowerCase()));
+    const before = this.espEvents.length;
+    this.espEvents = this.espEvents.filter((event) => !(event.companyId === companyId && wanted.has(event.recipient)));
+    let removed = before - this.espEvents.length;
+    for (const [key, row] of [...this.health]) {
+      if (row.company_id === companyId && wanted.has(row.email)) {
+        this.health.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   // erasure
   async crmContactEmails(companyId: string, contactId: string) {
     void companyId;
@@ -573,7 +732,7 @@ export class MemoryStore implements GmailStore {
     for (const key of keys) {
       const row = this.sends.get(key);
       if (!row || row.company_id !== companyId) continue;
-      Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
+      Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], delivery: {}, error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
       n += 1;
     }
     return n;

@@ -62,7 +62,7 @@ describe("erasing one person from the Mailbox", () => {
     const { env, store, host } = seeded();
     const outcome = await eraseSubject(env, CO, request());
     expect(outcome.errors).toBeUndefined();
-    expect(outcome.counts).toEqual({ messages: 3, drafts: 1, replyIssues: 1, sendRecords: 2, pendingLeads: 1, crmCopies: 1, doNotEmailRowsReplaced: 3, doNotEmailMarkers: 2 });
+    expect(outcome.counts).toEqual({ messages: 3, drafts: 1, replyIssues: 1, sendRecords: 2, providerEvents: 0, pendingLeads: 1, crmCopies: 1, doNotEmailRowsReplaced: 3, doNotEmailMarkers: 2 });
     // Messages: her mail, our mail to her, the draft to her other address, and the one that copied her. Bob's own mail stays.
     expect([...store.messages.keys()]).toEqual(["m-bob"]);
     expect(store.decisionsLog).toEqual([{ company_id: CO, subject_id: "m-bob" }]);

@@ -39,7 +39,7 @@ function cockpitDb(data: Data) {
         if (data.fail?.test(text)) throw new Error("boom");
         if (/SELECT DISTINCT company_id FROM/.test(text)) return [{ company_id: CO }];
         if (text.includes("AS needs_reply")) return data.counts ? [data.counts] : [];
-        if (text.includes(`FROM ${NAMESPACE}.accounts WHERE company_id = $1 AND status IN`)) return data.accounts ?? [];
+        if (text.includes(`FROM ${NAMESPACE}.accounts WHERE company_id = $1 AND provider = 'gmail' AND status IN`)) return data.accounts ?? [];
         if (text.includes(`FROM ${NAMESPACE}.send_requests`) && text.includes("ORDER BY sent_at DESC")) return data.sends ?? [];
         if (text.includes(`FROM ${NAMESPACE}.decisions`)) return data.decisions ?? [];
         return [];

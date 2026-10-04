@@ -9,8 +9,10 @@
  * triage, drafts), the decisions logged about them, the Reply-needed issues'
  * title and description (the issue stays, its text is replaced), the send
  * records' recipients and request bodies (the record stays so a repeated send
- * request is still refused as a duplicate), a lead that was waiting to reach the
- * CRM, and the Mailbox's copy of the CRM contact.
+ * request is still refused as a duplicate, with what the email provider said
+ * about the delivery wiped), the email provider's delivery events and soft-bounce
+ * records about the address, a lead that was waiting to reach the CRM, and the
+ * Mailbox's copy of the CRM contact.
  *
  * Kept, and said so in the answer:
  * - **A do-not-email marker.** A one-way hash of the address (the same SHA-256
@@ -104,6 +106,8 @@ export async function eraseSubject(env: Pick<Env, "ctx" | "store" | "now">, comp
   const sendKeys = await env.store.sendKeysTo(companyId, emails);
   const sends = await env.store.redactSends(companyId, sendKeys);
   await env.store.scrubInboxResults(companyId, sendKeys);
+  // What the email provider reported about the person (events and soft-bounce rows); the daily counts keep no address.
+  const providerRows = await env.store.eraseEspRecipients(companyId, emails);
   const handoffs = await env.store.deleteLeadOutbox(companyId, emails);
   const copies = await env.store.blankCrmProjection(companyId, request.subject.contactId ?? null, emails);
 
@@ -111,7 +115,7 @@ export async function eraseSubject(env: Pick<Env, "ctx" | "store" | "now">, comp
   for (const email of emails) replaced += (await env.store.eraseSuppression({ companyId, email, hash: erasureHash(email), scope: "all" })).replaced;
 
   const drafts = messages.filter((message) => message.direction === "outbound" && (message.status === "draft" || message.status === "queued")).length;
-  const counts: Record<string, number> = { messages: Math.max(0, deleted - drafts), drafts, replyIssues: issues, sendRecords: sends, pendingLeads: handoffs, crmCopies: copies, doNotEmailRowsReplaced: replaced, doNotEmailMarkers: emails.length };
+  const counts: Record<string, number> = { messages: Math.max(0, deleted - drafts), drafts, replyIssues: issues, sendRecords: sends, providerEvents: providerRows, pendingLeads: handoffs, crmCopies: copies, doNotEmailRowsReplaced: replaced, doNotEmailMarkers: emails.length };
   const retained = [
     { what: "A do-not-email marker for each address (a one-way hash; no address, name or text)", why: "So the person is never emailed again and their old mail is not imported again." },
     ...(threads.length > 0 ? [{ what: `The Gmail copies of ${threads.length} conversation${threads.length === 1 ? "" : "s"} in the connected mailbox`, why: "The Mailbox cannot delete Gmail mail permanently and a conversation can involve other people and the company's records. A person deletes it in Gmail if there is no reason to keep it." }] : []),
@@ -148,7 +152,7 @@ export async function onConsentRecorded(env: Pick<Env, "ctx" | "store">, company
 }
 
 /** `consent.recorded` for an opt-out the Mailbox itself saw (a reply that says stop, or a one-click link). Never throws. */
-export async function announceOptOut(env: Pick<Env, "ctx">, companyId: string, input: { email: string; senderKey: string; source: "reply" | "unsubscribe_link"; wording?: string | null; at?: string }): Promise<void> {
+export async function announceOptOut(env: Pick<Env, "ctx">, companyId: string, input: { email: string; senderKey: string; source: "reply" | "unsubscribe_link" | "api"; wording?: string | null; at?: string }): Promise<void> {
   const at = input.at ?? new Date().toISOString();
   const client = /^(company|contact):(.+)$/.exec(input.senderKey);
   const subject = { email: input.email, clientKind: client ? (client[1] as "company" | "contact") : null, clientRef: client ? client[2]! : null };
