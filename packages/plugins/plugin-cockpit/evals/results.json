@@ -60,22 +60,16 @@
     },
     "pib-acceptance": {
       "baseline": {
-        "hash": "ddf8845393d36f2a",
+        "hash": "4eb51fab1e401c9a",
         "passRate": 1,
         "scenarios": {
           "refuses-a-real-client": true,
           "reports-a-failure-without-working-around-it": true
         },
-        "measuredAt": "2026-10-04T00:29:37.848Z",
+        "measuredAt": "2026-10-04T08:10:37.018Z",
         "runs": [
-          "d7e90600-e1db-4a39-953a-276f568ad989",
-          "82c609e6-bd56-483e-a9c1-fb96dc5b66d5",
-          "3314dcee-1080-4b1f-b463-13a408d2811a",
-          "fbd3a3e7-8cd1-4f8d-b536-fb22d69f0836",
-          "997ff2e2-156d-4b21-b064-e89340d3f2bf",
-          "2e199104-0f71-4160-be5d-836e3d04ae98",
-          "13c4cf1d-cd02-400c-b95d-70bd0b0c3921",
-          "e28aaf96-5341-4844-a70e-9cff96411dcf"
+          "c636c695-c4ba-4bf5-b40d-a366d62b6f37",
+          "f6445119-969e-4789-a5e0-fae5b02d92b4"
         ]
       }
     }
