@@ -217,6 +217,47 @@ function ns(ctx: PluginContext): string {
   return name;
 }
 
+/** Writes one `decisions` row per answer; returns the row ids by question key. A failed write is logged and skipped. */
+async function logAnswers(
+  ctx: PluginContext,
+  companyId: string,
+  input: { config: DecisionClientConfig; purpose: string; subject: { kind: string; id: string }; acting?: string[]; log?: boolean },
+  answers: Record<string, JevAnswer>,
+  model: string | undefined,
+): Promise<Record<string, string>> {
+  const ids: Record<string, string> = {};
+  if (input.log === false) return ids;
+  for (const [key, answer] of Object.entries(answers)) {
+    const id = crypto.randomUUID();
+    const value = valueOf(answer);
+    try {
+      await ctx.db.execute(
+        `INSERT INTO ${ns(ctx)}.decisions (id, company_id, purpose, subject_kind, subject_id, question_key, answer_type, value_text, value_num, confidence, probabilities, model, acted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)`,
+        [
+          id,
+          companyId,
+          input.purpose,
+          input.subject.kind,
+          input.subject.id,
+          key,
+          answer.type,
+          typeof value === "string" ? value : null,
+          typeof value === "number" ? value : null,
+          confidenceOf(answer),
+          answer.type === "noul" ? null : JSON.stringify(answer.probabilities ?? {}),
+          model ?? input.config.model ?? JEV_MODEL_DEFAULT,
+          Boolean(input.acting?.includes(key)),
+        ],
+      );
+      ids[key] = id;
+    } catch (error) {
+      ctx.logger.info("Decision log write failed", { key, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return ids;
+}
+
 /**
  * Ask Jev and log the answers. Returns null when Jev is not configured or the
  * call fails (the failure is logged; callers fall back to their rules).
@@ -230,38 +271,121 @@ export async function decide(ctx: PluginContext, companyId: string, input: Decid
     ctx.logger.warn("Jev decision failed; falling back", { purpose: input.purpose, error: error instanceof Error ? error.message : String(error) });
     return null;
   }
-  const ids: Record<string, string> = {};
-  if (input.log !== false) {
-    for (const [key, answer] of Object.entries(response.answers ?? {})) {
-      const id = crypto.randomUUID();
-      const value = valueOf(answer);
-      try {
-        await ctx.db.execute(
-          `INSERT INTO ${ns(ctx)}.decisions (id, company_id, purpose, subject_kind, subject_id, question_key, answer_type, value_text, value_num, confidence, probabilities, model, acted)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)`,
-          [
-            id,
-            companyId,
-            input.purpose,
-            input.subject.kind,
-            input.subject.id,
-            key,
-            answer.type,
-            typeof value === "string" ? value : null,
-            typeof value === "number" ? value : null,
-            confidenceOf(answer),
-            answer.type === "noul" ? null : JSON.stringify(answer.probabilities ?? {}),
-            response.model ?? input.config.model ?? JEV_MODEL_DEFAULT,
-            Boolean(input.acting?.includes(key)),
-          ],
-        );
-        ids[key] = id;
-      } catch (error) {
-        ctx.logger.info("Decision log write failed", { key, error: error instanceof Error ? error.message : String(error) });
+  const ids = await logAnswers(ctx, companyId, { ...input, config: input.config }, response.answers ?? {}, response.model);
+  return { model: response.model, answers: response.answers ?? {}, inputTokens: response.usage?.input_tokens ?? 0, ids };
+}
+
+/** Items per Jev request, and the most characters of state one request carries (Jev reads about 32k tokens). */
+export const BATCH_MAX_ITEMS = 25;
+export const BATCH_MAX_CHARS = 60_000;
+
+export interface DecideBatchInput<T> {
+  config: DecisionClientConfig | null;
+  purpose: string;
+  subjectKind: string;
+  items: T[];
+  /** A stable id per item: the subject id in the decision log, and how the answers find their way back. */
+  idOf: (item: T) => string;
+  /** What Jev reads about one item (only the fields the decision needs). */
+  stateOf: (item: T) => unknown;
+  /** The same questions asked of every item. Keys are returned per item exactly as written here. */
+  questions: JevQuestions;
+  /** Shared by every item and sent once per request instead of once per item (the rules, the site name, the rubric context). */
+  context?: unknown;
+  acting?: string[];
+  maxItems?: number;
+  maxChars?: number;
+  log?: boolean;
+  fetchImpl?: typeof fetch;
+}
+
+/** Splits items into requests: at most `maxItems` and `maxChars` of state each. An item that is too big alone still goes alone. */
+export function chunkForBatch<T>(items: T[], stateChars: (item: T) => number, maxItems = BATCH_MAX_ITEMS, maxChars = BATCH_MAX_CHARS): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let size = 0;
+  for (const item of items) {
+    const n = stateChars(item);
+    if (current.length > 0 && (current.length >= maxItems || size + n > maxChars)) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(item);
+    size += n;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * Judge many items in one pass: one Jev request per chunk of items instead of one per item. The shared context is sent once,
+ * each item's state once, and every item gets the same questions under its own names. Answers come back split per item
+ * and are logged per item, exactly as `decide` would. The result lines up with `items`; an item is null when Jev is not
+ * configured or its request failed after the single-item retry, so callers fall back to their rules as they do today.
+ *
+ * Questions about one item must not depend on another item (ranking, "better than #40"): those run afterwards on the
+ * scored set, in a second stage the caller owns.
+ */
+export async function decideBatch<T>(ctx: PluginContext, companyId: string, input: DecideBatchInput<T>): Promise<Array<DecisionResult | null>> {
+  const out: Array<DecisionResult | null> = new Array(input.items.length).fill(null);
+  const config = input.config;
+  if (!config || input.items.length === 0) return out;
+  const index = new Map<T, number>(input.items.map((item, i) => [item, i]));
+  const states = new Map<T, unknown>(input.items.map((item) => [item, input.stateOf(item)]));
+  const chunks = chunkForBatch(input.items, (item) => JSON.stringify(states.get(item) ?? "").length + 80, input.maxItems, input.maxChars);
+
+  for (const chunk of chunks) {
+    const state: Record<string, unknown> = { items: Object.fromEntries(chunk.map((item) => [input.idOf(item), states.get(item)])) };
+    if (input.context !== undefined) state.context = input.context;
+    const questions: JevQuestions = {};
+    const names = new Map<string, { item: T; key: string }>();
+    chunk.forEach((item, n) => {
+      for (const [key, question] of Object.entries(input.questions)) {
+        const name = `${key}__${n}`;
+        names.set(name, { item, key });
+        questions[name] = { ...question, instructions: `Answer for the item with id "${input.idOf(item)}" in state.items. ${typeof question.instructions === "string" ? question.instructions : JSON.stringify(question.instructions)}` } as JevQuestion;
       }
+    });
+    let response: JevResponse | null = null;
+    try {
+      response = await jevEvaluate(config, state, questions, { fetchImpl: input.fetchImpl });
+    } catch (error) {
+      ctx.logger.warn("Jev batch failed; asking one item at a time", { purpose: input.purpose, items: chunk.length, error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!response) {
+      // One bad item or a long request can fail a whole chunk: retry singly so nothing is lost.
+      for (const item of chunk) {
+        out[index.get(item)!] = await decide(ctx, companyId, {
+          config,
+          purpose: input.purpose,
+          subject: { kind: input.subjectKind, id: input.idOf(item) },
+          state: input.context !== undefined ? { context: input.context, item: states.get(item) } : states.get(item),
+          questions: input.questions,
+          acting: input.acting,
+          log: input.log,
+          fetchImpl: input.fetchImpl,
+        });
+      }
+      continue;
+    }
+    const perItem = new Map<T, Record<string, JevAnswer>>(chunk.map((item) => [item, {}]));
+    for (const [name, answer] of Object.entries(response.answers ?? {})) {
+      const target = names.get(name);
+      if (target) perItem.get(target.item)![target.key] = answer;
+    }
+    const share = Math.round((response.usage?.input_tokens ?? 0) / chunk.length);
+    for (const item of chunk) {
+      const answers = perItem.get(item)!;
+      if (Object.keys(answers).length === 0) {
+        out[index.get(item)!] = null;
+        continue;
+      }
+      const ids = await logAnswers(ctx, companyId, { config, purpose: input.purpose, subject: { kind: input.subjectKind, id: input.idOf(item) }, acting: input.acting, log: input.log }, answers, response.model);
+      out[index.get(item)!] = { model: response.model, answers, inputTokens: share, ids };
     }
   }
-  return { model: response.model, answers: response.answers ?? {}, inputTokens: response.usage?.input_tokens ?? 0, ids };
+  return out;
 }
 
 /** Run `decide` over many items with bounded concurrency (Jev allows ~1,200 requests/min). */

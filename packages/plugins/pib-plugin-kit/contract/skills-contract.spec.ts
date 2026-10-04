@@ -15,7 +15,7 @@
  * tool or team role.
  */
 import { describe, expect, it } from "vitest";
-import { ASKING_HEADING, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, teamSkillKey } from "../src/index.js";
+import { ASKING_HEADING, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, WRITING_HEADING, teamSkillKey } from "../src/index.js";
 
 type Tool = { name: string; description?: string; parametersSchema?: Record<string, unknown> };
 type Skill = { skillKey: string; markdown?: string };
@@ -74,8 +74,8 @@ describe("skills ↔ tools contract", async () => {
     expect(missing).toEqual([]);
   });
 
-  it("every PiB skill carries the memory and asking sections", () => {
-    const without = skills.filter((s) => !s.md.includes(COMPANY_MEMORY_HEADING) || !s.md.includes(ASKING_HEADING)).map((s) => `${s.plugin}/${s.key}`);
+  it("every PiB skill carries the memory, asking and writing sections", () => {
+    const without = skills.filter((s) => !s.md.includes(COMPANY_MEMORY_HEADING) || !s.md.includes(ASKING_HEADING) || !s.md.includes(WRITING_HEADING)).map((s) => `${s.plugin}/${s.key}`);
     expect(without).toEqual([]);
   });
 
@@ -92,7 +92,7 @@ describe("skills ↔ tools contract", async () => {
   });
 
   it("skills stay within budget", () => {
-    const tooBig = skills.filter((s) => s.md.length > 18_000).map((s) => `${s.plugin}/${s.key}: ${s.md.length} chars`);
+    const tooBig = skills.filter((s) => s.md.length > 19_000).map((s) => `${s.plugin}/${s.key}: ${s.md.length} chars`);
     expect(tooBig).toEqual([]);
   });
 });

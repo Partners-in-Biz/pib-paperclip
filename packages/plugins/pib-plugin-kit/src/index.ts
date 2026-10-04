@@ -1,6 +1,7 @@
 export * from "./skills.js";
 export * from "./memory.js";
 export * from "./asking.js";
+export * from "./writing.js";
 export * from "./team.js";
 export * from "./crypto.js";
 export * from "./config.js";

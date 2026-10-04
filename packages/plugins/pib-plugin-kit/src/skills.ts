@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { withCompanyMemory } from "./memory.js";
 import { withAskingSection } from "./asking.js";
+import { withWritingSection } from "./writing.js";
 import { rememberCompany } from "./known-companies.js";
 
 export interface SkillDeclarationLike {
@@ -129,12 +130,13 @@ export type SkillSyncer = ReturnType<typeof createSkillSyncer>;
 /**
  * Prepend frontmatter with a unique pib- slug so reset never clobbers other
  * company skills, and append the company memory section (read before, write
- * after) and the "Asking a person" section unless `memory: false` (or
+ * after), the "Asking a person" section and the plain "Writing" section unless `memory: false` (or
  * `asking: false` for the asking section alone).
  */
-export function withFrontmatter(input: { name: string; description: string; memory?: boolean; asking?: boolean }, body: string): string {
+export function withFrontmatter(input: { name: string; description: string; memory?: boolean; asking?: boolean; writing?: boolean }, body: string): string {
   const description = input.description.replace(/\s+/g, " ").trim().replace(/"/g, "'");
   let content = input.memory === false ? body.trimStart() : withCompanyMemory(body.trimStart());
   if (input.asking !== false && input.memory !== false) content = withAskingSection(content);
+  if (input.writing !== false && input.memory !== false) content = withWritingSection(content);
   return `---\nname: ${input.name}\nslug: ${input.name}\ndescription: "${description}"\n---\n\n${content}`;
 }
