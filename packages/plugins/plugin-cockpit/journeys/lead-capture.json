@@ -1,6 +1,6 @@
 {
   "key": "lead-capture",
-  "version": 1,
+  "version": 2,
   "title": "Lead captured and qualified",
   "summary": "A visitor sends an enquiry to the client's lead form; it reaches the CRM and is qualified. The first leg of lead to cash, on the canary client. Runs every night: it creates no quote, invoice or approval.",
   "schedule": [
@@ -186,10 +186,10 @@
     },
     {
       "id": "close-lead-issue",
-      "title": "Close the lead issue the enquiry opened",
+      "title": "The lead issue is picked up and closed by the Inbound Qualifier",
       "kind": "check",
       "input": {},
-      "note": "The enquiry opens a lead issue for the Account Manager that mentions the canary. Find it with the Paperclip API (open issues whose text mentions canary or Acceptance run {{runId}}), comment 'Closed by acceptance run {{runId}}: canary', set it done, and report {issueId}. If there is none, report error: no lead issue (the CRM promises one).",
+      "note": "The enquiry opens a lead issue (its text mentions the canary) and wakes the Inbound Qualifier, which owns it and has it checked out while it works. Do NOT close it yourself: the host refuses another agent's checkout, and the point is to see the real flow work. Find the issue with the Paperclip API (open issues whose text mentions canary or Acceptance run {{runId}}), then check it once a minute (GET the issue) for up to 15 minutes. Report {issueId} when its status is done or cancelled. If it is still open after 15 minutes, report {issueId} anyway: the step fails and that is the finding (the qualifier did not finish). If there is no lead issue at all, report error: no lead issue (the CRM promises one).",
       "expect": [
         {
           "path": "issueId",
@@ -205,7 +205,7 @@
         ],
         "matches": "canary"
       },
-      "ownerRole": "account-manager"
+      "ownerRole": "inbound-qualifier"
     },
     {
       "id": "cleanup",
