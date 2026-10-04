@@ -19,8 +19,7 @@ import {
   ASK_OWNER_TOOL,
   confidenceOf,
   correctDecision,
-  decide,
-  decideMany,
+  decideBatch,
   decisionConfig,
   isYes,
   SecretResolver,
@@ -442,16 +441,16 @@ export async function triageInbox(ctx: PluginContext, config: SocialConfig, opti
     if (post) posts.set(id, { body: post.body, owner: post.owner_user_id });
   }
   const results: Array<DecisionResult | null> = jev
-    ? await decideMany(items, 4, (item) =>
-        decide(ctx, companyId, {
-          config: jev,
-          purpose: TRIAGE_PURPOSE,
-          subject: { kind: "inbox_item", id: item.id },
-          state: triageState(item, item.post_id ? posts.get(item.post_id)?.body ?? null : null),
-          questions: TRIAGE_QUESTIONS,
-          fetchImpl: options.fetchImpl,
-        }),
-      )
+    ? await decideBatch(ctx, companyId, {
+        config: jev,
+        purpose: TRIAGE_PURPOSE,
+        subjectKind: "inbox_item",
+        items,
+        idOf: (item) => item.id,
+        stateOf: (item) => triageState(item, item.post_id ? posts.get(item.post_id)?.body ?? null : null),
+        questions: TRIAGE_QUESTIONS,
+        fetchImpl: options.fetchImpl,
+      })
     : items.map(() => null);
   const accounts = new Map<string, AccountRow | null>();
   const account = async (id: string | null) => {

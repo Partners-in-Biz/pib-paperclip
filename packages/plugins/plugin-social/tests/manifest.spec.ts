@@ -48,7 +48,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.8.0");
+    expect(manifest.version).toBe("0.8.1");
     expect(manifest.version).toBe(pkg.version);
   });
 

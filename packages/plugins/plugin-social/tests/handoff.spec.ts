@@ -332,9 +332,12 @@ describe("Social → CRM leads", () => {
       { events: { emit }, secrets: { resolve: vi.fn(async () => "jev-key") }, companies: { get: vi.fn(async () => ({ id: "co" })) } },
       { queryResult: (sql) => (sql.includes("triaged_at IS NULL") ? [inboxRow] : []) },
     );
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ model: "jev-1", answers: { intent: { type: "choice", choice: "lead", probabilities: { lead: 0.93 }, confidence: 0.93 }, needs_reply: { type: "noul", noul: 0.2 }, escalate: { type: "noul", noul: 0.01 } }, usage: { input_tokens: 10 } }), { status: 200 }),
-    );
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { questions: Record<string, unknown> };
+      const per: Record<string, unknown> = { intent: { type: "choice", choice: "lead", probabilities: { lead: 0.93 }, confidence: 0.93 }, needs_reply: { type: "noul", noul: 0.2 }, escalate: { type: "noul", noul: 0.01 } };
+      const answers = Object.fromEntries(Object.keys(body.questions).map((name) => [name, per[name.split("__")[0]!]]).filter(([, v]) => v !== undefined));
+      return new Response(JSON.stringify({ model: "jev-1", answers, usage: { input_tokens: 10 } }), { status: 200 });
+    });
     const config = { companyId: "co", timezone: "Africa/Johannesburg", raw: { jev: { apiKey: { type: "secret_ref", secretId: "s1" } } } } as unknown as SocialConfig;
     const summary = await triageInbox(ctx, config, { fetchImpl: fetchImpl as never });
     expect(summary).toMatchObject({ triaged: 1, leads: 1 });

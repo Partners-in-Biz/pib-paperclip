@@ -44,6 +44,18 @@ function answers(kind: "spam" | "reply" | "risk" | "chat" | "unsure-spam") {
   return base;
 }
 
+/** Jev now gets a whole batch in one request: answer each `<question>__<n>` for the n-th item with that item's answers. */
+function batchReply(init: RequestInit, kindOf: (text: string) => Parameters<typeof answers>[0]): Response {
+  const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> }; questions: Record<string, unknown> };
+  const items = Object.values(body.state.items);
+  const out: Record<string, unknown> = {};
+  for (const name of Object.keys(body.questions)) {
+    const [key, n] = name.split("__");
+    out[name] = (answers(kindOf(items[Number(n)]!.text)) as Record<string, unknown>)[key!];
+  }
+  return json({ model: "jev-1.13.0", answers: out, usage: { input_tokens: 90 } });
+}
+
 function world(items: InboxItemRow[], options: { jev?: boolean; digest?: string | null; agent?: boolean } = {}) {
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ issueId: string; body: string }> = [];
@@ -187,22 +199,21 @@ describe("triage job", () => {
   it("marks spam read, queues replies in one digest per account per day, and escalates risk to the post owner", async () => {
     const items = [item("spam", "Free followers!!!"), item("q1", "What time do you open?"), item("q2", "Do you deliver to Ballito?"), item("risk", "I got food poisoning and I am calling my lawyer")];
     const fetchMock = mockFetch([
-      ["POST https://api.typesafe.ai/v1/systemone", (_url, init) => {
-        const body = JSON.parse(String(init.body)) as { state: { text: string } };
-        const kind = body.state.text.startsWith("Free") ? "spam" : body.state.text.includes("lawyer") ? "risk" : "reply";
-        return json({ model: "jev-1.13.0", answers: answers(kind), usage: { input_tokens: 90 } });
-      }],
+      ["POST https://api.typesafe.ai/v1/systemone", (_url, init) => batchReply(init, (text) => (text.startsWith("Free") ? "spam" : text.includes("lawyer") ? "risk" : "reply"))],
     ]);
     const w = world(items, { agent: true });
     const summary = await triageInbox(w.ctx, w.config, { now: NOW });
     expect(summary).toEqual({ triaged: 4, spam: 1, queued: 2, escalated: 1, failed: 0 });
 
-    // Minimal data: named fields only, one call per item with all four questions.
-    expect(fetchMock.calls).toHaveLength(4);
+    // Minimal data: named fields only, one request for the whole batch with all four questions per item.
+    expect(fetchMock.calls).toHaveLength(1);
     const request = jsonOf(fetchMock.calls[0]!);
     expect(request.model).toBe("jev-1.13.0");
-    expect(request.state).toEqual({ platform: "Facebook", kind: "comment", text: "Free followers!!!", post: "Our new winter menu is here" });
-    expect(Object.keys(request.questions as object)).toEqual(["needs_reply", "intent", "sentiment", "escalate"]);
+    const sent = (request.state as { items: Record<string, unknown> }).items;
+    expect(Object.keys(sent)).toEqual(["spam", "q1", "q2", "risk"]);
+    expect(sent.spam).toEqual({ platform: "Facebook", kind: "comment", text: "Free followers!!!", post: "Our new winter menu is here" });
+    expect(Object.keys(request.questions as object)).toHaveLength(16);
+    expect(Object.keys(request.questions as object).slice(0, 4)).toEqual(["needs_reply__0", "intent__0", "sentiment__0", "escalate__0"]);
     expect(fetchMock.calls[0]!.headers.get("authorization")).toBe("Bearer tsk-test");
 
     // Spam → read.
@@ -227,7 +238,7 @@ describe("triage job", () => {
   });
 
   it("adds later replies to today's digest as a comment and wakes the agent", async () => {
-    mockFetch([["POST https://api.typesafe.ai/v1/systemone", () => json({ model: "jev-1.13.0", answers: answers("reply") })]]);
+    mockFetch([["POST https://api.typesafe.ai/v1/systemone", (_url, init) => batchReply(init, () => "reply")]]);
     const w = world([item("q3", "Are you open on Sunday?")], { agent: true, digest: "iss-today" });
     await triageInbox(w.ctx, w.config, { now: NOW });
     expect(w.created).toHaveLength(0);
