@@ -339,6 +339,13 @@ const plugin = definePlugin({
       registerAction(`crm.${name}`, async (params, context) => runCareTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
     }
 
+    // Website tools (wp-seo, wp-content, wp-redirects and the rest): also page actions `crm.<tool name>`, so a person can
+    // change a site the agents are locked out of. The source is "human" for a board user, so the sign-off lock (which only
+    // refuses agents) lets it through; every write still needs a reason and is logged in site_changes with the actor.
+    for (const name of WP_TOOL_NAMES) {
+      registerAction(`crm.${name}`, async (params, context) => runWpTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
+    }
+
     // E-sign: every tool is also a page action `crm.<tool name>`; turning it on for a client is a person's action only.
     for (const name of [...ESIGN_TOOL_NAMES, ...ESIGN_PERSON_ACTIONS]) {
       registerAction(`crm.${name}`, async (params, context) => runEsignTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));

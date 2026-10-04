@@ -175,6 +175,13 @@ describe("client websites", () => {
     expect(calls.filter((c) => c.url.includes("seo/set"))).toHaveLength(0);
     expect(store.site_changes ?? []).toHaveLength(0);
     expect((await tool(harness, "wp-seo", { siteId: site.id, op: "get", url: "/about" })).endpoint).toBe("seo/get");
+    // A person (the board) is never blocked: the same write as a page action goes through, is logged with the person as actor.
+    const byPerson = await harness.performAction<Record<string, any>>("crm.wp-seo", write, { companyId: CO, actor: BOARD });
+    expect(byPerson).toMatchObject({ endpoint: "seo/set", changeId: "chg-9" });
+    expect(calls.filter((c) => c.url.includes("seo/set"))).toHaveLength(1);
+    expect(store.site_changes).toEqual([expect.objectContaining({ site_id: site.id, endpoint: "seo/set", ok: true, actor: expect.stringMatching(/^user:/) })]);
+    // ...and still needs a reason.
+    await expect(harness.performAction("crm.wp-seo", { ...write, reason: "" }, { companyId: CO, actor: BOARD })).rejects.toThrow(/reason is required/);
     // The approved window itself is covered in site-signoff.spec.ts (the in-memory database cannot evaluate approved_until > now()).
   });
 
