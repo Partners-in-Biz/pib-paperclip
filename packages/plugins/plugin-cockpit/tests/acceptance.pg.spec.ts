@@ -813,6 +813,7 @@ d("acceptance runs (Postgres)", () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ title: "Acceptance request: Lead captured and qualified (2026-10-04)", assigneeAgentId: ACC, originId: "cockpit:acceptance:nightly:2026-10-04" });
       expect(requests[0]!.description).toContain("create-canary-client");
+      expect(requests[0]!.description).toContain("again, before every journey, even after a previous journey's cleanup");
       expect(requests[0]!.description).toContain("Never approve, send or publish");
       expect(w.wakeups).toContain(requests[0]!.id);
       w.clock.set("2026-10-05T02:40:00.000Z");

@@ -27,6 +27,11 @@ describe("the Acceptance skill", () => {
     for (const text of ["The canary client only", "Draft and dry run only", "Never approve, send, publish, merge or pay", "Report what happened, not what you expected", "A step you cannot prove is a failed step", "@canary.invalid", "do not retry to hide it"]) expect(ACCEPTANCE_SKILL_BODY, text).toContain(text);
   });
 
+  it("tells the agent to create the canary again before every journey, because each cleanup deletes it", () => {
+    expect(ACCEPTANCE_SKILL_BODY).toContain("One canary per workspace, and every journey's cleanup deletes it");
+    expect(ACCEPTANCE_SKILL_BODY).toContain("Never reuse an earlier journey's create-canary-client output");
+  });
+
   it("tells the agent to give the input of every tool or http call, to take a run an issue names, and to abort when a tool does not exist yet", () => {
     expect(ACCEPTANCE_SKILL_BODY).toContain("always give it for a tool or http step");
     expect(ACCEPTANCE_SKILL_BODY).toContain("an issue that says to run a journey now");

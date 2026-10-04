@@ -565,7 +565,7 @@ export function requestText(input: { journeys: Journey[]; why: string; date: str
     ...input.journeys.map((j) => `- **${j.title}** (\`${j.key}\`, v${j.version}): ${j.summary}`),
     "",
     "For each journey:",
-    "1. Call `partnersinbiz.crm:create-canary-client` and take its `client`.",
+    "1. Call `partnersinbiz.crm:create-canary-client` again, before every journey, even after a previous journey's cleanup (that cleanup deletes the canary), and take its `client`. Never reuse an earlier journey's output.",
     "2. Call `partnersinbiz.cockpit:acceptance-run` with action `start`, the journey key, that client and this issue's id. It hands you the first step; make the call it names, then `record` the input you used and the tool's data. Repeat until it says the run is finished.",
     "3. The Cockpit writes the report on this issue and opens an issue for the role that owns each failed step. Do not fix a failure yourself and do not work around it.",
     "",
