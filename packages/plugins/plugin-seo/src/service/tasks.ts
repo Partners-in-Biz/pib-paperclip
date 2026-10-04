@@ -9,6 +9,7 @@ import * as db from "../db.js";
 import { BLOCK_COMMENT_MAX, blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
 import { branchFor, isCodeTask } from "../engine/site-change.js";
 import { completionBlocker } from "../engine/guards.js";
+import { isRehearsalSprint, REHEARSAL_REFUSAL } from "../engine/rehearsal.js";
 import {
   decideAssignee,
   needsSignoff,
@@ -105,6 +106,8 @@ async function humanTaskToDigest(env: Env, mc: MaterialiseContext, task: db.Spri
 
 export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db.SprintTask): Promise<string | null> {
   const { sprint, info } = mc;
+  // A rehearsal sprint keeps its task rows and opens nothing for them: no issue, no Needs you line (engine/rehearsal.ts).
+  if (isRehearsalSprint(sprint)) return null;
   if (task.owner === "human" && sprint.autopilotMode !== "off") {
     await humanTaskToDigest(env, mc, task);
     return null;
@@ -137,6 +140,7 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
     });
     const created = await openIssue(env, {
       companyId: sprint.companyId,
+      sprint,
       title: taskIssueTitle(task, sprint),
       description,
       originKind: ORIGIN.task,
@@ -172,6 +176,8 @@ export async function materialiseDueTasks(
   mc: MaterialiseContext,
   opts: { limit?: number; onlyTaskIds?: string[] } = {},
 ): Promise<{ created: number; remaining: number; errors: string[] }> {
+  // Nothing is due as an issue on a rehearsal sprint, and that is not an error (no root issue is expected either).
+  if (isRehearsalSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
   if (!mc.sprint.rootIssueId) return { created: 0, remaining: 0, errors: ["Sprint has no root issue yet"] };
   const tasks = await db.listTasks(env.ctx.db, mc.sprint.companyId, mc.sprint.id, { status: ["not_started"] });
   // An AI-search task is never opened for a sprint with AI search off (the switch retires them; this holds even if one is left over).
@@ -666,6 +672,7 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
     throw new SeoError("Only a person can start tasks early unless the sprint's autopilot is full. The plan follows its dates; ask the owner to press Start now on the SEO page.");
   }
   if (ctx.sprint.status === "paused") throw new SeoError("This sprint is paused. Resume it first; nothing starts while it is paused.");
+  if (isRehearsalSprint(ctx.sprint)) throw new SeoError(REHEARSAL_REFUSAL);
   if (!ctx.sprint.rootIssueId) throw new SeoError("The sprint has no root issue yet, so task issues cannot be opened.");
   const today = ctx.clock.day;
   const open = await db.listTasks(env.ctx.db, companyId, sprintId, { status: ["not_started"] });

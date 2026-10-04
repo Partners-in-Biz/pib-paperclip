@@ -87,7 +87,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Sprints",
     name: "create-sprint",
     displayName: "Create SEO sprint",
-    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations; AI search, Google Analytics and page groups start off, a person turns them on), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it.",
+    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations; AI search, Google Analytics and page groups start off, a person turns them on), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it. A fixture site (host ending .invalid) or the canary client makes a rehearsal sprint: its plan and tasks exist to read, but no issue is ever opened and nobody is asked for anything (the answer says rehearsal: true).",
     parametersSchema: schema(["siteUrl"], {
       siteUrl: text("The site, e.g. https://example.co.za"),
       ...clientProps('Who the sprint is for: "company:<CRM company id>" or "contact:<CRM contact id>" (a sole trader). Omit for Partners in Biz\'s own sites.'),
@@ -107,7 +107,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     description: "Read only. The extras a person can switch on per sprint (AI search, Google Analytics, page groups), which are on for a sprint (or for every sprint in a scope) and what new sprints start with. All are off until a person turns them on; you cannot change them, and the tools of an extra that is off refuse and change nothing.",
     parametersSchema: schema([], { sprintId: text("Sprint id: its switches and who changed them. Omit for every sprint (narrow with client)"), ...clientProps(CLIENT_FILTER) }),
   },
-  { group: "Sprints", name: "today", displayName: "Today's SEO plan", description: "What to do now: due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps, per sprint with its client. Omit sprintId for every active sprint (narrow with client).", parametersSchema: schema([], { sprintId, ...clientProps(CLIENT_FILTER) }) },
+  { group: "Sprints", name: "today", displayName: "Today's SEO plan", description: "What to do now: due, in-progress and blocked tasks (with issue ids), proposals, integration status and next steps, per sprint with its client. Omit sprintId for every active sprint, rehearsal sprints excepted (narrow with client).", parametersSchema: schema([], { sprintId, ...clientProps(CLIENT_FILTER) }) },
   { group: "Sprints", name: "set-autopilot", displayName: "Set sprint autopilot", description: "off: tasks go to the owner. safe: agent works its tasks; publish/send/deploy tasks need sign-off. full: no sign-off. Agents may only lower it.", parametersSchema: schema(["sprintId", "mode"], { sprintId, mode: choice(AUTOPILOT_MODES, "New autopilot mode; agents may only lower it") }) },
   {
     group: "Sprints",
@@ -134,7 +134,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   { group: "Sprints", name: "pause-sprint", displayName: "Pause SEO sprint", description: "Stop the daily run and new task issues for a sprint.", parametersSchema: schema(["sprintId"], { sprintId, reason: text("Why it is paused, posted on the sprint root issue (max 1000 chars)") }) },
   { group: "Sprints", name: "resume-sprint", displayName: "Resume SEO sprint", description: "Resume a paused or archived sprint; its status follows the calendar again.", parametersSchema: schema(["sprintId"], { sprintId }) },
-  { group: "Sprints", name: "archive-sprint", displayName: "Archive SEO sprint", description: "End a sprint. Nothing runs for it afterwards.", parametersSchema: schema(["sprintId"], { sprintId, reason: text("Why it ends, posted on the sprint root issue (max 1000 chars)") }) },
+  { group: "Sprints", name: "archive-sprint", displayName: "Archive SEO sprint", description: "End a sprint. Nothing runs for it afterwards. On a rehearsal sprint it also cancels any issue the sprint still has.", parametersSchema: schema(["sprintId"], { sprintId, reason: text("Why it ends, posted on the sprint root issue (max 1000 chars)") }) },
   { group: "Sprints", name: "post-digest", displayName: "Post SEO digest", description: "Once a day: post a short digest (under 1,000 characters) on the sprint root issue: your summary plus today's completed and waiting tasks. Full task reports belong on the task issue.", parametersSchema: schema(["sprintId", "summary"], { sprintId, summary: text("What you did, what moved, what is next — real numbers only") }) },
 
   // Tasks

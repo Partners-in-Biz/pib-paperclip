@@ -10,9 +10,13 @@
  * today's plan; also repairs the routines' stored issue template and moves task threads that grew too long.
  * seo-weekly (Mondays 05:00 UTC = 07:00 SAST): detectors + proposals + one
  * approval issue per sprint.
+ *
+ * A rehearsal sprint (engine/rehearsal.ts: a fixture site on .invalid, or the canary client) only has its clock and status kept
+ * by the daily run; the weekly run skips it. Neither opens an issue, asks a person for anything or calls out to Google or the site.
  */
 import { comparableUrl } from "../checks/parse.js";
 import * as db from "../db.js";
+import { isRehearsalSprint, REHEARSAL_NOTE } from "../engine/rehearsal.js";
 import { dailyStaggerHours, isRunning, issueRoom, nextSprintStatus, type AgentAvailability } from "../engine/sprint.js";
 import { daysBetween } from "../engine/time.js";
 import { fetchBingLinkCounts } from "../integrations/bing.js";
@@ -193,7 +197,9 @@ export async function runDailyForSprint(
   input: db.Sprint,
   deps: { agent: AgentAvailability; projectId: string | null },
 ): Promise<DailySprintResult> {
-  let sprint = await healWorkBranch(env, await autoLinkClientProject(env, input));
+  const rehearsal = isRehearsalSprint(input);
+  // A rehearsal sprint is not linked to a client project or a work branch: it has no issues to put there.
+  let sprint = rehearsal ? input : await healWorkBranch(env, await autoLinkClientProject(env, input));
   const warnings: string[] = [];
   const clock = clockFor(sprint, info.today);
   const status = nextSprintStatus(sprint.status, clock);
@@ -205,6 +211,15 @@ export async function runDailyForSprint(
     ...(deps.projectId && !sprint.projectId ? { project_id: deps.projectId } : {}),
   });
   sprint = { ...sprint, status, projectId: sprint.projectId ?? deps.projectId };
+
+  if (rehearsal) {
+    // Nothing else runs for it: no root issue, task issues, Needs you line, Google or site call, proposal or wake. Its clock moved above.
+    await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, {
+      today: { asOf: new Date().toISOString(), day: clock.day, week: clock.week, phase: clock.phase, due: 0, inProgress: 0, blocked: 0, proposals: 0, next: [REHEARSAL_NOTE], warnings: [] },
+      last_daily_on: info.today,
+    });
+    return { sprintId: sprint.id, status, day: clock.day, issuesOpened: 0, planUpgraded: false, needsYouResolved: 0, snapshotDay: null, measured: 0, healed: 0, warnings };
+  }
 
   try {
     sprint = await ensureRootIssue(env, info, sprint, sprint.projectId);
@@ -453,7 +468,7 @@ export async function runWeeklyForSprint(env: Env, info: CompanyInfo, sprint: db
 
 export async function runWeeklyJob(env: Env, opts: { force?: boolean } = {}): Promise<{ processed: number; proposals: number; errors: string[] }> {
   const started = Date.now();
-  const sprints = (await db.listRunnableSprints(env.ctx.db)).filter((s) => s.status === "active" || s.status === "compounding");
+  const sprints = (await db.listRunnableSprints(env.ctx.db)).filter((s) => (s.status === "active" || s.status === "compounding") && !isRehearsalSprint(s));
   let processed = 0;
   let proposals = 0;
   const errors: string[] = [];

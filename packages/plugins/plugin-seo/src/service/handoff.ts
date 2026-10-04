@@ -18,6 +18,7 @@
 import { HANDOFF_EVENTS, type ContentPublished } from "@partnersinbiz/pib-plugin-kit";
 import { bodyText, decodeEntities, extractMeta } from "../checks/parse.js";
 import * as db from "../db.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { errorMessage, type Env } from "./common.js";
 
 /** Task types whose completion means a page or post went live. */
@@ -172,6 +173,8 @@ interface Target {
 async function resolveTarget(env: Env, a: db.Announcement): Promise<{ target: Target } | { wait: string } | { drop: string }> {
   const sprint = await db.getSprint(env.ctx.db, a.companyId, a.sprintId);
   if (!sprint) return { drop: "The sprint no longer exists." };
+  // A rehearsal sprint's pages are fixtures: Social (and so a person and an agent) is never told about them.
+  if (isRehearsalSprint(sprint)) return { drop: "This is a rehearsal sprint: Social is never told about its pages." };
   const task = a.taskId ? await db.getTask(env.ctx.db, a.companyId, a.taskId) : null;
   if (a.taskId && task && task.status !== "done") return { drop: "The publish task is not done any more." };
   if (a.contentId) {

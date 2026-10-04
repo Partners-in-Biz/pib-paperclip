@@ -27,6 +27,7 @@ import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
 import { taskIssueDescription } from "../engine/copy.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { decideAssignee } from "../engine/sprint.js";
 import { continuationStatus, continuationSummary, moveHold, parseRollMark, rollableIssue, rollReason, THREAD_ROLL_BYTES, type RollMark, type RollReason } from "../engine/thread.js";
 import { resolveAgent } from "./agent.js";
@@ -135,6 +136,7 @@ async function rollTask(env: Env, companyId: string, listed: db.SprintTask, old:
   if (!task || task.issueId !== old.id) return { action: "skipped", detail: "the task already moved to another issue" };
   const sprint = await db.getSprint(env.ctx.db, companyId, task.sprintId);
   if (!sprint) return { action: "failed", detail: "the sprint is gone" };
+  if (isRehearsalSprint(sprint)) return { action: "skipped", detail: "a rehearsal sprint opens no continuation issue" };
   const info = await companyInfo(env, companyId);
   const agent = await resolveAgent(env, companyId);
   const [previews, last] = await Promise.all([
@@ -158,6 +160,7 @@ async function rollTask(env: Env, companyId: string, listed: db.SprintTask, old:
   const status = continuationStatus(String(old.status));
   const created = await openIssue(env, {
     companyId,
+    sprint,
     title: old.title,
     description: `${summary}\n\n---\n\n${taskDescription}`.slice(0, 30_000),
     originKind: ORIGIN.task,

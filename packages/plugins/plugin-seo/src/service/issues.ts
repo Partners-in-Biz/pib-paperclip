@@ -4,9 +4,10 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue } from "@partnersinbiz/pib-plugin-kit";
+import { isRehearsalSprint, REHEARSAL_REFUSAL, type RehearsalSubject } from "../engine/rehearsal.js";
 import { capComment, commentFingerprint, isRepeatNotice, rememberNotice, type CommentMemory } from "../engine/thread.js";
 import type { Env } from "./common.js";
-import { errorMessage } from "./common.js";
+import { errorMessage, SeoError } from "./common.js";
 
 type CreateInput = Parameters<PluginContext["issues"]["create"]>[0];
 type Issue = Awaited<ReturnType<PluginContext["issues"]["create"]>>;
@@ -14,6 +15,11 @@ type UpdatePatch = Parameters<PluginContext["issues"]["update"]>[1];
 
 export interface OpenIssueInput {
   companyId: string;
+  /**
+   * The sprint the issue is for. Required so no path can forget the rehearsal rule: a rehearsal sprint (a fixture site or the
+   * canary client, engine/rehearsal.ts) never gets an issue. Each path checks first and skips quietly; this is the net under them.
+   */
+  sprint: RehearsalSubject;
   title: string;
   description: string;
   originKind: `plugin:${string}`;
@@ -32,9 +38,10 @@ export interface OpenIssueInput {
 /**
  * Create a `todo` issue and wake an assigned agent (plugin-created issues do
  * not wake anyone on their own). If the user assignee or the parent is
- * rejected, retry without it rather than losing the task.
+ * rejected, retry without it rather than losing the task. Refuses (SeoError, nothing created) for a rehearsal sprint.
  */
 export async function openIssue(env: Env, input: OpenIssueInput): Promise<{ id: string; woke: boolean; assigned: "agent" | "user" | "none" }> {
+  if (isRehearsalSprint(input.sprint)) throw new SeoError(`${REHEARSAL_REFUSAL} (not opened: ${input.title.slice(0, 80)})`);
   const base: CreateInput & { wake?: boolean; wakeReason?: string } = {
     companyId: input.companyId,
     title: input.title.slice(0, 250),

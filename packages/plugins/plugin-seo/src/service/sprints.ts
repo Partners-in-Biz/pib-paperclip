@@ -18,6 +18,7 @@ import {
   type SprintStatus,
 } from "../engine/sprint.js";
 import { scopeParamValue, sprintScope } from "../engine/scope.js";
+import { isRehearsalSprint, REHEARSAL_NOTE } from "../engine/rehearsal.js";
 import { addDays } from "../engine/time.js";
 import { dueDayFor, PHASE_NAMES, TEMPLATE_VERSION, type SprintPhase } from "../templates/outrank-90.js";
 import { BUSINESS_TYPES, businessTypeOf, defaultBusinessType, planFor, planOf, type BusinessType, type PlanVariant } from "../templates/plans.js";
@@ -45,6 +46,7 @@ import {
 import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy } from "./context.js";
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
+import { cancelRehearsalIssues } from "./rehearsal.js";
 import { materialiseDueTasks } from "./tasks.js";
 import { groupViews } from "./chunks.js";
 import { geoSummary } from "./geo.js";
@@ -124,8 +126,9 @@ export async function seedTemplate(env: Env, sprint: db.Sprint, plan: PlanVarian
   return { tasks: tasks + geo.added, backlinks };
 }
 
-/** Create the sprint's root issue in the SEO project if it is missing. */
+/** Create the sprint's root issue in the SEO project if it is missing. A rehearsal sprint never has one. */
 export async function ensureRootIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, projectId: string | null): Promise<db.Sprint> {
+  if (isRehearsalSprint(sprint)) return sprint;
   if (sprint.rootIssueId) {
     const existing = await getIssue(env, sprint.companyId, sprint.rootIssueId);
     // A closed root issue is retired (e.g. its thread grew too long to hand an agent): open a fresh one.
@@ -141,6 +144,7 @@ export async function ensureRootIssue(env: Env, info: CompanyInfo, sprint: db.Sp
   }
   const created = await openIssue(env, {
     companyId: sprint.companyId,
+    sprint,
     title: rootIssueTitle(sprint),
     description: rootIssueDescription(sprintCopy(sprint), { startDate: sprint.startDate, cockpitPath: cockpitPath(info, sprint) }),
     originKind: ORIGIN.sprint,
@@ -176,6 +180,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   const clientKind = client?.kind ?? null;
   const clientRef = client?.id ?? null;
   const clientName = client?.name ?? null;
+  // A fixture site or the canary client: the sprint is made and can be read, but nothing is opened or linked for it (engine/rehearsal.ts).
+  const rehearsal = isRehearsalSprint({ siteUrl, clientRef });
   const host = new URL(siteUrl).hostname.replace(/^www\./, "");
   const siteName = str(params, "siteName", { max: 200 }) ?? clientName ?? host;
   const startDate = isoDateParam(params, "startDate") ?? info.today;
@@ -212,7 +218,7 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   let sprint = await requireSprint(env, companyId, id);
   // The client's one WordPress site at this URL with a connected Connector: link it now (best effort, never fails creation).
   let wordpressLinked: string | null = null;
-  if (client) {
+  if (client && !rehearsal) {
     try {
       const wp = await autoLinkWordPressSite(env, sprint);
       if (wp) {
@@ -227,10 +233,12 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
   const seeded = await seedTemplate(env, sprint, plan);
   await env.skills.ensure(companyId).catch(() => []);
   // A client sprint works in the client's own project when one exists; the company SEO project is the fallback.
-  sprint = await autoLinkClientProject(env, sprint);
-  const projectId = sprint.clientProjectId ?? (await ensureProject(env, companyId));
+  // A rehearsal sprint has no issues, so it needs neither: no project is linked or created for it.
+  if (!rehearsal) sprint = await autoLinkClientProject(env, sprint);
+  const projectId = rehearsal ? null : sprint.clientProjectId ?? (await ensureProject(env, companyId));
   const warnings: string[] = [];
   try {
+    // Opens nothing for a rehearsal sprint: the sprint stays without a root issue, so no task issue is opened below either.
     sprint = await ensureRootIssue(env, info, { ...sprint, projectId }, projectId);
   } catch (error) {
     warnings.push(`Root issue not created yet (${errorMessage(error)}); the daily run retries.`);
@@ -269,10 +277,13 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     warnings,
     switches: switchesOf(sprint),
     siteAccess: sprint.siteAccess,
+    ...(rehearsal ? { rehearsal: true, note: REHEARSAL_NOTE } : {}),
     ...(wordpressLinked ? { wordpressSite: wordpressLinked } : {}),
-    next: wordpressLinked
-      ? `Linked to the client's WordPress site ${wordpressLinked} through the PiB Connector: the agent makes SEO changes there itself. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.`
-      : "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.",
+    next: rehearsal
+      ? "Read the plan with list-tasks or get-sprint; end the rehearsal with archive-sprint."
+      : wordpressLinked
+        ? `Linked to the client's WordPress site ${wordpressLinked} through the PiB Connector: the agent makes SEO changes there itself. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.`
+        : "Link the site's repo project (link-site, or the sprint's Integrations tab) so code tasks open there. The agent verifies Search Console itself with the service account; anything only a person can do goes on the weekly Needs you issue. Wrong plan for this business? change-plan.",
   };
 }
 
@@ -330,6 +341,8 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
+    /** Only on a rehearsal sprint (a fixture site or the canary client): it has no issues and asks nobody for anything. */
+    ...(isRehearsalSprint(sprint) ? { rehearsal: true } : {}),
     health: sprint.health,
     lastDailyOn: sprint.lastDailyOn,
     notes: sprint.notes,
@@ -395,7 +408,8 @@ export async function todayTool(env: Env, companyId: string, params: Params) {
   const scope = scopeParam(params);
   const sprints = sprintId
     ? [await requireSprint(env, companyId, sprintId)]
-    : (await db.listSprints(env.ctx.db, companyId, { scope })).filter((s) => s.status !== "archived" && s.seededAt);
+    // A rehearsal sprint is never in the every-sprint plan the agent's daily routine works from; asked for by id, it shows its note.
+    : (await db.listSprints(env.ctx.db, companyId, { scope })).filter((s) => s.status !== "archived" && s.seededAt && !isRehearsalSprint(s));
   const out = [];
   for (const sprint of sprints) out.push(await sprintToday(env, info, sprint));
   return { today: info.today, timezone: info.timezone, sprints: out };
@@ -440,6 +454,8 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   // Pages marked live that Social has not been told about yet (they must answer 200 first).
   const announcements = await env.announcements.open(sprint.companyId, sprint.id).catch(() => [] as db.Announcement[]);
   const next: string[] = [];
+  const rehearsal = isRehearsalSprint(sprint);
+  if (rehearsal) next.push(REHEARSAL_NOTE);
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
   if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
     if (sa.key) {
@@ -522,6 +538,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     autopilotMode: sprint.autopilotMode,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
+    ...(rehearsal ? { rehearsal: true } : {}),
     due: notStarted.map(brief),
     inProgress: inProgress.map(brief),
     blocked: blocked.map(brief),
@@ -568,10 +585,16 @@ export async function setSprintStatus(env: Env, companyId: string, actor: Actor,
     status = target;
   }
   await db.updateSprint(env.ctx.db, companyId, sprint.id, { status, paused_reason: target === "resume" ? null : reason });
+  // Archiving a rehearsal sprint also closes any issue it still has (from before issues were refused for it): nobody has to clean up after a rehearsal.
+  const rehearsal = isRehearsalSprint(sprint);
+  if (rehearsal && target === "archived") {
+    const closed = await cancelRehearsalIssues(env, sprint);
+    return { sprintId: sprint.id, status, previous: sprint.status, rehearsal: true, issuesCancelled: closed.cancelled };
+  }
   if (sprint.rootIssueId) {
     await commentOn(env, companyId, sprint.rootIssueId, `Sprint ${target === "resume" ? `resumed (${status})` : status} by ${actorLabel(actor)}${reason ? `: ${reason}` : ""}.`);
   }
-  return { sprintId: sprint.id, status, previous: sprint.status };
+  return { sprintId: sprint.id, status, previous: sprint.status, ...(rehearsal ? { rehearsal: true } : {}) };
 }
 
 export async function updateSprintTool(env: Env, companyId: string, actor: Actor, params: Params) {

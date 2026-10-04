@@ -8,6 +8,7 @@ import { coversPluginTools, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { buildOriginId, ORIGIN, taskIdFromBuildOrigin } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
+import { isRehearsalSprint, REHEARSAL_REFUSAL } from "../engine/rehearsal.js";
 import { siteCopyFor, taskProjectId } from "./tasks.js";
 import { actorLabel, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
@@ -110,6 +111,7 @@ export async function requestBuild(env: Env, companyId: string, actor: Actor, pa
   const ctx = await loadSprintContext(env, companyId, sprintId);
   const { sprint } = ctx;
   assertWritable(sprint);
+  if (isRehearsalSprint(sprint)) throw new SeoError(REHEARSAL_REFUSAL);
   const task = await db.getTask(env.ctx.db, companyId, taskId);
   if (!task || task.sprintId !== sprintId) throw new SeoError("No such task on this sprint.");
   if (task.status === "done" || task.status === "skipped") throw new SeoError(`This task is already ${task.status}.`);
@@ -161,6 +163,7 @@ export async function requestBuild(env: Env, companyId: string, actor: Actor, pa
   });
   const created = await openIssue(env, {
     companyId,
+    sprint,
     title: `Build: ${task.title}`,
     description: brief,
     originKind: ORIGIN.build,
@@ -255,6 +258,7 @@ export async function startPreviewFix(env: Env, companyId: string, input: Previe
   const task = await db.getTask(env.ctx.db, companyId, input.taskId);
   if (!task || !task.issueId) return { fallback: "the task has no open issue" };
   const { sprint } = await loadSprintContext(env, companyId, task.sprintId);
+  if (isRehearsalSprint(sprint)) return { fallback: "this is a rehearsal sprint: nothing is built for it" };
   const earlier = buildsOf(task).filter((b) => b.kind === "preview-fix").length;
   if (earlier >= MAX_PREVIEW_FIXES) return { fallback: `${earlier} developer fixes of this page did not pass the check; put the question on Needs you for the owner` };
   const { developer, senior } = await findBuilders(env, companyId);
@@ -286,6 +290,7 @@ export async function startPreviewFix(env: Env, companyId: string, input: Previe
   ].join("\n");
   const created = await openIssue(env, {
     companyId,
+    sprint,
     title: `Fix preview: ${task.title}`.slice(0, 240),
     description: brief,
     originKind: ORIGIN.build,

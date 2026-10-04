@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { phaseForWeek } from "../templates/outrank-90.js";
 import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
+import { isRehearsalSprint, REHEARSAL_REFUSAL } from "../engine/rehearsal.js";
 import { findBuilders } from "./build.js";
 import { actorLabel, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
@@ -50,6 +51,7 @@ export async function addRedesign(env: Env, companyId: string, actor: Actor, par
   const sprintId = reqStr(params, "sprintId");
   const { sprint, clock } = await loadSprintContext(env, companyId, sprintId);
   assertWritable(sprint);
+  if (isRehearsalSprint(sprint)) throw new SeoError(REHEARSAL_REFUSAL);
   if (!sprint.rootIssueId) throw new SeoError("The sprint has no root issue yet.");
   const rawUrl = reqStr(params, "pageUrl", { max: 2000 });
   let pageUrl: string;
@@ -90,6 +92,7 @@ export async function addRedesign(env: Env, companyId: string, actor: Actor, par
     const projectId = taskProjectId(sprint, true, sprint.projectId);
     const created = await openIssue(env, {
       companyId,
+      sprint,
       title: `Redesign: ${label} — ${sprint.siteName}`.slice(0, 240),
       description: redesignBrief({ siteUrl: sprint.siteUrl, pageUrl, goal, sprintId, taskId: id, requester: actorLabel(actor), wordpress: sprint.siteAccess === "wordpress" }),
       originKind: ORIGIN.task,

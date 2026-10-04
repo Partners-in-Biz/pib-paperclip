@@ -30,6 +30,7 @@ import {
   splitSection,
   type GroupPlan,
 } from "../engine/chunks.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { branchFor, isCodeTask } from "../engine/site-change.js";
 import { offMessage } from "../engine/switches.js";
 import { decideAssignee, TERMINAL_TASK_STATUSES, type AgentAvailability } from "../engine/sprint.js";
@@ -176,6 +177,10 @@ export async function openNextGroup(env: Env, companyId: string, taskId: string,
   if (!(await db.claimChunk(env.ctx.db, companyId, next.id))) return null;
   try {
     const { sprint, info } = await loadSprintContext(env, companyId, task.sprintId, ctx?.info);
+    if (isRehearsalSprint(sprint)) {
+      await db.releaseChunk(env.ctx.db, companyId, next.id).catch(() => undefined);
+      return null;
+    }
     const agent = ctx?.agent !== undefined ? ctx.agent : await resolveAgent(env, companyId);
     const assignment = decideAssignee({ owner: "agent", autopilotEligible: task.autopilotEligible, mode: sprint.autopilotMode, agent, ownerUserId: assignableUser(sprint.ownerUserId) });
     const parent = await getIssue(env, companyId, task.issueId);
@@ -194,6 +199,7 @@ export async function openNextGroup(env: Env, companyId: string, taskId: string,
     }).join("\n");
     const created = await openIssue(env, {
       companyId,
+      sprint,
       title: groupIssueTitle(task, sprint, group),
       description,
       originKind: ORIGIN.chunk,

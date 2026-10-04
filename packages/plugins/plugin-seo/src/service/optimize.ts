@@ -8,6 +8,7 @@ import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
 import { approvalIssueDescription, approvalIssueTitle, type ProposalCopy } from "../engine/copy.js";
 import { buildMetricSet, classifyOutcome, updateScoreboard, type MetricSet, type Scoreboard } from "../engine/measure.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { isRunning, proposalAllowance } from "../engine/sprint.js";
 import { addDays, localDateOf } from "../engine/time.js";
 import { healthScore, runDetectors, type DetectorInput, type HealthSignal, type PositionPoint } from "../loop/detectors.js";
@@ -91,7 +92,8 @@ export async function detectSignals(env: Env, info: CompanyInfo, sprint: db.Spri
   await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { health });
   const created: db.Optimization[] = [];
   let allowance = 0;
-  if (opts.propose && isRunning(sprint.status)) {
+  // A rehearsal sprint is read for its health but proposes nothing: a proposal waits on a person's approval (engine/rehearsal.ts).
+  if (opts.propose && isRunning(sprint.status) && !isRehearsalSprint(sprint)) {
     allowance = proposalAllowance(input.day, await db.countOptimizationsSince(env.ctx.db, sprint.id, addDays(info.today, -6)));
     for (const proposal of proposeHypotheses(signals, sprint.scoreboard as Scoreboard)) {
       if (created.length >= allowance) break;
@@ -166,6 +168,7 @@ async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint,
       const clock = clockFor(sprint, info.today);
       const opened = await openIssue(env, {
         companyId: sprint.companyId,
+        sprint,
         title: approvalIssueTitle(sprint, `week ${clock.week}`),
         description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint), numbers),
         originKind: ORIGIN.approval,

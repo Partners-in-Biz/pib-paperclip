@@ -20,6 +20,7 @@ import {
 } from "../engine/needs-you.js";
 import type { AiBotKind } from "../checks/geo.js";
 import { probeKind } from "../engine/geo.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { TERMINAL_TASK_STATUSES } from "../engine/sprint.js";
 import { verificationKindOf, verifyInstruction } from "../engine/verify-route.js";
 import { resolveAgent } from "./agent.js";
@@ -90,6 +91,7 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     try {
       const created = await openIssue(env, {
         companyId: sprint.companyId,
+        sprint,
         title: needsYouTitle(sprint, digest.weekStart),
         description,
         originKind: ORIGIN.needsYou,
@@ -145,8 +147,12 @@ export async function lastNeedsYouItem(env: Env, sprint: db.Sprint, key: string)
   return null;
 }
 
-/** Add (or update) one item on this week's digest. */
+/**
+ * Add (or update) one item on this week's digest. A rehearsal sprint asks nobody for anything: nothing is recorded and no
+ * issue is opened (engine/rehearsal.ts), whichever job or tool raised the item.
+ */
 export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint, item: NewNeedsYouItem, opts: { reopen?: boolean } = {}): Promise<{ issueId: string | null; added: boolean; key: string }> {
+  if (isRehearsalSprint(sprint)) return { issueId: null, added: false, key: item.key };
   const digest = await currentDigest(env, info, sprint, "write");
   if (!digest) return { issueId: null, added: false, key: item.key };
   const merged = mergeItem(digest.items, item, nowIso(env), opts);

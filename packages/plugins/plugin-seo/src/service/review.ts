@@ -11,6 +11,7 @@ import { ORIGIN } from "../constants.js";
 import type * as db from "../db.js";
 import { withClientPrefix } from "../engine/copy.js";
 import type { NewNeedsYouItem } from "../engine/needs-you.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { assignableUser, errorMessage, type Env } from "./common.js";
 import { openIssue } from "./issues.js";
 
@@ -54,11 +55,13 @@ export function prReviewDescription(item: Pick<NewNeedsYouItem, "title" | "why" 
 
 /** A PR item was added to Needs you: open a review issue for the Reviewer when one is set. Never throws. */
 export async function routePrReview(env: Env, sprint: db.Sprint, item: NewNeedsYouItem): Promise<string | null> {
+  if (isRehearsalSprint(sprint)) return null;
   try {
     const reviewer = await reviewerAgentId(env.ctx, sprint.companyId);
     if (!reviewer) return null;
     const created = await openIssue(env, {
       companyId: sprint.companyId,
+      sprint,
       title: withClientPrefix(`Review PR before the owner merges: ${item.title}`, sprint.clientName),
       description: prReviewDescription(item, sprint),
       originKind: ORIGIN.approval,

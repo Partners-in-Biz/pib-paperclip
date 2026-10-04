@@ -8,6 +8,7 @@ import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { checkClaims } from "../engine/claims.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
@@ -262,6 +263,7 @@ async function routePreviewReview(
   sprint: db.Sprint,
   p: { id: string; key: string; pageUrl: string; title: string; stats: ReturnType<typeof previewStats>; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
 ): Promise<string | null> {
+  if (isRehearsalSprint(sprint)) return null;
   try {
     const reviewer = await reviewerAgentId(env.ctx, sprint.companyId);
     const owner = assignableUser(sprint.ownerUserId);
@@ -289,6 +291,7 @@ async function routePreviewReview(
     ];
     const created = await openIssue(env, {
       companyId: sprint.companyId,
+      sprint,
       title: `Check client preview: ${p.title}`.slice(0, 240),
       description: lines.join("\n"),
       originKind: ORIGIN.previewReview,

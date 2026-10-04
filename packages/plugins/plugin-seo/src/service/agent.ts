@@ -29,6 +29,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { AGENT_KEY, PROJECT_KEY, ROUTINE_KEYS, ROUTINE_TITLES, SKILL_KEY, SKILL_SLUG } from "../constants.js";
 import * as db from "../db.js";
+import { isRehearsalSprint } from "../engine/rehearsal.js";
 import type { AgentAvailability } from "../engine/sprint.js";
 import { assignableUser, errorMessage, SeoError, type Actor, type Env } from "./common.js";
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./hire.js";
@@ -373,7 +374,8 @@ export async function adoptUnassignedAgentTasks(env: Env, companyId: string, age
   const sprints = await db.listSprints(env.ctx.db, companyId);
   let adopted = 0;
   for (const sprint of sprints) {
-    if (sprint.autopilotMode === "off" || sprint.status === "archived") continue;
+    // A rehearsal sprint is never handed to the agent, not even an issue it was left with before issues were refused for it.
+    if (sprint.autopilotMode === "off" || sprint.status === "archived" || isRehearsalSprint(sprint)) continue;
     const tasks = await db.listTasks(env.ctx.db, companyId, sprint.id, { status: ["not_started", "in_progress"], owner: "agent" });
     for (const task of tasks) {
       if (!task.issueId || task.assigneeKind !== "unassigned") continue;
