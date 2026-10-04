@@ -110,7 +110,7 @@ beforeEach(() => {
 
 describe("manifest and hire", () => {
   it("declares the cockpit route at the bumped version", () => {
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.3.1");
     expect(manifest.apiRoutes).toContainEqual(COCKPIT_ROUTE);
   });
 

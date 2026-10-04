@@ -39,7 +39,7 @@ describe("manifest", () => {
     expect(manifest.capabilities).toContain("api.routes.register");
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.version).toBe("0.4.0");
+    expect(manifest.version).toBe("0.4.1");
   });
 
   it("schedules redeliver, month-end, FX and the all-company skill sync", () => {

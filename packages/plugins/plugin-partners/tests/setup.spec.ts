@@ -42,8 +42,8 @@ describe("Partners setup status", () => {
     expect(manifest.apiRoutes).toContainEqual(expect.objectContaining({ routeKey: SETUP_STATUS_ROUTE.routeKey, path: "/setup-status" }));
     expect(manifest.jobs?.map((job) => job.jobKey)).toEqual(["setup-status"]);
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "jobs.schedule", "events.emit"]));
-    expect(manifest.version).toBe("0.2.0");
-    expect(PLUGIN_VERSION).toBe("0.2.0");
+    expect(manifest.version).toBe("0.2.1");
+    expect(PLUGIN_VERSION).toBe("0.2.1");
   });
 
   it("unconfigured: settings missing, the partner link optional", async () => {
