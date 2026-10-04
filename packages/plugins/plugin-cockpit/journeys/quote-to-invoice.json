@@ -1,8 +1,8 @@
 {
   "key": "quote-to-invoice",
-  "version": 4,
+  "version": 5,
   "title": "Deal, quote, accepted, invoice ready to send",
-  "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), Billing turning the accepted quote into a draft invoice by itself and routing the send to the Reviewer first. The journey only reads what Billing did; it does not convert or ask for the send. It stops at the approval: only a person approves a send, and the run cancels the canary's own approval afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
+  "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), the accepted quote turned into a draft invoice and the send routed to the Reviewer first. Billing does not convert an accepted quote by itself: it may open a \"Deal won\" task for the Account Manager, which converts it, so the journey reads the quote and converts it only if nobody has (the run is the canary, so the Billing action is allowed). It stops at the approval: only a person approves a send, and the run cancels the canary's own approval and any Deal won task afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
   "schedule": [
     "release",
     "on-demand"
@@ -157,7 +157,7 @@
         "client": "{{client}}",
         "status": "won"
       },
-      "note": "Billing tells the CRM within seconds. If total is 0, wait 30 seconds and ask again once before recording.",
+      "note": "The CRM marks the deal won when the quote is accepted. If total is 0, wait 30 seconds and ask again once before recording.",
       "expect": [
         {
           "path": "total",
@@ -168,13 +168,13 @@
     },
     {
       "id": "quote-converted",
-      "title": "Billing converted the accepted quote by itself",
+      "title": "The accepted quote is converted to an invoice",
       "kind": "tool",
       "tool": "partnersinbiz.billing:quote-detail",
       "input": {
         "quoteId": "{{quoteId}}"
       },
-      "note": "Billing converts the quote when the deal is won, within seconds. If the quote is still accepted, wait 30 seconds and read it again once before recording. If it is still accepted then, record that: do not convert it yourself.",
+      "note": "Billing does NOT convert an accepted quote by itself: a \"Deal won\" task for the Account Manager may do it, and it is not opened for every deal. Read the quote with quote-detail. If quote.status is accepted, call partnersinbiz.billing:convert-quote with the same quoteId (the run is the canary, so this Billing action is allowed) and record ITS answer: it carries the same quote fields. If quote.status is already converted (a Deal won task got there first), record the quote-detail answer and use its convertedInvoiceId. If convert-quote refuses because the quote was converted meanwhile, read quote-detail again and record that. Do not wait for Billing to convert it, and do not assert that it does.",
       "expect": [
         {
           "path": "quote.status",
@@ -225,13 +225,13 @@
     },
     {
       "id": "invoice-send-approval",
-      "title": "The send approval Billing opened reaches the Reviewer first",
+      "title": "The invoice send approval reaches the Reviewer first",
       "kind": "tool",
       "tool": "partnersinbiz.billing:invoice-detail",
       "input": {
         "invoiceId": "{{invoiceId}}"
       },
-      "note": "Billing routes the send approval when it drafts the invoice, so nothing is requested here. Do NOT approve it, do not touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends. If approvalIssueId is empty, record that as it is; do not call request-invoice-send to fill it.",
+      "note": "Read the invoice with invoice-detail. If invoice.pendingAction is not send, or approvalIssueId is empty (no Deal won task asked for the send), call partnersinbiz.billing:request-invoice-send with this invoiceId and sendTo canary@canary.invalid, then read invoice-detail again and record that answer. Do NOT approve the approval, do not touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends.",
       "expect": [
         {
           "path": "invoice.pendingAction",

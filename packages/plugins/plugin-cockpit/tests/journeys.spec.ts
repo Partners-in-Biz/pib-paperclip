@@ -273,38 +273,49 @@ describe("the SEO sprint journey (0.6.5)", () => {
   });
 });
 
-describe("the quote to invoice journey (v4)", () => {
+describe("the quote to invoice journey (v5)", () => {
   const journey = journeyByKey("quote-to-invoice")!;
   const step = (id: string) => journey.steps.find((s) => s.id === id)!;
 
-  it("only reads what Billing did: it never converts the quote or asks for the send itself", () => {
-    expect(journey.version).toBe(4);
-    const tools = journey.steps.map((s) => s.tool);
-    expect(tools).not.toContain("partnersinbiz.billing:convert-quote");
-    expect(tools).not.toContain("partnersinbiz.billing:request-invoice-send");
+  it("does not claim Billing converts the quote by itself: the agent converts it when nobody has", () => {
+    expect(journey.version).toBe(5);
+    expect(journey.summary).toContain("Billing does not convert an accepted quote by itself");
+    expect(step("quote-converted").note).toContain("Billing does NOT convert an accepted quote by itself");
+    expect(step("quote-converted").note).toContain("call partnersinbiz.billing:convert-quote");
+    expect(step("quote-converted").note).toContain("do not assert that it does");
   });
 
-  it("reads the converted quote, then the draft invoice with the quote's total and the deal", () => {
-    expect(step("quote-converted").tool).toBe("partnersinbiz.billing:quote-detail");
-    expect(step("quote-converted").expect).toEqual(expect.arrayContaining([{ path: "quote.status", equals: "converted" }, { path: "quote.convertedInvoiceId", notEmpty: true }]));
-    expect(step("quote-converted").capture).toEqual({ invoiceId: { path: "quote.convertedInvoiceId" }, quoteTotalMinor: { path: "quote.totalMinor" } });
+  it("reads the quote, and accepts either its own conversion or one a Deal won task made", () => {
+    const converted = step("quote-converted");
+    expect(converted.tool).toBe("partnersinbiz.billing:quote-detail");
+    expect(converted.note).toContain("already converted");
+    expect(converted.note).toContain("convertedInvoiceId");
+    expect(converted.expect).toEqual(expect.arrayContaining([{ path: "quote.status", equals: "converted" }, { path: "quote.convertedInvoiceId", notEmpty: true }]));
+    expect(converted.capture).toEqual({ invoiceId: { path: "quote.convertedInvoiceId" }, quoteTotalMinor: { path: "quote.totalMinor" } });
+  });
+
+  it("checks the draft invoice has the quote's total and the deal", () => {
     expect(step("invoice-drafted").tool).toBe("partnersinbiz.billing:invoice-detail");
     expect(step("invoice-drafted").expect).toEqual([{ path: "invoice.status", equals: "draft" }, { path: "invoice.totalMinor", equals: "{{quoteTotalMinor}}" }, { path: "invoice.dealId", equals: "{{dealId}}" }]);
   });
 
-  it("checks the send approval Billing opened reaches the Reviewer first, and tells the agent not to fill it in", () => {
+  it("asks for the send only when no approval is open yet, and checks it reaches the Reviewer first", () => {
     const send = step("invoice-send-approval");
     expect(send.expect).toEqual([{ path: "invoice.pendingAction", equals: "send" }, { path: "invoice.approvalIssueId", notEmpty: true }]);
     expect(send.probe).toMatchObject({ kind: "approval-route", idPath: "invoice.approvalIssueId" });
-    expect(send.note).toContain("do not call request-invoice-send");
+    expect(send.note).toContain("invoice.pendingAction is not send");
+    expect(send.note).toContain("partnersinbiz.billing:request-invoice-send");
   });
 
-  it("tells the agent to record a quote that is still accepted, not convert it, and the agent is shown it", () => {
+  it("shows the agent the convert note", () => {
     const converted = step("quote-converted");
-    expect(converted.note).toContain("do not convert it yourself");
     const state = initRun(journey, "company:canary-1a2b3c4d", "run1", "2026-10-04");
     const view = stepView({ step: converted, input: { quoteId: "q1" }, missing: [], index: 7, total: 10 }, state);
     expect(view.note).toBe(converted.note);
+  });
+
+  it("titles the deal so the Deal won task Billing may open names the rehearsal and the run's net cancels it", () => {
+    expect((step("create-deal").input as { title: string }).title).toContain("Canary rehearsal");
   });
 });
 
