@@ -65,6 +65,7 @@ import {
 } from "./domain-health.js";
 import { addSendingDomain, refreshPendingDomains, refreshSendingDomain, sendingDomainView, dnsInstructions, type SendingDomainView } from "./esp/domains.js";
 import { readEspState } from "./esp/runtime.js";
+import { liftReputationHold } from "./esp/hold.js";
 import { isEspProvider, type EspDomainRow } from "./esp/types.js";
 import { ESP_ENDPOINT, handleEspWebhook } from "./esp/webhook.js";
 import { eraseSubject, onConsentRecorded } from "./erasure.js";
@@ -86,6 +87,7 @@ import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
 import type { DomainReport } from "./domain-health.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { isPrivateMail, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
 import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -190,7 +192,7 @@ const plugin = definePlugin({
       return sendingDomainsOverview(ctx, companyId, domain, false);
     });
     // Only a person decides that a domain is already established (no warm-up) or gives it a cap of its own: an agent must not lift its own limit.
-    user("mailbox.set-sending-domain", async (companyId, _userId, params) => {
+    user("mailbox.set-sending-domain", async (companyId, userId, params) => {
       const domain = sendingDomain(requiredString(params, "domain")) ?? "";
       const row = await requireStore().getEspDomain(companyId, domain);
       if (!row) throw new MailboxError(`${domain} is not a sending domain of the email provider`);
@@ -202,7 +204,16 @@ const plugin = definePlugin({
         patch.daily_cap_override = cap === 0 ? null : cap;
       }
       await requireStore().patchEspDomain(companyId, domain, patch);
+      // Whoever lifted a limit is on record, like whoever lifted a hold.
+      await requireStore().insertEspAudit({ id: randomUUID(), companyId, domain, action: "set_limits", actor: `user:${userId}`, detail: { warmupExempt: patch.warmup_exempt ?? null, dailyCap: "daily_cap_override" in patch ? patch.daily_cap_override : null, was: { warmupExempt: row.warmup_exempt, dailyCap: row.daily_cap_override } } }).catch((error) => ctx.logger.info("Limit change not audited", { domain, error: errorMessage(error) }));
       return sendingDomainsOverview(ctx, companyId, domain, false);
+    });
+    // A reputation hold (a domain's bounce or complaint rate over the limit holds its marketing back) is lifted by a person only, with a reason, and
+    // it is audited. The host lets any agent with company access call an action, so `user` refuses an agent here; the person is the host's actor,
+    // never a value in the request (a `userId` or `by` in the parameters is ignored).
+    user("mailbox.clear-reputation-hold", async (companyId, userId, params) => {
+      const result = await liftReputationHold(requireEnv(), companyId, { domain: requiredString(params, "domain"), reason: requiredString(params, "reason"), userId });
+      return { ...result, overview: await sendingDomainsOverview(ctx, companyId, result.domain, false) };
     });
     // "Check now" for the one-click unsubscribe link: the Mailbox posts to its own address and records whether the proxy passed the token on.
     user("mailbox.check-unsubscribe-proxy", (companyId) => checkUnsubscribeProxy(companyId));
@@ -621,6 +632,8 @@ function sendView(row: SendRow) {
     key: row.key,
     status: row.status,
     marketing: row.request?.marketing === true,
+    // A client message keeps no text once its send ended (private-mail.ts).
+    ...(isPrivateMail(row.context) ? { private: true, textKept: Boolean(row.request?.text || row.request?.html) } : {}),
     skipped: row.skipped ?? [],
     permanent: row.permanent,
     attempts: row.attempts,
@@ -944,6 +957,22 @@ async function purgeProviderHistory(ctx: PluginContext, companyId: string): Prom
   }
 }
 
+/**
+ * Hourly backstop for client messages (private-mail.ts): the store drops a settled send's text when it settles, so this finds what slipped
+ * (a send an older version stored, a sent copy the sync stored before the send was known) and what never settled (the sender's outbox gave
+ * up and cannot tell the Mailbox). Never throws.
+ */
+async function scrubPrivateMail(ctx: PluginContext, companyId: string): Promise<void> {
+  try {
+    const s = requireStore();
+    const bodies = await s.scrubPrivateBodies(companyId, new Date(requireEnv().now() - PRIVATE_STALE_DAYS * 86_400_000).toISOString());
+    const snippets = await s.scrubPrivateSnippets(companyId);
+    if (bodies > 0 || snippets > 0) ctx.logger.info("Client message text removed", { companyId, bodies, snippets });
+  } catch (error) {
+    ctx.logger.info("Client message text not removed this hour", { companyId, error: errorMessage(error) });
+  }
+}
+
 /** Hourly: managed skills for every company (not only the one a call comes from), and the domain results announced again. */
 async function hourlyHousekeeping(ctx: PluginContext): Promise<void> {
   try {
@@ -954,6 +983,7 @@ async function hourlyHousekeeping(ctx: PluginContext): Promise<void> {
   for (const companyId of await knownCompanies(ctx)) {
     try {
       if (!(await configSaved(ctx, companyId))) continue;
+      await scrubPrivateMail(ctx, companyId);
       await reannounceDomainChecks(domainEnv(), companyId);
       // A sending domain waiting for its DNS records is looked at again at the provider (it asks for a fresh verification at most every 6 hours).
       if (await isModuleEnabled(ctx, companyId, PLUGIN_ID)) await refreshPendingDomains(requireEnv(), companyId);
@@ -1143,6 +1173,10 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
   if (agentId) assertMayRead(await delegationFor(row.account_id, agentId));
   const account = await requireStore().getAccount(companyId, row.account_id);
   const base = { messageId: row.id, accountId: row.account_id, attachments: (row.attachments ?? []).map((a) => ({ attachmentId: a.attachmentId, filename: a.filename, mime: a.mime, bytes: a.bytes })) };
+  // A client message may carry a private link (a signing link): nobody gets its text through the Mailbox, whatever mailbox they may read.
+  if (await isPrivateMessage(companyId, row)) {
+    return { ...base, subject: row.subject, text: "", truncated: false, withheld: true, note: PRIVATE_BODY_NOTE, from: row.from_addr, to: row.to_addrs, date: row.received_at ?? row.created_at };
+  }
   if (!row.gmail_message_id || !account) {
     return { ...base, subject: row.subject, text: row.body, truncated: false, from: row.from_addr, to: row.to_addrs, date: row.received_at ?? row.created_at };
   }
@@ -1150,6 +1184,12 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
   const maxChars = params.maxChars == null ? 8000 : integer(params.maxChars, "maxChars");
   const body = await readMessageBody(e, await loadMailboxConfig(e.ctx, companyId), account, row.gmail_message_id, maxChars);
   return { ...base, ...body, triage: messageView(row) };
+}
+
+/** True when the stored message is the sent copy of a client message (the send record, not the copy, is what says so when the sync stored it first). */
+async function isPrivateMessage(companyId: string, row: MessageRow): Promise<boolean> {
+  if (isPrivateMail(row.sent_context)) return true;
+  return requireStore().isPrivateSend(companyId, { key: row.send_key, gmailMessageId: row.gmail_message_id, rfcMessageId: row.rfc_message_id });
 }
 
 async function correctTriageFor(companyId: string, messageId: string, params: Record<string, unknown>, userId: string | null, agentId: string | null) {

@@ -5,6 +5,7 @@ import {
   DOMAIN_HEALTH_EVENT,
   dkimKeyBits,
   domainHealthChecks,
+  domainHealthEvent,
   evaluateDomain,
   onboardingGuide,
   reannounceDomainChecks,
@@ -418,5 +419,17 @@ describe("onboarding a client's domain", () => {
     const guide = onboardingGuide("x.co", report, { gmail: true });
     expect(guide.records).toEqual([expect.objectContaining({ type: "TXT", host: "@", value: "v=spf1 include:mailgun.org include:_spf.google.com ~all", purpose: expect.stringMatching(/Edit the existing SPF record/) })]);
     expect(guide.alreadyDone).toEqual(expect.arrayContaining(["DKIM key at google", "DMARC (none)", "MX: smtp.google.com (google)"]));
+  });
+});
+
+
+describe("mail.domain.health says when only the email provider sends from the domain", () => {
+  const row = (result: Record<string, unknown>) => ({ company_id: "co-1", domain: "d.co", status: "bad" as const, result, source: "account" as const, client_kind: null, client_ref: null, checked_at: "2026-10-04T08:00:00.000Z", first_checked_at: "2026-10-04T08:00:00.000Z", status_since: "2026-10-04T08:00:00.000Z", dmarc_none_since: null });
+  const base = { domain: "d.co", checkedAt: "2026-10-04T08:00:00.000Z", sendReady: false, problems: [{ code: "esp_spf_missing", severity: "bad", message: "no SPF at the return path", fix: "add it" }] };
+
+  it("provider is resend for a domain only the provider sends from, and null for a domain with a Gmail mailbox on it or no provider at all", () => {
+    expect(domainHealthEvent(row({ ...base, esp: {}, espOnly: true }), ["hello@d.co"])).toMatchObject({ domain: "d.co", status: "bad", provider: "resend" });
+    expect(domainHealthEvent(row({ ...base, esp: {}, espOnly: false }), ["hello@d.co"])!.provider).toBeNull();
+    expect(domainHealthEvent(row({ ...base }), ["peet@d.co"])!.provider).toBeNull();
   });
 });

@@ -6,9 +6,10 @@
  */
 import { randomUUID } from "node:crypto";
 import type { MailAddress, MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
-import type { EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "./esp/types.js";
+import type { EspAuditRow, EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow, ReputationBaseline } from "./esp/types.js";
 import { ESP_DAY_FIELDS } from "./esp/types.js";
 import { erasureHash, markerEmail } from "./hash.js";
+import { isPrivateMail, PRIVATE_MAIL_KIND, scrubbedRequest } from "./private-mail.js";
 import type {
   AccountRow,
   ClientMapRow,
@@ -31,6 +32,9 @@ import type {
   SuppressionScope,
   TriageWrite,
 } from "./gmail/types.js";
+
+/** The context kind of private mail, as the SQL literal the statements below compare with (a constant, never caller text). */
+const PRIVATE_KIND_SQL = PRIVATE_MAIL_KIND;
 
 /** A row of `recentMessages`: drafts and other unsent mail. */
 export interface RecentMessageRow {
@@ -89,6 +93,12 @@ export type EspDomainPatch = Partial<{
   warmup_exempt: boolean;
   daily_cap_override: number | null;
   reputation: Record<string, unknown> | null;
+  open_tracking: boolean | null;
+  click_tracking: boolean | null;
+  reputation_cleared_at: string | null;
+  reputation_cleared_by: string | null;
+  reputation_cleared_day: string | null;
+  reputation_cleared_baseline: ReputationBaseline | null;
 }>;
 
 const ESP_DOMAIN_PATCH_CASTS: Record<keyof EspDomainPatch, string> = {
@@ -106,10 +116,18 @@ const ESP_DOMAIN_PATCH_CASTS: Record<keyof EspDomainPatch, string> = {
   warmup_exempt: "::boolean",
   daily_cap_override: "::int",
   reputation: "::jsonb",
+  open_tracking: "::boolean",
+  click_tracking: "::boolean",
+  reputation_cleared_at: "::timestamptz",
+  reputation_cleared_by: "",
+  reputation_cleared_day: "",
+  reputation_cleared_baseline: "::jsonb",
 };
 
 const ESP_DOMAIN_COLUMNS =
-  "company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at, verify_asked_at, first_sent_at, last_sent_at, warmup_exempt, daily_cap_override, reputation, created_at, updated_at";
+  "company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at, verify_asked_at, first_sent_at, last_sent_at, warmup_exempt, daily_cap_override, reputation, open_tracking, click_tracking, reputation_cleared_at, reputation_cleared_by, reputation_cleared_day, reputation_cleared_baseline, created_at, updated_at";
+
+const ESP_AUDIT_COLUMNS = "id, company_id, domain, action, actor, detail, created_at";
 
 const ESP_DAY_COLUMNS = "company_id, domain, day, sent, delivered, hard_bounces, soft_bounces, complaints, opened, clicked, failed";
 
@@ -173,6 +191,16 @@ export interface GmailStore {
   /** Newest sent request to this address in the last 30 days (bounce matching). */
   sendToRecipient(companyId: string, email: string): Promise<SendRow | null>;
   setInboxResult(key: string, result: Record<string, unknown>): Promise<void>;
+  // mail whose text must not be kept or shown (kind client_message, see private-mail.ts)
+  /** True when this send, by its key, its Gmail id or its Message-ID, is private mail. */
+  isPrivateSend(companyId: string, ids: { key?: string | null; gmailMessageId?: string | null; rfcMessageId?: string | null }): Promise<boolean>;
+  /** Drops the text, html and attachment links of private sends that have settled (sent or failed for good), and of any asked for before `staleBeforeIso`. Returns how many. */
+  scrubPrivateBodies(companyId: string, staleBeforeIso: string): Promise<number>;
+  /** Empties the stored snippet of every sent copy of a private send (a copy the sync stored before the send was known). Returns how many. */
+  scrubPrivateSnippets(companyId: string): Promise<number>;
+  // what a person did to a provider domain
+  insertEspAudit(row: { id: string; companyId: string; domain: string; action: EspAuditRow["action"]; actor: string; detail: Record<string, unknown> }): Promise<void>;
+  listEspAudit(companyId: string, domain: string, limit: number): Promise<EspAuditRow[]>;
   // thread issues
   claimThreadIssue(companyId: string, accountId: string, threadId: string): Promise<boolean>;
   setThreadIssue(accountId: string, threadId: string, issueId: string): Promise<void>;
@@ -398,9 +426,19 @@ function normaliseEspDomain(row: EspDomainRow): EspDomainRow {
     warmup_exempt: Boolean(row.warmup_exempt),
     daily_cap_override: row.daily_cap_override == null ? null : Number(row.daily_cap_override),
     reputation: row.reputation ?? null,
+    open_tracking: row.open_tracking ?? null,
+    click_tracking: row.click_tracking ?? null,
+    reputation_cleared_at: iso(row.reputation_cleared_at),
+    reputation_cleared_by: row.reputation_cleared_by ?? null,
+    reputation_cleared_day: row.reputation_cleared_day ?? null,
+    reputation_cleared_baseline: row.reputation_cleared_baseline ?? null,
     created_at: iso(row.created_at) ?? "",
     updated_at: iso(row.updated_at) ?? "",
   };
+}
+
+function normaliseAudit(row: EspAuditRow): EspAuditRow {
+  return { ...row, detail: row.detail ?? {}, created_at: iso(row.created_at) ?? "" };
 }
 
 function normaliseHealth(row: RecipientHealthRow): RecipientHealthRow {
@@ -793,7 +831,8 @@ export class SqlStore implements GmailStore {
       `INSERT INTO ${this.t("send_requests")} AS sr
         (key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, error, context, request, skipped)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'failed', $8, 1, $9, $10::jsonb, $11::jsonb, $12::jsonb)
-       ON CONFLICT (key) DO UPDATE SET status = 'failed', permanent = EXCLUDED.permanent, error = EXCLUDED.error, skipped = EXCLUDED.skipped, updated_at = now()
+       ON CONFLICT (key) DO UPDATE SET status = 'failed', permanent = EXCLUDED.permanent, error = EXCLUDED.error, skipped = EXCLUDED.skipped, updated_at = now(),
+         request = CASE WHEN EXCLUDED.permanent AND sr.context ->> 'kind' = '${PRIVATE_KIND_SQL}' THEN sr.request - 'text' - 'html' - 'attachments' ELSE sr.request END
        WHERE sr.status <> 'sent'`,
       [
         input.key,
@@ -806,7 +845,8 @@ export class SqlStore implements GmailStore {
         permanent,
         error.slice(0, 1000),
         json(input.context),
-        json(input.request),
+        // Failed for good: the text of a client message is not kept (a failure that will go away keeps it for the retry).
+        json(permanent && isPrivateMail(input.context) ? scrubbedRequest(input.request) : input.request),
         json(skipped),
       ],
     );
@@ -836,8 +876,10 @@ export class SqlStore implements GmailStore {
 
   async markSendSent(key: string, fields: SentFields & { skipped?: SkippedRecipient[] }): Promise<void> {
     await this.db.execute(
+      // A client message's text is not kept once it has gone: the link in it is a credential (private-mail.ts).
       `UPDATE ${this.t("send_requests")} SET status = 'sent', permanent = false, error = NULL, gmail_message_id = $2, gmail_thread_id = $3,
-         rfc_message_id = $4, account_id = $5, from_address = $6, skipped = $7::jsonb, sent_at = now(), updated_at = now()
+         rfc_message_id = $4, account_id = $5, from_address = $6, skipped = $7::jsonb, sent_at = now(), updated_at = now(),
+         request = CASE WHEN context ->> 'kind' = '${PRIVATE_KIND_SQL}' THEN request - 'text' - 'html' - 'attachments' ELSE request END
         WHERE key = $1`,
       [key, fields.gmailMessageId, fields.gmailThreadId, fields.rfcMessageId, fields.accountId, fields.fromAddress, json(fields.skipped ?? [])],
     );
@@ -894,6 +936,55 @@ export class SqlStore implements GmailStore {
 
   async setInboxResult(key: string, result: Record<string, unknown>): Promise<void> {
     await this.db.execute(`UPDATE ${this.t("inbox")} SET result = $2::jsonb WHERE key = $1`, [key, json(result)]);
+  }
+
+  async isPrivateSend(companyId: string, ids: { key?: string | null; gmailMessageId?: string | null; rfcMessageId?: string | null }): Promise<boolean> {
+    if (!ids.key && !ids.gmailMessageId && !ids.rfcMessageId) return false;
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT 1 AS n FROM ${this.t("send_requests")}
+        WHERE company_id = $1 AND context ->> 'kind' = '${PRIVATE_KIND_SQL}' AND (key = $2 OR gmail_message_id = $3 OR rfc_message_id = $4) LIMIT 1`,
+      [companyId, ids.key ?? null, ids.gmailMessageId ?? null, ids.rfcMessageId ?? null],
+    );
+    return rows.length > 0;
+  }
+
+  async scrubPrivateBodies(companyId: string, staleBeforeIso: string): Promise<number> {
+    const res = await this.db.execute(
+      `UPDATE ${this.t("send_requests")} SET request = request - 'text' - 'html' - 'attachments'
+        WHERE company_id = $1 AND context ->> 'kind' = '${PRIVATE_KIND_SQL}'
+          AND (request ->> 'text' IS NOT NULL OR request ->> 'html' IS NOT NULL OR request -> 'attachments' IS NOT NULL)
+          AND (status = 'sent' OR (status = 'failed' AND permanent) OR created_at < $2::timestamptz)`,
+      [companyId, staleBeforeIso],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async scrubPrivateSnippets(companyId: string): Promise<number> {
+    const res = await this.db.execute(
+      `UPDATE ${this.t("messages")} m SET snippet = ''
+        WHERE m.company_id = $1 AND m.direction = 'outbound' AND m.snippet <> ''
+          AND (m.sent_context ->> 'kind' = '${PRIVATE_KIND_SQL}'
+            OR EXISTS (SELECT 1 FROM ${this.t("send_requests")} s
+                        WHERE s.company_id = m.company_id AND s.context ->> 'kind' = '${PRIVATE_KIND_SQL}'
+                          AND (s.key = m.send_key OR s.gmail_message_id = m.gmail_message_id OR s.rfc_message_id = m.rfc_message_id)))`,
+      [companyId],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async insertEspAudit(row: { id: string; companyId: string; domain: string; action: EspAuditRow["action"]; actor: string; detail: Record<string, unknown> }): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO ${this.t("esp_domain_audit")} (id, company_id, domain, action, actor, detail) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+      [row.id, row.companyId, row.domain.toLowerCase(), row.action, row.actor, json(row.detail)],
+    );
+  }
+
+  async listEspAudit(companyId: string, domain: string, limit: number): Promise<EspAuditRow[]> {
+    const rows = await this.db.query<EspAuditRow>(
+      `SELECT ${ESP_AUDIT_COLUMNS} FROM ${this.t("esp_domain_audit")} WHERE company_id = $1 AND domain = $2 ORDER BY created_at DESC, id LIMIT $3`,
+      [companyId, domain.toLowerCase(), Math.max(1, Math.min(limit, 200))],
+    );
+    return rows.map(normaliseAudit);
   }
 
   // ── thread issues ───────────────────────────────────────────────────────
@@ -1260,10 +1351,11 @@ export class SqlStore implements GmailStore {
 
   async upsertEspDomain(row: EspDomainRow): Promise<void> {
     await this.db.execute(
-      `INSERT INTO ${this.t("esp_domains")} (company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz, $16::timestamptz)
+      `INSERT INTO ${this.t("esp_domains")} (company_id, domain, provider, provider_domain_id, region, status, records, return_path_host, dkim_selector, spf_include, client_kind, client_ref, account_id, created_by, verified_at, checked_at, open_tracking, click_tracking)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz, $16::timestamptz, $17::boolean, $18::boolean)
        ON CONFLICT (company_id, domain) DO UPDATE SET provider_domain_id = EXCLUDED.provider_domain_id, region = EXCLUDED.region, status = EXCLUDED.status, records = EXCLUDED.records,
          return_path_host = EXCLUDED.return_path_host, dkim_selector = EXCLUDED.dkim_selector, spf_include = EXCLUDED.spf_include,
+         open_tracking = EXCLUDED.open_tracking, click_tracking = EXCLUDED.click_tracking,
          verified_at = COALESCE(EXCLUDED.verified_at, ${this.t("esp_domains")}.verified_at), checked_at = EXCLUDED.checked_at, updated_at = now()`,
       [
         row.company_id,
@@ -1282,6 +1374,8 @@ export class SqlStore implements GmailStore {
         row.created_by,
         row.verified_at,
         row.checked_at,
+        row.open_tracking ?? null,
+        row.click_tracking ?? null,
       ],
     );
   }
@@ -1403,7 +1497,8 @@ export class SqlStore implements GmailStore {
   async markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }): Promise<void> {
     await this.db.execute(
       `UPDATE ${this.t("send_requests")} SET status = 'sent', permanent = false, error = NULL, provider = $2, provider_message_id = $3, account_id = $4, from_address = $5,
-         skipped = $6::jsonb, sent_at = now(), updated_at = now()
+         skipped = $6::jsonb, sent_at = now(), updated_at = now(),
+         request = CASE WHEN context ->> 'kind' = '${PRIVATE_KIND_SQL}' THEN request - 'text' - 'html' - 'attachments' ELSE request END
         WHERE key = $1`,
       [key, fields.provider, fields.providerMessageId, fields.accountId, fields.fromAddress, json(fields.skipped ?? [])],
     );

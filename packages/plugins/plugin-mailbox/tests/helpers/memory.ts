@@ -5,7 +5,8 @@
 import { vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { AccountPatch, EspDomainPatch, GmailStore, SentFields } from "../../src/db.js";
-import type { EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "../../src/esp/types.js";
+import type { EspAuditRow, EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "../../src/esp/types.js";
+import { isPrivateMail, scrubbedRequest } from "../../src/private-mail.js";
 import { createEnv, type Env } from "../../src/gmail/env.js";
 import type {
   AccountRow,
@@ -399,6 +400,8 @@ export class MemoryStore implements GmailStore {
     if (existing?.status === "sent") return;
     const row = existing ?? this.newSend(input, "failed");
     Object.assign(row, { status: "failed", permanent, error, skipped, attempts: existing ? row.attempts : 1 });
+    // A client message's text is not kept once it has failed for good.
+    if (permanent && isPrivateMail(row.context)) row.request = scrubbedRequest(row.request);
     this.sends.set(input.key, row);
   }
   async markRetrying(input: SendRecordInput, error: string) {
@@ -423,6 +426,7 @@ export class MemoryStore implements GmailStore {
       from_address: fields.fromAddress,
       sent_at: nowIso(),
     });
+    if (isPrivateMail(row.context)) row.request = scrubbedRequest(row.request);
   }
   async getSend(companyId: string, key: string) {
     const row = this.sends.get(key);
@@ -442,6 +446,41 @@ export class MemoryStore implements GmailStore {
   }
   async setInboxResult(key: string, result: Record<string, unknown>) {
     this.inboxResults.set(key, result);
+  }
+  async isPrivateSend(companyId: string, ids: { key?: string | null; gmailMessageId?: string | null; rfcMessageId?: string | null }) {
+    return [...this.sends.values()].some((s) => s.company_id === companyId && isPrivateMail(s.context) && ((ids.key && s.key === ids.key) || (ids.gmailMessageId && s.gmail_message_id === ids.gmailMessageId) || (ids.rfcMessageId && s.rfc_message_id === ids.rfcMessageId)));
+  }
+  async scrubPrivateBodies(companyId: string, staleBeforeIso: string) {
+    let n = 0;
+    for (const s of this.sends.values()) {
+      if (s.company_id !== companyId || !isPrivateMail(s.context)) continue;
+      const hasBody = Boolean(s.request.text || s.request.html || s.request.attachments);
+      const settled = s.status === "sent" || (s.status === "failed" && s.permanent);
+      if (hasBody && (settled || s.created_at < staleBeforeIso)) {
+        s.request = scrubbedRequest(s.request);
+        n += 1;
+      }
+    }
+    return n;
+  }
+  async scrubPrivateSnippets(companyId: string) {
+    let n = 0;
+    for (const m of this.messages.values()) {
+      if (m.company_id !== companyId || m.direction !== "outbound" || !m.snippet) continue;
+      const privateSend = isPrivateMail(m.sent_context) || [...this.sends.values()].some((s) => s.company_id === companyId && isPrivateMail(s.context) && (s.key === m.send_key || (s.gmail_message_id && s.gmail_message_id === m.gmail_message_id) || (s.rfc_message_id && s.rfc_message_id === m.rfc_message_id)));
+      if (privateSend) {
+        m.snippet = "";
+        n += 1;
+      }
+    }
+    return n;
+  }
+  espAudit: EspAuditRow[] = [];
+  async insertEspAudit(row: { id: string; companyId: string; domain: string; action: EspAuditRow["action"]; actor: string; detail: Record<string, unknown> }) {
+    this.espAudit.push({ id: row.id, company_id: row.companyId, domain: row.domain.toLowerCase(), action: row.action, actor: row.actor, detail: structuredClone(row.detail), created_at: nowIso() });
+  }
+  async listEspAudit(companyId: string, domain: string, limit: number) {
+    return this.espAudit.filter((row) => row.company_id === companyId && row.domain === domain.toLowerCase()).slice(-limit).reverse().map((row) => structuredClone(row));
   }
 
   async claimThreadIssue(_companyId: string, accountId: string, threadId: string) {
@@ -571,7 +610,7 @@ export class MemoryStore implements GmailStore {
       this.espDomains.set(key, { ...structuredClone(row), domain: row.domain.toLowerCase(), client_kind: row.client_ref ? row.client_kind : null, first_sent_at: null, last_sent_at: null, warmup_exempt: false, daily_cap_override: null, reputation: null, verify_asked_at: null, created_at: now, updated_at: now });
       return;
     }
-    Object.assign(have, { provider_domain_id: row.provider_domain_id, region: row.region, status: row.status, records: structuredClone(row.records), return_path_host: row.return_path_host, dkim_selector: row.dkim_selector, spf_include: row.spf_include, verified_at: row.verified_at ?? have.verified_at, checked_at: row.checked_at, updated_at: now });
+    Object.assign(have, { provider_domain_id: row.provider_domain_id, region: row.region, status: row.status, records: structuredClone(row.records), return_path_host: row.return_path_host, dkim_selector: row.dkim_selector, spf_include: row.spf_include, open_tracking: row.open_tracking ?? null, click_tracking: row.click_tracking ?? null, verified_at: row.verified_at ?? have.verified_at, checked_at: row.checked_at, updated_at: now });
   }
   async patchEspDomain(companyId: string, domain: string, patch: EspDomainPatch) {
     const row = this.espDomains.get(`${companyId}:${domain.toLowerCase()}`);
@@ -660,6 +699,7 @@ export class MemoryStore implements GmailStore {
     const row = this.sends.get(key);
     if (!row) return;
     Object.assign(row, { status: "sent", permanent: false, error: null, provider: fields.provider, provider_message_id: fields.providerMessageId, account_id: fields.accountId, from_address: fields.fromAddress, skipped: fields.skipped ?? [], sent_at: nowIso() });
+    if (isPrivateMail(row.context)) row.request = scrubbedRequest(row.request);
   }
   async setSendDelivery(companyId: string, key: string, status: string, detail: Record<string, unknown>) {
     const row = this.sends.get(key);

@@ -6,13 +6,17 @@
  * own Gmail) with no Reply-To. Now:
  *
  * - Each sender (`own`, `company:<id>`, `contact:<id>`: the kit `senderKeyOf`) can
- *   have an identity: a Mailbox account address to send from, a display name, a
- *   reply-to, and the SMS and WhatsApp numbers. `set-sender-identity` writes it.
+ *   have an identity: a Mailbox account address to send from (a connected Gmail
+ *   mailbox, or since 0.7.0 a send-only address on a verified sending domain of the
+ *   email provider), a display name, a reply-to, and the SMS and WhatsApp numbers.
+ *   `set-sender-identity` writes it. A send-only address has no inbox, so its
+ *   replies go to the reply-to and are matched to the step by that mailbox.
  * - Own marketing may use the Mailbox default account when no identity is set. A
  *   CLIENT's marketing needs that client's identity: with none the send is refused
  *   (kit `resolveSender`) rather than going out as PiB, and so is approval and
- *   launch. Nobody can send as a mailbox that is not connected: the Mailbox only
- *   sends from an account the company connected, and refuses any other `from`.
+ *   launch. Nobody can send as an address the Mailbox does not hold: it only sends
+ *   from an account the company connected or a provider domain it registered, and
+ *   refuses any other `from`.
  * - A campaign's own `fromName` and `replyTo` win over the identity's.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -76,7 +80,7 @@ export async function resolveEmailSender(ctx: PluginContext, companyId: string, 
     return {
       ok: false,
       senderKey,
-      error: `No sender is set up for ${senderKey} (${clientLabel(campaign)}), so this campaign's email would go out from PiB's own Gmail. Add one with set-sender-identity (fromAddress is a mailbox connected in the Mailbox; add fromName and replyTo). Email for a client is never sent from the default account.`,
+      error: `No sender is set up for ${senderKey} (${clientLabel(campaign)}), so this campaign's email would go out from PiB's own Gmail. Add one with set-sender-identity (fromAddress is a Gmail mailbox connected in the Mailbox or a send-only address on the client's sending domain; add fromName and replyTo). Email for a client is never sent from the default account.`,
     };
   }
   const row = all.find((entry) => entry.sender_key === senderKey);

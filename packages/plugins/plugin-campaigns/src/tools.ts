@@ -187,10 +187,10 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     name: "set-sender-identity",
     displayName: "Set who a sender goes out as",
     description:
-      "Set the identity a sender's messages go out as: the mailbox (a connected Gmail account in the Mailbox), the display name, the reply-to, and the SMS and WhatsApp numbers. A client's campaign cannot be approved or sent without its own identity: it never goes out from PiB's own Gmail or number. Omitted fields stay; an empty string clears one.",
+      "Set the identity a sender's messages go out as: the sending account (a Gmail mailbox connected in the Mailbox, or a send-only address on a client's own sending domain at the email provider), the display name, the reply-to, and the SMS and WhatsApp numbers. A client's campaign cannot be approved or sent without its own identity: it never goes out from PiB's own Gmail or number. Omitted fields stay; an empty string clears one.",
     parametersSchema: schema([], {
       client: str("Whose identity: company:<CRM company id> or contact:<CRM contact id>, or own (default) for PiB's own marketing."),
-      fromAddress: str("The mailbox to send from: an email address connected in the Mailbox. The Mailbox refuses an account that is not connected."),
+      fromAddress: str("The sending account: an email address the Mailbox sends from, either a connected Gmail mailbox or a send-only address on a verified sending domain of the email provider (list-mailboxes and list-sending-domains show them). The Mailbox refuses an address that is neither. A send-only address has no inbox, so also set replyTo to a mailbox somebody reads."),
       fromName: str("The name recipients see, e.g. 'Acme Plumbing'."),
       replyTo: str("Where replies go when it is not the sending mailbox."),
       smsFrom: str("The number SMS goes out from (+27...) or a Twilio Messaging Service SID (MG...)."),
@@ -258,7 +258,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "record-step-event",
     displayName: "Record step event",
-    description: "Record an open or click you saw in a real report (such as a link tracker). Never estimate. Sends, replies, bounces and unsubscribes are recorded automatically.",
+    description: "Record an open or click you saw in a real report (such as a link tracker). Never estimate. Sends, replies, bounces, complaints, deliveries (email through the email provider) and unsubscribes are recorded automatically.",
     parametersSchema: schema(["enrollmentId", "eventType"], {
       enrollmentId,
       eventType: { type: "string", enum: ["open", "click"], description: "open or click." },
@@ -268,7 +268,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "campaign-step-analytics",
     displayName: "Campaign step analytics",
-    description: "Per step: sent, replies, bounces, unsubscribes, opens and clicks.",
+    description: "Per step: sent, delivered, replies, bounces (hard), softBounces, complaints, unsubscribes, opens and clicks. Delivered, soft bounces and complaints, and opens and clicks only where tracking is on for the sending domain, come from the email provider (through the Mailbox); they are 0 for mail sent from Gmail.",
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {

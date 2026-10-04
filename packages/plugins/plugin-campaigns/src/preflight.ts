@@ -160,7 +160,7 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
   const channels: PreflightResult["channels"] = [];
   for (const channel of used) {
     if (channel === "email") {
-      if (automatic && !facts.mailboxOn) add("error", "mailbox-off", "The campaign sends email but the Mailbox module is switched off.", "Turn the Mailbox on in Setup and connect Gmail.");
+      if (automatic && !facts.mailboxOn) add("error", "mailbox-off", "The campaign sends email but the Mailbox module is switched off.", "Turn the Mailbox on in Setup, and connect Gmail or add the sending domain the campaign goes out from.");
       continue;
     }
     if (campaign.delivery !== "auto") add("error", "needs-auto", `${CHANNEL_LABELS[channel]} steps are sent by the plugin itself, so the campaign's delivery must be auto.`, "update-campaign with delivery auto");
@@ -181,7 +181,7 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
     if (facts.email?.ok) {
       const from = facts.email.identity?.fromAddress;
       sentAs = `${facts.email.fromName ? `${facts.email.fromName} ` : ""}${from ? `<${from}>` : "(the Mailbox's default account)"}${facts.email.replyTo ? `, replies to ${facts.email.replyTo}` : ""}`.trim();
-      if (!facts.email.replyTo && isClient) add("warning", "no-reply-to", "No reply-to is set, so replies go to the sending mailbox.");
+      if (!facts.email.replyTo && isClient) add("warning", "no-reply-to", "No reply-to is set, so replies go to the sending address. If that is a send-only address on the client's sending domain nobody reads it and replies are lost: set a reply-to somebody reads.");
       const health = facts.emailHealth;
       if (!health || health.status === "unknown") {
         add("warning", "domain-unknown", `The sender's domain health (SPF, DKIM, DMARC) has not been reported by the Mailbox, so it is not known whether this email will reach inboxes${from ? ` from ${from.split("@")[1] ?? "this domain"}` : ""}.`);
@@ -234,7 +234,10 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
  * per account. Until the Mailbox sends one the preflight says the health is unknown.
  */
 export const SENDER_HEALTH_EVENT = "sender.health";
+/** What the Mailbox really announces: `mail.domain.health`, one event per sending domain (kit/Mailbox `DomainHealthEvent`). */
+export const DOMAIN_HEALTH_EVENT = "mail.domain.health";
 const healthState = (companyId: string, account: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "campaigns-senders", stateKey: `health:${account.toLowerCase()}` });
+const domainHealthState = (companyId: string, domain: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "campaigns-senders", stateKey: `domain:${domain.toLowerCase()}` });
 
 export async function rememberSenderHealth(ctx: PluginContext, companyId: string, payload: unknown): Promise<boolean> {
   const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
@@ -246,13 +249,48 @@ export async function rememberSenderHealth(ctx: PluginContext, companyId: string
   return true;
 }
 
+/**
+ * `mail.domain.health`: `{ key, domain, status: healthy | warn | bad | unknown, healthy, sendReady, problems: [{ code, severity, message }], checkedAt, mailboxes }`.
+ * Kept per domain, the newest `checkedAt` winning (events are at-most-once and re-sent hourly, so an older one can arrive late). It covers the
+ * domain of a Gmail mailbox and of an email provider account alike: a provider domain's reputation problems (a bounce or complaint rate over the limit) are in it too.
+ * A healthy domain that is not send-ready yet (the first month of DMARC) is a warning, and a domain the Mailbox could not judge is not stored (unknown stays unknown).
+ * A bad domain blocks a launch only when `provider` says only the email provider sends from it (the Mailbox would refuse the send); a domain with a Gmail
+ * mailbox on it stays a warning, exactly as before this event was read.
+ */
+export async function rememberDomainHealth(ctx: PluginContext, companyId: string, payload: unknown): Promise<boolean> {
+  const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const domain = typeof p.domain === "string" ? p.domain.trim().toLowerCase() : "";
+  const checkedAt = typeof p.checkedAt === "string" && Number.isFinite(Date.parse(p.checkedAt)) ? p.checkedAt : null;
+  if (!domain.includes(".") || !checkedAt) return false;
+  const problems = (Array.isArray(p.problems) ? p.problems : []).map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {})).filter((entry) => typeof entry.message === "string");
+  const worst = problems.some((entry) => entry.severity === "bad") ? "bad" : problems.some((entry) => entry.severity === "warn") ? "warn" : null;
+  const judged = p.status === "bad" || worst === "bad" ? "bad" : p.status === "warn" || worst === "warn" ? "warn" : p.status === "healthy" ? (p.sendReady === false ? "warn" : "ok") : null;
+  if (!judged) return false;
+  // A domain only the email provider sends from: the Mailbox refuses marketing from it while it is bad, so the launch is refused too. A domain with a Gmail
+  // mailbox on it: the Mailbox still sends from it (it blocks nothing there), so its problems are shown to the approver and block nothing, as before.
+  const status = judged === "bad" && !(typeof p.provider === "string" && p.provider) ? "warn" : judged;
+  const lines = problems.filter((entry) => entry.severity === "bad" || entry.severity === "warn").map((entry) => String(entry.message)).slice(0, 3);
+  const detail = (lines.length > 0 ? lines.join(" ") : status === "warn" ? "The domain is healthy but not ready to send campaigns yet (its first month of DMARC monitoring)." : "").slice(0, 300);
+  const before = (await ctx.state.get(domainHealthState(companyId, domain)).catch(() => null)) as SenderHealth | null;
+  if (before && typeof before.checkedAt === "string" && Date.parse(before.checkedAt) > Date.parse(checkedAt)) return false;
+  await ctx.state.set(domainHealthState(companyId, domain), { status, detail, checkedAt } satisfies SenderHealth);
+  return true;
+}
+
+/** What the Mailbox last said about the account's sending domain: its own `sender.health` for the address when there is one, else `mail.domain.health` for the address's domain. */
 export async function senderHealthFor(ctx: PluginContext, companyId: string, account: string | null | undefined): Promise<SenderHealth | null> {
-  try {
-    const stored = (await ctx.state.get(healthState(companyId, account ?? "default"))) as SenderHealth | null;
-    return stored && typeof stored === "object" && stored.status ? stored : null;
-  } catch {
-    return null;
-  }
+  const read = async (key: ReturnType<typeof healthState>): Promise<SenderHealth | null> => {
+    try {
+      const stored = (await ctx.state.get(key)) as SenderHealth | null;
+      return stored && typeof stored === "object" && stored.status ? stored : null;
+    } catch {
+      return null;
+    }
+  };
+  const direct = await read(healthState(companyId, account ?? "default"));
+  if (direct) return direct;
+  const domain = account?.includes("@") ? account.split("@")[1]!.trim().toLowerCase() : null;
+  return domain ? read(domainHealthState(companyId, domain)) : null;
 }
 
 // ---------------------------------------------------------------------------

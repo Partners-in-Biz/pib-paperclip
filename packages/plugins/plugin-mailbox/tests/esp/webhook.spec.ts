@@ -190,8 +190,34 @@ describe("a delivery is applied once", () => {
     expect(t.store.espDays.get(day())!.clicked).toBe(2);
     await deliver(t, eventBody("email.opened"));
     expect(t.store.espDays.get(day())!.opened).toBe(1);
-    // An open is counted, not announced.
-    expect(emitted(t, ESP_DELIVERY_EVENT).map((p) => p.type)).toEqual(["clicked", "clicked"]);
+    // Opens and clicks are counted and announced (they can repeat: a consumer counts the first per send); only the provider's own "sent" is not.
+    expect(emitted(t, ESP_DELIVERY_EVENT).map((p) => p.type)).toEqual(["clicked", "clicked", "opened"]);
+  });
+
+  it("announces mail.delivery in the kit's shape: the send's key, the client it was for, the provider and the time, and no content", async () => {
+    const t = await sent();
+    await deliver(t, eventBody("email.delivered", {}, { createdAt: "2026-10-04T08:00:00.000Z" }), { id: "msg_shape" });
+    expect(ESP_DELIVERY_EVENT).toBe(MAIL_EVENTS.delivery);
+    const [delivery] = emitted(t, MAIL_EVENTS.delivery);
+    expect(delivery).toEqual({
+      key: "esp:msg_shape",
+      type: "delivered",
+      provider: "resend",
+      sendKey: "campaigns:step:e1:1",
+      recipient: "ann@x.co",
+      at: "2026-10-04T08:00:00.000Z",
+      context: marketing().context,
+      clientKind: CLIENT.kind,
+      clientRef: CLIENT.ref,
+    });
+    // The company's own mail has no client; an event about a send the Mailbox does not know yet takes the client of the domain it came through.
+    const own = await sent({ client: false });
+    await deliver(own, eventBody("email.delivered", { from: `Partners in Biz <${OWN_FROM}>` }), { id: "msg_own" });
+    expect(emitted(own, MAIL_EVENTS.delivery)[0]).toMatchObject({ clientKind: null, clientRef: null, sendKey: "billing:invoice:inv-1:send" });
+    const early = await sent();
+    await deliver(early, eventBody("email.delivered", { email_id: "not-recorded-yet" }), { id: "msg_early" });
+    expect(emitted(early, MAIL_EVENTS.delivery)[0]).toMatchObject({ sendKey: null, context: null, clientKind: CLIENT.kind, clientRef: CLIENT.ref });
+    expect(JSON.stringify(emitted(t, MAIL_EVENTS.delivery))).not.toMatch(/subject|Spring offer|Hi Ann/);
   });
 
   it("an event that fails to apply is taken back out, so the provider's retry applies it", async () => {

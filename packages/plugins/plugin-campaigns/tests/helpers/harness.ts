@@ -24,6 +24,11 @@ export const FUTURE = "2099-01-01T08:00:00.000Z";
 
 /** The approval and step-issue sweeps read `public.issues`; tests keep those rows in `store.issues`. */
 export const SWEEP_ROUTES: Route[] = [
+  // The sends to one address (a reply is matched to one of them): the SQL runs for real in delivery.pg.spec.ts.
+  [/lower\(meta ->> 'to'\) = \$2/, (p, s) =>
+    (s.campaign_step_events ?? [])
+      .filter((e) => e.company_id === p[0] && e.event_type === "sent" && String(e.meta?.to ?? "").toLowerCase() === p[1] && Date.parse(String(e.occurred_at)) >= Date.parse(String(p[2])))
+      .sort((a, b) => Date.parse(String(b.occurred_at)) - Date.parse(String(a.occurred_at)))],
   [/JOIN public\.issues i ON i\.id::text = c\.approval_issue_id\s+WHERE c\.status = 'draft' AND i\.status = 'done'/, (_p, s) =>
     (s.campaigns ?? [])
       .filter((c) => c.status === "draft" && c.approval_issue_id)

@@ -24,7 +24,7 @@ import {
   tokens,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
-import { emptyTotals, replyRate, type CampaignEventTotals, type CampaignSeries, type SendWeek } from "../series.js";
+import { emptyTotals, providerReport, replyRate, type CampaignEventTotals, type CampaignSeries, type SendWeek } from "../series.js";
 
 // ---------------------------------------------------------------------------
 // Statuses
@@ -117,6 +117,7 @@ export function CampaignsOverview({ campaigns, series, suppressed = 0, onNew, on
   const ratePrior = priorSent ? priorReplies / priorSent : null;
   const rateDelta = rateNow !== null && ratePrior !== null ? (rateNow - ratePrior) * 100 : null;
   const bounceRate = recentSent ? recentBounces / recentSent : null;
+  const provider = providerReport(byCampaign);
   const active = campaigns.filter((c) => c.status === "active").length;
   const waiting = campaigns.filter(awaitingApproval).length;
   const running = sum(campaigns.map((c) => c.stats.running));
@@ -164,7 +165,7 @@ export function CampaignsOverview({ campaigns, series, suppressed = 0, onNew, on
           label="Bounce rate"
           value={percent(bounceRate)}
           tone={bounceTone(bounceRate) === "ok" ? "neutral" : bounceTone(bounceRate)}
-          hint={bounceRate === null ? "Nothing sent yet" : bounceRate >= 0.02 ? "Clean the list before the next send" : "Healthy"}
+          hint={`${bounceRate === null ? "Nothing sent yet" : bounceRate >= 0.02 ? "Clean the list before the next send" : "Healthy"}${provider.line ? `. ${provider.line}` : ""}`}
           icon={CircleAlert}
           invert
         />

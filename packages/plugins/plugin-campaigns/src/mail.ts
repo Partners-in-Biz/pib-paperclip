@@ -9,6 +9,10 @@
  * - `mail.received` from a contact we emailed records a `reply`, `bounce` or
  *   `unsubscribe` step event and, with Jev, acts on it: stop, suppress, push
  *   or open an issue for the campaign's agent (else the Account Manager).
+ *   A reply is matched to its step by the send context the Mailbox linked (a Gmail
+ *   send), else by the Reply-To mailbox it arrived at plus the send it answers (a
+ *   send through the email provider has no thread or Message-ID to link by: its
+ *   `sent` event keeps the Reply-To, the address and the subject), else by the sender.
  * - Campaign email is marketing (`marketing: true`): the Mailbox skips
  *   suppressed addresses and adds List-Unsubscribe. An unsubscribe reply is
  *   announced as `contact.suppressed` so the CRM and the Mailbox stop too.
@@ -47,6 +51,7 @@ import {
   isSuppressed,
   latestSends,
   listSteps,
+  sendsToAddress,
   markDecisionActed,
   noteOutboxError,
   pushEnrollmentDue,
@@ -358,6 +363,10 @@ async function applySendResult(ctx: PluginContext, row: OutboxRow, result: MailS
   const sentStep = stepFor(steps, enrollment.stepPosition, enrollment.variant);
   const payload = record(row.payload);
   const to = Array.isArray(payload.to) ? record(payload.to[0]).email : null;
+  // Where a reply arrives (the Mailbox says what the message carried; else what we asked for), and what the email was about: a send through the email
+  // provider has no thread or Message-ID, so a reply is matched to it by these (`matchByReplyTo`).
+  const replyTo = (typeof result.replyTo === "string" && result.replyTo ? result.replyTo : typeof record(payload.replyTo).email === "string" ? (record(payload.replyTo).email as string) : "").trim().toLowerCase();
+  const subject = typeof payload.subject === "string" ? payload.subject.slice(0, 300) : "";
   await insertStepEventOnce(ctx, {
     companyId: enrollment.companyId,
     campaignId: enrollment.campaignId,
@@ -366,7 +375,15 @@ async function applySendResult(ctx: PluginContext, row: OutboxRow, result: MailS
     eventType: "sent",
     variant: sentStep?.variant ?? "a",
     sourceKey: `sent:${result.key}`,
-    meta: { to: typeof to === "string" ? to : null, messageId: result.messageId ?? null, threadId: result.threadId ?? null, key: result.key },
+    meta: {
+      to: typeof to === "string" ? to : null,
+      messageId: result.messageId ?? null,
+      threadId: result.threadId ?? null,
+      key: result.key,
+      ...(result.provider ? { provider: result.provider } : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(subject ? { subject } : {}),
+    },
   });
   const sentEnrollment: EnrollmentDraft = {
     ...enrollment,
@@ -407,7 +424,7 @@ export async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, 
       ? [
         `The Mailbox could not send this campaign email to \`contact:${enrollment.contactId}\`: ${error}`,
         "",
-        "Fix the cause if you can (reconnect Gmail on the Mailbox page, or correct the address on the contact in the CRM), then send it: draft it with `partnersinbiz.mailbox:create-draft` and send it with `send-draft`, or send it from Gmail. Send the text below as written, including the last lines that say who we are and how to unsubscribe: never cut them. Mark this issue **done** to move the contact to the next step, or **cancelled** to stop the campaign for them.",
+        "Fix the cause if you can (reconnect Gmail on the Mailbox page, check the client's sending domain with list-sending-domains, or correct the address on the contact in the CRM), then send it: draft it with `partnersinbiz.mailbox:create-draft` and send it with `send-draft`, or send it from Gmail. Send the text below as written, including the last lines that say who we are and how to unsubscribe: never cut them. Mark this issue **done** to move the contact to the next step, or **cancelled** to stop the campaign for them.",
         "",
         `**Subject:** ${hand?.subject ?? step?.subject ?? ""}`,
         "",
@@ -465,20 +482,61 @@ function asMailReceived(payload: unknown): MailReceived | null {
   };
 }
 
+/** How far back a reply is matched to a send by its Reply-To mailbox (a reply later than that is a new conversation). */
+export const REPLY_TO_MATCH_DAYS = 90;
+/** A send is not an answer to a reply that arrived before it (clock skew between the provider and the mailbox is allowed for). */
+const REPLY_CLOCK_SKEW_MS = 5 * 60_000;
+
+/** `Re: Hi Ada` and `Hi Ada` are the same subject: replies and forwards lose their prefixes, case and spacing. */
+export function plainSubject(subject: string): string {
+  return subject.replace(/^\s*((re|fw|fwd|aw|sv|vs)\s*:\s*)+/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * A reply to an email that went out through the email provider. The provider's message has no Gmail thread and no Message-ID the Mailbox knows, so
+ * the Mailbox cannot link the reply to the send. What a reply does have is where it arrived (the Reply-To mailbox: it is addressed to it, and
+ * it landed in it) and who wrote it (the person the email went to). Each `sent` event keeps the Reply-To the message carried, the address
+ * and the subject, so the reply is matched to the send whose Reply-To mailbox it came to, from the person it went to, sent before it arrived:
+ * the newest such send, and among several, the one whose subject the reply carries. The send's key goes on the reply event, so the match can
+ * be checked. Null when nothing matches, and the older ways of matching take over.
+ */
+export async function matchByReplyTo(ctx: PluginContext, companyId: string, mail: MailReceived): Promise<{ enrollment: EnrollmentDraft; sent: SentEvent } | null> {
+  const mailboxes = new Set([mail.accountAddress, ...(mail.to ?? []).map((address) => address.email)].map((address) => String(address ?? "").trim().toLowerCase()).filter((address) => address.includes("@")));
+  const from = mail.from.email.trim().toLowerCase();
+  if (mailboxes.size === 0 || !from) return null;
+  const arrived = Date.parse(mail.receivedAt);
+  const at = Number.isFinite(arrived) ? arrived : Date.now();
+  const sends = await sendsToAddress(ctx, companyId, from, new Date(at - REPLY_TO_MATCH_DAYS * 86_400_000).toISOString());
+  const fits = sends.filter((sent) => {
+    const replyTo = typeof sent.meta.replyTo === "string" ? sent.meta.replyTo.trim().toLowerCase() : "";
+    const sentAt = Date.parse(sent.occurredAt);
+    return typeof sent.meta.key === "string" && mailboxes.has(replyTo) && (!Number.isFinite(sentAt) || sentAt <= at + REPLY_CLOCK_SKEW_MS);
+  });
+  if (fits.length === 0) return null;
+  const subject = plainSubject(mail.subject);
+  // Newest first: the first whose subject the reply carries, else the newest.
+  const best = (subject ? fits.find((sent) => plainSubject(String(sent.meta.subject ?? "")) === subject) : undefined) ?? fits[0]!;
+  const enrollment = await enrollmentById(ctx, best.enrollmentId);
+  return enrollment && enrollment.companyId === companyId ? { enrollment, sent: best } : null;
+}
+
 /**
  * The enrollment a message replies to: the send context when the Mailbox
- * linked it, else the sender's CRM contact's most recently emailed
- * enrollment, else that contact's newest running one.
+ * linked it (a Gmail send), else the Reply-To mailbox it arrived at plus the
+ * send it answers (an email provider send), else the sender's CRM contact's
+ * most recently emailed enrollment, else that contact's newest running one.
  */
-export async function matchEnrollment(ctx: PluginContext, companyId: string, mail: MailReceived): Promise<{ enrollment: EnrollmentDraft; sent: SentEvent | null } | null> {
+export async function matchEnrollment(ctx: PluginContext, companyId: string, mail: MailReceived): Promise<{ enrollment: EnrollmentDraft; sent: SentEvent | null; via?: "send-context" | "reply-to" | "contact" } | null> {
   const context = mail.replyTo;
   if (context?.plugin === PLUGIN_ID && context.kind === "campaign_step" && context.id) {
     const enrollment = await enrollmentById(ctx, context.id);
     if (enrollment && enrollment.companyId === companyId) {
       const [sent] = await latestSends(ctx, companyId, [enrollment.id]);
-      return { enrollment, sent: sent ?? null };
+      return { enrollment, sent: sent ?? null, via: "send-context" };
     }
   }
+  const byReplyTo = await matchByReplyTo(ctx, companyId, mail);
+  if (byReplyTo) return { ...byReplyTo, via: "reply-to" };
   const contacts = await crmContactsByEmail(ctx, companyId, mail.from.email);
   if (contacts.length === 0) return null;
   const enrollments = await enrollmentsForContacts(ctx, companyId, contacts.map((contact) => contact.id));
@@ -486,10 +544,10 @@ export async function matchEnrollment(ctx: PluginContext, companyId: string, mai
   const sends = await latestSends(ctx, companyId, enrollments.map((row) => row.id));
   if (sends[0]) {
     const enrollment = enrollments.find((row) => row.id === sends[0]!.enrollmentId)!;
-    return { enrollment, sent: sends[0] };
+    return { enrollment, sent: sends[0], via: "contact" };
   }
   const running = enrollments.find((row) => row.status === "running");
-  return running ? { enrollment: running, sent: null } : null;
+  return running ? { enrollment: running, sent: null, via: "contact" } : null;
 }
 
 export async function onMailReceived(ctx: PluginContext, event: PluginEvent): Promise<void> {
@@ -520,7 +578,7 @@ function pct(value: number | null): string {
 export async function handleReply(ctx: PluginContext, companyId: string, mail: MailReceived): Promise<CampaignReplyOutcome> {
   const matched = await matchEnrollment(ctx, companyId, mail);
   if (!matched) return { matched: false };
-  const { enrollment, sent } = matched;
+  const { enrollment, sent, via } = matched;
   const campaign = await getCampaign(ctx, enrollment.campaignId);
   if (!campaign || campaign.companyId !== companyId) return { matched: false };
 
@@ -552,7 +610,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       eventType: plan.event,
       variant,
       sourceKey: `${plan.event}:${mail.messageId}`,
-      meta: { messageId: mail.messageId, threadId: mail.threadId || null, kind, confidence },
+      meta: { messageId: mail.messageId, threadId: mail.threadId || null, kind, confidence, ...(via ? { matchedBy: via } : {}), ...(via === "reply-to" && typeof sent?.meta.key === "string" ? { sendKey: sent.meta.key } : {}) },
     });
   }
 

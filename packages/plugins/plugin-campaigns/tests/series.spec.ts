@@ -2,7 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
 import { eventCounts, eventDays } from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { eventTotals, replyRate, weekStarts, weeklySends } from "../src/series.js";
+import { eventTotals, providerReport, replyRate, weekStarts, weeklySends } from "../src/series.js";
 import { validateParams, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
 const NOW = new Date("2026-09-26T15:00:00Z");
@@ -17,12 +17,15 @@ describe("campaign chart series", () => {
       { campaign_id: "c1", event_type: "reply", variant: "b", count: 9 },
       { campaign_id: "c1", event_type: "bounce", variant: "a", count: 2 },
       { campaign_id: "c1", event_type: "open", variant: null, count: 40 },
+      { campaign_id: "c1", event_type: "delivered", variant: "a", count: 170 },
+      { campaign_id: "c1", event_type: "complaint", variant: "a", count: 1 },
+      { campaign_id: "c1", event_type: "soft_bounce", variant: null, count: 3 },
       { campaign_id: "c1", event_type: "weird", variant: null, count: 7 },
       { campaign_id: "c2", event_type: "sent", variant: "a", count: 5 },
     ], new Set(["c1"]));
     expect(Object.keys(totals)).toEqual(["c1"]);
     expect(totals.c1).toEqual({
-      sent: 185, replies: 12, bounces: 2, unsubscribes: 0, opens: 40, clicks: 0,
+      sent: 185, replies: 12, bounces: 2, unsubscribes: 0, opens: 40, clicks: 0, delivered: 170, complaints: 1, softBounces: 3,
       variants: { a: { sent: 94, replies: 3 }, b: { sent: 91, replies: 9 } },
     });
   });
@@ -82,5 +85,22 @@ describe("overview queries", () => {
       validateParams(call.sql, call.params);
     }
     expect(calls[1]!.params[1]).toBe("2026-07-04T00:00:00.000Z");
+  });
+});
+
+describe("what the email provider reported", () => {
+  it("adds up delivered, soft bounces, complaints, opens and clicks across campaigns, and says nothing when the provider is not in use", () => {
+    const totals = eventTotals([
+      { campaign_id: "c1", event_type: "sent", variant: "a", count: 10 },
+      { campaign_id: "c1", event_type: "delivered", variant: "a", count: 8 },
+      { campaign_id: "c1", event_type: "complaint", variant: "a", count: 1 },
+      { campaign_id: "c2", event_type: "delivered", variant: "a", count: 4 },
+      { campaign_id: "c2", event_type: "soft_bounce", variant: "a", count: 2 },
+      { campaign_id: "c2", event_type: "click", variant: "a", count: 1 },
+    ]);
+    expect(providerReport(totals)).toEqual({ delivered: 12, complaints: 1, softBounces: 2, opens: 0, clicks: 1, line: "From the email provider: 12 delivered, 2 soft bounces, 1 complaint, 1 click." });
+    // Gmail sends report nothing of this: no line, so the overview is as it was.
+    expect(providerReport(eventTotals([{ campaign_id: "c1", event_type: "sent", variant: "a", count: 10 }])).line).toBeNull();
+    expect(providerReport({}).line).toBeNull();
   });
 });

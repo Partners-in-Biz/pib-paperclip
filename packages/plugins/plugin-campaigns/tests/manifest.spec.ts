@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ASKING_HEADING, COMPANY_MEMORY_HEADING } from "@partnersinbiz/pib-plugin-kit";
@@ -24,10 +25,10 @@ describe("manifest 0.6", () => {
     expect(result.success ? [] : result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`)).toEqual([]);
   });
 
-  it("is version 0.6.0 everywhere", () => {
-    expect(manifest.version).toBe("0.6.0");
-    expect(PLUGIN_VERSION).toBe("0.6.0");
-    expect(pkg.version).toBe("0.6.0");
+  it("is version 0.7.0 everywhere", () => {
+    expect(manifest.version).toBe("0.7.0");
+    expect(PLUGIN_VERSION).toBe("0.7.0");
+    expect(pkg.version).toBe("0.7.0");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {
@@ -106,23 +107,48 @@ describe("the skill", () => {
   });
 });
 
-describe("migration 013", () => {
+describe("migrations", () => {
   const files = readdirSync(new URL("../migrations/", import.meta.url)).sort();
-  const sql = readFileSync(new URL("../migrations/013_campaigns.sql", import.meta.url), "utf8");
+  const read = (name: string) => readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8");
 
-  it("is the next migration and passes the host migration guard, with no quotes in comments and nothing destructive", () => {
-    expect(files.at(-1)).toBe("013_campaigns.sql");
-    expect(files).toHaveLength(13);
+  it("013 passes the host migration guard, with no quotes in comments and nothing destructive", () => {
+    const sql = read("013_campaigns.sql");
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     expect(sql).not.toMatch(/\bdelete\b/i);
     expect(sql).not.toMatch(/\bdrop\s+table\b/i);
   });
 
-  it("never edits an applied migration", () => {
-    // 001 to 012 are applied on the live host; their checksums must not move. Their first lines are stable markers.
-    const first = (name: string) => readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8").split("\n")[0];
-    expect(first("011_campaigns.sql")).toBe("-- Campaigns 0.4.0: one suppression list fed by Campaigns, the CRM and the Mailbox, and launch on approval.");
-    expect(first("012_campaigns.sql")).toBe("-- Campaigns 0.5.0: when a draft last changed (a refused campaign must change before it is asked");
+  it("014 is the next migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
+    const sql = read("014_campaigns.sql");
+    expect(files.at(-1)).toBe("014_campaigns.sql");
+    expect(files).toHaveLength(14);
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+    // Every kind of 013 stays allowed, and the two new ones are added.
+    expect(sql).toContain("CHECK (event_type IN ('open', 'click', 'sent', 'reply', 'bounce', 'unsubscribe', 'skipped', 'delivered', 'failed', 'soft_bounce', 'complaint'))");
+    expect(sql).toContain("WHERE event_type = 'sent'");
+    expect(sql).not.toMatch(/\bdelete\b/i);
+    expect(sql).not.toMatch(/\bdrop\s+table\b/i);
+    expect(sql).not.toMatch(/\bupdate\b/i);
+  });
+
+  it("never edits an applied migration: 001 to 013 are live and each file still has the hash it was applied with", () => {
+    const applied: Record<string, string> = {
+      "001_campaigns.sql": "cb49831db73842f7713fa9955fc8b25cea439f75e4e35d3ebff8ea24ff8d960e",
+      "002_campaigns.sql": "2553260da7795e4ca89dc5d0f9a11f124acdb74ad21728d9fa9ae129f3074c77",
+      "003_campaigns.sql": "6b9246efa6359f87150ccef6f9eef2bbb83f129fc20ec3c33a60e2611e8bb114",
+      "004_campaigns.sql": "19664c4e9d37df3e998e26e03786d0b00b96fc61c6b541e351fe2026f43b318a",
+      "005_campaigns.sql": "105265c9bd999393bc934f002b96035b8c6269a02a49e93521348cee056fea3c",
+      "006_campaigns.sql": "b3948b08537df90311cb8484e545dcb174d53355bd798b548dd646ca78bd1352",
+      "007_campaigns.sql": "8d52f8048ed0713d272a19fb14c5c5d5123a2f1b58b9e0fb0269b30514478d16",
+      "008_campaigns.sql": "406763292c6569b4e4b2b269b3d914c2048d67a78376419cddbc542a222d4ffe",
+      "009_campaigns.sql": "c4bb5c5bd256506da9be18c4581928db36f5d3fbefd3c5d8c263a4070b0081cd",
+      "010_campaigns.sql": "78aef4c10cff70d4fd23ca66dc1e7844f59b0032376f701ea6609936f5017473",
+      "011_campaigns.sql": "a2cf86b0f61c4c09ddaa874df52c6540a78158a481224ea911b9ae451024ad87",
+      "012_campaigns.sql": "4b79dab38b9ab0dc7dbdcff92e399df5a0a7b3e4c7a916592a5d7e7a37720106",
+      "013_campaigns.sql": "26c2095386695151fa743255ed7938cb16135e70cf87da4e6cb7029d29648fbd",
+    };
+    for (const [name, hash] of Object.entries(applied)) expect(createHash("sha256").update(readFileSync(new URL(`../migrations/${name}`, import.meta.url))).digest("hex"), `${name} was edited after it was applied: add 015 instead`).toBe(hash);
   });
 });

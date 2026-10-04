@@ -28,6 +28,7 @@ import {
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
 import { GmailUnavailable } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
+import { isPrivateMail } from "../private-mail.js";
 import {
   batchModify,
   getMessageMetadata,
@@ -115,6 +116,17 @@ export function mayHaveAttachments(message: GmailMessage): boolean {
 
 export function messageRowId(accountId: string, gmailMessageId: string): string {
   return `gm_${accountId}_${gmailMessageId}`;
+}
+
+/**
+ * The sent copy of a client message (it may carry a private link) is stored without its preview: when the sync finds a message we sent that
+ * the send path has not stored yet, it is looked up by its Message-ID. Everything else is stored as it is.
+ */
+export async function withheldIfPrivate(env: Pick<Env, "store">, row: NewGmailMessage): Promise<NewGmailMessage> {
+  if (row.direction !== "outbound" || !row.snippet || !row.rfcMessageId) return row;
+  const sends = await env.store.sendsByRfcIds(row.companyId, [row.rfcMessageId]);
+  const send = sends.find((entry) => isPrivateMail(entry.context));
+  return send ? { ...row, snippet: "", sentContext: row.sentContext ?? send.context, sendKey: row.sendKey ?? send.key } : row;
 }
 
 /** Gmail metadata → the row we store, or null for drafts, trash, spam and chats. */
@@ -316,7 +328,7 @@ async function syncLocked(env: Env, loaded: LoadedConfig, account: AccountRow, r
   let stored = 0;
   for (const row of parsed) {
     if (row && isErasedMail(row, erased, account.address)) continue;
-    if (row && (await env.store.insertGmailMessage(row))) stored += 1;
+    if (row && (await env.store.insertGmailMessage(await withheldIfPrivate(env, row)))) stored += 1;
   }
 
   // Triage what is stored but not triaged yet (this run's messages, or a backlog a failed run left).

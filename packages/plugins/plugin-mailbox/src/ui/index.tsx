@@ -56,7 +56,7 @@ import {
 import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
-import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, dnsRecordLine, domainFacts, domainStatusLabel, domainTone, draftRecipients, espCapLine, espReputationLine, espStatusLabel, espStatusTone, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping } from "./view.js";
+import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, dnsRecordLine, domainFacts, domainStatusLabel, domainTone, draftRecipients, espCapLine, espReputationLine, espStatusLabel, espStatusTone, holdLiftedLine, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping, trackingLine, trackingOn } from "./view.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
 
@@ -110,7 +110,11 @@ interface EspDomainView {
   verifiedAt: string | null;
   checkedAt: string | null;
   cap: { cap: number; day: number | null; warming: boolean; source: string; sentToday: number; remaining: number };
-  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }> } | null;
+  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }>; clearedDay?: string | null } | null;
+  /** What the provider last said about tracking for this domain (worker 0.6.1+); a client message is refused through a domain with either on. */
+  tracking?: { open: boolean | null; click: boolean | null } | null;
+  /** A person lifted the reputation hold (worker 0.6.1+). */
+  holdLifted?: { at: string; by: string | null; day: string | null } | null;
   dns: { zone: string; records: DnsInstruction[]; dmarc: DnsInstruction | null; steps: string[]; whoAddsIt: string; afterwards: string } | null;
 }
 /** The email provider's state and sending domains (worker 0.6.0+). */
@@ -239,7 +243,7 @@ interface NamedAgent { id: string; name: string; status: string }
 
 const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
 type TabId = (typeof TAB_IDS)[number];
-type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | "esp-domain" | "esp-limits" | null;
+type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | "esp-domain" | "esp-limits" | "esp-hold" | null;
 type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
 
 const URGENCY_NAMES = ["Can wait", "Normal", "Soon", "Urgent"];
@@ -473,6 +477,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   const addSendingDomain = usePluginAction("mailbox.add-sending-domain");
   const refreshSendingDomain = usePluginAction("mailbox.refresh-sending-domain");
   const setSendingDomain = usePluginAction("mailbox.set-sending-domain");
+  const clearHold = usePluginAction("mailbox.clear-reputation-hold");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
@@ -514,6 +519,8 @@ export function MailboxPage({ context }: PluginPageProps) {
   const [espAdded, setEspAdded] = useState<EspDomainView | null>(null);
   const [limitsFor, setLimitsFor] = useState<EspDomainView | null>(null);
   const [limits, setLimits] = useState({ exempt: false, cap: "" });
+  const [holdFor, setHoldFor] = useState<EspDomainView | null>(null);
+  const [holdReason, setHoldReason] = useState("");
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
@@ -644,6 +651,12 @@ export function MailboxPage({ context }: PluginPageProps) {
     setLimitsFor(row);
     setLimits({ exempt: row.cap.source === "established", cap: row.cap.source === "override" ? String(row.cap.cap) : "" });
     setCreate("esp-limits");
+  }
+
+  function openHold(row: EspDomainView) {
+    setHoldFor(row);
+    setHoldReason("");
+    setCreate("esp-hold");
   }
 
   const settings = snapshot?.settings;
@@ -1277,6 +1290,14 @@ export function MailboxPage({ context }: PluginPageProps) {
                     </span>
                     {row.ready ? <span style={{ fontSize: 12, color: tokens.muted }}>{espCapLine(row)} · {espReputationLine(row)}</span> : null}
                     {(row.reputation?.problems ?? []).map((problem) => <div key={problem.message} style={{ fontSize: 12.5, color: tone("bad").fg, overflowWrap: "anywhere" }}>{problem.message}</div>)}
+                    {(row.reputation?.problems ?? []).length > 0 ? (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={() => openHold(row)}>Lift the hold</Button>
+                        <span style={{ fontSize: 12, color: tokens.muted }}>Marketing from this domain is held back. Only a person can lift it, after the cause is fixed.</span>
+                      </div>
+                    ) : null}
+                    {holdLiftedLine(row) ? <span style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>{holdLiftedLine(row)}</span> : null}
+                    {trackingLine(row) ? <span style={{ fontSize: 12, color: trackingOn(row) ? tone("warn").fg : tokens.muted, overflowWrap: "anywhere" }}>{trackingLine(row)}</span> : null}
                     {row.dns ? (
                       <div style={{ display: "grid", gap: 4 }}>
                         <span style={{ fontSize: 12.5, overflowWrap: "anywhere" }}>{row.dns.whoAddsIt}</span>
@@ -1736,6 +1757,16 @@ export function MailboxPage({ context }: PluginPageProps) {
             </Field>
           </>
         )}
+      </Modal>
+
+      <Modal open={create === "esp-hold"} title={holdFor ? `Lift the hold on ${holdFor.domain}` : "Lift the hold"} description="Marketing from this domain is held back because its bounce or complaint rate is over the limit. Lift the hold only after the cause is fixed (the list was cleaned, the audience tightened). From now on only what happens next is counted, so a new bounce or complaint can hold it again. Your name and the reason are kept." onClose={() => setCreate(null)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
+          <Button type="button" disabled={busy || !holdFor || holdReason.trim().length < 10} onClick={() => void run(() => clearHold({ domain: holdFor!.domain, reason: holdReason.trim() }), "The hold was lifted")}>Lift the hold</Button>
+        </>
+      )}>
+        {holdFor ? (holdFor.reputation?.problems ?? []).map((problem) => <Muted key={problem.message}>{problem.message}</Muted>) : null}
+        <Field label="What was fixed (at least 10 characters)"><Input value={holdReason} onChange={(event) => setHoldReason(event.target.value)} placeholder="Removed the 14 dead addresses from the list and re-checked the rest" /></Field>
       </Modal>
 
       <Modal open={create === "esp-limits"} title={limitsFor ? `Limits for ${limitsFor.domain}` : "Limits"} description="A new domain's daily cap ramps up over 13 days (50, 100, 200 ... 8,000) so mailbox providers learn to trust it. Only a person can lift that: mark a domain as already established if it has sent real volume before, or give it a cap of its own." onClose={() => setCreate(null)} footer={(

@@ -126,6 +126,9 @@ export class MockEmailProvider implements EmailProvider {
       returnPathHost: `send.${name}`,
       dkimSelector: "resend",
       spfInclude: "amazonses.com",
+      // Registered with tracking off, like the real adapter asks for.
+      openTracking: false,
+      clickTracking: false,
     };
     this.domains.set(name, domain);
     return structuredClone(domain);
@@ -153,6 +156,14 @@ export class MockEmailProvider implements EmailProvider {
   async listDomains(): Promise<ProviderDomain[]> {
     this.calls.push("listDomains");
     return [...this.domains.values()].map((domain) => structuredClone({ ...domain, records: [] }));
+  }
+
+  /** Test helper: somebody switched tracking on (or off) for the domain in the provider's dashboard; `null` is an answer that does not say. */
+  setTracking(name: string, flags: { open?: boolean | null; click?: boolean | null }): void {
+    const domain = this.domains.get(name.toLowerCase());
+    if (!domain) return;
+    if (flags.open !== undefined) domain.openTracking = flags.open;
+    if (flags.click !== undefined) domain.clickTracking = flags.click;
   }
 
   /** Test helper: the provider has seen the DNS records. */

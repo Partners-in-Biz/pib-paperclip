@@ -53,6 +53,8 @@ export class FakeGmail {
   ];
   sent: Array<{ raw: string; mime: string; threadId: string | null; id: string }> = [];
   calls: Call[] = [];
+  /** The plain text of a message just sent (a test decodes its own MIME), so Gmail's snippet and a read of the sent copy have it. */
+  sentText: ((mime: string) => string) | null = null;
   /** Override responses: return a Response to short-circuit. */
   intercept: ((call: Call) => Response | null | Promise<Response | null>) | null = null;
   tokenResponse: () => Response = () => json({ access_token: "fresh-token", expires_in: 3600, scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send" });
@@ -243,7 +245,13 @@ export class FakeGmail {
       const subject = /^Subject: (.+)$/m.exec(mime)?.[1]?.trim() ?? "";
       const thread = threadId ?? `t-${id}`;
       this.sent.push({ raw, mime, threadId, id });
-      this.addMessage({ id, threadId: thread, labelIds: ["SENT"], headers: { "Message-ID": messageId, Subject: subject, From: this.email } });
+      const stored = this.addMessage({ id, threadId: thread, labelIds: ["SENT"], headers: { "Message-ID": messageId, Subject: subject, From: this.email } });
+      // Gmail keeps the whole message in the sender's Sent folder and reads its start back as the snippet: a test says what the text was.
+      const text = this.sentText?.(mime);
+      if (text != null) {
+        stored.snippet = text.replace(/\s+/g, " ").slice(0, 100);
+        stored.payload = { mimeType: "text/plain", data: text };
+      }
       return json({ id, threadId: thread, labelIds: ["SENT"] });
     }
     return json({ error: { code: 400, message: `Unhandled ${method} ${path}` } }, 400);

@@ -236,7 +236,7 @@ function sendHealth(counts: Counts): HealthCheck {
       status: "bad",
       detail: `${failed} campaign email${failed === 1 ? "" : "s"} could not be sent in the last 7 days${retrying ? `, ${retrying} retrying` : ""}. Each one was handed to a person as an issue.`,
       href: HREF,
-      fix: "Check Gmail is connected in the Mailbox, then work the hand-over issues.",
+      fix: "Check the sending account in the Mailbox (Gmail connected, or the client's sending domain verified and not held for its bounce or complaint rate), then work the hand-over issues.",
       since: counts.oldest_failed,
     };
   }

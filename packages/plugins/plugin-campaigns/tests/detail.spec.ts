@@ -7,7 +7,7 @@ const BOARD = { type: "user" as const, userId: "user-peet" };
 describe("campaign detail wording", () => {
   it("names the delivery in plain words", () => {
     expect(deliveryLabel("issue")).toBe("Task for the agent");
-    expect(deliveryLabel("email")).toBe("Email from Gmail");
+    expect(deliveryLabel("email")).toBe("Email through the Mailbox");
     expect(deliveryLabel("auto")).toBe("Automatic: email, SMS, WhatsApp");
     expect(deliveryLabel(undefined)).toBe("Task for the agent");
   });

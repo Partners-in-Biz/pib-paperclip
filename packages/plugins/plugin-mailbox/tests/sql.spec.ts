@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { crmProjectionMigration, decisionsMigration, inboxMigration, outboxMigration } from "@partnersinbiz/pib-plugin-kit";
@@ -10,8 +11,35 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–008 untouched and adds 009", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql"]);
+  it("keeps 001–009 untouched and adds 010", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql"]);
+  });
+
+  it("never edits a migration that has been applied (001–009 are live): each file still has the hash it was applied with", () => {
+    const applied: Record<string, string> = {
+      "001_mailbox.sql": "13599162008f53d0fd835d2f442e852edf091087c9921afa19364af9482bc68d",
+      "002_mailbox.sql": "a99a3f9dfdf1c82324cd55230651d9a4478f610caee5f73e3929dfe76a94b85c",
+      "003_gmail.sql": "8a3b0a88725e9309f3960f5c4f427496d45c8f4b96acc7865dae8d3d0a7e5543",
+      "004_crm_projection.sql": "1ff00e646637a51f30e77813fb8ca22157b6cc4424c398a675298c9ef1f603ea",
+      "005_decisions_inbox.sql": "b00c20ba2ad36127033d7ac5c2dfa7bb68f43b5d310317ef632ec218ef78b081",
+      "006_bounces.sql": "63dda76af6f15009ab61b573745ce44cc52a15bf23aa76cb9835665ce6cad9b6",
+      "007_suppressions_outbox.sql": "d54feb1dc21efcefde7252e930cda210213202797c8d048bc79314cf72720c8c",
+      "008_wave3_delegations_senders_domains.sql": "6685350caecdf073aabb8e18ebed473d027dc399023e4d7aac6e6ff5cd93fb47",
+      "009_esp_send_only_accounts.sql": "907033f1be0f8e28dd73f4b27f946156a8ca30b118568d54fc082125fb20e35a",
+    };
+    for (const [file, hash] of Object.entries(applied)) expect(createHash("sha256").update(readFileSync(new URL(file, migrationsDir))).digest("hex"), `${file} was edited after it was applied: add 011 instead`).toBe(hash);
+  });
+
+  it("010 adds the reputation clearance, the tracking flags, the audit table and the index of client messages, and nothing that could lose data", () => {
+    const sql = readFileSync(new URL("010_client_messages_holds_tracking.sql", migrationsDir), "utf8");
+    for (const column of ["open_tracking boolean", "click_tracking boolean", "reputation_cleared_at timestamptz", "reputation_cleared_by text", "reputation_cleared_day text", "reputation_cleared_baseline jsonb"]) expect(sql).toContain(column);
+    expect(sql).toContain(`CREATE TABLE ${NAMESPACE}.esp_domain_audit`);
+    expect(sql).toContain("CHECK (action IN ('clear_reputation_hold', 'set_limits'))");
+    expect(sql).toContain("WHERE (context ->> 'kind') = 'client_message'");
+    // Additive only: no drop, no delete, no rewrite of a row, no secret column.
+    expect(sql).not.toMatch(/\b(drop|delete|truncate|update)\b/i);
+    expect(sql).not.toMatch(/\bapi_key\b|\bsecret\b|\btoken\b/i);
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
   });
 
   it("009 adds the send-only account kind, the provider fields on a send, and the domain, day, event and soft-bounce tables, and edits nothing that ran", () => {

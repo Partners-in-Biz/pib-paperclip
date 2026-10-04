@@ -298,7 +298,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
     <>
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       {gmail && gmail.status !== "done" ? (
-        <Banner text="Emails can't go out: Gmail isn't connected." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
+        <Banner text="PiB's own emails can't go out: Gmail isn't connected in the Mailbox." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
       ) : null}
       {snapshot && snapshot.settingsSaved === false ? (
         <Banner text="Due emails won't go out until the Campaigns settings are saved once." link={{ label: "Open settings", href: settingsItem?.href ?? "/company/settings/instance/plugins" }} linkProps={linkProps} />

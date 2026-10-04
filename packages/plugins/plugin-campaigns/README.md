@@ -44,7 +44,7 @@ Closes the audit findings Q1a-3 (client email), Q10-7 and Q1a-6 (SMS, WhatsApp, 
 
 ### Who a campaign goes out as (Q1a-3)
 
-- Before 0.6 a campaign saved `fromName`, `fromLocal` and `replyTo`, showed them to the approver and then discarded them: the mail went out from the Mailbox default account (PiB's Gmail) with no Reply-To. Now each **sender** (`own`, `company:<id>`, `contact:<id>`, the kit `senderKeyOf`) has an identity in `sender_identities`: `fromAddress` (a Mailbox account the client connected), `fromName`, `replyTo`, `smsFrom`, `whatsappFrom`. Tools: `set-sender-identity`, `remove-sender-identity`, `list-sender-identities`.
+- Before 0.6 a campaign saved `fromName`, `fromLocal` and `replyTo`, showed them to the approver and then discarded them: the mail went out from the Mailbox default account (PiB's Gmail) with no Reply-To. Now each **sender** (`own`, `company:<id>`, `contact:<id>`, the kit `senderKeyOf`) has an identity in `sender_identities`: `fromAddress` (a Mailbox account: a Gmail mailbox the client connected, or since 0.7.0 a send-only address on the client's verified sending domain), `fromName`, `replyTo`, `smsFrom`, `whatsappFrom`. Tools: `set-sender-identity`, `remove-sender-identity`, `list-sender-identities`.
 - The send request carries `from`, `fromName` and `replyTo` (kit `mailSenderFields`). The campaign's own `fromName` and `replyTo` win over the identity's; `fromLocal` no longer picks anything (kept for compatibility). The Mailbox must honour them and refuse a `from` that is not a connected account (needs elsewhere).
 - Own marketing without an identity still uses the default account. A client's marketing without an identity is refused at `request-campaign-approval`, at launch (the approval goes back to the person with the reason) and at every send (the step is held: nothing goes out, no issue per contact, the Cockpit goes red with `campaigns:cannot-send`). It is never sent from PiB's Gmail or number. A campaign whose delivery is `issue` (an agent sends each email by hand) needs no identity. Its step issues, and the "Email not sent" issue of a failed automatic send, carry the same text an automatic send would: the body for the contact followed by the footer (who sent it, the person's own unsubscribe link, reply STOP), and say to send it whole. The skill tells agents not to write their own opt-out line, so the footer must be in the issue; preflight warns when no link can be built (the footer then says reply STOP only).
 - The approval issue states "Sent as: Name <address>, replies to ...", the audience reachable per channel, the send window, the footer that is added, and the preflight warnings. Changing an identity cancels the open approval of that sender's drafts.
@@ -83,7 +83,7 @@ paperclip.partnersinbiz.online {
 
 ### Preflight
 
-`preflight-campaign` (tool) runs the same checks `request-campaign-approval` runs (and the launch re-runs without the web): every step complete and its merge tokens known; a client has its own sender; the Mailbox is on; each text channel is configured and has a number; a client's email can carry an unsubscribe link (error), PiB's own warns; the sender's domain health when the Mailbox has reported it (event `sender.health`: bad blocks, unknown warns); links are https, not test or private addresses, and answer (404 or an unknown host is an error, a site that blocks robots a warning; up to 12 links through the host's SSRF-guarded fetch); SMS parts and characters that force UCS-2; WhatsApp templates; and who can receive each channel (nobody is an error). Errors block the request, warnings go to the approver.
+`preflight-campaign` (tool) runs the same checks `request-campaign-approval` runs (and the launch re-runs without the web): every step complete and its merge tokens known; a client has its own sender; the Mailbox is on; each text channel is configured and has a number; a client's email can carry an unsubscribe link (error), PiB's own warns; the sender's domain health when the Mailbox has reported it (events `mail.domain.health` and `sender.health`: bad blocks for a domain only the email provider sends from, a warning for a domain with a Gmail mailbox on it; unknown warns); links are https, not test or private addresses, and answer (404 or an unknown host is an error, a site that blocks robots a warning; up to 12 links through the host's SSRF-guarded fetch); SMS parts and characters that force UCS-2; WhatsApp templates; and who can receive each channel (nobody is an error). Errors block the request, warnings go to the approver.
 
 ### SMS and WhatsApp (Q10-7, Q1a-6)
 
@@ -120,6 +120,53 @@ The plugin declares a managed **Campaigns** project (`projects.managed`) and cal
 
 ### Needs elsewhere
 
-- **Mailbox:** honour `from` (a connected account only: refuse any other, never fall back for a client), `fromName` and `replyTo` on `mail.send.requested`; add `List-Unsubscribe: <unsubscribeUrl>, <mailto:...>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` when `unsubscribeUrl` is set; apply `suppressionBlocks` with the `senderKey` on `contact.suppressed`; announce `sender.health` (`{ accountAddress, status: ok | warn | bad, detail, checkedAt }`, `default: true` for the default account) from its SPF, DKIM and DMARC check.
+- **Mailbox:** done in Mailbox 0.5.0 and 0.6.0 (`from`, `fromName`, `replyTo`, the headers, `senderKey`). It announces `mail.domain.health` (one event per sending domain), not the `sender.health` this section first asked for; Campaigns reads both since 0.7.0.
 - **CRM:** emit `client.projects.updated`; be the erasure originator and publish `consent.recorded`.
 - **VPS ops:** the Caddy rule above; prune `plugin_webhook_deliveries` older than 30 days.
+
+## What the email provider reports, replies to provider sends, and send-only senders (0.7.0)
+
+Finishes the Campaigns side of the Mailbox's email provider (Mailbox 0.6.0 and 0.6.1, Wave 4 and 5 of the 2026-10-03 audit, Q10-7 and Q1a-3). Migration `014_campaigns.sql`. **Deploy: stop-first** because of the migration (no new capability, no new core table). The contract with the Mailbox stays `mail.send.requested`; **with the provider off Campaigns works exactly as before** (Gmail sends report none of this, and no `mail.delivery` event arrives).
+
+### Delivery reports (`mail.delivery`, `src/delivery.ts`)
+
+The Mailbox announces what became of an email the provider took (kit `MAIL_EVENTS.delivery`, type `MailDelivery`). Campaigns listens, reads only its own sends (context `campaign_step` of this plugin, key `campaigns:step:<enrollment>:<n>`; another plugin's mail and a malformed event are ignored and store nothing) and records a **step event** per send and kind:
+
+| Report | Step event | What else |
+|---|---|---|
+| `delivered` | `delivered` | |
+| `opened`, `clicked` | `open`, `click` | counted once per send (a mail client may preload a pixel, a person may click twice); they exist only when somebody switched tracking on for the domain at the provider, which the Mailbox never does |
+| `bounced` (hard) | `bounce` (`bounceKind` hard, `bounceSubType`) | the address goes on the do-not-email list for **every sender** (a hard bounce is about the address), reason `bounce`, source the Mailbox, and the contact's running campaigns stop |
+| `suppressed` | `bounce` | the provider refused an address on its own list: the same as a hard bounce |
+| `complained` | `complaint` | the address goes on **this client's** marketing list (the sender's: the client's, or PiB's own), reason `complaint`; only that sender's campaigns stop for the person |
+| `soft_bounced` | `soft_bounce` | nothing is suppressed: the address may work next time (the Mailbox backs it off itself) |
+| `failed` | `failed` | the provider could not send it |
+| `delayed` | none | a delay is not an outcome |
+
+**Idempotency, the same discipline as `mail.send.result` and `mail.received`:** the report is handled once per its key (`esp:<delivery id>`, kit `receiveOnce`, answered from the `inbox` table on a repeat); a step event is written once per `source_key` `delivery:<kind>:<send key>`, so the same fact under another delivery id changes nothing; the do-not-email row is written once per (company, address, sender) (`ON CONFLICT DO NOTHING`), so a redelivered report, the same bounce under a new id, or the Mailbox's own `contact.suppressed` for the same bounce (it always sends one, before or after the report) adds nothing. A report whose recipient is not the address the campaign emailed changes the numbers and suppresses nobody. A failure is logged, nothing is stored, and the event handler never throws into the host; the Mailbox's hourly re-announcement of its own suppressions still reaches the list.
+
+**Reporting.** `campaign-step-analytics` gives per step: `sent`, `delivered`, `replies`, `bounces` (hard), `softBounces`, `complaints`, `unsubscribes`, `opens`, `clicks`. The overview's event totals carry `delivered`, `complaints` and `softBounces`, and the Bounce-rate card says what the provider reported ("From the email provider: 12 delivered, 1 complaint"). For Gmail sends delivered, soft bounces, complaints, opens and clicks are 0 (Gmail reports none of them): replies, hard bounces and unsubscribes are captured as before.
+
+### Replies to a provider send
+
+A provider send has no Gmail `threadId` or Message-ID the Mailbox knows, and its replies go to the **Reply-To mailbox**, so the Mailbox cannot link a reply to the send. Each `sent` step event now keeps what is needed to do it here: the **Reply-To** the message carried (the Mailbox says so in `mail.send.result.replyTo`, kit 0.2.2; else the campaign's own), the address it went to, the subject and the provider. A reply (`mail.received`) is attributed in this order, and the first that applies wins:
+
+1. **The send context the Mailbox linked** (a Gmail reply in the same thread): unchanged. The reply event records `matchedBy: send-context`.
+2. **The Reply-To mailbox plus the send** (`matchByReplyTo`): the reply arrived at a mailbox that is the send's Reply-To (its account or any recipient), from the person the email went to, within 90 days, sent before it arrived (5 minutes of clock skew allowed). Of several such sends the newest wins, and among those the one whose subject the reply carries (`Re:`, `Fwd:` and spacing ignored). The reply event records `matchedBy: reply-to` and the send's key (`sendKey`), so the attribution can be checked. The lookup is the partial index `step_events_sent_to` of migration 014.
+3. **The sender's CRM contact** (their most recently emailed enrollment, else their newest running one): the old fallback, `matchedBy: contact`.
+
+A reply that arrives at a mailbox the Mailbox does not read (a Reply-To that is not one of the company's connected Gmail mailboxes) is never seen at all: set a Reply-To somebody connected to the Mailbox reads. A send-only address has no inbox, and the preflight says so.
+
+### A send-only address as the sender
+
+`fromAddress` may be a connected Gmail mailbox or a send-only address on a verified sending domain of the provider (Mailbox `add-sending-domain`, `list-mailboxes`, `list-sending-domains`). The Mailbox refuses any other address and never falls back for a client. What changed here: the tool descriptions, the Setup item ("Give the client a sending account": connect their Gmail, or add their sending domain, whose DNS records go to the owner or the client's web host), the "Email through the Mailbox" delivery label, the Cockpit fix text and the page banner ("PiB's own emails can't go out: Gmail isn't connected": a client with its own sending domain does not need PiB's Gmail), none of which assumes a Gmail account any more. The no-reply-to warning now says a send-only address has no inbox.
+
+**Domain health.** The Mailbox never sent `sender.health`; it announces `mail.domain.health` per domain. Campaigns now keeps it (newest `checkedAt` wins) and the preflight reads it for the domain of the address the campaign goes out from: a domain **only the provider sends from** reported bad (SPF or DKIM at the provider's records wrong, or a bounce or complaint rate over the limit: the Mailbox holds that domain's marketing back) blocks the approval and the launch; a domain with a Gmail mailbox on it reported bad stays a warning to the approver (the Mailbox still sends from it, as before this event was read); healthy but not send-ready (the first month of DMARC) is a warning; unknown stays a warning. When a person lifts a reputation hold on the Mailbox page the Mailbox announces the domain healthy again at once and the block goes.
+
+### Tests
+
+`pnpm test` (419): `delivery.spec.ts` (the payload, every type, redelivery, the Mailbox's own suppression in both orders, scoped stops, foreign events, a failing database), `delivery.pg.spec.ts` (migration 014 and the delivery handler, the counts and the reply lookup against a real Postgres with all 14 migrations, and that the lookup uses the new index), `provider-replies.spec.ts`, `domain-health.spec.ts`, plus the changed series, manifest and setup tests. 40 mutations (the receiveOnce, the step event key and the kind in it, the scope, sender and reason of each suppression, soft bounces, the recipient check, the context and foreign-event checks, the listener wiring, every reply-attribution rule and its order against the Gmail path, the domain-health rules, the counts, the migration's kinds and index, and the kit's contract tests) were applied one by one and each was caught by a failing test; the two company guards in the delivery handler each survive alone because the other covers them, and are caught when both are removed.
+
+### Needs elsewhere
+
+None. Opens and clicks stay at 0 unless somebody switches tracking on for the domain in the provider's dashboard; nothing here does.

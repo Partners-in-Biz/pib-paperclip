@@ -146,7 +146,9 @@ export interface EspDomainLike {
   status: string;
   ready: boolean;
   cap: { cap: number; day: number | null; warming: boolean; source: string; sentToday: number; remaining: number };
-  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }> } | null;
+  reputation: { sent: number; hardBounces: number; complaints: number; bounceRate: number | null; complaintRate: number | null; problems: Array<{ message: string }>; clearedDay?: string | null } | null;
+  tracking?: { open: boolean | null; click: boolean | null } | null;
+  holdLifted?: { at: string; by: string | null; day: string | null } | null;
 }
 
 /** Page wording for a provider domain: ready, waiting for DNS records, or its records are wrong. */
@@ -185,4 +187,25 @@ export function espReputationLine(row: Pick<EspDomainLike, "reputation">): strin
 /** A DNS record as one line a person can read out or paste: `MX  send.updates.client.co.za  10  feedback-smtp...`. */
 export function dnsRecordLine(record: { type: string; host: string; priority: number | null; value: string }): string {
   return [record.type, record.host, ...(record.priority != null ? [String(record.priority)] : []), record.value].join("  ");
+}
+
+/** "A person lifted the reputation hold on 2026-10-04: bounces and complaints are counted from that day on", or "" when nobody did. The audit row has who. */
+export function holdLiftedLine(row: Pick<EspDomainLike, "holdLifted">): string {
+  const lifted = row.holdLifted;
+  if (!lifted) return "";
+  const day = lifted.day ?? lifted.at.slice(0, 10);
+  return `A person lifted the reputation hold on ${day}: bounces and complaints are counted from that day on.`;
+}
+
+/** True when tracking is switched on for the domain at the provider (a client message is then refused through it). */
+export function trackingOn(row: Pick<EspDomainLike, "tracking">): boolean {
+  return row.tracking?.open === true || row.tracking?.click === true;
+}
+
+/** What the provider says about tracking for the domain: a line only when it is on. */
+export function trackingLine(row: Pick<EspDomainLike, "tracking">): string {
+  const t = row.tracking;
+  if (!t || !trackingOn(row)) return "";
+  const on = [t.click === true ? "click" : null, t.open === true ? "open" : null].filter(Boolean);
+  return `${on.join(" and ")} tracking is on at the provider. Client messages (a signing link, a report) are refused through this domain until it is switched off in the provider's dashboard, because tracking rewrites links.`;
 }

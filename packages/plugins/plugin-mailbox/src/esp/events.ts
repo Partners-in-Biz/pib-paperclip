@@ -29,12 +29,14 @@
  *   (the suppression and the notes on the send are the same when repeated; a counter is not).
  * - A bounce or complaint re-judges the domain's last 7 days at once (`applyReputation`): the domain that has just crossed
  *   2% hard bounces or 0.1% complaints is held back for marketing now, not at tomorrow's check.
- * - The result is announced as `mail.delivery` (`plugin.partnersinbiz.mailbox.mail.delivery`) for any plugin that wants to
- *   record it: `{ key, type, sendKey, recipient?, at, context, provider, bounce? }`. The result of the SEND stays the single
- *   `mail.send.result` the sender settles on; a later bounce is never sent as a second result for the same key, because the
- *   senders settle on the first one.
+ * - The result is announced as `mail.delivery` (kit `MAIL_EVENTS.delivery`, `plugin.partnersinbiz.mailbox.mail.delivery`, kit type
+ *   `MailDelivery`) for any plugin that wants to record it: `{ key, type, provider, sendKey, recipient?, at, context, clientKind,
+ *   clientRef, bounce? }`. The client is the send's own scope, else the sending domain's client. An open or a click is announced too (0.6.1;
+ *   they exist only when somebody switched tracking on for the domain, and each may repeat: a consumer counts the first per send). The
+ *   result of the SEND stays the single `mail.send.result` the sender settles on; a later bounce is never sent as a second result
+ *   for the same key, because the senders settle on the first one.
  */
-import { senderKeyOf, suppressionScope, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
+import { MAIL_EVENTS, senderKeyOf, suppressionScope, type MailDelivery, type MailDeliveryType, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
 import type { LoadedConfig } from "../config.js";
 import { sendingDomain } from "../dns.js";
 import { applyReputation, defaultResolver, type DomainRunEnv } from "../domain-health.js";
@@ -50,7 +52,7 @@ import { noteEspState } from "./runtime.js";
 import type { EspDayField, EspDomainRow } from "./types.js";
 import { SOFT_BOUNCE_LIMIT, SOFT_BOUNCE_WINDOW_DAYS, softBounceBackoffUntil, utcDay } from "./warmup.js";
 
-export const ESP_DELIVERY_EVENT = "mail.delivery";
+export const ESP_DELIVERY_EVENT = MAIL_EVENTS.delivery;
 
 export type EspEventOutcome = "applied" | "duplicate" | "ignored";
 
@@ -61,7 +63,7 @@ export function mergedDeliveryStatus(current: string | null | undefined, incomin
   return (RANK[incoming] ?? 0) >= (RANK[current ?? ""] ?? 0) ? incoming : (current as string);
 }
 
-const TYPE_OF: Record<string, string> = {
+const TYPE_OF: Record<string, MailDeliveryType | "sent"> = {
   delivered: "delivered",
   delayed: "delayed",
   bounced_hard: "bounced",
@@ -231,8 +233,9 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
       }
     }
 
-    if (event.kind !== "opened" && event.kind !== "sent") {
-      await announceDelivery(env, companyId, { id: delivery.id, type, sendKey: send?.key ?? null, recipient, at: atIso, context: send?.context ?? null, bounce: event.bounce });
+    // Everything the consumers can use is announced; the provider's own "sent" only says it took the message, which `mail.send.result` already did.
+    if (type !== "sent") {
+      await announceDelivery(env, companyId, { id: delivery.id, type: type as MailDeliveryType, sendKey: send?.key ?? null, recipient, at: atIso, context: send?.context ?? null, client: deliveryClient(send?.context ?? null, domain), bounce: event.bounce });
     }
     return "applied";
   } catch (error) {
@@ -242,9 +245,18 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
   }
 }
 
+const clientKindOf = (value: unknown): "company" | "contact" => (value === "contact" ? "contact" : "company");
+
+/** The client a delivery is for: the send's own scope, else the client the sending domain belongs to, else nobody (the company's own mail). */
+function deliveryClient(context: MailSendRequested["context"] | null, domain: Pick<EspDomainRow, "client_kind" | "client_ref">): { kind: "company" | "contact" | null; ref: string | null } {
+  if (context?.clientRef) return { kind: clientKindOf(context.clientKind), ref: context.clientRef };
+  if (domain.client_ref) return { kind: clientKindOf(domain.client_kind), ref: domain.client_ref };
+  return { kind: null, ref: null };
+}
+
 /** `mail.delivery`: what happened to a message after the provider took it. No message content, no link, no address unless it is the single recipient. Never throws. */
-async function announceDelivery(env: Pick<Env, "ctx">, companyId: string, input: { id: string; type: string; sendKey: string | null; recipient: string; at: string; context: MailSendRequested["context"] | null; bounce: ResendEvent["bounce"] }): Promise<void> {
-  const payload = {
+async function announceDelivery(env: Pick<Env, "ctx">, companyId: string, input: { id: string; type: MailDeliveryType; sendKey: string | null; recipient: string; at: string; context: MailSendRequested["context"] | null; client: { kind: "company" | "contact" | null; ref: string | null }; bounce: ResendEvent["bounce"] }): Promise<void> {
+  const payload: MailDelivery = {
     key: `esp:${input.id}`,
     type: input.type,
     provider: "resend",
@@ -252,7 +264,9 @@ async function announceDelivery(env: Pick<Env, "ctx">, companyId: string, input:
     ...(input.recipient ? { recipient: input.recipient } : {}),
     at: input.at,
     context: input.context,
-    ...(input.bounce ? { bounce: { kind: (input.bounce.type ?? "").toLowerCase() === "permanent" ? "hard" : "soft", subType: input.bounce.subType } } : {}),
+    clientKind: input.client.ref ? input.client.kind : null,
+    clientRef: input.client.ref,
+    ...(input.bounce ? { bounce: { kind: (input.bounce.type ?? "").toLowerCase() === "permanent" ? ("hard" as const) : ("soft" as const), subType: input.bounce.subType } } : {}),
   };
   try {
     await env.ctx.events.emit(ESP_DELIVERY_EVENT, companyId, payload as unknown as Record<string, unknown>);

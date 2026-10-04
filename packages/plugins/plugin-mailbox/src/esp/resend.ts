@@ -6,10 +6,15 @@
  * - `POST /emails` (from, to, cc, bcc, subject, html, text, reply_to, headers, attachments, tags) with an `Idempotency-Key`
  *   header: a repeat with the same key returns the first answer for 24 hours, which is what makes a retry after a timeout safe.
  * - `POST /emails/batch`: up to 100 messages, no attachments, one idempotency key for the request, one `{ id }` per message in order.
- * - `POST /domains` (name, region), `GET /domains/{id}`, `GET /domains`, `POST /domains/{id}/verify`: the records Resend asks for
+ * - `POST /domains` (name, region, open_tracking false, click_tracking false), `GET /domains/{id}`, `GET /domains`, `POST /domains/{id}/verify`: the records Resend asks for
  *   come back on the domain (SPF as an MX and a TXT on the `send` return-path host, DKIM at `resend._domainkey`). They are handed
  *   to whoever controls the DNS; this adapter never edits DNS. Domain calls need a full-access key, a sending-only key is refused
  *   with 401 `restricted_api_key`.
+ * - **Tracking is a setting of the domain, not of a message** (Create Domain and Update Domain take `open_tracking` and `click_tracking`, Get
+ *   Domain returns them; the send call has no such parameter). So this adapter never adds a pixel and never rewrites a link itself
+ *   (`toResendPayload` hands over the html and text exactly as given), registers every domain with both switched OFF, and reads the two
+ *   flags back so the sender can refuse a message that must keep its links intact (a signing link is a bearer token in the URL
+ *   fragment) through a domain somebody switched tracking on for.
  * - Errors are `{ statusCode, name, message }`. 429 `rate_limit_exceeded` carries `retry-after`; `daily_quota_exceeded` and
  *   `monthly_quota_exceeded` are quota; 403 `validation_error` "domain is not verified" is an unverified domain.
  *
@@ -89,7 +94,10 @@ export function classifyResendFailure(status: number | null, body: unknown, retr
 // Payloads
 // ---------------------------------------------------------------------------
 
-/** The `POST /emails` body for a message. */
+/**
+ * The `POST /emails` body for a message. It carries only what the message says: no tracking switch (the send call has none), no pixel,
+ * and the html and text byte for byte as given, so a link in them reaches the provider unchanged.
+ */
 export function toResendPayload(email: EspEmail): Record<string, unknown> {
   const body: Record<string, unknown> = { from: email.from, to: email.to, subject: email.subject };
   if (email.cc?.length) body.cc = email.cc;
@@ -178,6 +186,8 @@ export function parseResendDomain(raw: unknown): ProviderDomain {
   const spfMx = records.find((entry) => entry.record.toUpperCase() === "SPF" && entry.type === "MX");
   const dkim = records.find((entry) => entry.record.toUpperCase() === "DKIM");
   const include = spfTxt ? /(?:^|\s)include:(\S+)/i.exec(spfTxt.value)?.[1]?.toLowerCase() ?? null : null;
+  // Only a real boolean counts: a field that is missing or of another type says nothing, and nothing is not "off".
+  const flag = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
   return {
     id,
     name,
@@ -187,6 +197,8 @@ export function parseResendDomain(raw: unknown): ProviderDomain {
     returnPathHost: (spfTxt ?? spfMx)?.fqdn ?? null,
     dkimSelector: dkim ? dkim.name.split(".")[0]!.toLowerCase() : null,
     spfInclude: include,
+    openTracking: flag(d.open_tracking),
+    clickTracking: flag(d.click_tracking),
   };
 }
 
@@ -413,7 +425,8 @@ export class ResendProvider implements EmailProvider {
 
   async addDomain(input: { name: string; region?: string | null }): Promise<ProviderDomain> {
     const region = input.region && (RESEND_REGIONS as readonly string[]).includes(input.region) ? input.region : DEFAULT_REGION;
-    return parseResendDomain(await this.domainCall("POST", "/domains", { name: input.name, region }));
+    // Tracking off, said out loud: the provider's own default is not documented, and tracking would rewrite the links of every message from the domain.
+    return parseResendDomain(await this.domainCall("POST", "/domains", { name: input.name, region, open_tracking: false, click_tracking: false }));
   }
 
   async getDomain(id: string): Promise<ProviderDomain> {

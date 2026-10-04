@@ -133,7 +133,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
     required: false,
     detail: blocked
       ? "Active campaigns send email, but the Mailbox module is switched off. Turn it on in Setup and connect Gmail."
-      : "Campaigns set to email delivery send through the Mailbox (Gmail). Connect Gmail there first. Campaigns delivered as tasks for the agent need nothing more.",
+      : "Campaigns set to email delivery send through the Mailbox: PiB's own email from its default Gmail account (connect it there first), a client's from the client's own mailbox or sending domain (below). Campaigns delivered as tasks for the agent need nothing more.",
     // The Mailbox page starts the Google sign-in at once from this link.
     href: blocked ? "/setup" : "/mailbox?tab=mailboxes&connect=gmail",
     hrefLabel: blocked ? "Turn on the Mailbox" : "Connect Gmail",
@@ -257,10 +257,10 @@ export async function messagingItems(ctx: PluginContext, companyId: string, conf
       ? `These clients have automatic campaigns but no sender: ${missingSenders.slice(0, 5).join(", ")}${missingSenders.length > 5 ? ", ..." : ""}. Their email will not go out, and it is never sent from PiB's own Gmail.`
       : "Every client with an automatic campaign has a sender.",
     href: "/mailbox?tab=mailboxes&connect=gmail",
-    hrefLabel: "Connect the client's mailbox",
+    hrefLabel: "Open the Mailboxes",
     steps: missingSenders.length > 0 ? [
-      "Connect the client's own Gmail in the Mailbox (a one-time Google sign-in by the client or by you with their login).",
-      "Ask the Account Manager to run set-sender-identity for the client with that mailbox, the client's name and a reply-to.",
+      "Give the client a sending account in the Mailbox. Either connect the client's own Gmail (a one-time Google sign-in by the client or by you with their login), or have the Account Manager add the client's sending domain (add-sending-domain: its DNS records go to the client's web host or to you, and a send-only address on it is used).",
+      "Ask the Account Manager to run set-sender-identity for the client with that Gmail mailbox or send-only address, the client's name and a reply-to somebody reads (a send-only address has no inbox).",
     ] : undefined,
     agentNext: "The client's campaigns can be approved, and each email goes out as the client with replies to them.",
   });

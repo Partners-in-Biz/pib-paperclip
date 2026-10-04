@@ -532,6 +532,11 @@ export const HANDOFF_EVENTS = {
   dealWon: "deal.won",
   /** Billing → CRM: the customer accepted a quote. The CRM moves its deal to won. */
   quoteAccepted: "quote.accepted",
+  /**
+   * CRM → Billing: a client signed a document online (the e-sign page). `plugin.partnersinbiz.crm.deal.accepted`.
+   * A signed quote also goes out as `quote.accepted`, in the shape Billing already reads.
+   */
+  dealAccepted: "deal.accepted",
   /** Billing → CRM and the Cockpit: an invoice is paid in full. */
   invoicePaid: "invoice.paid",
   /** CRM / Campaigns / Mailbox → each other: stop marketing email to an address (every email after a hard bounce). */
@@ -614,6 +619,53 @@ export interface QuoteAccepted {
   currency: string;
   acceptedAt: string;
 }
+
+/**
+ * `deal.accepted` (CRM → Billing): a client signed a proposal, quote or agreement on the CRM's private signing page. The shape is the
+ * CRM's (its README, "After a signature"); the hash and `auditHead` are the signature's proof, not secrets. Recorded once per document
+ * (`key` is `crm:esign:<documentId>:accepted`) and re-sent hourly for a day, so a receiver dedupes by `key`.
+ */
+export interface DealAccepted {
+  key: string; // `crm:esign:<documentId>:accepted`
+  documentId: string;
+  kind: "proposal" | "quote" | "contract";
+  title: string;
+  dealId: string | null;
+  quoteId: string | null;
+  quoteNumber: string | null;
+  clientKind: ClientKind;
+  clientRef: string;
+  clientName: string | null;
+  valueMinor: number | null;
+  currency: string;
+  signerName: string | null;
+  signedAt: string | null;
+  /** SHA-256 of the exact text that was signed. */
+  contentSha256: string;
+  /** The hash of the signature's last audit row (the audit fingerprint). */
+  auditHead: string;
+}
+
+/** Every field of `DealAccepted`, kept in step with the interface by the compiler (a contract test compares it with what the CRM sends). */
+const DEAL_ACCEPTED_SHAPE: Record<keyof DealAccepted, true> = {
+  key: true,
+  documentId: true,
+  kind: true,
+  title: true,
+  dealId: true,
+  quoteId: true,
+  quoteNumber: true,
+  clientKind: true,
+  clientRef: true,
+  clientName: true,
+  valueMinor: true,
+  currency: true,
+  signerName: true,
+  signedAt: true,
+  contentSha256: true,
+  auditHead: true,
+};
+export const DEAL_ACCEPTED_FIELDS = Object.keys(DEAL_ACCEPTED_SHAPE) as Array<keyof DealAccepted>;
 
 export interface InvoicePaid {
   key: string; // `billing:invoice:<id>:paid`

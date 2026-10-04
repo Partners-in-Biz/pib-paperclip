@@ -27,8 +27,12 @@
  * under 0.08% complaints), so a domain close to ours is already close to its.
  * A reputation problem blocks MARKETING from that domain (never transactional mail) until the window clears, and is reported
  * as a health problem on the domain, which is also what Campaigns reads before it launches.
+ *
+ * **A person can lift the hold** (0.6.1, `hold.ts`): they say the cause is fixed, and from that moment only what happens AFTER it is
+ * judged. Days before the clearing day are left out; the clearing day's counts at that moment (the baseline) are taken off that day's row,
+ * so a bounce or complaint that comes after counts again and can hold the domain once more. An agent cannot do this.
  */
-import type { EspDayRow, EspDomainRow } from "./types.js";
+import type { EspDayRow, EspDomainRow, ReputationBaseline } from "./types.js";
 
 export const WARMUP_SCHEDULE: ReadonlyArray<number> = [50, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000];
 export const DEFAULT_STEADY_CAP = 10_000;
@@ -109,6 +113,17 @@ export interface ReputationProblem {
   blocks: "marketing";
 }
 
+/** A person lifted the hold on `day` (UTC) when the day's counts stood at `baseline`. */
+export interface ReputationClearance {
+  day: string;
+  baseline: ReputationBaseline | null;
+}
+
+/** The clearance a domain row carries, or null when nobody lifted a hold. */
+export function clearanceOf(row: Pick<EspDomainRow, "reputation_cleared_day" | "reputation_cleared_baseline"> | null | undefined): ReputationClearance | null {
+  return row?.reputation_cleared_day ? { day: row.reputation_cleared_day, baseline: row.reputation_cleared_baseline ?? null } : null;
+}
+
 export interface ReputationReport {
   windowDays: number;
   sent: number;
@@ -125,22 +140,31 @@ export interface ReputationReport {
   complaintsJudged: boolean;
   problems: ReputationProblem[];
   computedAt: string;
+  /** Set while a person's clearing is inside the window: only what happened from that day on was counted. */
+  clearedDay?: string | null;
 }
 
 const pct = (rate: number) => `${(rate * 100).toFixed(rate < 0.01 ? 2 : 1)}%`;
 
 /** The last `REPUTATION_WINDOW_DAYS` UTC days up to and including `nowMs`, from a domain's day rows. */
-export function reputationOf(rows: Array<Pick<EspDayRow, "day" | "sent" | "delivered" | "hard_bounces" | "soft_bounces" | "complaints">>, domain: string, nowMs: number): ReputationReport {
+export function reputationOf(rows: Array<Pick<EspDayRow, "day" | "sent" | "delivered" | "hard_bounces" | "soft_bounces" | "complaints">>, domain: string, nowMs: number, clearance: ReputationClearance | null = null): ReputationReport {
   const since = dayStart(utcDay(nowMs - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS));
   const until = dayStart(utcDay(nowMs));
   const sum = { sent: 0, delivered: 0, hardBounces: 0, softBounces: 0, complaints: 0 };
+  // A clearing older than the window no longer changes anything: every day in the window is after it.
+  const cleared = clearance && dayStart(clearance.day) >= since ? clearance : null;
   for (const row of rows) {
     if (dayStart(row.day) < since || dayStart(row.day) > until) continue;
-    sum.sent += Number(row.sent);
-    sum.delivered += Number(row.delivered);
-    sum.hardBounces += Number(row.hard_bounces);
-    sum.softBounces += Number(row.soft_bounces);
-    sum.complaints += Number(row.complaints);
+    // Before the day a person lifted the hold: said to be dealt with, not counted.
+    if (cleared && row.day < cleared.day) continue;
+    // The clearing day itself counts only what came in after the hold was lifted.
+    const base = cleared && row.day === cleared.day ? cleared.baseline : null;
+    const minus = (value: unknown, taken: number | undefined) => Math.max(0, Number(value) - (taken ?? 0));
+    sum.sent += minus(row.sent, base?.sent);
+    sum.delivered += minus(row.delivered, base?.delivered);
+    sum.hardBounces += minus(row.hard_bounces, base?.hard_bounces);
+    sum.softBounces += minus(row.soft_bounces, base?.soft_bounces);
+    sum.complaints += minus(row.complaints, base?.complaints);
   }
   const judged = sum.sent >= REPUTATION_MIN_SENDS_BOUNCE;
   const complaintsJudged = sum.sent >= REPUTATION_MIN_SENDS_COMPLAINT;
@@ -149,12 +173,14 @@ export function reputationOf(rows: Array<Pick<EspDayRow, "day" | "sent" | "deliv
   const problems: ReputationProblem[] = [];
   const bounceBad = judged ? (bounceRate ?? 0) >= BOUNCE_RATE_LIMIT : sum.hardBounces >= SMALL_SAMPLE_HARD_BOUNCES;
   const complaintBad = complaintsJudged ? (complaintRate ?? 0) >= COMPLAINT_RATE_LIMIT : sum.complaints >= SMALL_SAMPLE_COMPLAINTS;
+  const window = cleared ? `since a person lifted the hold on ${cleared.day}` : `in the last ${REPUTATION_WINDOW_DAYS} days`;
+  const lift = "Once the cause is fixed a person can lift the hold (Mailboxes tab, Email provider, Lift the hold); an agent cannot.";
   if (bounceBad) {
     problems.push({
       code: "esp_bounce_rate",
       severity: "bad",
-      message: `${domain}: ${sum.hardBounces} of ${sum.sent} recipients hard bounced in the last ${REPUTATION_WINDOW_DAYS} days${bounceRate != null ? ` (${pct(bounceRate)}; the limit is ${pct(BOUNCE_RATE_LIMIT)})` : ""}, so marketing mail from it is held back.`,
-      fix: "Stop adding addresses that were never verified: check where the list came from, remove the dead addresses, and let the 7-day window clear. Transactional mail still goes.",
+      message: `${domain}: ${sum.hardBounces} of ${sum.sent} recipients hard bounced ${window}${bounceRate != null ? ` (${pct(bounceRate)}; the limit is ${pct(BOUNCE_RATE_LIMIT)})` : ""}, so marketing mail from it is held back.`,
+      fix: `Stop adding addresses that were never verified: check where the list came from, remove the dead addresses, and let the 7-day window clear. ${lift} Transactional mail still goes.`,
       blocks: "marketing",
     });
   }
@@ -162,12 +188,12 @@ export function reputationOf(rows: Array<Pick<EspDayRow, "day" | "sent" | "deliv
     problems.push({
       code: "esp_complaint_rate",
       severity: "bad",
-      message: `${domain}: ${sum.complaints} of ${sum.sent} recipients marked the mail as spam in the last ${REPUTATION_WINDOW_DAYS} days${complaintRate != null ? ` (${pct(complaintRate)}; the limit is ${pct(COMPLAINT_RATE_LIMIT)})` : ""}, so marketing mail from it is held back.`,
-      fix: "Look at who the campaign went to and why they did not expect it: tighten the audience, make the unsubscribe link easy to see, and let the 7-day window clear. Transactional mail still goes.",
+      message: `${domain}: ${sum.complaints} of ${sum.sent} recipients marked the mail as spam ${window}${complaintRate != null ? ` (${pct(complaintRate)}; the limit is ${pct(COMPLAINT_RATE_LIMIT)})` : ""}, so marketing mail from it is held back.`,
+      fix: `Look at who the campaign went to and why they did not expect it: tighten the audience, make the unsubscribe link easy to see, and let the 7-day window clear. ${lift} Transactional mail still goes.`,
       blocks: "marketing",
     });
   }
-  return { windowDays: REPUTATION_WINDOW_DAYS, ...sum, bounceRate, complaintRate, judged, complaintsJudged, problems, computedAt: new Date(nowMs).toISOString() };
+  return { windowDays: REPUTATION_WINDOW_DAYS, ...sum, bounceRate, complaintRate, judged, complaintsJudged, problems, computedAt: new Date(nowMs).toISOString(), ...(cleared ? { clearedDay: cleared.day } : {}) };
 }
 
 // ---------------------------------------------------------------------------

@@ -156,6 +156,37 @@ describe("Resend: what each error answer means", () => {
   });
 });
 
+describe("Resend: tracking is the domain's setting, never a message's", () => {
+  const LINK = "https://paperclip.example.com/_plugins/00000000-0000-4000-8000-000000000001/ui/s/page1234.html#pibt_exampletoken";
+  const HTML = `<p>Please sign: <a href="${LINK}">here</a></p><img src="https://cdn.example.com/logo.png">`;
+
+  it("hands the provider a client message exactly as written: the html and text byte for byte, no pixel, no rewritten link, and no field that could switch tracking on", async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { id: "e1" } }]);
+    await new ResendProvider({ apiKey: KEY, fetch }).send({ ...EMAIL, html: HTML, text: `Sign here: ${LINK}`, headers: undefined, cc: undefined });
+    const body = calls[0]!.body as Record<string, unknown>;
+    expect(body.html).toBe(HTML);
+    expect(body.text).toBe(`Sign here: ${LINK}`);
+    expect(Object.keys(body).sort()).toEqual(["from", "html", "reply_to", "subject", "tags", "text", "to"]);
+    expect(JSON.stringify(body)).not.toMatch(/track/i);
+    // Documented: Send Email has no tracking parameter (only the domain does), so the adapter has none to send.
+    expect(JSON.stringify(toResendPayload({ ...EMAIL, headers: undefined }))).not.toMatch(/track|pixel|open|click/i);
+  });
+
+  it("registers a domain with open and click tracking switched off, and says so in the request", async () => {
+    const { fetch, calls } = fakeFetch([{ status: 201, body: DOMAIN_BODY }]);
+    await new ResendProvider({ apiKey: KEY, fetch }).addDomain({ name: "updates.client.co.za", region: "eu-west-1" });
+    expect(calls[0]!.body).toEqual({ name: "updates.client.co.za", region: "eu-west-1", open_tracking: false, click_tracking: false });
+  });
+
+  it("reads the two flags back, and an answer that does not say is null, never off", () => {
+    expect(parseResendDomain({ ...DOMAIN_BODY, open_tracking: false, click_tracking: true })).toMatchObject({ openTracking: false, clickTracking: true });
+    expect(parseResendDomain({ ...DOMAIN_BODY, open_tracking: true, click_tracking: false })).toMatchObject({ openTracking: true, clickTracking: false });
+    expect(parseResendDomain(DOMAIN_BODY)).toMatchObject({ openTracking: null, clickTracking: null });
+    // Only a real boolean counts: a string or a number says nothing.
+    expect(parseResendDomain({ ...DOMAIN_BODY, open_tracking: "false", click_tracking: 0 })).toMatchObject({ openTracking: null, clickTracking: null });
+  });
+});
+
 describe("Resend: batches", () => {
   it("posts an array to /emails/batch with one key and maps the ids back in order", async () => {
     const { fetch, calls } = fakeFetch([{ status: 200, body: { data: [{ id: "a" }, { id: "b" }] } }]);

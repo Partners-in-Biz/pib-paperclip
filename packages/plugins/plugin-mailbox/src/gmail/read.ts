@@ -7,7 +7,8 @@ import type { LoadedConfig } from "../config.js";
 import { MailboxError } from "../domain.js";
 import { getMessageFull, getMessageMetadata, listMessages, modifyMessage, type GmailPart } from "./api.js";
 import { errorMessage, type Env } from "./env.js";
-import { decodeEncodedWords, headerMap, parseAddressList } from "./headers.js";
+import { decodeEncodedWords, headerMap, parseAddressList, parseMessageIds } from "./headers.js";
+import { isPrivateMail } from "../private-mail.js";
 import { ensureLabelIds } from "./labels.js";
 import { htmlToText } from "./mime.js";
 import { mapLimit } from "./sync.js";
@@ -76,10 +77,12 @@ export async function searchMail(env: Env, loaded: LoadedConfig, account: Accoun
   const listed = await withGmail(env, loaded, account, (token) => listMessages(env.fetch, token, q, { maxResults: Math.max(1, Math.min(limit, 25)) }));
   const results = await mapLimit(listed.messages, 5, async (item) => {
     const message = await withGmail(env, loaded, account, (token) =>
-      getMessageMetadata(env.fetch, token, item.id, ["From", "To", "Subject", "Date"]),
+      getMessageMetadata(env.fetch, token, item.id, ["From", "To", "Subject", "Date", "Message-ID"]),
     );
     const headers = headerMap(message.payload?.headers);
     const stored = await env.store.getMessageByGmailId(account.company_id, message.id);
+    // The sent copy of a client message may carry a private link, and Gmail's own snippet is the start of its text: it is not handed on.
+    const privateMail = isPrivateMail(stored?.sent_context) || (await env.store.isPrivateSend(account.company_id, { key: stored?.send_key ?? null, gmailMessageId: message.id, rfcMessageId: parseMessageIds(headers.get("message-id"))[0] ?? null }));
     return {
       gmailMessageId: message.id,
       threadId: message.threadId,
@@ -88,7 +91,8 @@ export async function searchMail(env: Env, loaded: LoadedConfig, account: Accoun
       to: parseAddressList(headers.get("to")),
       subject: decodeEncodedWords(headers.get("subject") ?? ""),
       date: headers.get("date") ?? null,
-      snippet: message.snippet,
+      snippet: privateMail ? "" : message.snippet,
+      ...(privateMail ? { withheld: true } : {}),
       labels: message.labelIds,
       category: stored?.category ?? null,
     };

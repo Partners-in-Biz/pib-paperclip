@@ -38,9 +38,9 @@ export const CHANNELS_REFERENCE = `# Channels: email, SMS, WhatsApp
 export const SENDERS_REFERENCE = `# Who a campaign goes out as, and how people unsubscribe
 
 ## Sender identities
-- A sender is \`own\` (PiB's marketing) or a client (\`company:<id>\` or \`contact:<id>\`). \`set-sender-identity\` gives a sender: \`fromAddress\` (a mailbox connected in the Mailbox: the Mailbox refuses an account that is not), \`fromName\`, \`replyTo\`, \`smsFrom\` and \`whatsappFrom\`. Omitted fields stay; an empty string clears one. \`remove-sender-identity\` removes it.
+- A sender is \`own\` (PiB's marketing) or a client (\`company:<id>\` or \`contact:<id>\`). \`set-sender-identity\` gives a sender: \`fromAddress\` (an address the Mailbox sends from: a connected Gmail mailbox, or a send-only address on a verified sending domain of the email provider; the Mailbox refuses an address that is neither), \`fromName\`, \`replyTo\`, \`smsFrom\` and \`whatsappFrom\`. Omitted fields stay; an empty string clears one. \`remove-sender-identity\` removes it.
 - The campaign's own \`fromName\` and \`replyTo\` override the identity's. \`fromLocal\` no longer chooses anything.
-- Own marketing without an identity uses the Mailbox's default account. A client's marketing without an identity is refused at approval, at launch and at every send: it must never go out as PiB's Gmail or number. Getting the client's mailbox connected is a one-time sign-in by the client (the Setup page lists it).
+- Own marketing without an identity uses the Mailbox's default account. A client's marketing without an identity is refused at approval, at launch and at every send: it must never go out as PiB's Gmail or number. Getting the client a sending account is one of two one-time jobs: a Google sign-in by the client (their Gmail), or their sending domain's DNS records added by the owner or their web host (the Setup page lists both). A send-only address has no inbox: give the identity a \`replyTo\` somebody reads, and replies to it are matched to the campaign step by that mailbox and the address the email went to.
 - Changing an identity cancels the open approval of that sender's drafts, because the approver saw the old one.
 
 ## The footer and the unsubscribe
@@ -49,11 +49,13 @@ export const SENDERS_REFERENCE = `# Who a campaign goes out as, and how people u
 - The links need the public base URL in the settings and the Campaigns page opened once.
 
 ## Preflight
-- \`preflight-campaign\` checks: every step has what it needs; a client has its own sender; each channel is configured; an unsubscribe link can be built (an error for a client's email); the sender's domain health when the Mailbox has reported SPF, DKIM and DMARC (bad is an error, unknown a warning); every link is https, not a test address, and answers (404 or an unknown host is an error, a site that blocks robots a warning); who can receive each channel.
+- \`preflight-campaign\` checks: every step has what it needs; a client has its own sender; each channel is configured; an unsubscribe link can be built (an error for a client's email); the sender's domain health when the Mailbox has reported it (SPF, DKIM, DMARC, and for a client's sending domain its bounce and complaint rates: bad is an error for a domain only the email provider sends from and a warning for a Gmail domain, unknown a warning; a domain held for its bounce or complaint rate stays blocked until a person lifts the hold on the Mailboxes page, so put it in one \`partnersinbiz.cockpit:ask-owner\` and do not look for a way round it); every link is https, not a test address, and answers (404 or an unknown host is an error, a site that blocks robots a warning); who can receive each channel.
 - Fix errors with the tool the message names; warnings go to the approver.
 
-## Opens and clicks
-- Opens and clicks are not captured. A tracking pixel and redirect links need a public endpoint that can answer a GET with an image or a redirect to a checked address, which the host cannot serve, and an unchecked redirect would be an open redirect. Replies, bounces, unsubscribes and SMS delivery results are captured. If you have a real report from a link tracker, \`record-step-event\` stores it.
+## What the email provider reports, opens and clicks
+- Campaigns does not track opens or clicks itself: a tracking pixel and redirect links need a public endpoint that answers a GET with an image or a redirect to a checked address, which the host cannot serve, and an unchecked redirect would be an open redirect.
+- For email the email provider took (a client's sending domain), the Mailbox announces what became of each message and Campaigns records it per step: \`delivered\`, \`bounce\` (hard: the address is stopped for every sender), \`soft_bounce\`, \`complaint\` (the address leaves THIS client's marketing list), \`failed\`. Opens and clicks arrive only if somebody switched tracking on for the domain in the provider's dashboard (the Mailbox never does, and refuses a client's signing email through such a domain), and each is counted once per send. With the provider off none of this arrives and Campaigns works as before.
+- Replies, bounces, unsubscribes and SMS delivery results are captured as well. If you have a real report from a link tracker, \`record-step-event\` stores it.
 `;
 
 export const PRIVACY_REFERENCE = `# Consent, erasure and retention (POPIA)

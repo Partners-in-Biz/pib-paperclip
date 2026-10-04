@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BOUNCE_RATE_LIMIT, COMPLAINT_RATE_LIMIT, dailyCap, DEFAULT_STEADY_CAP, highestDailyCap, overCap, REPUTATION_MIN_SENDS_BOUNCE, REPUTATION_MIN_SENDS_COMPLAINT, reputationOf, softBounceBackoffUntil, utcDay, WARMUP_SCHEDULE, warmupDay } from "../../src/esp/warmup.js";
+import { BOUNCE_RATE_LIMIT, clearanceOf, COMPLAINT_RATE_LIMIT, dailyCap, DEFAULT_STEADY_CAP, highestDailyCap, overCap, REPUTATION_MIN_SENDS_BOUNCE, REPUTATION_MIN_SENDS_COMPLAINT, reputationOf, softBounceBackoffUntil, utcDay, WARMUP_SCHEDULE, warmupDay } from "../../src/esp/warmup.js";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-10T08:00:00Z");
@@ -131,6 +131,52 @@ describe("reputation: 2% hard bounces, 0.1% complaints, over 7 days", () => {
 
   it("can raise both problems at once", () => {
     expect(reputationOf(days([["2026-10-10", 1000, 40, 0, 5]]), "d.co", NOW).problems.map((p) => p.code)).toEqual(["esp_bounce_rate", "esp_complaint_rate"]);
+  });
+});
+
+describe("a person lifting a reputation hold", () => {
+  const base = { sent: 0, delivered: 0, hard_bounces: 0, soft_bounces: 0, complaints: 0 };
+  const held = days([["2026-10-08", 30, 2, 0, 0], ["2026-10-09", 30, 2, 0, 0], ["2026-10-10", 40, 1, 0, 0]]);
+
+  it("is held before, and judges only what comes after: the days before the clearing day are left out, the clearing day's counts at that moment are taken off", () => {
+    expect(reputationOf(held, "d.co", NOW).problems.map((p) => p.code)).toEqual(["esp_bounce_rate"]);
+    // Lifted on 10 Oct when that day stood at 40 sent and 1 bounce: nothing is counted yet.
+    const lifted = reputationOf(held, "d.co", NOW, { day: "2026-10-10", baseline: { ...base, sent: 40, hard_bounces: 1 } });
+    expect(lifted).toMatchObject({ sent: 0, hardBounces: 0, problems: [], clearedDay: "2026-10-10" });
+    // More of the same day after it was lifted: only the new ones count (3 new bounces out of 10 new sends is over the floor).
+    const later = days([["2026-10-08", 30, 2, 0, 0], ["2026-10-09", 30, 2, 0, 0], ["2026-10-10", 50, 4, 0, 0]]);
+    expect(reputationOf(later, "d.co", NOW, { day: "2026-10-10", baseline: { ...base, sent: 40, hard_bounces: 1 } })).toMatchObject({ sent: 10, hardBounces: 3 });
+    expect(reputationOf(later, "d.co", NOW, { day: "2026-10-10", baseline: { ...base, sent: 40, hard_bounces: 1 } }).problems.map((p) => p.code)).toEqual(["esp_bounce_rate"]);
+    // Days AFTER the clearing day count in full.
+    expect(reputationOf(held, "d.co", NOW + DAY, { day: "2026-10-10", baseline: { ...base, sent: 40, hard_bounces: 1 } }).sent).toBe(0);
+    const next = days([["2026-10-08", 30, 2, 0, 0], ["2026-10-10", 40, 1, 0, 0], ["2026-10-11", 20, 3, 0, 0]]);
+    expect(reputationOf(next, "d.co", NOW + DAY, { day: "2026-10-10", baseline: { ...base, sent: 40, hard_bounces: 1 } })).toMatchObject({ sent: 20, hardBounces: 3 });
+  });
+
+  it("leaves out the days before the clearing day even when the clearing day itself has no baseline", () => {
+    expect(reputationOf(held, "d.co", NOW, { day: "2026-10-10", baseline: null })).toMatchObject({ sent: 40, hardBounces: 1, problems: [] });
+  });
+
+  it("stops mattering once the clearing day has left the 7-day window (every day in the window is after it)", () => {
+    const old = { day: "2026-10-01", baseline: { ...base, sent: 99, hard_bounces: 50 } };
+    expect(reputationOf(held, "d.co", NOW, old)).toEqual(reputationOf(held, "d.co", NOW, null));
+    expect(reputationOf(held, "d.co", NOW, old).clearedDay).toBeUndefined();
+  });
+
+  it("never counts below zero (a counter that went down, a baseline taken from a later read)", () => {
+    expect(reputationOf(held, "d.co", NOW, { day: "2026-10-10", baseline: { ...base, sent: 400, hard_bounces: 9 } })).toMatchObject({ sent: 0, hardBounces: 0 });
+  });
+
+  it("tells the person in the problem text when a clearing is in force, and says that only a person can lift a hold", () => {
+    const again = reputationOf(days([["2026-10-10", 10, 4, 0, 0]]), "d.co", NOW, { day: "2026-10-10", baseline: null });
+    expect(again.problems[0]!.message).toContain("since a person lifted the hold on 2026-10-10");
+    expect(reputationOf(held, "d.co", NOW).problems[0]!.fix).toMatch(/a person can lift the hold \(Mailboxes tab, Email provider, Lift the hold\); an agent cannot/);
+  });
+
+  it("reads the clearance from a domain row, and none from a row nobody lifted", () => {
+    expect(clearanceOf({ reputation_cleared_day: "2026-10-10", reputation_cleared_baseline: { ...base, sent: 5 } })).toEqual({ day: "2026-10-10", baseline: { ...base, sent: 5 } });
+    expect(clearanceOf({ reputation_cleared_day: null, reputation_cleared_baseline: null })).toBeNull();
+    expect(clearanceOf(null)).toBeNull();
   });
 });
 

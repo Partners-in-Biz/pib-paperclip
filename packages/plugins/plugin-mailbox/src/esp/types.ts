@@ -111,6 +111,13 @@ export interface ProviderDomain {
   dkimSelector: string | null;
   /** The include the provider's SPF record asks for (`amazonses.com`). */
   spfInclude: string | null;
+  /**
+   * Whether the provider adds an open pixel / rewrites links for mail from this domain. Tracking is a setting of the DOMAIN at the provider
+   * (Create and Update Domain `open_tracking`, `click_tracking`; Get Domain returns them); the send call has no per-message switch. null:
+   * the provider did not say, which is not "off".
+   */
+  openTracking?: boolean | null;
+  clickTracking?: boolean | null;
 }
 
 /** Thrown by the domain calls (a send returns an outcome instead). */
@@ -131,6 +138,7 @@ export interface EmailProvider {
   send(email: EspEmail): Promise<SendOutcome>;
   /** Up to 100 messages in one request, no attachments. The key covers the whole batch. */
   sendBatch(emails: EspEmail[], batchKey: string): Promise<BatchOutcome>;
+  /** Registers the domain with open and click tracking OFF (the Mailbox never switches tracking on; a person may, in the provider's dashboard). */
   addDomain(input: { name: string; region?: string | null }): Promise<ProviderDomain>;
   getDomain(id: string): Promise<ProviderDomain>;
   /** Asks the provider to look at the DNS again. The domain is `pending` until it has. */
@@ -176,8 +184,40 @@ export interface EspDomainRow {
   /** A person's own daily cap (replaces the schedule). */
   daily_cap_override: number | null;
   reputation: Record<string, unknown> | null;
+  /** What the provider last said about tracking for this domain (null: not read yet). */
+  open_tracking?: boolean | null;
+  click_tracking?: boolean | null;
+  /**
+   * A person lifted the reputation hold (0.6.1): judge only what happens after `reputation_cleared_at`. The day before it is ignored, and
+   * the clearing day's counts at that moment (`reputation_cleared_baseline`) are taken off that day's row.
+   */
+  reputation_cleared_at?: string | null;
+  reputation_cleared_by?: string | null;
+  reputation_cleared_day?: string | null;
+  reputation_cleared_baseline?: ReputationBaseline | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The counts of the clearing day at the moment a person lifted a hold. */
+export interface ReputationBaseline {
+  sent: number;
+  delivered: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  complaints: number;
+}
+
+/** One line of what a person did to a provider domain's limits (who, when, why). */
+export interface EspAuditRow {
+  id: string;
+  company_id: string;
+  domain: string;
+  action: "clear_reputation_hold" | "set_limits";
+  /** `user:<id>`: always the signed-in person the host reported, never a value from the request. */
+  actor: string;
+  detail: Record<string, unknown>;
+  created_at: string;
 }
 
 export type EspDayField = "delivered" | "hard_bounces" | "soft_bounces" | "complaints" | "opened" | "clicked" | "failed";

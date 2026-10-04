@@ -131,3 +131,26 @@ describe("the email provider on the page", () => {
     expect(dnsRecordLine({ type: "TXT", host: "_dmarc.updates.client.co.za", priority: null, value: "v=DMARC1; p=none" })).toBe("TXT  _dmarc.updates.client.co.za  v=DMARC1; p=none");
   });
 });
+
+describe("what the page says about a lifted hold and about tracking (0.6.1)", () => {
+  it("says a person lifted the hold and from which day bounces are counted, and nothing when nobody did", async () => {
+    const { holdLiftedLine } = await import("../src/ui/view.js");
+    expect(holdLiftedLine({ holdLifted: null })).toBe("");
+    expect(holdLiftedLine({})).toBe("");
+    expect(holdLiftedLine({ holdLifted: { at: "2026-10-04T09:30:00.000Z", by: "user:u1", day: "2026-10-04" } })).toBe("A person lifted the reputation hold on 2026-10-04: bounces and complaints are counted from that day on.");
+    // The day is the lifted day, else the day of the moment it happened.
+    expect(holdLiftedLine({ holdLifted: { at: "2026-10-05T09:30:00.000Z", by: null, day: null } })).toMatch(/on 2026-10-05:/);
+  });
+
+  it("warns only when tracking is on at the provider, and says what it does to a client message", async () => {
+    const { trackingLine, trackingOn } = await import("../src/ui/view.js");
+    for (const tracking of [null, undefined, { open: false, click: false }, { open: null, click: null }]) {
+      expect(trackingOn({ tracking }), JSON.stringify(tracking)).toBe(false);
+      expect(trackingLine({ tracking }), JSON.stringify(tracking)).toBe("");
+    }
+    expect(trackingOn({ tracking: { open: false, click: true } })).toBe(true);
+    expect(trackingLine({ tracking: { open: false, click: true } })).toMatch(/^click tracking is on at the provider\. Client messages \(a signing link, a report\) are refused through this domain until it is switched off/);
+    expect(trackingLine({ tracking: { open: true, click: true } })).toMatch(/^click and open tracking is on/);
+    expect(trackingLine({ tracking: { open: true, click: false } })).toMatch(/^open tracking is on/);
+  });
+});

@@ -8,6 +8,11 @@
  *    failing (`bad` SPF or DKIM at the provider's records holds every send back; a bad bounce or complaint record holds
  *    only marketing back). Each of these is a permanent failure with what to fix: the plugin that asked hands the mail
  *    to a person. It is never re-routed to Gmail: a client's mail must not go out as the company.
+ *    **A client message keeps its links intact** (0.6.1): mail with `context.kind` `client_message` carries a private link (a signing link is a
+ *    bearer token in the URL fragment), and tracking at the provider is a setting of the DOMAIN (the send call has no per-message switch)
+ *    that rewrites links through the provider's own address. So before such a message is handed over the Mailbox reads the domain's two
+ *    tracking flags from the provider; anything but both confirmed off is a permanent failure that says how to switch tracking off, or
+ *    to send it from the client's Gmail mailbox. A read that failed defers the send (nothing was handed over).
  * 2. **The do-not-email list** (same code as Gmail, per sender): suppressed recipients are left out; nobody left is a
  *    permanent failure with the `suppressed` list.
  * 3. **Soft-bounce back-off** (marketing): an address that soft bounced lately waits (6, 24, then 72 hours). A message
@@ -37,6 +42,7 @@ import { espReadiness, type LoadedConfig } from "../config.js";
 import { sendingDomain } from "../dns.js";
 import { holdsProviderSend, senderDomainHealth } from "../domain-health.js";
 import { EspUnavailable, MailboxError, SendThrottled } from "../domain.js";
+import { isPrivateMail } from "../private-mail.js";
 import { errorMessage, type Env } from "../gmail/env.js";
 import type { AccountRow, SendRecordInput, SendRow, SkippedRecipient } from "../gmail/types.js";
 import { accountScopeProblem, accountSenderKey, cleanDisplayName, effectiveReplyTo } from "../sender.js";
@@ -45,7 +51,7 @@ import { checkSuppression } from "../suppression.js";
 import { ownOneClickUrl } from "../unsubscribe.js";
 import { tagValue } from "./resend.js";
 import { espProviderFor, noteEspState } from "./runtime.js";
-import type { EspAttachment, EspDomainRow, EspEmail } from "./types.js";
+import { EspApiError, type EspAttachment, type EspDomainRow, type EspEmail } from "./types.js";
 import { dailyCap, DAY_MS, highestDailyCap, utcDay, WARMUP_IDLE_RESET_DAYS } from "./warmup.js";
 
 /** A retry of a call with an unknown outcome is safe while the provider still remembers the idempotency key (24 hours); stop a few hours before. */
@@ -145,6 +151,37 @@ async function notAllowed(env: Env, loaded: LoadedConfig, pick: EspPick, request
   return null;
 }
 
+/**
+ * For a client message: null when the provider says open and click tracking are both OFF for the sending domain, else why it may not go
+ * out through this domain. Throws (the send is asked again later) when the provider could not be asked: nothing has been handed over.
+ */
+export async function trackingProblem(env: Env, loaded: LoadedConfig, pick: EspPick, request: Pick<MailSendRequested, "context">): Promise<string | null> {
+  if (!isPrivateMail(request.context) || !pick.domain) return null;
+  const domain = pick.domain.domain;
+  const provider = await espProviderFor(env, loaded, { forSending: true });
+  // A provider that is not ready is reported by the rules that follow, in their own words.
+  if (!provider.ok) return null;
+  let remote;
+  try {
+    remote = await provider.provider.getDomain(pick.domain.provider_domain_id);
+  } catch (error) {
+    if (error instanceof EspApiError && error.kind === "not_found") return `Not sent: ${domain} is not registered at the email provider any more, so it cannot send. Add it again (add-sending-domain).`;
+    if (error instanceof EspApiError && error.kind === "config") await noteEspState(env.ctx, pick.domain.company_id, { code: "key_refused", detail: error.message }, env.now());
+    throw new EspUnavailable(`The Mailbox could not check that tracking is off for ${domain} before sending a client message (${errorMessage(error)}); it is tried again.`);
+  }
+  // What the provider said is kept, so the page can show it before a message is refused.
+  await env.store.patchEspDomain(pick.domain.company_id, domain, { open_tracking: remote.openTracking ?? null, click_tracking: remote.clickTracking ?? null }).catch(() => undefined);
+  const on = [remote.clickTracking === true ? "click" : null, remote.openTracking === true ? "open" : null].filter((word): word is string => Boolean(word));
+  const way = `Switch tracking off for ${domain} in the provider's dashboard (https://resend.com/domains, the domain, Configuration), or send this message from the client's Gmail mailbox.`;
+  if (on.length > 0) {
+    return `Not sent: ${on.join(" and ")} tracking is switched on for ${domain} at the email provider. A client message carries a private link (a signing link, a report); click tracking rewrites links through the provider's own address, which would break the link and show it to the provider, and an open pixel reports who read it. ${way}`;
+  }
+  if (remote.clickTracking !== false || remote.openTracking !== false) {
+    return `Not sent: the email provider did not say whether open and click tracking are off for ${domain}, and a client message must not go through a domain that may rewrite its links. ${way} Then check the domain again (check-sender-domain).`;
+  }
+  return null;
+}
+
 /** Sends one request through the provider. See the file header for the order of the rules. Throws when it should be asked again later. */
 export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPick, request: MailSendRequested, options: SendOptions, before: SendRow | null, problem: string | null): Promise<SendResult> {
   const { account } = pick;
@@ -170,7 +207,7 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
   };
 
   // 1. Allowed to send at all.
-  const early = problem ?? accountScopeProblem(account, request) ?? (await notAllowed(env, loaded, pick, request));
+  const early = problem ?? accountScopeProblem(account, request) ?? (await notAllowed(env, loaded, pick, request)) ?? (await trackingProblem(env, loaded, pick, request));
   if (early) return fail(early);
 
   // 2. The do-not-email list.
@@ -370,6 +407,8 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
       permanent: false,
       context: request.context,
       provider: "resend",
+      // Where a reply arrives: a provider send has no thread, so the sender that wants to attribute a reply keeps this and the key.
+      replyTo: built.email.replyTo ?? null,
       ...(skipped.length ? { suppressed: skipped } : {}),
       ...(all.length ? { warnings: all } : {}),
     };

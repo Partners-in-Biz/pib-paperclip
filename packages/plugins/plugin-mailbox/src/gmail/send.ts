@@ -25,6 +25,7 @@ import { GmailUnavailable, MailboxError, SendThrottled } from "../domain.js";
 import { performEspSend } from "../esp/send.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { pickSender } from "../pick-sender.js";
+import { bodyIsGone, isPrivateMail, PRIVATE_RETRY_NOTE } from "../private-mail.js";
 import { AttachmentError, domainWarnings, downloadAttachments, failed, MAX_ATTACHMENT_BYTES, resultFromRow, type SendOptions, type SendResult } from "../send-shared.js";
 import { accountScopeProblem, accountSenderKey, cleanDisplayName, effectiveReplyTo, parseReplyTo, parseUnsubscribeUrl, senderScopeWarnings } from "../sender.js";
 import { ownOneClickUrl } from "../unsubscribe.js";
@@ -370,7 +371,8 @@ async function finishSent(
         to: request.to,
         cc: request.cc ?? [],
         bcc: request.bcc ?? [],
-        snippet: (request.text ?? (request.html ? htmlToText(request.html) : "")).replace(/\s+/g, " ").slice(0, 200),
+        // A client message's text is not kept (it may carry a private link): the stored copy has a subject and recipients, no preview.
+        snippet: isPrivateMail(request.context) ? "" : (request.text ?? (request.html ? htmlToText(request.html) : "")).replace(/\s+/g, " ").slice(0, 200),
         labels: labelIds,
         attachments: [],
         bulk: false,
@@ -391,6 +393,8 @@ async function finishSent(
     error: null,
     permanent: false,
     context: request.context,
+    // The Reply-To the message carries (none when it is the mailbox itself): where a reply arrives.
+    replyTo: effectiveReplyTo(request.replyTo, account.address)?.email ?? null,
     ...(skipped.length ? { suppressed: skipped } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
@@ -429,6 +433,8 @@ export async function retrySend(env: Env, companyId: string, key: string): Promi
   const row = await env.store.getSend(companyId, key);
   if (!row) throw new MailboxError("Send request not found");
   if (row.status === "sent") return resultFromRow(row);
+  // A client message's text is gone once its send ended: there is nothing to send again (the plugin that made it makes a new one).
+  if (bodyIsGone(row)) throw new MailboxError(PRIVATE_RETRY_NOTE);
   const normalised = normaliseRequest(row.request, row.source_plugin);
   if (!normalised) throw new MailboxError("The stored request cannot be read");
   const result = await performSend(env, companyId, normalised.request, { sourcePlugin: row.source_plugin, force: true }, normalised.problem);

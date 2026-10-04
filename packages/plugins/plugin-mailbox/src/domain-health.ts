@@ -43,7 +43,7 @@ import { errorMessage } from "./gmail/env.js";
 import { isFreeMailDomain } from "./free-mail.js";
 import type { AccountRow, DomainCheckRow, DomainStatus } from "./gmail/types.js";
 import { isEspProvider, type ProviderDomainStatus } from "./esp/types.js";
-import { REPUTATION_WINDOW_DAYS, reputationOf, utcDay, DAY_MS, type ReputationReport } from "./esp/warmup.js";
+import { clearanceOf, REPUTATION_WINDOW_DAYS, reputationOf, utcDay, DAY_MS, type ReputationReport } from "./esp/warmup.js";
 
 export const DOMAIN_HEALTH_EVENT = "mail.domain.health";
 /** DMARC `p=none` is a monitoring step; after this many days of sending it is a warning. */
@@ -150,6 +150,8 @@ export interface DomainReport {
   manual: string[];
   /** Present for a domain registered at the email provider. */
   esp?: EspReport | null;
+  /** True for a domain only the email provider sends from (no Gmail mailbox on it): the whole report is about provider sending. */
+  espOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +479,7 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
     problems,
     unreadable,
     manual: unreadable ? [...digCommands(domain, parts.selectors), ...(esp ? [`dig +short TXT ${esp.returnPathHost}`, `dig +short MX ${esp.returnPathHost}`] : [])] : [],
-    ...(esp ? { esp } : {}),
+    ...(esp ? { esp, espOnly } : {}),
   };
 }
 
@@ -575,6 +577,11 @@ export interface DomainHealthEvent {
   mailboxes: string[];
   clientKind?: string | null;
   clientRef?: string | null;
+  /**
+   * `resend` when only the email provider sends from this domain (no Gmail mailbox on it): then every problem here is one that holds a send from it
+   * back, and a sender may refuse to launch from it. null for a domain with a Gmail mailbox: the Mailbox still sends from it, so a problem is a warning.
+   */
+  provider?: string | null;
 }
 
 export function domainHealthEvent(row: DomainCheckRow, mailboxes: string[]): DomainHealthEvent | null {
@@ -591,6 +598,7 @@ export function domainHealthEvent(row: DomainCheckRow, mailboxes: string[]): Dom
     mailboxes,
     clientKind: row.client_kind,
     clientRef: row.client_ref,
+    provider: report.esp && report.espOnly ? "resend" : null,
   };
 }
 
@@ -659,7 +667,7 @@ export async function checkAndStore(env: DomainRunEnv, companyId: string, target
   const existing = await env.store.getDomainCheck(companyId, target.domain);
   const now = env.now();
   // A provider domain also carries the last 7 days of what it sent and what came back.
-  const reputation = target.esp ? reputationOf(await env.store.espDayRows(companyId, target.domain, utcDay(now - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS)), target.domain, now) : null;
+  const reputation = target.esp ? await judgeReputation(env.store, companyId, target.domain, now) : null;
   const report = await checkDomain(env.dns, target.domain, {
     selectors: options.selectors,
     now,
@@ -700,6 +708,15 @@ export async function checkAndStore(env: DomainRunEnv, companyId: string, target
   return report;
 }
 
+/**
+ * A provider domain's last 7 days judged against the limits, counting only what came after the day a person lifted a hold (if one did).
+ * Every place that judges reputation goes through here, so a lifted hold is lifted everywhere.
+ */
+export async function judgeReputation(store: Pick<GmailStore, "espDayRows" | "getEspDomain">, companyId: string, domain: string, now: number): Promise<ReputationReport> {
+  const [rows, row] = await Promise.all([store.espDayRows(companyId, domain, utcDay(now - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS)), store.getEspDomain(companyId, domain)]);
+  return reputationOf(rows, domain, now, clearanceOf(row));
+}
+
 /** Problem codes that come from a domain's sending record rather than its DNS. */
 export const REPUTATION_CODES: ReadonlySet<string> = new Set(["esp_bounce_rate", "esp_complaint_rate"]);
 
@@ -711,8 +728,7 @@ export const REPUTATION_CODES: ReadonlySet<string> = new Set(["esp_bounce_rate",
  */
 export async function applyReputation(env: DomainRunEnv, companyId: string, domain: string): Promise<{ reputation: ReputationReport; changed: boolean }> {
   const now = env.now();
-  const rows = await env.store.espDayRows(companyId, domain, utcDay(now - (REPUTATION_WINDOW_DAYS - 1) * DAY_MS));
-  const reputation = reputationOf(rows, domain, now);
+  const reputation = await judgeReputation(env.store, companyId, domain, now);
   await env.store.patchEspDomain(companyId, domain, { reputation: reputation as unknown as Record<string, unknown> });
   const row = await env.store.getDomainCheck(companyId, domain);
   const report = row ? reportOf(row) : null;

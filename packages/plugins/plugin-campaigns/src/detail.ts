@@ -9,7 +9,7 @@ export type Delivery = "issue" | "email" | "auto";
 /** The Delivery column and the new-campaign choice. */
 export const DELIVERY_LABEL: Record<Delivery, string> = {
   issue: "Task for the agent",
-  email: "Email from Gmail",
+  email: "Email through the Mailbox",
   auto: "Automatic: email, SMS, WhatsApp",
 };
 

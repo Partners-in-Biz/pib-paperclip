@@ -90,7 +90,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
   {
     name: "search-mail",
     displayName: "Search mail",
-    description: "Search a Gmail mailbox with a Gmail query (e.g. from:acme.com newer_than:30d has:attachment). Headers and snippets only; read one with get-message.",
+    description: "Search a Gmail mailbox with a Gmail query (e.g. from:acme.com newer_than:30d has:attachment). Headers and snippets only; read one with get-message. A client message (a signing email, a report) comes back with no snippet and withheld: true.",
     parametersSchema: schema(["query"], {
       query: str("Gmail search query."),
       accountId: str("Mailbox account id. Default: the first mailbox you may read."),
@@ -100,7 +100,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
   {
     name: "get-message",
     displayName: "Read a message",
-    description: "One message's text from Gmail on demand (text only, truncated), with its attachments (attachmentId, filename, type, size) and triage.",
+    description: "One message's text from Gmail on demand (text only, truncated), with its attachments (attachmentId, filename, type, size) and triage. A client message (the CRM's signing email, report or sign-off) may carry a private link, so it answers withheld: true with no text: never ask for it.",
     parametersSchema: schema(["messageId"], {
       messageId,
       maxChars: { type: "integer", minimum: 200, maximum: 50000, description: "Longest text to return (default 8000)." },
@@ -162,7 +162,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "list-sending-domains",
     displayName: "List sending domains",
     description:
-      "The company's domains at the email provider: status (not_started, pending, verified, failed), whether mail may go out now, the send-only account, the records still to add, today's cap and warm-up day (and what is left of it), and the last 7 days' bounce and complaint rates against the limits (2% and 0.1%). refresh: true asks the provider to look at the DNS again first (at most every 6 hours per domain; the Mailbox also does it every hour).",
+      "The company's domains at the email provider: status (not_started, pending, verified, failed), whether mail may go out now, the send-only account, the records still to add, today's cap and warm-up day (and what is left of it), and the last 7 days' bounce and complaint rates against the limits (2% and 0.1%), whether a person lifted a reputation hold (holdLifted; only a person can, you cannot), and what the provider says about open and click tracking (tracking: a client message is refused through a domain with either on). refresh: true asks the provider to look at the DNS again first (at most every 6 hours per domain; the Mailbox also does it every hour).",
     parametersSchema: schema([], {
       domain: str("One domain. Omit for every sending domain."),
       refresh: { type: "boolean", description: "Ask the provider to verify the DNS again before answering." },
@@ -203,7 +203,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
   {
     name: "mail-status",
     displayName: "Mail send status",
-    description: "Status of a send another plugin asked for, by its key: sending, sent, failed or retrying, with the Gmail or provider ids, the error, any recipients left out as suppressed, and, for mail the email provider took, what happened to it afterwards (delivered, delayed, bounced, complained).",
+    description: "Status of a send another plugin asked for, by its key: sending, sent, failed or retrying, with the Gmail or provider ids, the error, any recipients left out as suppressed, and, for mail the email provider took, what happened to it afterwards (delivered, delayed, bounced, complained). For a client message (kind client_message) private is true and textKept says whether its text is still held (only while a retry is pending).",
     parametersSchema: schema(["key"], { key: str("The send request key, e.g. billing:invoice:<id>:send.") }),
   },
 ];

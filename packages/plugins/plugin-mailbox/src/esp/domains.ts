@@ -29,7 +29,7 @@ import { cleanDisplayName } from "../sender.js";
 import { hostInZone } from "./resend.js";
 import { espProviderFor, noteEspState } from "./runtime.js";
 import { EspApiError, type DnsRecord, type EspDomainRow, type ProviderDomain } from "./types.js";
-import { dailyCap, utcDay, reputationOf, REPUTATION_WINDOW_DAYS, DAY_MS, type DailyCap, type ReputationReport } from "./warmup.js";
+import { clearanceOf, dailyCap, utcDay, reputationOf, REPUTATION_WINDOW_DAYS, DAY_MS, type DailyCap, type ReputationReport } from "./warmup.js";
 
 export const MAX_ESP_DOMAINS = 25;
 /** Verification is asked for at most this often per domain (the provider marks the domain pending each time). */
@@ -125,6 +125,10 @@ export interface SendingDomainView {
   firstSentAt: string | null;
   cap: DailyCap & { sentToday: number; remaining: number };
   reputation: ReputationReport | null;
+  /** What the provider last said about tracking for this domain (null: not read yet). A client message is refused through a domain with either on. */
+  tracking: { open: boolean | null; click: boolean | null };
+  /** A person lifted the reputation hold: when, who (`user:<id>`) and the UTC day it counts from. */
+  holdLifted: { at: string; by: string | null; day: string | null } | null;
   /** Records still to add (empty once verified). */
   dns: DnsInstructions | null;
 }
@@ -147,7 +151,9 @@ export async function sendingDomainView(env: Pick<Env, "store" | "now">, config:
     checkedAt: row.checked_at,
     firstSentAt: row.first_sent_at,
     cap: { ...cap, sentToday, remaining: Math.max(0, cap.cap - sentToday) },
-    reputation: days.length > 0 ? reputationOf(days, row.domain, now) : null,
+    reputation: days.length > 0 ? reputationOf(days, row.domain, now, clearanceOf(row)) : null,
+    tracking: { open: row.open_tracking ?? null, click: row.click_tracking ?? null },
+    holdLifted: row.reputation_cleared_at ? { at: row.reputation_cleared_at, by: row.reputation_cleared_by ?? null, day: row.reputation_cleared_day ?? null } : null,
     dns: row.status === "verified" ? null : dnsInstructions(row, { report }),
   };
 }
@@ -219,6 +225,9 @@ function fromProvider(row: EspDomainRow, domain: ProviderDomain, nowIso: string)
     return_path_host: domain.returnPathHost ?? row.return_path_host,
     dkim_selector: domain.dkimSelector ?? row.dkim_selector,
     spf_include: domain.spfInclude ?? row.spf_include,
+    // Exactly what the provider said: not told is null, never "off".
+    open_tracking: domain.openTracking ?? null,
+    click_tracking: domain.clickTracking ?? null,
     verified_at: domain.status === "verified" ? row.verified_at ?? nowIso : row.verified_at,
     checked_at: nowIso,
   };

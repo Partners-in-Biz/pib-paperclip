@@ -12,6 +12,7 @@ The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plu
 ## Reading
 - \`list-inbox\`: inbound mail with triage (\`category\`, \`urgency\` 0 can wait to 3 urgent, \`needs_reply\` probability, client, attachments).
 - \`search-mail\` runs a Gmail query (headers and snippets only); \`get-message\` reads one message's text (truncated); \`list-threads\` groups by thread; \`mark-read\` marks read here and in Gmail.
+- A client message (the CRM's signing email, report or sign-off: send context kind \`client_message\`) may carry a private link that signs for the client. The Mailbox keeps no text of it after the send, and \`get-message\` and \`search-mail\` answer \`withheld: true\` with no text or snippet. Never ask a person to paste it, forward it or open its link; if a signing email needs checking, ask the CRM's work issue, not the mailbox.
 - Read only what the task needs. Never copy mailbox credentials or tokens into an issue.
 
 ## Attachments
@@ -154,6 +155,11 @@ Resend asks for an MX and a TXT (SPF) on its return-path host \`send.<domain>\`,
 
 ## Caps and reputation
 Day 1 is the UTC day of the first send. Caps for marketing: 50, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000, then the steady cap (default 10,000). A domain idle for 30 days starts again. Only a person can mark a domain as already established or give it its own cap. Over the cap marketing is deferred and tried again (the sender retries for about three days). Over any 7 days, 2% hard bounces (judged from 100 recipients) or 0.1% complaints (judged from 1,000 recipients; under those, three hard bounces or two complaints) hold the domain's marketing back until the window clears, and Campaigns will not launch from it. Fix the cause (where the list came from, who it was sent to), do not wait it out and repeat it.
+
+**Lifting a hold sooner is for a person only.** On the Mailboxes tab the domain's card has Lift the hold: the person writes what was fixed, it is recorded with their name, and only bounces and complaints from then on are counted (a new one can hold the domain again). You have no tool for it and must not look for a way round it: put the domain and what was fixed in one \`partnersinbiz.cockpit:ask-owner\` and wait. Setup shows the item "marketing is held for ..." to the owner.
+
+## Tracking
+Open and click tracking are a setting of the DOMAIN at the provider, never of one message. The Mailbox registers a domain with both off and never switches them on; a person may in the provider's dashboard (\`list-sending-domains\` shows \`tracking\`). A client message (kind \`client_message\`: a signing email, a report) is refused for good through a domain with either on, or when the provider does not say, because click tracking rewrites links through the provider's own address and would break the private link (it lives in the URL fragment) and show it to the provider. The answer says how: switch tracking off at resend.com/domains (Domains, the domain, Configuration), or send that message from the client's Gmail mailbox. Do not retry it in a loop.
 
 ## What a delivery event does
 Delivered: counted. Delayed: noted, nothing suppressed. Hard bounce (Permanent): the address is suppressed for ALL mail. Soft bounce (Transient or Undetermined): marketing to the address waits 6, 24, then 72 hours; the third in 14 days suppresses its marketing. Complaint: suppressed for marketing on the sender's list (a client's, or the company's own). A message to several recipients does not say which one an event is about, so it suppresses nobody (marketing is one recipient per message). Events about a domain the company did not register, or a message the Mailbox did not send (another app on the same provider team), are ignored. The Mailbox announces each result as \`mail.delivery\` for any plugin that records it; the send's own \`mail.send.result\` stays the one answer the sender settles on.

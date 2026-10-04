@@ -611,10 +611,25 @@ export async function insertStepEvent(
   );
 }
 
+/** What happened at one step: counts of each kind of step event. Opens and clicks exist only when tracking is on at the provider (or a person recorded them). */
+export interface StepStats {
+  stepPosition: number;
+  opens: number;
+  clicks: number;
+  sent: number;
+  delivered: number;
+  replies: number;
+  /** Hard bounces (a soft bounce is counted apart: the address may well work next time). */
+  bounces: number;
+  softBounces: number;
+  complaints: number;
+  unsubscribes: number;
+}
+
 export async function stepEventStats(
   ctx: PluginContext,
   campaignId: string,
-): Promise<Array<{ stepPosition: number; opens: number; clicks: number; sent: number; replies: number; bounces: number; unsubscribes: number }>> {
+): Promise<Array<StepStats>> {
   const rows = await ctx.db.query<{ step_position: number; event_type: string; count: string | number }>(
     `SELECT step_position, event_type, count(*) AS count
        FROM ${table(ctx, "campaign_step_events")}
@@ -623,15 +638,18 @@ export async function stepEventStats(
       ORDER BY step_position`,
     [campaignId],
   );
-  const byStep = new Map<number, { stepPosition: number; opens: number; clicks: number; sent: number; replies: number; bounces: number; unsubscribes: number }>();
+  const byStep = new Map<number, StepStats>();
   for (const row of rows) {
-    const step = byStep.get(row.step_position) ?? { stepPosition: row.step_position, opens: 0, clicks: 0, sent: 0, replies: 0, bounces: 0, unsubscribes: 0 };
+    const step = byStep.get(row.step_position) ?? { stepPosition: row.step_position, opens: 0, clicks: 0, sent: 0, delivered: 0, replies: 0, bounces: 0, softBounces: 0, complaints: 0, unsubscribes: 0 };
     const count = Number(row.count ?? 0);
     if (row.event_type === "open") step.opens = count;
     if (row.event_type === "click") step.clicks = count;
     if (row.event_type === "sent") step.sent = count;
+    if (row.event_type === "delivered") step.delivered = count;
     if (row.event_type === "reply") step.replies = count;
     if (row.event_type === "bounce") step.bounces = count;
+    if (row.event_type === "soft_bounce") step.softBounces = count;
+    if (row.event_type === "complaint") step.complaints = count;
     if (row.event_type === "unsubscribe") step.unsubscribes = count;
     byStep.set(row.step_position, step);
   }
@@ -688,6 +706,9 @@ export async function getCampaignTemplate(ctx: PluginContext, id: string): Promi
 // Mailbox sends and replies
 // ---------------------------------------------------------------------------
 
+/** What a step event can be (the table's check, widened in 014 for the provider's complaint and soft bounce). */
+export type StepEventType = "open" | "click" | "sent" | "reply" | "bounce" | "unsubscribe" | "skipped" | "delivered" | "failed" | "soft_bounce" | "complaint";
+
 /** A step event recorded once per source (a Mailbox result or message may arrive twice). */
 export async function insertStepEventOnce(
   ctx: PluginContext,
@@ -696,7 +717,7 @@ export async function insertStepEventOnce(
     campaignId: string;
     enrollmentId: string;
     stepPosition: number;
-    eventType: "sent" | "reply" | "bounce" | "unsubscribe" | "skipped" | "delivered" | "failed";
+    eventType: StepEventType;
     variant: string;
     sourceKey: string;
     meta?: Record<string, unknown> | null;
@@ -730,10 +751,22 @@ export interface SentEvent {
   meta: Record<string, unknown>;
 }
 
+interface SentRow { enrollment_id: string; step_position: number; variant: string | null; occurred_at: unknown; meta: unknown }
+
+function sentEvent(row: SentRow): SentEvent {
+  return {
+    enrollmentId: row.enrollment_id,
+    stepPosition: Number(row.step_position),
+    variant: row.variant ?? "a",
+    occurredAt: asIso(row.occurred_at) ?? "",
+    meta: row.meta && typeof row.meta === "object" ? (row.meta as Record<string, unknown>) : typeof row.meta === "string" ? ((parseJson(row.meta) as Record<string, unknown>) ?? {}) : {},
+  };
+}
+
 /** The latest step each of these enrollments was emailed, newest first. */
 export async function latestSends(ctx: PluginContext, companyId: string, enrollmentIds: string[]): Promise<SentEvent[]> {
   if (enrollmentIds.length === 0) return [];
-  const rows = await ctx.db.query<{ enrollment_id: string; step_position: number; variant: string | null; occurred_at: unknown; meta: unknown }>(
+  const rows = await ctx.db.query<SentRow>(
     `SELECT enrollment_id, step_position, variant, occurred_at, meta
        FROM ${table(ctx, "campaign_step_events")}
       WHERE company_id = $1 AND event_type = 'sent' AND enrollment_id = ANY(${textArrayParam(2)})
@@ -741,13 +774,34 @@ export async function latestSends(ctx: PluginContext, companyId: string, enrollm
       LIMIT 50`,
     [companyId, JSON.stringify(enrollmentIds)],
   );
-  return rows.map((row) => ({
-    enrollmentId: row.enrollment_id,
-    stepPosition: Number(row.step_position),
-    variant: row.variant ?? "a",
-    occurredAt: asIso(row.occurred_at) ?? "",
-    meta: row.meta && typeof row.meta === "object" ? (row.meta as Record<string, unknown>) : typeof row.meta === "string" ? ((parseJson(row.meta) as Record<string, unknown>) ?? {}) : {},
-  }));
+  return rows.map(sentEvent);
+}
+
+/**
+ * The campaign emails sent to one address since `sinceIso`, newest first. A reply to a provider send has no thread to find its campaign by, so it is
+ * matched against these (their Reply-To and subject are in each event's `meta`).
+ */
+export async function sendsToAddress(ctx: PluginContext, companyId: string, email: string, sinceIso: string, limit = 20): Promise<SentEvent[]> {
+  const rows = await ctx.db.query<SentRow>(
+    `SELECT enrollment_id, step_position, variant, occurred_at, meta
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE company_id = $1 AND event_type = 'sent' AND lower(meta ->> 'to') = $2 AND occurred_at >= $3::timestamptz
+      ORDER BY occurred_at DESC
+      LIMIT ${Math.max(1, Math.min(limit, 100))}`,
+    [companyId, email.trim().toLowerCase(), sinceIso],
+  );
+  return rows.map(sentEvent);
+}
+
+/** The `sent` event of one send (by the send's key), for the address and variant it went out with. */
+export async function sentEventByKey(ctx: PluginContext, companyId: string, sendKey: string): Promise<SentEvent | null> {
+  const rows = await ctx.db.query<SentRow>(
+    `SELECT enrollment_id, step_position, variant, occurred_at, meta
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE company_id = $1 AND source_key = $2 LIMIT 1`,
+    [companyId, `sent:${sendKey}`],
+  );
+  return rows[0] ? sentEvent(rows[0]) : null;
 }
 
 /** Projected CRM contacts with this address (case-insensitive). */

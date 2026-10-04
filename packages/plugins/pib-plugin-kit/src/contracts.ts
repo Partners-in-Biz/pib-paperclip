@@ -42,6 +42,12 @@ export const MAIL_EVENTS = {
   sendResult: "mail.send.result",
   /** Mailbox → everyone: a new inbound message, already triaged. */
   received: "mail.received",
+  /**
+   * Mailbox → everyone: what happened to a message after the email provider took it (delivered, bounced, complained,
+   * opened, clicked). Not a second answer to the send: the send's own `mail.send.result` stays the one answer a sender
+   * settles on. Delivery is at-most-once like every event: consumers dedupe by `MailDelivery.key`.
+   */
+  delivery: "mail.delivery",
 } as const;
 
 /** Plugins whose `mail.send.requested` events the Mailbox listens to. */
@@ -115,6 +121,44 @@ export interface MailSendResult {
   /** True when the failure will not go away on retry (bad address, no account). */
   permanent?: boolean;
   context: MailSendRequested["context"];
+  /** The email provider that took the message (`resend`); absent for Gmail. A provider send has no Gmail `threadId` or Message-ID. */
+  provider?: string | null;
+  /**
+   * The Reply-To the message went out with (the request's, else the sending account's own): where a reply arrives. A provider send has no
+   * thread to match a reply by, so a sender that wants to attribute one keeps this address and the send's key.
+   */
+  replyTo?: string | null;
+}
+
+/** What a `mail.delivery` event can say. A hard bounce is `bounced`; the provider's own refusal of a listed address is `suppressed`. */
+export const MAIL_DELIVERY_TYPES = ["delivered", "delayed", "bounced", "soft_bounced", "complained", "failed", "suppressed", "opened", "clicked"] as const;
+export type MailDeliveryType = (typeof MAIL_DELIVERY_TYPES)[number];
+
+/**
+ * `mail.delivery` (Mailbox → everyone): the feedback an email provider gives after it took a message. No message content
+ * and no link, so it is safe to log. `opened` and `clicked` exist only when somebody switched tracking on for the sending
+ * domain at the provider (the Mailbox never does, and refuses a signing email through a tracked domain); an open or a
+ * click may repeat, so a consumer counts the first per `sendKey`.
+ */
+export interface MailDelivery {
+  /** `esp:<the provider's delivery id>`: the same event delivered twice carries the same key. */
+  key: string;
+  type: MailDeliveryType;
+  /** The email provider (`resend`). */
+  provider: string;
+  /** The `MailSendRequested.key` of the send this is about; null when the Mailbox could not tie the event to a send of its own. */
+  sendKey: string | null;
+  /** The recipient, only when the message had exactly one (a message to several does not say which one an event is about). */
+  recipient?: string;
+  /** When it happened at the provider (ISO). */
+  at: string;
+  /** Who asked and why (from the send); null when the send is unknown. */
+  context: MailSendRequested["context"] | null;
+  /** The client the mail was sent for: the send's own scope, else the sending domain's client; null for the company's own mail. */
+  clientKind?: "company" | "contact" | null;
+  clientRef?: string | null;
+  /** `bounced` and `soft_bounced`: hard or soft, and the provider's sub type. */
+  bounce?: { kind: "hard" | "soft"; subType: string | null };
 }
 
 export const MAIL_CATEGORIES = [

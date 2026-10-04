@@ -11,6 +11,8 @@ interface Domain {
   status: string;
   region: string;
   records: Array<Record<string, unknown>>;
+  open_tracking: boolean;
+  click_tracking: boolean;
 }
 
 export interface SentEmail {
@@ -26,8 +28,12 @@ export class FakeResend {
   requests: Array<{ method: string; path: string }> = [];
   /** The owner has added the DNS records: a verify makes domains verified. */
   dnsAdded = false;
+  /** The bodies of every POST /domains (what the adapter asked the provider to create). */
+  domainBodies: Array<Record<string, unknown>> = [];
+  /** Get Domain leaves the two tracking flags out (an answer that does not say). */
+  hideTracking = false;
   /** Answers handed out to the next requests instead of the real answer, oldest first. */
-  errors: Array<{ status: number; body: unknown; headers?: Record<string, string>; accepted?: boolean }> = [];
+  errors: Array<{ status: number; body: unknown; headers?: Record<string, string>; accepted?: boolean; /** Only a request whose path matches: a read of a domain does not use up an answer meant for a send. */ on?: RegExp }> = [];
   private byKey = new Map<string, string>();
   private seq = 0;
 
@@ -41,6 +47,20 @@ export class FakeResend {
       { record: "SPF", name: "send", value: '"v=spf1 include:amazonses.com ~all"', type: "TXT", ttl: "Auto", status },
       { record: "DKIM", name: "resend._domainkey", value: "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDsc4Lh8xilsngyKEgN2S84+21gn+x6SEXtjWvPiAAmnmql4cTGP5v9DJUqAC1HXLqqxXVXyOZhbLzoPFOSTqiSnSmprmP0fpv2Ql5oR3BG9zMDW+pNKQKZZYZP0V7p8ATEeB3Bp3MvvQ4vzpnB+RUCTMHNHdlSLAw/b5GZrRLwwIDAQAB", type: "TXT", ttl: "Auto", status },
     ];
+  }
+
+  /** Somebody switches tracking on or off for a domain in the provider's dashboard. */
+  setTracking(name: string, flags: { open?: boolean; click?: boolean }): void {
+    const domain = this.domains.get(name);
+    if (!domain) return;
+    if (flags.open !== undefined) domain.open_tracking = flags.open;
+    if (flags.click !== undefined) domain.click_tracking = flags.click;
+  }
+
+  /** The domain object as Get Domain and Create Domain answer. */
+  private shown(domain: Domain): Record<string, unknown> {
+    const { open_tracking, click_tracking, ...rest } = domain;
+    return this.hideTracking ? rest : { ...rest, open_tracking, click_tracking };
   }
 
   /** The domain's DNS is in place at the provider. */
@@ -58,7 +78,7 @@ export class FakeResend {
     this.requests.push({ method, path });
     const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
     if (headers.authorization !== `Bearer ${API_KEY}`) return this.json(401, { statusCode: 401, name: "missing_api_key", message: "Missing API key in the authorization header." });
-    const scripted = this.errors.shift();
+    const scripted = this.errors[0] && (!this.errors[0].on || this.errors[0].on.test(path)) ? this.errors.shift() : undefined;
     if (scripted && !scripted.accepted) return this.json(scripted.status, scripted.body, scripted.headers);
     const body = init?.body ? (JSON.parse(init.body) as unknown) : undefined;
 
@@ -66,12 +86,14 @@ export class FakeResend {
       const name = String((body as { name: string }).name).toLowerCase();
       if (this.domains.has(name)) return this.json(403, { statusCode: 403, name: "validation_error", message: `The ${name} domain has been registered already.` });
       this.seq += 1;
-      const domain: Domain = { id: `d0000000-0000-4000-8000-${String(this.seq).padStart(12, "0")}`, name, status: "not_started", region: (body as { region?: string }).region ?? "us-east-1", records: this.recordsFor(name, "not_started") };
+      this.domainBodies.push(body as Record<string, unknown>);
+      const asked = body as { region?: string; open_tracking?: boolean; click_tracking?: boolean };
+      const domain: Domain = { id: `d0000000-0000-4000-8000-${String(this.seq).padStart(12, "0")}`, name, status: "not_started", region: asked.region ?? "us-east-1", records: this.recordsFor(name, "not_started"), open_tracking: asked.open_tracking ?? false, click_tracking: asked.click_tracking ?? false };
       this.domains.set(name, domain);
-      return this.json(201, { object: "domain", ...domain });
+      return this.json(201, { object: "domain", ...this.shown(domain) });
     }
     if (method === "GET" && path === "/domains") {
-      return this.json(200, { object: "list", has_more: false, data: [...this.domains.values()].map(({ records: _records, ...rest }) => rest) });
+      return this.json(200, { object: "list", has_more: false, data: [...this.domains.values()].map(({ records: _records, open_tracking: _o, click_tracking: _c, ...rest }) => rest) });
     }
     const domainMatch = /^\/domains\/([^/]+)(\/verify)?$/.exec(path);
     if (domainMatch) {
@@ -88,7 +110,7 @@ export class FakeResend {
       if (method === "GET") {
         // Resend also looks at a pending domain's DNS by itself.
         if (this.dnsAdded && domain.status === "pending") this.verify(domain.name);
-        return this.json(200, { object: "domain", ...domain });
+        return this.json(200, { object: "domain", ...this.shown(domain) });
       }
     }
     if (method === "POST" && (path === "/emails" || path === "/emails/batch")) {

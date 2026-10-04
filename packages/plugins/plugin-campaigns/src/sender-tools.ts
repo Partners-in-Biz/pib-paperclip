@@ -72,7 +72,7 @@ export async function setSenderIdentity(
 
   const from = change(params, "fromAddress");
   if (from.set) {
-    if (from.value && !EMAIL.test(from.value)) throw new CampaignError("fromAddress must be an email address: a mailbox connected in the Mailbox.");
+    if (from.value && !EMAIL.test(from.value)) throw new CampaignError("fromAddress must be an email address the Mailbox sends from: a connected Gmail mailbox or a send-only address on a verified sending domain.");
     next.from_address = from.value ? suppressionEmail(from.value) : null;
   }
   const name = change(params, "fromName");
@@ -98,7 +98,7 @@ export async function setSenderIdentity(
   next.updated_by = actor;
   await beforeSave?.(existing, next);
   await upsertSenderIdentity(ctx, next);
-  return { saved: true, ...publicIdentity(next), next: next.from_address ? "Email goes out from that mailbox, which must be connected in the Mailbox (it refuses any other). A campaign draft that was waiting for approval needs a new request." : "Done." };
+  return { saved: true, ...publicIdentity(next), next: next.from_address ? "Email goes out from that address, which must be a Gmail mailbox connected in the Mailbox or a send-only address on a verified sending domain (the Mailbox refuses any other). If it is a send-only address, replies go to the reply-to, so set one somebody reads. A campaign draft that was waiting for approval needs a new request." : "Done." };
 }
 
 export async function removeSenderIdentity(ctx: PluginContext, companyId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {

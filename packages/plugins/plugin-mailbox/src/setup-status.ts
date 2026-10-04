@@ -512,5 +512,26 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
     blockedBy: readiness.sending ? undefined : ["esp_account", "esp_webhook"],
     agentNext: "Once the provider has verified the domain its send-only account becomes ready, the daily domain check watches it, and Campaigns and the other plugins can send as the client.",
   });
+
+  // A domain whose bounce or complaint rate is over the limit has its marketing held back. Only a person can lift it sooner than the 7-day window
+  // does, so it is shown here where the owner looks, with the one place to do it.
+  const held = domains.filter((row) => Array.isArray((row.reputation as { problems?: unknown[] } | null)?.problems) && ((row.reputation as { problems: unknown[] }).problems.length > 0));
+  if (held.length > 0) {
+    items.push({
+      key: "esp_hold",
+      title: `Email provider: marketing is held for ${held.map((row) => row.domain).join(", ")}`,
+      status: "missing",
+      required: false,
+      detail: `Marketing from ${held.length === 1 ? "this domain is" : "these domains are"} held back because its hard bounce rate reached 2% or its complaint rate 0.1% over the last 7 days. Transactional mail (invoices, signing emails) still goes. The hold clears by itself as the bad days leave the window; once the cause is fixed a person can lift it sooner. Only a person can, with a reason, and it is recorded: an agent cannot.`,
+      href: "/mailbox?tab=mailboxes",
+      hrefLabel: "Open sending domains",
+      steps: [
+        "Find out why: where the list came from (hard bounces) or who did not expect the mail (complaints). The domain's card on the Mailboxes tab shows the numbers.",
+        "Fix the cause: remove the dead addresses, tighten the audience, make the unsubscribe link easy to see.",
+        "On the Mailboxes tab, Email provider, open the domain and click Lift the hold, and write what was fixed.",
+      ],
+      agentNext: "Campaigns can launch from the domain again, and only bounces and complaints from now on are counted.",
+    });
+  }
   return items;
 }

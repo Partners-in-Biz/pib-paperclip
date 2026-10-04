@@ -94,7 +94,7 @@ import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "
 import { pollMessaging } from "./inbound.js";
 import { messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
-import { gatherPreflight, preflightLines, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
+import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
@@ -136,6 +136,7 @@ import {
   type ClientScope,
 } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import { onMailDelivery } from "./delivery.js";
 import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSendResult, openIssueOnce, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { eventCounts, eventDays } from "./db.js";
@@ -169,6 +170,11 @@ const plugin = definePlugin({
     // The Mailbox may report how a sender's domain is set up; the preflight uses it when present.
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, SENDER_HEALTH_EVENT), async (event) => {
       if (event.companyId) await rememberSenderHealth(ctx, event.companyId, event.payload).catch(() => false);
+    });
+    // What the Mailbox really announces (0.5.0+): the health of each sending domain, a Gmail mailbox's or an email provider account's (SPF, DKIM, DMARC, and for a
+    // provider domain its bounce and complaint rates). The preflight reads it for the domain of the address a campaign sends from.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, DOMAIN_HEALTH_EVENT), async (event) => {
+      if (event.companyId) await rememberDomainHealth(ctx, event.companyId, event.payload).catch(() => false);
     });
     for (const tool of CAMPAIGN_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
@@ -235,6 +241,12 @@ const plugin = definePlugin({
       await onMailReceived(ctx, event);
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
+    // What the email provider says became of a campaign email (delivered, bounced, marked as spam, opened, clicked): step events for the report, and a
+    // hard bounce or a complaint stops the address. Only mail the provider took is reported, so with the provider off nothing arrives.
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.delivery), async (event) => {
+      if (event.companyId && !(await isModuleEnabled(ctx, event.companyId, PLUGIN_ID))) return;
+      await onMailDelivery(ctx, event);
+    });
     // Unsubscribes and hard bounces from the CRM and the Mailbox join Campaigns' own list.
     for (const eventType of suppressionEvents()) {
       ctx.events.on(eventType as `plugin.${string}`, (event) => onContactSuppressed(ctx, event));
@@ -1108,7 +1120,7 @@ export function launchReviewBrief(campaign: Pick<CampaignDraft, "name" | "delive
       ? `the client contact ${campaign.clientName ?? campaign.clientRef ?? ""}`.trim()
       : `the contacts at ${campaign.clientName ?? campaign.clientRef ?? "the client"}`;
   return reviewerBrief({
-    what: `the launch of campaign ${campaign.name} (${campaign.delivery === "email" ? "sent by email from Gmail" : "each step opens an issue"})`,
+    what: `the launch of campaign ${campaign.name} (${campaign.delivery === "email" ? "sent by email through the Mailbox" : "each step opens an issue"})`,
     checks: [
       "Subject and body of every step and every A/B variant: clear, on brand, no typos, and every {{token}} reads well when filled in (use {{first_name|there}} where a name may be missing).",
       `Audience matches the intent: this campaign goes to ${audience}. Nobody who should not get it (existing clients mid-project, partners, staff).`,

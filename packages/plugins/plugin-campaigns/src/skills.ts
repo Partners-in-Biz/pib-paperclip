@@ -20,7 +20,7 @@ Themed email, SMS and WhatsApp programs for PiB's own marketing or a client's, w
 - \`delivery\`: \`issue\` (a task per step, you send it), \`email\` (the Mailbox sends each email) or \`auto\` (every step goes out by itself on its channel; SMS and WhatsApp need it).
 
 ## Who it goes out as
-- Own marketing may use the Mailbox's default account. A **client's** campaign needs its own sender: \`set-sender-identity\` with \`client\`, \`fromAddress\` (a mailbox the client connected in the Mailbox), \`fromName\`, \`replyTo\`, and \`smsFrom\` / \`whatsappFrom\` for texts. Without it the campaign cannot be approved or sent: it never goes out from PiB's Gmail or number. \`list-sender-identities\` shows what is set; \`remove-sender-identity\` removes one.
+- Own marketing may use the Mailbox's default account. A **client's** campaign needs its own sender: \`set-sender-identity\` with \`client\`, \`fromAddress\` (a Gmail mailbox the client connected, or a send-only address on the client's sending domain: \`list-mailboxes\` shows both), \`fromName\`, \`replyTo\`, and \`smsFrom\` / \`whatsappFrom\` for texts. Without it the campaign cannot be approved or sent: it never goes out from PiB's Gmail or number. \`list-sender-identities\` shows what is set; \`remove-sender-identity\` removes one.
 - The approver sees the real sender on the approval ("Sent as"). Details: references/senders-and-unsubscribe.md.
 
 ## Audience
@@ -75,7 +75,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - Opt-outs and hard bounces from the CRM and the Mailbox apply here too. A person's erasure request removes their campaign data (references/privacy.md).
 
 ## Results
-- \`campaign-stats\`, \`campaign-funnel\`, \`campaign-step-analytics\`. \`record-step-event\` only for an open or click from a real report; never estimate. Opens and clicks are not captured automatically (no tracking pixel or redirect links), replies, bounces, unsubscribes and SMS delivery are.
+- \`campaign-stats\`, \`campaign-funnel\`, \`campaign-step-analytics\` (per step: sent, delivered, replies, hard and soft bounces, complaints, unsubscribes, opens, clicks). \`record-step-event\` only for an open or click from a real report; never estimate. Replies, bounces, unsubscribes and SMS delivery are captured; for email through the email provider so are delivered, soft bounces, complaints and, only when tracking is on for the sending domain at the provider, opens and clicks (nothing here switches tracking on).
 - A/B: \`suggest-ab-winner\` (20 sends per variant, else inconclusive). A person picks the winner: ask with the suggestion, then \`declare-ab-winner\`.
 
 ## Never

@@ -8,10 +8,15 @@ export interface VariantCounts { sent: number; replies: number }
 export interface CampaignEventTotals {
   sent: number;
   replies: number;
+  /** Hard bounces. */
   bounces: number;
   unsubscribes: number;
   opens: number;
   clicks: number;
+  /** What the email provider reported (delivered, complaints, soft bounces); empty when it is not in use. */
+  delivered: number;
+  complaints: number;
+  softBounces: number;
   variants: { a: VariantCounts; b: VariantCounts };
 }
 
@@ -40,10 +45,13 @@ const FIELD: Record<string, keyof Omit<CampaignEventTotals, "variants">> = {
   unsubscribe: "unsubscribes",
   open: "opens",
   click: "clicks",
+  delivered: "delivered",
+  complaint: "complaints",
+  soft_bounce: "softBounces",
 };
 
 export function emptyTotals(): CampaignEventTotals {
-  return { sent: 0, replies: 0, bounces: 0, unsubscribes: 0, opens: 0, clicks: 0, variants: { a: { sent: 0, replies: 0 }, b: { sent: 0, replies: 0 } } };
+  return { sent: 0, replies: 0, bounces: 0, unsubscribes: 0, opens: 0, clicks: 0, delivered: 0, complaints: 0, softBounces: 0, variants: { a: { sent: 0, replies: 0 }, b: { sent: 0, replies: 0 } } };
 }
 
 /** Event counts per campaign, with sends and replies split by A/B variant (a missing variant is A). */
@@ -94,4 +102,27 @@ export function weeklySends(rows: EventDayRow[], now: Date, weeks = 12, campaign
 /** Replies ÷ sends, or null before anything was sent. */
 export function replyRate(counts: { sent: number; replies: number }): number | null {
   return counts.sent > 0 ? counts.replies / counts.sent : null;
+}
+
+/**
+ * What the email provider reported across campaigns (delivered, complaints, soft bounces, and opens and clicks where tracking is on at the provider),
+ * and the line the overview shows under the bounce rate. Empty when the provider is not in use: Gmail sends report none of it.
+ */
+export function providerReport(byCampaign: Record<string, CampaignEventTotals>): { delivered: number; complaints: number; softBounces: number; opens: number; clicks: number; line: string | null } {
+  const sum = { delivered: 0, complaints: 0, softBounces: 0, opens: 0, clicks: 0 };
+  for (const totals of Object.values(byCampaign)) {
+    sum.delivered += totals.delivered;
+    sum.complaints += totals.complaints;
+    sum.softBounces += totals.softBounces;
+    sum.opens += totals.opens;
+    sum.clicks += totals.clicks;
+  }
+  const parts = [
+    sum.delivered ? `${sum.delivered} delivered` : null,
+    sum.softBounces ? `${sum.softBounces} soft ${sum.softBounces === 1 ? "bounce" : "bounces"}` : null,
+    sum.complaints ? `${sum.complaints} ${sum.complaints === 1 ? "complaint" : "complaints"}` : null,
+    sum.opens ? `${sum.opens} ${sum.opens === 1 ? "open" : "opens"}` : null,
+    sum.clicks ? `${sum.clicks} ${sum.clicks === 1 ? "click" : "clicks"}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return { ...sum, line: parts.length ? `From the email provider: ${parts.join(", ")}.` : null };
 }

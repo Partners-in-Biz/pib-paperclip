@@ -132,7 +132,7 @@ describe.skipIf(!available)("the email provider on a real Postgres", () => {
     expect(after!.status).toBe("connected");
     expect((await sql<{ status: string }>(`SELECT status FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]))[0]!.status).toBe("verified");
     expect((await sql<{ status: string }>(`SELECT status FROM ${NAMESPACE}.domain_checks WHERE domain = $1`, [DOMAIN]))[0]!.status).toBe("healthy");
-    expect(b.events(DOMAIN_HEALTH_EVENT).at(-1)).toMatchObject({ domain: DOMAIN, status: "healthy", healthy: true, sendReady: true });
+    expect(b.events(DOMAIN_HEALTH_EVENT).at(-1)).toMatchObject({ domain: DOMAIN, status: "healthy", healthy: true, sendReady: true, provider: "resend", clientKind: "company", clientRef: CLIENT.ref });
 
     // 5. Now the client's campaign goes out as the client's own domain, and the answer is the usual mail.send.result.
     await send(b, { key: "campaigns:step:e2:1" });
@@ -317,6 +317,131 @@ describe.skipIf(!available)("the email provider on a real Postgres", () => {
     await expect(b.harness.performAction("mailbox.set-sending-domain", { domain: "nope.co.za", dailyCap: 5 }, { companyId: CO, actor: { type: "user", userId: "user-1" } })).rejects.toThrow(/not a sending domain/);
     // A send-only account is made by adding its domain, never by hand.
     await expect(b.harness.performAction("mailbox.create-account", { provider: "resend", address: "x@y.co" }, { companyId: CO, actor: { type: "user", userId: "user-1" } })).rejects.toThrow(/created by adding its sending domain/);
+  });
+
+  describe("a person lifts a reputation hold", () => {
+    const person = { companyId: CO, actor: { type: "user", userId: "user-owner" } } as never;
+    const lift = (b: Booted, params: Record<string, unknown> = {}, actor: unknown = person) => b.harness.performAction<Record<string, any>>("mailbox.clear-reputation-hold", { domain: DOMAIN, reason: "Cleaned the 14 dead addresses out of the list", ...params }, actor as never);
+
+    /** A client's domain held for marketing: 40 recipients went out and three of them hard bounced (the floor under 100 recipients). */
+    async function held(b: Booted) {
+      await verifiedDomain(b);
+      await send(b, { key: "campaigns:step:first", to: Array.from({ length: 40 }, (_v, i) => ({ email: `r${i}@x.co` })) });
+      const id = b.resend.emails[0]!.id;
+      const bounce = (who: string, delivery: string) => deliver(b, eventBody("email.bounced", { email_id: id, to: [who], bounce: { type: "Permanent", subType: "General", message: "x" } }), delivery);
+      for (const [n, who] of ["r0@x.co", "r1@x.co", "r2@x.co"].entries()) await bounce(who, `b${n}`);
+      await send(b, { key: "campaigns:step:blocked", to: [{ email: "new@x.co" }] });
+      expect(results(b).at(-1)).toMatchObject({ key: "campaigns:step:blocked", status: "failed", permanent: true });
+      return { id, bounce };
+    }
+    const status = async () => (await sql<{ status: string }>(`SELECT status FROM ${NAMESPACE}.domain_checks WHERE domain = $1`, [DOMAIN]))[0]!.status;
+
+    it("lifts the hold at once, on record, and a new bounce after it counts again", async () => {
+      const b = await boot();
+      const { bounce } = await held(b);
+      expect(await status()).toBe("bad");
+      const before = b.events(DOMAIN_HEALTH_EVENT).length;
+
+      // The person is the host's actor: a `userId`, `by` or `actor` in the request changes nothing.
+      const out = await lift(b, { userId: "user-someone-else", by: "user-evil", actor: "user-evil" });
+      expect(out).toMatchObject({ domain: DOMAIN, lifted: true, by: "user:user-owner", day: today() });
+      expect(out.was[0]).toMatch(/3 of 40 recipients hard bounced/);
+      expect(out.note).toMatch(/can hold it again/);
+      // What the page reads: no problem left, and who lifted it and from which day.
+      expect(out.overview.domains[0]).toMatchObject({ reputation: { problems: [], hardBounces: 0, clearedDay: today() }, holdLifted: { by: "user:user-owner", day: today() } });
+
+      // The database: the clearance with its baseline, one audit row naming the host's user, the check healthy again and announced.
+      const [row] = await sql<{ reputation_cleared_by: string; reputation_cleared_day: string; reputation_cleared_baseline: Record<string, number> }>(`SELECT reputation_cleared_by, reputation_cleared_day, reputation_cleared_baseline FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]);
+      expect(row).toMatchObject({ reputation_cleared_by: "user:user-owner", reputation_cleared_day: today(), reputation_cleared_baseline: { sent: 40, hard_bounces: 3, complaints: 0 } });
+      const audit = await sql<{ action: string; actor: string; detail: Record<string, any> }>(`SELECT action, actor, detail FROM ${NAMESPACE}.esp_domain_audit WHERE domain = $1`, [DOMAIN]);
+      expect(audit).toEqual([expect.objectContaining({ action: "clear_reputation_hold", actor: "user:user-owner" })]);
+      expect(audit[0]!.detail).toMatchObject({ reason: "Cleaned the 14 dead addresses out of the list", problems: [expect.objectContaining({ code: "esp_bounce_rate" })], window: { sent: 40, hardBounces: 3 }, countedFrom: today() });
+      expect(JSON.stringify(audit)).not.toContain("user-evil");
+      expect(await status()).toBe("healthy");
+      expect(b.events(DOMAIN_HEALTH_EVENT)).toHaveLength(before + 1);
+      expect(b.events(DOMAIN_HEALTH_EVENT).at(-1)).toMatchObject({ domain: DOMAIN, status: "healthy", healthy: true });
+
+      // Marketing goes out again. It is a different message to a different address, so the earlier refusal is not replayed.
+      await send(b, { key: "campaigns:step:after", to: [{ email: "new@x.co" }] });
+      expect(results(b).at(-1)).toMatchObject({ key: "campaigns:step:after", status: "sent", provider: "resend" });
+
+      // It lifts, it does not forget: two more hard bounces are under the floor of three counted from now, the third holds the domain again.
+      await b.harness.executeTool("sender-domain-health", {}, am);
+      const id2 = b.resend.emails.at(-1)!.id;
+      for (const [n, who] of ["n0@x.co", "n1@x.co"].entries()) await deliver(b, eventBody("email.bounced", { email_id: id2, to: [who], bounce: { type: "Permanent", subType: "General", message: "x" } }), `c${n}`);
+      expect(await status()).toBe("healthy");
+      await deliver(b, eventBody("email.bounced", { email_id: id2, to: ["n2@x.co"], bounce: { type: "Permanent", subType: "General", message: "x" } }), "c2");
+      expect(await status()).toBe("bad");
+      await send(b, { key: "campaigns:step:again", to: [{ email: "later@x.co" }] });
+      expect(results(b).at(-1)).toMatchObject({ key: "campaigns:step:again", status: "failed", permanent: true });
+      const stored = (await sql<{ reputation: { hardBounces: number; clearedDay: string } }>(`SELECT reputation FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]))[0]!.reputation;
+      expect(stored).toMatchObject({ hardBounces: 3, clearedDay: today() });
+      // The daily job keeps the lifted state (it judges through the same clearance).
+      await b.harness.runJob("check-domain-health");
+      expect(await status()).toBe("bad");
+      expect((await sql<{ reputation: { hardBounces: number } }>(`SELECT reputation FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]))[0]!.reputation.hardBounces).toBe(3);
+    });
+
+    it("is for a signed-in person only: an agent, or an actor with no user, changes nothing and leaves no record", async () => {
+      const b = await boot();
+      await held(b);
+      for (const actor of [{ type: "agent", agentId: "agent-am" }, { type: "user" }, { type: "agent", agentId: "agent-am", userId: "user-owner" }]) {
+        await expect(lift(b, {}, { companyId: CO, actor }), JSON.stringify(actor)).rejects.toThrow(/board users/);
+      }
+      expect(await sql(`SELECT 1 FROM ${NAMESPACE}.esp_domain_audit`)).toHaveLength(0);
+      expect((await sql<{ reputation_cleared_at: string | null }>(`SELECT reputation_cleared_at FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]))[0]!.reputation_cleared_at).toBeNull();
+      expect(await status()).toBe("bad");
+      // No tool can do it either: the agent's way is to tell the owner.
+      const names = (await import("../../src/tools.js")).MAILBOX_TOOLS.map((tool) => tool.name);
+      expect(names.some((name) => /hold|reputation/i.test(name))).toBe(false);
+      const text = JSON.stringify((await import("../../src/tools.js")).MAILBOX_TOOLS);
+      expect(text).not.toMatch(/clear-reputation-hold|lift the hold/i);
+    });
+
+    it("refuses without a reason, for a domain that is not held, and for a domain it does not know", async () => {
+      const b = await boot();
+      await verifiedDomain(b);
+      await expect(lift(b)).rejects.toThrow(/Nothing to lift: updates\.client\.co\.za has no reputation hold/);
+      await expect(lift(b, { domain: "nope.co.za" })).rejects.toThrow(/not a sending domain/);
+      await expect(lift(b, { reason: "ok" })).rejects.toThrow(/Say why the hold may be lifted/);
+      await expect(lift(b, { reason: "" })).rejects.toThrow(/reason is required/);
+      expect(await sql(`SELECT 1 FROM ${NAMESPACE}.esp_domain_audit`)).toHaveLength(0);
+    });
+
+    it("an audit row that cannot be written means no lifted hold: the clearance is taken back", async () => {
+      const b = await boot();
+      await held(b);
+      await sql(`ALTER TABLE ${NAMESPACE}.esp_domain_audit ADD CONSTRAINT esp_domain_audit_broken CHECK (action = 'never')`);
+      await expect(lift(b)).rejects.toThrow(/The hold was not lifted: its audit record could not be written/);
+      await sql(`ALTER TABLE ${NAMESPACE}.esp_domain_audit DROP CONSTRAINT esp_domain_audit_broken`);
+      expect((await sql<{ reputation_cleared_at: string | null; reputation_cleared_day: string | null }>(`SELECT reputation_cleared_at, reputation_cleared_day FROM ${NAMESPACE}.esp_domains WHERE domain = $1`, [DOMAIN]))[0]).toEqual({ reputation_cleared_at: null, reputation_cleared_day: null });
+      expect(await status()).toBe("bad");
+      // And it works once the record can be written.
+      expect(await lift(b)).toMatchObject({ lifted: true });
+    });
+
+    it("shows where the hold is reported: the Setup item while held, the domain's card with what was lifted after, and the daily and limit changes are on record too", async () => {
+      const b = await boot();
+      await held(b);
+      const items = async () => (await setupStatus(b.harness.ctx, CO, b.store, Date.now())).items;
+      const hold = (await items()).find((item) => item.key === "esp_hold")!;
+      expect(hold).toMatchObject({ status: "missing", required: false, href: "/mailbox?tab=mailboxes" });
+      expect(hold.title).toContain(DOMAIN);
+      expect(hold.detail).toMatch(/Only a person can, with a reason, and it is recorded: an agent cannot/);
+      expect(hold.steps!.join(" ")).toMatch(/Lift the hold/);
+      const shown = await b.harness.performAction<{ domains: Array<Record<string, any>> }>("mailbox.sending-domains", {}, person);
+      expect(shown.domains[0]!.reputation.problems[0].message).toMatch(/3 of 40/);
+      expect(shown.domains[0]!.reputation.problems[0].fix).toMatch(/a person can lift the hold/);
+      expect(shown.domains[0]!.holdLifted).toBeNull();
+
+      await lift(b);
+      expect((await items()).find((item) => item.key === "esp_hold")).toBeUndefined();
+      // A person's change of the limits is on record as well (who, and what it was).
+      await b.harness.performAction("mailbox.set-sending-domain", { domain: DOMAIN, dailyCap: 300 }, person);
+      const audit = await sql<{ action: string; actor: string; detail: Record<string, any> }>(`SELECT action, actor, detail FROM ${NAMESPACE}.esp_domain_audit WHERE domain = $1 ORDER BY created_at`, [DOMAIN]);
+      expect(audit.map((row) => row.action)).toEqual(["clear_reputation_hold", "set_limits"]);
+      expect(audit[1]).toMatchObject({ actor: "user:user-owner", detail: { dailyCap: 300, was: { dailyCap: null } } });
+    });
   });
 
   it("check-sender-domain asks the provider and judges a provider domain on its records; list-mailboxes and mail-status tell an agent what it is", async () => {
