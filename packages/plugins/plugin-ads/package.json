@@ -1,0 +1,42 @@
+{
+  "name": "@partnersinbiz/plugin-ads",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paid ads (Meta, Google Ads): read-only reporting into daily rollups and a spend ledger, monthly budget caps with pacing, anomaly alerts, and governed change proposals. Nothing that spends money runs without a recorded human approval.",
+  "files": [
+    "dist",
+    "migrations",
+    "README.md"
+  ],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "dependencies": {
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
+  }
+}

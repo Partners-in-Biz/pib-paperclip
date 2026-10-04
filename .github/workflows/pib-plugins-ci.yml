@@ -44,6 +44,7 @@ jobs:
           # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
           - pib-plugin-kit
           - plugin-accounting
+          - plugin-ads
           - plugin-billing
           - plugin-campaigns
           - plugin-cockpit
@@ -73,6 +74,11 @@ jobs:
 
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile --prefer-offline
+
+      # The workspace plugin SDK is consumed through its built declarations (dist/ is not committed): without this
+      # step every package that imports it fails to typecheck on a fresh runner (the kit was red on every run).
+      - name: Build the plugin SDK
+        run: pnpm --filter @paperclipai/plugin-sdk run build
 
       # The scripts a package does not have are skipped (--if-present): the kit and the UI package have no build, the
       # connector has only a build. The kit's `test` runs its unit tests and then the cross-plugin contract tests
