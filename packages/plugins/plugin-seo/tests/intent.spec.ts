@@ -5,7 +5,7 @@ import { decisionsMigration } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
 import { addKeywords, discoverKeywordsTool } from "../src/service/data.js";
-import { classifyIntents, INTENT_CONCURRENCY } from "../src/service/intent.js";
+import { classifyIntents, INTENT_PER_REQUEST } from "../src/service/intent.js";
 import { validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
 type Row = Record<string, unknown>;
@@ -26,6 +26,8 @@ type Answers = Record<string, [string, number]>;
 function host(options: { jev?: boolean; answers?: Answers; suggestions?: string[] } = {}) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const jevStates: unknown[] = [];
+  const jevContexts: unknown[] = [];
+  const jevQuestionCounts: number[] = [];
   let inFlight = 0;
   let maxInFlight = 0;
   const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
@@ -40,10 +42,18 @@ function host(options: { jev?: boolean; answers?: Answers; suggestions?: string[
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((resolve) => setTimeout(resolve, 5));
       inFlight -= 1;
-      const body = JSON.parse(String(init?.body)) as { state: { keyword: string } };
-      jevStates.push(body.state);
-      const [choice, confidence] = options.answers?.[body.state.keyword] ?? ["solution", 0.9];
-      return new Response(JSON.stringify({ model: "jev-1.13.0", answers: { intent: { type: "choice", choice, probabilities: { [choice]: confidence }, confidence } } }), { status: 200 });
+      const body = JSON.parse(String(init?.body)) as { state: { items: Record<string, { keyword: string }>; context?: unknown }; questions: Record<string, unknown> };
+      jevContexts.push(body.state.context);
+      jevQuestionCounts.push(Object.keys(body.questions).length);
+      const items = Object.values(body.state.items);
+      const answers: Record<string, unknown> = {};
+      for (const name of Object.keys(body.questions)) {
+        const item = items[Number(name.split("__")[1])]!;
+        jevStates.push(item);
+        const [choice, confidence] = options.answers?.[item.keyword] ?? ["solution", 0.9];
+        answers[name] = { type: "choice", choice, probabilities: { [choice]: confidence }, confidence };
+      }
+      return new Response(JSON.stringify({ model: "jev-1.13.0", answers }), { status: 200 });
     }
     return new Response("not found", { status: 404 });
   });
@@ -71,7 +81,7 @@ function host(options: { jev?: boolean; answers?: Answers; suggestions?: string[
   } as unknown as PluginContext;
   const env = createEnv(ctx, { now: () => new Date("2026-09-26T08:00:00Z"), fetch: fetchMock as never, site: vi.fn() as never });
   const jevCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("typesafe")).length;
-  return { env, executes, jevStates, jevCalls, maxInFlight: () => maxInFlight };
+  return { env, executes, jevStates, jevContexts, jevQuestionCounts, jevCalls, maxInFlight: () => maxInFlight };
 }
 
 describe("keyword intent migration", () => {
@@ -82,22 +92,30 @@ describe("keyword intent migration", () => {
 });
 
 describe("keyword intent with Jev", () => {
-  it("classifies in parallel batches of 8 with only the phrase and site name", async () => {
-    const { env, jevStates, maxInFlight, executes } = host();
+  it("classifies 20 keywords in one request, with only the phrase per keyword and the site name once", async () => {
+    const { env, jevStates, jevContexts, jevQuestionCounts, jevCalls, executes } = host();
     const items = Array.from({ length: 20 }, (_, i) => ({ phrase: `plumber ${i}`, fallback: "solution" as const }));
     const results = await classifyIntents(env, "co-1", items, { siteName: "Acme Plumbing", sprintId: "sp-1" });
     expect(results).toHaveLength(20);
     expect(results.every((result) => result.source === "jev")).toBe(true);
-    expect(INTENT_CONCURRENCY).toBe(8);
-    expect(maxInFlight()).toBeLessThanOrEqual(8);
-    expect(maxInFlight()).toBeGreaterThan(1);
+    expect(INTENT_PER_REQUEST).toBe(25);
+    expect(jevCalls()).toBe(1);
+    expect(jevQuestionCounts).toEqual([20]);
+    expect(jevContexts).toEqual([{ site: "Acme Plumbing" }]);
     expect(jevStates).toHaveLength(20);
-    for (const state of jevStates) expect(Object.keys(state as object).sort()).toEqual(["keyword", "site"]);
-    expect(jevStates[0]).toEqual({ keyword: "plumber 0", site: "Acme Plumbing" });
+    for (const state of jevStates) expect(Object.keys(state as object)).toEqual(["keyword"]);
+    expect(jevStates[0]).toEqual({ keyword: "plumber 0" });
     const logged = executes.filter((call) => /INSERT INTO \S+\.decisions/.test(call.sql));
     expect(logged).toHaveLength(20);
     expect(logged[0]!.params).toContain("seo.keyword-intent");
     expect(executes.filter((call) => /SET acted = true/.test(call.sql))).toHaveLength(20);
+  });
+
+  it("splits 60 keywords into three requests", async () => {
+    const { env, jevCalls } = host();
+    const items = Array.from({ length: 60 }, (_, i) => ({ phrase: `plumber ${i}`, fallback: "solution" as const }));
+    await classifyIntents(env, "co-1", items, { siteName: null, sprintId: null });
+    expect(jevCalls()).toBe(3);
   });
 
   it("discover-keywords uses Jev when sure and keeps the word-rule guess below the update threshold", async () => {

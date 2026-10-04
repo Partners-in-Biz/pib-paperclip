@@ -2,22 +2,24 @@
  * Keyword intent with Jev (Outrank-90 buckets), falling back to the regex
  * guess (`inferIntent`) when Jev is not set up, fails, or is below the
  * `update` confidence threshold. Jev sees only the keyword phrase and the
- * site name. Calls run in parallel batches of 8 (kit `decideMany`) and every
- * answer is logged in the plugin's `decisions` table.
+ * site name. Keywords go to Jev many to a request (kit `decideBatch`: the site name is sent once, a request holds up to 25
+ * keywords) and every answer is logged in the plugin's `decisions` table.
  */
-import { decide, decideMany, decisionConfig, shouldAct, type JevQuestions } from "@partnersinbiz/pib-plugin-kit";
+import { decideBatch, decisionConfig, shouldAct, type JevQuestions } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../namespace.js";
 import type { Intent } from "../integrations/autocomplete.js";
 import { loadSeoConfig } from "../config.js";
 import type { Env } from "./common.js";
 
-export const INTENT_CONCURRENCY = 8;
+/** Keywords judged in one Jev request (was: one request per keyword, 8 at a time). */
+export const INTENT_PER_REQUEST = 25;
+export const INTENT_CONCURRENCY = INTENT_PER_REQUEST;
 
 export const INTENT_QUESTIONS: JevQuestions = {
   intent: {
     type: "choice",
     instructions:
-      "The state is a search keyword and the website it is being tracked for. Which Outrank-90 intent bucket does a person typing this keyword belong to?",
+      "The item is a search keyword; the website it is being tracked for, when given, is the shared site in the context. Which Outrank-90 intent bucket does a person typing this keyword belong to?",
     criteria: {
       problem: "Researching the pain or a question, not yet comparing providers: how to, why, what is, tips, guides, examples, fixes, checklists.",
       solution: "Comparing options or looking for a product, service or provider to solve it: best, vs, alternatives, reviews, pricing, near me, hire, agency, software.",
@@ -58,16 +60,18 @@ export async function classifyIntents(
   }
   if (!config) return rules;
   const site = context.siteName?.trim() || null;
-  const decisions = await decideMany(items, INTENT_CONCURRENCY, (item) =>
-    decide(env.ctx, companyId, {
-      config,
-      purpose: "seo.keyword-intent",
-      subject: { kind: "keyword", id: `${context.sprintId ?? "discover"}:${item.phrase.toLowerCase()}` },
-      state: site ? { keyword: item.phrase, site } : { keyword: item.phrase },
-      questions: INTENT_QUESTIONS,
-      fetchImpl: env.fetch as typeof fetch,
-    }),
-  );
+  const decisions = await decideBatch(env.ctx, companyId, {
+    config,
+    purpose: "seo.keyword-intent",
+    subjectKind: "keyword",
+    items,
+    idOf: (item) => `${context.sprintId ?? "discover"}:${item.phrase.toLowerCase()}`,
+    stateOf: (item) => ({ keyword: item.phrase }),
+    context: site ? { site } : undefined,
+    questions: INTENT_QUESTIONS,
+    maxItems: INTENT_PER_REQUEST,
+    fetchImpl: env.fetch as typeof fetch,
+  });
   const out: IntentResult[] = [];
   for (let i = 0; i < items.length; i += 1) {
     const answer = decisions[i]?.answers.intent;

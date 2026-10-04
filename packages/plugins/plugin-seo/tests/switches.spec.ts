@@ -222,7 +222,7 @@ describe("the daily pass with everything off", () => {
     expect(w.googleCalls.some((c) => /analyticsadmin/.test(c.url))).toBe(true);
     expect(executed(w, /INSERT INTO plugin_seo_8099f8879a\.geo_audits/).length).toBeGreaterThan(0);
     // The daily run also puts back the AI-search tasks a switch could not add (here: none had been added).
-    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(8);
+    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(GEO_TASK_KEYS.length);
   });
 
   it("takes a day-30 snapshot without the AI-search and Analytics parts, and never fetches the site for it", async () => {
@@ -246,11 +246,11 @@ describe("turning AI search on for one sprint", () => {
     const before3 = JSON.parse(JSON.stringify(w.store.tasks.filter((t) => t.sprint_id === "sp-3")));
     const answer = (await setSwitchTool(w.env, "co-1", user, { sprintId: "sp-1", feature: "geo", enabled: true })) as unknown as { changed: boolean; effect: { tasksAdded: number } };
     expect(answer).toMatchObject({ changed: true, scope: "sprint", feature: "geo", enabled: true });
-    // sp-1 got exactly the eight GEO tasks, none of them started.
+    // sp-1 got exactly the GEO tasks, none of them started.
     const added = w.store.tasks.filter((t) => t.sprint_id === "sp-1" && GEO_TASK_KEYS.includes(String(t.template_key)));
     expect(added.map((t) => t.template_key).sort()).toEqual([...GEO_TASK_KEYS].sort());
     expect(added.every((t) => t.status === "not_started" && t.issue_id == null && t.company_id === "co-1")).toBe(true);
-    expect(w.store.tasks.filter((t) => t.sprint_id === "sp-1")).toHaveLength(4 + 8);
+    expect(w.store.tasks.filter((t) => t.sprint_id === "sp-1")).toHaveLength(4 + GEO_TASK_KEYS.length);
     // The sprint next to it and the one in the other company: not one row changed.
     expect(w.store.tasks.filter((t) => t.sprint_id === "sp-2")).toEqual(before2);
     expect(w.store.tasks.filter((t) => t.sprint_id === "sp-3")).toEqual(before3);
@@ -288,10 +288,10 @@ describe("turning AI search on for one sprint", () => {
   it("records who did it and what it did in the audit trail, and says in plain words what was added", async () => {
     const w = world({ sprints: [sprintRow("sp-1")], tasks: liveTasks("sp-1") });
     const answer = (await setSwitchTool(w.env, "co-1", user, { sprintId: "sp-1", feature: "geo", enabled: true })) as { note: string };
-    expect(answer.note).toMatch(/AI search is on: 8 tasks added to this sprint/);
+    expect(answer.note).toMatch(/AI search is on: 11 tasks added to this sprint/);
     const [log] = executed(w, /INSERT INTO plugin_seo_8099f8879a\.switch_log/);
     expect(log!.params.slice(1, 7)).toEqual(["co-1", "sp-1", "geo", "sprint", true, "user-peet"]);
-    expect(JSON.parse(String(log!.params[7]))).toEqual({ tasksAdded: 8, tasksRevived: 0 });
+    expect(JSON.parse(String(log!.params[7]))).toEqual({ tasksAdded: 11, tasksRevived: 0 });
     // The sprint's root issue says so too (one short line).
     expect(w.comments.find((c) => c.id === "root-sp-1")!.body).toContain("AI search (GEO) was switched on for this sprint by user user-peet");
   });
@@ -314,7 +314,7 @@ describe("turning AI search off again", () => {
     const geoTasks = GEO_TASK_KEYS.map((key, i) => taskRow({ id: `g-${i}`, sprint_id: "sp-1", template_key: key, task_type: key.startsWith("w2") ? "geo-mention-check" : "geo-crawler-access", status: i === 0 ? "in_progress" : i === 1 ? "done" : "not_started", issue_id: i === 0 ? "issue-9" : null, issue_status: i === 0 ? "todo" : null }));
     const w = world({ sprints: [sprintRow("sp-1", { geo_enabled: true })], tasks: [...liveTasks("sp-1"), ...geoTasks] });
     const answer = (await setSwitchTool(w.env, "co-1", user, { sprintId: "sp-1", feature: "geo", enabled: false })) as unknown as { effect: { tasksClosed: number; issuesCancelled: number }; note: string };
-    expect(answer.effect).toMatchObject({ tasksClosed: 7, issuesCancelled: 1 });
+    expect(answer.effect).toMatchObject({ tasksClosed: 10, issuesCancelled: 1 });
     // A pull request a cancelled task already opened is the person's to close: the answer and the confirmation both say so.
     expect(answer.note).toMatch(/A pull request one of those tasks already opened is not closed for you/);
     expect(FEATURES.geo.off).toMatch(/pull request .* is not closed for you/);
@@ -335,7 +335,7 @@ describe("turning AI search off again", () => {
     expect(result).toMatchObject({ revived: 2 });
     expect(w.store.tasks.find((t) => t.id === "g-0")).toMatchObject({ status: "not_started", blocker_reason: null, issue_id: null, issue_status: null });
     expect(w.store.tasks.find((t) => t.id === "g-hand")).toMatchObject({ status: "skipped" }); // a person's own skip stays skipped
-    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(8);
+    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(GEO_TASK_KEYS.length);
   });
 
   it("a plan change never retires them (they belong to no plan)", () => {
@@ -663,7 +663,7 @@ describe("new sprints start off", () => {
     const w = world({ sprints: [], tasks: [] });
     const result = (await createSprint(w.env, "co-1", user, { siteUrl: "https://acme.co.za", businessType: "local", switches: { geo: true, ga4: true, chunks: false } })) as { switches: Record<string, boolean>; seededTasks: number };
     expect(result.switches).toEqual({ geo: true, ga4: true, chunks: false });
-    expect(result.seededTasks).toBe(PLANS.local.tasks.length + 8);
+    expect(result.seededTasks).toBe(PLANS.local.tasks.length + GEO_TASK_KEYS.length);
     expect(executed(w, /INSERT INTO plugin_seo_8099f8879a\.integrations/).some((e) => e.params.includes("ga4"))).toBe(true);
     const log = executed(w, /INSERT INTO plugin_seo_8099f8879a\.switch_log/).map((e) => [e.params[3], e.params[4], e.params[5], e.params[6]]);
     expect(log).toEqual([["geo", "sprint", true, "user-peet"], ["ga4", "sprint", true, "user-peet"]]);
@@ -772,7 +772,7 @@ describe("the Cockpit and the weekly numbers", () => {
 
 describe("the extras in plain words", () => {
   it("each says what turning it on adds, and the AI-search one names the number of tasks", () => {
-    expect(FEATURES.geo.adds).toMatch(/^Adds up to 8 AI-search \(GEO\) tasks to this sprint/);
+    expect(FEATURES.geo.adds).toMatch(/^Adds up to 11 AI-search \(GEO\) tasks to this sprint/);
     expect(FEATURES.ga4.needs).toMatch(/Two one-time Google steps first \(not done yet\)/);
     expect(FEATURES.ga4.adds).toMatch(/read only/);
     expect(FEATURES.chunks.adds).toMatch(/Splits big site-wide tasks/);
@@ -978,7 +978,7 @@ describe("the company default is read back when a sprint is created", () => {
     // Even an agent creating the sprint gets the person's default: it chooses nothing, the company's setting applies.
     const result = (await createSprint(w.env, "co-1", agent, { siteUrl: "https://acme.co.za", businessType: "local" })) as { switches: Record<string, boolean>; seededTasks: number };
     expect(result.switches).toEqual({ geo: true, ga4: false, chunks: true });
-    expect(result.seededTasks).toBe(PLANS.local.tasks.length + 8);
+    expect(result.seededTasks).toBe(PLANS.local.tasks.length + GEO_TASK_KEYS.length);
     const insert = executed(w, /INSERT INTO plugin_seo_8099f8879a\.sprints /)[0]!;
     expect(insert.params.slice(-3)).toEqual([true, false, true]);
     const log = executed(w, /INSERT INTO plugin_seo_8099f8879a\.switch_log/).map((e) => [e.params[3], e.params[4], e.params[5], e.params[6]]);
@@ -1115,7 +1115,7 @@ describe("the daily run follows a switch a person flipped while the sprint waite
     const { w, result } = await run({ geoEnabled: false, ga4Enabled: false, chunksEnabled: false }, { geo_enabled: true });
     expect(result.geoAudited).toBe(true);
     expect(w.store.tasks.filter((t) => t.status === "na" && t.blocker_reason === GEO_OFF_NOTE)).toEqual([]);
-    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(8);
+    expect(w.store.tasks.filter((t) => GEO_TASK_KEYS.includes(String(t.template_key)))).toHaveLength(GEO_TASK_KEYS.length);
     // The other two were not switched: still nothing from Analytics.
     expect(w.googleCalls.filter((c) => /analyticsadmin|analyticsdata/.test(c.url))).toEqual([]);
   });

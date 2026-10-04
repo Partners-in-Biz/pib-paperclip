@@ -19,7 +19,7 @@ export interface Playbook {
 }
 
 const SITE_CHANGE =
-  "First read `get-client-facts`: describe how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, legal or licence wording) ONLY with an approved wording from the fact sheet, otherwise leave the claim out; `create-preview` refuses anything else. Decide what the change is, then hand the BUILD to a developer with `request-build` (Developer; level senior for theme or template work, many pages or ecommerce): they branch (`seo/<task>`), commit, push and open the PR; you do not build it yourself and you end your turn until they report back (the issue's Site repo section and skill `references/site-changes.md` describe the repo flow). When they report the PR: wait for CI and the preview, verify on the preview with the check tools, `check-change-scope`, then merge when it says merge (or add the PR to Needs you). No repo link (site access none): write the exact change set and add it to Needs you with `needs-you-add`.";
+  "First read `get-client-facts`: describe how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, legal or licence wording) ONLY with an approved wording from the fact sheet, otherwise leave the claim out; `create-preview` refuses anything else. Decide what the change is, then hand the BUILD to a developer with `request-build` (Developer; level senior for theme or template work, many pages or ecommerce): they branch (`seo/<task>`), commit, push and open the PR; you do not build it yourself and you end your turn until they report back (the issue's Site repo section and skill `references/site-changes.md` describe the repo flow). When they report the PR: wait for CI and the preview, verify on the preview with the check tools, `check-change-scope`, then run `page-diff` on every page the change touches (live address against the preview or staging address) and put its result in the evidence: an element it lists as lost (a table, a ranking, a form, an image, internal links, structured data) is restored unless you name it as removed on purpose with the reason. Then merge when `check-change-scope` says merge (or add the PR to Needs you). No repo link (site access none): write the exact change set and add it to Needs you with `needs-you-add`.";
 
 const AFTER_DEPLOY = "After the deploy, re-run the same checks on production and `complete-task` with the PR link, the commit and the check output.";
 
@@ -50,6 +50,7 @@ function geoRecheck(day90: boolean): Playbook {
       "Run `geo-audit` with sprintId.",
       "Ask the same questions as the baseline (`list-ai-mentions` lists them) with the same assistants or tools, and record them with `record-ai-mentions`. The latest answer per question and assistant is the one that counts in the rate; the baseline day stays for the trend.",
       "Compare with `list-ai-mentions`: the baseline rate, the latest rate and the change in points. Name what moved and the competitors that still appear. Say plainly when nothing moved: a handful of samples is a signal, not a measurement.",
+      "Ranking watch: open every third-party ranking the w3 query map showed the business listed in. Check it is still listed and at which position. Flag removals, drops, and rankings whose title still carries last year (draft a refresh request to the site owner on Needs you). Then run the w3 searches again and note rankings that are new.",
       "For each gap you can explain (a page that does not answer the question, a missing profile, a blocked crawler) `add-task` with the cause." + (day90 ? " Include the readiness score and the mention rate in the day-90 report (`post-digest`), next to the GA4 organic numbers when GA4 is connected (`list-ga4-summary`)." : ""),
     ],
     tools: ["geo-audit", "list-ai-mentions", "record-ai-mentions", "add-task", ...(day90 ? ["list-ga4-summary"] : [])],
@@ -286,25 +287,27 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w3-use-case-page": {
     goal: "One page for the client's main use case or core service, built around a solution keyword.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Choose the keyword (priority, solution intent).",
       "Outline: problem → how the client solves it → proof (cases, reviews) → FAQ → call to action.",
       "Write the page; link it from the home page.",
       SITE_CHANGE,
       "Record it with `add-content` (type use-case, targetKeywordId, targetUrl, status live when published) and set the keyword's targetUrl.",
     ],
-    tools: ["list-keywords", "add-content", "update-content", "update-keyword", "check-meta"],
+    tools: ["list-keywords", "add-content", "update-content", "update-keyword", "check-meta", "page-for-keyword", "page-diff"],
     done: "The page is live, passes `check-meta`, and is linked from the home page.",
     evidence: "URL, target keyword, PR or handoff.",
   },
   "w3-comparison-page": {
     goal: "A fair 'client vs category leader' (or 'alternatives to X') page for a solution keyword.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Pick the competitor people actually compare against (autocomplete 'vs' results help).",
       "Write an honest comparison table, who each option is best for, pricing notes with dates, FAQ.",
       SITE_CHANGE,
       "Record it with `add-content` (type comparison) and set the keyword's targetUrl.",
     ],
-    tools: ["discover-keywords", "add-content", "update-keyword", "check-meta"],
+    tools: ["discover-keywords", "add-content", "update-keyword", "check-meta", "page-for-keyword", "page-diff"],
     done: "The comparison page is live and recorded as content.",
     evidence: "URL and the keyword it targets.",
   },
@@ -335,13 +338,14 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w5-post-1": {
     goal: "Publish the first blog post in a comparison or alternative format for a priority keyword.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Pick the next priority keyword without content (`list-keywords`, `list-content`).",
       "Write the post (1,200+ words, real facts, comparison table, FAQ, links to core pages).",
       "Create/update the content row: status drafting → review.",
       "Write it on a `seo/<task>` branch and open the PR; the Vercel preview is the draft. Safe mode: `block-task` with `review: true` and the preview link (the brief/draft needs sign-off). Once the owner approves (issue done or a comment), merge — a new post from an approved brief is SEO scope. Full mode: merge when checks pass.",
       "When live: `update-content` status live, targetUrl, publishOn.",
     ],
-    tools: ["list-keywords", "list-content", "add-content", "update-content", "check-meta"],
+    tools: ["list-keywords", "list-content", "add-content", "update-content", "check-meta", "page-for-keyword", "page-diff"],
     done: "The post is live and its content row is status live with its URL.",
     evidence: "Draft link, live URL, target keyword.",
   },
@@ -349,10 +353,11 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w6-post-2": {
     goal: "Publish the second post in a use-case format for a priority keyword.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Same flow as post 1: pick keyword → write → content row → review handoff (safe) or publish (full) → mark live.",
       "Link to the pillar-to-be and core pages.",
     ],
-    tools: ["list-keywords", "list-content", "add-content", "update-content", "check-meta"],
+    tools: ["list-keywords", "list-content", "add-content", "update-content", "check-meta", "page-for-keyword", "page-diff"],
     done: "The post is live and recorded.",
     evidence: "Live URL and target keyword.",
   },
@@ -360,12 +365,13 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w7-pillar": {
     goal: "Publish a 2,000+ word pillar page covering the core topic end to end, linking out to every related post and core page.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Choose the topic that the most tracked keywords roll up to.",
       "Outline sections that each could become a cluster post; write with real examples and data.",
       "Content row type pillar; review handoff in safe mode; publish when approved.",
       "Mark live with URL.",
     ],
-    tools: ["list-keywords", "add-content", "update-content", "validate-schema"],
+    tools: ["list-keywords", "add-content", "update-content", "validate-schema", "page-for-keyword", "page-diff"],
     done: "The pillar is live and recorded as content type pillar, status live.",
     evidence: "Live URL, word count, sections.",
   },
@@ -384,25 +390,29 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w8-pseo-feature": {
     goal: "A repeatable page template for features/services (one page per feature or service line) with unique copy per page.",
     steps: [
+      "One page per run, never a batch: duplicate the reference page, replace every place-specific or item-specific fact (local details, prices, examples, proof), run `page-diff` against the REFERENCE page and restore anything the reference had that the new page lost. A page that only swaps the name does not ship.",
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "List the features/services worth a page (from the site and CRM).",
       "Design the template: H1 pattern, sections, FAQ, schema, internal links.",
       "Write the first 3–5 pages; no thin duplicates.",
       "Safe mode: review handoff before launch.",
       "Record each as content (type feature).",
     ],
-    tools: ["add-content", "check-meta", "validate-schema"],
+    tools: ["add-content", "check-meta", "validate-schema", "page-for-keyword", "page-diff"],
     done: "At least 3 feature pages are live and recorded.",
     evidence: "URLs.",
   },
   "w8-pseo-comparison": {
     goal: "A template for 'alternative to X' / 'client vs X' pages, launched for the top competitors.",
     steps: [
+      "One page per run, never a batch: duplicate the reference page, replace every place-specific or item-specific fact (local details, prices, examples, proof), run `page-diff` against the REFERENCE page and restore anything the reference had that the new page lost. A page that only swaps the name does not ship.",
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Use autocomplete (`discover-keywords` with competitor names) to find real comparison searches.",
       "Build the template with an honest table and who-it-suits sections.",
       "Launch 3+ pages; review handoff in safe mode.",
       "Record each as content (type alternative or comparison) with its keyword.",
     ],
-    tools: ["discover-keywords", "add-keywords", "add-content"],
+    tools: ["discover-keywords", "add-keywords", "add-content", "page-for-keyword", "page-diff"],
     done: "At least 3 comparison/alternative pages are live and recorded.",
     evidence: "URLs and target keywords.",
   },
@@ -494,11 +504,12 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w12-cluster-publish": {
     goal: "Publish the cluster posts, all linking to the pillar and to each other.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "Write each cluster post; link to the pillar and sibling posts.",
       "Safe mode: review handoff per batch.",
       "When live: `update-content` status live, targetUrl, linksToPillarIds with the pillar id.",
     ],
-    tools: ["list-content", "update-content", "internal-link-audit"],
+    tools: ["list-content", "update-content", "internal-link-audit", "page-for-keyword", "page-diff"],
     done: "At least 5 cluster posts are live and each lists the pillar in linksToPillarIds.",
     evidence: "Live URLs.",
   },
@@ -575,12 +586,13 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w3-service-pages": {
     goal: "One strong page per main service or practice area, each built around its own keyword: what it is, who it is for, how pricing works, proof, FAQ and a clear way to book or call.",
     steps: [
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "List the services from the client profile (`partnersinbiz.crm:get-client-profile`) and the site, and match each to a tracked keyword (`list-keywords`). Merge small services into one page rather than writing thin pages.",
       "Write each page with real facts only (no invented prices, results or reviews): the service, who it suits, the process, how pricing works, proof, FAQ and the call to action. A local business names its town or area.",
       SITE_CHANGE,
       "Record each page with `add-content` (type page, targetKeywordId, targetUrl, status live when published) and set the keyword's targetUrl with `update-keyword`.",
     ],
-    tools: ["list-keywords", "add-content", "update-content", "update-keyword", "check-meta", "partnersinbiz.crm:get-client-profile"],
+    tools: ["list-keywords", "add-content", "update-content", "update-keyword", "check-meta", "partnersinbiz.crm:get-client-profile", "page-for-keyword", "page-diff"],
     done: "Every main service has a live page that passes `check-meta` and is linked from the home page.",
     evidence: "The service page URLs and their keywords.",
   },
@@ -684,12 +696,14 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w8-area-pages": {
     goal: "One genuinely useful page per main town, suburb or region served: the services offered there, local details, travel or call-out notes and local proof. Never copy-paste pages that only swap the place name.",
     steps: [
+      "One page per run, never a batch: duplicate the reference page, replace every place-specific or item-specific fact (local details, prices, examples, proof), run `page-diff` against the REFERENCE page and restore anything the reference had that the new page lost. A page that only swaps the name does not ship.",
+      "Before you write anything for a keyword, run `page-for-keyword`: when it says optimise or merge, improve that page and add its secondary keywords to the title and sections instead of creating a second page (record the decision in the task summary).",
       "List the areas from the client profile, the Google Business Profile's service area and Search Console queries with place names (`gsc-query` with the town in `query`).",
       "Pick at most 5–8 areas with real demand. Write unique content for each: what you do there, local context, travel time or call-out fee, and reviews from customers there.",
       "Build them from one template. Safe mode: `block-task` with `review: true` and the preview before they go live.",
       "Record each with `add-content` (type page) and track its keyword with `add-keywords` (with targetUrl).",
     ],
-    tools: ["gsc-query", "discover-keywords", "add-keywords", "add-content", "check-meta", "validate-schema"],
+    tools: ["gsc-query", "discover-keywords", "add-keywords", "add-content", "check-meta", "validate-schema", "page-for-keyword", "page-diff"],
     done: "The area pages are live, each with unique content and a tracked keyword.",
     evidence: "The URLs and their keywords.",
   },
@@ -793,6 +807,45 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     tools: ["list-ai-mentions", "record-ai-mentions", "list-keywords", "list-content", "gsc-query", "skip-task"],
     done: "At least 5 questions are sampled and recorded with `record-ai-mentions` (complete-task checks this).",
     evidence: "The questions, the assistants or tools used, the mention rate and the competitors that appeared.",
+  },
+  "w3-geo-queries": {
+    goal: "The list of searches an AI assistant runs for this business's customers, and for each one which ranking or review pages come up and whether the business is listed in them.",
+    steps: [
+      "Take the top 10 priority keywords that have commercial intent (`list-keywords`, intent solution). Skip informational keywords for this task.",
+      "For each keyword build the searches assistants run: `best <keyword> <year>`, `best <keyword> <year> <country>`, the same two in English when the site is not in English, and for the business and its top 3 competitors `<name> reviews` and `<name> alternative`.",
+      "Look up each search with the search tool you really have. List the top 10 results and mark which are rankings, listicles or review pages. For each of those: is the business listed, at which position, which domain hosts it. If your run has no search tool, `skip-task` with that reason. Never write a ranking you did not see.",
+      "Write the map as a table in the task summary: search, ranking pages, listed yes or no, position, host domain. Add the 3 to 5 ranking pages that matter most as backlink targets with `add-backlink` (type guest_post or link_trade, status not_started, the page URL in notes).",
+    ],
+    tools: ["list-keywords", "add-backlink", "list-backlinks", "gsc-query", "skip-task"],
+    done: "At least 5 searches are mapped with the ranking pages seen and whether the business is listed, or the task is skipped with the reason.",
+    evidence: "The table of searches, the ranking pages found, and the backlink targets added.",
+  },
+  "w5-geo-self-rank": {
+    goal: "No page of the site names the business first in a ranking it wrote itself unless that page earns clicks. Pages that earn clicks are left alone.",
+    steps: [
+      "List the pages whose title or H1 contains best, top, ranking or a year (`check-sitemap`, then `check-meta` on each). Open each and note who is listed first.",
+      "For each page where the business is first: read its clicks over 90 days (`gsc-query` with page). A page with clicks is not touched: list it for the owner with its click count (`needs-you-add`, kind message).",
+      "A page where the business is first and that earns no clicks: rewrite the ranking on the merits, with the business honestly placed, in the list but never first by default. One page per run, never a batch.",
+      SITE_CHANGE,
+      "Before the change goes to review run `page-diff` on the page. Rewriting a ranking is exactly where tables and rows get dropped: every lost row, table or link is restored.",
+    ],
+    tools: ["check-sitemap", "check-meta", "gsc-query", "page-diff", "needs-you-add", "check-change-scope"],
+    done: "Every page where the business is first is either left alone with its click count on Needs you, or rewritten with a clean `page-diff`.",
+    evidence: "The pages found, who was first, clicks per page, the pages rewritten and each page-diff summary.",
+  },
+  "w10-geo-outreach": {
+    goal: "Third-party rankings that do not list the business get a personal, honest request, with every email drafted and approved by a person before anything is sent.",
+    steps: [
+      "Take the ranking pages from the w3 query map where the business is not listed, plus niche sites that rank for the business's commercial keywords but host no ranking yet.",
+      "For each site find a real contact on its about, author or contact page. Never guess an address. No contact found means skip the site.",
+      "Sort each lead: network blog, business site, pure-player media, or author opportunity. Write one short personal email per lead with one concrete offer: a business site gets a swap (we list them in our matching ranking), media gets a story or data they can use. Never ask a site to say the business is the best.",
+      "Write the leads as a table in the task summary (email, first name, site, ranking URL, rung, personal first line) and the drafts under it. Send nothing.",
+      "Hand it to a person: `needs-you-add` (kind message) with the drafts in `copy`. When the Campaigns module is on, also put the leads in a campaign (`partnersinbiz.campaigns:create-campaign`, then `request-campaign-approval`): Campaigns refuses to launch without approval, caps the daily volume and stops on a reply. Pace is at most 10 new leads a day.",
+      "When replies arrive, classify them (yes, question, no, wrong person), draft the answer and put it on Needs you. Record agreed links with `update-backlink`.",
+    ],
+    tools: ["list-backlinks", "add-backlink", "update-backlink", "needs-you-add", "list-keywords"],
+    done: "Leads and drafts are recorded and with a person for approval; nothing was sent by the agent.",
+    evidence: "The lead table, the Needs you item or campaign id, and replies handled.",
   },
   "w4-geo-answers": {
     goal: "The core pages answer the questions customers ask in a short, quotable block, and FAQ markup describes only questions the page really shows.",

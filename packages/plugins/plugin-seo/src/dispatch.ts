@@ -9,6 +9,7 @@ import * as data from "./service/data.js";
 import * as gsc from "./service/gsc.js";
 import * as indexing from "./service/indexing.js";
 import * as needsYou from "./service/needs-you.js";
+import * as pageTools from "./service/page-tools.js";
 import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
 import * as optimize from "./service/optimize.js";
@@ -81,6 +82,8 @@ export const HANDLERS: Record<string, Handler> = {
   "check-sitemap": (env, c, _a, p) => checks.checkSitemapTool(env, c, p),
   "check-meta": (env, c, _a, p) => checks.checkMetaTool(env, c, p),
   "check-canonical": (env, c, _a, p) => checks.checkCanonicalTool(env, c, p),
+  "page-diff": (env, c, _a, p) => pageTools.pageDiffTool(env, c, p),
+  "page-for-keyword": (env, c, _a, p) => pageTools.pageForKeywordTool(env, c, p),
   "validate-schema": (env, c, _a, p) => checks.validateSchemaTool(env, c, p),
   "internal-link-audit": (env, c, _a, p) => checks.internalLinkAuditTool(env, c, p),
   "crawler-sim": (env, c, _a, p) => checks.crawlerSimTool(env, c, p),

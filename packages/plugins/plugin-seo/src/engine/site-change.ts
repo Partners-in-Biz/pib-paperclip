@@ -273,6 +273,7 @@ export const CODE_TASK_TYPES = new Set([
   "geo-llms-txt",
   "geo-entity-schema",
   "geo-answer-blocks",
+  "geo-self-rank",
 ]);
 
 const CODE_WORDS = /\b(schema|json-?ld|searchaction|meta ?tags?|title tag|canonical|noindex|robots\.txt|sitemap|alt text|redirect|structured data|og:image|open graph|fix)\b/i;

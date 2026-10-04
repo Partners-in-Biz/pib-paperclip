@@ -21,15 +21,18 @@ import { SEO_TOOL_DECLARATIONS } from "../src/tools.js";
 import { executed, seoHost, sprintRoutes, taskRow, type Route } from "./helpers/seo-host.js";
 
 describe("the GEO tasks (an add-on a person switches on, in no plan)", () => {
-  it("are eight tasks, due where the add-on says, and no plan carries them", () => {
+  it("are eleven tasks, due where the add-on says, and no plan carries them", () => {
     expect(GEO_TASKS.map((t) => [t.templateKey, t.week, t.dueDay ?? null])).toEqual([
       ["w0-geo-crawlers", 0, null],
       ["w1-geo-llms-txt", 1, null],
       ["w1-geo-entity", 1, null],
       ["w2-geo-baseline", 2, null],
+      ["w3-geo-queries", 3, null],
       ["w4-geo-answers", 4, null],
+      ["w5-geo-self-rank", 5, null],
       ["w6-geo-brand", 6, null],
       ["w8-geo-recheck", 8, null],
+      ["w10-geo-outreach", 10, null],
       ["w13-geo-recheck", 13, 90],
     ]);
     for (const task of GEO_TASKS) expect(task, task.templateKey).toMatchObject({ owner: "agent", autopilotEligible: true, focus: "AI search" });
@@ -66,7 +69,7 @@ describe("the GEO tasks (an add-on a person switches on, in no plan)", () => {
   });
 
   it("opens the site-changing ones in the site project and leaves the research ones where they are", () => {
-    expect([...GEO_CODE_TYPES].sort()).toEqual(GEO_TASKS.filter((t) => ["geo-crawler-access", "geo-llms-txt", "geo-entity-schema", "geo-answer-blocks"].includes(t.taskType)).map((t) => t.taskType).sort());
+    expect([...GEO_CODE_TYPES].sort()).toEqual(GEO_TASKS.filter((t) => ["geo-crawler-access", "geo-llms-txt", "geo-entity-schema", "geo-answer-blocks", "geo-self-rank"].includes(t.taskType)).map((t) => t.taskType).sort());
     expect(GEO_AUDIT_TYPES).toContain("geo-brand-consistency");
     expect(GEO_AUDIT_TYPES).not.toContain("geo-mention-check");
   });
@@ -110,13 +113,13 @@ describe("switching AI search on adds the GEO tasks; the daily plan upgrade neve
   const sprint = async (h: ReturnType<typeof seoHost>, extra: Partial<db.Sprint> = {}) => ({ ...(await db.getSprint(h.env.ctx.db, "co-1", "sp-1"))!, ...extra });
   const has = (keys: string[]): Route => [/FROM plugin_seo_8099f8879a\.sprint_tasks/, () => keys.map((k, i) => taskRow({ id: `t-${i}`, template_key: k }))];
 
-  it("adds the eight tasks, with their due days, in one idempotent insert", async () => {
+  it("adds the eleven tasks, with their due days, in one idempotent insert", async () => {
     const h = seoHost({ routes: sprintRoutes });
-    expect(await addGeoTasks(h.env, await sprint(h))).toEqual({ added: 1, revived: 0 }); // the fake database reports one row; the statement carries all eight
+    expect(await addGeoTasks(h.env, await sprint(h))).toEqual({ added: 1, revived: 0 }); // the fake database reports one row; the statement carries all eleven
     const [insert] = executed(h, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/);
     expect(insert!.sql).toContain("ON CONFLICT (sprint_id, template_key) WHERE template_key IS NOT NULL DO NOTHING");
     const rows = Array.from({ length: insert!.params.length / 17 }, (_, i) => insert!.params.slice(i * 17, (i + 1) * 17));
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(11);
     expect(rows.map((r) => [r[3], r[4], r[6]])).toEqual(GEO_TASKS.map((t) => [t.templateKey, t.week, dueDayFor(t.week, t.dueDay)]));
     expect(rows.every((r) => r[1] === "co-1" && r[2] === "sp-1" && r[14] === "template" && r[11] === "agent")).toBe(true);
   });
@@ -126,7 +129,7 @@ describe("switching AI search on adds the GEO tasks; the daily plan upgrade neve
     await addGeoTasks(partial.env, await sprint(partial));
     const [insert] = executed(partial, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/);
     const keys = Array.from({ length: insert!.params.length / 17 }, (_, i) => insert!.params[i * 17 + 3]);
-    expect(keys).toEqual(["w1-geo-entity", "w2-geo-baseline", "w4-geo-answers", "w6-geo-brand", "w8-geo-recheck", "w13-geo-recheck"]);
+    expect(keys).toEqual(["w1-geo-entity", "w2-geo-baseline", "w3-geo-queries", "w4-geo-answers", "w5-geo-self-rank", "w6-geo-brand", "w8-geo-recheck", "w10-geo-outreach", "w13-geo-recheck"]);
     const full = seoHost({ routes: [has(GEO_TASK_KEYS), ...sprintRoutes] });
     expect(await addGeoTasks(full.env, await sprint(full))).toEqual({ added: 0, revived: 0 });
     expect(executed(full, /INSERT INTO plugin_seo_8099f8879a\.sprint_tasks/)).toHaveLength(0);
@@ -151,7 +154,7 @@ describe("the skill", () => {
   const ref = (name: string) => skill.files!.find((f) => f.path === `references/${name}.md`)!.content;
 
   it("points at the three new references and the six new tools, within the character budget", () => {
-    expect(skill.markdown!.length).toBeLessThan(18_000);
+    expect(skill.markdown!.length).toBeLessThan(19_000);
     for (const file of ["geo.md", "analytics.md", "page-groups.md"]) expect(skill.markdown).toContain(file);
     for (const tool of ["geo-audit", "record-ai-mentions", "list-ai-mentions", "connect-ga4", "list-ga4-summary", "split-task"]) {
       expect(SKILL_BODY + TOOLS_DOC, tool).toContain(tool);

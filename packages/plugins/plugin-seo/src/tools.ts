@@ -485,6 +485,27 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Site checks", name: "check-robots", displayName: "Check robots.txt", description: "Fetch and parse robots.txt: blocking rules for Googlebot/*, sitemaps.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-sitemap", displayName: "Check sitemap", description: "Find (robots.txt or /sitemap.xml) and parse the sitemap or index, count URLs, spot-check a sample.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap or index to check, URL or path (${FOUND_SITEMAP})`), sample: int("0–10 URLs to spot-check, default 5") }) },
   { group: "Site checks", name: "check-meta", displayName: "Check meta tags", description: "Title, description, h1, canonical, robots, Open Graph with length rules.", parametersSchema: schema([], { ...urlOrSprint }) },
+  {
+    group: "Site checks",
+    name: "page-diff",
+    displayName: "Diff gate: what a changed page lost",
+    description:
+      "Compare the live page with the changed version (a preview or staging address, or its HTML) and list every element the old page had that the new one does not: headings, tables and table rows, lists, images, forms, embeds, internal links, structured data types, the title and the meta description. Read only. Run it before any page change goes to review or is merged; every lost element must be restored or named as removed on purpose.",
+    parametersSchema: schema(["url"], {
+      sprintId: text("Sprint id (optional): paths like /about are read against the sprint's site"),
+      url: text("The live page: a full URL or a path like /about"),
+      afterUrl: text("The changed page: its preview or staging address"),
+      afterHtml: text("The changed page's HTML, when it has no address yet (at most 600,000 characters)"),
+    }),
+  },
+  {
+    group: "Site checks",
+    name: "page-for-keyword",
+    displayName: "Optimise, merge or create? (one keyword, one page)",
+    description:
+      "Before writing any page for a keyword: read the last 90 days of Search Console for that exact keyword and say whether a page already earns it (optimise that page), two pages fight for it (merge them) or nothing does (create). With an existing page it also lists that page's other top-5 queries, which are its secondary keywords. Read only; needs Search Console connected.",
+    parametersSchema: schema(["sprintId", "keyword"], { sprintId, keyword: text("The exact keyword to write for") }),
+  },
   { group: "Site checks", name: "check-canonical", displayName: "Check canonical", description: "Canonical link/header vs the served URL.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "validate-schema", displayName: "Validate structured data", description: "Extract and parse JSON-LD; report types, missing required properties and FAQ problems.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages (20 s limit): inbound internal links per page, orphans, linked pages missing from the sitemap.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)") }) },
