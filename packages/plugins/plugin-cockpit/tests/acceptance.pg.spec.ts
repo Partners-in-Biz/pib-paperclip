@@ -142,17 +142,24 @@ d("acceptance runs (Postgres)", () => {
       expect(await listRuns(w.ctx, A)).toEqual([]);
     });
 
-    it("refuses a second run of a journey while one is open, and aborts a stale one", async () => {
+    it("refuses a second run while one is open, of any journey (they share one canary client), and aborts a stale one", async () => {
       const w = await make();
       const first = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
       const again = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
       expect(again.error).toContain(`Run ${first.data.runId} of lead-capture is still open`);
-      // Another journey is its own run.
+      // Another journey would lose the canary when the first one's cleanup removes it (the first live three-journey request did exactly that).
+      const other = await acceptanceRun(w, { action: "start", journey: "seo-sprint-draft", client: CANARY });
+      expect(other.error).toContain(`Run ${first.data.runId} of lead-capture is still open`);
+      expect(other.error).toContain("Journeys run one at a time");
+      expect(other.error).toContain("then start seo-sprint-draft");
+      // Once the first is over, the other journey starts.
+      await acceptanceRun(w, { action: "abort", runId: first.data.runId, reason: "test" });
       expect((await acceptanceRun(w, { action: "start", journey: "seo-sprint-draft", client: CANARY })).error).toBeUndefined();
-      // Nobody touched the first for over two hours: the next start aborts it and goes ahead.
+      // Nobody touched the other run for over two hours: the next start aborts it and goes ahead.
       w.clock.set(new Date(Date.parse(NOW) + STALE_RUN_MS + 60_000).toISOString());
       const fresh = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
       expect(fresh.error).toBeUndefined();
+      expect((await listRuns(w.ctx, A, { journey: "seo-sprint-draft" }))[0]!.status).toBe("aborted");
       expect((await getRun(w.ctx, A, first.data.runId))!.status).toBe("aborted");
     });
 
@@ -762,18 +769,19 @@ d("acceptance runs (Postgres)", () => {
       expect(w.comments.find((c) => c.issueId === "issue-req")!.body).toContain("ABORTED");
     });
 
-    it("the nightly sweep ends it without waiting for the same journey to start again, and leaves a run that is still young alone", async () => {
+    it("the nightly sweep ends it without waiting for a journey to start again, and leaves a run that is still young alone", async () => {
       const w = await make();
       const { id, runId } = await abandoned(w);
       w.clock.set(LATER);
-      const young = await acceptanceRun(w, { action: "start", journey: "seo-sprint-draft", client: CANARY });
       const totals = await nightlyAcceptance(w.env);
       expect(totals.swept).toBe(1);
       expect((await getRun(w.ctx, A, runId))!.status).toBe("aborted");
       expect(w.issues.get(id)!.status).toBe("cancelled");
-      expect((await getRun(w.ctx, A, young.data.runId))!.status).toBe("running");
-      // Nothing left to sweep the next time.
+      // A run started after the sweep is young: the next sweep leaves it alone (one open run per company, so it cannot start while the stale one was still open).
+      const young = await acceptanceRun(w, { action: "start", journey: "seo-sprint-draft", client: CANARY });
+      expect(young.error).toBeUndefined();
       expect(await sweepStaleRuns(w.env, A)).toBe(0);
+      expect((await getRun(w.ctx, A, young.data.runId))!.status).toBe("running");
     });
 
     it("an approval that does not name the canary is left open and the report says so, even for a swept run", async () => {
@@ -1008,8 +1016,14 @@ d("acceptance runs (Postgres)", () => {
 
   it("every journey can be started, and a journey that changed under an open run aborts it", async () => {
     const w = await make();
-    for (const j of JOURNEYS) expect((await acceptanceRun(w, { action: "start", journey: j.key, client: CANARY })).error, j.key).toBeUndefined();
-    const run1 = (await listRuns(w.ctx, A, { journey: "lead-capture" }))[0]!;
+    // One open run per company: each journey starts once the previous one is over.
+    for (const j of JOURNEYS) {
+      const started = await acceptanceRun(w, { action: "start", journey: j.key, client: CANARY });
+      expect(started.error, j.key).toBeUndefined();
+      await acceptanceRun(w, { action: "abort", runId: started.data.runId, reason: "test" });
+    }
+    expect((await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY })).error).toBeUndefined();
+    const run1 = (await listRuns(w.ctx, A, { journey: "lead-capture", status: "running" }))[0]!;
     await w.client.query(`UPDATE ${(await import("../src/namespace.js")).NAMESPACE}.acceptance_runs SET journey_version = 99 WHERE id = $1`, [run1.id]);
     const recorded = await acceptanceRun(w, { action: "record", runId: run1.id, stepId: "ensure-canary", input: {}, output: {} });
     expect(recorded.error).toContain("The journey changed");

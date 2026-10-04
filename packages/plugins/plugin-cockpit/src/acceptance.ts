@@ -220,9 +220,10 @@ export async function startRun(env: Env, companyId: string, input: { journey: st
   const journey = journeyByKey(input.journey);
   if (!journey) throw new AcceptanceError(`There is no journey ${JSON.stringify(input.journey)}. They are: ${JOURNEYS.map((j) => j.key).join(", ")}.`);
   const now = env.now();
-  const open = await listRuns(env.ctx, companyId, { journey: journey.key, status: "running", limit: 5 });
+  // The canary is ONE client shared by every journey and each journey ends by removing it, so a second journey started while another is open would lose its client under it (the first live three-journey request did exactly that): one open run per company, whatever the journey.
+  const open = await listRuns(env.ctx, companyId, { status: "running", limit: 10 });
   for (const other of open) {
-    if (now.getTime() - Date.parse(other.updatedAt) < STALE_RUN_MS) throw new AcceptanceError(`Run ${other.id} of ${journey.key} is still open (started ${other.startedAt.slice(0, 16).replace("T", " ")}). Continue it with action "next" and runId ${other.id}, or abort it. Two runs on one canary client would trample each other.`);
+    if (now.getTime() - Date.parse(other.updatedAt) < STALE_RUN_MS) throw new AcceptanceError(`Run ${other.id} of ${other.journeyKey} is still open (started ${other.startedAt.slice(0, 16).replace("T", " ")}). Journeys run one at a time, because they share one canary client and each ends by removing it: continue that run with action "next" and runId ${other.id} until it is finished (its last step, the cleanup, runs even after a failure), or abort it, then start ${journey.key}.`);
     await abortStaleRun(env, other, "Nobody finished this run: it was aborted when a newer one started.");
   }
   const id = newId();
