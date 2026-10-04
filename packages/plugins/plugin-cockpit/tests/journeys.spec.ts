@@ -273,26 +273,38 @@ describe("the SEO sprint journey (0.6.5)", () => {
   });
 });
 
-describe("the quote to invoice journey (0.6.5)", () => {
+describe("the quote to invoice journey (v4)", () => {
   const journey = journeyByKey("quote-to-invoice")!;
-  const convert = journey.steps.find((s) => s.id === "convert-quote")!;
+  const step = (id: string) => journey.steps.find((s) => s.id === id)!;
 
-  it("keeps its own convert-quote as the one that converts, with the logic it had", () => {
-    expect(journey.version).toBe(3);
-    expect(convert.tool).toBe("partnersinbiz.billing:convert-quote");
-    expect(convert.input).toEqual({ quoteId: "{{quoteId}}" });
-    expect(convert.expect).toEqual([{ path: "invoice.status", equals: "draft" }, { path: "quote.status", equals: "converted" }, { path: "invoice.id", notEmpty: true }]);
-    expect(convert.capture).toEqual({ invoiceId: { path: "invoice.id" } });
-    expect(journey.steps.filter((s) => s.tool === "partnersinbiz.billing:convert-quote")).toHaveLength(1);
+  it("only reads what Billing did: it never converts the quote or asks for the send itself", () => {
+    expect(journey.version).toBe(4);
+    const tools = journey.steps.map((s) => s.tool);
+    expect(tools).not.toContain("partnersinbiz.billing:convert-quote");
+    expect(tools).not.toContain("partnersinbiz.billing:request-invoice-send");
   });
 
-  it("tells the agent to report a refusal because the quote is already converted exactly as it came, and the agent is shown it", () => {
-    expect(convert.note).toContain("already converted");
-    expect(convert.note).toContain("record that error exactly as it came");
-    expect(convert.note).toContain("do not retry");
+  it("reads the converted quote, then the draft invoice with the quote's total and the deal", () => {
+    expect(step("quote-converted").tool).toBe("partnersinbiz.billing:quote-detail");
+    expect(step("quote-converted").expect).toEqual(expect.arrayContaining([{ path: "quote.status", equals: "converted" }, { path: "quote.convertedInvoiceId", notEmpty: true }]));
+    expect(step("quote-converted").capture).toEqual({ invoiceId: { path: "quote.convertedInvoiceId" }, quoteTotalMinor: { path: "quote.totalMinor" } });
+    expect(step("invoice-drafted").tool).toBe("partnersinbiz.billing:invoice-detail");
+    expect(step("invoice-drafted").expect).toEqual([{ path: "invoice.status", equals: "draft" }, { path: "invoice.totalMinor", equals: "{{quoteTotalMinor}}" }, { path: "invoice.dealId", equals: "{{dealId}}" }]);
+  });
+
+  it("checks the send approval Billing opened reaches the Reviewer first, and tells the agent not to fill it in", () => {
+    const send = step("invoice-send-approval");
+    expect(send.expect).toEqual([{ path: "invoice.pendingAction", equals: "send" }, { path: "invoice.approvalIssueId", notEmpty: true }]);
+    expect(send.probe).toMatchObject({ kind: "approval-route", idPath: "invoice.approvalIssueId" });
+    expect(send.note).toContain("do not call request-invoice-send");
+  });
+
+  it("tells the agent to record a quote that is still accepted, not convert it, and the agent is shown it", () => {
+    const converted = step("quote-converted");
+    expect(converted.note).toContain("do not convert it yourself");
     const state = initRun(journey, "company:canary-1a2b3c4d", "run1", "2026-10-04");
-    const view = stepView({ step: convert, input: { quoteId: "q1" }, missing: [], index: 7, total: 9 }, state);
-    expect(view.note).toBe(convert.note);
+    const view = stepView({ step: converted, input: { quoteId: "q1" }, missing: [], index: 7, total: 10 }, state);
+    expect(view.note).toBe(converted.note);
   });
 });
 
