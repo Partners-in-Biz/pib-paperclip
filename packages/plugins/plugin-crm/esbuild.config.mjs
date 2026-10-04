@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readdirSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
@@ -18,6 +18,12 @@ const staticDir = fileURLToPath(new URL("./static/", import.meta.url));
 const uiDir = fileURLToPath(new URL("./dist/ui/", import.meta.url));
 mkdirSync(uiDir, { recursive: true });
 for (const name of readdirSync(staticDir)) cpSync(`${staticDir}${name}`, `${uiDir}${name}`);
+
+// The site events script is built here, minified, so its source can be read and commented and the file clients load stays under 2 KB.
+const evSource = readFileSync(fileURLToPath(new URL("./static-src/ev.js", import.meta.url)), "utf8");
+const evBuilt = esbuild.transformSync(evSource, { minify: true, legalComments: "none", target: "es2019" });
+const evHeader = "/*! PiB site events (Partners in Biz): counts only, no personal data. */";
+writeFileSync(`${uiDir}ev.js`, `${evHeader}${evBuilt.code}`);
 
 const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 const watch = process.argv.includes("--watch");

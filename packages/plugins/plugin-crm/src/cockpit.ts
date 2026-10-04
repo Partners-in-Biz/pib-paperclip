@@ -33,6 +33,8 @@ import { knownCompanies } from "./setup-status.js";
 import { activeLeadSources } from "./lead-capture.js";
 import { heldLeadStats } from "./store.js";
 import { careHealth, careWaiting } from "./care-jobs.js";
+import { growthKpis } from "./growth-kpis.js";
+import { eventKeysHealth } from "./site-events-health.js";
 
 const HREF = "/crm";
 const ORIGIN = `plugin:${PLUGIN_ID}`;
@@ -118,7 +120,7 @@ export const LEAD_STUCK_DAYS = 2;
 export const DEAL_IDLE_DAYS = 14;
 
 /** Work issues the waiting list shows while no agent holds them (origin ids before and after 0.5.0). */
-export const FOLLOW_UP_ORIGINS = "^(reply|lead|handoff|quote|won|crm:(reply|lead-followup|sequence-refused|quote-deal|won-client|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain)):";
+export const FOLLOW_UP_ORIGINS = "^(reply|lead|handoff|quote|won|crm:(reply|lead-followup|sequence-refused|quote-deal|won-client|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale)):";
 /** Lead follow-up issues (origin ids before and after 0.5.0). */
 export const LEAD_FOLLOW_UP_ORIGINS = "^(lead|crm:lead-followup):";
 
@@ -287,11 +289,16 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     snap.kpis.push(...kpis);
   }
 
+  // Numbers the Cockpit's goals read (leads by source, visits, documents signed): only for what is set up.
+  snap.kpis.push(...(await part(ctx, "growth-kpis", () => growthKpis(ctx, companyId, defaultCurrency), [] as CockpitKpi[])));
+
   for (const job of CRM_JOBS) snap.health.push(await jobHealth(ctx, job.key, job.title, job.every));
   snap.health.push(await outboxHealth(ctx, companyId));
   snap.health.push(await part(ctx, "held-leads", () => heldLeadsHealth(ctx, companyId), { key: "held-leads", title: "Leads waiting for the CRM", status: "ok" } as HealthCheck));
   const forms = await part(ctx, "lead-forms", () => leadFormsHealth(ctx, companyId), null as HealthCheck | null);
   if (forms) snap.health.push(forms);
+  const counters = await part(ctx, "event-keys", () => eventKeysHealth(ctx, companyId), null as HealthCheck | null);
+  if (counters) snap.health.push(counters);
   // The Account Manager this plugin staffs; the Cockpit shares it in roles.updated so every plugin can route work to it.
   snap.team = await part(ctx, "team", () => teamReport(ctx, companyId), [{ role: "account-manager", agentId: null, status: null }] as TeamMemberReport[]);
 

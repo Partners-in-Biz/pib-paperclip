@@ -137,7 +137,7 @@ Last updated: {{date}}
 {{client_name}} ({{registration_number}}) is the responsible party for the personal information described here. Contact our information officer: {{information_officer_name}}, {{information_officer_email}}, {{postal_address}}.
 
 ## What we collect
-We collect: {{list what the website and the business really collect: name, email, phone, message, billing details, website visits, cookies}}. We collect it from you when you {{fill in a form, buy, email us}}{{, and from other sources: name them, or delete this clause}}.
+We collect: {{list what the website and the business really collect: name, email, phone, message, billing details, website visits, cookies}}.{{If the site counts visits with Partners in Biz's visit counter, keep this and delete it otherwise: We count visits to this website (the pages viewed, the site or search that sent you, and actions such as pressing a phone or WhatsApp link) and keep only daily totals, which are not linked to your name, email or phone number. To keep the site safe and stop abuse, the web server that runs the counter briefly records the internet address and browser of each visit (for up to 3 days), and we keep a scrambled (hashed) form of the address for 2 days. If you agree on our cookie banner we also remember for 90 days which campaign first brought you here. We do nothing if your browser says Do Not Track.}} We collect it from you when you {{fill in a form, buy, email us}}{{, and from other sources: name them, or delete this clause}}.
 
 ## Why we use it, and on what basis
 | What we do | Why | Basis |

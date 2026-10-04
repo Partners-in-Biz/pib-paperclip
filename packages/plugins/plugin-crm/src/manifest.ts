@@ -1,6 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { LEAD_ENDPOINT_KEY } from "./lead-form.js";
+import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -33,6 +34,18 @@ const instanceConfigSchema: JsonSchema = {
         "Optional. The address visitors and WordPress sites reach this Paperclip on, e.g. https://paperclip.partnersinbiz.online (the default). It is used to download the PiB Connector when an agent runs wp-connector update (it must be a host the Connector accepts for self-updates) and to build the lead form snippet and endpoint addresses clients put on their sites.",
     },
     jev: jevConfigSchema() as unknown as JsonSchema,
+    documents: {
+      type: "object",
+      title: "Documents to sign",
+      description:
+        "Optional. How a proposal, quote or agreement a client signs online looks. Without these it uses the Partners in Biz colours and no logo. E-sign stays off for every client but the canary until you turn it on for a client (CRM client page, Agreements).",
+      properties: {
+        primaryColor: { type: "string", title: "Main colour", description: "Hex, e.g. #14304f. Used for the header and headings." },
+        accentColor: { type: "string", title: "Accent colour", description: "Hex, e.g. #2a9d8f." },
+        logoUrl: { type: "string", title: "Logo address", description: "A public address that starts with https (an image). Shown at the top of the page. The CRM only links to it." },
+        footer: { type: "string", title: "Footer line", description: "One line under the document, e.g. your registration number and address." },
+      },
+    } as unknown as JsonSchema,
     leads: {
       type: "object",
       title: "Lead forms",
@@ -112,6 +125,16 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: LEAD_ENDPOINT_KEY,
       displayName: "Lead form",
       description: "Public. Takes an enquiry from a website form (a JSON body with the form key). The key says whose lead it is; the plugin checks everything.",
+    },
+    {
+      endpointKey: SIGN_ENDPOINT_KEY,
+      displayName: "Signing page",
+      description: "Public. The page a client opens to sign a document posts its answer here (view, sign or decline). A private token made for the document decides everything; nothing else is believed.",
+    },
+    {
+      endpointKey: EVENTS_ENDPOINT_KEY,
+      displayName: "Site events",
+      description: "Public. The small script on a client's website counts page visits, outbound clicks and named conversions here (a JSON body with the site's write key). Only counts are kept.",
     },
   ],
   jobs: [

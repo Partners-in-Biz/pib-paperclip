@@ -231,6 +231,21 @@ export interface Attribution {
   referrer: string | null;
   /** The first page of the visit, when the visit started elsewhere on the site. */
   landingUrl: string | null;
+  /**
+   * The first and the last campaign touch the visitor's site remembered across visits (the site events script, only when the site's own
+   * cookie banner allowed it): where the visitor first came from, and where they last came from before this form. Absent when nothing was
+   * remembered, in which case the one visit above is both. A click id is kept only as which kind (`g` Google, `m` Microsoft, `f` Facebook).
+   */
+  ftSource?: string;
+  ftMedium?: string;
+  ftCampaign?: string;
+  ftReferrer?: string;
+  ftClick?: string;
+  ltSource?: string;
+  ltMedium?: string;
+  ltCampaign?: string;
+  ltReferrer?: string;
+  ltClick?: string;
 }
 
 export interface Submission {
@@ -272,11 +287,32 @@ function utm(value: unknown): string | null {
   return text || null;
 }
 
+/** One remembered touch from `touches.first` / `touches.last` (`{ s, m, c, r, k }`) as flat fields with the given prefix. Empty when there is nothing in it. */
+function persistedTouch(value: unknown, prefix: "ft" | "lt"): Partial<Attribution> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const v = value as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  const set = (name: string, raw: unknown) => {
+    const text = utm(raw);
+    if (text) out[`${prefix}${name}`] = text;
+  };
+  set("Source", v.s);
+  set("Medium", v.m);
+  set("Campaign", v.c);
+  const referrer = cleanText(v.r, 100).toLowerCase();
+  if (/^[a-z0-9.-]+\.[a-z]{2,}$/.test(referrer)) out[`${prefix}Referrer`] = referrer;
+  if (v.k === "g" || v.k === "m" || v.k === "f") out[`${prefix}Click`] = v.k;
+  return out as Partial<Attribution>;
+}
+
 /** UTM values arrive as `utm: { source, medium, ... }`, or flat as `utm_source`. Both are accepted. */
 export function parseAttribution(body: Record<string, unknown>): Attribution {
   const nested = body.utm && typeof body.utm === "object" && !Array.isArray(body.utm) ? (body.utm as Record<string, unknown>) : {};
   const pick = (name: string) => utm(nested[name] ?? nested[`utm_${name}`] ?? body[`utm_${name}`]);
+  const touches = body.touches && typeof body.touches === "object" && !Array.isArray(body.touches) ? (body.touches as Record<string, unknown>) : {};
   return {
+    ...persistedTouch(touches.first, "ft"),
+    ...persistedTouch(touches.last, "lt"),
     utmSource: pick("source"),
     utmMedium: pick("medium"),
     utmCampaign: pick("campaign"),

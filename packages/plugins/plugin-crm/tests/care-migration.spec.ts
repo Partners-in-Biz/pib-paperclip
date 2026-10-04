@@ -26,8 +26,11 @@ describe("migration 011", () => {
     expect(sql).toContain("(company_id, source_key) WHERE source_key IS NOT NULL");
   });
 
-  it("is the next numbered migration and no applied migration was edited (there are eleven, in order)", () => {
+  it("is still the eleventh migration: the numbers run in order and a later one only adds (012 is the next wave's)", () => {
     const files = readdirSync(new URL("../migrations/", import.meta.url)).filter((name) => name.endsWith(".sql")).sort();
-    expect(files).toEqual(Array.from({ length: 11 }, (_, i) => `${String(i + 1).padStart(3, "0")}_crm.sql`));
+    expect(files.slice(0, 11)).toEqual(Array.from({ length: 11 }, (_, i) => `${String(i + 1).padStart(3, "0")}_crm.sql`));
+    // Never edited after it was applied: its table list and hash are what the live database has.
+    expect(sql).toContain("CREATE TABLE plugin_crm_832258244c.care_approvals (");
+    expect(sql).toContain("CONSTRAINT care_approvals_kind CHECK (kind IN ('client_action', 'client_reminder', 'client_report', 'feedback_request', 'erasure'))");
   });
 });

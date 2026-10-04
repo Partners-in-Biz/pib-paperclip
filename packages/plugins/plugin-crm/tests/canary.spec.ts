@@ -52,7 +52,7 @@ describe("what makes a record the canary's", () => {
     expect(CANARY_RULES.join(" ")).toMatch(/draft or a dry run/);
     expect(CANARY_RULES.join(" ")).toMatch(/@canary\.invalid/);
     expect(CANARY_RULES.join(" ")).toMatch(/cleanup-canary/);
-    expect(CANARY_JOURNEY.map((step) => step.split(":")[0])).toEqual(["Lead", "Qualify", "Quote", "Won", "Invoice", "Payment proof", "Care", "Clean up"]);
+    expect(CANARY_JOURNEY.map((step) => step.split(":")[0])).toEqual(["Lead", "Qualify", "Quote", "Sign", "Won", "Invoice", "Payment proof", "Site events and attribution", "Care", "Clean up"]);
   });
 });
 

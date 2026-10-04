@@ -96,6 +96,21 @@
     return { utm: touch.utm || {}, page: page, referrer: touch.referrer || "", landing: touch.landing || page };
   }
 
+  /**
+   * The first and last campaign touch the site events script (ev.js) remembered across visits. It stores them only when the site's own
+   * cookie banner allowed it, so there is something here only for a visitor who agreed. Nothing is read from anywhere else.
+   */
+  function remembered(name) {
+    try {
+      var raw = window.localStorage.getItem(name);
+      var value = raw ? JSON.parse(raw) : null;
+      if (!value || typeof value !== "object") return null;
+      return { s: clip(value.s, 60), m: clip(value.m, 60), c: clip(value.c, 60), r: clip(value.r, 100), k: value.k === "g" || value.k === "m" || value.k === "f" ? value.k : "" };
+    } catch (error) {
+      return null;
+    }
+  }
+
   function option(name, max) {
     var value = script.getAttribute("data-" + name);
     return value ? clip(value, max) : "";
@@ -113,6 +128,10 @@
     for (var i = 0; i < UTM_KEYS.length; i += 1) {
       if (context.utm[UTM_KEYS[i]]) parts.push(UTM_KEYS[i] + "=" + encodeURIComponent(context.utm[UTM_KEYS[i]]));
     }
+    var first = remembered("pib_ft");
+    var last = remembered("pib_lt");
+    if (first) parts.push("ft=" + encodeURIComponent(JSON.stringify(first)));
+    if (last) parts.push("lt=" + encodeURIComponent(JSON.stringify(last)));
     return base + "lead-form.html#" + parts.join("&");
   }
 

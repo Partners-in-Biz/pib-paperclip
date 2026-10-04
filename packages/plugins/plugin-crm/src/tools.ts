@@ -3,6 +3,8 @@ import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersin
 import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
 import { SOURCE_STATUSES } from "./lead-form.js";
 import { CARE_TOOLS } from "./care-tools.js";
+import { ESIGN_TOOLS } from "./esign-tools.js";
+import { GROWTH_TOOLS } from "./growth-tools.js";
 import { SERVICE_KEYS, SERVICES } from "./services.js";
 
 /**
@@ -834,4 +836,6 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   ...CARE_TOOLS,
+  ...ESIGN_TOOLS,
+  ...GROWTH_TOOLS,
 ];

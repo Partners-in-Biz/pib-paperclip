@@ -14,6 +14,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { outboxStatus, reopenApprovalForPerson, settleOutbox, type MailReceived, type MailSendResult } from "@partnersinbiz/pib-plugin-kit";
 import { actionEmailProblem, actionHooks, onActionReply } from "./client-actions.js";
+import { esignEmailProblem, esignHooks, onEsignReply, prepareEsignDraft } from "./esign.js";
 import {
   approvalBySendKey,
   approvalByIssue,
@@ -26,7 +27,7 @@ import {
 import { asRecord, noteOutboxError } from "./db.js";
 import { openIssueOnce } from "./mail.js";
 import { originFor } from "./origins.js";
-import { MESSAGE_KEY_PREFIX, RecipientRefused, sendApproved, type MailApprovalHooks } from "./outbound.js";
+import { messageKey, MESSAGE_KEY_PREFIX, RecipientRefused, scrubSettledBody, sendApproved, type MailApprovalHooks } from "./outbound.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { executeApprovedErasure, redactErasureApproval } from "./privacy.js";
 import { reportEmailProblem, reportHooks } from "./report.js";
@@ -38,7 +39,21 @@ const HOOKS: Partial<Record<ApprovalKind, MailApprovalHooks>> = {
   client_reminder: actionHooks,
   client_report: reportHooks,
   feedback_request: feedbackHooks,
+  esign_request: esignHooks,
+  esign_reminder: esignHooks,
+  esign_copy: esignHooks,
 };
+
+const ESIGN_KINDS: readonly ApprovalKind[] = ["esign_request", "esign_reminder", "esign_copy"];
+
+/**
+ * A signing email's queued text holds a live link. Once its outbox row is settled (sent, or given up on) nothing needs the text again, so it
+ * is blanked there. Never fails the caller: a failed blanking is logged and the hourly care job settles the row again.
+ */
+async function scrubSigningBody(ctx: PluginContext, approval: ApprovalRecord): Promise<void> {
+  if (!ESIGN_KINDS.includes(approval.kind)) return;
+  await scrubSettledBody(ctx, approval.sendKey ?? messageKey(approval.id)).catch((error) => ctx.logger.info("CRM signing email text not blanked in the outbox", { approvalId: approval.id, error: message(error) }));
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -78,14 +93,17 @@ async function queueEmail(ctx: PluginContext, approval: ApprovalRecord, by: stri
   const hooks = HOOKS[approval.kind];
   // The approval was written for one state of the request or report. If it moved on while the approval waited (the client answered, the
   // request was finished, the report skipped), the email is wrong now: a person's "done" does not send it.
-  const stale = (await actionEmailProblem(ctx, approval).catch(() => null)) ?? (await reportEmailProblem(ctx, approval).catch(() => null));
+  const stale = (await actionEmailProblem(ctx, approval).catch(() => null)) ?? (await reportEmailProblem(ctx, approval).catch(() => null)) ?? (await esignEmailProblem(ctx, approval).catch(() => null));
   if (stale) {
     await updateApproval(ctx, approval.companyId, approval.id, { status: "refused", decidedBy: "system:action-closed", error: stale });
     await comment(ctx, approval, `Not sent: ${stale} Nothing went to the client.`);
     return;
   }
   try {
-    const outcome = await sendApproved(ctx, approval, by);
+    // A signing email gets its private link now, at the moment a person approved it: the link is in no issue, approval or tool result. It
+    // is in the email, so it sits in the outbox row until the Mailbox answers, and the Mailbox keeps the message it sent.
+    const draft = ESIGN_KINDS.includes(approval.kind) ? await prepareEsignDraft(ctx, approval) : undefined;
+    const outcome = await sendApproved(ctx, approval, by, draft ? { draft } : {});
     if (outcome.status === "dry_run") await hooks?.onSent(ctx, { ...approval, status: "dry_run" }, { dryRun: true });
   } catch (error) {
     const text = error instanceof RecipientRefused ? error.message : `The email could not be queued (${message(error)}).`;
@@ -96,6 +114,7 @@ async function queueEmail(ctx: PluginContext, approval: ApprovalRecord, by: stri
 /** The email will not go: record why, tell whoever asked, and hand it to the Account Manager. */
 async function failApproval(ctx: PluginContext, approval: ApprovalRecord, by: string | null, error: string): Promise<void> {
   await updateApproval(ctx, approval.companyId, approval.id, { status: "failed", decidedBy: by ?? undefined, error });
+  await scrubSigningBody(ctx, approval);
   await comment(ctx, approval, `This was approved but the email was not sent: ${error}`);
   await HOOKS[approval.kind]?.onFailed(ctx, approval, error).catch(() => undefined);
   await openIssueOnce(ctx, {
@@ -165,8 +184,10 @@ export async function handleCareSendResult(ctx: PluginContext, result: MailSendR
     return "retrying";
   }
   const row = await settleOutbox(ctx, result.key, result as unknown as Record<string, unknown>, result.status === "sent" ? "done" : "failed");
-  if (!row) return "ignored";
   const approval = asked;
+  // Blanked even when another delivery of the same answer settled it first (idempotent), so a failed blanking is repaired by the next answer.
+  await scrubSigningBody(ctx, approval);
+  if (!row) return "ignored";
   if (result.status === "sent") {
     await updateApproval(ctx, approval.companyId, approval.id, { status: "sent", result: { messageId: result.messageId ?? null, threadId: result.threadId ?? null, sentAt: result.sentAt ?? new Date().toISOString() } });
     await HOOKS[approval.kind]?.onSent(ctx, { ...approval, status: "sent" }, { dryRun: false, messageId: result.messageId ?? null, threadId: result.threadId ?? null });
@@ -183,6 +204,7 @@ export async function settleStuckMessages(ctx: PluginContext, companyId: string)
     if (!approval.sendKey) continue;
     const row = await outboxStatus(ctx, approval.sendKey);
     if (!row || row.status === "pending") continue;
+    await scrubSigningBody(ctx, approval);
     const stored = (row.result ?? null) as MailSendResult | null;
     if (row.status === "done") {
       await updateApproval(ctx, companyId, approval.id, { status: "sent", result: { messageId: stored?.messageId ?? null, threadId: stored?.threadId ?? null, sentAt: stored?.sentAt ?? null } });
@@ -207,5 +229,6 @@ export async function onClientMailReply(ctx: PluginContext, companyId: string, m
   if (!approval) return false;
   if (approval.kind === "client_action" || approval.kind === "client_reminder") await onActionReply(ctx, companyId, approval.subjectId, mail.receivedAt ?? null);
   else if (approval.kind === "feedback_request") await onFeedbackReply(ctx, companyId, approval.subjectId, mail.snippet);
+  else if (ESIGN_KINDS.includes(approval.kind)) await onEsignReply(ctx, companyId, approval.subjectId, mail.receivedAt ?? null);
   return true;
 }

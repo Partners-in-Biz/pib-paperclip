@@ -41,7 +41,7 @@ async function run(store: Store) {
 describe("origin ids", () => {
   it("every kind of CRM work has its own crm: prefix, and step ids carry the enrollment and step", () => {
     const prefixes = CRM_DONE_CHECKS.map((rule) => rule.originPrefix);
-    expect(prefixes).toEqual(["crm:lead-followup:", "crm:reply:", "crm:step:", "crm:send-failed:", "crm:won-client:", "crm:quote-deal:", "crm:pipeline-check:", "crm:duplicates:", "crm:client-lead:", "crm:service-onboard:", "crm:client-report:", "crm:support-case:", "crm:support-breach:", "crm:client-action-stale:", "crm:churn-risk:", "crm:feedback-low:", "crm:site-down:", "crm:site-tls:", "crm:site-domain:"]);
+    expect(prefixes).toEqual(["crm:lead-followup:", "crm:reply:", "crm:step:", "crm:send-failed:", "crm:won-client:", "crm:quote-deal:", "crm:pipeline-check:", "crm:duplicates:", "crm:client-lead:", "crm:service-onboard:", "crm:client-report:", "crm:support-case:", "crm:support-breach:", "crm:client-action-stale:", "crm:churn-risk:", "crm:feedback-low:", "crm:esign:", "crm:esign-stale:", "crm:site-down:", "crm:site-tls:", "crm:site-domain:"]);
     for (const prefix of prefixes) expect(prefixes.filter((other) => other !== prefix && other.startsWith(prefix))).toEqual([]);
     expect(originFor.step("e1", 2)).toBe("crm:step:e1:2");
     expect(parseStepRef("crm:step:e1:2", CRM_ORIGINS.step)).toEqual({ enrollmentId: "e1", position: 2 });

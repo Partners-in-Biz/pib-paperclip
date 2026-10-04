@@ -14,6 +14,11 @@ import { NPS_COOLDOWN_DAYS, SLA_HOURS } from "../src/support.js";
 import { SKILLS } from "../src/skills.js";
 import { CRM_TOOLS } from "../src/tools.js";
 import { MAX_NEW_STEPS_PER_RUN } from "../src/service-onboarding.js";
+import { ATTRIBUTION_REFERENCE, ESIGN_REFERENCE, GROWTH_REFERENCE_FILES, GROWTH_SECTION, SITE_EVENTS_REFERENCE } from "../src/skills-growth.js";
+import { ESIGN_TOOLS } from "../src/esign-tools.js";
+import { GROWTH_TOOLS } from "../src/growth-tools.js";
+import { DEFAULT_VALID_DAYS, ESIGN_REMIND_AFTER_DAYS, MAX_ESIGN_REMINDERS, MAX_VALID_DAYS, MIN_SIGN_MS, SIGNED_PAGE_DAYS, TEMPLATE_VERSION } from "../src/esign-templates.js";
+import { EVENT_KEY_GRACE_DAYS, EVENT_LIMITS, EVENT_RATE, ROLLUP_KEEP_DAYS } from "../src/site-events-form.js";
 
 const records = SKILLS.find((skill) => skill.skillKey === "crm-records")!;
 const outbound = SKILLS.find((skill) => skill.skillKey === "crm-outbound")!;
@@ -24,7 +29,7 @@ const toolNames = new Set(CRM_TOOLS.map((tool) => tool.name));
 describe("the CRM skills and their references", () => {
   it("stay within 18,000 characters, with the long material in references", () => {
     for (const skill of SKILLS) expect(skill.markdown!.length, skill.skillKey).toBeLessThanOrEqual(18_000);
-    expect(records.files!.map((file) => file.path)).toEqual(["references/services.md", "references/new-client.md", "references/canary.md", ...CARE_REFERENCE_FILES.map((file) => file.path)]);
+    expect(records.files!.map((file) => file.path)).toEqual(["references/services.md", "references/new-client.md", "references/canary.md", ...CARE_REFERENCE_FILES.map((file) => file.path), ...GROWTH_REFERENCE_FILES.map((file) => file.path)]);
     expect(outbound.files!.map((file) => file.path)).toEqual(["references/lead-capture.md"]);
     for (const skill of [records, outbound]) for (const file of skill.files!) expect(file.content.length, file.path).toBeGreaterThan(1_000);
     // Each skill points at its references by the path it ships them under.
@@ -33,13 +38,13 @@ describe("the CRM skills and their references", () => {
   });
 
   it("name every new tool, and every tool they name exists", () => {
-    const text = [records.markdown, outbound.markdown, inbound.markdown, SERVICES_REFERENCE, NEW_CLIENT_REFERENCE, CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, ...CARE_REFERENCE_FILES.map((file) => file.content)].join("\n");
+    const text = [records.markdown, outbound.markdown, inbound.markdown, SERVICES_REFERENCE, NEW_CLIENT_REFERENCE, CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, ...CARE_REFERENCE_FILES.map((file) => file.content), ...GROWTH_REFERENCE_FILES.map((file) => file.content)].join("\n");
     for (const name of NEW_TOOLS) {
       expect(toolNames.has(name), name).toBe(true);
       expect(text, name).toContain(`\`${name}\``);
     }
     // Every hyphenated word in backticks is a CRM tool, a job, an HTML attribute of the snippet, or one of the other modules' known names.
-    const elsewhere = new Set(["pib-mailbox-draft", "pib-invoice-draft", "pib-crm-records", "pib-crm-outbound", "mailbox-draft", "ask-owner", "get-site-link", "link-site", "create-sprint", "new-client-project", "lead-capture", "services-check", "get-sprint", "list-keywords", "keyword-history", "gsc-query", "audit-summary", "list-ga4-summary", "list-posts", "account-analytics", "post-analytics", "performance-review", "list-campaigns", "campaign-stats", "list-open-invoices", "billing-report", "invoice-detail", "list-threads", "mail-status"]);
+    const elsewhere = new Set(["pib-mailbox-draft", "pib-invoice-draft", "pib-crm-records", "pib-crm-outbound", "mailbox-draft", "ask-owner", "get-site-link", "link-site", "create-sprint", "new-client-project", "lead-capture", "services-check", "get-sprint", "list-keywords", "keyword-history", "gsc-query", "audit-summary", "list-ga4-summary", "list-posts", "account-analytics", "post-analytics", "performance-review", "list-campaigns", "campaign-stats", "list-open-invoices", "billing-report", "invoice-detail", "list-threads", "mail-status", "signed-copy"]);
     const tokens = [...text.matchAll(/`([a-z][a-z]*(?:-[a-z]+)+)`/g)].map((match) => match[1]!);
     const unknown = [...new Set(tokens)].filter((token) => !toolNames.has(token) && !elsewhere.has(token) && !token.startsWith("data-") && !SERVICE_KEYS.includes(token as never));
     expect(unknown).toEqual([]);
@@ -77,7 +82,9 @@ describe("the CRM skills and their references", () => {
     expect(CANARY_REFERENCE).toMatch(/@canary\.invalid/);
     expect(NEW_CLIENT_REFERENCE).toMatch(/main only changes with Peet's approval/);
     expect(NEW_CLIENT_REFERENCE).toMatch(/never one per item/);
-    expect(records.markdown).toMatch(/no e-sign/i);
+    // E-sign now exists, and what it is not is said in the guide: a basic electronic signature, never an advanced one.
+    expect(records.markdown).not.toMatch(/no e-sign/i);
+    expect(ESIGN_REFERENCE).toMatch(/not an advanced electronic signature/);
   });
 
   it("a change to a reference changes the skill's hash, so every company's copy is refreshed", () => {
@@ -140,5 +147,70 @@ describe("the CRM skills and their references", () => {
     // Nothing legal is asserted as fact where the client must decide it.
     expect(PRIVACY_POLICY_TEMPLATE).not.toMatch(/within 30 days/);
     expect(PRIVACY_POLICY_TEMPLATE).not.toMatch(/\d+ years? as the law/i);
+  });
+});
+
+describe("the guidance for documents to sign, attribution and site counters", () => {
+  it("names every e-sign and growth tool, and the skill points at each reference by the path it ships under", () => {
+    const text = [records.markdown, ...GROWTH_REFERENCE_FILES.map((file) => file.content)].join("\n");
+    for (const tool of [...ESIGN_TOOLS, ...GROWTH_TOOLS]) expect(text, tool.name).toContain(`\`${tool.name}\``);
+    for (const file of GROWTH_REFERENCE_FILES) expect(records.markdown, file.path).toContain(file.path);
+    expect(GROWTH_SECTION.length).toBeLessThan(3_500);
+    expect(records.markdown!.length).toBeLessThan(17_000);
+  });
+
+  it("says the same numbers as the code, so the guide cannot drift from the limits", () => {
+    expect(ESIGN_REFERENCE).toContain(`A link is valid ${DEFAULT_VALID_DAYS} days by default (1 to ${MAX_VALID_DAYS})`);
+    expect(ESIGN_REFERENCE).toContain(`after ${ESIGN_REMIND_AFTER_DAYS} days, up to ${MAX_ESIGN_REMINDERS}`);
+    expect(ESIGN_REFERENCE).toContain(`After ${MAX_ESIGN_REMINDERS} reminders you get an issue`);
+    expect(ESIGN_REFERENCE).toContain(`for ${SIGNED_PAGE_DAYS} days`);
+    expect(ESIGN_REFERENCE).toContain(`at least ${MIN_SIGN_MS / 1000} seconds on the page`);
+    expect(ESIGN_REFERENCE).toContain(`version ${TEMPLATE_VERSION}`);
+    expect(SITE_EVENTS_REFERENCE).toContain(`counts older than ${ROLLUP_KEEP_DAYS} days go`);
+    expect(SITE_EVENTS_REFERENCE).toContain(`the old one counts ${EVENT_KEY_GRACE_DAYS} more days`);
+    expect(SITE_EVENTS_REFERENCE).toContain(`${EVENT_RATE.keyPerMinute} requests a minute per key, ${EVENT_RATE.ipPerMinute} a minute and ${EVENT_RATE.ipPerHour} an hour per visitor, ${EVENT_LIMITS.conversionNamesPerDay} different action names, ${EVENT_LIMITS.pathBucketsPerDay} page groups and ${EVENT_LIMITS.outboundHostsPerDay} outside hosts a day per site`);
+  });
+
+  it("keeps the rules that must not be lost: the link is never shown, a basic signature only, nothing is installed on a client's site, no number is made up", () => {
+    expect(ESIGN_REFERENCE).toMatch(/Never ask for the link, paste a link, or put one in an issue or a comment/);
+    expect(ESIGN_REFERENCE).toMatch(/typed name given with the signer's explicit consent/);
+    expect(ESIGN_REFERENCE).toMatch(/drafts no lawyer has reviewed/);
+    expect(ESIGN_REFERENCE).toMatch(/never sign, simulate or "test" on a real client's link/i);
+    expect(ESIGN_REFERENCE).toMatch(/Outward email is always an approval/);
+    expect(records.markdown).toMatch(/you \*\*never read, open, forward or sign from the signing email\*\*/);
+    expect(records.markdown).not.toMatch(/you never see it/);
+    expect(ESIGN_REFERENCE).toMatch(/never read, open, forward or sign from a signing email/);
+    expect(ESIGN_REFERENCE).toMatch(/the email that goes out carries it \(the client's inbox, and the Mailbox's record of what it sent\)/);
+    expect(ESIGN_REFERENCE).not.toMatch(/goes only to the client's inbox/);
+    expect(records.markdown).toMatch(/you NEVER install it/);
+    expect(SITE_EVENTS_REFERENCE).toMatch(/Never put it on a live site yourself/);
+    expect(SITE_EVENTS_REFERENCE).toMatch(/no name, email, phone number, form content or visitor id/);
+    // What is true of the whole system, not only of the plugin: the host's request log holds each visit's address for a few days.
+    expect(SITE_EVENTS_REFERENCE).toMatch(/hosting server's own request log records every request .* IP address, browser and the page path/);
+    expect(SITE_EVENTS_REFERENCE).toMatch(/up to 3 days/);
+    expect(SITE_EVENTS_REFERENCE).toMatch(/Never tell a client or a visitor that no visitor identifier is kept/);
+    expect(SITE_EVENTS_REFERENCE).not.toMatch(/no raw event is stored/);
+    expect(records.markdown).toMatch(/the host's request log still holds each visit's address for up to 3 days/);
+    // The privacy policy template a client pastes must not say the counter keeps no identifier at all.
+    expect(PRIVACY_POLICY_TEMPLATE).toMatch(/the web server that runs the counter briefly records the internet address and browser of each visit \(for up to 3 days\)/);
+    expect(PRIVACY_POLICY_TEMPLATE).not.toMatch(/without your name, email or any visitor identifier/);
+    expect(SITE_EVENTS_REFERENCE).toMatch(/Counts are estimates/);
+    expect(ATTRIBUTION_REFERENCE).toMatch(/never guessed/);
+    expect(ATTRIBUTION_REFERENCE).toMatch(/Never estimate one/);
+    expect(ATTRIBUTION_REFERENCE).toMatch(/Only record what the client said/);
+    expect(ATTRIBUTION_REFERENCE).toMatch(/money is kept per currency and never converted/);
+  });
+
+  it("every growth reference is long enough to be worth a reference and short enough to read", () => {
+    for (const file of GROWTH_REFERENCE_FILES) {
+      expect(file.content.length, file.path).toBeGreaterThan(1_500);
+      expect(file.content.length, file.path).toBeLessThan(9_000);
+    }
+  });
+
+  it("a change to a growth reference changes the skill's hash, so every company's copy is refreshed", () => {
+    const before = skillVersion(records);
+    const changed = { ...records, files: records.files!.map((file) => (file.path === "references/esign.md" ? { ...file, content: `${file.content}\nOne more rule.` } : file)) };
+    expect(skillVersion(changed)).not.toBe(before);
   });
 });

@@ -60,6 +60,10 @@ export const CRM_ORIGINS = {
   feedbackLow: "crm:feedback-low:",
   /** `crm:approval:<approval id>`: an email to a client, or an erasure, that a person decides (never checked). */
   approval: "crm:approval:",
+  /** `crm:esign:<document id>`: get a document signed by a client (Deal Desk; done when it is signed, declined or withdrawn). */
+  esign: "crm:esign:",
+  /** `crm:esign-stale:<document id>`: a client has not signed after the reminders (Account Manager). */
+  esignStale: "crm:esign-stale:",
 } as const;
 
 export const originFor = {
@@ -83,6 +87,8 @@ export const originFor = {
   churnRisk: (kind: string, clientId: string, period: string) => `${CRM_ORIGINS.churnRisk}${kind}:${clientId}:${period}`,
   msgFailed: (approvalId: string) => `${CRM_ORIGINS.msgFailed}${approvalId}`,
   feedbackLow: (feedbackId: string) => `${CRM_ORIGINS.feedbackLow}${feedbackId}`,
+  esign: (documentId: string) => `${CRM_ORIGINS.esign}${documentId}`,
+  esignStale: (documentId: string) => `${CRM_ORIGINS.esignStale}${documentId}`,
   siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
   siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
   siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
@@ -99,7 +105,7 @@ export const LEGACY_ORIGINS = {
 };
 
 /** Work the CRM hands to agents (not approvals or hires), old and new ids. */
-export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain):/;
+export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale):/;
 
 /** Lead follow-ups, old and new ids. */
 export function isLeadFollowUp(originId: string | null | undefined): boolean {

@@ -71,6 +71,8 @@ import { AccountManagerBox, type HireView } from "./agent.js";
 import { ProjectsCard, WebsitesCard, type ConnectResult, type ProjectView, type SiteView } from "./sites.js";
 import { ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
 import { LeadFormsCard } from "./leads.js";
+import { ClientAgreementsCard, type CreatedKey } from "./agreements.js";
+import { agreementsVisible, type AgreementsView, type GrowthView } from "./agreements-view.js";
 import { ClientCareCard } from "./care.js";
 import { careVisible, type CareView } from "./care-view.js";
 import type { CreatedLeadForm, LeadFormView } from "./leads-view.js";
@@ -1062,6 +1064,10 @@ interface WorkspaceData {
   connectorDownload?: string | null;
   /** Client care: health, cases, requests, reports, sites, feedback, sensitivity (null when it could not be read). */
   care?: CareView | null;
+  /** Documents to sign: whether e-sign is on for the client and its documents (null when it could not be read). */
+  agreements?: AgreementsView | null;
+  /** Where enquiries came from and the site visit counters (null when it could not be read). */
+  growth?: GrowthView | null;
 }
 
 /** What `GET /api/plugins/<key>/api/client-summary` returns for one client. */
@@ -1130,6 +1136,15 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
     "set-site-monitoring": usePluginAction("crm.set-site-monitoring"),
     "set-client-sensitivity": usePluginAction("crm.set-client-sensitivity"),
   };
+  // Agreements and growth: e-sign on or off is a person's action; a document goes out only through an approved email.
+  const agreementActions: Record<string, ReturnType<typeof usePluginAction>> = {
+    "enable-esign": usePluginAction("crm.enable-esign"),
+    "disable-esign": usePluginAction("crm.disable-esign"),
+    "send-for-signature": usePluginAction("crm.send-for-signature"),
+    "void-sign-document": usePluginAction("crm.void-sign-document"),
+    "update-event-key": usePluginAction("crm.update-event-key"),
+  };
+  const createEventKey = usePluginAction("crm.create-event-key");
   // Only installed modules get a card, like the workspace tabs; nothing shows while that is unknown.
   const contributions = useUiContributions();
   const sources = WORK_SOURCES.filter((source) => moduleInstalled(contributions, source.pluginKey) === true);
@@ -1607,6 +1622,28 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
               care={data.care!}
               clientRef={`${client.kind}:${client.id}`}
               onRun={(action, params, success) => run(() => careActions[action]!(params), success)}
+            />
+          ) : null}
+
+          {(company || companies.length === 0) && agreementsVisible(data.agreements, data.growth) ? (
+            <ClientAgreementsCard
+              agreements={data.agreements ?? null}
+              growth={data.growth ?? null}
+              clientRef={`${client.kind}:${client.id}`}
+              clientName={name}
+              onRun={(action, params, success) => run(() => agreementActions[action]!(params), success)}
+              onCreateKey={async (params) => {
+                setMessage("");
+                try {
+                  const result = (await createEventKey(params)) as CreatedKey;
+                  await refresh();
+                  setMessage(result.created === false ? "That counter already exists" : "Counter made. Nothing is installed: the text is for the client's developer.");
+                  return result;
+                } catch (error) {
+                  setMessage(errorText(error));
+                  return null;
+                }
+              }}
             />
           ) : null}
 

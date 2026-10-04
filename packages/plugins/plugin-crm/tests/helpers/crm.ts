@@ -53,6 +53,17 @@ export const ROUTES: Route[] = [
   [/contact_companies l/, (p, s) =>
     (s.contact_companies ?? []).filter((link) => link.contact_id === p[0]).map((link) => ({ account_id: link.account_id, role_label: link.role_label, name: (s.companies ?? []).find((a) => a.id === link.account_id)?.name ?? "" }))],
   [/count\(\*\) AS count, max\(created_at\)/, () => [{ count: 0, last_at: null }]],
+  // The request-log count the public endpoints' rate limits use: `SELECT count(*) AS n FROM (SELECT 1 FROM public_hits WHERE ... LIMIT cap) AS capped`.
+  [/count\(\*\) AS n FROM \(SELECT 1 FROM \S+\.public_hits/, (p, s, sql) => {
+    const param = (column: string) => {
+      const found = new RegExp(`\\b${column} = \\$(\\d+)`).exec(sql);
+      return found ? p[Number(found[1]) - 1] : undefined;
+    };
+    const cap = Number(/LIMIT (\d+)/.exec(sql)![1]);
+    const [subject, ipHash, outcome] = [param("subject"), param("ip_hash"), param("outcome")];
+    const rows = (s.public_hits ?? []).filter((row) => row.scope === p[0] && Date.parse(String(row.created_at)) >= Date.parse(String(p[1])) && (subject === undefined || row.subject === subject) && (ipHash === undefined || row.ip_hash === ipHash) && (outcome === undefined || row.outcome === outcome));
+    return [{ n: String(Math.min(rows.length, cap)) }];
+  }],
   [/GROUP BY sequence_id/, (p, s) => {
     const by = new Map<string, number>();
     for (const row of mine(s.enrollments, p).filter((e) => e.status === "running")) by.set(row.sequence_id, (by.get(row.sequence_id) ?? 0) + 1);
@@ -200,7 +211,10 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
       contacts: { email_status: "ok", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() },
       // Column defaults of migration 009 that the inserts rely on.
       lead_sources: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null },
-      client_leads: { phone: null, meta: {}, issue_id: null },
+      client_leads: { phone: null, meta: {}, issue_id: null, outcome: "new", value_minor: null, value_currency: null, outcome_at: null },
+      // Column defaults of migration 012 that the counters and the signing flow rely on.
+      event_keys: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_event_at: null },
+      sign_documents: { view_count: 0, reminders: 0 },
     },
   });
   (harness.ctx as unknown as { db: typeof db }).db = db;

@@ -59,7 +59,10 @@ import {
   table,
 } from "./db.js";
 import { LOCAL_BOARD_USER_ID, stageStopsEnrollments, type AccountDraft, type ContactDraft, type DealDraft, type EmailStatus } from "./domain.js";
+import { isCanaryId } from "./canary-flag.js";
 import { deleteCareDataOfClient } from "./care-store.js";
+import { insertRevenue } from "./attribution-store.js";
+import { deleteGrowthDataOfClient } from "./growth-erase.js";
 import { deleteLeadDataOfClient } from "./lead-store.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { LEGACY_ORIGINS, originFor } from "./origins.js";
@@ -447,15 +450,25 @@ function asInvoicePaid(payload: unknown): InvoicePaid | null {
 export async function handleInvoicePaid(ctx: PluginContext, companyId: string, invoice: InvoicePaid): Promise<Record<string, unknown>> {
   let kind = invoice.clientKind;
   let ref = invoice.clientRef;
-  if ((!kind || !ref) && invoice.dealId) {
+  let canary = isCanaryId(ref);
+  if (invoice.dealId) {
     const deal = await getDeal(ctx, invoice.dealId);
     if (deal && deal.companyId === companyId) {
-      kind = deal.accountId ? "company" : deal.contactId ? "contact" : null;
-      ref = deal.accountId ?? deal.contactId ?? null;
+      if (!kind || !ref) {
+        kind = deal.accountId ? "company" : deal.contactId ? "contact" : null;
+        ref = deal.accountId ?? deal.contactId ?? null;
+      }
+      if (isCanaryId(ref) || isCanaryId(deal.accountId) || isCanaryId(deal.contactId) || deal.custom?.canary === true) canary = true;
     }
   }
+  const known = kind && ref ? await clientRecord(ctx, companyId, kind, ref) : null;
+  // The plugin's own flag only (`custom.canary`, set when the canary client is made): a person's tag on a real client must never hide its payment.
+  if (known && (isCanaryId(known.id) || known.custom?.canary === true)) canary = true;
+  // The payment is kept as a revenue row (once per Billing key) so the attribution report can credit it to the channel that brought the customer.
+  // The canary's test payment is not revenue: it is logged on the canary client below like any payment, but never counted in the report.
+  if (!canary) await insertRevenue(ctx, companyId, { key: invoice.key, invoiceId: invoice.invoiceId || null, number: invoice.number, dealId: invoice.dealId ?? null, clientKind: kind, clientRef: ref, totalMinor: invoice.totalMinor, currency: invoice.currency, paidAt: invoice.paidAt }).catch((error) => ctx.logger.info("CRM revenue row not saved", { key: invoice.key, error: message(error) }));
   if (!kind || !ref) return { logged: false, reason: "No client on the invoice" };
-  const client = await clientRecord(ctx, companyId, kind, ref);
+  const client = known;
   if (!client) return { logged: false, reason: `Client ${refOf(kind, ref)} is not in the CRM` };
   const becameCustomer = client.lifecycle !== "customer";
   if (becameCustomer) {
@@ -627,6 +640,7 @@ export async function deleteCompanyRecord(ctx: PluginContext, companyId: string,
   await deleteServiceSteps(ctx, companyId, "company", account.id);
   // The client's care data (reports, requests, cases, feedback, health, sensitivity, monitoring) goes with it.
   await deleteCareDataOfClient(ctx, companyId, { kind: "company", id: account.id });
+  await deleteGrowthDataOfClient(ctx, companyId, { kind: "company", id: account.id });
   await ctx.db.execute(`DELETE FROM ${table(ctx, "companies")} WHERE company_id = $1 AND id = $2`, [companyId, account.id]);
   // People who worked there are re-shared so the other modules drop the link.
   for (const link of links) await ctx.db.execute(`UPDATE ${table(ctx, "contacts")} SET updated_at = now() WHERE id = $1`, [link.contactId]);

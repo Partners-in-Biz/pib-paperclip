@@ -18,6 +18,8 @@ import { onClientMailReply, settleStuckMessages } from "./care-approvals.js";
 import { approvalsByStatus, listActionsByStatus } from "./care-store.js";
 import { clientActionsHealth, repliedActionItems, runActionReminders } from "./client-actions.js";
 import { clientsAtRiskHealth, runHealthScores } from "./health-score.js";
+import { esignHealth, runEsignCare } from "./esign.js";
+import { syncAllPages } from "./esign-sync.js";
 import { asMailReceived, matchContact } from "./mail.js";
 import { runSiteMonitor, siteMonitorHealth } from "./monitor.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -73,11 +75,13 @@ export interface CareRun {
   reminders: number;
   settled: number;
   reports: number;
+  /** E-sign: documents expired, reminders drafted, signed documents finished. */
+  esign: number;
 }
 
 /** Every 15 minutes. `now` is the clock (tests set it). */
 export async function runClientCareJob(ctx: PluginContext, now = new Date()): Promise<CareRun> {
-  const total: CareRun = { companies: 0, breaches: 0, reminders: 0, settled: 0, reports: 0 };
+  const total: CareRun = { companies: 0, breaches: 0, reminders: 0, settled: 0, reports: 0, esign: 0 };
   const hourly = now.getUTCMinutes() < 15;
   const sast = new Date(now.getTime() + 2 * 3_600_000);
   total.companies = await eachCompany(ctx, "client care", async (companyId) => {
@@ -99,6 +103,10 @@ export async function runClientCareJob(ctx: PluginContext, now = new Date()): Pr
       const run = await runActionReminders(ctx, companyId, now);
       total.reminders += run.drafted;
     });
+    await step("e-sign", async () => {
+      const run = await runEsignCare(ctx, companyId, now);
+      total.esign += run.expired + run.reminders + run.escalated + run.effects;
+    });
     // The 1st is the monthly job's; days 2 to 10 catch up whatever it missed.
     if (hourly && sast.getUTCDate() >= 2 && sast.getUTCDate() <= 10) {
       await step("report catch-up", async () => void (total.reports += (await runMonthlyReports(ctx, companyId, now, 8)).opened));
@@ -108,6 +116,8 @@ export async function runClientCareJob(ctx: PluginContext, now = new Date()): Pr
       await step("register", async () => void (await seedRegister(ctx, companyId)));
     }
   });
+  // The signing pages are files that a deploy removes: written again from the records (one pass for every company).
+  await syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages sync failed", { error: error instanceof Error ? error.message : String(error) }));
   return total;
 }
 
@@ -170,6 +180,7 @@ export async function careHealth(ctx: PluginContext, companyId: string): Promise
   await add("customer health", () => clientsAtRiskHealth(ctx, companyId));
   await add("reports", () => reportsHealth(ctx, companyId));
   await add("privacy", () => privacyHealth(ctx, companyId));
+  await add("e-sign", () => esignHealth(ctx, companyId));
   return checks;
 }
 

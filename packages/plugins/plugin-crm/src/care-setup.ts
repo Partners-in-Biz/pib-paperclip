@@ -9,6 +9,12 @@ import { customerClients } from "./care-clients.js";
 import { previousPeriod, periodLabel } from "./report-render.js";
 import { reportsOfPeriod } from "./care-store.js";
 import { table } from "./db.js";
+import { esignSetupItem } from "./esign.js";
+import { dateLabel } from "./esign-render.js";
+import { eventInstallSteps, eventUrls } from "./events-embed.js";
+import { urlsFor } from "./lead-capture.js";
+import { listEventKeys } from "./site-events-store.js";
+import { crmLink } from "./refs.js";
 import { REGISTER, ruleOf } from "./register.js";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -88,5 +94,37 @@ export async function careSetupItems(ctx: PluginContext, companyId: string, fact
     ],
     agentNext: "The register marks each system cleared, conditional or not cleared for a client flagged sensitive, and the Cockpit and routing read that. Once an agreement is on file the system can be cleared.",
   });
+  // E-sign acceptance: an owner decision per client.
+  items.push(await esignSetupItem(ctx, companyId));
+  // Site visit counters: one line per key that is not the canary's, done once it has counted something.
+  items.push(...(await eventKeyItems(ctx, companyId).catch(() => [])));
   return items;
+}
+
+/**
+ * One line per site visit counter ("Count visits on acme.co.za"): done once the script has counted something. Putting the script on a
+ * client's site is a change to that site, so the steps say it needs the owner's OK and goes through the client's repo project.
+ */
+export async function eventKeyItems(ctx: PluginContext, companyId: string): Promise<SetupItem[]> {
+  const keys = (await listEventKeys(ctx, companyId)).filter((key) => key.status === "active" && !key.canary);
+  if (keys.length === 0) return [];
+  const base = await urlsFor(ctx, companyId).catch(() => null);
+  const urls = base ? eventUrls(base) : null;
+  return keys.map((key) => {
+    const counting = key.acceptedCount > 0;
+    const site = key.siteUrl ? key.siteUrl.replace(/^https?:\/\//, "") : null;
+    return {
+      key: `site-events:${key.id}`,
+      title: site ? `Count visits on ${site}` : `Count visits: ${key.label}`,
+      status: counting ? "done" : "missing",
+      required: false,
+      detail: counting
+        ? `Counting: ${key.acceptedCount} events so far${key.lastEventAt ? `, the last on ${dateLabel(key.lastEventAt)}` : ""}.`
+        : "Nothing counted yet: the script is not on the site. Putting it there changes the client's site, so it needs the owner's OK and goes through the client's repo project.",
+      href: key.clientKind && key.clientRef ? crmLink(null, key.clientKind, key.clientRef) : "/crm",
+      hrefLabel: key.clientKind ? "Open the client page" : "Open CRM",
+      steps: counting ? undefined : urls ? eventInstallSteps(key, urls, key.siteUrl) : ["Open the CRM page once (CRM in the sidebar) so the plugin learns its public address, then ask the agent for the snippet with list-event-keys."],
+      agentNext: "Once the first events arrive, the monthly client report shows visits, conversions and where they came from, and attribution-report credits enquiries and revenue to channels.",
+    } satisfies SetupItem;
+  });
 }

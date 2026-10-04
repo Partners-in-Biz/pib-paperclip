@@ -14,9 +14,13 @@ const UI_BASE = `/_plugins/${UUID}/ui/`;
 const TURNSTILE = { timezone: "Africa/Johannesburg", leads: { turnstileSiteKey: "0x4AAAAAAA", turnstileSecret: { type: "secret_ref", secretId: "sec-1" } } };
 
 describe("what the plugin declares for the public endpoint", () => {
-  it("asks for the webhooks.receive capability and declares one endpoint called lead", () => {
+  it("asks for the webhooks.receive capability and declares the public endpoints: the lead form, the signing page and the site events", () => {
     expect(manifest.capabilities).toContain("webhooks.receive");
-    expect(manifest.webhooks).toEqual([expect.objectContaining({ endpointKey: "lead", displayName: "Lead form" })]);
+    expect(manifest.webhooks).toEqual([
+      expect.objectContaining({ endpointKey: "lead", displayName: "Lead form" }),
+      expect.objectContaining({ endpointKey: "sign", displayName: "Signing page" }),
+      expect.objectContaining({ endpointKey: "ev", displayName: "Site events" }),
+    ]);
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("services-check");
     const names = (manifest.tools ?? []).map((tool) => tool.name);
     for (const name of ["create-lead-endpoint", "rotate-lead-key", "list-lead-sources", "update-lead-source", "start-new-client", "create-canary-client", "cleanup-canary"]) expect(names).toContain(name);

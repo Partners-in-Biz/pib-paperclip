@@ -12,6 +12,8 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { CANARY_DOMAIN, CANARY_NAME, CANARY_RULES, CANARY_TAG, canaryAccountId, canaryContactId, canaryEmail, isCanaryAccount, isCanaryContact, isCanaryEmail } from "./canary-flag.js";
 import { deleteCareDataOfClient } from "./care-store.js";
+import { deleteRevenueOfDeals } from "./attribution-store.js";
+import { deleteGrowthDataOfClient } from "./growth-erase.js";
 import { getAccount, getContact, insertAccount, insertContact, insertLink, listDeals, listLinks, table } from "./db.js";
 import { createAccount, createContact, CrmError, linkContact, type Viewer } from "./domain.js";
 import { deleteCompanyRecord } from "./handoffs.js";
@@ -25,9 +27,11 @@ export const CANARY_JOURNEY: readonly string[] = [
   "Lead: send one test enquiry to the canary form (leadForm.curl, with an address ending @canary.invalid). It shows under Leads from their channels on the canary client's page and opens a lead issue.",
   "Qualify: log what you found on the client (`log-activity`) and set the contact's lifecycle to prospect.",
   "Quote: `create-deal` for the canary company, then draft the quote in Billing (`pib-invoice-draft`) with the deal id. Say in the request that it is the canary. Approvals run as usual.",
+  "Sign: `create-sign-document` (template proposal) for the canary company with the deal, then `send-for-signature` (the plugin must know its public address, so open the CRM page once first) and approve the email as usual (it is a dry run: nothing is queued). `get-sign-document` returns the canary's own link; open it, type a name, tick the box and sign. Then `verify-sign-document` must say ok, the deal moves to won and `deal.accepted` goes to Billing. Never ask for a real client's link: you will not be given one.",
   "Won: accept the quote in Billing; the CRM moves the deal to won and the Cockpit opens the onboarding issue once.",
   "Invoice: convert the accepted quote to an invoice in Billing as a draft. Never send it.",
-  "Payment proof: record the payment as a test payment in Billing; the CRM logs invoice.paid on the client.",
+  "Payment proof: record the payment as a test payment in Billing; the CRM logs invoice.paid on the client. A test payment is never counted as revenue: it is not in the attribution report or the goal numbers, and `cleanup-canary` removes any trace of it.",
+  "Site events and attribution: `create-event-key` for the canary company, send one test event (`install.curl`), then `site-events-report` shows the visit and `attribution-report` shows the lead under its channel. Install nothing on any site.",
   "Care: `open-support-case` for the canary (answer it and resolve it), `create-client-action` with an https link, then `build-client-report` and `send-client-report`. Each email goes through its approval as usual, and because the address ends @canary.invalid the send is a dry run: the action waits, the report shows as a dry run.",
   "Clean up: `cleanup-canary` with confirm true.",
 ];
@@ -119,6 +123,8 @@ export async function cleanupCanary(ctx: PluginContext, viewer: Viewer, params: 
   }
   if (dealIds.length) {
     await ctx.db.execute(`DELETE FROM ${table(ctx, "deal_products")} WHERE company_id = $1 AND deal_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, [companyId, ids(dealIds)]);
+    // A payment that named only a canary deal (no client on the invoice) is a test payment too: it leaves no revenue behind.
+    await deleteRevenueOfDeals(ctx, companyId, dealIds);
     await ctx.db.execute(`DELETE FROM ${table(ctx, "deals")} WHERE company_id = $1 AND id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, [companyId, ids(dealIds)]);
   }
   await ctx.db.execute(`DELETE FROM ${table(ctx, "activities")} WHERE company_id = $1 AND record_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, [companyId, ids(recordIds)]);
@@ -140,6 +146,7 @@ export async function cleanupCanary(ctx: PluginContext, viewer: Viewer, params: 
   await ctx.db.execute(`DELETE FROM ${table(ctx, "consent_records")} WHERE company_id = $1 AND sender_key = $2`, [companyId, `company:${accountId}`]);
   for (const contactId of flagged) {
     await deleteCareDataOfClient(ctx, companyId, { kind: "contact", id: contactId });
+    await deleteGrowthDataOfClient(ctx, companyId, { kind: "contact", id: contactId });
     await ctx.db.execute(`DELETE FROM ${table(ctx, "client_profiles")} WHERE company_id = $1 AND client_kind = 'contact' AND client_ref = $2`, [companyId, contactId]);
     await ctx.db.execute(`DELETE FROM ${table(ctx, "consent_records")} WHERE company_id = $1 AND contact_id = $2`, [companyId, contactId]);
   }

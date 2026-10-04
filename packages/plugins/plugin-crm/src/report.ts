@@ -54,6 +54,8 @@ import { brandName, companyPrefix, crmLink, refOf } from "./refs.js";
 import { currentPeriod, EMPTY_NARRATIVE, escapeHtml, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type MissingModule, type ReportData, type ReportSection } from "./report-render.js";
 import { teamAssignee } from "./routing.js";
 import { SERVICES } from "./services.js";
+import { growthSection } from "./attribution.js";
+import { listEventKeys } from "./site-events-store.js";
 import { clientProjectIds, getClientProfile, listClientLeads } from "./store.js";
 
 const DAY_MS = 86_400_000;
@@ -179,6 +181,13 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
     const bySource = new Map<string, number>();
     for (const lead of leadsInMonth) bySource.set(lead.source, (bySource.get(lead.source) ?? 0) + 1);
     sections.push({ module: "leads", title: "Enquiries for your business", source: "crm", headline: [{ label: "Enquiries received", value: String(leadsInMonth.length), delta: null }], bullets: [...bySource.entries()].map(([source, n]) => `${n} from ${source === "form" ? "your website form" : source}`) });
+  }
+
+  // Where the enquiries and the site's visitors came from (site events and the client's forms): only when there is something to say.
+  const growth = await safe(ctx, "growth", () => growthSection(ctx, companyId, client, period), null as ReportSection | null);
+  if (growth) {
+    sections.push(growth);
+    have.add("growth");
   }
 
   // Billing: when Billing sent nothing, what the CRM saw (payments it was told about).
@@ -589,12 +598,14 @@ export function reportHasSubstance(data: ReportData): boolean {
 export async function worthReporting(ctx: PluginContext, companyId: string, info: ClientInfo, period?: string, now = new Date()): Promise<boolean> {
   if (isInternalClient(info)) return false;
   if (await hasActiveService(ctx, companyId, info.key)) return true;
-  const [signals, sites, projects] = await Promise.all([
+  const [signals, sites, projects, eventKeys] = await Promise.all([
     listSignals(ctx, companyId, info.key).catch(() => []),
     listMonitorSites(ctx, companyId).catch(() => []),
     clientProjectIds(ctx, companyId, info.key.kind, info.key.id).catch(() => [] as string[]),
+    listEventKeys(ctx, companyId, { kind: info.key.kind, id: info.key.id }).catch(() => []),
   ]);
-  const candidate = signals.length > 0 || sites.some((site) => site.client.kind === info.key.kind && site.client.id === info.key.id) || projects.length > 0;
+  // A site with a visit counter has numbers to report; whether this month has any is decided below.
+  const candidate = signals.length > 0 || eventKeys.length > 0 || sites.some((site) => site.client.kind === info.key.kind && site.client.id === info.key.id) || projects.length > 0;
   if (!candidate || !period) return candidate;
   return reportHasSubstance(await gatherReportData(ctx, companyId, info, period, now));
 }

@@ -37,7 +37,8 @@
     if (fields.indexOf("email") < 0) fields.splice(1, 0, "email");
     var utm = {};
     for (var k = 0; k < UTM_KEYS.length; k += 1) if (out[UTM_KEYS[k]]) utm[UTM_KEYS[k]] = out[UTM_KEYS[k]];
-    return {
+    var touches = { first: parseTouch(out.ft), last: parseTouch(out.lt) };
+    var result = {
       key: out.k || "",
       consentText: out.c || DEFAULT_CONSENT,
       privacyUrl: /^https?:\/\//i.test(out.p || "") ? out.p : "",
@@ -50,6 +51,21 @@
       landingUrl: out.l || "",
       utm: utm,
     };
+    if (touches.first || touches.last) result.touches = touches;
+    return result;
+  }
+
+  /** A remembered touch the loader passed (JSON in the fragment), cut to the fields the endpoint reads; null when there is none or it is not one. */
+  function parseTouch(text) {
+    if (!text) return null;
+    try {
+      var value = JSON.parse(text);
+      if (!value || typeof value !== "object") return null;
+      var out = { s: String(value.s || "").slice(0, 60), m: String(value.m || "").slice(0, 60), c: String(value.c || "").slice(0, 60), r: String(value.r || "").slice(0, 100), k: value.k === "g" || value.k === "m" || value.k === "f" ? value.k : "" };
+      return out.s || out.m || out.c || out.r || out.k ? out : null;
+    } catch (error) {
+      return null;
+    }
   }
 
   /** What the visitor must fix before sending: field name -> message. Empty when it is fine to send. */
@@ -82,6 +98,8 @@
       var field = config.fields[i];
       if (field !== "email" && values[field]) payload[field] = String(values[field]).trim();
     }
+    // Only a visitor whose site remembered earlier visits (with their consent) brings a first and last touch.
+    if (config.touches && (config.touches.first || config.touches.last)) payload.touches = { first: config.touches.first, last: config.touches.last };
     return payload;
   }
 

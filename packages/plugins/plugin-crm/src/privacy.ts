@@ -49,6 +49,7 @@ import {
 import { recordConsent } from "./consent.js";
 import { contactsByEmail, getAccount, getContact, listDeals, listSequences, sequenceDelivery, enrollmentsForSequence, asRecord, table } from "./db.js";
 import { CrmError, type ContactDraft, type Viewer } from "./domain.js";
+import { deleteGrowthDataOfClient, eraseSignDocsOfPerson, signDocsOfEmails } from "./growth-erase.js";
 import { emitSuppressed, setEmailStatus } from "./handoffs.js";
 import { consentsOfSubject, deleteLeadDataOfClient, eraseFormData, getConsent, putConsent } from "./lead-store.js";
 import { requireClient } from "./lookup.js";
@@ -248,12 +249,14 @@ export interface PersonData {
   issueIds: string[];
   /** Rows the CRM keeps for them as a client (a sole trader is a client under their own contact id), for the approval a person reads. */
   clientRecords: number;
+  /** Documents sent to their address to sign, and how many of them are signed (those stay as the agreement's evidence). */
+  documents: { total: number; signed: number };
 }
 
 /** Every table whose rows are keyed to a client by (client_kind, client_ref). */
 const CLIENT_KEYED_TABLES = [
   "client_signals", "client_reports", "client_actions", "support_cases", "client_feedback", "client_health", "client_sensitivity", "care_approvals",
-  "client_profiles", "client_projects", "client_leads", "service_onboarding", "lead_sources", "client_sites",
+  "client_profiles", "client_projects", "client_leads", "service_onboarding", "lead_sources", "client_sites", "sign_documents", "event_keys", "esign_clients",
 ] as const;
 
 /** How many rows the CRM keeps for one contact as a client: what `eraseClientRecordsOfContact` will remove. Read only. */
@@ -275,8 +278,9 @@ function mentions(payload: unknown, person: Person): boolean {
 
 export async function collectPersonData(ctx: PluginContext, companyId: string, person: Person): Promise<PersonData> {
   const contactIds = person.contacts.map((contact) => contact.id);
-  const data: PersonData = { person, links: [], activities: [], facts: [], enrollments: [], consent: [], clientLeads: [], deals: [], cases: [], clientActions: [], feedback: [], approvals: [], handoffIds: [], outboxKeys: [], heldLeadIds: [], decisionIds: [], issueIds: [], clientRecords: 0 };
+  const data: PersonData = { person, links: [], activities: [], facts: [], enrollments: [], consent: [], clientLeads: [], deals: [], cases: [], clientActions: [], feedback: [], approvals: [], handoffIds: [], outboxKeys: [], heldLeadIds: [], decisionIds: [], issueIds: [], clientRecords: 0, documents: { total: 0, signed: 0 } };
   for (const contactId of contactIds) data.clientRecords += await clientRecordCount(ctx, companyId, contactId);
+  data.documents = await signDocsOfEmails(ctx, companyId, person.emails);
   if (contactIds.length) {
     const links = await ctx.db.query<{ account_id: string; role_label: string }>(`SELECT account_id, role_label FROM ${table(ctx, "contact_companies")} WHERE company_id = $1 AND contact_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))) LIMIT 100`, [companyId, ids(contactIds)]);
     for (const link of links) data.links.push({ accountId: link.account_id, company: (await getAccount(ctx, link.account_id))?.name ?? null, role: link.role_label });
@@ -335,6 +339,7 @@ export function personDataCounts(data: PersonData): Record<string, number> {
     emails_drafted_or_queued: data.approvals.length + data.outboxKeys.length,
     records_kept_for_them_as_a_client: data.clientRecords,
     issues_mentioning_them: data.issueIds.length,
+    ...(data.documents.total > 0 ? { documents_sent_to_sign: data.documents.total } : {}),
   };
 }
 
@@ -430,6 +435,8 @@ async function eraseClientRecordsOfContact(ctx: PluginContext, companyId: string
   await deleteServiceSteps(ctx, companyId, "contact", contactId);
   await deleteClientProfile(ctx, companyId, "contact", contactId);
   removed += (await ctx.db.execute(`DELETE FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND client_kind = 'contact' AND client_ref = $2`, [companyId, contactId]))?.rowCount ?? 0;
+  // Documents they were sent to sign, the site counters and the cost records kept for them as a client (a signed agreement stays: see growth-erase.ts).
+  removed += (await deleteGrowthDataOfClient(ctx, companyId, { kind: "contact", id: contactId })).removed;
   return removed;
 }
 
@@ -491,6 +498,9 @@ export async function eraseSubjectInCrm(ctx: PluginContext, companyId: string, p
   let clientRecords = 0;
   for (const contactId of contactIds) clientRecords += await eraseClientRecordsOfContact(ctx, companyId, contactId);
   add("client_records", clientRecords);
+  const documents = await eraseSignDocsOfPerson(ctx, companyId, person.emails);
+  add("documents_sent_to_sign", documents.removed);
+  if (documents.keptSigned) retained.push({ what: `${documents.keptSigned} signed document${documents.keptSigned === 1 ? "" : "s"} (the text, the signature and the audit trail)`, why: "A signed agreement is a business record and the evidence of what was agreed. It is kept; only a lawyer's advice should change that." });
   add("company_links", await removeRows(ctx, "contact_companies", "contact_id", companyId, contactIds));
   add("shares", await removeRows(ctx, "record_grants", "record_id", companyId, contactIds));
   add("issues_blanked", await redactIssues(ctx, companyId, data.issueIds));

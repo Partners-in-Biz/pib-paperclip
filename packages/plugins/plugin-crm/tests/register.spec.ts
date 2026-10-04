@@ -22,7 +22,7 @@ describe("the data-processing register file", () => {
   it("names every system the owner listed, each with its region, retention, agreement, safeguards and rule for sensitive clients", () => {
     const ids = REGISTER.rows.map((row) => row.id);
     for (const system of ["anthropic", "hermes-nous", "typesafe", "resend", "google", "cloudflare-r2", "hetzner", "github", "vercel", "firebase"]) expect(ids, system).toContain(system);
-    expect(REGISTER.version).toBe("2026-10-03");
+    expect(REGISTER.version).toBe("2026-10-04");
     for (const row of REGISTER.rows) {
       expect(row.region.length, row.id).toBeGreaterThan(1);
       expect(row.retention.length, row.id).toBeGreaterThan(1);
@@ -86,7 +86,7 @@ describe("the register table", () => {
   it("is read through a tool that cannot change it, and can be narrowed to what a sensitive client must avoid", async () => {
     const { harness } = await bootCare();
     const all = await tool<Record<string, any>>(harness, "list-data-processing", {});
-    expect(all).toMatchObject({ version: "2026-10-03", count: REGISTER.rows.length });
+    expect(all).toMatchObject({ version: "2026-10-04", count: REGISTER.rows.length });
     expect(all.agreementsUnverified).toBeGreaterThan(5);
     expect(all.systems.find((s: any) => s.id === "hetzner")).toMatchObject({ name: expect.stringMatching(/Hetzner/), sensitiveClients: expect.stringMatching(/^cleared/) });
     const avoid = await tool<Record<string, any>>(harness, "list-data-processing", { forSensitiveClient: true });

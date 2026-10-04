@@ -96,6 +96,8 @@ export function asLeadExtras(value: unknown): LeadExtras | null {
       pageUrl: pick("pageUrl"),
       referrer: pick("referrer"),
       landingUrl: pick("landingUrl"),
+      // The remembered first and last touch, only when the lead came with them.
+      ...Object.fromEntries(["ftSource", "ftMedium", "ftCampaign", "ftReferrer", "ftClick", "ltSource", "ltMedium", "ltCampaign", "ltReferrer", "ltClick"].flatMap((name) => (pick(name) ? [[name, pick(name)]] : []))),
     },
     consent: body.consent === true,
     consentText: str(body.consentText, 500),

@@ -28,8 +28,9 @@ import {
   type ApprovalRecord,
   type ClientKey,
 } from "./care-store.js";
-import { contactsByEmail } from "./db.js";
+import { contactsByEmail, table } from "./db.js";
 import { textToHtml } from "./domain.js";
+import { displayDraftText } from "./esign-render.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { companyPrefix, issueLink } from "./refs.js";
 
@@ -91,7 +92,9 @@ export function approvalDescription(request: Pick<ApprovalRequest, "intro" | "dr
   const draft = request.draft;
   if (draft) {
     const to = draft.to.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(", ");
-    const body = draft.text.length > 6_500 ? `${draft.text.slice(0, 6_500)}\n\n[...the full email is stored with the approval]` : draft.text;
+    // A placeholder the system fills when the email is approved (a private signing link) is shown as a note: nobody reading this sees the link.
+    const shown = displayDraftText(draft.text);
+    const body = shown.length > 6_500 ? `${shown.slice(0, 6_500)}\n\n[...the full email is stored with the approval]` : shown;
     lines.push("", `**To:** ${to}`, `**Subject:** ${draft.subject}`, "", "---", body, "---");
   }
   lines.push("", doneNote);
@@ -226,8 +229,10 @@ export interface SendOutcome {
  * answers with `mail.send.result`). An email to canary addresses only is a dry
  * run: nothing is queued, and the caller applies its effects as if it was sent.
  */
-export async function sendApproved(ctx: PluginContext, approval: ApprovalRecord, decidedBy: string): Promise<SendOutcome> {
-  const draft = approval.payload.draft as MailDraft | undefined;
+export async function sendApproved(ctx: PluginContext, approval: ApprovalRecord, decidedBy: string, options: { draft?: MailDraft } = {}): Promise<SendOutcome> {
+  // A signing email's draft is completed at this moment (the private link is made now): the caller passes the finished draft. Its text goes
+  // to the Mailbox outbox below, which is where the link lives until the Mailbox answers (`scrubSettledBody` then blanks it).
+  const draft = options.draft ?? (approval.payload.draft as MailDraft | undefined);
   if (!draft) throw new Error("This approval has no email to send.");
   await checkRecipients(ctx, approval.companyId, approval.kind, draft);
   if (draft.to.every((to) => isCanaryEmail(to.email))) {
@@ -253,6 +258,18 @@ export async function sendApproved(ctx: PluginContext, approval: ApprovalRecord,
   await enqueue(ctx, approval.companyId, MAIL_EVENTS.sendRequested, payload as unknown as { key: string } & Record<string, unknown>);
   await updateApproval(ctx, approval.companyId, approval.id, { status: "approved", decidedBy, sendKey: key, error: null });
   return { status: "queued", key };
+}
+
+/**
+ * Blanks the text and html of an outbox row once it is settled (the Mailbox answered, or the outbox gave up), so a finished message
+ * does not sit in the CRM's own outbox for good. A signing email carries a live link (the page id and the token), so this is what keeps
+ * the CRM from holding one after the send. A pending row is left alone: the redeliver job still has to send it. The Mailbox keeps its own
+ * copy of what it sent (that is the Mailbox's to scrub), so this is one of two places the link lives, not a promise that none does.
+ * Returns whether a settled row was blanked.
+ */
+export async function scrubSettledBody(ctx: PluginContext, key: string): Promise<boolean> {
+  const res = await ctx.db.execute(`UPDATE ${table(ctx, "outbox")} SET payload = payload - 'text' - 'html' WHERE key = $1 AND status <> 'pending'`, [key]);
+  return (res?.rowCount ?? 0) > 0;
 }
 
 /** What a feature does when the person decided its email, or the Mailbox answered. `care-approvals.ts` calls these. */

@@ -25,6 +25,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { DoneCheckIssue, DoneCheckResult, DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
 import { clientContacts, clientInfo } from "./care-clients.js";
 import { actionResolved } from "./client-actions.js";
+import { esignIssueResolved } from "./esign.js";
 import { siteIssueResolved } from "./monitor.js";
 import { reportIssueResolved } from "./report.js";
 import { breachResolved, caseIssueResolved } from "./support.js";
@@ -308,6 +309,8 @@ export const CRM_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: CRM_ORIGINS.clientActionStale, label: "A client has not answered", check: (issue, ctx) => actionResolved(ctx, issue.companyId, issue.originId ?? "") },
   { originPrefix: CRM_ORIGINS.churnRisk, label: "Churn risk", check: (issue, ctx) => checkChurnRisk(ctx, issue) },
   { originPrefix: CRM_ORIGINS.feedbackLow, label: "Unhappy client", check: (issue, ctx) => checkFeedbackLow(ctx, issue) },
+  { originPrefix: CRM_ORIGINS.esign, label: "A document to sign", check: (issue, ctx) => esignIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
+  { originPrefix: CRM_ORIGINS.esignStale, label: "A client has not signed", check: (issue, ctx) => esignIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
   { originPrefix: CRM_ORIGINS.siteDown, label: "Site down", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
   { originPrefix: CRM_ORIGINS.siteTls, label: "Certificate about to expire", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },
   { originPrefix: CRM_ORIGINS.siteDomain, label: "Domain about to expire", check: (issue, ctx) => siteIssueResolved(ctx, issue.companyId, issue.originId ?? "") },

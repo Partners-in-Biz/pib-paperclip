@@ -2,6 +2,7 @@ import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
 import { CARE_REFERENCE_FILES, CLIENT_CARE_SECTION } from "./skills-care.js";
+import { GROWTH_REFERENCE_FILES, GROWTH_SECTION } from "./skills-growth.js";
 import { DATA_STEWARD_SKILL, DEAL_DESK_SKILL, INBOUND_QUALIFY_SKILL, SALES_LEAD_SKILL } from "./skills-sales.js";
 import { CLIENT_SITES_SKILL, IOS_RELEASE_SKILL } from "./skills-sites.js";
 
@@ -34,12 +35,13 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 ## Services, the brand kit and proposals
 - **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
 - **Brand kit** (\`update-client-profile\`): logoKey (an R2 key inside this company's folder, such as social/<company id>/logo.png: the CRM keeps the key only), primaryColor, secondaryColor, accentColor (hex), fonts, toneExamples (short pieces in their voice). Use them for anything made for the client.
-- **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). There is no e-sign: a person gets the signed copy by email or in person and logs it on the client.
+- **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
 ## Starting a new client
 \`start-new-client\` (client, optionally projectId and services) links the project and returns what is still to do for the Delivery Lead and for you: project and git workspace, the development branch rule, the agent guide, website, lead form, brand kit, one step per service, one grant ask, billing. The project and repo are made by the ops tool new-client-project.py, which then calls \`crm.link-client-project\`. Details and the contract: \`references/new-client.md\`.
 
 ${CLIENT_CARE_SECTION}
+${GROWTH_SECTION}
 ## The canary client
 Acceptance runs use one internal test client (\`create-canary-client\`, \`cleanup-canary\`). Anything flagged canary is a draft or a dry run: no real send, post, invoice or payment, and its address ends @canary.invalid. Rules and the journey: \`references/canary.md\`.
 
@@ -116,6 +118,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/new-client.md", content: NEW_CLIENT_REFERENCE },
       { path: "references/canary.md", content: CANARY_REFERENCE },
       ...CARE_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
+      ...GROWTH_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
     ],
   },
   {

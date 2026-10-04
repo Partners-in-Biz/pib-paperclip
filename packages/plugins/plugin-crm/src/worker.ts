@@ -186,9 +186,19 @@ import { originFor } from "./origins.js";
 import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
 import { clientLeadForms, createLeadEndpoint, handleLeadWebhook, listLeadSourcesTool, makeLeadSecret, retryClientLeadIssues, rotateLeadKey, updateLeadSource } from "./lead-capture.js";
 import { purgeHits } from "./lead-store.js";
+import { purgePublicHits } from "./esign-store.js";
+import { dayOf, ROLLUP_KEEP_DAYS } from "./site-events-form.js";
+import { purgeRollup } from "./site-events-store.js";
 import { cleanupCanary, ensureCanaryClient } from "./canary.js";
 import { onCareApprovalIssue, onCareSendResult } from "./care-approvals.js";
 import { CARE_TOOL_NAMES, clientCareView, isCareTool, runCareTool } from "./care-dispatch.js";
+import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } from "./esign-dispatch.js";
+import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
+import { handleSignWebhook } from "./esign-public.js";
+import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
+import { clientAgreementsAndGrowth } from "./growth-view.js";
+import { handleEventsWebhook } from "./site-events.js";
+import { syncAllPages } from "./esign-sync.js";
 import { onMailForCare, runClientCareJob, runClientHealthJob, runMonthlyReportJob, runSiteMonitorJob } from "./care-jobs.js";
 import { registerClientSignals } from "./client-signals.js";
 import { registerPrivacy } from "./privacy.js";
@@ -329,6 +339,16 @@ const plugin = definePlugin({
       registerAction(`crm.${name}`, async (params, context) => runCareTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
     }
 
+    // E-sign: every tool is also a page action `crm.<tool name>`; turning it on for a client is a person's action only.
+    for (const name of [...ESIGN_TOOL_NAMES, ...ESIGN_PERSON_ACTIONS]) {
+      registerAction(`crm.${name}`, async (params, context) => runEsignTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
+    }
+
+    // Attribution and site events: every tool is also a page action `crm.<tool name>` (`crm.attribution-report` and the rest).
+    for (const name of GROWTH_TOOL_NAMES) {
+      registerAction(`crm.${name}`, async (params, context) => runGrowthTool(ctx, await actionViewer(ctx, context), name, objectParams(params), actionSource(context)));
+    }
+
     // The CRM's roles (Setup → Team calls these; kit TEAM_ROLES "account-manager" and the sales roles, picked by `params.role`).
     registerAction("crm.hire-options", async (params, context) => {
       const role = crmRoleOf(params);
@@ -454,6 +474,9 @@ const plugin = definePlugin({
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
         await purgeHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
+        // The signing page's and the site events' request logs (keyed address hashes), and daily counts past their retention.
+        await purgePublicHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
+        await purgeRollup(ctx, dayOf(Date.now() - ROLLUP_KEEP_DAYS * 86_400_000)).catch(() => undefined);
         await linkPendingHires(ctx);
         await reemitAllHandoffs(ctx);
         await publishAllSetupStatus(ctx);
@@ -487,6 +510,8 @@ const plugin = definePlugin({
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
     await syncKnownCompanies(ctx);
+    // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
+    void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
     ctx.logger.info("CRM plugin ready");
   },
 
@@ -496,7 +521,16 @@ const plugin = definePlugin({
 
   /** The public lead form (`POST /api/plugins/partnersinbiz.crm/webhooks/lead`). Throws a plain message when the sender can fix something. */
   async onWebhook(input) {
-    if (!pluginCtx) throw new Error("The lead form is not ready yet. Please try again in a minute.");
+    if (!pluginCtx) throw new Error("The form is not ready yet. Please try again in a minute.");
+    // Three public endpoints, each checked on its own terms: the lead form, the signing page and (below) the site events.
+    if (input.endpointKey === SIGN_ENDPOINT_KEY) {
+      await handleSignWebhook(pluginCtx, input);
+      return;
+    }
+    if (input.endpointKey === EVENTS_ENDPOINT_KEY) {
+      await handleEventsWebhook(pluginCtx, input);
+      return;
+    }
     await handleLeadWebhook(pluginCtx, input);
   },
 
@@ -712,6 +746,8 @@ async function dispatch(
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);
+      if (isEsignTool(name)) return runEsignTool(ctx, viewer, name, body, source);
+      if (isGrowthTool(name)) return runGrowthTool(ctx, viewer, name, body, source);
       throw new CrmError(`Unknown CRM tool ${name}`);
   }
 }
@@ -957,18 +993,21 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       accountId: deal.accountId,
     }));
 
-  const [activities, profileRecord, clientLeads, sitesAndProjects, leadForms, care] = await Promise.all([
+  const [activities, profileRecord, clientLeads, sitesAndProjects, leadForms, care, agreementsAndGrowth] = await Promise.all([
     listActivities(ctx, ref.kind, ref.id, 50),
     getClientProfile(ctx, viewer.companyId, ref.kind, ref.id).catch(() => null),
     listClientLeads(ctx, viewer.companyId, ref.kind, ref.id, 20).catch(() => []),
     clientSitesAndProjects(ctx, viewer, ref, (account ?? contact)!.name),
     clientLeadForms(ctx, viewer.companyId, ref).catch(() => []),
     clientCareView(ctx, viewer.companyId, ref).catch(() => null),
+    clientAgreementsAndGrowth(ctx, viewer.companyId, ref).catch(() => ({ agreements: null, growth: null })),
   ]);
   return {
     ...base,
     found: true as const,
     care,
+    agreements: agreementsAndGrowth.agreements,
+    growth: agreementsAndGrowth.growth,
     company: account,
     contact,
     profile: profileRecord ? { ...pickProfile(profileRecord), humanOwned: profileRecord.humanOwned, updatedAt: profileRecord.updatedAt } : null,

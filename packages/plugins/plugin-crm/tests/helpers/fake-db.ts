@@ -83,6 +83,12 @@ function evalExpr(raw: string, params: unknown[], row?: Row): unknown {
   if (row && (m = /^EXCLUDED\.(\w+)$/i.exec(expr))) return row[m[1]!];
   // `count = count + 1`: a counter bumped in SQL.
   if (row && (m = /^(?:\w+\.)?(\w+)\s*\+\s*(\d+)$/.exec(expr)) && m[1]! in row) return Number(row[m[1]!]) + Number(m[2]);
+  // `payload - 'text' - 'html'`: keys dropped from a jsonb column in SQL.
+  if (row && (m = /^(?:\w+\.)?(\w+)((?:\s+-\s+'\w+')+)$/.exec(expr)) && m[1]! in row) {
+    const next = { ...(row[m[1]!] as Record<string, unknown>) };
+    for (const key of m[2]!.matchAll(/'(\w+)'/g)) delete next[key[1]!];
+    return next;
+  }
   if (row && (m = /^(?:\w+\.)?(\w+)$/.exec(expr)) && m[1]! in row) return row[m[1]!];
   throw new Error(`fake db: unsupported expression "${expr}"`);
 }
