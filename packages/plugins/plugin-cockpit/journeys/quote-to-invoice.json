@@ -1,8 +1,8 @@
 {
   "key": "quote-to-invoice",
-  "version": 3,
+  "version": 4,
   "title": "Deal, quote, accepted, invoice ready to send",
-  "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), the invoice drafted and the send routed to the Reviewer first. It stops at the approval: only a person approves a send, and the run cancels the canary's own approval afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
+  "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), Billing turning the accepted quote into a draft invoice by itself and routing the send to the Reviewer first. The journey only reads what Billing did; it does not convert or ask for the send. It stops at the approval: only a person approves a send, and the run cancels the canary's own approval afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
   "schedule": [
     "release",
     "on-demand"
@@ -167,12 +167,45 @@
       "ownerRole": "account-manager"
     },
     {
-      "id": "convert-quote",
-      "title": "Draft the invoice from the quote",
+      "id": "quote-converted",
+      "title": "Billing converted the accepted quote by itself",
       "kind": "tool",
-      "tool": "partnersinbiz.billing:convert-quote",
+      "tool": "partnersinbiz.billing:quote-detail",
       "input": {
         "quoteId": "{{quoteId}}"
+      },
+      "note": "Billing converts the quote when the deal is won, within seconds. If the quote is still accepted, wait 30 seconds and read it again once before recording. If it is still accepted then, record that: do not convert it yourself.",
+      "expect": [
+        {
+          "path": "quote.status",
+          "equals": "converted"
+        },
+        {
+          "path": "quote.convertedInvoiceId",
+          "notEmpty": true
+        },
+        {
+          "path": "quote.totalMinor",
+          "gte": 1
+        }
+      ],
+      "capture": {
+        "invoiceId": {
+          "path": "quote.convertedInvoiceId"
+        },
+        "quoteTotalMinor": {
+          "path": "quote.totalMinor"
+        }
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "invoice-drafted",
+      "title": "The invoice is a draft with the quote's total and the deal",
+      "kind": "tool",
+      "tool": "partnersinbiz.billing:invoice-detail",
+      "input": {
+        "invoiceId": "{{invoiceId}}"
       },
       "expect": [
         {
@@ -180,45 +213,38 @@
           "equals": "draft"
         },
         {
-          "path": "quote.status",
-          "equals": "converted"
+          "path": "invoice.totalMinor",
+          "equals": "{{quoteTotalMinor}}"
         },
         {
-          "path": "invoice.id",
-          "notEmpty": true
+          "path": "invoice.dealId",
+          "equals": "{{dealId}}"
         }
       ],
-      "capture": {
-        "invoiceId": {
-          "path": "invoice.id"
-        }
-      },
-      "note": "This call is the only one that converts the quote. If the answer is a refusal because the quote is already converted, record that error exactly as it came (as the error): do not retry and do not look for the invoice. Something else converted the quote, which a rehearsal must never cause, and that is the finding.",
       "ownerRole": "account-manager"
     },
     {
       "id": "invoice-send-approval",
-      "title": "Ask for the invoice to be sent: the approval reaches the Reviewer first",
+      "title": "The send approval Billing opened reaches the Reviewer first",
       "kind": "tool",
-      "tool": "partnersinbiz.billing:request-invoice-send",
+      "tool": "partnersinbiz.billing:invoice-detail",
       "input": {
-        "invoiceId": "{{invoiceId}}",
-        "sendTo": "canary@canary.invalid"
+        "invoiceId": "{{invoiceId}}"
       },
-      "note": "This opens an approval issue. Do NOT approve it, do not touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends.",
+      "note": "Billing routes the send approval when it drafts the invoice, so nothing is requested here. Do NOT approve it, do not touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends. If approvalIssueId is empty, record that as it is; do not call request-invoice-send to fill it.",
       "expect": [
         {
-          "path": "issueId",
-          "notEmpty": true
+          "path": "invoice.pendingAction",
+          "equals": "send"
         },
         {
-          "path": "pendingAction",
-          "equals": "send"
+          "path": "invoice.approvalIssueId",
+          "notEmpty": true
         }
       ],
       "probe": {
         "kind": "approval-route",
-        "idPath": "issueId",
+        "idPath": "invoice.approvalIssueId",
         "outward": true
       },
       "ownerRole": "account-manager"
