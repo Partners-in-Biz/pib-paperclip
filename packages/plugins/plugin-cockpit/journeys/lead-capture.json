@@ -1,6 +1,6 @@
 {
   "key": "lead-capture",
-  "version": 1,
+  "version": 2,
   "title": "Lead captured and qualified",
   "summary": "A visitor sends an enquiry to the client's lead form; it reaches the CRM and is qualified. The first leg of lead to cash, on the canary client. Runs every night: it creates no quote, invoice or approval.",
   "schedule": [
@@ -186,10 +186,10 @@
     },
     {
       "id": "close-lead-issue",
-      "title": "Close the lead issue the enquiry opened",
+      "title": "The lead issue the enquiry opened gets closed",
       "kind": "check",
       "input": {},
-      "note": "The enquiry opens a lead issue for the Account Manager that mentions the canary. Find it with the Paperclip API (open issues whose text mentions canary or Acceptance run {{runId}}), comment 'Closed by acceptance run {{runId}}: canary', set it done, and report {issueId}. If there is none, report error: no lead issue (the CRM promises one).",
+      "note": "The enquiry opens a lead issue (title starts 'Lead for') and wakes its assignee, usually the Inbound Qualifier, who checks it out and works it for a few minutes. Do NOT set it done yourself and never break the other agent's checkout: the host refuses it, and the qualifier needs the canary records this run still holds until cleanup. Find the issue with the Paperclip API (open issues whose text mentions canary or Acceptance run {{runId}}), then poll it every 30 seconds for up to 5 minutes and report {issueId} as soon as it is done or cancelled. Only if no agent has it checked out and no run of its assignee is live, comment 'Closed by acceptance run {{runId}}: canary' and set it done yourself. Still open after 5 minutes: report its issueId anyway, so the check fails with the status it is in (the qualifier did not finish: a real finding). If there is none, report error: no lead issue (the CRM promises one). Cleanup is the next step and runs after this one, so do not report until the issue is closed or the 5 minutes are up.",
       "expect": [
         {
           "path": "issueId",
