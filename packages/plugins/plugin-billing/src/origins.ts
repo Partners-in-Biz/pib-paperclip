@@ -17,6 +17,8 @@ export const WORK_ORIGINS = {
   dealWon: "billing:deal-won:",
   /** A supplier's invoice arrived by email, one per draft bill: `billing:bill-from-email:<billId>`. */
   billFromEmail: "billing:bill-from-email:",
+  /** A client signed a document (CRM e-sign), one per signed document: `billing:signed:<documentId>`. */
+  signed: "billing:signed:",
 } as const;
 
 /** Decisions only a person makes (the Reviewer may check first); never done-checked. */

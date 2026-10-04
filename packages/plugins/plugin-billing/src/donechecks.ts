@@ -12,9 +12,10 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
+import { getAcceptance } from "./accepted-store.js";
 import { iso } from "./balances.js";
 import { billingSettings } from "./config.js";
-import { asObject, getQuote, table } from "./db.js";
+import { asObject, getInvoice, getQuote, table } from "./db.js";
 import { draftsWaiting, overdueInvoices, type DraftItem, type OverdueItem } from "./followups.js";
 import { notedSince } from "./notes.js";
 import { originSubject, WORK_ORIGINS } from "./origins.js";
@@ -199,6 +200,43 @@ export async function checkDealWon(ctx: PluginContext, issue: DoneCheckIssue): P
   ]);
 }
 
+// ── A client signed (CRM e-sign) ───────────────────────────────────────────
+
+/**
+ * The invoice Billing drafted from a signed document is asked to send (or already sent, paid, cancelled or erased), or a note
+ * says why it will not be; or, when Billing found a difference and drafted nothing, an invoice now exists for the quote or deal,
+ * or a note on the quote, deal or invoice says why none will be made. A note counts when it was made since the issue opened.
+ */
+export async function checkSignedDocument(ctx: PluginContext, issue: DoneCheckIssue): Promise<DoneCheckResult> {
+  const documentId = originSubject(issue.originId, WORK_ORIGINS.signed);
+  const acceptance = documentId ? await getAcceptance(ctx, issue.companyId, documentId) : null;
+  if (!acceptance) return done;
+  const row = await getWorkIssue(ctx, issue.originId!);
+  const since = sinceOf(row, issue);
+  if (acceptance.status === "drafted" && acceptance.invoice_id) {
+    const invoice = await getInvoice(ctx, acceptance.invoice_id);
+    // An invoice that is gone (erased) or no longer a draft needs nothing more from the agent.
+    if (!invoice || invoice.company_id !== issue.companyId || invoice.status !== "draft" || invoice.pending_action === "send" || invoice.delivery_status === "queued") return done;
+    if ((await notedSince(ctx, issue.companyId, "invoice", [invoice.id], since)).size > 0) return done;
+    return notDone([
+      `Invoice ${invoice.number} (${formatMoneyMinor(Number(invoice.total_minor), invoice.currency)}, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet: check it with \`invoice-detail\`, then \`request-invoice-send\`. If it must not go out, say why with \`log-follow-up\` (invoiceId, note).`,
+    ]);
+  }
+  if (acceptance.status !== "needs_attention") return done;
+  const made = await ctx.db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM ${table(ctx, "invoices")} i
+      WHERE i.company_id = $1 AND i.status <> 'cancelled' AND ((i.quote_id IS NOT NULL AND i.quote_id = $2) OR (i.deal_id IS NOT NULL AND i.deal_id = $3))`,
+    [issue.companyId, acceptance.quote_id ?? "", acceptance.deal_id ?? ""],
+  );
+  if (Number(made[0]?.n ?? 0) > 0) return done;
+  if (acceptance.quote_id && (await notedSince(ctx, issue.companyId, "quote", [acceptance.quote_id], since)).size > 0) return done;
+  if (acceptance.deal_id && (await notedSince(ctx, issue.companyId, "deal", [acceptance.deal_id], since)).size > 0) return done;
+  const where = [acceptance.quote_id ? `quoteId \`${acceptance.quote_id}\`` : null, acceptance.deal_id ? `dealId \`${acceptance.deal_id}\`` : null].filter(Boolean).join(" or ");
+  return notDone([
+    `No invoice was drafted for the signed document \`${acceptance.document_id}\` and none exists yet for ${where || "it"}: sort out the difference this issue lists, then \`convert-quote\` or draft the invoice and \`request-invoice-send\`. If nothing will be invoiced, say why with \`log-follow-up\`${where ? ` (${where}, note)` : ""}.`,
+  ]);
+}
+
 // ── Complete the bill from an email ────────────────────────────────────────
 
 /** The drafted bill has its lines and an approval request, or is no longer a draft, or a note says it is not a bill. */
@@ -223,4 +261,5 @@ export const BILLING_DONE_CHECKS: DoneCheckRule[] = [
   { originPrefix: WORK_ORIGINS.quoteReply, label: "Quote reply", check: (issue, ctx) => checkQuoteReply(ctx, issue) },
   { originPrefix: WORK_ORIGINS.dealWon, label: "Deal won", check: (issue, ctx) => checkDealWon(ctx, issue) },
   { originPrefix: WORK_ORIGINS.billFromEmail, label: "Complete the bill", check: (issue, ctx) => checkBillFromEmail(ctx, issue) },
+  { originPrefix: WORK_ORIGINS.signed, label: "Signed document", check: (issue, ctx) => checkSignedDocument(ctx, issue) },
 ];

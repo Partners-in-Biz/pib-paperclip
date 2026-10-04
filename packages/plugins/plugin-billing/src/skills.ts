@@ -19,6 +19,7 @@ Never tell a customer an invoice is paid until \`invoice-detail\` shows status \
 | Issue | What to do | Done when |
 |---|---|---|
 | Deal won: … | Draft the quote, invoice or retainer (sections 2 to 4). | A quote, invoice or retainer is drafted for the deal or its client, or the deal's invoice is asked to send. Not billed? Say why with \`log-follow-up\` (dealId). |
+| Signed: … | A client signed a quote, proposal or agreement online. Billing drafted the invoice itself (never sent): check it with \`invoice-detail\` and ask for the send (section 3). When the issue says no invoice was drafted, the signed document and Billing differ: it lists exactly what, so make Billing match what was signed (section 2) or ask the owner. Never \`convert-quote\` or draft a second invoice for a signed document. | The invoice is waiting for approval, or cancelled with a \`log-follow-up\` note saying why. After a difference: an invoice exists for the quote or deal, or a note says why none will. |
 | Quote reply: Q-… | The customer answered a quote: accept and convert, decline, or answer with a Mailbox draft (section 2). | The quote's status changed, a new quote for the deal is drafted, or your drafted answer is logged with \`log-follow-up\` (quoteId, mailDraftId). |
 | Drafts to send (daily) | Drafts nobody asked to send, and accepted quotes not invoiced yet: check each, then ask to send. | No draft over a day old is left without a send request (a cancelled or deleted draft counts). |
 | Overdue invoices (weekly) | The next step for each overdue invoice (section 6). | Each listed invoice that needs a step has one: a reminder request, a payment check, a \`log-follow-up\` note, or it is paid. |
@@ -38,7 +39,7 @@ These issues update themselves, reopen when new work arrives and close when noth
 2. \`add-quote-line\` per item: description, quantity, \`unitAmountMinor\` (cents, excl. VAT unless \`pricesIncludeVat\`), \`taxCode\`. Fix it with \`remove-quote-line\` and \`update-quote\`.
 3. \`quote-detail\` to check it, then \`request-quote-send\`. A person approves; the Mailbox emails it with the PDF and it becomes \`sent\`.
 4. The customer replies and you get a "Quote reply" issue with the reply. Accepted: \`set-quote-status\` \`accepted\` (this tells the CRM, which marks the deal won). Declined: \`set-quote-status\` \`declined\`. A question or a change: answer with a Mailbox draft (\`partnersinbiz.mailbox:create-draft\` with \`replyToMessageId\`), then log it with \`log-follow-up\` (quoteId, note, mailDraftId); for a new price, draft a new quote with the same \`dealId\`.
-5. \`convert-quote\` makes a draft invoice with the same client, lines, VAT codes and deal. Then section 3, step 2.
+5. \`convert-quote\` makes a draft invoice with the same client, lines, VAT codes and deal. Then section 3, step 2. A quote the client signs online (CRM e-sign) is accepted and converted by Billing itself, after it checks the signed amount, client and deal against the quote: you get a \"Signed: …\" issue instead.
 
 ## 3. Invoice
 

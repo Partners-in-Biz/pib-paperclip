@@ -540,38 +540,65 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
   const companyId = requiredCompany(context);
   const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
   if (quote.status !== "accepted") throw new BillingError("Only an accepted quote can be converted to an invoice");
-  const { settings } = await loadBilling(ctx, companyId);
-  const customer = asObject(quote.customer);
-  const invoice: InvoiceRow = {
-    id: randomUUID(),
-    company_id: quote.company_id,
-    number: await nextDocumentNumber(ctx, companyId, "invoice", { kind: quote.customer_kind, ref: quote.customer_ref, name: String(customer.name ?? quote.customer_ref) }, settings),
-    status: "draft",
-    currency: quote.currency,
-    customer_kind: quote.customer_kind,
-    customer_ref: quote.customer_ref,
-    sender: asObject(quote.sender),
-    customer,
-    sender_snapshot: null,
-    customer_snapshot: null,
-    total_minor: Number(quote.total_minor),
-    tax_rate: Number(quote.tax_rate ?? 0),
-    due_at: defaultDueAt(settings),
-    approval_issue_id: null,
-    pending_action: null,
-    sent_at: null,
-    default_tax_code: quote.default_tax_code ?? null,
-    prices_include_vat: Boolean(quote.prices_include_vat),
-    notes: quote.notes ?? null,
-    subtotal_minor: Number(quote.subtotal_minor ?? 0),
-    vat_minor: Number(quote.vat_minor ?? 0),
-    send_to: asArray(quote.send_to),
-    quote_id: quote.id,
-    deal_id: quote.deal_id ?? null,
+  const { invoice } = await convertQuoteRow(ctx, quote);
+  return {
+    quote: publicQuote(quote),
+    invoice: publicInvoice({ ...invoice, created_at: new Date().toISOString() }),
+    next: `Check draft invoice ${invoice.number} (invoice-detail), then ask for it to be sent with request-invoice-send.`,
   };
-  await insertInvoice(ctx, invoice);
+}
+
+/**
+ * Turns an accepted quote into a draft invoice with the same client, lines, VAT codes and deal, and marks the quote converted.
+ *
+ * With `invoiceId` the work can be repeated: the invoice has that id, an invoice that is already there (a first try stopped half way)
+ * is finished instead of made again, and its lines have ids made from the quote's own, so none is copied twice. That is how a signed
+ * quote is invoiced (`accepted.ts`): it must make one invoice however often it is asked. Without it (a person or agent converting by
+ * hand) everything is new, as before. `dealId` links the invoice to the CRM deal when the quote carries none.
+ */
+export async function convertQuoteRow(ctx: PluginContext, quote: QuoteRow, options: { invoiceId?: string; dealId?: string | null } = {}): Promise<{ quote: QuoteRow; invoice: InvoiceRow }> {
+  const { settings } = await loadBilling(ctx, quote.company_id);
+  const customer = asObject(quote.customer);
+  const dealId = quote.deal_id ?? options.dealId ?? null;
+  const existing = options.invoiceId ? await getInvoice(ctx, options.invoiceId) : null;
+  let invoice: InvoiceRow;
+  if (existing && existing.company_id === quote.company_id) invoice = existing;
+  else {
+    invoice = {
+      id: options.invoiceId ?? randomUUID(),
+      company_id: quote.company_id,
+      number: await nextDocumentNumber(ctx, quote.company_id, "invoice", { kind: quote.customer_kind, ref: quote.customer_ref, name: String(customer.name ?? quote.customer_ref) }, settings),
+      status: "draft",
+      currency: quote.currency,
+      customer_kind: quote.customer_kind,
+      customer_ref: quote.customer_ref,
+      sender: asObject(quote.sender),
+      customer,
+      sender_snapshot: null,
+      customer_snapshot: null,
+      total_minor: Number(quote.total_minor),
+      tax_rate: Number(quote.tax_rate ?? 0),
+      due_at: defaultDueAt(settings),
+      approval_issue_id: null,
+      pending_action: null,
+      sent_at: null,
+      default_tax_code: quote.default_tax_code ?? null,
+      prices_include_vat: Boolean(quote.prices_include_vat),
+      notes: quote.notes ?? null,
+      subtotal_minor: Number(quote.subtotal_minor ?? 0),
+      vat_minor: Number(quote.vat_minor ?? 0),
+      send_to: asArray(quote.send_to),
+      quote_id: quote.id,
+      deal_id: dealId,
+    };
+    await insertInvoice(ctx, invoice);
+  }
+  const have = new Set((await linesFor(ctx, invoice.id)).map((line) => line.id));
   for (const line of await quoteLinesFor(ctx, quote.id)) {
+    const id = options.invoiceId ? `${invoice.id}:${line.id}` : undefined;
+    if (id && have.has(id)) continue;
     await insertLine(ctx, {
+      ...(id ? { id } : {}),
       companyId: quote.company_id,
       invoiceId: invoice.id,
       description: line.description,
@@ -583,12 +610,12 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
   await recomputeInvoice(ctx, invoice);
   quote.status = "converted";
   quote.converted_invoice_id = invoice.id;
+  if (!quote.deal_id && dealId) {
+    quote.deal_id = dealId;
+    await ctx.db.execute(`UPDATE ${table(ctx, "quotes")} SET deal_id = $2 WHERE id = $1 AND deal_id IS NULL`, [quote.id, dealId]);
+  }
   await saveQuoteStatus(ctx, quote);
-  return {
-    quote: publicQuote(quote),
-    invoice: publicInvoice({ ...invoice, created_at: new Date().toISOString() }),
-    next: `Check draft invoice ${invoice.number} (invoice-detail), then ask for it to be sent with request-invoice-send.`,
-  };
+  return { quote, invoice };
 }
 
 export function publicQuote(quote: QuoteRow) {

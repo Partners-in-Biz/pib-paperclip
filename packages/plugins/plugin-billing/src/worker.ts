@@ -37,6 +37,7 @@ import {
   type ClientRef,
   type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
+import { CRM_DEAL_ACCEPTED_EVENT, CRM_QUOTE_ACCEPTED_EVENT, onSignedDocument } from "./accepted.js";
 import { backpostTotal, postMissingJournals } from "./backpost.js";
 import { cancelPaymentLinkAction, createPaymentLinkAction, paymentLinksAction, paymentsStatusAction, publicLink, recordRefundAction, simulatePaymentAction } from "./pay/actions.js";
 import { housekeepPaymentLinks } from "./pay/links.js";
@@ -418,6 +419,9 @@ const plugin = definePlugin({
     ctx.events.on(LEDGER_RESULT_EVENT, guard("ledger result", (event) => onLedgerPostResult(ctx, event)));
     ctx.events.on(BANK_MATCHED_EVENT, guard("bank match", (event) => onBankMatchedEvent(ctx, event)));
     ctx.events.on(DEAL_WON_EVENT, guard("deal won", (event) => onDealWon(ctx, event)));
+    // A client signed (CRM e-sign): draft the invoice, once per signed document, never send it.
+    ctx.events.on(CRM_DEAL_ACCEPTED_EVENT, guard("deal accepted", (event) => onSignedDocument(ctx, event, "deal")));
+    ctx.events.on(CRM_QUOTE_ACCEPTED_EVENT, guard("quote accepted", (event) => onSignedDocument(ctx, event, "quote")));
     // After registerModuleWatch (handlers run in order): Accounting switched on → post the journals it missed.
     ctx.events.on(`plugin.${SETUP_PLUGIN}.${SETUP_EVENTS.modulesUpdated}`, guard("module switch", (event) => onModulesUpdated(ctx, event)));
     // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.

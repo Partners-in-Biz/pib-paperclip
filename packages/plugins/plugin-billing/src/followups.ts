@@ -8,6 +8,8 @@
  *   next step for each.
  * - A quote reply (from the Mailbox): one issue per quote with the reply.
  * - A won deal (CRM `deal.won`): one drafting issue per deal.
+ * - A signed document (CRM `deal.accepted` / `quote.accepted`, `accepted.ts`): one issue per signature, for the invoice Billing
+ *   drafted by itself or for the difference that stopped it.
  *
  * Each issue's origin id is `billing:<kind>:<id>` (`WORK_ORIGINS`); when an
  * agent closes one, its done check (`donechecks.ts`) looks at the outcome.
@@ -16,6 +18,7 @@ import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, HANDOFF_EVENTS, PIB_PLUGINS, pluginEvent, receiveOnce, type DealWon, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso } from "./balances.js";
 import { billingSettings, dunningStages, type BillingSettings } from "./config.js";
+import { draftedForDeal } from "./accepted-store.js";
 import { asObject, getQuote, table } from "./db.js";
 import { daysPastDue } from "./domain.js";
 import { optedOutClients, requestStage, sentStages } from "./dunning.js";
@@ -417,6 +420,9 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
   const issued = invoices.find((i) => i.status !== "draft");
   // Already invoiced (the quote was accepted and the invoice went out): nothing to draft.
   if (issued) return { dealId: deal.dealId, skipped: `invoice ${issued.number} is already ${issued.status}` };
+  // The client signed first and Billing drafted the invoice itself: that signature has its own issue, so nothing is asked here twice.
+  const signed = await draftedForDeal(ctx, companyId, deal.dealId);
+  if (signed) return { dealId: deal.dealId, skipped: `an invoice was drafted from the document the client signed (${signed.document_id})` };
   const prefix = await companyPrefix(ctx, companyId);
   const client = clientRef(deal.clientKind, deal.clientRef);
   const value = deal.valueMinor != null && deal.valueMinor > 0 ? formatMoneyMinor(deal.valueMinor, deal.currency || "ZAR") : null;

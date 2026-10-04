@@ -26,6 +26,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { AS_AT_CUTOFF_SQL, asAtDate, invoiceBalances, iso, statusAsAtToday } from "./balances.js";
 import { billingSettings } from "./config.js";
+import { stuckAcceptances } from "./accepted-store.js";
 import { asObject, table } from "./db.js";
 import { daysPastDue, shortDayText } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -176,6 +177,21 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
     const sums: Sums = new Map();
     for (const r of rows) addTo(sums, (r.currency ?? main).toUpperCase(), n(r.total));
     snap.kpis.push({ key: "received_month", label: "Received this month", value: sumsText(sums, main), raw: sums.get(main) ?? 0, tone: "neutral", delta: monthToDate(today), href: `${PAGE}?tab=payments`, group: "money" });
+  });
+
+  await part("signed documents", async () => {
+    // A client signed and Billing could not draft the invoice for hours (the CRM sends the hand-off again hourly for a day, so this is a real fault).
+    const stuck = await stuckAcceptances(ctx, companyId, 2);
+    snap.health.push(stuck.length > 0
+      ? {
+          key: "signed:stuck",
+          title: "A signed document has no invoice draft",
+          status: "warn",
+          detail: `${plural(stuck.length, "signed document")} could not be turned into a draft invoice: ${stuck.slice(0, 3).map((row) => `${row.documentId}${row.error ? ` (${row.error})` : ""}`).join("; ")}.`.slice(0, 600),
+          href: PAGE,
+          fix: "Ask the Account Manager to draft the invoice by hand for each (the CRM shows the document under the client's Agreements). Billing keeps trying while the CRM sends the hand-off again; after a day it stops, and the reason above says what to fix first (often: the client is not in Billing yet).",
+        }
+      : { key: "signed:stuck", title: "Signed documents", status: "ok" });
   });
 
   await part("future payments", async () => {

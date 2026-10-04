@@ -54,7 +54,7 @@ export async function embeddedAvailable(): Promise<boolean> {
 }
 
 const TABLES_IN_ORDER = [
-  "payment_refunds", "payment_events", "payment_links", "erasures", "privacy_holds",
+  "signed_acceptances", "payment_refunds", "payment_events", "payment_links", "erasures", "privacy_holds",
   "credit_applications", "payments", "credit_notes", "reminders", "pops", "invoice_lines", "invoice_grants", "recurring_invoices",
   "time_entries", "subscriptions", "retainer_plans", "bill_payments", "bill_lines", "bills", "quote_lines", "quotes", "invoices",
   "expenses", "numbering_counters", "number_claims", "client_prefixes", "outbox", "inbox", "decisions", "deliveries",
