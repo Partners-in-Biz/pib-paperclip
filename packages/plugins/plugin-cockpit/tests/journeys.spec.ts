@@ -314,7 +314,7 @@ describe("the quote to invoice journey (v5)", () => {
     expect(view.note).toBe(converted.note);
   });
 
-  it("titles the deal so the Deal won task Billing may open names the rehearsal and the run's net cancels it", () => {
+  it("titles the deal so a Deal won task, if one were opened, names the rehearsal and the run's net cancels it", () => {
     expect((step("create-deal").input as { title: string }).title).toContain("Canary rehearsal");
   });
 });
