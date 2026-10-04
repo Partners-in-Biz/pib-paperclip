@@ -7,8 +7,8 @@
  * rewritten when its state changes; the page posts its answer to the plugin's public webhook on the same origin.
  *
  * Two facts about that folder shape this module:
- * - the deploy script copies `dist/` with `--delete`, so every deploy removes the pages. They are not data: the record
- *   is in the database and `syncPages` (care job, and at start) writes them again from it;
+ * - the deploy script keeps this folder (`dist/ui/s/` is excluded from its `--delete` copy), but the pages are still not
+ *   data: the record is in the database and `syncPages` (care job, and at start) writes them again from it;
  * - the host treats a file name ending in `-<8 or more hex characters>.<ext>` as a content-hashed asset and tells browsers
  *   to cache it for a year. A page id never contains `-` or `.`, so it can never look like one (a test holds this).
  *
