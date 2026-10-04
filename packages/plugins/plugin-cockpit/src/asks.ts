@@ -330,12 +330,13 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
     }
   }
 
-  const [prefix, returnName, label] = await Promise.all([
+  const [prefix, returnName, askerName, label] = await Promise.all([
     prefixOf(env, companyId),
     agentName(env, companyId, ask.returnAgentId ?? agentId),
+    agentName(env, companyId, agentId),
     clientLabel(env, companyId, ask.clientRef),
   ]);
-  const body = askComment({ ask: input, agentName: returnName ?? "the agent", clientLabel: label, prefix, again: !!existing });
+  const body = askComment({ ask: input, agentName: returnName ?? "the agent", from: askerName, clientLabel: label, prefix, again: !!existing });
   const comment = await env.ctx.issues.createComment(issue.id, body, companyId, { authorAgentId: agentId });
   await setCommentId(env, ask, String((comment as { id?: unknown }).id ?? "") || null);
 

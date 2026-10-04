@@ -74,8 +74,8 @@ describe("ask-owner input", () => {
   });
 
   it("builds a clear comment and short answers", () => {
-    const body = askComment({ ask: parseAskInput({ issueId: "PIB-1", ...QUESTION }), agentName: "Sam", clientLabel: "Northwind (company:nw)", prefix: "PIB" });
-    expect(body).toContain("**Question for the owner** · One-time grant · for Northwind (company:nw) · needed by 2026-10-01");
+    const body = askComment({ ask: parseAskInput({ issueId: "PIB-1", ...QUESTION }), agentName: "Sam", from: "Planner", clientLabel: "Northwind (company:nw)", prefix: "PIB" });
+    expect(body).toContain("**Question for the owner** · from Planner · One-time grant · for Northwind (company:nw) · needed by 2026-10-01");
     expect(body).toContain("1. **Add seo@partnersinbiz.online as a full user** (recommended)");
     expect(body).toContain("2. Ask Northwind to do it");
     expect(body).toContain("**Why it matters:** The SEO sprint's audit and indexing wait on it.");

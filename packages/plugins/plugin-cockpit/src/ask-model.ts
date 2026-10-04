@@ -211,12 +211,14 @@ export function prefixed(href: string, prefix: string | null): string {
 export function askComment(input: {
   ask: Pick<AskInput, "question" | "options" | "why" | "kind" | "links" | "steps" | "dueBy"> & { effect?: AskEffect | null };
   agentName: string;
+  /** Who raised it (an agent, or "the Cockpit"); shown first so the owner sees the source on the collapsed card. */
+  from?: string | null;
   clientLabel?: string | null;
   prefix: string | null;
   again?: boolean;
 }): string {
   const { ask } = input;
-  const meta = [ASK_KIND_LABEL[ask.kind], input.clientLabel ? `for ${input.clientLabel}` : null, ask.dueBy ? `needed by ${ask.dueBy}` : null].filter(Boolean).join(" · ");
+  const meta = [input.from ? `from ${input.from}` : null, ASK_KIND_LABEL[ask.kind], input.clientLabel ? `for ${input.clientLabel}` : null, ask.dueBy ? `needed by ${ask.dueBy}` : null].filter(Boolean).join(" · ");
   const lines = [`${ASK_OWNER_COMMENT_MARK}${input.again ? " (updated)" : ""}** · ${meta}`, "", ask.question, ""];
   if (ask.options.length) {
     lines.push("**Options** (recommended first)");

@@ -109,11 +109,11 @@ export async function openCockpitAsk(env: Env, companyId: string, spec: { origin
   const prefix = company?.issuePrefix ?? null;
   const now = env.now().toISOString();
   const operator = route.assigneeAgentId ? await env.ctx.agents.get(route.assigneeAgentId, companyId).catch(() => null) : null;
-  const body = askComment({ ask: { ...spec.card, dueBy: null }, agentName: operator ? String(operator.name ?? "the Operator") : "the Operator", clientLabel: null, prefix });
+  const body = askComment({ ask: { ...spec.card, dueBy: null }, agentName: operator ? String(operator.name ?? "the Operator") : "the Operator", from: "the Cockpit", clientLabel: null, prefix });
   const issue = await env.ctx.issues.create({
     companyId,
     title: spec.title,
-    description: `${spec.card.question}\n\n${spec.card.why}\n\nReply with your answer in a comment on this issue.`,
+    description: `${spec.card.question}\n\n${spec.card.why}\n\nRaised by the Cockpit${operator ? `; your answer goes back to ${String(operator.name ?? "the Operator")}` : ""}. Reply with your answer in a comment on this issue.`,
     status: "in_review",
     priority: "medium",
     assigneeUserId: owner,
