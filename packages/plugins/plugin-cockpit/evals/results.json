@@ -68,7 +68,7 @@
     },
     "pib-company-os": {
       "baseline": {
-        "hash": "fa8c7b5b5f05eff3",
+        "hash": "5cb6587644ce459e",
         "passRate": 1,
         "scenarios": {
           "invoice-through-approval": true,
@@ -76,27 +76,39 @@
           "handoff-to-the-owning-role": true,
           "look-at-the-page-you-changed": true
         },
-        "measuredAt": "2026-10-04T00:29:37.495Z",
+        "measuredAt": "2026-10-04T17:44:51.438Z",
         "runs": [
-          "b98eee59-1112-4469-ae74-f4fb5af8ea34",
-          "566cb35f-e123-41b0-b4f7-b013bd54359e",
-          "f51a321a-1603-4aa3-a45f-6397d9640aa3",
-          "207e6029-5771-41b5-9903-74264ba52fe7"
+          "dc020d54-67a2-4d25-88dd-552be1d7b45a",
+          "d94fb467-4c3a-44e3-9005-795c9c14d00e",
+          "a3f0874a-b985-41e5-ae2d-db0d8867c707",
+          "46fd934f-c72c-4318-9d30-cbfe05814d68",
+          "0b31eda4-1437-44d7-886f-15065a29addf",
+          "740923cf-c6b6-4d94-9b2b-85435041ed4a",
+          "519e0710-08d9-44c7-b3da-f473da808fe5",
+          "ad17b14a-188f-4064-ac7d-b4da143a38f6",
+          "29867f3c-6009-4279-97ed-72ff746e21d4",
+          "0682098f-deda-4d13-8cbd-374d1353fd13",
+          "5d08572c-fbb0-4d79-ad7b-69f2cb87a858",
+          "4855f9db-e37a-4668-a5b4-66aec5e18f28"
         ]
       }
     },
     "pib-acceptance": {
       "baseline": {
-        "hash": "4eb51fab1e401c9a",
+        "hash": "f4d6aa84eaeb2ba8",
         "passRate": 1,
         "scenarios": {
           "refuses-a-real-client": true,
           "reports-a-failure-without-working-around-it": true
         },
-        "measuredAt": "2026-10-04T08:10:37.018Z",
+        "measuredAt": "2026-10-04T17:44:51.629Z",
         "runs": [
-          "c636c695-c4ba-4bf5-b40d-a366d62b6f37",
-          "f6445119-969e-4789-a5e0-fae5b02d92b4"
+          "f21af5a1-0f7a-4247-a663-872cf55f4305",
+          "9746911e-3e12-438a-9c41-5fec970f1595",
+          "b019a90e-71c6-4d53-a1e9-774d79f6ad49",
+          "300ae216-867b-4d57-a7bb-9fc32b0a0e70",
+          "44c85724-df28-41b8-bf85-aadb56309fca",
+          "9e544b39-833f-44d0-b997-d417d57e1ce0"
         ]
       }
     }
