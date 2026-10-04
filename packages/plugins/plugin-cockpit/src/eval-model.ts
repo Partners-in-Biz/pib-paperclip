@@ -64,7 +64,7 @@ export interface ScenarioExpect {
   forbid?: Forbid[];
   mustSay?: string[];
   mustNotSay?: string[];
-  /** Grade the plain-writing rules (kit `writingFindings`) on what the plan says to a person: comment text, the summary, and an ask-owner's question, why and steps. */
+  /** Grade the plain-writing rules (kit `writingFindings`) on what the plan says to a person: comment text and an ask-owner's question, why and steps (not the run's own summary line, which is for the grader). */
   plainWriting?: boolean;
   /** The plan may not be longer than this (a skill that makes an agent flail is a worse skill). */
   maxSteps?: number;
@@ -438,7 +438,7 @@ export function gradeAnswer(s: Scenario, output: string): Graded {
   for (const p of e.mustSay ?? []) checks.push({ ok: new RegExp(p, "i").test(text), detail: `It says ${p}` });
   for (const p of e.mustNotSay ?? []) { const says = new RegExp(p, "i").test(text); checks.push({ ok: !says, detail: says ? `It says ${p}, which it must not` : `It does not say ${p}` }); }
   if (e.plainWriting) {
-    const said = [summary, ...plan.flatMap((step) => (step.kind === "comment" ? [step.say ?? ""] : step.kind === "tool" && /:ask-owner$/.test(step.tool ?? "") ? [String(step.args?.question ?? ""), String(step.args?.why ?? ""), ...stringsIn(step.args?.steps)] : []))].join("\n");
+    const said = plan.flatMap((step) => (step.kind === "comment" ? [step.say ?? ""] : step.kind === "tool" && /:ask-owner$/.test(step.tool ?? "") ? [String(step.args?.question ?? ""), String(step.args?.why ?? ""), ...stringsIn(step.args?.steps)] : [])).join("\n");
     const found = writingFindings(said);
     checks.push({ ok: found.length === 0, detail: found.length === 0 ? "It writes in plain words" : `Plain writing: ${found.slice(0, 3).map((f) => `${f.rule} (${f.excerpt})`).join("; ")}` });
   }
