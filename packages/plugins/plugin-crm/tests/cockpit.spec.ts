@@ -371,6 +371,19 @@ describe("Sequence email approval: Reviewer routing", () => {
     expect(handoff).toMatchObject({ title: 'Hand-off: email sending refused for sequence "Intro"', assigneeAgentId: "am-1" });
   });
 
+  it("the acceptance agent's rehearsal sequence: cancelling its approval at the end of a run opens no hand-off and wakes nobody", async () => {
+    const { harness, store } = await boot();
+    await setRoles(harness, { ownerUserId: "user-peet", team: { "account-manager": { agentId: "am-1", status: "idle" } } });
+    store.sequences![0]!.name = "Canary acceptance run1a2b3c4d5e6f";
+    const first = await harness.performAction<{ approvalIssueId: string }>("crm.set-sequence-delivery", { sequenceId: "seq-intro", delivery: "email" }, { companyId: CO, actor: BOARD });
+    const approval = (await issues(harness)).find((row) => row.id === first.approvalIssueId)!;
+    harness.seed({ issues: [{ ...approval, status: "cancelled" }] });
+    await harness.emit("issue.updated", {}, { companyId: CO, entityId: approval.id, actorType: "user", actorId: "user-peet" });
+    // The refusal itself still goes through (back to issue delivery); only the hand-off is skipped.
+    expect(store.sequences![0]).toMatchObject({ delivery: "issue", email_approval_issue_id: null });
+    expect((await issues(harness)).some((row) => row.originId === `crm:sequence-refused:${approval.id}`)).toBe(false);
+  });
+
   it("the brief falls back to a board member", () => {
     expect(sequenceReviewBrief("Intro", "the Mailbox's default Gmail account", null)).toContain("reassign this issue to a board member");
   });

@@ -534,6 +534,8 @@ export async function onApprovalIssue(ctx: PluginContext, event: PluginEvent, is
 /** A person refused email sending: back to issue delivery, and a hand-off for the Account Manager. */
 async function refuseSequenceEmail(ctx: PluginContext, companyId: string, sequence: SequenceRow, approvalIssueId: string): Promise<void> {
   await saveSequenceDelivery(ctx, { id: sequence.id, delivery: "issue", approvalIssueId: null });
+  // The acceptance agent's rehearsal sequence ("Canary acceptance <run id>"): the Cockpit cancels its approval when the run ends, which reads as a person's refusal. Nobody has to act, so no hand-off and no wake-up.
+  if (/^Canary acceptance\b/i.test(sequence.name)) return;
   const prefix = await companyPrefix(ctx, companyId);
   await openIssueOnce(ctx, {
     companyId,

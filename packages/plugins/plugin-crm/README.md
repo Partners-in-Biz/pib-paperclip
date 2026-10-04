@@ -79,6 +79,10 @@ Written against `packages/plugins/pib-wp-connector/PROTOCOL.md`, "Version 1.1.0 
 - **Skills.** `wp-sites` (Connector tools, pairing over SFTP, the SFTP deploy routine for our own plugins: backup, upload to a new name, swap, sha256 readback, live check, rollback) is an extra skill of the SEO Specialist. `ios-release` (Mac build environment, API-key signing, `asc` upload, App Review needs a person) is for the agent that builds iOS apps.
 - New capabilities: `projects.read`, `http.outbound`. Migration `007_crm.sql`: `client_sites`, `site_changes`, `client_projects`.
 
+## 0.14.3
+
+The acceptance agent's rehearsal sequence (named "Canary acceptance <run id>") no longer opens a hand-off for the Account Manager when the Cockpit cancels its approval at the end of a run (it read as a person's refusal and woke a real agent).
+
 ## 0.14.2
 
 `create-canary-client` takes an optional `runRef` and echoes it, so an acceptance journey can prove the answer belongs to this call (the first live runs recorded a previous journey's answer for step 1 after its cleanup had removed the canary).
