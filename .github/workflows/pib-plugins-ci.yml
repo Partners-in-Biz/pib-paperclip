@@ -22,6 +22,9 @@ on:
   pull_request:
     branches: [development]
   workflow_dispatch:
+  # A daily run of the same checks: tests that quietly depend on today's date (a fixed fixture clock against code that reads the real one) pass for a day and then fail the deploy gate; this shows them as a red run overnight instead.
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read

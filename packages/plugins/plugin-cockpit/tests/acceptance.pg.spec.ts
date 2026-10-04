@@ -64,7 +64,16 @@ d("acceptance runs (Postgres)", () => {
   }
 
   const call = async (w: Hybrid, name: string, params: Record<string, unknown>): Promise<ToolResult> => (await w.tools.get(name)!(params, run)) as ToolResult;
-  const acceptanceRun = (w: Hybrid, params: Record<string, unknown>) => call(w, "acceptance-run", params);
+  /**
+   * Calls the tool. The real create-canary-client echoes the run id the step asked it to pass (`runRef`), so a faithful agent's
+   * answer for step 1 carries it; the helper adds it unless the test sets its own (a stale answer is tested explicitly).
+   */
+  const acceptanceRun = (w: Hybrid, params: Record<string, unknown>) => {
+    const step1 = params.action === "record" && params.stepId === "ensure-canary";
+    const withRef = step1 && params.output && typeof params.output === "object" && !("runRef" in (params.output as object));
+    const emptyInput = step1 && (!params.input || (typeof params.input === "object" && Object.keys(params.input as object).length === 0));
+    return call(w, "acceptance-run", step1 ? { ...params, ...(withRef ? { output: { ...(params.output as object), runRef: params.runId } } : {}), ...(emptyInput ? { input: { runRef: params.runId } } : {}) } : params);
+  };
 
   /** The request issue the Acceptance agent is woken on. */
   const requestIssue = (w: Hybrid, id = "issue-req"): string => {
@@ -353,6 +362,19 @@ d("acceptance runs (Postgres)", () => {
       const w3 = await make();
       const gone = await work(w3, "lead-capture", good("no-such-issue"), {});
       expect((await getRun(w3.ctx, A, gone.runId))!.state.steps.find((s) => s.id === "close-lead-issue")!.checks.some((c) => !c.ok && c.detail.includes("could not be found"))).toBe(true);
+    });
+
+    it("fails step 1 when the answer is not this run's own: a stale answer from an earlier call or journey is refused", async () => {
+      const w = await make();
+      const started = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
+      expect(started.data.step.input).toEqual({ runRef: started.data.runId });
+      const stale = await acceptanceRun(w, { action: "record", runId: started.data.runId, stepId: "ensure-canary", input: { runRef: started.data.runId }, output: { ...(good("x")["ensure-canary"] as object), runRef: "run-from-the-previous-journey" } });
+      expect(stale.data.result.status).toBe("failed");
+      expect(stale.data.result.checks.join("\n")).toContain("runRef");
+      const w2 = await make();
+      const s2 = await acceptanceRun(w2, { action: "start", journey: "lead-capture", client: CANARY });
+      const missing = await acceptanceRun(w2, { action: "record", runId: s2.data.runId, stepId: "ensure-canary", input: {}, output: { ...(good("x")["ensure-canary"] as object), runRef: undefined } });
+      expect(missing.data.result.status).toBe("failed");
     });
 
     it("reads an evidence item's file under the names an agent naturally uses, and says when an item was ignored", async () => {

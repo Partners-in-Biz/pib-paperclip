@@ -1,10 +1,16 @@
 {
   "key": "quote-to-invoice",
-  "version": 1,
+  "version": 2,
   "title": "Deal, quote, accepted, invoice ready to send",
   "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), the invoice drafted and the send routed to the Reviewer first. It stops at the approval: only a person approves a send, and the run cancels the canary's own approval afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
-  "schedule": ["release", "on-demand"],
-  "plugins": ["partnersinbiz.crm", "partnersinbiz.billing"],
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm",
+    "partnersinbiz.billing"
+  ],
   "ownerRole": "account-manager",
   "steps": [
     {
@@ -12,25 +18,59 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
+      "input": {
+        "runRef": "{{runId}}"
+      },
       "expect": [
-        { "path": "client", "equals": "{{client}}" },
-        { "path": "contact.email", "endsWith": "@canary.invalid" }
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        }
       ],
-      "capture": { "contactId": { "path": "contact.ref", "strip": "contact:" } },
-      "ownerRole": "account-manager"
+      "capture": {
+        "contactId": {
+          "path": "contact.ref",
+          "strip": "contact:"
+        }
+      },
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary."
     },
     {
       "id": "create-deal",
       "title": "Open a deal",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-deal",
-      "input": { "title": "Canary rehearsal {{runId}}", "amountMinor": 100000, "currency": "ZAR", "companyRecordId": "{{companyRecordId}}", "contactId": "{{contactId}}" },
+      "input": {
+        "title": "Canary rehearsal {{runId}}",
+        "amountMinor": 100000,
+        "currency": "ZAR",
+        "companyRecordId": "{{companyRecordId}}",
+        "contactId": "{{contactId}}"
+      },
       "expect": [
-        { "path": "id", "notEmpty": true },
-        { "path": "client", "equals": "{{client}}" }
+        {
+          "path": "id",
+          "notEmpty": true
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        }
       ],
-      "capture": { "dealId": { "path": "id" } },
+      "capture": {
+        "dealId": {
+          "path": "id"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -38,13 +78,34 @@
       "title": "Draft the quote",
       "kind": "tool",
       "tool": "partnersinbiz.billing:create-quote",
-      "input": { "currency": "ZAR", "customerKind": "company", "customerRef": "{{companyRecordId}}", "customerName": "PiB Canary Co", "customerEmail": "canary@canary.invalid", "dealId": "{{dealId}}", "notes": "Acceptance canary {{runId}}: never send." },
+      "input": {
+        "currency": "ZAR",
+        "customerKind": "company",
+        "customerRef": "{{companyRecordId}}",
+        "customerName": "PiB Canary Co",
+        "customerEmail": "canary@canary.invalid",
+        "dealId": "{{dealId}}",
+        "notes": "Acceptance canary {{runId}}: never send."
+      },
       "expect": [
-        { "path": "status", "equals": "draft" },
-        { "path": "customerRef", "equals": "{{companyRecordId}}" },
-        { "path": "dealId", "equals": "{{dealId}}" }
+        {
+          "path": "status",
+          "equals": "draft"
+        },
+        {
+          "path": "customerRef",
+          "equals": "{{companyRecordId}}"
+        },
+        {
+          "path": "dealId",
+          "equals": "{{dealId}}"
+        }
       ],
-      "capture": { "quoteId": { "path": "id" } },
+      "capture": {
+        "quoteId": {
+          "path": "id"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -52,8 +113,18 @@
       "title": "Add a line to the quote",
       "kind": "tool",
       "tool": "partnersinbiz.billing:add-quote-line",
-      "input": { "quoteId": "{{quoteId}}", "description": "Canary service", "quantity": 1, "unitAmountMinor": 100000 },
-      "expect": [{ "path": "$", "notEmpty": true }],
+      "input": {
+        "quoteId": "{{quoteId}}",
+        "description": "Canary service",
+        "quantity": 1,
+        "unitAmountMinor": 100000
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
       "ownerRole": "account-manager"
     },
     {
@@ -61,10 +132,19 @@
       "title": "The customer accepts the quote",
       "kind": "tool",
       "tool": "partnersinbiz.billing:set-quote-status",
-      "input": { "quoteId": "{{quoteId}}", "status": "accepted" },
+      "input": {
+        "quoteId": "{{quoteId}}",
+        "status": "accepted"
+      },
       "expect": [
-        { "path": "status", "equals": "accepted" },
-        { "path": "acceptedAt", "notEmpty": true }
+        {
+          "path": "status",
+          "equals": "accepted"
+        },
+        {
+          "path": "acceptedAt",
+          "notEmpty": true
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -73,9 +153,17 @@
       "title": "The CRM marked the deal won",
       "kind": "tool",
       "tool": "partnersinbiz.crm:list-deals",
-      "input": { "client": "{{client}}", "status": "won" },
+      "input": {
+        "client": "{{client}}",
+        "status": "won"
+      },
       "note": "Billing tells the CRM within seconds. If total is 0, wait 30 seconds and ask again once before recording.",
-      "expect": [{ "path": "total", "gte": 1 }],
+      "expect": [
+        {
+          "path": "total",
+          "gte": 1
+        }
+      ],
       "ownerRole": "account-manager"
     },
     {
@@ -83,13 +171,28 @@
       "title": "Draft the invoice from the quote",
       "kind": "tool",
       "tool": "partnersinbiz.billing:convert-quote",
-      "input": { "quoteId": "{{quoteId}}" },
+      "input": {
+        "quoteId": "{{quoteId}}"
+      },
       "expect": [
-        { "path": "invoice.status", "equals": "draft" },
-        { "path": "quote.status", "equals": "converted" },
-        { "path": "invoice.id", "notEmpty": true }
+        {
+          "path": "invoice.status",
+          "equals": "draft"
+        },
+        {
+          "path": "quote.status",
+          "equals": "converted"
+        },
+        {
+          "path": "invoice.id",
+          "notEmpty": true
+        }
       ],
-      "capture": { "invoiceId": { "path": "invoice.id" } },
+      "capture": {
+        "invoiceId": {
+          "path": "invoice.id"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -97,13 +200,26 @@
       "title": "Ask for the invoice to be sent: the approval reaches the Reviewer first",
       "kind": "tool",
       "tool": "partnersinbiz.billing:request-invoice-send",
-      "input": { "invoiceId": "{{invoiceId}}", "sendTo": "canary@canary.invalid" },
+      "input": {
+        "invoiceId": "{{invoiceId}}",
+        "sendTo": "canary@canary.invalid"
+      },
       "note": "This opens an approval issue. Do NOT approve it, do not touch it: the Cockpit checks where it went and cancels the canary's approval when the run ends.",
       "expect": [
-        { "path": "issueId", "notEmpty": true },
-        { "path": "pendingAction", "equals": "send" }
+        {
+          "path": "issueId",
+          "notEmpty": true
+        },
+        {
+          "path": "pendingAction",
+          "equals": "send"
+        }
       ],
-      "probe": { "kind": "approval-route", "idPath": "issueId", "outward": true },
+      "probe": {
+        "kind": "approval-route",
+        "idPath": "issueId",
+        "outward": true
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -111,10 +227,18 @@
       "title": "Remove the canary's records",
       "kind": "tool",
       "tool": "partnersinbiz.crm:cleanup-canary",
-      "input": { "confirm": true },
+      "input": {
+        "confirm": true
+      },
       "expect": [
-        { "path": "cleaned", "equals": true },
-        { "path": "company", "equals": "{{client}}" }
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
       ],
       "always": true,
       "ownerRole": "account-manager"

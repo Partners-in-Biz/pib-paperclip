@@ -120,7 +120,7 @@ async function weakAcme(): Promise<Booted> {
 describe("gathering what the score reads", () => {
   it("takes support, unanswered email, the other modules' signals and the monitor from the right places", async () => {
     const booted = await weakAcme();
-    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, new Date());
+    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, NOW);
     expect(read.support).toMatchObject({ open: 1, urgentOpen: 1 });
     expect(read.support!.breached).toBe(1);
     expect(read.billing).toEqual({ overdueCount: 3 });
@@ -139,13 +139,13 @@ describe("gathering what the score reads", () => {
       ],
     });
     const booted = await bootCare({ store });
-    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, new Date());
+    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, NOW);
     expect(read.replyLatency).toEqual({ unanswered: 0, oldestHours: null });
   });
 
   it("a client with nothing recorded has no support, signals, uptime or requests part", async () => {
     const booted = await bootCare();
-    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, new Date());
+    const read = await gatherHealthInputs(booted.harness.ctx, CO, { kind: "company", id: "acme" }, NOW);
     expect(read).toMatchObject({ support: null, replyLatency: null, billing: null, seo: null, uptime: null, responsiveness: null });
   });
 });
@@ -154,7 +154,7 @@ describe("the daily job", () => {
   it("scores customers only, keeps the score, and opens one churn-risk issue for the one that is at risk", async () => {
     const booted = await weakAcme();
     const { harness, store } = booted;
-    const run = await runHealthScores(harness.ctx, CO, new Date());
+    const run = await runHealthScores(harness.ctx, CO, NOW);
     expect(run).toMatchObject({ scored: 2, atRisk: 1, alerts: 1 });
     const acme = store.client_health!.find((row) => row.client_ref === "acme")!;
     expect(acme).toMatchObject({ band: "at_risk", client_kind: "company" });
@@ -174,7 +174,7 @@ describe("the daily job", () => {
     expect(issue!.description).toContain("**SEO health**");
     expect(issue!.description).toContain("**Done when** your follow-up is logged on the client");
     // Running again does not open a second one, nor re-alert.
-    expect((await runHealthScores(harness.ctx, CO, new Date())).alerts).toBe(0);
+    expect((await runHealthScores(harness.ctx, CO, NOW)).alerts).toBe(0);
     expect(await issuesWith(harness, "crm:churn-risk:")).toHaveLength(1);
     expect(store.client_health!.find((row) => row.client_ref === "acme")!.previous_score).toBe(acme.score);
     expect((await clientsAtRiskHealth(harness.ctx, CO))).toMatchObject({ key: "clients:health", status: "warn" });
@@ -183,7 +183,7 @@ describe("the daily job", () => {
   it("closing the issue needs a follow-up logged on the client since it opened", async () => {
     const booted = await weakAcme();
     const { harness, store } = booted;
-    await runHealthScores(harness.ctx, CO, new Date());
+    await runHealthScores(harness.ctx, CO, NOW);
     const [issue] = await issuesWith(harness, "crm:churn-risk:");
     const doneIssue = { id: issue!.id, companyId: CO, originId: issue!.originId, createdAt: new Date(Date.now() - 3_600_000).toISOString() } as never;
     const open = await checkChurnRisk(harness.ctx, doneIssue);
@@ -208,7 +208,7 @@ describe("the daily job", () => {
     await tool(booted.harness, "record-client-signal", { client: "company:own", module: "seo", health: { score: 5 } });
     await tool(booted.harness, "record-client-signal", { client: "contact:pat", module: "billing", health: { overdueCount: 4 } });
     await tool(booted.harness, "record-client-signal", { client: "contact:pat", module: "seo", health: { score: 5 } });
-    const run = await runHealthScores(booted.harness.ctx, CO, new Date());
+    const run = await runHealthScores(booted.harness.ctx, CO, NOW);
     expect(run.alerts).toBe(0);
     expect(await issuesWith(booted.harness, "crm:churn-risk:")).toHaveLength(0);
     // Scored all the same, so the numbers exist for people who ask.
@@ -222,7 +222,7 @@ describe("the daily job", () => {
     expect(one.parts.map((p: any) => p.part)).toEqual(expect.arrayContaining(["Support", "Invoices", "SEO health", "Reply speed", "Website"]));
     expect(one.notMeasured).toContain("Answers our requests");
     expect((await tool<Record<string, any>>(booted.harness, "client-health", {})).note).toMatch(/No scores yet/);
-    await runHealthScores(booted.harness.ctx, CO, new Date());
+    await runHealthScores(booted.harness.ctx, CO, NOW);
     const all = await tool<Record<string, any>>(booted.harness, "client-health", {});
     expect(all.clients.map((c: any) => c.name)).toEqual(["Acme Plumbing", "Sipho Solo"]);
     expect((await tool<Record<string, any>>(booted.harness, "client-health", { onlyAtRisk: true })).clients.map((c: any) => c.name)).toEqual(["Acme Plumbing"]);

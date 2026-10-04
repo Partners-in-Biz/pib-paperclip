@@ -1,10 +1,15 @@
 {
   "key": "seo-sprint-draft",
-  "version": 1,
+  "version": 2,
   "title": "SEO sprint on a fixture site, not started",
   "summary": "A 90-day sprint is created for the canary client's fixture site with a start date more than a year away and autopilot off, so no task opens and nothing is crawled or changed; a keyword is added, the task list is read, and the sprint is archived.",
-  "schedule": ["release", "on-demand"],
-  "plugins": ["partnersinbiz.seo"],
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.seo"
+  ],
   "ownerRole": "seo-specialist",
   "steps": [
     {
@@ -12,19 +17,48 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
-      "expect": [{ "path": "client", "equals": "{{client}}" }],
-      "ownerRole": "account-manager"
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        }
+      ],
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary."
     },
     {
       "id": "create-sprint",
       "title": "Create the sprint, not started",
       "kind": "tool",
       "tool": "partnersinbiz.seo:create-sprint",
-      "input": { "siteUrl": "https://canary.invalid", "client": "{{client}}", "siteName": "PiB Canary Co", "businessType": "professional", "startDate": "{{futureDate}}", "autopilotMode": "off", "notes": "Acceptance run {{runId}}: fixture site, nothing is crawled or changed." },
+      "input": {
+        "siteUrl": "https://canary.invalid",
+        "client": "{{client}}",
+        "siteName": "PiB Canary Co",
+        "businessType": "professional",
+        "startDate": "{{futureDate}}",
+        "autopilotMode": "off",
+        "notes": "Acceptance run {{runId}}: fixture site, nothing is crawled or changed."
+      },
       "note": "If the tool tries to reach canary.invalid (it cannot) or opens work for the SEO agent, report it as a failure: a rehearsal must never create real work.",
-      "expect": [{ "path": "id", "notEmpty": true }],
-      "capture": { "sprintId": { "path": "id" } },
+      "expect": [
+        {
+          "path": "id",
+          "notEmpty": true
+        }
+      ],
+      "capture": {
+        "sprintId": {
+          "path": "id"
+        }
+      },
       "ownerRole": "seo-specialist"
     },
     {
@@ -32,8 +66,18 @@
       "title": "Add a keyword",
       "kind": "tool",
       "tool": "partnersinbiz.seo:add-keywords",
-      "input": { "sprintId": "{{sprintId}}", "keywords": ["canary rehearsal"] },
-      "expect": [{ "path": "$", "notEmpty": true }],
+      "input": {
+        "sprintId": "{{sprintId}}",
+        "keywords": [
+          "canary rehearsal"
+        ]
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
       "ownerRole": "seo-specialist"
     },
     {
@@ -41,8 +85,15 @@
       "title": "Read the task list",
       "kind": "tool",
       "tool": "partnersinbiz.seo:list-tasks",
-      "input": { "sprintId": "{{sprintId}}" },
-      "expect": [{ "path": "$", "notEmpty": true }],
+      "input": {
+        "sprintId": "{{sprintId}}"
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
       "ownerRole": "seo-specialist"
     },
     {
@@ -50,8 +101,15 @@
       "title": "Archive the sprint",
       "kind": "tool",
       "tool": "partnersinbiz.seo:archive-sprint",
-      "input": { "sprintId": "{{sprintId}}" },
-      "expect": [{ "path": "$", "notEmpty": true }],
+      "input": {
+        "sprintId": "{{sprintId}}"
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
       "always": true,
       "ownerRole": "seo-specialist"
     },
@@ -60,10 +118,18 @@
       "title": "Remove the canary's records",
       "kind": "tool",
       "tool": "partnersinbiz.crm:cleanup-canary",
-      "input": { "confirm": true },
+      "input": {
+        "confirm": true
+      },
       "expect": [
-        { "path": "cleaned", "equals": true },
-        { "path": "company", "equals": "{{client}}" }
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
       ],
       "always": true,
       "ownerRole": "account-manager"

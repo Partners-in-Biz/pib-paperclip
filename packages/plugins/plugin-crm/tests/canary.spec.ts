@@ -57,6 +57,18 @@ describe("what makes a record the canary's", () => {
 });
 
 describe("create-canary-client", () => {
+  it("echoes a caller's runRef, so a journey can show an answer belongs to this call, and ignores a malformed one", async () => {
+    const { harness } = await boot();
+    const withRef = await tool<Record<string, any>>(harness, "create-canary-client", { runRef: "run1a2b3c4d5e6f" });
+    expect(withRef.runRef).toBe("run1a2b3c4d5e6f");
+    const without = await tool<Record<string, any>>(harness, "create-canary-client", {});
+    expect("runRef" in without).toBe(false);
+    const bad = await tool<Record<string, any>>(harness, "create-canary-client", { runRef: "a b; drop table" });
+    expect("runRef" in bad).toBe(false);
+    const viaAction = await harness.performAction<Record<string, any>>("crm.create-canary-client", { runRef: "run-xyz" }, { companyId: CO, actor: BOARD });
+    expect(viaAction.runRef).toBe("run-xyz");
+  });
+
   it("makes the flagged company, its contact on a canary address, and a canary lead form, and says how to run the journey", async () => {
     const { harness, store } = await boot();
     const result = await tool<Record<string, any>>(harness, "create-canary-client", {});

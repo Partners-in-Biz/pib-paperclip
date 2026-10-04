@@ -330,7 +330,7 @@ const plugin = definePlugin({
     registerAction("crm.update-lead-source", async (params, context) => updateLeadSource(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.start-new-client", async (params, context) => startNewClient(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.find-records", async (params, context) => findRecords(ctx, await actionViewer(ctx, context), params));
-    registerAction("crm.create-canary-client", async (_params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context)));
+    registerAction("crm.create-canary-client", async (params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.cleanup-canary", async (params, context) => cleanupCanary(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.run-services-check", async (_params, context) => runServicesCheck(ctx, new Date(), { companyId: requireCompany(context) }));
     registerAction("crm.normalize-services", async (_params, context) => ({ saved: await backfillServices(ctx, requireCompany(context)) }));
@@ -740,7 +740,7 @@ async function dispatch(
     case "start-new-client":
       return startNewClient(ctx, viewer, body, source);
     case "create-canary-client":
-      return ensureCanaryClient(ctx, viewer);
+      return ensureCanaryClient(ctx, viewer, body);
     case "cleanup-canary":
       return cleanupCanary(ctx, viewer, body);
     default:

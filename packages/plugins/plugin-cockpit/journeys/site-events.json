@@ -1,10 +1,15 @@
 {
   "key": "site-events",
-  "version": 1,
+  "version": 2,
   "title": "Site visit counter",
   "summary": "A site events key is made for the canary client, one test page view is posted to the public events endpoint, the daily counter is checked to have moved, the key is paused and the canary cleaned up. It installs nothing on any site and keeps no visitor data (the host's request log holds the test request for a few days, like any visit). Release and on demand only: it posts to a public endpoint, so the nightly run stays with the lead form.",
-  "schedule": ["release", "on-demand"],
-  "plugins": ["partnersinbiz.crm"],
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
   "ownerRole": "account-manager",
   "steps": [
     {
@@ -12,30 +17,74 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
+      "input": {
+        "runRef": "{{runId}}"
+      },
       "expect": [
-        { "path": "client", "equals": "{{client}}" },
-        { "path": "contact.email", "endsWith": "@canary.invalid" }
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        }
       ],
-      "ownerRole": "account-manager"
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary."
     },
     {
       "id": "make-key",
       "title": "Make a site events key for the canary",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-event-key",
-      "input": { "client": "{{client}}", "label": "Acceptance {{runId}}" },
+      "input": {
+        "client": "{{client}}",
+        "label": "Acceptance {{runId}}"
+      },
       "note": "This only returns a key and its snippet: never install the snippet anywhere. An answer with an installNote and no curl means the plugin does not know its public address (the CRM page was never opened): record it as it came, it is a finding.",
       "expect": [
-        { "path": "created", "equals": true },
-        { "path": "key.client", "equals": "{{client}}" },
-        { "path": "key.canary", "equals": true },
-        { "path": "key.status", "equals": "active" },
-        { "path": "key.writeKey", "matches": "^pibe_" },
-        { "path": "key.install.curl", "notEmpty": true },
-        { "path": "key.install.endpoint", "notEmpty": true }
+        {
+          "path": "created",
+          "equals": true
+        },
+        {
+          "path": "key.client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "key.canary",
+          "equals": true
+        },
+        {
+          "path": "key.status",
+          "equals": "active"
+        },
+        {
+          "path": "key.writeKey",
+          "matches": "^pibe_"
+        },
+        {
+          "path": "key.install.curl",
+          "notEmpty": true
+        },
+        {
+          "path": "key.install.endpoint",
+          "notEmpty": true
+        }
       ],
-      "capture": { "keyId": { "path": "key.id" }, "eventCurl": { "path": "key.install.curl" } },
+      "capture": {
+        "keyId": {
+          "path": "key.id"
+        },
+        "eventCurl": {
+          "path": "key.install.curl"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -43,23 +92,55 @@
       "title": "Read the counters before the test event",
       "kind": "tool",
       "tool": "partnersinbiz.crm:site-events-report",
-      "input": { "client": "{{client}}", "days": 2 },
+      "input": {
+        "client": "{{client}}",
+        "days": 2
+      },
       "expect": [
-        { "path": "keys", "gte": 1 },
-        { "path": "entrances", "gte": 0 },
-        { "path": "pageviews", "gte": 0 }
+        {
+          "path": "keys",
+          "gte": 1
+        },
+        {
+          "path": "entrances",
+          "gte": 0
+        },
+        {
+          "path": "pageviews",
+          "gte": 0
+        }
       ],
-      "capture": { "entrancesBefore": { "path": "entrances" }, "pageviewsBefore": { "path": "pageviews" } },
+      "capture": {
+        "entrancesBefore": {
+          "path": "entrances"
+        },
+        "pageviewsBefore": {
+          "path": "pageviews"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
       "id": "send-test-event",
       "title": "Post one test page view to the public endpoint",
       "kind": "http",
-      "input": { "curl": "{{eventCurl}}" },
+      "input": {
+        "curl": "{{eventCurl}}"
+      },
       "note": "Run the curl once, exactly as given: it posts one page view for the canary's own key. Report the command you ran as input.curl and the answer as output {status, body}. Never change the key or post it to any other address.",
-      "expect": [{ "path": "status", "oneOf": [200, 201, 202] }],
-      "evidence": ["curl"],
+      "expect": [
+        {
+          "path": "status",
+          "oneOf": [
+            200,
+            201,
+            202
+          ]
+        }
+      ],
+      "evidence": [
+        "curl"
+      ],
       "ownerRole": "account-manager"
     },
     {
@@ -67,11 +148,20 @@
       "title": "The daily counter moved",
       "kind": "tool",
       "tool": "partnersinbiz.crm:site-events-report",
-      "input": { "client": "{{client}}", "days": 2 },
+      "input": {
+        "client": "{{client}}",
+        "days": 2
+      },
       "note": "Allow a few seconds after the post; ask again once if the numbers have not moved.",
       "expect": [
-        { "path": "entrances", "gtCapture": "entrancesBefore" },
-        { "path": "pageviews", "gtCapture": "pageviewsBefore" }
+        {
+          "path": "entrances",
+          "gtCapture": "entrancesBefore"
+        },
+        {
+          "path": "pageviews",
+          "gtCapture": "pageviewsBefore"
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -80,11 +170,22 @@
       "title": "The key shows what it counted and refused nothing",
       "kind": "tool",
       "tool": "partnersinbiz.crm:list-event-keys",
-      "input": { "client": "{{client}}" },
+      "input": {
+        "client": "{{client}}"
+      },
       "expect": [
-        { "path": "keys[id={{keyId}}].counted", "gte": 1 },
-        { "path": "keys[id={{keyId}}].refused", "equals": 0 },
-        { "path": "keys[id={{keyId}}].canary", "equals": true }
+        {
+          "path": "keys[id={{keyId}}].counted",
+          "gte": 1
+        },
+        {
+          "path": "keys[id={{keyId}}].refused",
+          "equals": 0
+        },
+        {
+          "path": "keys[id={{keyId}}].canary",
+          "equals": true
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -93,11 +194,20 @@
       "title": "Pause the key",
       "kind": "tool",
       "tool": "partnersinbiz.crm:update-event-key",
-      "input": { "keyId": "{{keyId}}", "status": "paused" },
+      "input": {
+        "keyId": "{{keyId}}",
+        "status": "paused"
+      },
       "note": "Pausing is what an agent may do; revoking is a person's. The canary cleanup then removes the key and its counts.",
       "expect": [
-        { "path": "key.status", "equals": "paused" },
-        { "path": "key.id", "equals": "{{keyId}}" }
+        {
+          "path": "key.status",
+          "equals": "paused"
+        },
+        {
+          "path": "key.id",
+          "equals": "{{keyId}}"
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -106,10 +216,18 @@
       "title": "Remove the canary's records",
       "kind": "tool",
       "tool": "partnersinbiz.crm:cleanup-canary",
-      "input": { "confirm": true },
+      "input": {
+        "confirm": true
+      },
       "expect": [
-        { "path": "cleaned", "equals": true },
-        { "path": "company", "equals": "{{client}}" }
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
       ],
       "always": true,
       "ownerRole": "account-manager"

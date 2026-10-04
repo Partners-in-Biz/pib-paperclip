@@ -1,6 +1,6 @@
 {
   "key": "email-sequence-dry-run",
-  "version": 1,
+  "version": 2,
   "title": "Email sequence in dry run",
   "summary": "A sequence is set to send email, its approval reaches the Reviewer first (the 2026-10-01 cold-email approvals reached nobody), and the canary contact is enrolled: the CRM records a dry run and queues nothing.",
   "schedule": [
@@ -17,8 +17,14 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
+      "input": {
+        "runRef": "{{runId}}"
+      },
       "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
         {
           "path": "client",
           "equals": "{{client}}"
@@ -34,7 +40,8 @@
           "strip": "contact:"
         }
       },
-      "ownerRole": "account-manager"
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary."
     },
     {
       "id": "create-email-sequence",

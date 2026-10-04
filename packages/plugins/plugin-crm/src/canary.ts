@@ -37,7 +37,9 @@ export const CANARY_JOURNEY: readonly string[] = [
 ];
 
 /** Finds or creates the canary company, its contact and its lead form. Idempotent. */
-export async function ensureCanaryClient(ctx: PluginContext, viewer: Viewer) {
+export async function ensureCanaryClient(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  // A caller-chosen reference echoed in the answer: the acceptance journeys pass their run id, so an answer from an earlier call (a previous journey's, before its cleanup removed the canary) cannot be passed off as this call's.
+  const runRef = typeof params.runRef === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(params.runRef) ? params.runRef : null;
   const companyId = viewer.companyId;
   const accountId = canaryAccountId(companyId);
   const contactId = canaryContactId(companyId);
@@ -68,6 +70,7 @@ export async function ensureCanaryClient(ctx: PluginContext, viewer: Viewer) {
   const prefix = await companyPrefix(ctx, companyId);
   return {
     created,
+    ...(runRef ? { runRef } : {}),
     client: refOf("company", accountId),
     name: account.name,
     link: crmLink(prefix, "company", accountId),

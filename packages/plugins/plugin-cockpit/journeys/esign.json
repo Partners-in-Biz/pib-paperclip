@@ -1,10 +1,15 @@
 {
   "key": "esign",
-  "version": 1,
+  "version": 2,
   "title": "Document prepared and sent for signature",
   "summary": "E-sign on the canary client, in the CRM's dry-run mode: a proposal is made from the template, read back with its SHA-256 and an intact audit trail, and sent for signature as an approval that must reach the Reviewer first (the send refuses when the plugin does not know its public address). It is then withdrawn and the canary cleaned up; nothing is sent. The signature itself and the invoice it makes stay a person's: the Acceptance agent never approves, and the page refuses a signature made from this server. Billing's own tests cover its side.",
-  "schedule": ["release", "on-demand"],
-  "plugins": ["partnersinbiz.crm"],
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
   "ownerRole": "account-manager",
   "steps": [
     {
@@ -12,14 +17,34 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
-      "note": "Asking again returns the same client. An empty leadForm.embed means the CRM page was never opened, so the plugin does not know its public address: e-sign needs the same address for the signing page. That is a failure to report, not something to fix by hand.",
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "note": "Asking again returns the same client. An empty leadForm.embed means the CRM page was never opened, so the plugin does not know its public address: e-sign needs the same address for the signing page. That is a failure to report, not something to fix by hand. Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary.",
       "expect": [
-        { "path": "client", "equals": "{{client}}" },
-        { "path": "contact.email", "endsWith": "@canary.invalid" },
-        { "path": "leadForm.embed.example", "notEmpty": true }
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        },
+        {
+          "path": "leadForm.embed.example",
+          "notEmpty": true
+        }
       ],
-      "capture": { "contactId": { "path": "contact.ref", "strip": "contact:" } },
+      "capture": {
+        "contactId": {
+          "path": "contact.ref",
+          "strip": "contact:"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -43,15 +68,43 @@
       },
       "note": "Only the canary can use e-sign until the owner turns it on for a client. If the CRM refuses the canary, report its answer as the error: it is a finding.",
       "expect": [
-        { "path": "status", "equals": "draft" },
-        { "path": "client", "equals": "{{client}}" },
-        { "path": "kind", "equals": "proposal" },
-        { "path": "canary", "equals": true },
-        { "path": "to", "contains": "@canary.invalid" },
-        { "path": "contentSha256", "matches": "^[0-9a-f]{64}$" },
-        { "path": "documentId", "notEmpty": true }
+        {
+          "path": "status",
+          "equals": "draft"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "kind",
+          "equals": "proposal"
+        },
+        {
+          "path": "canary",
+          "equals": true
+        },
+        {
+          "path": "to",
+          "contains": "@canary.invalid"
+        },
+        {
+          "path": "contentSha256",
+          "matches": "^[0-9a-f]{64}$"
+        },
+        {
+          "path": "documentId",
+          "notEmpty": true
+        }
       ],
-      "capture": { "documentId": { "path": "documentId" }, "contentSha256": { "path": "contentSha256" } },
+      "capture": {
+        "documentId": {
+          "path": "documentId"
+        },
+        "contentSha256": {
+          "path": "contentSha256"
+        }
+      },
       "ownerRole": "account-manager"
     },
     {
@@ -59,16 +112,40 @@
       "title": "Read the document back: its text, its fingerprint and an intact trail",
       "kind": "tool",
       "tool": "partnersinbiz.crm:get-sign-document",
-      "input": { "documentId": "{{documentId}}", "includeContent": true },
+      "input": {
+        "documentId": "{{documentId}}",
+        "includeContent": true
+      },
       "note": "Before a person approves anything there is no signing link, so none may appear in the answer.",
       "expect": [
-        { "path": "status", "equals": "draft" },
-        { "path": "contentSha256", "equals": "{{contentSha256}}" },
-        { "path": "content", "notEmpty": true },
-        { "path": "consentText", "notEmpty": true },
-        { "path": "trailIntact", "equals": true },
-        { "path": "trail[0].kind", "equals": "created" },
-        { "path": "canaryLink", "exists": false }
+        {
+          "path": "status",
+          "equals": "draft"
+        },
+        {
+          "path": "contentSha256",
+          "equals": "{{contentSha256}}"
+        },
+        {
+          "path": "content",
+          "notEmpty": true
+        },
+        {
+          "path": "consentText",
+          "notEmpty": true
+        },
+        {
+          "path": "trailIntact",
+          "equals": true
+        },
+        {
+          "path": "trail[0].kind",
+          "equals": "created"
+        },
+        {
+          "path": "canaryLink",
+          "exists": false
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -77,16 +154,36 @@
       "title": "Send it for signature: the approval reaches the Reviewer first",
       "kind": "tool",
       "tool": "partnersinbiz.crm:send-for-signature",
-      "input": { "documentId": "{{documentId}}" },
+      "input": {
+        "documentId": "{{documentId}}"
+      },
       "note": "This opens an approval issue for the email that carries the signing link. Do NOT approve it and do not touch it: the Cockpit checks where it went. The CRM also opens a work issue for the document (workIssueId): leave that one alone too, the Cockpit cancels both when the run ends. A refusal that says the plugin must learn its public address means the CRM page was never opened: record it as the error. No link may be in the answer.",
       "expect": [
-        { "path": "status", "equals": "awaiting_approval" },
-        { "path": "documentId", "equals": "{{documentId}}" },
-        { "path": "approvalIssueId", "notEmpty": true },
-        { "path": "canaryLink", "exists": false }
+        {
+          "path": "status",
+          "equals": "awaiting_approval"
+        },
+        {
+          "path": "documentId",
+          "equals": "{{documentId}}"
+        },
+        {
+          "path": "approvalIssueId",
+          "notEmpty": true
+        },
+        {
+          "path": "canaryLink",
+          "exists": false
+        }
       ],
-      "probe": { "kind": "approval-route", "idPath": "approvalIssueId", "outward": true },
-      "cleanupIssues": ["workIssueId"],
+      "probe": {
+        "kind": "approval-route",
+        "idPath": "approvalIssueId",
+        "outward": true
+      },
+      "cleanupIssues": [
+        "workIssueId"
+      ],
       "ownerRole": "account-manager"
     },
     {
@@ -94,12 +191,26 @@
       "title": "Check the record: text, consent wording and every step of the trail",
       "kind": "tool",
       "tool": "partnersinbiz.crm:verify-sign-document",
-      "input": { "documentId": "{{documentId}}" },
+      "input": {
+        "documentId": "{{documentId}}"
+      },
       "expect": [
-        { "path": "ok", "equals": true },
-        { "path": "status", "equals": "awaiting_approval" },
-        { "path": "contentSha256", "equals": "{{contentSha256}}" },
-        { "path": "events", "gte": 2 }
+        {
+          "path": "ok",
+          "equals": true
+        },
+        {
+          "path": "status",
+          "equals": "awaiting_approval"
+        },
+        {
+          "path": "contentSha256",
+          "equals": "{{contentSha256}}"
+        },
+        {
+          "path": "events",
+          "gte": 2
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -108,12 +219,26 @@
       "title": "The client's documents show it waiting, and e-sign is on only because this is the canary",
       "kind": "tool",
       "tool": "partnersinbiz.crm:list-sign-documents",
-      "input": { "client": "{{client}}" },
+      "input": {
+        "client": "{{client}}"
+      },
       "expect": [
-        { "path": "count", "gte": 1 },
-        { "path": "documents[documentId={{documentId}}].status", "equals": "awaiting_approval" },
-        { "path": "esign.canary", "equals": true },
-        { "path": "esign.allowed", "equals": true }
+        {
+          "path": "count",
+          "gte": 1
+        },
+        {
+          "path": "documents[documentId={{documentId}}].status",
+          "equals": "awaiting_approval"
+        },
+        {
+          "path": "esign.canary",
+          "equals": true
+        },
+        {
+          "path": "esign.allowed",
+          "equals": true
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -122,11 +247,23 @@
       "title": "Withdraw the document: its email approval is withdrawn with it",
       "kind": "tool",
       "tool": "partnersinbiz.crm:void-sign-document",
-      "input": { "documentId": "{{documentId}}", "reason": "Acceptance run {{runId}} (canary): the rehearsal is finished, so nothing stays waiting." },
+      "input": {
+        "documentId": "{{documentId}}",
+        "reason": "Acceptance run {{runId}} (canary): the rehearsal is finished, so nothing stays waiting."
+      },
       "expect": [
-        { "path": "status", "equals": "void" },
-        { "path": "documentId", "equals": "{{documentId}}" },
-        { "path": "emailsWithdrawn", "gte": 1 }
+        {
+          "path": "status",
+          "equals": "void"
+        },
+        {
+          "path": "documentId",
+          "equals": "{{documentId}}"
+        },
+        {
+          "path": "emailsWithdrawn",
+          "gte": 1
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -135,12 +272,26 @@
       "title": "The document is withdrawn, its trail still intact and no link anywhere",
       "kind": "tool",
       "tool": "partnersinbiz.crm:get-sign-document",
-      "input": { "documentId": "{{documentId}}" },
+      "input": {
+        "documentId": "{{documentId}}"
+      },
       "expect": [
-        { "path": "status", "equals": "void" },
-        { "path": "statusLine", "contains": "Withdrawn" },
-        { "path": "trailIntact", "equals": true },
-        { "path": "canaryLink", "exists": false }
+        {
+          "path": "status",
+          "equals": "void"
+        },
+        {
+          "path": "statusLine",
+          "contains": "Withdrawn"
+        },
+        {
+          "path": "trailIntact",
+          "equals": true
+        },
+        {
+          "path": "canaryLink",
+          "exists": false
+        }
       ],
       "ownerRole": "account-manager"
     },
@@ -149,10 +300,18 @@
       "title": "Remove the canary's records",
       "kind": "tool",
       "tool": "partnersinbiz.crm:cleanup-canary",
-      "input": { "confirm": true },
+      "input": {
+        "confirm": true
+      },
       "expect": [
-        { "path": "cleaned", "equals": true },
-        { "path": "company", "equals": "{{client}}" }
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
       ],
       "always": true,
       "ownerRole": "account-manager"

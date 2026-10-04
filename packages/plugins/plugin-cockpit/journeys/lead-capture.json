@@ -1,6 +1,6 @@
 {
   "key": "lead-capture",
-  "version": 2,
+  "version": 3,
   "title": "Lead captured and qualified",
   "summary": "A visitor sends an enquiry to the client's lead form; it reaches the CRM and is qualified. The first leg of lead to cash, on the canary client. Runs every night: it creates no quote, invoice or approval.",
   "schedule": [
@@ -18,9 +18,15 @@
       "title": "Find the canary client",
       "kind": "tool",
       "tool": "partnersinbiz.crm:create-canary-client",
-      "input": {},
-      "note": "Asking again returns the same client. An empty leadForm.embed means the CRM page was never opened (the plugin does not know its public address yet): that is a failure to report, not something to fix by hand.",
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "note": "Asking again returns the same client. An empty leadForm.embed means the CRM page was never opened (the plugin does not know its public address yet): that is a failure to report, not something to fix by hand. Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary.",
       "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
         {
           "path": "client",
           "equals": "{{client}}"

@@ -210,7 +210,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     displayName: "Create the canary client",
     description:
       "For the acceptance agent's test journeys (every agent with CRM tools can call it, so other agents leave it alone). Finds or creates the internal canary client (PiB Canary Co): a company, a contact whose address ends @canary.invalid (no mail system can deliver to it) and a canary lead form, all flagged. Use it to run lead, qualify, quote, invoice and payment proof without touching a real client. Everything outward for it is a draft or a dry run. Asking again returns the same client.",
-    parametersSchema: schema([], {}),
+    parametersSchema: schema([], { runRef: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$", description: "Optional. Any reference of your own (the acceptance journeys pass their run id); it is echoed back as runRef so you can show the answer belongs to this call." } }),
   },
   {
     name: "cleanup-canary",
