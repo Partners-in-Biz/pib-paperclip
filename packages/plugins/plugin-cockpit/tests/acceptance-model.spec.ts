@@ -22,6 +22,7 @@ import {
   parseJourney,
   recordStep,
   recordIdOf,
+  rehearsalIssueIds,
   renderValue,
   reportMarkdown,
   runFinished,
@@ -124,6 +125,33 @@ describe("parseJourney", () => {
     expect(problemsOf(journey({ steps: [steps[2], steps[0], steps[1]] }))).toContain("come last");
     steps[1] = { id: "look", title: "Look", kind: "ui", expect: [{ path: "$", notEmpty: true }] };
     expect(problemsOf(journey({ steps }))).toContain("screenshot evidence");
+  });
+});
+
+describe("the issues a rehearsal opens (cleanupIssues)", () => {
+  const stepWith = (extra: Record<string, unknown>) => {
+    const steps = (journey().steps as Array<Record<string, unknown>>).slice();
+    steps[1] = { ...steps[1]!, ...extra };
+    return journey({ steps });
+  };
+
+  it("a tool step may name one to three paths into its answer", () => {
+    expect(problemsOf(stepWith({ cleanupIssues: ["workIssueId"] }))).toBe("");
+    expect(problemsOf(stepWith({ cleanupIssues: ["a", "b.id", "c[0].id"] }))).toBe("");
+  });
+
+  it("refuses an empty list, too many, a path that is not text, the whole answer, and any other kind of step", () => {
+    for (const bad of [[], ["a", "b", "c", "d"], [7], [""], ["$"]]) expect(problemsOf(stepWith({ cleanupIssues: bad })), JSON.stringify(bad)).toContain("cleanupIssues is one to three paths");
+    expect(problemsOf(stepWith({ cleanupIssues: "workIssueId" }))).toContain("cleanupIssues is one to three paths");
+    expect(problemsOf(stepWith({ kind: "http", cleanupIssues: ["issueId"] }))).toContain("cleanupIssues");
+  });
+
+  it("reads plain issue ids from the answer, once each, and nothing else", () => {
+    const step = { cleanupIssues: ["workIssueId", "other.id", "workIssueId", "missing", "odd"] };
+    expect(rehearsalIssueIds(step, { workIssueId: "issue-work", other: { id: "9d0c-1" }, odd: "not an id; DROP" })).toEqual(["issue-work", "9d0c-1"]);
+    expect(rehearsalIssueIds(step, { workIssueId: 42, odd: "x".repeat(200) })).toEqual([]);
+    expect(rehearsalIssueIds(step, undefined)).toEqual([]);
+    expect(rehearsalIssueIds({}, { workIssueId: "issue-work" })).toEqual([]);
   });
 });
 

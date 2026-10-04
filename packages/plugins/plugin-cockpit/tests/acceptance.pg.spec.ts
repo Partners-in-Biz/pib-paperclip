@@ -348,6 +348,23 @@ d("acceptance runs (Postgres)", () => {
       expect((await getRun(w3.ctx, A, gone.runId))!.state.steps.find((s) => s.id === "close-lead-issue")!.checks.some((c) => !c.ok && c.detail.includes("could not be found"))).toBe(true);
     });
 
+    it("reads an evidence item's file under the names an agent naturally uses, and says when an item was ignored", async () => {
+      // The first live run lost its screenshots to `path` instead of `ref`: the step failed with no hint why.
+      const w = await make();
+      const started = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
+      await acceptanceRun(w, { action: "record", runId: started.data.runId, stepId: "ensure-canary", input: {}, output: good("x")["ensure-canary"] });
+      const viaPath = await acceptanceRun(w, { action: "record", runId: started.data.runId, stepId: "look-at-the-form", input: { url: "https://paperclip.example/x" }, output: { ok: true, bytes: 8000 }, evidence: [{ kind: "screenshot", path: "/tmp/pib-shots/by-path-missing.png" }] });
+      // Read as the file (so the Cockpit went looking for it on disk), not dropped as an item without a ref.
+      expect(viaPath.data.result.checks.join("\n")).toContain("by-path-missing.png was not found on disk");
+      expect(viaPath.data.result.checks.join("\n")).not.toContain("were ignored");
+      const w2 = await make();
+      const s2 = await acceptanceRun(w2, { action: "start", journey: "lead-capture", client: CANARY });
+      await acceptanceRun(w2, { action: "record", runId: s2.data.runId, stepId: "ensure-canary", input: {}, output: good("x")["ensure-canary"] });
+      const unreadable = await acceptanceRun(w2, { action: "record", runId: s2.data.runId, stepId: "look-at-the-form", input: { url: "https://paperclip.example/x" }, output: { ok: true, bytes: 8000 }, evidence: [{ kind: "screenshot", note: "no file given" }, { kind: "bogus", ref: "x" }] });
+      expect(unreadable.data.result.status).toBe("failed");
+      expect(unreadable.data.result.checks.join("\n")).toContain("No screenshot evidence attached (2 item(s) you sent were ignored");
+    });
+
     it("fails a screenshot that is not on disk, and one that is outside the folders agents write", async () => {
       const w = await make();
       const started = await acceptanceRun(w, { action: "start", journey: "lead-capture", client: CANARY });
@@ -469,6 +486,246 @@ d("acceptance runs (Postgres)", () => {
       expect(last.data.status).toBe("passed");
       expect(w.issues.get(id)!.status).toBe("todo");
       expect(w.comments.find((c) => c.issueId === "issue-req")!.body).toContain(`Left open, because it does not name the canary: ${id}`);
+    });
+  });
+
+  describe("the e-sign and site events journeys (0.6.0)", () => {
+    const DOC = "7a1c0e2e-5b1d-4c53-9e55-0a6f2f0b9c11";
+    const SHA = "a".repeat(64);
+    const canaryClient = { client: CANARY, contact: { ref: "contact:canary-contact-1a2b3c4d", email: "canary@canary.invalid" }, leadForm: { embed: { example: "https://paperclip.example/_plugins/u/ui/lead-example.html", curl: "curl -sS -X POST 'https://paperclip.example/api/lead'" } }, rules: ["draft only"] };
+    const approval = (w: Hybrid, over: Record<string, unknown> = {}) => {
+      w.issues.set("issue-sign", { id: "issue-sign", companyId: A, title: "Approve signing link for PiB Canary Co: Acceptance rehearsal", description: `Document for ${CANARY}`, status: "todo", assigneeAgentId: REV, identifier: "PAR-961", originKind: "plugin:partnersinbiz.crm", ...over });
+      return "issue-sign";
+    };
+    /** The work issue the CRM opens for a document the moment it is sent for signature (for the deal desk, in the canary's own words). */
+    const workIssue = (w: Hybrid, over: Record<string, unknown> = {}) => {
+      w.issues.set("issue-work", { id: "issue-work", companyId: A, title: "Get \"Proposal: Acceptance rehearsal r1\" signed by PiB Canary Co", description: `Prepared for PiB Canary Co to sign online (${CANARY}).`, status: "todo", assigneeAgentId: AM, identifier: "PAR-962", originKind: "plugin:partnersinbiz.crm", originId: `crm:esign:${DOC}`, ...over });
+      return "issue-work";
+    };
+    /** What each e-sign step returns when the CRM works (the shapes the CRM's own tools return). */
+    const esignOutputs = (approvalId: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      "ensure-canary": canaryClient,
+      "create-document": { documentId: DOC, client: CANARY, kind: "proposal", title: "Acceptance rehearsal r1", status: "draft", to: "Canary Contact <canary@canary.invalid>", contentSha256: SHA, canary: true },
+      "read-document": { documentId: DOC, client: CANARY, status: "draft", contentSha256: SHA, content: "# Proposal\n\nAcceptance rehearsal.", consentText: "I agree to sign this document electronically.", trailIntact: true, trail: [{ seq: 1, at: NOW, kind: "created", actor: "agent:acc" }] },
+      "send-for-signature": { documentId: DOC, status: "awaiting_approval", approvalIssueId: approvalId, workIssueId: "issue-work" },
+      "verify-record": { documentId: DOC, status: "awaiting_approval", ok: true, problems: [], events: 2, contentSha256: SHA, auditFingerprint: null },
+      "list-documents": { count: 1, documents: [{ documentId: DOC, status: "awaiting_approval" }], esign: { allowed: true, canary: true, turnedOnBy: null } },
+      withdraw: { documentId: DOC, status: "void", emailsWithdrawn: 1 },
+      "confirm-withdrawn": { documentId: DOC, status: "void", statusLine: "Withdrawn on 4 Oct 2026: the rehearsal is finished.", trailIntact: true, trail: [] },
+      cleanup: { cleaned: true, company: CANARY },
+      ...over,
+    });
+    const eventsOutputs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      "ensure-canary": canaryClient,
+      "make-key": { created: true, key: { id: "key-1", client: CANARY, canary: true, status: "active", writeKey: "pibe_example", install: { curl: "curl -sS -X POST 'https://paperclip.example/api/plugins/partnersinbiz.crm/webhooks/ev' -H 'content-type: application/json' -d '{}'", endpoint: "https://paperclip.example/api/plugins/partnersinbiz.crm/webhooks/ev" } } },
+      "count-before": { keys: 1, entrances: 0, pageviews: 0 },
+      "send-test-event": { status: 200, body: { status: "success" } },
+      "confirm-counter-moved": { keys: 1, entrances: 1, pageviews: 1 },
+      "key-counted": { keys: [{ id: "key-1", counted: 1, refused: 0, canary: true }] },
+      "pause-key": { key: { id: "key-1", status: "paused" } },
+      cleanup: { cleaned: true, company: CANARY },
+      ...over,
+    });
+    const stepStatuses = async (w: Hybrid, runId: string) => Object.fromEntries((await getRun(w.ctx, A, runId))!.state.steps.map((st) => [st.id, st.status]));
+
+    it("e-sign passes when the CRM works: the approval reached the Reviewer, and nothing is left waiting", async () => {
+      const w = await make();
+      const id = approval(w);
+      const { runId, last } = await work(w, "esign", esignOutputs(id), { issueId: requestIssue(w) });
+      expect(last.data.status).toBe("passed");
+      expect((await getRun(w.ctx, A, runId))!.state.captures).toMatchObject({ documentId: DOC, contentSha256: SHA, contactId: "canary-contact-1a2b3c4d" });
+      // The CRM's own void withdrew the approval in real life; here it is still open, so the Cockpit cancels it when the run ends.
+      expect(w.issues.get(id)!.status).toBe("cancelled");
+    });
+
+    it("e-sign fails at the send, and still cleans up, when the CRM does not know its public address", async () => {
+      const w = await make();
+      const refusal = "Open the CRM page once so the plugin learns its public address, then ask again.";
+      const { runId, last } = await work(w, "esign", esignOutputs("none"), { errors: { "send-for-signature": refusal } });
+      expect(last.data.status).toBe("failed");
+      expect(await stepStatuses(w, runId)).toMatchObject({ "create-document": "passed", "read-document": "passed", "send-for-signature": "failed", "verify-record": "blocked", withdraw: "blocked", cleanup: "passed" });
+      const failure = (await getRun(w.ctx, A, runId))!.state.steps.find((st) => st.id === "send-for-signature")!;
+      expect(failure.checks.some((c) => !c.ok && c.detail.includes("public address"))).toBe(true);
+    });
+
+    it("e-sign fails when a signing link shows up before anyone approved the email", async () => {
+      const w = await make();
+      const id = approval(w);
+      const leak = esignOutputs(id, { "read-document": { ...(esignOutputs(id)["read-document"] as object), canaryLink: "https://paperclip.example/_plugins/u/ui/s/abc.html#token" } });
+      const { runId, last } = await work(w, "esign", leak, {});
+      expect(last.data.status).toBe("failed");
+      expect((await stepStatuses(w, runId))["read-document"]).toBe("failed");
+    });
+
+    it("e-sign fails when the approval skipped the Reviewer, when the record is broken, and when the document is not the one it made", async () => {
+      const w = await make();
+      const skipped = approval(w, { assigneeAgentId: null, assigneeUserId: OWNER });
+      expect((await stepStatuses(w, (await work(w, "esign", esignOutputs(skipped), {})).runId))["send-for-signature"]).toBe("failed");
+      const w2 = await make();
+      const ok = approval(w2);
+      const broken = await work(w2, "esign", esignOutputs(ok, { "verify-record": { documentId: DOC, status: "awaiting_approval", ok: false, problems: ["The text of the document does not match its recorded SHA-256"], events: 2, contentSha256: SHA } }), {});
+      expect((await stepStatuses(w2, broken.runId))["verify-record"]).toBe("failed");
+      const w3 = await make();
+      const id3 = approval(w3);
+      const other = await work(w3, "esign", esignOutputs(id3, { "read-document": { ...(esignOutputs(id3)["read-document"] as object), contentSha256: "b".repeat(64) } }), {});
+      expect((await stepStatuses(w3, other.runId))["read-document"]).toBe("failed");
+    });
+
+    it("e-sign: an approval the CRM already withdrew is not cancelled a second time", async () => {
+      const w = await make();
+      const id = approval(w, { status: "cancelled" });
+      const { last } = await work(w, "esign", esignOutputs(id), { issueId: requestIssue(w) });
+      expect(last.data.status).toBe("passed");
+      expect(w.comments.filter((c) => c.issueId === id)).toEqual([]);
+    });
+
+    it("e-sign cancels the work issue the CRM opened for the document as well, so no agent is left waiting on a rehearsal, and the report says so", async () => {
+      const w = await make();
+      const id = approval(w);
+      const work1 = workIssue(w);
+      const { runId, last } = await work(w, "esign", esignOutputs(id), { issueId: requestIssue(w) });
+      expect(last.data.status).toBe("passed");
+      expect((await getRun(w.ctx, A, runId))!.state.rehearsalIssues).toEqual([work1]);
+      expect(w.issues.get(work1)!.status).toBe("cancelled");
+      expect(w.comments.find((c) => c.issueId === work1)!.body).toContain(`Cancelled by acceptance run ${runId}: this issue was opened for the canary client by a rehearsal`);
+      const report = w.comments.find((c) => c.issueId === "issue-req")!.body;
+      expect(report).toContain("The canary's own approval was cancelled (1)");
+      expect(report).toContain("The work issue the rehearsal opened for the canary was cancelled (1)");
+    });
+
+    it("e-sign leaves a work issue that does not name the canary alone, and says it did", async () => {
+      const w = await make();
+      const id = approval(w);
+      const work1 = workIssue(w, { title: "Get the Q4 agreement signed", description: "A real client's document" });
+      await work(w, "esign", esignOutputs(id), { issueId: requestIssue(w) });
+      expect(w.issues.get(work1)!.status).toBe("todo");
+      expect(w.comments.filter((c) => c.issueId === work1)).toEqual([]);
+      expect(w.comments.find((c) => c.issueId === "issue-req")!.body).toContain(`Left open, because it does not name the canary: ${work1}`);
+    });
+
+    it("e-sign cancels the work issue even when the send step then fails (the approval skipped the Reviewer): it exists either way", async () => {
+      const w = await make();
+      const skipped = approval(w, { assigneeAgentId: null, assigneeUserId: OWNER });
+      const work1 = workIssue(w);
+      const { runId } = await work(w, "esign", esignOutputs(skipped), {});
+      expect((await stepStatuses(w, runId))["send-for-signature"]).toBe("failed");
+      expect(w.issues.get(work1)!.status).toBe("cancelled");
+    });
+
+    it("e-sign remembers no work issue from a send that errored, so nothing it did not open is touched", async () => {
+      const w = await make();
+      const work1 = workIssue(w);
+      const { runId } = await work(w, "esign", esignOutputs("none"), { errors: { "send-for-signature": "Open the CRM page once so the plugin learns its public address." } });
+      expect((await getRun(w.ctx, A, runId))!.state.rehearsalIssues).toBeUndefined();
+      expect(w.issues.get(work1)!.status).toBe("todo");
+    });
+
+    it("a send that reported an error, or aborted the run for using something that is not the canary, remembers no issue even if its answer names one", async () => {
+      const w = await make();
+      const id = approval(w);
+      const work1 = workIssue(w);
+      const outputs = esignOutputs(id);
+      const started = await work(w, "esign", outputs, { stopAfter: "read-document" });
+      const errored = await acceptanceRun(w, { action: "record", runId: started.runId, stepId: "send-for-signature", input: { documentId: DOC }, error: "The CRM answered 500", output: outputs["send-for-signature"] });
+      expect(errored.data.result.status).toBe("failed");
+      expect((await getRun(w.ctx, A, started.runId))!.state.rehearsalIssues).toBeUndefined();
+
+      const w2 = await make();
+      const id2 = approval(w2);
+      const work2 = workIssue(w2);
+      const outputs2 = esignOutputs(id2);
+      const second = await work(w2, "esign", outputs2, { stopAfter: "read-document" });
+      const touched = await acceptanceRun(w2, { action: "record", runId: second.runId, stepId: "send-for-signature", input: { documentId: DOC, contactId: "contact-of-a-real-client" }, output: outputs2["send-for-signature"] });
+      expect(touched.data).toMatchObject({ finished: true, status: "aborted" });
+      expect((await getRun(w2.ctx, A, second.runId))!.state.rehearsalIssues).toBeUndefined();
+      expect(w.issues.get(work1)!.status).toBe("todo");
+      expect(w2.issues.get(work2)!.status).toBe("todo");
+    });
+
+    it("a closed work issue is not cancelled again, and one the run was walked away from is cancelled by the sweep, journey or no journey", async () => {
+      const w = await make();
+      const id = approval(w);
+      const work1 = workIssue(w, { status: "done" });
+      await work(w, "esign", esignOutputs(id), { issueId: requestIssue(w) });
+      expect(w.issues.get(work1)!.status).toBe("done");
+      expect(w.comments.filter((c) => c.issueId === work1)).toEqual([]);
+
+      const w2 = await make();
+      const id2 = approval(w2);
+      const work2 = workIssue(w2);
+      const { runId } = await work(w2, "esign", esignOutputs(id2), { issueId: requestIssue(w2), stopAfter: "send-for-signature" });
+      expect((await getRun(w2.ctx, A, runId))!.status).toBe("running");
+      expect(w2.issues.get(work2)!.status).toBe("todo");
+      w2.clock.set(new Date(Date.parse(NOW) + STALE_RUN_MS + 60_000).toISOString());
+      expect(await sweepStaleRuns(w2.env, A)).toBe(1);
+      expect(w2.issues.get(id2)!.status).toBe("cancelled");
+      expect(w2.issues.get(work2)!.status).toBe("cancelled");
+
+      // The journey was removed by a release while the run was open: there is no report to write, but the issue still goes.
+      const w3 = await make();
+      approval(w3);
+      const work3 = workIssue(w3);
+      const gone = await work(w3, "esign", esignOutputs("issue-sign"), { issueId: requestIssue(w3), stopAfter: "send-for-signature" });
+      await w3.client.query(`UPDATE ${NAMESPACE}.acceptance_runs SET journey_key = 'removed-journey' WHERE id = $1`, [gone.runId]);
+      w3.clock.set(new Date(Date.parse(NOW) + STALE_RUN_MS + 60_000).toISOString());
+      expect(await sweepStaleRuns(w3.env, A)).toBe(1);
+      expect(w3.issues.get(work3)!.status).toBe("cancelled");
+    });
+
+    it("site events passes when the counter moves, and says so in the report", async () => {
+      const w = await make();
+      const { runId, last } = await work(w, "site-events", eventsOutputs(), { issueId: requestIssue(w) });
+      expect(last.data.status).toBe("passed");
+      expect((await getRun(w.ctx, A, runId))!.state.captures).toMatchObject({ keyId: "key-1", entrancesBefore: 0, pageviewsBefore: 0 });
+      expect(w.comments.find((c) => c.issueId === "issue-req")!.body).toContain("Site visit counter");
+    });
+
+    it("site events fails when the counter did not move after the post, even though the endpoint answered", async () => {
+      const w = await make();
+      const { runId, last } = await work(w, "site-events", eventsOutputs({ "confirm-counter-moved": { keys: 1, entrances: 0, pageviews: 0 } }), {});
+      expect(last.data.status).toBe("failed");
+      const step = (await getRun(w.ctx, A, runId))!.state.steps.find((st) => st.id === "confirm-counter-moved")!;
+      expect(step.status).toBe("failed");
+      expect(step.checks.some((c) => !c.ok && c.detail.includes("is above entrancesBefore (0)"))).toBe(true);
+      // The key is still cleaned up with the canary.
+      expect((await stepStatuses(w, runId)).cleanup).toBe("passed");
+    });
+
+    it("site events fails when the public endpoint refuses the event, or the plugin has no public address to give", async () => {
+      const w = await make();
+      const refused = await work(w, "site-events", eventsOutputs({ "send-test-event": { status: 502, body: { error: "This site key is not active." } } }), {});
+      expect(refused.last.data.status).toBe("failed");
+      expect((await stepStatuses(w, refused.runId))).toMatchObject({ "send-test-event": "failed", "confirm-counter-moved": "blocked", cleanup: "passed" });
+      const w2 = await make();
+      const noAddress = await work(w2, "site-events", eventsOutputs({ "make-key": { created: true, key: { id: "key-1", client: CANARY, canary: true, status: "active", writeKey: "pibe_example", install: { installNote: "Open the CRM page once so the plugin learns its public address." } } } }), {});
+      expect(noAddress.last.data.status).toBe("failed");
+      expect((await stepStatuses(w2, noAddress.runId))["make-key"]).toBe("failed");
+    });
+
+    it("a site key made for a real client aborts the run: the journey only ever works on the canary", async () => {
+      const w = await make();
+      expect((await acceptanceRun(w, { action: "start", journey: "site-events", client: REAL })).error).toContain("only on the canary client");
+      const started = await acceptanceRun(w, { action: "start", journey: "site-events", client: CANARY });
+      const runId = started.data.runId as string;
+      await acceptanceRun(w, { action: "record", runId, stepId: "ensure-canary", input: {}, output: canaryClient });
+      const touched = await acceptanceRun(w, { action: "record", runId, stepId: "make-key", input: { client: REAL, label: "Acceptance r1" }, output: eventsOutputs()["make-key"] });
+      expect(touched.data).toMatchObject({ finished: true, status: "aborted" });
+      expect((await getRun(w.ctx, A, runId))!.state.abortReason).toContain("not the canary client");
+    });
+
+    it("a release of the CRM asks for all six CRM journeys in one request, e-sign and the visit counter among them", async () => {
+      const w = await make();
+      const status = (version: string) => ({ companyId: A, payload: { plugin: "partnersinbiz.crm", module: "crm", title: "CRM", version, items: [], checkedAt: NOW } });
+      await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.13.0"));
+      await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.14.0"));
+      const requests = [...w.issues.values()].filter((i) => i.originKind === ORIGIN.acceptance);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ title: "Acceptance request: 6 journeys (2026-10-04)", originId: "cockpit:acceptance:release:partnersinbiz.crm:0.14.0", assigneeAgentId: ACC });
+      for (const key of ["esign", "site-events", "lead-capture", "quote-to-invoice", "email-sequence-dry-run", "client-report"]) expect(requests[0]!.description).toContain(`\`${key}\``);
+      expect(requests[0]!.description).toContain("Document prepared and sent for signature");
+      expect(requests[0]!.description).toContain("Site visit counter");
+      // The nightly request is still the lead form alone.
+      expect(JOURNEYS.filter((j) => j.schedule.includes("nightly")).map((j) => j.key)).toEqual(["lead-capture"]);
     });
   });
 

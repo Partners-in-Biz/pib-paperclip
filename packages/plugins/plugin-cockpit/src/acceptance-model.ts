@@ -85,6 +85,12 @@ export interface JourneyStep {
   always?: boolean;
   /** Evidence the step must come with. */
   evidence?: Array<"screenshot" | "curl" | "output">;
+  /**
+   * Paths in the step's answer that name an issue the rehearsal opened for the product's own sake (the work issue a document
+   * opens for the deal desk): the Cockpit cancels the canary's own when the run ends, as it does an approval, so a rehearsal never
+   * leaves work for an agent or a person.
+   */
+  cleanupIssues?: string[];
 }
 
 export interface Journey {
@@ -199,6 +205,10 @@ export function parseJourney(raw: unknown, roles: readonly string[]): Journey {
     }
     if (step.ownerRole !== undefined && (typeof step.ownerRole !== "string" || !roles.includes(step.ownerRole))) bad(`${label}: ownerRole must be one of ${roles.join(", ")}`);
     if (step.kind === "ui" && !(Array.isArray(step.evidence) && step.evidence.includes("screenshot"))) bad(`${label}: a ui step must list screenshot evidence`);
+    if (step.cleanupIssues !== undefined) {
+      const paths = step.cleanupIssues;
+      if (step.kind !== "tool" || !Array.isArray(paths) || paths.length < 1 || paths.length > 3 || paths.some((p) => typeof p !== "string" || !p.trim() || p === "$")) bad(`${label}: cleanupIssues is one to three paths into a tool answer, each naming an issue id`);
+    }
     if (step.always === true) sawAlways = true;
     else if (sawAlways) bad(`${label}: steps that always run (cleanup) come last`);
     if (isRecord(step.capture)) for (const name of Object.keys(step.capture)) known.add(name);
@@ -431,6 +441,18 @@ export interface RunState {
   abortReason?: string | null;
   /** Approval issues this run opened (a send, a sequence): the worker cancels the canary's own when the run ends. */
   approvals?: string[];
+  /** Work issues a step opened only because of the rehearsal (`cleanupIssues`): cancelled the same way, when the run ends. */
+  rehearsalIssues?: string[];
+}
+
+/** The issue ids a step's answer names under its `cleanupIssues` paths: plain ids only, once each. Nothing is read from a call that failed. */
+export function rehearsalIssueIds(step: Pick<JourneyStep, "cleanupIssues">, output: unknown): string[] {
+  const ids = new Set<string>();
+  for (const path of step.cleanupIssues ?? []) {
+    const got = getPath(output, path);
+    if (got.found && typeof got.value === "string" && /^[A-Za-z0-9._:-]{1,120}$/.test(got.value)) ids.add(got.value);
+  }
+  return [...ids];
 }
 
 /** The month before `date` (YYYY-MM-DD) as YYYY-MM: what a monthly report is for. */
@@ -544,6 +566,8 @@ export interface Report {
   output?: unknown;
   error?: string | null;
   evidence?: Evidence[];
+  /** How many evidence items the agent sent that could not be read (no kind, or no ref): said in the failing check so the agent can fix its call. */
+  evidenceIgnored?: number;
   skip?: string | null;
 }
 
@@ -622,7 +646,7 @@ export function recordStep(journey: Journey, state: RunState, stepId: string, re
       for (const kind of step.evidence ?? []) {
         if (kind === "output") continue;
         const have = evidence.some((ev) => ev.kind === kind);
-        checks.push({ ok: have, detail: have ? `${kind} evidence attached` : `No ${kind} evidence attached` });
+        checks.push({ ok: have, detail: have ? `${kind} evidence attached` : `No ${kind} evidence attached${report.evidenceIgnored ? ` (${report.evidenceIgnored} item(s) you sent were ignored: each needs "kind" and "ref", the file path, command, link or text)` : ""}` });
       }
       for (const file of facts.missingFiles ?? []) checks.push({ ok: false, detail: `The screenshot ${file} was not found on disk (or is too small to be one)` });
       if (checks.some((c) => !c.ok)) status = "failed";

@@ -27,6 +27,7 @@ import {
   initRun,
   nextStep,
   recordStep,
+  rehearsalIssueIds,
   renderValue,
   reportMarkdown,
   runFinished,
@@ -244,8 +245,9 @@ export async function startRun(env: Env, companyId: string, input: { journey: st
 export async function abortStaleRun(env: Env, run: RunRow, reason: string): Promise<RunRow> {
   const aborted = await saveRun(env, run, { state: abortState(run.state, reason), status: "aborted", summary: "Aborted: nobody finished it.", finished: true });
   if (journeyByKey(run.journeyKey)) return finishRun(env, aborted);
-  // The journey is gone (a release removed it): there is no report to write, but the approvals still go.
+  // The journey is gone (a release removed it): there is no report to write, but the approvals and the rehearsal's own issues still go.
   await cancelCanaryApprovals(env, run.companyId, aborted.state.approvals ?? [], run.id);
+  await cancelCanaryApprovals(env, run.companyId, aborted.state.rehearsalIssues ?? [], run.id, "issue");
   return aborted;
 }
 
@@ -331,11 +333,27 @@ export interface RecordInput {
 
 const EVIDENCE_KINDS = new Set(["screenshot", "curl", "output", "link", "note"]);
 
+/** The names an agent naturally gives the file, command, link or text of an evidence item; `ref` is the documented one. */
+const REF_ALIASES = ["ref", "path", "file", "filepath", "url", "link", "command", "text", "value"] as const;
+
+function evidenceRef(e: Record<string, unknown>): string | null {
+  for (const key of REF_ALIASES) {
+    const value = e[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
 function cleanEvidence(raw: RecordInput["evidence"]): Evidence[] {
   return (raw ?? [])
     .slice(0, 8)
-    .filter((e) => e && typeof e.kind === "string" && EVIDENCE_KINDS.has(e.kind) && typeof e.ref === "string" && e.ref.trim())
-    .map((e) => ({ kind: e.kind as Evidence["kind"], ref: String(e.ref).slice(0, 600), ...(typeof e.note === "string" && e.note.trim() ? { note: e.note.slice(0, 300) } : {}) }));
+    .map((e) => {
+      if (!e || typeof e !== "object" || typeof e.kind !== "string" || !EVIDENCE_KINDS.has(e.kind)) return null;
+      const ref = evidenceRef(e as Record<string, unknown>);
+      if (!ref) return null;
+      return { kind: e.kind as Evidence["kind"], ref: ref.slice(0, 600), ...(typeof e.note === "string" && e.note.trim() ? { note: e.note.slice(0, 300) } : {}) } as Evidence;
+    })
+    .filter((e): e is Evidence => e !== null);
 }
 
 export interface RecordResult {
@@ -357,11 +375,16 @@ export async function recordRunStep(env: Env, companyId: string, input: RecordIn
     throw new AcceptanceError("The journey changed (a release) while this run was open, so the run was aborted. Start it again.");
   }
   const evidence = cleanEvidence(input.evidence);
-  const report: Report = { input: input.input, output: input.output, error: input.error ?? null, evidence, skip: input.skip ?? null };
+  const report: Report = { input: input.input, output: input.output, error: input.error ?? null, evidence, evidenceIgnored: Math.max(0, Math.min((input.evidence ?? []).length, 8) - evidence.length), skip: input.skip ?? null };
   const { facts, approvalIssueId } = await gatherFacts(env, companyId, journey, input.stepId, report, evidence);
   const recorded = recordStep(journey, run.state, input.stepId, report, facts, env.now().toISOString());
   let state = recorded.state;
   if (approvalIssueId && recorded.result.status === "passed") state = { ...state, approvals: [...new Set([...(state.approvals ?? []), approvalIssueId])] };
+  // An issue the step opened for the rehearsal exists whether the step then passed or not, so it is remembered either way (never for a call that errored or was skipped, or for input that was not the canary's).
+  if (!recorded.aborted && !report.error && !report.skip) {
+    const opened = rehearsalIssueIds(journey.steps.find((s) => s.id === input.stepId)!, report.output);
+    if (opened.length) state = { ...state, rehearsalIssues: [...new Set([...(state.rehearsalIssues ?? []), ...opened])] };
+  }
   const status = runStatus(journey, state);
   let saved = await saveRun(env, run, { state, status: status === "running" ? "running" : run.status });
   if (runFinished(journey, state)) saved = await finishRun(env, saved);
@@ -388,10 +411,13 @@ const CLOSED = new Set(["done", "cancelled"]);
 /**
  * A rehearsal that tests where an approval goes leaves the approval behind. The
  * canary's own are cancelled when the run ends (a refusal: nothing is sent), so
- * the owner is never asked to decide a test. Only an issue whose text names the
- * canary is touched; anything else is left open and said so in the report.
+ * the owner is never asked to decide a test. The same goes for an issue a step
+ * opened only because of the rehearsal (`cleanupIssues`: the work issue a document
+ * opens for the deal desk), which would otherwise wake an agent for nothing and stay
+ * open. Only an issue whose text names the canary is touched; anything else is left
+ * open and said so in the report.
  */
-export async function cancelCanaryApprovals(env: Env, companyId: string, ids: string[], runId: string): Promise<{ cancelled: string[]; left: string[] }> {
+export async function cancelCanaryApprovals(env: Env, companyId: string, ids: string[], runId: string, what: "approval" | "issue" = "approval"): Promise<{ cancelled: string[]; left: string[] }> {
   const out = { cancelled: [] as string[], left: [] as string[] };
   for (const id of ids) {
     const issue = await lookupIssue(env, companyId, id);
@@ -402,10 +428,10 @@ export async function cancelCanaryApprovals(env: Env, companyId: string, ids: st
     }
     try {
       await env.ctx.issues.update(id, { status: "cancelled" }, companyId);
-      await env.ctx.issues.createComment(id, `Cancelled by acceptance run ${runId}: this approval was opened for the canary client to check where it goes. Nothing was sent.`, companyId).catch(() => undefined);
+      await env.ctx.issues.createComment(id, what === "approval" ? `Cancelled by acceptance run ${runId}: this approval was opened for the canary client to check where it goes. Nothing was sent.` : `Cancelled by acceptance run ${runId}: this issue was opened for the canary client by a rehearsal of the product, so nothing real depends on it.`, companyId).catch(() => undefined);
       out.cancelled.push(id);
     } catch (error) {
-      env.ctx.logger.info("Acceptance: a canary approval could not be cancelled", { companyId, issueId: id, error: message(error) });
+      env.ctx.logger.info("Acceptance: a canary issue could not be cancelled", { companyId, issueId: id, error: message(error) });
       out.left.push(id);
     }
   }
@@ -445,6 +471,7 @@ export async function finishRun(env: Env, run: RunRow): Promise<RunRow> {
   const prefix = company?.issuePrefix ?? null;
   const roles = await currentRoles(env, companyId).catch(() => null);
   const cleaned = await cancelCanaryApprovals(env, companyId, state.approvals ?? [], run.id);
+  const rehearsal = await cancelCanaryApprovals(env, companyId, state.rehearsalIssues ?? [], run.id, "issue");
 
   // Where the report lives: the request the run answered, else (for a failure) a new issue for the Operator.
   let reportIssueId = run.reportIssueId ?? run.requestIssueId;
@@ -507,7 +534,8 @@ export async function finishRun(env: Env, run: RunRow): Promise<RunRow> {
   const markdown = [
     reportMarkdown(journey, state, { runId: run.id, trigger: run.trigger, triggerRef: run.triggerRef, startedAt: run.startedAt, finishedAt: now, children }),
     ...(cleaned.cancelled.length ? ["", `The canary's own approval${cleaned.cancelled.length === 1 ? " was" : "s were"} cancelled (${cleaned.cancelled.length}): nothing was sent.`] : []),
-    ...(cleaned.left.length ? ["", `Left open, because it does not name the canary: ${cleaned.left.join(", ")}. A person looks at it.`] : []),
+    ...(rehearsal.cancelled.length ? ["", `The work issue${rehearsal.cancelled.length === 1 ? "" : "s"} the rehearsal opened for the canary ${rehearsal.cancelled.length === 1 ? "was" : "were"} cancelled (${rehearsal.cancelled.length}): nobody is left waiting on it.`] : []),
+    ...([...cleaned.left, ...rehearsal.left].length ? ["", `Left open, because it does not name the canary: ${[...cleaned.left, ...rehearsal.left].join(", ")}. A person looks at it.`] : []),
   ].join("\n");
   if (reportRef) await env.ctx.issues.createComment(reportRef.id, markdown, companyId).catch((error) => env.ctx.logger.info("Acceptance: the report comment was not posted", { runId: run.id, error: message(error) }));
   const saved = await saveRun(env, run, { state, status, summary: runSummary(journey, state), report: markdown, reportIssueId: reportIssueId ?? null, children, finished: true });

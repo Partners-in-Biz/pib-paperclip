@@ -77,7 +77,7 @@ export function parseMetricKey(key: string): ParsedMetric | null {
 }
 
 export const METRIC_KEY_HELP =
-  'A metric key: "company:<metric>" (e.g. company:fail_rate), "agent:<agentId>:<metric>" (fail_rate, retry_rate, p90_sec, usd_per_done, usd_7d, runs_7d), "kpi:<plugin>:<kpi key>" (a number a module reports, e.g. kpi:partnersinbiz.crm:new_leads_week) or "manual" (you record the value yourself).';
+  'A metric key: "company:<metric>" (e.g. company:fail_rate), "agent:<agentId>:<metric>" (fail_rate, retry_rate, p90_sec, usd_per_done, usd_7d, runs_7d), "kpi:<plugin>:<kpi key>" (a number a module reports, e.g. kpi:partnersinbiz.crm:new_leads_week; the CRM also reports leads_30d, organic_leads_30d, attributed_revenue_30d, site_visits_30d, site_conversions_30d, docs_signed_30d and docs_waiting_signature, each only once what it counts is set up) or "manual" (you record the value yourself).';
 
 /** Which way is better when the key says so; null for `manual` and modules' KPIs (the caller says). */
 export function metricBetter(parsed: ParsedMetric): Better | null {

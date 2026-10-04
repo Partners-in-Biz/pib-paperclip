@@ -134,7 +134,7 @@ export async function ownSetupStatus(env: Env, companyId: string): Promise<Setup
       required: false,
       detail: acceptance
         ? `${acceptance.name} uses the product like a customer on a test client: every night, after each plugin release and when asked${acceptance.status === "paused" ? " (paused: resume it once its model key works)" : ""}.`
-        : "Optional. The Acceptance agent uses the product the way a customer would (a lead captured, a quote, an invoice, an email sequence, a social draft, an SEO sprint, a client report) on a test client, so a release that passes its tests but does not work is found before a client finds it.",
+        : "Optional. The Acceptance agent uses the product the way a customer would (a lead captured, a quote, an invoice, an email sequence, a social draft, an SEO sprint, a client report, a document sent for signature, a site visit counter) on a test client, so a release that passes its tests but does not work is found before a client finds it.",
       href: teamSetupPath("acceptance" as TeamRoleKey),
       hrefLabel: TEAM_LABEL,
       agentNext: "Works the customer journeys every night and after each plugin release and files a pass or fail report; a failure opens an issue for the role that owns the step.",

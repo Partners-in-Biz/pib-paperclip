@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { askCardProblems } from "@partnersinbiz/pib-plugin-kit";
+import { METRIC_KEY_HELP, parseMetricKey } from "../src/metrics-keys.js";
 import { ACTIVATE_GOALS_EFFECT, businessReviewContent, GOALS_MAX_ACTIVE, GoalError, goalBrief, goalProgress, goalsAskCard, parseGoalInput, type GoalRow } from "../src/goals-model.js";
 
 const goal = (extra: Partial<GoalRow> = {}): GoalRow => ({
@@ -142,5 +144,23 @@ describe("the weekly business review", () => {
     expect(description).toContain("1 active goal: 1 reached, 0 on track, 0 behind.");
     expect(description).toContain("- [ ] Nothing is behind. Say in one line what drove the best number");
     expect(description).not.toContain("proposed goal");
+  });
+});
+
+describe("the numbers the CRM reports for goals", () => {
+  const CRM_KPIS = ["leads_30d", "organic_leads_30d", "attributed_revenue_30d", "site_visits_30d", "site_conversions_30d", "docs_signed_30d", "docs_waiting_signature"];
+
+  it("are named in the metric key help an agent reads when it sets a goal, and each is a key a goal accepts", () => {
+    for (const key of CRM_KPIS) {
+      expect(METRIC_KEY_HELP, key).toContain(key);
+      expect(parseMetricKey(`kpi:partnersinbiz.crm:${key}`), key).toEqual({ kind: "kpi", plugin: "partnersinbiz.crm", kpi: key });
+    }
+    expect(METRIC_KEY_HELP).toContain("each only once what it counts is set up");
+  });
+
+  it("are numbers the CRM really reports (the help cannot name one that is gone)", () => {
+    const crm = readFileSync(new URL("../../plugin-crm/src/growth-kpis.ts", import.meta.url), "utf8");
+    for (const key of CRM_KPIS) expect(crm, key).toContain(`key: "${key}"`);
+    expect(readFileSync(new URL("../../plugin-crm/src/cockpit.ts", import.meta.url), "utf8")).toContain('key: "new_leads_week"');
   });
 });
