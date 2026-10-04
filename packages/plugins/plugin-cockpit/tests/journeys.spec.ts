@@ -8,8 +8,9 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { guardInput, renderValue, type Journey } from "../src/acceptance-model.js";
-import { JOURNEYS, journeyByKey, journeysFor } from "../src/journeys.js";
+import { stepView } from "../src/acceptance.js";
+import { checkExpectation, getPath, guardInput, initRun, parseJourney, renderValue, type Expectation, type Journey } from "../src/acceptance-model.js";
+import { JOURNEY_ROLES, JOURNEYS, journeyByKey, journeysFor } from "../src/journeys.js";
 
 type Tool = { name: string; parametersSchema?: { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean } };
 const PLUGINS = ["crm", "billing", "social", "seo", "campaigns", "mailbox"] as const;
@@ -223,6 +224,75 @@ describe("the site events journey (0.6.0)", () => {
     expect(step("key-counted").expect.every((e) => e.path.startsWith("keys[id={{keyId}}]"))).toBe(true);
     expect(step("pause-key").input).toEqual({ keyId: "{{keyId}}", status: "paused" });
     expect(events.steps.at(-1)!.tool).toBe("partnersinbiz.crm:cleanup-canary");
+  });
+});
+
+describe("the SEO sprint journey (0.6.5)", () => {
+  const seo = journeyByKey("seo-sprint-draft")!;
+  const step = (id: string) => seo.steps.find((s) => s.id === id)!;
+  const create = step("create-sprint");
+  const SPRINT = "29ba7904-ea9d-47bd-9ed7-380272b46b64";
+  // What partnersinbiz.seo:create-sprint answers (the live answer of 2026-10-04, trimmed): the sprint is `sprintId` and `issuesOpened` counts the task issues it opened.
+  const answer = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ sprintId: SPRINT, siteUrl: "https://canary.invalid", siteName: "PiB Canary Co", client: "company:canary-1a2b3c4d", startDate: "2027-11-08", status: "pre_launch", day: -400, issuesOpened: 0, issuesPending: 0, warnings: [], ...over });
+  const verdicts = (output: unknown) => create.expect.flatMap((e) => checkExpectation(output, renderValue(e, { client: "company:canary-1a2b3c4d" }) as Expectation, {}));
+  const failures = (output: unknown) => verdicts(output).filter((c) => !c.ok).map((c) => c.detail);
+
+  it("is a version 3 file that passes the journey validator as it stands on disk", () => {
+    const onDisk = JSON.parse(readFileSync(new URL("../journeys/seo-sprint-draft.json", import.meta.url), "utf8")) as unknown;
+    expect(parseJourney(onDisk, JOURNEY_ROLES)).toMatchObject({ key: "seo-sprint-draft", version: 3 });
+    expect(seo.version).toBe(3);
+  });
+
+  it("expects the field names create-sprint answers with, and that it opened no work", () => {
+    expect(failures(answer())).toEqual([]);
+    // The first live run expected `id`: an answer in the old shape fails, naming the field.
+    expect(failures({ id: SPRINT, issuesOpened: 0 })).toEqual(["sprintId is missing from the result"]);
+    // The live answer opened nine task issues for the owner: that is the finding.
+    expect(failures(answer({ issuesOpened: 9 }))).toEqual(["issuesOpened is 0; got 9"]);
+    expect(failures(answer({ issuesOpened: "9" }))).toEqual(['issuesOpened is 0; got "9"']);
+    expect(failures({ sprintId: SPRINT })).toEqual(["issuesOpened is missing from the result"]);
+    expect(failures(answer({ sprintId: "" }))).toEqual(["sprintId is not empty; got \"\""]);
+  });
+
+  it("captures the sprint under the name its answer gives, for every later step", () => {
+    expect(create.capture).toEqual({ sprintId: { path: "sprintId" } });
+    expect(getPath(answer(), create.capture!.sprintId!.path)).toEqual({ found: true, value: SPRINT });
+    for (const id of ["add-keyword", "read-tasks", "archive-sprint"]) expect(step(id).input?.sprintId, id).toBe("{{sprintId}}");
+  });
+
+  it("reads fields the SEO plugin's answer really has (a renamed field fails the build, not a night)", () => {
+    const source = readFileSync(new URL("../../plugin-seo/src/service/sprints.ts", import.meta.url), "utf8");
+    const body = source.slice(source.indexOf("export async function createSprint("), source.indexOf("export async function upgradeLegacySprint("));
+    expect(body.length).toBeGreaterThan(500);
+    for (const path of [...create.expect.map((e) => e.path), ...Object.values(create.capture ?? {}).map((c) => c.path)]) expect(body, path).toMatch(new RegExp(`\\b${path}\\b\\s*:`));
+  });
+
+  it("tells the agent where the sprint id comes from when create-sprint failed after the sprint was made", () => {
+    expect(step("archive-sprint").always).toBe(true);
+    expect(step("archive-sprint").note).toContain("sprintId from the answer of create-sprint");
+  });
+});
+
+describe("the quote to invoice journey (0.6.5)", () => {
+  const journey = journeyByKey("quote-to-invoice")!;
+  const convert = journey.steps.find((s) => s.id === "convert-quote")!;
+
+  it("keeps its own convert-quote as the one that converts, with the logic it had", () => {
+    expect(journey.version).toBe(3);
+    expect(convert.tool).toBe("partnersinbiz.billing:convert-quote");
+    expect(convert.input).toEqual({ quoteId: "{{quoteId}}" });
+    expect(convert.expect).toEqual([{ path: "invoice.status", equals: "draft" }, { path: "quote.status", equals: "converted" }, { path: "invoice.id", notEmpty: true }]);
+    expect(convert.capture).toEqual({ invoiceId: { path: "invoice.id" } });
+    expect(journey.steps.filter((s) => s.tool === "partnersinbiz.billing:convert-quote")).toHaveLength(1);
+  });
+
+  it("tells the agent to report a refusal because the quote is already converted exactly as it came, and the agent is shown it", () => {
+    expect(convert.note).toContain("already converted");
+    expect(convert.note).toContain("record that error exactly as it came");
+    expect(convert.note).toContain("do not retry");
+    const state = initRun(journey, "company:canary-1a2b3c4d", "run1", "2026-10-04");
+    const view = stepView({ step: convert, input: { quoteId: "q1" }, missing: [], index: 7, total: 9 }, state);
+    expect(view.note).toBe(convert.note);
   });
 });
 

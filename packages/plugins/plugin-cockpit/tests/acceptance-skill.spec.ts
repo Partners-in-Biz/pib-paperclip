@@ -33,6 +33,12 @@ describe("the Acceptance skill", () => {
     expect(ACCEPTANCE_SKILL_BODY).toContain("the tool does not exist (its plugin has not been upgraded to the version that ships it yet)");
   });
 
+  it("tells the agent the Cockpit cancels the issues a rehearsal leaves about the canary, so it never does (0.6.5)", () => {
+    expect(ACCEPTANCE_SKILL_BODY).toContain("any other open issue named after the canary it made meanwhile");
+    expect(journeysReference()).toContain("any other open issue made while the run was open whose title names the canary");
+    expect(journeysReference()).toContain("never cancel one yourself");
+  });
+
   it("names only tools that exist: its own, and the CRM's canary tool", () => {
     const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
     expect(own.has("acceptance-run")).toBe(true);

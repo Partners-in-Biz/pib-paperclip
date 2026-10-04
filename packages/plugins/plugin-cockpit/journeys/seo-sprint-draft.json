@@ -1,8 +1,8 @@
 {
   "key": "seo-sprint-draft",
-  "version": 2,
+  "version": 3,
   "title": "SEO sprint on a fixture site, not started",
-  "summary": "A 90-day sprint is created for the canary client's fixture site with a start date more than a year away and autopilot off, so no task opens and nothing is crawled or changed; a keyword is added, the task list is read, and the sprint is archived.",
+  "summary": "A 90-day sprint is created for the canary client's fixture site with a start date more than a year away and autopilot off, and the answer must say it opened no task issue (a rehearsal creates no work); nothing is crawled or changed. A keyword is added, the task list is read, and the sprint is archived.",
   "schedule": [
     "release",
     "on-demand"
@@ -47,16 +47,20 @@
         "autopilotMode": "off",
         "notes": "Acceptance run {{runId}}: fixture site, nothing is crawled or changed."
       },
-      "note": "If the tool tries to reach canary.invalid (it cannot) or opens work for the SEO agent, report it as a failure: a rehearsal must never create real work.",
+      "note": "The answer names the sprint as sprintId and says issuesOpened: it must be 0, because a rehearsal never creates work for the SEO agent or a person. If the tool tries to reach canary.invalid (it cannot) or issuesOpened is above 0, record the answer as it came: the step fails, and that is the finding.",
       "expect": [
         {
-          "path": "id",
+          "path": "sprintId",
           "notEmpty": true
+        },
+        {
+          "path": "issuesOpened",
+          "equals": 0
         }
       ],
       "capture": {
         "sprintId": {
-          "path": "id"
+          "path": "sprintId"
         }
       },
       "ownerRole": "seo-specialist"
@@ -110,6 +114,7 @@
           "notEmpty": true
         }
       ],
+      "note": "If create-sprint failed (issuesOpened above 0) the sprint exists all the same and the Cockpit has no sprintId to fill in: archive it with the sprintId from the answer of create-sprint.",
       "always": true,
       "ownerRole": "seo-specialist"
     },

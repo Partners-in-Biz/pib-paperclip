@@ -246,9 +246,8 @@ export async function startRun(env: Env, companyId: string, input: { journey: st
 export async function abortStaleRun(env: Env, run: RunRow, reason: string): Promise<RunRow> {
   const aborted = await saveRun(env, run, { state: abortState(run.state, reason), status: "aborted", summary: "Aborted: nobody finished it.", finished: true });
   if (journeyByKey(run.journeyKey)) return finishRun(env, aborted);
-  // The journey is gone (a release removed it): there is no report to write, but the approvals and the rehearsal's own issues still go.
-  await cancelCanaryApprovals(env, run.companyId, aborted.state.approvals ?? [], run.id);
-  await cancelCanaryApprovals(env, run.companyId, aborted.state.rehearsalIssues ?? [], run.id, "issue");
+  // The journey is gone (a release removed it): there is no report to write, but the approvals, the rehearsal's own issues and any other issue it left about the canary still go.
+  await putAwayRehearsal(env, aborted, aborted.state);
   return aborted;
 }
 
@@ -372,7 +371,9 @@ export async function recordRunStep(env: Env, companyId: string, input: RecordIn
   if (run.status !== "running") throw new AcceptanceError(`Run ${run.id} is already ${run.status}.`);
   const journey = journeyByKey(run.journeyKey);
   if (!journey || journey.version !== run.journeyVersion) {
-    await saveRun(env, run, { state: abortState(run.state, `The journey changed (v${run.journeyVersion} to ${journey ? `v${journey.version}` : "gone"}) while this run was open: start it again.`), status: "aborted", summary: "Aborted: the journey changed while it ran.", finished: true });
+    const ended = await saveRun(env, run, { state: abortState(run.state, `The journey changed (v${run.journeyVersion} to ${journey ? `v${journey.version}` : "gone"}) while this run was open: start it again.`), status: "aborted", summary: "Aborted: the journey changed while it ran.", finished: true });
+    // The run ends here without a report, but what it opened for the canary must not stay in anyone's queue.
+    await putAwayRehearsal(env, ended, ended.state).catch((error) => env.ctx.logger.info("Acceptance: the rehearsal of a changed journey could not be put away", { companyId, runId: run.id, error: message(error) }));
     throw new AcceptanceError("The journey changed (a release) while this run was open, so the run was aborted. Start it again.");
   }
   const evidence = cleanEvidence(input.evidence);
@@ -439,6 +440,96 @@ export async function cancelCanaryApprovals(env: Env, companyId: string, ids: st
   return out;
 }
 
+/** What the net looks for in a TITLE: the fake client's name, or the words the journeys give their rehearsal records (`Canary rehearsal <run>`, `Acceptance run <run>`). Any case. */
+const STRAY_PHRASES = ["PiB Canary Co", "Canary acceptance run", "Acceptance rehearsal", "Canary rehearsal"] as const;
+const STRAY_TITLE = new RegExp(STRAY_PHRASES.join("|"), "i");
+/** The Cockpit's own acceptance issues (a request, a report, a failure) keep their own life: the net never touches them. */
+const OWN_ACCEPTANCE_TITLE = /^\s*Acceptance (?:request|failure|failed|stopped)\b/i;
+const STRAY_STATUSES = ["todo", "in_progress", "blocked", "in_review"] as const;
+/** The most issues one net looks at (the newest) and the most it cancels. */
+export const STRAY_LIST_LIMIT = 200;
+export const STRAY_CANCEL_LIMIT = 60;
+
+/**
+ * The general net under a rehearsal (0.6.5). The first full runs on the fake canary client still left about
+ * two dozen open issues for the owner and for real agents (a deal-won issue, SEO tasks, an invoice send approval,
+ * an email approval, a social review). Each source is made quiet at its own plugin and a journey cancels what it
+ * knows it opened (`cancelCanaryApprovals`); this catches the rest when the run ends, whatever opened it: every open
+ * issue (todo, in progress, blocked, in review) created while the run was open whose TITLE names the canary client
+ * or a rehearsal is cancelled, with a comment saying it was a rehearsal.
+ *
+ * It never touches an issue whose title does not name the canary, one made before the run started or after it ended,
+ * a closed one, or the Cockpit's own acceptance issues (the run's request and report, a failure, a request). Bounded
+ * (STRAY_LIST_LIMIT looked at, STRAY_CANCEL_LIMIT cancelled), best effort, and it never throws: a run still ends.
+ * `left` holds what it found and did not cancel (past the limit, or refused by the host), for the report.
+ *
+ * The candidates come from one read of the host's issues table (the host lists issues by priority first, then by
+ * activity, so a list of the newest open ones could bury a medium-priority rehearsal issue under high-priority work
+ * in a busy company); every row is checked again here, and the cancelling goes through the issues API.
+ */
+export async function cancelStrayRehearsalIssues(env: Env, run: Pick<RunRow, "id" | "companyId" | "startedAt" | "finishedAt" | "requestIssueId" | "reportIssueId">): Promise<{ cancelled: string[]; left: string[] }> {
+  const out = { cancelled: [] as string[], left: [] as string[] };
+  try {
+    const companyId = run.companyId;
+    const from = Date.parse(run.startedAt);
+    if (!Number.isFinite(from)) return out;
+    // A report filed again for a run that ended long ago must not reach into a later run's issues: the window closes when the run did.
+    const until = run.finishedAt ? Date.parse(run.finishedAt) : env.now().getTime();
+    const own = new Set([run.requestIssueId, run.reportIssueId].filter((id): id is string => !!id));
+    const rows = await env.ctx.db.query<Raw>(
+      `SELECT id::text AS id, company_id::text AS company_id, identifier, title, status, origin_kind, created_at FROM public.issues
+       WHERE company_id = $1::uuid AND hidden_at IS NULL AND status IN (${STRAY_STATUSES.map((status) => `'${status}'`).join(", ")})
+         AND created_at >= $2::timestamptz AND created_at <= $3::timestamptz
+         AND (${STRAY_PHRASES.map((_, i) => `title ILIKE $${i + 4}`).join(" OR ")})
+       ORDER BY created_at DESC LIMIT ${STRAY_LIST_LIMIT}`,
+      [companyId, new Date(from).toISOString(), new Date(until).toISOString(), ...STRAY_PHRASES.map((phrase) => `%${phrase}%`)],
+    );
+    const found = new Map<string, string>();
+    for (const row of rows) {
+      const id = String(row.id ?? "");
+      const title = String(row.title ?? "");
+      const made = Date.parse(iso(row.created_at) ?? "");
+      if (!id || found.has(id) || own.has(id) || (row.identifier && own.has(String(row.identifier)))) continue;
+      if (String(row.company_id) !== companyId) continue;
+      if (!(STRAY_STATUSES as readonly string[]).includes(String(row.status))) continue;
+      if (row.origin_kind === ORIGIN.acceptance || OWN_ACCEPTANCE_TITLE.test(title)) continue;
+      if (!STRAY_TITLE.test(title)) continue;
+      // Only what was made while the run was open: an issue with no readable creation time cannot be shown to be the rehearsal's, so it is left.
+      if (!Number.isFinite(made) || made < from || made > until) continue;
+      found.set(id, title);
+    }
+    for (const id of found.keys()) {
+      if (out.cancelled.length >= STRAY_CANCEL_LIMIT) {
+        out.left.push(id);
+        continue;
+      }
+      try {
+        await env.ctx.issues.update(id, { status: "cancelled" }, companyId);
+        await env.ctx.issues.createComment(id, `Cancelled by acceptance run ${run.id}: this was a rehearsal on the fake canary client (PiB Canary Co), so no real client or person is waiting on it.`, companyId).catch(() => undefined);
+        out.cancelled.push(id);
+      } catch (error) {
+        env.ctx.logger.info("Acceptance: a stray rehearsal issue could not be cancelled", { companyId, runId: run.id, issueId: id, error: message(error) });
+        out.left.push(id);
+      }
+    }
+    if (out.cancelled.length) env.ctx.logger.info("Acceptance: cancelled issues a rehearsal left open", { companyId, runId: run.id, count: out.cancelled.length });
+  } catch (error) {
+    env.ctx.logger.info("Acceptance: the net for stray rehearsal issues failed", { companyId: run.companyId, runId: run.id, error: message(error) });
+  }
+  return out;
+}
+
+/**
+ * Everything a rehearsal can leave behind, put away when its run ends however it ends: the canary's approvals, the
+ * work issues a step named, and then the net for any other open issue that names the canary.
+ */
+async function putAwayRehearsal(env: Env, run: RunRow, state: RunState): Promise<{ cleaned: { cancelled: string[]; left: string[] }; rehearsal: { cancelled: string[]; left: string[] }; strays: { cancelled: string[]; left: string[] } }> {
+  const cleaned = await cancelCanaryApprovals(env, run.companyId, state.approvals ?? [], run.id);
+  const rehearsal = await cancelCanaryApprovals(env, run.companyId, state.rehearsalIssues ?? [], run.id, "issue");
+  const strays = await cancelStrayRehearsalIssues(env, run);
+  return { cleaned, rehearsal, strays };
+}
+
 /** The originId a failure issue starts with: one (journey, step) pair, then the run that opened it. */
 export const failureOriginPrefix = (journeyKey: string, stepId: string): string => `${ORIGIN_ID.acceptance}fail:${journeyKey}:${stepId}:`;
 const OPEN_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
@@ -471,8 +562,7 @@ export async function finishRun(env: Env, run: RunRow): Promise<RunRow> {
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
   const roles = await currentRoles(env, companyId).catch(() => null);
-  const cleaned = await cancelCanaryApprovals(env, companyId, state.approvals ?? [], run.id);
-  const rehearsal = await cancelCanaryApprovals(env, companyId, state.rehearsalIssues ?? [], run.id, "issue");
+  const { cleaned, rehearsal, strays } = await putAwayRehearsal(env, run, state);
 
   // Where the report lives: the request the run answered, else (for a failure) a new issue for the Operator.
   let reportIssueId = run.reportIssueId ?? run.requestIssueId;
@@ -536,7 +626,9 @@ export async function finishRun(env: Env, run: RunRow): Promise<RunRow> {
     reportMarkdown(journey, state, { runId: run.id, trigger: run.trigger, triggerRef: run.triggerRef, startedAt: run.startedAt, finishedAt: now, children }),
     ...(cleaned.cancelled.length ? ["", `The canary's own approval${cleaned.cancelled.length === 1 ? " was" : "s were"} cancelled (${cleaned.cancelled.length}): nothing was sent.`] : []),
     ...(rehearsal.cancelled.length ? ["", `The work issue${rehearsal.cancelled.length === 1 ? "" : "s"} the rehearsal opened for the canary ${rehearsal.cancelled.length === 1 ? "was" : "were"} cancelled (${rehearsal.cancelled.length}): nobody is left waiting on it.`] : []),
+    ...(strays.cancelled.length ? ["", `${strays.cancelled.length} other open issue${strays.cancelled.length === 1 ? "" : "s"} about the canary ${strays.cancelled.length === 1 ? "was" : "were"} cancelled (${strays.cancelled.length}): a rehearsal on the fake canary client, so nobody real was waiting on ${strays.cancelled.length === 1 ? "it" : "them"}.`] : []),
     ...([...cleaned.left, ...rehearsal.left].length ? ["", `Left open, because it does not name the canary: ${[...cleaned.left, ...rehearsal.left].join(", ")}. A person looks at it.`] : []),
+    ...(strays.left.length ? ["", `Named the canary but not cancelled (past the limit of ${STRAY_CANCEL_LIMIT} a run cancels, or the host refused): ${strays.left.slice(0, 10).join(", ")}${strays.left.length > 10 ? ` and ${strays.left.length - 10} more` : ""}. A person looks at ${strays.left.length === 1 ? "it" : "them"}.`] : []),
   ].join("\n");
   if (reportRef) await env.ctx.issues.createComment(reportRef.id, markdown, companyId).catch((error) => env.ctx.logger.info("Acceptance: the report comment was not posted", { runId: run.id, error: message(error) }));
   const saved = await saveRun(env, run, { state, status, summary: runSummary(journey, state), report: markdown, reportIssueId: reportIssueId ?? null, children, finished: true });

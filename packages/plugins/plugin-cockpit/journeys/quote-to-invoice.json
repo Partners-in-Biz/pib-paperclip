@@ -1,6 +1,6 @@
 {
   "key": "quote-to-invoice",
-  "version": 2,
+  "version": 3,
   "title": "Deal, quote, accepted, invoice ready to send",
   "summary": "From a qualified canary client to a draft invoice behind its send approval: a deal, a quote with a line, the customer accepting (the CRM marks the deal won), the invoice drafted and the send routed to the Reviewer first. It stops at the approval: only a person approves a send, and the run cancels the canary's own approval afterwards. The payment proof leg waits for Billing to record a canary payment without a person (see the README).",
   "schedule": [
@@ -193,6 +193,7 @@
           "path": "invoice.id"
         }
       },
+      "note": "This call is the only one that converts the quote. If the answer is a refusal because the quote is already converted, record that error exactly as it came (as the error): do not retry and do not look for the invoice. Something else converted the quote, which a rehearsal must never cause, and that is the finding.",
       "ownerRole": "account-manager"
     },
     {

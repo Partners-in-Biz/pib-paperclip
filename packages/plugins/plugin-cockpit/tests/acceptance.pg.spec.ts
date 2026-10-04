@@ -87,6 +87,27 @@ d("acceptance runs (Postgres)", () => {
     return "issue-lead";
   };
 
+  /** Minutes after NOW, the moment every run in these tests starts (a test moves the clock on to end a run later). */
+  const at = (minutes: number): string => new Date(Date.parse(NOW) + minutes * 60_000).toISOString();
+  let strays = 0;
+  /**
+   * An open issue a rehearsal left behind: by default a plugin's task for the owner named after the fake client, made five minutes into the run.
+   * It is in the host's issues table (what the net reads) and in the fake host (what it cancels through).
+   */
+  const strayIssue = async (w: Hybrid, title: string, over: Record<string, unknown> = {}): Promise<string> => {
+    strays += 1;
+    const id = `00000000-0000-4000-8000-${String(strays).padStart(12, "0")}`;
+    const row = { id, companyId: A, title, description: "", status: "todo", assigneeUserId: OWNER, identifier: `PAR-${970 + strays}`, originKind: "plugin:partnersinbiz.seo:task", createdAt: at(5), ...over };
+    w.issues.set(id, row);
+    await w.client.query(`INSERT INTO public.issues (id, company_id, identifier, title, description, status, origin_kind, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [id, row.companyId, row.identifier, row.title, row.description, row.status, row.originKind ?? null, row.createdAt]);
+    return id;
+  };
+  const strayIssues = async (w: Hybrid, specs: Array<[string, Record<string, unknown>?]>): Promise<string[]> => {
+    const ids: string[] = [];
+    for (const [title, over] of specs) ids.push(await strayIssue(w, title, over));
+    return ids;
+  };
+
   /** What each lead-capture step returns when the product works. */
   const good = (leadId: string): Record<string, unknown> => ({
     "ensure-canary": { client: CANARY, contact: { ref: "contact:canary-contact-1a2b3c4d", email: "canary@canary.invalid" }, leadForm: { embed: { curl: "curl -sS -X POST 'https://paperclip.example/api/lead' -d '{\"email\":\"jane@example.com\"}'", example: "https://paperclip.example/_plugins/u/ui/lead-example.html" } }, rules: ["draft only"] },
@@ -112,11 +133,12 @@ d("acceptance runs (Postgres)", () => {
     ...(step.attach?.includes("screenshot") ? [{ kind: "screenshot", ref: "/tmp/pib-shots/form.png", note: "desktop" }, { kind: "screenshot", ref: "/tmp/pib-shots/form-mobile.png", note: "mobile" }] : []),
   ];
 
-  /** Starts a journey and records every step with the given outputs (a step with `error` set reports it). */
-  async function work(w: Hybrid, key: string, outputs: Record<string, unknown>, options: { issueId?: string | null; errors?: Record<string, string>; stopAfter?: string } = {}) {
+  /** Starts a journey and records every step with the given outputs (a step with `error` set reports it). `afterStart` runs once the run is open (the host does things while a run is open). */
+  async function work(w: Hybrid, key: string, outputs: Record<string, unknown>, options: { issueId?: string | null; errors?: Record<string, string>; stopAfter?: string; afterStart?: () => void | Promise<void> } = {}) {
     const started = await acceptanceRun(w, { action: "start", journey: key, client: CANARY, ...(options.issueId ? { issueId: options.issueId } : {}) });
     expect(started.error, started.content).toBeUndefined();
     const runId = started.data.runId as string;
+    await options.afterStart?.();
     let step = started.data.step as Record<string, any> | null;
     let last: ToolResult = started;
     while (step) {
@@ -831,6 +853,260 @@ d("acceptance runs (Postgres)", () => {
       w.clock.set(LATER);
       expect(await sweepStaleRuns(w.env, "cccccccc-0000-4000-8000-0000000000c1")).toBe(0);
       expect((await getRun(w.ctx, A, runId))!.status).toBe("running");
+    });
+
+    it("the nightly sweep also cancels the other open issues about the canary made since the run started, and not older ones (0.6.5)", async () => {
+      const w = await make();
+      const { runId } = await abandoned(w);
+      const [since, older] = await strayIssues(w, [["SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co", { createdAt: at(5) }], ["SEO W0 · Set up Bing Webmaster Tools — PiB Canary Co", { createdAt: at(-30) }]]);
+      w.clock.set(LATER);
+      expect((await nightlyAcceptance(w.env)).swept).toBe(1);
+      expect((await getRun(w.ctx, A, runId))!.status).toBe("aborted");
+      expect(w.issues.get(since!)!.status).toBe("cancelled");
+      expect(w.comments.find((c) => c.issueId === since)!.body).toContain(`Cancelled by acceptance run ${runId}: this was a rehearsal on the fake canary client`);
+      expect(w.issues.get(older!)!.status).toBe("todo");
+      expect(w.comments.find((c) => c.issueId === "issue-req")!.body).toContain("1 other open issue about the canary was cancelled (1)");
+    });
+
+    it("a run whose journey is gone, or changed while it was open, still has the issues it left about the canary cancelled (0.6.5)", async () => {
+      const w = await make();
+      const { id, runId } = await abandoned(w);
+      const since = await strayIssue(w, "SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co");
+      await w.client.query(`UPDATE ${NAMESPACE}.acceptance_runs SET journey_key = 'removed-journey' WHERE id = $1`, [runId]);
+      w.clock.set(LATER);
+      expect(await sweepStaleRuns(w.env, A)).toBe(1);
+      expect(w.issues.get(id)!.status).toBe("cancelled");
+      expect(w.issues.get(since)!.status).toBe("cancelled");
+
+      // The journey changed (a release) under an open run: it ends without a report, and its approval and strays go the same way.
+      const w2 = await make();
+      const open = await abandoned(w2);
+      const since2 = await strayIssue(w2, "Deal won: Canary rehearsal r2 for PiB Canary Co");
+      await w2.client.query(`UPDATE ${NAMESPACE}.acceptance_runs SET journey_version = 99 WHERE id = $1`, [open.runId]);
+      w2.clock.set(at(10));
+      expect((await acceptanceRun(w2, { action: "record", runId: open.runId, stepId: "enroll-canary-contact", input: {}, output: {} })).error).toContain("The journey changed");
+      expect((await getRun(w2.ctx, A, open.runId))!.status).toBe("aborted");
+      expect(w2.issues.get(open.id)!.status).toBe("cancelled");
+      expect(w2.issues.get(since2)!.status).toBe("cancelled");
+    });
+  });
+
+  describe("the net under a rehearsal: open issues about the canary (0.6.5)", () => {
+    /** Works the lead capture to its end. It starts at NOW and ends ten minutes later. */
+    const rehearse = async (w: Hybrid, options: { issueId?: string; lead?: Record<string, unknown> } = {}) => {
+      const lead = leadIssue(w);
+      return work(w, "lead-capture", { ...good(lead), ...(options.lead ?? {}) }, { issueId: options.issueId ?? requestIssue(w), afterStart: () => w.clock.set(at(10)) });
+    };
+    const reportOf = (w: Hybrid, id = "issue-req") => w.comments.find((c) => c.issueId === id)!.body;
+    /** Watches the read the net makes of the issues table (the database answers it for real); `answer` may replace what it gets back. */
+    const watchIssueReads = (w: Hybrid, answer: (sql: string, params: unknown[], run: () => Promise<unknown[]>) => Promise<unknown[]>) => {
+      const db = w.ctx.db;
+      (w.ctx as unknown as { db: unknown }).db = { ...db, query: (sql: string, params: unknown[] = []) => (/FROM public\.issues/.test(sql) && /ILIKE/.test(sql) ? answer(sql, params, () => db.query(sql, params)) : db.query(sql, params)) };
+    };
+    /** The issue that must go, and everything the net must leave alone (the request is one: it names the canary and is still open when the run ends). */
+    const bystanders = async (w: Hybrid) => {
+      const request = await strayIssue(w, "Run the PiB Canary Co journeys now", { createdAt: at(1), assigneeUserId: null, assigneeAgentId: ACC });
+      const mine = await strayIssue(w, "SEO W0 · Set up Bing Webmaster Tools — PiB Canary Co");
+      const untouched = await strayIssues(w, [
+        // A real client's issue: the canary is named only in its text, and the title rules.
+        ["Fix the checkout for Acme Plumbing", { description: "Seen while the PiB Canary Co journeys ran (company:canary-1a2b3c4d)." }],
+        ["Acme Plumbing: Canary Coffee menu page"],
+        ["SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co", { createdAt: at(-1) }],
+        ["Deal won: Canary rehearsal run3 for PiB Canary Co", { createdAt: at(30) }],
+        ["Acceptance failure: Quote to invoice, Open a deal for PiB Canary Co", { originKind: ORIGIN.acceptance }],
+        ["Acceptance failure: Quote to invoice, Open a deal for PiB Canary Co", { originKind: "manual" }],
+        ["Acceptance request: PiB Canary Co journeys (2026-10-03)", { originKind: "manual" }],
+        ["Canary rehearsal run0: follow-up", { originKind: ORIGIN.acceptance }],
+        ["Deal won: Canary rehearsal run1 for PiB Canary Co", { status: "done" }],
+        ["Approve sending invoice to PiB Canary Co (R 1,000.00)", { status: "cancelled" }],
+        ["SEO W0 · Link to the site from another site we own — PiB Canary Co", { status: "backlog" }],
+        ["SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co", { companyId: "cccccccc-0000-4000-8000-0000000000c1" }],
+      ]);
+      return { request, mine, untouched };
+    };
+    const expectBystandersLeftAlone = (w: Hybrid, seen: { request: string; mine: string; untouched: string[] }, before: Record<string, string>) => {
+      // Proof the net ran, so "left alone" is not just "never looked".
+      expect(w.issues.get(seen.mine)!.status).toBe("cancelled");
+      expect(w.issues.get(seen.request)!.status).toBe("todo");
+      for (const id of seen.untouched) {
+        expect(w.issues.get(id)!.status, `${w.issues.get(id)!.title} (${id})`).toBe(before[id]);
+        expect(w.comments.filter((c) => c.issueId === id), id).toEqual([]);
+      }
+      expect(w.comments.filter((c) => c.issueId === seen.request).every((c) => !c.body.startsWith("Cancelled by"))).toBe(true);
+      expect(reportOf(w, seen.request)).toContain("1 other open issue about the canary was cancelled (1)");
+      // Nothing was tried and refused either: what is not the rehearsal's is dropped, not left for a person.
+      expect(reportOf(w, seen.request)).not.toContain("not cancelled");
+    };
+
+    it("cancels what a rehearsal left open about the canary, whoever it is for and whatever state it is open in, and the report says how many", async () => {
+      const w = await make();
+      const gone = await strayIssues(w, [
+        ["Deal won: Canary rehearsal run92ba542ec733 for PiB Canary Co, R 1,000.00: convert quote Q-PIB-002", { assigneeAgentId: AM, assigneeUserId: null, originKind: "plugin:partnersinbiz.billing" }],
+        ["SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co", { status: "in_progress", assigneeAgentId: AM, assigneeUserId: null }],
+        ["Approve sending invoice to PiB Canary Co (R 1,000.00)", { status: "in_review", assigneeAgentId: REV, assigneeUserId: null, originKind: "plugin:partnersinbiz.billing" }],
+        ["Approve email sending: Canary acceptance run911e46ce64be", { status: "blocked", originKind: "plugin:partnersinbiz.crm" }],
+        ["[PiB Canary Co] Review social post: Acceptance run run1c98e20d9ddb: a rehearsal draft", { originKind: "plugin:partnersinbiz.social" }],
+      ]);
+      const { runId, last } = await rehearse(w);
+      expect(last.data).toMatchObject({ finished: true, status: "passed" });
+      for (const id of gone) {
+        expect(w.issues.get(id)!.status, id).toBe("cancelled");
+        expect(w.comments.filter((c) => c.issueId === id).map((c) => c.body)).toEqual([`Cancelled by acceptance run ${runId}: this was a rehearsal on the fake canary client (PiB Canary Co), so no real client or person is waiting on it.`]);
+      }
+      const line = "5 other open issues about the canary were cancelled (5): a rehearsal on the fake canary client, so nobody real was waiting on them.";
+      expect(reportOf(w)).toContain(line);
+      expect((await getRun(w.ctx, A, runId))!.report).toContain(line);
+    });
+
+    it("any one of the four names is enough, in any case, in the title", async () => {
+      const w = await make();
+      const named = await strayIssues(w, ["Hand-off for PiB Canary Co", "Approve email sending: Canary acceptance run911e", "Proposal: Acceptance rehearsal run1", "Deal won: Canary rehearsal run2", "new lead: pib canary co"].map((title): [string] => [title]));
+      await rehearse(w);
+      for (const id of named) expect(w.issues.get(id)!.status, w.issues.get(id)!.title).toBe("cancelled");
+      expect(reportOf(w)).toContain("5 other open issues about the canary were cancelled (5)");
+    });
+
+    it("says one in the singular", async () => {
+      const w = await make();
+      await strayIssue(w, "SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co");
+      await rehearse(w);
+      expect(reportOf(w)).toContain("1 other open issue about the canary was cancelled (1): a rehearsal on the fake canary client, so nobody real was waiting on it.");
+    });
+
+    it("leaves alone a real client's issue, one made before the run or after it ended, the run's own request and failures, and a closed one", async () => {
+      const w = await make();
+      const seen = await bystanders(w);
+      const before = Object.fromEntries(seen.untouched.map((id) => [id, w.issues.get(id)!.status]));
+      const { last } = await rehearse(w, { issueId: seen.request });
+      expect(last.data).toMatchObject({ finished: true, status: "passed" });
+      expectBystandersLeftAlone(w, seen, before);
+    });
+
+    it("checks every row the read gives back, so a read that returned too much would still cancel only the rehearsal's own", async () => {
+      const w = await make();
+      const seen = await bystanders(w);
+      const before = Object.fromEntries(seen.untouched.map((id) => [id, w.issues.get(id)!.status]));
+      // Every issue of every company, closed or not, made when it was made.
+      watchIssueReads(w, async () => (await w.client.query("SELECT id::text AS id, company_id::text AS company_id, identifier, title, status, origin_kind, created_at FROM public.issues")).rows);
+      const { last } = await rehearse(w, { issueId: seen.request });
+      expect(last.data).toMatchObject({ finished: true, status: "passed" });
+      expectBystandersLeftAlone(w, seen, before);
+    });
+
+    it("never cancels more than 60, looks at no more than the newest 200, and the report names what it left", async () => {
+      const w = await make();
+      const reads: string[] = [];
+      watchIssueReads(w, async (sql, _params, run) => {
+        reads.push(sql);
+        return run();
+      });
+      // Oldest first: 230 open issues, one every two seconds from a minute into the run.
+      const ids = await strayIssues(w, Array.from({ length: 230 }, (_, i): [string, Record<string, unknown>] => [`SEO W0 · task ${i} — PiB Canary Co`, { status: i % 2 ? "in_progress" : "todo", createdAt: new Date(Date.parse(at(1)) + i * 2000).toISOString() }]));
+      await rehearse(w);
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toContain("LIMIT 200");
+      // The newest 200 are looked at (30 to 229), the first 60 of them cancelled (the newest, 170 to 229), and the 140 below are named.
+      const cancelled = ids.filter((id) => w.issues.get(id)!.status === "cancelled");
+      expect(cancelled).toEqual(ids.slice(170));
+      expect(ids.slice(0, 170).map((id) => w.issues.get(id)!.status)).toEqual(ids.slice(0, 170).map((_, i) => (i % 2 ? "in_progress" : "todo")));
+      const report = reportOf(w);
+      expect(report).toContain("60 other open issues about the canary were cancelled (60)");
+      expect(report).toContain(`Named the canary but not cancelled (past the limit of 60 a run cancels, or the host refused): ${ids.slice(160, 170).reverse().join(", ")} and 130 more. A person looks at them.`);
+    });
+
+    it("never stops a run: a host that will not cancel one issue, or will not answer the read, is not a failure of the run", async () => {
+      const w = await make();
+      const [stuck, fine] = await strayIssues(w, [["SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co"], ["SEO W0 · Set up Bing Webmaster Tools — PiB Canary Co"]]);
+      const issues = w.ctx.issues as unknown as { update: (id: string, patch: Record<string, unknown>, companyId: string) => Promise<unknown> };
+      const update = issues.update.bind(issues);
+      issues.update = async (id, patch, companyId) => {
+        if (id === stuck) throw new Error("the host says no");
+        return update(id, patch, companyId);
+      };
+      const { runId, last } = await rehearse(w);
+      expect(last.data).toMatchObject({ finished: true, status: "passed" });
+      expect((await getRun(w.ctx, A, runId))!.status).toBe("passed");
+      expect(w.issues.get(stuck!)!.status).toBe("todo");
+      expect(w.issues.get(fine!)!.status).toBe("cancelled");
+      expect(reportOf(w)).toContain("1 other open issue about the canary was cancelled (1)");
+      expect(reportOf(w)).toContain(`Named the canary but not cancelled (past the limit of 60 a run cancels, or the host refused): ${stuck}. A person looks at it.`);
+
+      const w2 = await make();
+      const kept = await strayIssue(w2, "SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co");
+      watchIssueReads(w2, async () => {
+        throw new Error("the host is down");
+      });
+      const second = await rehearse(w2);
+      expect(second.last.data).toMatchObject({ finished: true, status: "passed" });
+      expect(w2.issues.get(kept)!.status).toBe("todo");
+      expect(reportOf(w2)).not.toContain("other open issue");
+    });
+
+    it("filing a finished run's report again never reaches into issues made after the run ended, or into the report issue itself", async () => {
+      const w = await make();
+      const during = await strayIssue(w, "SEO W0 · Claim and verify the Google Business Profile — PiB Canary Co");
+      const { runId } = await rehearse(w, { lead: { "mark-prospect": { lifecycle: "lead" } } });
+      expect(w.issues.get(during)!.status).toBe("cancelled");
+      // A later run's issue, open while the report of this one is filed again an hour on; and a report issue (made during the run) that names the canary.
+      const later = await strayIssue(w, "Deal won: Canary rehearsal run7 for PiB Canary Co", { createdAt: at(30) });
+      const report = await strayIssue(w, "Acceptance run summary for PiB Canary Co", { createdAt: at(6) });
+      w.clock.set(at(60));
+      await w.client.query(`UPDATE ${NAMESPACE}.acceptance_runs SET child_issue_ids = '{}'::jsonb, report_issue_id = $2 WHERE id = $1`, [runId, report]);
+      expect((await call(w, "acceptance-report", { runId, file: true })).data.refiled).toBe(true);
+      expect(w.issues.get(later)!.status).toBe("todo");
+      expect(w.issues.get(report)!.status).toBe("todo");
+      expect(w.comments.some((c) => c.issueId === report && c.body.includes("## Acceptance:"))).toBe(true);
+    });
+  });
+
+  describe("the SEO sprint journey (0.6.5)", () => {
+    const SPRINT = "29ba7904-ea9d-47bd-9ed7-380272b46b64";
+    const outputs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      "ensure-canary": { client: CANARY, contact: { ref: "contact:canary-contact-1a2b3c4d", email: "canary@canary.invalid" } },
+      // What partnersinbiz.seo:create-sprint answers (the live answer of 2026-10-04, trimmed): the sprint is `sprintId`, and `issuesOpened` counts the task issues it opened.
+      "create-sprint": { sprintId: SPRINT, siteUrl: "https://canary.invalid", siteName: "PiB Canary Co", client: CANARY, startDate: "2027-11-08", status: "pre_launch", day: -400, autopilotMode: "off", rootIssueId: "root-1", seededTasks: 46, issuesOpened: 0, issuesPending: 0, warnings: [] },
+      "add-keyword": { added: 1 },
+      "read-tasks": { count: 46, tasks: [] },
+      "archive-sprint": { sprintId: SPRINT, status: "archived" },
+      cleanup: { cleaned: true, company: CANARY },
+      ...over,
+    });
+
+    it("passes on the answer the SEO plugin gives, and every later step works on the sprint it named", async () => {
+      const w = await make();
+      const { runId, last } = await work(w, "seo-sprint-draft", outputs(), { issueId: requestIssue(w) });
+      expect(last.data).toMatchObject({ finished: true, status: "passed" });
+      const row = (await getRun(w.ctx, A, runId))!;
+      expect(row).toMatchObject({ journeyVersion: 3, summary: "Passed: 6 of 6 steps." });
+      expect(row.state.captures.sprintId).toBe(SPRINT);
+      for (const id of ["add-keyword", "read-tasks", "archive-sprint"]) expect(row.state.steps.find((st) => st.id === id)!.input, id).toMatchObject({ sprintId: SPRINT });
+    });
+
+    it("fails when the sprint opened work: a rehearsal must never create any, and the step says how many it opened", async () => {
+      const w = await make();
+      const answer = { ...(outputs()["create-sprint"] as object), issuesOpened: 9 };
+      const { runId, last } = await work(w, "seo-sprint-draft", outputs({ "create-sprint": answer }), { issueId: requestIssue(w) });
+      expect(last.data.status).toBe("failed");
+      const row = (await getRun(w.ctx, A, runId))!;
+      const step = row.state.steps.find((st) => st.id === "create-sprint")!;
+      expect(step.status).toBe("failed");
+      expect(step.checks.filter((c) => !c.ok).map((c) => c.detail)).toEqual(["issuesOpened is 0; got 9"]);
+      expect(row.state.steps.map((st) => st.status)).toEqual(["passed", "failed", "blocked", "blocked", "passed", "passed"]);
+      expect(row.state.captures.sprintId).toBeUndefined();
+
+      // The sprint exists all the same, so the archive step is still handed out; the Cockpit has no id to fill in, and the step's note says where to take it from.
+      const w2 = await make();
+      const open = await work(w2, "seo-sprint-draft", outputs({ "create-sprint": answer }), { issueId: requestIssue(w2), stopAfter: "create-sprint" });
+      const next = await acceptanceRun(w2, { action: "next", runId: open.runId });
+      expect(next.data.step).toMatchObject({ id: "archive-sprint", unfilled: ["sprintId"] });
+      expect(next.data.step.note).toContain("sprintId from the answer of create-sprint");
+    });
+
+    it("fails, naming the field, on an answer that calls the sprint id (the first live run's mistake)", async () => {
+      const w = await make();
+      const { runId } = await work(w, "seo-sprint-draft", outputs({ "create-sprint": { id: SPRINT, issuesOpened: 0 } }), {});
+      const step = (await getRun(w.ctx, A, runId))!.state.steps.find((st) => st.id === "create-sprint")!;
+      expect(step.checks.filter((c) => !c.ok).map((c) => c.detail)).toEqual(["sprintId is missing from the result"]);
     });
   });
 
