@@ -759,6 +759,9 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
 /** A task handed to the SEO agent whose issue has sat in todo this long with no run is woken again (a wake can be coalesced into a run that was ending). */
 export const IDLE_TASK_MINUTES = 25;
 export const IDLE_TASK_MAX_NUDGES = 4;
+/** After this many wakes with no run, the task gets a fresh issue (at most IDLE_TASK_MAX_REISSUES times). */
+export const IDLE_TASK_REISSUE_AFTER = 3;
+export const IDLE_TASK_MAX_REISSUES = 2;
 
 /**
  * Tasks the plugin handed back to the agent (a Reviewer or client answer, a page to revise) whose issue is still `todo` with nobody running
@@ -784,9 +787,23 @@ export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
       if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
       const issue = await getIssue(env, companyId, issueId);
       if (!issue || !["todo", "backlog"].includes(String(issue.status))) continue;
-      await wakeIssue(env.ctx, issueId, companyId, "This task is waiting for the SEO agent");
-      await db.updateTask(env.ctx.db, companyId, String(row.id), { evidence: { ...evidence, idleNudges: nudges + 1, idleNudgedAt: env.now().toISOString() } });
-      woken += 1;
+      // Woken IDLE_TASK_REISSUE_AFTER times with no run ever starting: the host is holding this issue (a recovery action from an interrupted
+      // run: "execution reconciliation required", which waits for a board operator). The plugin opens a fresh issue for the task instead.
+      if (nudges >= IDLE_TASK_REISSUE_AFTER && Number(evidence.reissues ?? 0) < IDLE_TASK_MAX_REISSUES) {
+        if (await reissueTask(env, companyId, String(row.id), issueId, `The host would not start a run on this issue (${String(evidence.idleNudgeAnswer ?? "no run after repeated wakes")}).`)) woken += 1;
+        continue;
+      }
+      // The host's own answer is kept: it refuses a wake for reasons the kit's wakeIssue swallows (blockers, budget, workspace, no assignee).
+      let answer = "";
+      try {
+        const res = await env.ctx.issues.requestWakeup(issueId, companyId, { reason: "This task is waiting for the SEO agent", idempotencyKey: `idle:${issueId}:${Date.now()}` });
+        answer = res && (res as { queued?: boolean }).queued === false ? "not queued: the host started no run" : "";
+      } catch (error) {
+        answer = errorMessage(error);
+      }
+      await db.updateTask(env.ctx.db, companyId, String(row.id), { evidence: { ...evidence, idleNudges: nudges + 1, idleNudgedAt: env.now().toISOString(), idleNudgeAnswer: answer || "woken" } });
+      if (answer) env.ctx.logger.info("SEO idle task wake refused", { issueId, answer });
+      else woken += 1;
     } catch (error) {
       env.ctx.logger.info("SEO idle task not woken", { issueId, error: errorMessage(error) });
     }
@@ -822,4 +839,33 @@ export async function reblockParkedTasks(env: Env): Promise<number> {
     }
   }
   return blocked;
+}
+
+
+/**
+ * The task's issue is stuck where the plugin cannot reach (the host holds it behind a recovery action): the old issue is cancelled with a
+ * pointer, the task loses its issue and a new one is opened for it, with the same description and owner. The agent's work is read from the
+ * live site by the task itself, so nothing is lost. Returns true when a new issue was opened.
+ */
+export async function reissueTask(env: Env, companyId: string, taskId: string, oldIssueId: string, why: string): Promise<boolean> {
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || task.issueId !== oldIssueId) return false;
+  const ctx = await loadSprintContext(env, companyId, task.sprintId);
+  // Only sprints a person put on automatic client sign-off: elsewhere a stuck task is for the owner to see.
+  if (ctx.sprint.status !== "active" || isRehearsalSprint(ctx.sprint) || !ctx.sprint.rootIssueId || ctx.sprint.clientSignoff !== "auto") return false;
+  const reissues = Number(((task.evidence ?? {}) as { reissues?: number }).reissues ?? 0);
+  await commentOn(env, companyId, oldIssueId, `Stuck: ${why} A new issue is opened for this task and this one is closed. Nothing is lost: the task reads the live state again.`);
+  await patchIssue(env, companyId, oldIssueId, { status: "cancelled" });
+  await db.updateTask(env.ctx.db, companyId, task.id, {
+    issue_id: null,
+    issue_identifier: null,
+    issue_status: null,
+    issue_project_id: null,
+    status: "not_started",
+    blocker_reason: null,
+    assignee_kind: null,
+    evidence: { ...(task.evidence ?? {}), reissues: reissues + 1, idleNudges: 0, idleNudgedAt: null, idleNudgeAnswer: null, previousIssueId: oldIssueId },
+  });
+  const opened = await materialiseDueTasks(env, { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId }, { onlyTaskIds: [task.id] });
+  return opened.created > 0;
 }

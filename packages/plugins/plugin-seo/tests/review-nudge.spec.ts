@@ -131,3 +131,27 @@ describe("previews that never reached the client go stale", () => {
     expect(await refreshStalePreviews(manual.env)).toBe(0);
   });
 });
+
+describe("a task the host will not start a run on gets a fresh issue", () => {
+  it("after three wakes with no run, cancels the stuck issue and opens a new one for the task (at most twice)", async () => {
+    const { nudgeIdleAgentTasks } = await import("../src/service/tasks.js");
+    const route = (evidence: Row): Route[] => [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND t\.status = 'in_progress' AND t\.assignee_kind = 'agent'/, () => [{ id: "t1", company_id: "co-1", issue_id: "iss-old", evidence }]]];
+    const stuck = (evidence: Row, extra: Row = {}) => world({ sprints: [sprintFor("real", { root_issue_id: "root-1", status: "active", client_signoff: "auto", ...extra })], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", template_key: "w1-robots", week: 1, due_day: 6, status: "in_progress", assignee_kind: "agent", issue_id: "iss-old", issue_status: "todo", evidence })], routes: route(evidence) });
+    const w = stuck({ idleNudges: 3, idleNudgedAt: "2026-10-01T00:00:00Z", idleNudgeAnswer: "not queued" });
+    expect(await nudgeIdleAgentTasks(w.env)).toBe(1);
+    expect(w.updates.some((u) => u.id === "iss-old" && u.patch.status === "cancelled")).toBe(true);
+    expect(w.comments.find((c) => c.id === "iss-old")!.body).toMatch(/Stuck:[\s\S]*new issue is opened/);
+    expect(w.created.some((c) => String(c.input.originKind).endsWith(":task"))).toBe(true);
+    const evidence = w.store.tasks[0]!.evidence as Record<string, unknown>;
+    expect(evidence).toMatchObject({ reissues: 1, idleNudges: 0, previousIssueId: "iss-old" });
+    expect(w.store.tasks[0]!.issue_id).not.toBe("iss-old");
+    // The third time it stays with the nudges instead of looping (the control).
+    const capped = stuck({ idleNudges: 3, idleNudgedAt: "2026-10-01T00:00:00Z", reissues: 2 });
+    await nudgeIdleAgentTasks(capped.env);
+    expect(capped.updates.some((u) => u.patch.status === "cancelled")).toBe(false);
+    // A sprint on manual sign-off is not touched either.
+    const manual = stuck({ idleNudges: 3, idleNudgedAt: "2026-10-01T00:00:00Z" }, { client_signoff: "manual" });
+    await nudgeIdleAgentTasks(manual.env);
+    expect(manual.updates.some((u) => u.patch.status === "cancelled")).toBe(false);
+  });
+});
