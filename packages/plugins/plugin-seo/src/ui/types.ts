@@ -52,6 +52,8 @@ export type SprintSummary = {
   autopilotMode: string;
   /** auto: tasks open by the calendar. manual: a person starts each week. */
   pacing?: "auto" | "manual";
+  /** auto: the plugin handles the client's approval end to end (WordPress sites on pr_only). */
+  clientSignoff?: "auto" | "manual";
   ownerUserId: string | null;
   rootIssueId: string | null;
   rootIssueIdentifier: string | null;

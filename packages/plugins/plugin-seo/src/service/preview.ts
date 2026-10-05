@@ -18,6 +18,7 @@ import { assertWritable, loadSprintContext } from "./context.js";
 import { companyInfo } from "./common.js";
 import { startPreviewFix } from "./build.js";
 import { addNeedsYou, closeSignoffItems } from "./needs-you.js";
+import { afterPreviewPassed, handleClientAnswer, isAutoSignoff } from "./client-signoff.js";
 import { commentOn, openIssue, patchIssue } from "./issues.js";
 
 export const PREVIEW_DAYS = 30;
@@ -68,7 +69,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
         ...violations.slice(0, 8).map((v) => `- "${v.sentence.slice(0, 220)}": ${v.why}`),
         "",
         approved.length > 0 ? `Approved wordings you may reuse (shortened is fine, reworded is not):\n${approved.join("\n")}` : "There are no approved wordings yet for this client.",
-        "Leave the claim out, or use an approved wording. If a fact is needed and missing, put a Needs you item for the owner to add it (get-client-facts shows the sheet). Do not invent or paraphrase it.",
+        "Leave the claim out, or use an approved wording. If the client says it on their own site (terms, delivery, returns, FAQ, about), copy the sentence exactly and add it with propose-client-facts (the plugin checks it against that page). If the client does not say it anywhere, leave the claim out. Do not invent or paraphrase it.",
       ].join("\n"),
     );
   }
@@ -103,7 +104,9 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     reviewStatus: "pending",
     reviewIssueId: review,
     ...(built.notes.length > 0 ? { notes: built.notes } : {}),
-    next: "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.",
+    next: sprint.clientSignoff === "auto"
+      ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
+      : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.",
   };
 }
 
@@ -192,7 +195,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
 /** Tells the task's issue what the client answered (once per answer). Runs from the 5-minute job. */
 export async function deliverPreviewAnswers(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
-    `SELECT id, company_id, task_id, issue_id, page_url, title, status, decision_note FROM ${t("previews")}
+    `SELECT id, company_id, sprint_id, task_id, issue_id, page_url, title, status, decision_note, draft_key FROM ${t("previews")}
       WHERE decided_at IS NOT NULL AND notified_at IS NULL ORDER BY decided_at LIMIT 25`,
   );
   let sent = 0;
@@ -202,6 +205,31 @@ export async function deliverPreviewAnswers(env: Env): Promise<number> {
     const issueId = row.issue_id ? String(row.issue_id) : null;
     const approved = row.status === "approved";
     try {
+      // A sprint on automatic sign-off: the plugin takes the answer from here (service/client-signoff.ts).
+      const sprint = await db.getSprint(env.ctx.db, companyId, String(row.sprint_id));
+      if (sprint && isAutoSignoff(sprint)) {
+        if (issueId) {
+          const note = row.decision_note ? `\n\n> ${String(row.decision_note).replace(/\n/g, "\n> ")}` : "";
+          await commentOn(env, companyId, issueId, `The client ${approved ? "**approved**" : "**asked for changes** on"} the preview of ${String(row.page_url)} (${String(row.title)}).${note}`);
+        }
+        const handled = await handleClientAnswer(env, sprint, {
+          id,
+          companyId,
+          sprintId: sprint.id,
+          taskId: row.task_id ? String(row.task_id) : null,
+          issueId,
+          pageUrl: String(row.page_url),
+          title: String(row.title),
+          status: String(row.status),
+          note: row.decision_note ? String(row.decision_note) : null,
+          draftKey: row.draft_key ? String(row.draft_key) : null,
+        });
+        if (handled) {
+          await env.ctx.db.execute(`UPDATE ${t("previews")} SET notified_at = now() WHERE id = $1`, [id]);
+          sent += 1;
+          continue;
+        }
+      }
       if (issueId) {
         const verdict = approved ? "**approved**" : "**asked for changes** on";
         const note = row.decision_note ? `\n\n> ${String(row.decision_note).replace(/\n/g, "\n> ")}` : "";
@@ -377,6 +405,13 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     });
   }
   const handedToDeveloper = fix !== null && "issueId" in fix;
+  // On automatic client sign-off a passed preview parks the task on the client instead of handing it back to the agent.
+  const sprintForSignoff = verdict === "pass" ? await db.getSprint(env.ctx.db, companyId, sprintId) : null;
+  const autoSignoff = Boolean(sprintForSignoff && isAutoSignoff(sprintForSignoff));
+  if (autoSignoff) {
+    const outcome = await afterPreviewPassed(env, sprintForSignoff!, taskId, issueId);
+    return { previewId, reviewStatus: "passed", clientCanOpen: true, signoff: "automatic", taskParked: outcome === "parked", next: "Set your review issue to done. The plugin drafts the approval email for the client and applies what they approve; nobody else needs to be woken." };
+  }
   if (!handedToDeveloper) await resumeTaskAfterReview(env, companyId, taskId);
   if (issueId) {
     const text =

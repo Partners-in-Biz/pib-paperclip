@@ -51,13 +51,13 @@ export function senderOf(eventType: string): string | null {
   return eventType.slice("plugin.".length, -SUFFIX.length) || null;
 }
 
-function str(value: unknown, max: number): string | null {
+export function str(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, max) : null;
 }
 
-function addressList(value: unknown, field: string, problems: string[]): MailAddress[] {
+export function addressList(value: unknown, field: string, problems: string[]): MailAddress[] {
   if (value == null) return [];
   const list = Array.isArray(value) ? value : [value];
   const out: MailAddress[] = [];

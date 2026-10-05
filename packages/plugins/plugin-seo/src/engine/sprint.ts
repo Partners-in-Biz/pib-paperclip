@@ -15,6 +15,9 @@ export type TaskSource = "template" | "manual" | "optimization";
 export const SPRINT_STATUSES: SprintStatus[] = ["pre_launch", "active", "compounding", "paused", "archived"];
 export const AUTOPILOT_MODES: AutopilotMode[] = ["off", "safe", "full"];
 export const PACINGS: Pacing[] = ["auto", "manual"];
+/** manual: a person puts a passed preview link in front of the client and presses Apply. auto: the plugin does the waiting, the email draft and the apply (service/client-signoff.ts). */
+export type SignoffMode = "manual" | "auto";
+export const SIGNOFF_MODES: SignoffMode[] = ["manual", "auto"];
 export const TASK_STATUSES: TaskStatus[] = ["not_started", "in_progress", "blocked", "done", "skipped", "na"];
 export const OPEN_TASK_STATUSES: TaskStatus[] = ["not_started", "in_progress", "blocked"];
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ["done", "skipped", "na"];

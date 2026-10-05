@@ -40,6 +40,13 @@ export const MAIL_EVENTS = {
   sendRequested: "mail.send.requested",
   /** Mailbox → the requesting plugin (filter on `context.plugin`). */
   sendResult: "mail.send.result",
+  /**
+   * Any plugin in MAIL_SENDERS → Mailbox: put a message in the company's Gmail DRAFTS folder instead of sending it. A person
+   * reads it, changes it and sends it from Gmail (or deletes it). The Mailbox never sends a draft by itself.
+   */
+  draftRequested: "mail.draft.requested",
+  /** Mailbox → the requesting plugin (filter on `context.plugin`): the answer to `mail.draft.requested`. */
+  draftResult: "mail.draft.result",
   /** Mailbox → everyone: a new inbound message, already triaged. */
   received: "mail.received",
   /**
@@ -109,6 +116,42 @@ export interface MailSendRequested {
    * Transactional email (invoices, payslips, replies) leaves it unset.
    */
   marketing?: boolean;
+}
+
+/**
+ * `mail.draft.requested`: the same message fields as a send, but the Mailbox only creates a Gmail draft (users.drafts.create) on
+ * the account `from` names, else the company's default Gmail account. `key` is the idempotency key: a repeat delivery
+ * re-emits the stored result and never creates a second draft. No suppression or marketing rules apply (nothing is sent).
+ */
+export interface MailDraftRequested {
+  key: string;
+  from?: string | null;
+  fromName?: string | null;
+  replyTo?: MailAddress | null;
+  to: MailAddress[];
+  cc?: MailAddress[];
+  bcc?: MailAddress[];
+  subject: string;
+  html?: string | null;
+  text?: string | null;
+  context: MailSendRequested["context"];
+}
+
+export interface MailDraftResult {
+  key: string;
+  status: "drafted" | "failed";
+  /** Gmail's draft id and the message inside it. */
+  gmailDraftId?: string | null;
+  gmailMessageId?: string | null;
+  threadId?: string | null;
+  /** The account the draft is in (its address). */
+  account?: string | null;
+  /** Opens the draft in Gmail (https://mail.google.com/mail/u/<account>/#drafts?compose=<message id>). */
+  draftUrl?: string | null;
+  error?: string | null;
+  /** True when the failure will not go away on retry (bad address, no Gmail account). */
+  permanent?: boolean;
+  context: MailSendRequested["context"];
 }
 
 export interface MailSendResult {

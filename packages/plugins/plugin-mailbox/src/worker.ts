@@ -82,6 +82,7 @@ import { createEnv, errorMessage, type Env } from "./gmail/env.js";
 import { toMailAddress } from "./gmail/headers.js";
 import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
+import { handleDraftRequested } from "./gmail/draft.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
@@ -259,6 +260,10 @@ const plugin = definePlugin({
     for (const sender of MAIL_SENDERS) {
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.sendRequested), async (event) => {
         await handleSendRequested(requireEnv(), event);
+      });
+      // A Gmail draft instead of a send: the message waits in Drafts for a person (nothing is sent).
+      ctx.events.on(pluginEvent(sender, MAIL_EVENTS.draftRequested), async (event) => {
+        await handleDraftRequested(requireEnv(), event);
       });
     }
     // Unsubscribes and hard bounces the CRM and Campaigns found join the do-not-email list.

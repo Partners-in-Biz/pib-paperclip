@@ -51,6 +51,15 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+### Gmail drafts for other plugins (0.6.4)
+
+Listens to `plugin.<sender>.mail.draft.requested` for every kit `MAIL_SENDERS` plugin (event-only: no agent tool) and answers with `mail.draft.result` (kit `MailDraftRequested` / `MailDraftResult`). The message lands in the **Drafts folder** of the Gmail account `from` names, else the company's default Gmail account (`users.drafts.create`). A person reads it, edits it and sends it from Gmail, or deletes it. The Mailbox never sends a draft: no send claim, no `messages.send`, no email-provider path, and no suppression or marketing rule (those guard a send). An empty recipient list, a missing subject or a bad address is still refused.
+
+- Request: `key` (idempotency), `to` / `cc` / `bcc` (at least one valid address), `subject`, `html` and/or `text`, optional `from`, `fromName`, `replyTo`, and the usual `context`. No attachments, no threading.
+- Result (`status: "drafted"`): `gmailDraftId`, `gmailMessageId`, `threadId`, `account` (the address) and `draftUrl` = `https://mail.google.com/mail/u/<account>/#drafts?compose=<gmailMessageId>`. `status: "failed"` carries `error` and `permanent: true` for: no connected Gmail account (or none for `from`), a bad address, a `from` that is a send-only email-provider account (no Drafts folder), a client's own mailbox asked to hold another party's mail, the Mailbox switched off in Setup, or a message Gmail refuses.
+- Idempotent: `receiveOnce` keyed `draft:<key>` on the existing `inbox` table (no migration); a repeat delivery re-emits the stored result and creates no second draft. A draft that was created but whose answer was lost is found again by its Message-ID before another is created.
+- Rate limit, Gmail down or an account that must be reconnected: nothing is stored or emitted, so the sender's outbox retries (the same split as a send).
+
 ### Tools
 
 Existing: `create-draft` (now takes `to`, `cc`, `bcc`, `html`, `replyToMessageId`), `send-draft` (sends through Gmail when the delegation allows it; queued for a person without a connected account), `list-inbox` (with triage), `mark-read` (also in Gmail), `list-threads`, `create-email-template`, `list-email-templates`.

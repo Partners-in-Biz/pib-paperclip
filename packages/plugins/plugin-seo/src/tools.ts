@@ -299,6 +299,28 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   {
     group: "Site",
+    name: "propose-client-facts",
+    displayName: "Add wordings from the client's own pages to the fact sheet",
+    description:
+      "When create-preview refuses a claim because the fact sheet does not cover it, find where the client says it themselves (their terms, delivery, returns, FAQ or about page) and add it here: copy the sentence EXACTLY from that page and send the page's address. The plugin fetches the page and refuses any wording that is not on it, so nothing is invented. Accepted wordings join the sheet as a draft the owner can confirm later; copy may use them (shortened is fine, reworded is not). If the client does not say it anywhere, leave the claim out of the copy. Up to 20 per call.",
+    parametersSchema: schema(["sprintId", "say"], {
+      sprintId,
+      say: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            wording: text("The sentence, copied exactly from the client's page (at least 12 characters)"),
+            sourceUrl: text("The client's page it is on: absolute URL or a path like /delivery"),
+          },
+          required: ["wording", "sourceUrl"],
+        },
+        description: "Wordings to approve, each with the page it comes from",
+      },
+    }),
+  },
+  {
+    group: "Site",
     name: "get-client-facts",
     displayName: "Read the client fact sheet",
     description:

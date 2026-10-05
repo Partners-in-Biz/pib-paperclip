@@ -12,7 +12,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { NAMESPACE } from "./namespace.js";
-import type { AutopilotMode, Pacing, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
+import type { AutopilotMode, Pacing, SignoffMode, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
 import type { TaskOwner } from "./templates/outrank-90.js";
 import { CHANGE_POLICIES, SITE_ACCESS, type ChangePolicy, type SiteAccess } from "./engine/site-change.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
@@ -206,6 +206,8 @@ export interface Sprint {
   chunksEnabled: boolean;
   /** auto: template tasks open by the calendar. manual: they open only when a person starts their week (engine/sprint.ts). */
   pacing: Pacing;
+  /** auto: the plugin waits for the client, drafts the approval email and applies what the client approved (service/client-signoff.ts). */
+  clientSignoff: SignoffMode;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -214,7 +216,7 @@ const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, c
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
   last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, client_project_id, site_access, site_id, repo_url, default_branch, framework,
-  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, pacing, created_at, updated_at`;
+  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, pacing, client_signoff, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
   return {
@@ -261,6 +263,7 @@ function sprintFrom(row: Row): Sprint {
     ga4Enabled: flag(row.ga4_enabled),
     chunksEnabled: flag(row.chunks_enabled),
     pacing: String(row.pacing) === "manual" ? "manual" : "auto",
+    clientSignoff: String(row.client_signoff) === "auto" ? "auto" : "manual",
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -286,6 +289,7 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   template_version: "int",
   autopilot_mode: "text",
   pacing: "text",
+  client_signoff: "text",
   owner_user_id: "text",
   project_id: "text",
   root_issue_id: "text",

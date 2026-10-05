@@ -440,3 +440,66 @@ export async function sendRaw(
     labelIds: Array.isArray(body.labelIds) ? (body.labelIds as unknown[]).map(String) : [],
   };
 }
+
+function rawOf(mime: string): string {
+  return Buffer.from(mime, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export interface GmailDraft {
+  /** Gmail's draft id. */
+  id: string;
+  /** The message inside the draft. */
+  messageId: string;
+  threadId: string;
+}
+
+function toDraft(body: Record<string, unknown>): GmailDraft | null {
+  const message = body.message && typeof body.message === "object" ? (body.message as Record<string, unknown>) : {};
+  const id = typeof body.id === "string" ? body.id : "";
+  const messageId = typeof message.id === "string" ? message.id : "";
+  if (!id || !messageId) return null;
+  return { id, messageId, threadId: String(message.threadId ?? messageId) };
+}
+
+/**
+ * `users.drafts.create`: puts the message in the account's Drafts folder. Nothing is sent. Same size handling as `sendRaw`
+ * (JSON `raw` up to RAW_JSON_LIMIT, the multipart upload endpoint above it).
+ */
+export async function createGmailDraft(fetchImpl: FetchLike, token: string, mime: string): Promise<GmailDraft> {
+  const raw = rawOf(mime);
+  let body: Record<string, unknown>;
+  if (raw.length <= RAW_JSON_LIMIT) {
+    body = await gmail(fetchImpl, token, "POST", "/drafts", { body: { message: { raw } }, timeoutMs: 60_000 });
+  } else {
+    const boundary = `pib_upload_${Math.random().toString(36).slice(2)}`;
+    const multipartBody = [
+      `--${boundary}`,
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      JSON.stringify({ message: {} }),
+      `--${boundary}`,
+      "Content-Type: message/rfc822",
+      "",
+      mime,
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    body = await gmail(fetchImpl, token, "POST", "/drafts", {
+      base: GMAIL_UPLOAD_API,
+      query: { uploadType: "multipart" },
+      rawBody: multipartBody,
+      contentType: `multipart/related; boundary=${boundary}`,
+      timeoutMs: 120_000,
+    });
+  }
+  const draft = toDraft(body);
+  if (!draft) throw new GmailApiError("Gmail created a draft but returned no draft or message id", 502, false, true);
+  return draft;
+}
+
+/** `users.drafts.list` for a Message-ID the Mailbox set itself: finds a draft an earlier attempt created whose answer was lost. */
+export async function findGmailDraft(fetchImpl: FetchLike, token: string, rfcMessageId: string): Promise<GmailDraft | null> {
+  const body = await gmail(fetchImpl, token, "GET", "/drafts", { query: { q: `rfc822msgid:${rfcMessageId}`, maxResults: 1 } });
+  const first = Array.isArray(body.drafts) ? (body.drafts as Array<Record<string, unknown>>)[0] : undefined;
+  return first ? toDraft(first) : null;
+}

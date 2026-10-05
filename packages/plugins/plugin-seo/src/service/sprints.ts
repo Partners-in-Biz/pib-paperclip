@@ -343,6 +343,8 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     autopilotMode: sprint.autopilotMode,
     /** auto: tasks open by the calendar. manual: a person starts each week (set-pacing). */
     pacing: sprint.pacing,
+    /** auto: the plugin waits for the client, drafts the approval email and applies what they approve (set-signoff-mode). */
+    clientSignoff: sprint.clientSignoff,
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
@@ -462,6 +464,9 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const rehearsal = isRehearsalSprint(sprint);
   if (rehearsal) next.push(REHEARSAL_NOTE);
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
+  if (sprint.clientSignoff === "auto") {
+    next.push("Client sign-off is automatic: for any page a client must approve, make previews with create-preview (one per page) and end your turn. The plugin parks the task, drafts the approval email and wakes you when the client has answered; never use Needs you or block-task for it. Carry on with the next due task meanwhile.");
+  }
   if (sprint.pacing === "manual") {
     const waiting = tasks.filter((t) => t.held).length;
     next.push(`Manual pacing: a person starts each plan week, nothing opens by the calendar${waiting > 0 ? ` (${plural(waiting, "task")} wait for their week to be started)` : ""}. Never pull a week forward yourself; work what is open and keep the data and proposals moving.`);

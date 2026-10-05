@@ -226,6 +226,7 @@ export function SprintCockpit({
     : [{ label: "SEO", link: nav.linkProps("/seo") }, { label: s.siteName }];
   const paused = s.status === "paused" || s.status === "archived";
   const manual = s.pacing === "manual";
+  const autoSignoff = s.clientSignoff === "auto";
   const items: MenuItem[] = [
     { key: "daily", label: working === "daily" ? "Running today's work…" : "Run today's work now", hint: "The daily run: opens due tasks and pulls data", disabled: Boolean(working) || s.legacy, onSelect: () => void run("daily", () => runDaily({ sprintId }), (r) => {
       const x = r as { issuesOpened: number; warnings: string[] };
@@ -237,6 +238,9 @@ export function SprintCockpit({
       return `Weekly review done: ${plural(x.signals.length, "signal")}, ${plural(x.proposalsCreated.length, "new proposal")}.`;
     }) },
     { key: "pacing", label: manual ? "Switch to automatic pacing" : "Switch to manual pacing", hint: manual ? "Tasks open by the calendar again" : "Nothing opens until you start each week", disabled: s.legacy || s.status === "archived", onSelect: () => void call("set-pacing", { sprintId, pacing: manual ? "auto" : "manual" }, manual ? "Pacing is automatic: tasks open by the calendar." : "Pacing is manual: press Start on a week to open its tasks.").then(() => onChanged()) },
+    ...(s.site?.siteAccess === "wordpress" && s.site?.changePolicy === "pr_only"
+      ? [{ key: "signoff", label: autoSignoff ? "Client sign-off: switch to manual" : "Client sign-off: switch to automatic", hint: autoSignoff ? "You carry the preview links and press Apply" : "Approval email drafted in Gmail, approved changes applied by the agent", disabled: s.legacy || s.status === "archived", onSelect: () => void call("set-signoff-mode", { sprintId, mode: autoSignoff ? "manual" : "auto" }, autoSignoff ? "Client sign-off is manual." : "Client sign-off is automatic: passed previews are drafted as one email in Gmail, and what the client approves is applied.").then(() => onChanged()) }]
+      : []),
     { key: "autopilot", label: "Change autopilot…", hint: `Now: ${AUTOPILOT[s.autopilotMode]?.label ?? s.autopilotMode}`, disabled: s.status === "archived", onSelect: () => setDialog("autopilot") },
     { key: "plan", label: "Change plan type…", hint: `Now: ${s.plan}`, disabled: s.legacy || s.status === "archived", onSelect: () => setDialog("plan") },
     ...(s.rootIssueId ? [{ kind: "link" as const, key: "issue", label: "Open the sprint issue", hint: s.rootIssueIdentifier ?? undefined, link: nav.linkProps(`/issues/${s.rootIssueIdentifier ?? s.rootIssueId}`) }] : []),
@@ -248,7 +252,7 @@ export function SprintCockpit({
   ];
   const tabs = tabsForPhone(TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon, ...tabCount(t.id, bundle, canWork) })), narrow);
   const autopilot = AUTOPILOT[s.autopilotMode]?.label ?? s.autopilotMode;
-  const facts = s.legacy ? ["No 90-day plan yet"] : [`${s.plan} plan`, sprintStatusText(s), `Autopilot: ${autopilot.toLowerCase()}`, ...(manual ? ["Manual pacing"] : [])];
+  const facts = s.legacy ? ["No 90-day plan yet"] : [`${s.plan} plan`, sprintStatusText(s), `Autopilot: ${autopilot.toLowerCase()}`, ...(manual ? ["Manual pacing"] : []), ...(autoSignoff ? ["Client sign-off automatic"] : [])];
 
   return (
     <div style={{ display: "grid", gap: 14, minWidth: 0 }}>

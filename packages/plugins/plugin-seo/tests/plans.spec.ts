@@ -126,7 +126,7 @@ function sprint(extra: Partial<db.Sprint> = {}): db.Sprint {
     status: "active", startDate: "2026-09-01", templateId: TEMPLATE_ID, templateVersion: 4, autopilotMode: "safe", ownerUserId: null, projectId: null, rootIssueId: null,
     rootIssueIdentifier: null, agentId: null, notes: null, pausedReason: null, health: {}, scoreboard: {}, today: {}, currentDay: 0, currentWeek: 0, currentPhase: 0,
     lastDailyOn: null, lastWeeklyOn: null, auditDaysDone: [], seededAt: "2026-09-01T00:00:00Z", siteProjectId: null, clientProjectId: null, siteAccess: "unlinked", siteId: null, repoUrl: null,
-    defaultBranch: "main", framework: null, hosting: null, changePolicy: "merge_seo_scope", verification: {}, geoEnabled: false, ga4Enabled: false, chunksEnabled: false, pacing: "auto", createdAt: null, updatedAt: null, ...extra,
+    defaultBranch: "main", framework: null, hosting: null, changePolicy: "merge_seo_scope", verification: {}, geoEnabled: false, ga4Enabled: false, chunksEnabled: false, pacing: "auto", clientSignoff: "manual", createdAt: null, updatedAt: null, ...extra,
   };
 }
 

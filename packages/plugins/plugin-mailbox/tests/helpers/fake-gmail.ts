@@ -52,6 +52,8 @@ export class FakeGmail {
     { id: "UNREAD", name: "UNREAD" },
   ];
   sent: Array<{ raw: string; mime: string; threadId: string | null; id: string }> = [];
+  /** Drafts created through `users.drafts.create` (nothing is sent). */
+  drafts: Array<{ id: string; messageId: string; threadId: string; mime: string; rfcMessageId: string }> = [];
   calls: Call[] = [];
   /** The plain text of a message just sent (a test decodes its own MIME), so Gmail's snippet and a read of the sent copy have it. */
   sentText: ((mime: string) => string) | null = null;
@@ -224,6 +226,29 @@ export class FakeGmail {
       if (!m) return json({ error: { code: 404, message: "Not Found" } }, 404);
       m.labelIds = [...new Set([...m.labelIds.filter((l) => !req.removeLabelIds?.includes(l)), ...(req.addLabelIds ?? [])])];
       return json({ id: m.id, threadId: m.threadId, labelIds: m.labelIds });
+    }
+    if (method === "POST" && path === "/drafts") {
+      let raw = "";
+      if (url.pathname.startsWith("/upload/")) {
+        const parts = (body ?? "").split(/--pib_upload_[a-z0-9]+/);
+        raw = b64url(parts[2]!.split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n$/, ""));
+      } else {
+        raw = (JSON.parse(body ?? "{}") as { message?: { raw?: string } }).message?.raw ?? "";
+      }
+      const mime = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+      this.seq += 1;
+      const messageId = `draft-msg-${this.seq}`;
+      const id = `draft-${this.seq}`;
+      const rfcMessageId = /^Message-ID: (.+)$/m.exec(mime)?.[1]?.trim() ?? `<${messageId}@mail.gmail.com>`;
+      const threadId = `t-${messageId}`;
+      // A draft's message is kept apart from `messages`: it is not synced mail.
+      this.drafts.push({ id, messageId, threadId, mime, rfcMessageId });
+      return json({ id, message: { id: messageId, threadId, labelIds: ["DRAFT"] } });
+    }
+    if (method === "GET" && path === "/drafts") {
+      const rfc = /rfc822msgid:(\S+)/.exec(url.searchParams.get("q") ?? "")?.[1];
+      const list = this.drafts.filter((d) => !rfc || d.rfcMessageId === rfc);
+      return json({ drafts: list.map((d) => ({ id: d.id, message: { id: d.messageId, threadId: d.threadId } })), resultSizeEstimate: list.length });
     }
     if (method === "POST" && path === "/messages/send") {
       let raw = "";

@@ -50,6 +50,7 @@ import {
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, previewRows } from "./service/preview.js";
+import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -106,6 +107,12 @@ const plugin = definePlugin({
       }).catch((error) => ctx.logger.info("SEO idle page groups not advanced", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
+      // Sprints on automatic client sign-off: one approval email draft per batch of passed previews.
+      const drafted = await draftApprovalRequests(e).catch((error) => {
+        ctx.logger.info("SEO approval drafts failed", { error: errorMessage(error) });
+        return 0;
+      });
+      if (drafted > 0) ctx.logger.info("SEO approval email drafts requested", { drafted });
       // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
       const moved = await db.listSprintCompanies(ctx.db).then((companies) => guardTaskThreads(e, companies)).catch((error) => {
         ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
@@ -116,6 +123,14 @@ const plugin = definePlugin({
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
+    });
+    // The Mailbox's answer to an approval email draft request: the Gmail link goes on the sprint's Needs you.
+    ctx.events.on(DRAFT_RESULT_EVENT, async (event) => {
+      try {
+        await onDraftResult(e, event);
+      } catch (error) {
+        ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
+      }
     });
     // One subscription for every issue event (a second one, e.g. kit registerDoneChecks, would deliver each event twice).
     ctx.events.on("issue.updated", async (event) => {
