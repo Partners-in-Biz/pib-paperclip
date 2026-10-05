@@ -34,8 +34,13 @@ export async function getClientFacts(env: Env, companyId: string, params: Params
     claimTopics: [...new Set(CLAIM_TERMS.map((c) => c.why))],
     rule:
       "Copy may describe how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, verification, licences, legal or FICA wording, refunds, time commitments) ONLY by reusing one of the approved wordings above (shortened is fine, reworded is not). Anything else: leave the claim out. create-preview refuses a sentence that breaks this. If a needed fact is missing, ask the owner to add it (Needs you), do not invent it.",
-    ...(sheet.status === "none" ? { note: "No fact sheet yet: every claim of those kinds will be refused until the owner adds approved wordings." } : {}),
-    ...(sheet.status === "draft" ? { note: "Drafted from the client's own pages; not yet confirmed by the owner." } : {}),
+    ...(sheet.status === "none" || sheet.facts.filter((f) => f.kind === "say").length === 0
+      ? {
+          note:
+            "The sheet is empty, so every claim of those kinds will be refused. BEFORE you write copy: read the client's own pages (terms, FAQ, about, delivery, returns, and the page you are rewriting) and add each sentence you want to rely on with propose-client-facts: copy it EXACTLY from that page and send the page's address (the plugin checks it). Then write your copy with only those wordings for claims. A claim the client does not make on their own site stays out of the copy.",
+        }
+      : {}),
+    ...(sheet.status === "draft" && sheet.facts.some((f) => f.kind === "say") ? { note: "Drafted from the client's own pages; not yet confirmed by the owner." } : {}),
   };
 }
 

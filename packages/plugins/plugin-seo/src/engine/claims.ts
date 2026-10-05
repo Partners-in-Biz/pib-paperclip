@@ -29,6 +29,10 @@ export const CLAIM_TERMS: Array<{ re: RegExp; why: string }> = [
   { re: /\bcommission\b/i, why: "commission" },
   { re: /\bwithin \d+ (working |business )?(hours?|days?)\b/i, why: "a time commitment" },
   { re: /\b(legal(ly)?|lawful(ly)?|compliant|compliance)\b/i, why: "legal compliance" },
+  // Training and education: which courses carry which status is the client's own statement, never the copywriter's.
+  { re: /\b(accredit(ed|ation)|QCTO|SAQA|SETA|NQF|(nationally|internationally) recogni[sz]ed|certified)\b/i, why: "accreditation or certification" },
+  { re: /\b(at your own pace|self[- ]paced|at any time|anytime|24\/7|study (anywhere|when you))\b/i, why: "when and how a course can be studied" },
+  { re: /\b(job placement|guaranteed (job|employment)|get(ting)? a job|you will (earn|get hired))\b/i, why: "a job or income outcome" },
 ];
 
 export interface ClaimViolation {
