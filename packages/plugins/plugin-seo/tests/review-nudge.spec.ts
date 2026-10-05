@@ -159,3 +159,16 @@ describe("a task the host will not start a run on gets a fresh issue", () => {
     expect(manual.updates.some((u) => u.patch.status === "cancelled")).toBe(false);
   });
 });
+
+describe("a NUL byte in a page or in the copy", () => {
+  it("is stripped before the preview is saved (Postgres refuses 0x00 in text and jsonb, which made every preview of such a page fail)", async () => {
+    const { createPreview, withoutNul } = await import("../src/service/preview.js");
+    expect(withoutNul({ a: "x\u0000y", b: ["\u0000z"], c: 3 })).toEqual({ a: "xy", b: ["z"], c: 3 });
+    const live = `<html><head><title>Old</title></head><body><h1>Old</h1><main><div class="entry-content">${"<p>auction words here </p>".repeat(40)}<script>var a="\u0000";</script></div></main></body></html>`;
+    const w = world({ sprints: [sprint()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "in_progress", issue_id: "iss-1", assignee_kind: "agent" })] });
+    (w.env as unknown as { site: unknown }).site = async (url: string) => ({ status: 200, url, redirects: [], headers: {}, text: live, ms: 1 });
+    await createPreview(w.env, "co-1", { kind: "agent", agentId: "a1", runId: "r", responsibleUserId: null }, { sprintId: "sp-real", taskId: "t1", pageUrl: "https://agristudies.co.za/", h1: "Farm\u0000 machinery", bodyHtml: "<p>Bid on farm\u0000 equipment today.</p>" });
+    const insert = executed(w, /INSERT INTO plugin_seo_8099f8879a\.previews/)[0]!;
+    expect(insert.params.every((p) => typeof p !== "string" || !p.includes("\u0000"))).toBe(true);
+  });
+});

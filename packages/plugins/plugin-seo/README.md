@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.14: a NUL byte no longer stops a preview from saving
+Found on Agri Auctions SA (2026-10-05): every `create-preview` for the home page failed with "Failed query: INSERT INTO previews" and the agent looped (8 runs in 15 minutes) until the host's liveness check gave up. The Postgres log showed `invalid byte sequence for encoding "UTF8": 0x00`: the live page (or the copy) held a NUL byte, which text and jsonb cannot store. `createPreview` now strips NUL from the page HTML, the proposed changes, the label and the stats before saving (`withoutNul`).
+
 ## 0.26.13: on automatic sign-off a page's change is never handed to a person
 Found on Agri Auctions SA (2026-10-05): for the home page the agent wrote a change set "to apply in wp-admin" for a person (`block-task` + Needs you), with no preview and no client email: the old manual path, which would have put a change on the live site without the client's sign-off flow. `block-task` now refuses a `page-write` task of an auto-sign-off sprint that has no preview yet and tells the agent to make previews. `reclaimPersonHandOffs` (5-minute job) takes back a hand-off made before the rule (closes the Needs you line, returns the task to the agent, wakes it), once per task.
 

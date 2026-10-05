@@ -30,6 +30,14 @@ function hostOf(url: string): string {
   return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
 }
 
+/** Postgres text and jsonb cannot hold a NUL (0x00): a page that has one (a stray byte in a script or an attribute) made every preview of it fail to save. */
+export function withoutNul<T>(value: T): T {
+  if (typeof value === "string") return value.replace(/\u0000/g, "") as T;
+  if (Array.isArray(value)) return value.map((v) => withoutNul(v)) as T;
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, withoutNul(v)])) as T;
+  return value;
+}
+
 export async function createPreview(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprintId = reqStr(params, "sprintId");
   const { sprint } = await loadSprintContext(env, companyId, sprintId);
@@ -82,7 +90,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   const res = await env.site(pageUrl, { maxChars: MAX_HTML });
   if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
   const token = randomBytes(24).toString("base64url");
-  const built = buildPreviewHtml(res.text, res.url || pageUrl, changes, { token, clientName: sprint.clientName });
+  const built = buildPreviewHtml(withoutNul(res.text), res.url || pageUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
   const stats = previewStats(res.text, built.html);
   if (stats.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
@@ -95,7 +103,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   await env.ctx.db.execute(
     `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb)`,
-    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl, built.html, JSON.stringify(changes), expiresAt, actorId(actor), reviewKey, JSON.stringify(stats)],
+    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats))],
   );
   const review = await routePreviewReview(env, sprint, { id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
