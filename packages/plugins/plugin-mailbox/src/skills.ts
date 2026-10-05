@@ -24,7 +24,7 @@ The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plu
 - \`create-draft\` on a mailbox where \`mayDraft\` is true: \`to\` (and \`cc\`, \`bcc\`), subject, \`body\` (optional \`html\`). \`replyToMessageId\` keeps the Gmail thread. \`replyTo\` and \`fromName\` set where replies go and the name shown when it is not the mailbox's own.
 - A mailbox that belongs to a client sends only that client's mail, as the client. Never draft another client's or the company's own mail on it, and never put a client's mail on the company's own mailbox to avoid that.
 - \`send-draft\` only where \`maySend\` is true. Without a connected Gmail account it queues the draft for a person: say so; never claim it was delivered.
-- Every email says who we are. Writing to or for a client: read \`partnersinbiz.crm:get-client-profile\` first (brand voice, banned words). Replies, invoices, quotes and payslips are transactional; campaigns and sequences are marketing and never reach an address that opted out.
+- Every email says who we are. Writing to or for a client: read \`partnersinbiz.crm:get-client-profile\` first (brand voice, banned words). The person you write to may work for several companies: \`partnersinbiz.crm:get-contact\` lists them all; follow the \`crm-records\` step \"A person who works for several companies\" (profile and memory for each, say which company each point is about, never leak one company's details into another's) before you draft. Replies, invoices, quotes and payslips are transactional; campaigns and sequences are marketing and never reach an address that opted out.
 - \`create-email-template\` and \`list-email-templates\` keep reusable copy.
 
 ## Where inbound mail goes
