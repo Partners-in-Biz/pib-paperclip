@@ -341,17 +341,19 @@ export function factLine(fact: MemoryFact): string {
 /**
  * When a task is for several clients (a person who works for three
  * companies), one client's facts must not crowd the others out of the brief:
- * each client's best facts come first, the rest follow in rank order. With
+ * each client's best facts come first (at most SELECTION.briefMinPerClient each, fewer when many clients share the brief), the rest follow in rank order. With
  * one client (or none) the order is unchanged.
  */
-function shareAmongClients(rest: RankedFact[]): RankedFact[] {
+function shareAmongClients(rest: RankedFact[], maxFacts: number): RankedFact[] {
   const clients = new Set(rest.filter((r) => r.clientMatch && r.fact.clientRef).map((r) => r.fact.clientRef));
   if (clients.size < 2) return rest;
+  // Enough for every client to appear: 3 each for a few clients, fewer when many share the brief (5 companies in 12 slots get 2 each).
+  const each = Math.max(1, Math.min(SELECTION.briefMinPerClient, Math.floor(maxFacts / clients.size)));
   const taken = new Map<string, number>();
   const first: RankedFact[] = [];
   for (const r of rest) {
     const ref = r.clientMatch ? r.fact.clientRef : null;
-    if (!ref || (taken.get(ref) ?? 0) >= SELECTION.briefMinPerClient) continue;
+    if (!ref || (taken.get(ref) ?? 0) >= each) continue;
     taken.set(ref, (taken.get(ref) ?? 0) + 1);
     first.push(r);
   }
@@ -365,7 +367,7 @@ export function pack(ordered: RankedFact[], limits: { maxFacts: number; maxToken
   let tokens = 0;
   const seen = new Set<string>();
   const pinned = ordered.filter((r) => r.pinApplies).slice(0, MEMORY_LIMITS.pinnedMaxPerScope * 2);
-  for (const r of [...pinned, ...shareAmongClients(ordered.filter((x) => !x.pinApplies))]) {
+  for (const r of [...pinned, ...shareAmongClients(ordered.filter((x) => !x.pinApplies), limits.maxFacts)]) {
     if (seen.has(r.fact.id)) continue;
     if (out.length >= limits.maxFacts) break;
     const cost = estimateTokens(factLine(r.fact)) + 1;

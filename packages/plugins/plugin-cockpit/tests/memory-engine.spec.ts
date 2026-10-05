@@ -201,6 +201,11 @@ describe("ranking and selection", () => {
     const ids = pack(ordered, { maxFacts: 6, maxTokens: 1500 }).facts.map((r) => r.fact.id);
     expect(ids).toEqual(expect.arrayContaining(["a0", "b0", "b1", "c0"]));
     expect(ids).toHaveLength(6);
+    // Five clients in the usual 12 slots: every one appears (2 each), none is left out.
+    const five = ["a", "b", "c", "d", "e"].flatMap((c, k) => Array.from({ length: 6 }, (_, i) => row(`${c}${i}`, `company:${c}`, 10 - k - i * 0.1)));
+    const shared = pack(five.sort((x, y) => y.score - x.score)).facts.map((r) => r.fact.clientRef);
+    expect(new Set(shared).size).toBe(5);
+    expect(shared).toHaveLength(12);
     // One client: plain rank order, unchanged.
     const single = pack(ordered.filter((r) => r.fact.clientRef === "company:a"), { maxFacts: 4, maxTokens: 1500 }).facts.map((r) => r.fact.id);
     expect(single).toEqual(["a0", "a1", "a2", "a3"]);
