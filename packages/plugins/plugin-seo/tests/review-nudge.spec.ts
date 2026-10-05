@@ -97,6 +97,10 @@ describe("a task handed to the agent that nobody picks up", () => {
     expect(await nudgeIdleAgentTasks(recent.env)).toBe(0);
     const tired = world({ sprints: [sprint()], routes: route([idle({ idleNudges: 4, idleNudgedAt: "2026-10-01T00:00:00Z" })]) });
     expect(await nudgeIdleAgentTasks(tired.env)).toBe(0);
+    // An issue left in_progress by a run that is long over is nudged too (Hunt and Gun's category task sat that way for two days).
+    const inProgress = world({ sprints: [sprint()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "in_progress", assignee_kind: "agent", issue_id: "iss-1", issue_status: "in_progress" })], routes: route([idle()]) });
+    (inProgress.ctx.issues as unknown as { get: unknown }).get = async (id: string) => ({ id, status: "in_progress", identifier: "PAR-1" });
+    expect(await nudgeIdleAgentTasks(inProgress.env)).toBe(1);
     // A run is already queued or running on the issue: leave it alone.
     const running = world({ sprints: [sprint()], routes: [...route([idle()]), [/FROM public\.heartbeat_runs r\s+WHERE r\.company_id = \$1 AND r\.status IN \('queued', 'running'\)/, () => [{ issue_id: "iss-1" }]]] });
     expect(await nudgeIdleAgentTasks(running.env)).toBe(0);

@@ -756,7 +756,7 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
 }
 
 
-/** A task handed to the SEO agent whose issue has sat in todo this long with no run is woken again (a wake can be coalesced into a run that was ending). */
+/** A task handed to the SEO agent whose issue has sat in todo or in_progress this long with no run is woken again (a wake can be coalesced into a run that was ending, and a run can end without anything finishing the task). */
 export const IDLE_TASK_MINUTES = 25;
 export const IDLE_TASK_MAX_NUDGES = 4;
 /** After this many wakes with no run, the task gets a fresh issue (at most IDLE_TASK_MAX_REISSUES times). */
@@ -771,7 +771,7 @@ export const IDLE_TASK_MAX_REISSUES = 2;
 export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT t.id, t.company_id, t.issue_id, t.evidence FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
-      WHERE s.status = 'active' AND t.status = 'in_progress' AND t.assignee_kind = 'agent' AND t.issue_id IS NOT NULL AND t.issue_status = 'todo'
+      WHERE s.status = 'active' AND t.status = 'in_progress' AND t.assignee_kind = 'agent' AND t.issue_id IS NOT NULL AND t.issue_status IN ('todo', 'in_progress')
         AND t.updated_at < now() - ($1::int * interval '1 minute') LIMIT 30`,
     [IDLE_TASK_MINUTES],
   );
@@ -786,7 +786,7 @@ export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
       if (nudges >= IDLE_TASK_MAX_NUDGES || env.now().getTime() - last < IDLE_TASK_MINUTES * 60_000) continue;
       if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
       const issue = await getIssue(env, companyId, issueId);
-      if (!issue || !["todo", "backlog"].includes(String(issue.status))) continue;
+      if (!issue || !["todo", "backlog", "in_progress"].includes(String(issue.status))) continue;
       // Woken IDLE_TASK_REISSUE_AFTER times with no run ever starting: the host is holding this issue (a recovery action from an interrupted
       // run: "execution reconciliation required", which waits for a board operator). The plugin opens a fresh issue for the task instead.
       if (nudges >= IDLE_TASK_REISSUE_AFTER && Number(evidence.reissues ?? 0) < IDLE_TASK_MAX_REISSUES) {

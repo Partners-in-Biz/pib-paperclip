@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.12: the idle-task nudge also covers issues left in progress
+Found on Hunt and Gun (2026-10-05): the category task's issue (PAR-620) had been `in_progress` with the agent since 3 October and no run had touched it, so seven rejected pages waited on nobody. `nudgeIdleAgentTasks` now covers issues in `in_progress` as well as `todo` (still only without a queued or running run, 25 minutes apart, at most 4 wakes).
+
 ## 0.26.11: a task the host will not run gets a fresh issue
 Found on Agri Auctions SA (2026-10-05): the week-1 robots.txt issue (PAR-211) had sat in `todo` since 30 September. An interrupted run left a host *recovery action* ("legacy execution requires reconciliation"), and the host answers every wake for that issue with `execution_reconciliation_required` until a board operator resolves it. `nudgeIdleAgentTasks` now records the host's answer in the task's evidence and, after 3 wakes with no run, `reissueTask` cancels the stuck issue (with a pointer) and opens a fresh one for the task, at most twice. Only on sprints with automatic client sign-off. (PAR-90, an AHS Law task, is stranded the same way since 30 September: not touched, reported.)
 
