@@ -275,7 +275,7 @@ describe("a page already on the owner's list is handed to the Senior Developer",
     expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain('"status":"done"');
     expect(w.comments.some((c) => /Senior Developer\) is fixing it/.test(c.body))).toBe(true);
     // The task now records the Senior Developer's go: the next run leaves the page alone.
-    w.store.tasks[0]!.evidence = { builds: [{ issueId: "x", agentId: "sen-1", at: "2026-10-05T13:30:00Z", kind: "preview-fix", level: "senior" }] };
+    w.store.tasks[0]!.evidence = { builds: [{ issueId: "x", agentId: "sen-1", at: "2026-10-05T13:30:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://agristudies.co.za/" }] };
     expect(await handStuckPreviewsToSenior(w.env)).toBe(0);
   });
 });

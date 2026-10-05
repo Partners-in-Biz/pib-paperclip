@@ -118,7 +118,7 @@ describe("review-preview", () => {
 describe("a page that keeps failing", () => {
   const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
   it("goes to the owner after two rounds once the Senior Developer has had a go, instead of back to the agent", async () => {
-    const h = host(row, 2, { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior" }] });
+    const h = host(row, 2, { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] });
     const out = await reviewPreview(h.env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Claims the client's terms contradict" });
     expect(out).toMatchObject({ escalatedToOwner: true });
     expect(h.wakes).toEqual([]);

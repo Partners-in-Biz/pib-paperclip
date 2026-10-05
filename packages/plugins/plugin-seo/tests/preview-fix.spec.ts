@@ -96,7 +96,7 @@ describe("Reviewer sends a build problem to a developer", () => {
     expect(none.created).toHaveLength(0);
     expect(none.wakes).toEqual(["iss-1"]);
     expect(none.comments[0]!.body).toMatch(/meant for a developer but no Developer/);
-    const builds = [1, 2, 3].map((n) => ({ issueId: `f${n}`, agentId: "dev-1", at: "x", kind: "preview-fix", reported: "done" }));
+    const builds = [1, 2, 3].map((n) => ({ issueId: `f${n}`, agentId: "dev-1", at: "x", kind: "preview-fix", reported: "done", pageUrl: "https://acme.co.za/" }));
     const tired = host({ task: task({ evidence: { builds } }) });
     await reviewPreview(tired.env, "co-1", reviewer, { ...base, fixBy: "developer" });
     expect(tired.created).toHaveLength(0);
@@ -134,7 +134,7 @@ describe("a page that keeps failing goes to the Senior Developer once before the
   });
 
   it("after the Senior Developer's go it is the owner's", async () => {
-    const seniorTask = task({ evidence: { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior" }] } });
+    const seniorTask = task({ evidence: { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] } });
     const h = host({ rounds: 3, task: seniorTask });
     expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ escalatedToOwner: true });
     expect(h.created).toEqual([]);
@@ -147,6 +147,20 @@ describe("a page that keeps failing goes to the Senior Developer once before the
 
   it("the first rounds keep their routing (the control)", async () => {
     const h = host({ rounds: 1 });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Developer" });
+  });
+});
+
+describe("each page of a many-page task has its own tries", () => {
+  it("the Senior Developer's go on one page does not use up the go of another page of the same task", async () => {
+    const other = task({ evidence: { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/other-page/" }] } });
+    const h = host({ rounds: 2, task: other });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Senior Developer" });
+  });
+
+  it("three earlier fixes of other pages do not stop a fix of this one", async () => {
+    const builds = ["a", "b", "c"].map((p) => ({ issueId: `f-${p}`, agentId: "dev-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "developer", pageUrl: `https://acme.co.za/${p}/` }));
+    const h = host({ rounds: 1, task: task({ evidence: { builds } }) });
     expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Developer" });
   });
 });

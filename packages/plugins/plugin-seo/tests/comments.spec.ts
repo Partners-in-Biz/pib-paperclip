@@ -72,7 +72,7 @@ describe("repeat notices", () => {
 type Row = Record<string, unknown>;
 
 function host(options: { previewRow?: Row; rounds?: number; stateBroken?: boolean; refuse?: boolean } = {}) {
-  const seniorFix = { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-03T07:00:00Z", kind: "preview-fix", level: "senior" }] };
+  const seniorFix = { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-03T07:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] };
   const comments: Array<{ id: string; body: string }> = [];
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const wakes: string[] = [];

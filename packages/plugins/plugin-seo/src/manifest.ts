@@ -65,7 +65,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.26.2",
+  version: "0.26.3",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task. AI-search (GEO) audits, Google Analytics (GA4) numbers and page groups are extras a person switches on per sprint.",
   author: "Partners in Biz",

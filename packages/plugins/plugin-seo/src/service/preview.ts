@@ -392,7 +392,7 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
     if (Number(rounds[0]?.n ?? 0) >= MAX_REVIEW_ROUNDS) {
       const task = await db.getTask(env.ctx.db, companyId, taskId);
-      if (task && !seniorTried(task)) {
+      if (task && !seniorTried(task, pageUrl)) {
         fixBy = "senior";
         forcedSenior = true;
       } else {
@@ -576,7 +576,7 @@ export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
         if (!taskId) continue;
         try {
           const task = await db.getTask(env.ctx.db, companyId, taskId);
-          if (!task || !task.issueId || seniorTried(task)) continue;
+          if (!task || !task.issueId) continue;
           const keyed = item.key.slice(`preview-stuck:${taskId}:`.length);
           const rows = await env.ctx.db.query(
             `SELECT id, page_url, changes, review_note, review_key FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url LIKE $3 ORDER BY created_at DESC LIMIT 1`,
@@ -585,6 +585,7 @@ export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
           const row = rows[0];
           if (!row) continue;
           const pageUrl = String(row.page_url);
+          if (seniorTried(task, pageUrl)) continue;
           const changes = typeof row.changes === "string" ? (JSON.parse(String(row.changes)) as Record<string, unknown>) : ((row.changes ?? {}) as Record<string, unknown>);
           const fix = await startPreviewFix(env, companyId, {
             previewId: String(row.id),
