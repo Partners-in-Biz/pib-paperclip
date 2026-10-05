@@ -381,6 +381,8 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
     const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId!, pageUrl, String(row.title), notes!, Number(rounds[0]?.n));
     if (!escalated) return null;
+    const owning = await db.getSprint(env.ctx.db, companyId, sprintId);
+    if (owning && isAutoSignoff(owning)) return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, pageDropped: true, next: "Set your review issue to done. The page failed the check repeatedly and was dropped from the task; the SEO agent carries on with the task's other pages." };
     // Once per page: the Reviewer's last reason is on the owner's Needs you item and in previews.review_note, not repeated here every round.
     if (issueId) {
       await commentOn(
@@ -545,6 +547,9 @@ export const MAX_REVIEW_ROUNDS = 2;
 async function escalateStuckPreview(env: Env, companyId: string, sprintId: string, taskId: string, pageUrl: string, title: string, notes: string, rounds: number): Promise<boolean> {
   try {
     const { sprint } = await loadSprintContext(env, companyId, sprintId);
+    // Automatic client sign-off: the plugin decides. A page that has failed the Senior Developer's go too is dropped from the task, and the
+    // task finishes with the other pages (one quiet line for the owner to revisit), instead of stopping everything for a person.
+    if (isAutoSignoff(sprint)) return await dropFailingPage(env, sprint, taskId, pageUrl, title, notes, rounds);
     const info = await companyInfo(env, companyId);
     await addNeedsYou(env, info, sprint, {
       key: `preview-stuck:${taskId}:${pageUrl}`.slice(0, 120),
@@ -562,6 +567,43 @@ async function escalateStuckPreview(env: Env, companyId: string, sprintId: strin
     env.ctx.logger.info("SEO stuck preview escalation failed", { taskId, error: errorMessage(error) });
     return false;
   }
+}
+
+/**
+ * A page that kept failing the Reviewer, the Senior Developer's go included, on a sprint with automatic client sign-off: its previews are
+ * withdrawn (expired, so the client never sees them), the task carries on with its other pages and the agent is told not to try the page
+ * again. The owner gets one quiet, optional line to revisit it later; nothing waits for a person.
+ */
+export async function dropFailingPage(env: Env, sprint: db.Sprint, taskId: string, pageUrl: string, title: string, notes: string, rounds: number): Promise<boolean> {
+  const companyId = sprint.companyId;
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || !task.issueId) return false;
+  await env.ctx.db.execute(`UPDATE ${t("previews")} SET expires_at = now() WHERE company_id = $1 AND sprint_id = $2 AND page_url = $3 AND status = 'pending' AND expires_at > now()`, [companyId, sprint.id, pageUrl]);
+  const dropped = [...(((task.evidence ?? {}) as { droppedPages?: Array<Record<string, string>> }).droppedPages ?? []), { pageUrl, at: env.now().toISOString(), reason: notes.slice(0, 500) }];
+  await db.updateTask(env.ctx.db, companyId, task.id, { evidence: { ...(task.evidence ?? {}), droppedPages: dropped } });
+  const info = await companyInfo(env, companyId);
+  await closeNeedsYouItems(env, info, sprint, [`preview-stuck:${taskId}:${pageUrl}`.slice(0, 120)], "plugin", "The page was dropped from the task after repeated failed previews.").catch(() => 0);
+  await addNeedsYou(env, info, sprint, {
+    key: `page-skipped:${taskId}:${pageUrl}`.slice(0, 120),
+    kind: "task",
+    title: `Skipped after ${rounds} failed previews: ${pageUrl}`,
+    why: `"${title}" kept failing the Reviewer's check, the Senior Developer's go included, so it was dropped from "${task.title}" and the task carried on without it. Last reason: ${notes}`.slice(0, 1500),
+    steps: ["Nothing is waiting on this. Revisit the page later: it may need copy the client has not provided yet, or a different approach (metadata only, or leave as is)."],
+    links: [],
+    after: "Nothing: the line is informational.",
+    check: "manual",
+    taskIds: [],
+    optional: true,
+    quiet: true,
+  }).catch(() => undefined);
+  await commentOn(env, companyId, task.issueId, `The page ${pageUrl} failed the Reviewer's check ${rounds} times, the Senior Developer's fix included, so it is DROPPED from this task: its previews are withdrawn and the client never sees them. Do not make another preview for it. Carry on with the task's other pages and complete the task when every other page is applied or dropped. Reason: ${notes.replace(/\s+/g, " ").slice(0, 400)}`, { dedupeKey: `dropped:${task.id}:${commentFingerprint(pageUrl)}` });
+  // If everything else of the task is looked at and waiting for the client, park it there; otherwise the agent carries on.
+  const outcome = await afterPreviewPassed(env, sprint, taskId, task.issueId);
+  if (outcome !== "parked" && outcome !== "waiting") {
+    await resumeTaskAfterReview(env, companyId, taskId);
+    await wakeIssue(env.ctx, task.issueId, companyId, "A page was dropped from the task: carry on");
+  }
+  return true;
 }
 
 /**
@@ -590,7 +632,12 @@ export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
           const row = rows[0];
           if (!row) continue;
           const pageUrl = String(row.page_url);
-          if (seniorTried(task, pageUrl)) continue;
+          if (seniorTried(task, pageUrl)) {
+            // The Senior Developer already had its go: on a sprint with automatic sign-off the page is dropped instead of waiting for a person.
+            const { sprint: owning } = await loadSprintContext(env, companyId, digest.sprintId);
+            if (isAutoSignoff(owning) && (await dropFailingPage(env, owning, taskId, pageUrl, item.title, item.why, MAX_REVIEW_ROUNDS))) handed += 1;
+            continue;
+          }
           const changes = typeof row.changes === "string" ? (JSON.parse(String(row.changes)) as Record<string, unknown>) : ((row.changes ?? {}) as Record<string, unknown>);
           const fix = await startPreviewFix(env, companyId, {
             previewId: String(row.id),

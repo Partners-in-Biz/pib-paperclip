@@ -274,9 +274,12 @@ describe("a page already on the owner's list is handed to the Senior Developer",
     expect(w.created.some((c) => c.input.assigneeAgentId === "sen-1")).toBe(true);
     expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain('"status":"done"');
     expect(w.comments.some((c) => /Senior Developer\) is fixing it/.test(c.body))).toBe(true);
-    // The task now records the Senior Developer's go: the next run leaves the page alone.
+    // The task now records the Senior Developer's go: no second fix; on automatic sign-off the page is dropped from the task instead.
+    const fixes = w.created.filter((c) => c.input.assigneeAgentId === "sen-1").length;
     w.store.tasks[0]!.evidence = { builds: [{ issueId: "x", agentId: "sen-1", at: "2026-10-05T13:30:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://agristudies.co.za/" }] };
-    expect(await handStuckPreviewsToSenior(w.env)).toBe(0);
+    expect(await handStuckPreviewsToSenior(w.env)).toBe(1);
+    expect(w.created.filter((c) => c.input.assigneeAgentId === "sen-1").length).toBe(fixes);
+    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("Skipped after");
   });
 });
 
@@ -301,5 +304,36 @@ describe("the Gmail draft link", () => {
     expect(await repairDraftLinks(w.env)).toBe(1);
     expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("https://mail.google.com/mail/?authuser=peet%40pib.online#drafts?compose=1");
     expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("authuser=peet%40pib.online");
+  });
+});
+
+describe("a page that keeps failing, on automatic sign-off, is dropped instead of waiting for a person", () => {
+  const page = "https://agristudies.co.za/product/national-certificate-animal-production/";
+  const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
+  const routes = (): Route[] => [
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
+    latest([preview("p0", "product/other", { status: "approved" })]),
+  ];
+
+  it("withdraws the page's previews, tells the agent not to retry, leaves one quiet line and asks nobody", async () => {
+    const { reviewPreview } = await import("../src/service/preview.js");
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "reviewer", evidence: seniorTried })], routes: routes() });
+    const out = await reviewPreview(w.env, "co-1", { kind: "user", userId: "user-peet" }, { sprintId: "sp-real", previewId: "p1", verdict: "changes", notes: "Repeats the live page" });
+    expect(out).toMatchObject({ pageDropped: true });
+    expect(executed(w, /SET expires_at = now\(\) WHERE company_id = \$1 AND sprint_id = \$2 AND page_url = \$3/)).toHaveLength(1);
+    const lines = JSON.stringify(w.needsYou.at(-1)!.items);
+    expect(lines).toContain("Skipped after");
+    expect(lines).toContain('"quiet":true');
+    expect(lines).not.toContain("keeps failing the check");
+    expect(w.comments.some((c) => /DROPPED from this task/.test(c.body))).toBe(true);
+  });
+
+  it("on a sprint with manual sign-off the owner is still asked (the control)", async () => {
+    const { reviewPreview } = await import("../src/service/preview.js");
+    const w = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ assignee_kind: "reviewer", evidence: seniorTried })], routes: routes() });
+    const out = await reviewPreview(w.env, "co-1", { kind: "user", userId: "user-peet" }, { sprintId: "sp-real", previewId: "p1", verdict: "changes", notes: "Repeats the live page" });
+    expect(out).toMatchObject({ escalatedToOwner: true });
+    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("keeps failing the check");
   });
 });
