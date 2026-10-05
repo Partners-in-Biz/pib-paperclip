@@ -2004,6 +2004,20 @@ export async function repointPreviews(db: SeoDb, companyId: string, fromIssueId:
  * Issues an agent run has started on (last 30 days), with when the first one began. The host raises no
  * issue.updated event when an agent picks an issue up, so this is how a task learns its work started.
  */
+/** Issues (of those given) with a run queued or running right now. */
+export async function issuesWithActiveRuns(db: SeoDb, companyId: string, issueIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
+  if (ids.length === 0) return new Set();
+  const rows = await db.query(
+    `SELECT DISTINCT r.context_snapshot->>'issueId' AS issue_id
+       FROM public.heartbeat_runs r
+      WHERE r.company_id = $1 AND r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 days'
+        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))`,
+    [companyId, JSON.stringify(ids)],
+  );
+  return new Set(rows.map((r) => String(r.issue_id)).filter(Boolean));
+}
+
 export async function issuesWithStartedRuns(db: SeoDb, companyId: string, issueIds: string[]): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);

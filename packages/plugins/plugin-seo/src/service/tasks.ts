@@ -754,3 +754,72 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
   const opened = await materialiseDueTasks(env, mc);
   return { moved, opened: opened.created };
 }
+
+
+/** A task handed to the SEO agent whose issue has sat in todo this long with no run is woken again (a wake can be coalesced into a run that was ending). */
+export const IDLE_TASK_MINUTES = 25;
+export const IDLE_TASK_MAX_NUDGES = 4;
+
+/**
+ * Tasks the plugin handed back to the agent (a Reviewer or client answer, a page to revise) whose issue is still `todo` with nobody running
+ * it: the host coalesces a wake into an execution of the same issue that is already ending, and then nothing starts. The task is woken
+ * again, at most IDLE_TASK_MAX_NUDGES times, IDLE_TASK_MINUTES apart. Runs from the 5-minute job; returns how many it woke.
+ */
+export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.issue_id, t.evidence FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND t.status = 'in_progress' AND t.assignee_kind = 'agent' AND t.issue_id IS NOT NULL AND t.issue_status = 'todo'
+        AND t.updated_at < now() - ($1::int * interval '1 minute') LIMIT 30`,
+    [IDLE_TASK_MINUTES],
+  );
+  let woken = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    const issueId = String(row.issue_id);
+    try {
+      const evidence = typeof row.evidence === "string" ? (JSON.parse(String(row.evidence)) as Record<string, any>) : ((row.evidence ?? {}) as Record<string, any>);
+      const nudges = Number(evidence.idleNudges ?? 0);
+      const last = evidence.idleNudgedAt ? new Date(String(evidence.idleNudgedAt)).getTime() : 0;
+      if (nudges >= IDLE_TASK_MAX_NUDGES || env.now().getTime() - last < IDLE_TASK_MINUTES * 60_000) continue;
+      if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
+      const issue = await getIssue(env, companyId, issueId);
+      if (!issue || !["todo", "backlog"].includes(String(issue.status))) continue;
+      await wakeIssue(env.ctx, issueId, companyId, "This task is waiting for the SEO agent");
+      await db.updateTask(env.ctx.db, companyId, String(row.id), { evidence: { ...evidence, idleNudges: nudges + 1, idleNudgedAt: env.now().toISOString() } });
+      woken += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO idle task not woken", { issueId, error: errorMessage(error) });
+    }
+  }
+  return woken;
+}
+
+
+/**
+ * A task parked on the Reviewer or the client has nothing for the agent to do. When its issue is flipped back to in_progress (a wake
+ * made the agent check it out) the host sees an in-progress issue with no live work and wakes the agent again every 30 seconds
+ * ("issue_continuation_needed"): found on Agri Studies (2026-10-05), 20+ runs and an 81 KB thread in 15 minutes. The issue is put back to
+ * blocked, which the host leaves alone. Runs from the 5-minute job; returns how many tasks it re-blocked.
+ */
+export async function reblockParkedTasks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.issue_id FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND t.assignee_kind IN ('reviewer', 'client') AND t.status = 'in_progress' AND t.issue_id IS NOT NULL LIMIT 30`,
+  );
+  let blocked = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    const issueId = String(row.issue_id);
+    try {
+      const issue = await getIssue(env, companyId, issueId);
+      // in_review is a sign-off waiting for the Reviewer or the owner (block-task review): not this function's to change.
+      if (!issue || ["done", "cancelled", "blocked", "in_review"].includes(String(issue.status))) continue;
+      if (!(await patchIssue(env, companyId, issueId, { status: "blocked" }))) continue;
+      await db.updateTask(env.ctx.db, companyId, String(row.id), { status: "blocked", issue_status: "blocked" });
+      blocked += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO parked task not re-blocked", { issueId, error: errorMessage(error) });
+    }
+  }
+  return blocked;
+}

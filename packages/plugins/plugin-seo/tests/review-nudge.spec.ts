@@ -83,3 +83,34 @@ describe("a corrected preview made without a taskId", () => {
     expect(insert.params[4]).toBe("iss-1");
   });
 });
+
+describe("a task handed to the agent that nobody picks up", () => {
+  it("wakes the agent again when the issue sits in todo with no run, at most four times, 25 minutes apart", async () => {
+    const { nudgeIdleAgentTasks } = await import("../src/service/tasks.js");
+    const idle = (evidence: Row | null = null): Row => ({ id: "t1", company_id: "co-1", issue_id: "iss-1", evidence });
+    const route = (rows: Row[]): Route[] => [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND t\.status = 'in_progress' AND t\.assignee_kind = 'agent'/, () => rows]];
+    const w = world({ sprints: [sprint()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "in_progress", assignee_kind: "agent", issue_id: "iss-1", issue_status: "todo" })], routes: route([idle()]) });
+    expect(await nudgeIdleAgentTasks(w.env)).toBe(1);
+    expect(w.wakeups).toEqual(["iss-1"]);
+    expect(executed(w, /UPDATE plugin_seo_8099f8879a\.sprint_tasks SET evidence/)[0]!.params[0]).toContain('"idleNudges":1');
+    const recent = world({ sprints: [sprint()], routes: route([idle({ idleNudges: 1, idleNudgedAt: "2026-10-03T07:50:00Z" })]) });
+    expect(await nudgeIdleAgentTasks(recent.env)).toBe(0);
+    const tired = world({ sprints: [sprint()], routes: route([idle({ idleNudges: 4, idleNudgedAt: "2026-10-01T00:00:00Z" })]) });
+    expect(await nudgeIdleAgentTasks(tired.env)).toBe(0);
+    // A run is already queued or running on the issue: leave it alone.
+    const running = world({ sprints: [sprint()], routes: [...route([idle()]), [/FROM public\.heartbeat_runs r\s+WHERE r\.company_id = \$1 AND r\.status IN \('queued', 'running'\)/, () => [{ issue_id: "iss-1" }]]] });
+    expect(await nudgeIdleAgentTasks(running.env)).toBe(0);
+    expect(running.wakeups).toEqual([]);
+  });
+});
+
+describe("a parked task keeps its issue blocked", () => {
+  it("puts an in-progress issue of a task parked on the Reviewer or the client back to blocked (the host re-wakes in-progress issues every 30 seconds)", async () => {
+    const { reblockParkedTasks } = await import("../src/service/tasks.js");
+    const route: Route[] = [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND t\.assignee_kind IN \('reviewer', 'client'\)/, () => [{ id: "t1", company_id: "co-1", issue_id: "iss-1" }]]];
+    const w = world({ sprints: [sprint()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "in_progress", assignee_kind: "client", issue_id: "iss-1", issue_status: "in_progress" })], routes: route });
+    expect(await reblockParkedTasks(w.env)).toBe(1);
+    expect(w.updates.some((u) => u.id === "iss-1" && u.patch.status === "blocked")).toBe(true);
+    expect(w.store.tasks[0]).toMatchObject({ status: "blocked", issue_status: "blocked" });
+  });
+});

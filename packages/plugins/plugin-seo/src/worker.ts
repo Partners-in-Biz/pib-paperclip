@@ -67,7 +67,7 @@ import { advanceReleasedWeeks, integrationView, sprintView, upgradeLegacySprint 
 import { displayTitle, sprintOverviews, withRunFailures } from "./service/overview.js";
 import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
-import { onIssueUpdated, advanceQueuedWeeks } from "./service/tasks.js";
+import { onIssueUpdated, advanceQueuedWeeks, nudgeIdleAgentTasks, reblockParkedTasks } from "./service/tasks.js";
 import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
@@ -107,6 +107,8 @@ const plugin = definePlugin({
       await db.listSprintCompanies(ctx.db).then(async (companies) => {
         for (const companyId of companies) await openIdleGroups(e, companyId).catch(() => 0);
       }).catch((error) => ctx.logger.info("SEO idle page groups not advanced", { error: errorMessage(error) }));
+      await reblockParkedTasks(e).catch((error) => ctx.logger.info("SEO parked tasks not re-blocked", { error: errorMessage(error) }));
+      await nudgeIdleAgentTasks(e).catch((error) => ctx.logger.info("SEO idle tasks not woken", { error: errorMessage(error) }));
       await nudgeStalledReviews(e).catch((error) => ctx.logger.info("SEO stalled reviews not nudged", { error: errorMessage(error) }));
       await reviveOrphanedChanges(e).catch((error) => ctx.logger.info("SEO orphaned changes not handed back", { error: errorMessage(error) }));
       await handStuckPreviewsToSenior(e).catch((error) => ctx.logger.info("SEO stuck previews not handed over", { error: errorMessage(error) }));
