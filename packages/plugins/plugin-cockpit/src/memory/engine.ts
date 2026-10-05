@@ -44,6 +44,8 @@ export const SELECTION = {
   cacheMinutes: 10,
   /** Active facts per client + area before the least valuable get archived. */
   scopeActiveCap: 120,
+  /** A brief for several clients keeps at least this many of each client's best facts before the rest fill in by rank. */
+  briefMinPerClient: 3,
   /** Client picked by Jev only at or above this confidence. */
   clientChoiceMin: 0.6,
   /** Version of the ranking + selection rules, stored with every brief. */
@@ -336,13 +338,34 @@ export function factLine(fact: MemoryFact): string {
   return `- [${fact.id}] (${scope}) ${fact.text}${source ? ` — ${source}` : ""}`;
 }
 
+/**
+ * When a task is for several clients (a person who works for three
+ * companies), one client's facts must not crowd the others out of the brief:
+ * each client's best facts come first, the rest follow in rank order. With
+ * one client (or none) the order is unchanged.
+ */
+function shareAmongClients(rest: RankedFact[]): RankedFact[] {
+  const clients = new Set(rest.filter((r) => r.clientMatch && r.fact.clientRef).map((r) => r.fact.clientRef));
+  if (clients.size < 2) return rest;
+  const taken = new Map<string, number>();
+  const first: RankedFact[] = [];
+  for (const r of rest) {
+    const ref = r.clientMatch ? r.fact.clientRef : null;
+    if (!ref || (taken.get(ref) ?? 0) >= SELECTION.briefMinPerClient) continue;
+    taken.set(ref, (taken.get(ref) ?? 0) + 1);
+    first.push(r);
+  }
+  const reserved = new Set(first.map((r) => r.fact.id));
+  return [...first, ...rest.filter((r) => !reserved.has(r.fact.id))];
+}
+
 /** Fill the brief in order until the fact or token cap is reached. Pinned facts come first. */
 export function pack(ordered: RankedFact[], limits: { maxFacts: number; maxTokens: number } = { maxFacts: MEMORY_LIMITS.briefMaxFacts, maxTokens: MEMORY_LIMITS.briefMaxTokens }): { facts: RankedFact[]; tokens: number } {
   const out: RankedFact[] = [];
   let tokens = 0;
   const seen = new Set<string>();
   const pinned = ordered.filter((r) => r.pinApplies).slice(0, MEMORY_LIMITS.pinnedMaxPerScope * 2);
-  for (const r of [...pinned, ...ordered.filter((x) => !x.pinApplies)]) {
+  for (const r of [...pinned, ...shareAmongClients(ordered.filter((x) => !x.pinApplies))]) {
     if (seen.has(r.fact.id)) continue;
     if (out.length >= limits.maxFacts) break;
     const cost = estimateTokens(factLine(r.fact)) + 1;

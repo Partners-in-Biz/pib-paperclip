@@ -529,6 +529,22 @@ d("company memory (Postgres)", () => {
       expect((await store.getFact(h.ctx, COMPANY, gone.saved[0]!.id))!.clientRef).toBeNull();
     });
 
+    it("a task for a person who works for three companies gets facts from all three", async () => {
+      await h.client.query(`INSERT INTO ${NAMESPACE}.crm_companies (id, company_id, name, lifecycle, updated_at) VALUES ('g1', $1, 'Goosen Farming', 'customer', now()), ('g2', $1, 'Goosen Legal', 'customer', now()), ('g3', $1, 'Goosen Auctions', 'customer', now()), ('g4', $1, 'Unrelated Co', 'customer', now())`, [COMPANY]);
+      await h.client.query(`INSERT INTO ${NAMESPACE}.crm_contacts (id, company_id, name, emails, account_ids, updated_at) VALUES ('pg', $1, 'Pieter Goosen', ARRAY['pieter@example.co.za'], ARRAY['g3','g1','g2'], now())`, [COMPANY]);
+      for (const [ref, name] of [["company:g1", "Goosen Farming"], ["company:g2", "Goosen Legal"], ["company:g3", "Goosen Auctions"], ["company:g4", "Unrelated Co"]] as const) {
+        const r = await add({ text: `${name} wants invoices sent to their bookkeeper, not to Pieter.`, client: ref, clientName: name, area: "crm" });
+        expect(r.error).toBeUndefined();
+      }
+      h.addIssue({ id: "i-pg", identifier: "PIB-120", title: "Draft an email to Pieter Goosen about the year-end paperwork", originKind: "plugin:partnersinbiz.crm" });
+      const brief = await recall({ issueId: "PIB-120" });
+      expect(brief.error).toBeUndefined();
+      expect([...brief.data.client.refs].sort()).toEqual(["company:g1", "company:g2", "company:g3"]);
+      const texts: string[] = brief.data.facts.map((f: { text: string }) => f.text);
+      for (const name of ["Goosen Farming", "Goosen Legal", "Goosen Auctions"]) expect(texts.some((t) => t.startsWith(name))).toBe(true);
+      expect(texts.some((t) => t.startsWith("Unrelated Co"))).toBe(false);
+    });
+
     it("lets the memory tools take the CRM name or ref (the name comes from the CRM)", async () => {
       await crm();
       const byName = await add({ text: "Brightside Dental closes on Wednesday afternoons.", client: "Brightside Dental" });

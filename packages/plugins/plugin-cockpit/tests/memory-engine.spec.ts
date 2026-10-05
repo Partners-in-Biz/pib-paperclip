@@ -23,6 +23,7 @@ import {
   type TaskContext,
 } from "../src/memory/engine.js";
 import { factValue } from "../src/memory/service.js";
+import { knownClientsFrom, type CrmClientRow } from "../src/clients.js";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 
@@ -123,6 +124,23 @@ describe("clients", () => {
     expect(clientsMentioned("Jo wants a call", known)).toEqual([]); // names under 3 characters are ignored
   });
 
+  it("a person who works for several known companies names every one of them", () => {
+    const crm: CrmClientRow[] = [
+      { kind: "company", id: "b", name: "Bravo Farms", domain: null, lifecycle: "customer", accountIds: [] },
+      { kind: "company", id: "a", name: "Alpha Legal", domain: null, lifecycle: "customer", accountIds: [] },
+      { kind: "company", id: "c", name: "Charlie Auctions", domain: null, lifecycle: "lead", accountIds: [] },
+      { kind: "contact", id: "p1", name: "Pieter Goosen", domain: null, lifecycle: "customer", accountIds: ["c", "gone", "a", "b", "a"] },
+      { kind: "contact", id: "p2", name: "Solo Trader", domain: null, lifecycle: "lead", accountIds: ["gone"] },
+    ];
+    const known = knownClientsFrom(crm, []);
+    // Sorted by id and deduplicated; a link to a company the CRM no longer has is ignored.
+    expect(clientsMentioned("Draft an email to Pieter Goosen", known)).toEqual(["company:a", "company:b", "company:c"]);
+    // Naming one company still finds just that one.
+    expect(clientsMentioned("[Alpha Legal] renew the retainer", known)).toEqual(["company:a"]);
+    // A contact with no known company is still its own client.
+    expect(clientsMentioned("Call Solo Trader", known)).toEqual(["contact:p2"]);
+  });
+
   it("builds a Jev choice over known clients with a none option", () => {
     const choice = clientChoice(task({ clientRefs: [], clientNames: [] }), known)!;
     expect(Object.values(choice.options)).toEqual(["company:nw", "company:ac", "contact:jo"]);
@@ -170,6 +188,22 @@ describe("ranking and selection", () => {
     expect(packed.tokens).toBeLessThanOrEqual(1500);
     const tight = pack([...many], { maxFacts: 50, maxTokens: 300 });
     expect(tight.tokens).toBeLessThanOrEqual(300);
+  });
+
+  it("a brief for several clients keeps each client's best facts, then fills by rank", () => {
+    const row = (id: string, ref: string, score: number) => ({ fact: fact({ id, text: `Fact ${id}.`, clientRef: ref, clientName: ref }), score, lexical: 0, clientMatch: true, areaMatch: true, pinApplies: false });
+    const ordered = [
+      ...Array.from({ length: 10 }, (_, i) => row(`a${i}`, "company:a", 10 - i)),
+      row("b0", "company:b", 0.9),
+      row("b1", "company:b", 0.8),
+      row("c0", "company:c", 0.7),
+    ];
+    const ids = pack(ordered, { maxFacts: 6, maxTokens: 1500 }).facts.map((r) => r.fact.id);
+    expect(ids).toEqual(expect.arrayContaining(["a0", "b0", "b1", "c0"]));
+    expect(ids).toHaveLength(6);
+    // One client: plain rank order, unchanged.
+    const single = pack(ordered.filter((r) => r.fact.clientRef === "company:a"), { maxFacts: 4, maxTokens: 1500 }).facts.map((r) => r.fact.id);
+    expect(single).toEqual(["a0", "a1", "a2", "a3"]);
   });
 
   describe("pinned rules from another area", () => {
