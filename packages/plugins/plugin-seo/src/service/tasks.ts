@@ -42,6 +42,7 @@ import {
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { isAutoSignoff } from "./client-signoff.js";
+import { PLUGIN_VERSION } from "../namespace.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
 import { addNeedsYou, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
@@ -800,6 +801,9 @@ export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
         if (await reissueTask(env, companyId, String(row.id), issueId, `The host would not start a run on this issue (${String(evidence.idleNudgeAnswer ?? "no run after repeated wakes")}).`)) woken += 1;
         continue;
       }
+      // An agent that met a tool failure keeps believing in it (found on Agri Auctions SA: create-preview failed with a NUL-byte fault, was fixed, and the agent
+      // went on answering "still failing" without trying again, which the host flagged as "plan only"). Said once per plugin version and issue.
+      await commentOn(env, companyId, issueId, `The SEO plugin was updated (version ${PLUGIN_VERSION}). If a tool failed earlier in this task (for example create-preview), call it again now before concluding it is broken: those faults are fixed. Then carry on with the task.`, { dedupeKey: `plugin-update:${PLUGIN_VERSION}:${issueId}` }).catch(() => false);
       // The host's own answer is kept: it refuses a wake for reasons the kit's wakeIssue swallows (blockers, budget, workspace, no assignee).
       let answer = "";
       try {

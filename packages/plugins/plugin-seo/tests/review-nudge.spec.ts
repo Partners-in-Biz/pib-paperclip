@@ -92,6 +92,8 @@ describe("a task handed to the agent that nobody picks up", () => {
     const w = world({ sprints: [sprint()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "in_progress", assignee_kind: "agent", issue_id: "iss-1", issue_status: "todo" })], routes: route([idle()]) });
     expect(await nudgeIdleAgentTasks(w.env)).toBe(1);
     expect(w.wakeups).toEqual(["iss-1"]);
+    // The agent is told once that earlier tool failures may be fixed.
+    expect(w.comments.find((c) => c.id === "iss-1")!.body).toMatch(/plugin was updated[\s\S]*call it again/);
     expect(executed(w, /UPDATE plugin_seo_8099f8879a\.sprint_tasks SET evidence/)[0]!.params[0]).toContain('"idleNudges":1');
     const recent = world({ sprints: [sprint()], routes: route([idle({ idleNudges: 1, idleNudgedAt: "2026-10-03T07:50:00Z" })]) });
     expect(await nudgeIdleAgentTasks(recent.env)).toBe(0);
