@@ -279,3 +279,27 @@ describe("a page already on the owner's list is handed to the Senior Developer",
     expect(await handStuckPreviewsToSenior(w.env)).toBe(0);
   });
 });
+
+describe("the Gmail draft link", () => {
+  it("is rewritten from the u/<account> form (a Gmail 404 where the account is not first) to authuser", async () => {
+    const { gmailDraftLink } = await import("../src/service/client-signoff.js");
+    expect(gmailDraftLink("https://mail.google.com/mail/u/peet.stander@partnersinbiz.online/#drafts?compose=1a10")).toBe("https://mail.google.com/mail/?authuser=peet.stander%40partnersinbiz.online#drafts?compose=1a10");
+    expect(gmailDraftLink("https://mail.google.com/mail/?authuser=a%40b.co#drafts?compose=1")).toBe("https://mail.google.com/mail/?authuser=a%40b.co#drafts?compose=1");
+    expect(gmailDraftLink("https://mail.google.com/mail/u/0/#drafts?compose=1")).toBe("https://mail.google.com/mail/u/0/#drafts?compose=1");
+    expect(gmailDraftLink(null)).toBeNull();
+  });
+
+  it("repairs a stored old link and refreshes the Needs you line", async () => {
+    const { repairDraftLinks } = await import("../src/service/client-signoff.js");
+    const w = world({
+      sprints: [wp()],
+      routes: [
+        [/SELECT DISTINCT company_id, sprint_id, draft_key, draft_url FROM/, () => [{ company_id: "co-1", sprint_id: "sp-real", draft_key: "seo-approval:sp-real:abc", draft_url: "https://mail.google.com/mail/u/peet@pib.online/#drafts?compose=1" }]],
+        [/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND draft_key = \$2/, () => [{ id: "p1", page_url: "https://agristudies.co.za/", title: "Home" }]],
+      ],
+    });
+    expect(await repairDraftLinks(w.env)).toBe(1);
+    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("https://mail.google.com/mail/?authuser=peet%40pib.online#drafts?compose=1");
+    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("authuser=peet%40pib.online");
+  });
+});

@@ -83,7 +83,7 @@ function failedDraft(request: MailDraftRequested, error: string): MailDraftResul
 }
 
 export function draftUrlFor(account: string, gmailMessageId: string): string {
-  return `https://mail.google.com/mail/u/${account}/#drafts?compose=${gmailMessageId}`;
+  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#drafts?compose=${gmailMessageId}`;
 }
 
 function isPermanentGmail(error: unknown): boolean {

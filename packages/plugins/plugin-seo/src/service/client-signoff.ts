@@ -185,6 +185,31 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
   return requested;
 }
 
+/** Gmail opens a draft with `?authuser=<account>`; the older `u/<account>/` form shows a 404 where the account is not the first one signed in. */
+export function gmailDraftLink(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const old = /^https:\/\/mail\.google\.com\/mail\/u\/([^/]+)\/(#.*)$/.exec(url);
+  return old && old[1] && old[1].includes("@") ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(decodeURIComponent(old[1]))}${old[2]}` : url;
+}
+
+/** Drafts made before the link fix: rewrite the stored link and refresh the Needs you line. Returns how many it repaired. */
+export async function repairDraftLinks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT DISTINCT company_id, sprint_id, draft_key, draft_url FROM ${t("previews")} WHERE draft_status = 'drafted' AND draft_url LIKE 'https://mail.google.com/mail/u/%@%' LIMIT 20`,
+  );
+  let repaired = 0;
+  for (const row of rows) {
+    const draftUrl = gmailDraftLink(String(row.draft_url));
+    if (!draftUrl || draftUrl === String(row.draft_url)) continue;
+    await onDraftResult(env, {
+      companyId: String(row.company_id),
+      payload: { key: String(row.draft_key), status: "drafted", draftUrl, context: { plugin: PIB_PLUGINS.seo, kind: DRAFT_KIND, id: String(row.sprint_id) } },
+    });
+    repaired += 1;
+  }
+  return repaired;
+}
+
 /** The Mailbox answered a draft request: record the Gmail link and put one line on Needs you (a person reads and sends it). */
 export async function onDraftResult(env: Env, event: { companyId?: string | null; payload?: unknown }): Promise<void> {
   const result = (event.payload ?? {}) as Partial<MailDraftResult>;
@@ -195,6 +220,7 @@ export async function onDraftResult(env: Env, event: { companyId?: string | null
   const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
   if (!sprint) return;
   const drafted = result.status === "drafted";
+  result.draftUrl = gmailDraftLink(result.draftUrl);
   await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_status = $3, draft_url = $4 WHERE company_id = $1 AND draft_key = $2`, [companyId, result.key, drafted ? "drafted" : "failed", result.draftUrl ?? null]);
   const rows = await env.ctx.db.query(`SELECT id, page_url, title FROM ${t("previews")} WHERE company_id = $1 AND draft_key = $2 ORDER BY created_at`, [companyId, result.key]);
   const pages = rows.map((r) => ({ title: String(r.title), pageUrl: String(r.page_url), link: previewLink(String(r.page_url), String(r.id)) }));

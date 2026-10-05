@@ -146,7 +146,7 @@ export interface MailDraftResult {
   threadId?: string | null;
   /** The account the draft is in (its address). */
   account?: string | null;
-  /** Opens the draft in Gmail (https://mail.google.com/mail/u/<account>/#drafts?compose=<message id>). */
+  /** Opens the draft in Gmail (https://mail.google.com/mail/?authuser=<account>#drafts?compose=<message id>). */
   draftUrl?: string | null;
   error?: string | null;
   /** True when the failure will not go away on retry (bad address, no Gmail account). */

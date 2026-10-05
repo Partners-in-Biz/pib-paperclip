@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.5: the Gmail draft link opens the right account
+Verified live: the first approval email was a real Gmail draft, but the link the Mailbox built (`mail/u/<account>/#drafts…`) showed a Gmail 404 where the account is not the first signed in. The Mailbox (0.6.5) now builds `mail/?authuser=<account>#drafts?compose=<id>`, and `repairDraftLinks` (5-minute job) rewrites links stored in the old form and refreshes the Needs you line.
+
 ## 0.26.4: the approval email goes for tasks that wait on the client
 The draft job only takes previews whose task is parked on the client (every preview of the task has a verdict), batched across tasks for 10 quiet minutes or at most an hour. Before, it waited for a quiet 30 minutes across the whole sprint, which never came while other previews kept passing.
 

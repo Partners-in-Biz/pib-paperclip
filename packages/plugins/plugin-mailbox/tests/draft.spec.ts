@@ -48,7 +48,7 @@ describe("mail.draft.requested", () => {
       gmailMessageId: "draft-msg-1",
       threadId: "t-draft-msg-1",
       account: "peet@partnersinbiz.online",
-      draftUrl: "https://mail.google.com/mail/u/peet@partnersinbiz.online/#drafts?compose=draft-msg-1",
+      draftUrl: "https://mail.google.com/mail/?authuser=peet%40partnersinbiz.online#drafts?compose=draft-msg-1",
       error: null,
       permanent: false,
       context: request().context,

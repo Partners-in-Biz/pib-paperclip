@@ -50,7 +50,7 @@ import {
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, previewRows } from "./service/preview.js";
-import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult } from "./service/client-signoff.js";
+import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -116,6 +116,7 @@ const plugin = definePlugin({
         return 0;
       });
       if (drafted > 0) ctx.logger.info("SEO approval email drafts requested", { drafted });
+      await repairDraftLinks(e).catch((error) => ctx.logger.info("SEO draft links not repaired", { error: errorMessage(error) }));
       // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
       const moved = await db.listSprintCompanies(ctx.db).then((companies) => guardTaskThreads(e, companies)).catch((error) => {
         ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
