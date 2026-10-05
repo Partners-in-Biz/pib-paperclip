@@ -311,11 +311,11 @@ export function pullRequestPackage(input: PackageInput): PullRequestPackage {
     "- The Code Reviewer reviews this PR; the Delivery Lead merges it. Bump the plugin's version in `package.json` and its manifest, and note the change in its README.",
     "",
     "## After it ships",
-    "- Deploy with `deploy-plugins.sh`, then `skill-eval` gate and `baseline` on the live skill.",
+    "- The Delivery Lead requests the deploy (`pib-deploy-request deploy <plugin> --issue PAR-n --sha <merge commit>`), then `skill-eval` gate and `baseline` on the live skill.",
     ...(input.improvement ? [`- The change is in the improvements ledger as \`${input.improvement.id}\`: the Cockpit measures \`${input.improvement.metricKey}\` again on ${input.improvement.recheckAt.slice(0, 10)} and records improved, no change or worse. A worse result is reverted, not left.`] : []),
     "",
     "## Rollback",
-    "Revert this PR and deploy again, or `deploy-plugins.sh --rollback`: the skill is plugin source, so the previous version is one deploy away.",
+    "Revert this PR and have the Delivery Lead request the deploy again, or a person runs `deploy-plugins.sh --rollback` (agents cannot roll back): the skill is plugin source, so the previous version is one deploy away.",
   ].join("\n");
   const steps = [
     "git switch development && git pull --ff-only",
