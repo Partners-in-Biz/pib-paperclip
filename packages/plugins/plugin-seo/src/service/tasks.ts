@@ -44,7 +44,7 @@ import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from 
 import { isAutoSignoff } from "./client-signoff.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
-import { addNeedsYou, closeNeedsYouItems } from "./needs-you.js";
+import { addNeedsYou, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
@@ -891,9 +891,9 @@ export async function taskHasPreview(env: Env, companyId: string, taskId: string
  */
 export async function reclaimPersonHandOffs(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
-    `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+    `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence, t.human_ask FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
       WHERE s.status = 'active' AND s.client_signoff = 'auto' AND t.task_type = 'page-write' AND t.status = 'blocked' AND t.issue_id IS NOT NULL
-        AND t.human_ask IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
+        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
   );
   let taken = 0;
   for (const row of rows) {
@@ -902,12 +902,20 @@ export async function reclaimPersonHandOffs(env: Env): Promise<number> {
       const evidence = typeof row.evidence === "string" ? (JSON.parse(String(row.evidence)) as Record<string, any>) : ((row.evidence ?? {}) as Record<string, any>);
       if (evidence.reclaimedHandOff) continue;
       const task = await db.getTask(env.ctx.db, companyId, String(row.id));
-      if (!task || !task.issueId || !isAutoSignoff(await requireSprintOrNull(env, companyId, task.sprintId))) continue;
+      if (!task || !task.issueId) continue;
       const { sprint, info } = await loadSprintContext(env, companyId, task.sprintId);
-      await closeNeedsYouItems(env, info, sprint, [`task:${task.id}`], "plugin", "Taken back: on this sprint a page's change goes to the client as a preview, not to a person.").catch(() => 0);
+      if (!isAutoSignoff(sprint)) continue;
+      // The hand-off lines about this task: a change set for a person to apply (any key), never a setup item (a login, a repo link).
+      const digests = await db.openNeedsYouDigests(env.ctx.db, companyId);
+      const lines = digests
+        .filter((d) => d.sprintId === sprint.id)
+        .flatMap((d) => d.items)
+        .filter((i) => i.status === "open" && (i.taskIds ?? []).includes(task.id) && ["task", "review", "pr"].includes(i.kind) && !(STANDARD_KEYS as readonly string[]).includes(i.key));
+      if (lines.length === 0 && !row.human_ask) continue;
+      if (lines.length > 0) await closeNeedsYouItems(env, info, sprint, lines.map((i) => i.key), "plugin", "Taken back: on this sprint a page's change goes to the client as a preview, not to a person.").catch(() => 0);
       if (!(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) continue;
       await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null, human_ask: null, evidence: { ...(task.evidence ?? {}), reclaimedHandOff: true } });
-      await commentOn(env, companyId, task.issueId, `Client sign-off is automatic on this sprint, so this page's change is not handed to a person. The Needs you line was closed. Make a preview of each page with partnersinbiz.seo:create-preview (taskId ${task.id}) and end your turn: the plugin parks the task on the client, drafts the approval email and wakes you when they answer.`);
+      await commentOn(env, companyId, task.issueId, `Client sign-off is automatic on this sprint, so this page's change is not handed to a person. The Needs you line was closed. Make a preview of each page with partnersinbiz.seo:create-preview (taskId ${task.id}) and end your turn: the plugin parks the task on the client, drafts the approval email and wakes you when they answer. (If create-preview failed before, that was a plugin fault that is fixed.)`);
       await wakeIssue(env.ctx, task.issueId, companyId, "Make previews instead of a hand-off");
       taken += 1;
     } catch (error) {

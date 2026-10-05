@@ -356,11 +356,44 @@ describe("on automatic sign-off a page's change is never handed to a person", ()
 
   it("takes back a hand-off made before the rule: closes the Needs you line, returns the task to the agent and wakes it", async () => {
     const { reclaimPersonHandOffs } = await import("../src/service/tasks.js");
-    const route: Route[] = [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND s\.client_signoff = 'auto'/, () => [{ id: "t1", company_id: "co-1", sprint_id: "sp-real", issue_id: "iss-1", evidence: {} }]]];
+    const route: Route[] = [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND s\.client_signoff = 'auto'/, () => [{ id: "t1", company_id: "co-1", sprint_id: "sp-real", issue_id: "iss-1", evidence: {}, human_ask: "Apply the change set" }]]];
     const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "agent", task_type: "page-write", human_ask: "Apply the change set" })], routes: route });
     expect(await reclaimPersonHandOffs(w.env)).toBe(1);
     expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent", human_ask: null });
     expect(w.wakeups).toEqual(["iss-1"]);
     expect(w.comments.at(-1)!.body).toMatch(/create-preview/);
+  });
+});
+
+
+describe("a hand-off line with a custom key is taken back too, and needs-you-add refuses the same hand-off", () => {
+  const handOff = { key: "w3-product-pages-change-set", kind: "task", title: "W3: apply top-10 product page rewrites", why: "create-preview is failing, so the change set is here", steps: [], links: [], after: "", check: "manual", taskIds: ["t1"], status: "open", addedAt: "2026-10-05T21:00:00Z" };
+  it("closes every open task/review/pr line about the task (not a setup item) and returns the task to the agent", async () => {
+    const { reclaimPersonHandOffs } = await import("../src/service/tasks.js");
+    const routes: Route[] = [
+      [/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND s\.client_signoff = 'auto'/, () => [{ id: "t1", company_id: "co-1", sprint_id: "sp-real", issue_id: "iss-1", evidence: {}, human_ask: null }]],
+      [/FROM plugin_seo_8099f8879a\.needs_you n JOIN/, () => [{ sprint_id: "sp-real", items: [handOff, { ...handOff, key: "wp_connector", kind: "grant", title: "Pair the Connector" }] }]],
+    ];
+    const w = world({
+      sprints: [wp()],
+      tasks: [parked({ assignee_kind: "needs_you", task_type: "page-write" })],
+      needsYouRecent: [{ id: "ny-1", company_id: "co-1", sprint_id: "sp-real", week_start: "2026-09-28", issue_id: "ny-issue", issue_identifier: "PAR-1", items: [handOff, { ...handOff, key: "wp_connector", kind: "grant", title: "Pair the Connector" }], status: "open" }],
+      routes,
+    });
+    expect(await reclaimPersonHandOffs(w.env)).toBe(1);
+    const items = w.needsYou.at(-1)!.items as Array<{ key: string; status: string }>;
+    expect(items.find((i) => i.key === "w3-product-pages-change-set")!.status).toBe("done");
+    expect(items.find((i) => i.key === "wp_connector")!.status).toBe("open");
+    expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent" });
+  });
+
+  it("needs-you-add refuses a task line for a page-writing task without a preview, on automatic sign-off only", async () => {
+    const { needsYouAddTool } = await import("../src/service/needs-you.js");
+    const ask = { sprintId: "sp-real", kind: "task", title: "Apply the change set", why: "w", after: "a", taskIds: ["t1"] };
+    const route: Route[] = [[/SELECT t\.id FROM plugin_seo_8099f8879a\.sprint_tasks t WHERE t\.company_id = \$1 AND t\.id IN/, () => [{ id: "t1" }]]];
+    const w = world({ sprints: [wp()], tasks: [parked({ task_type: "page-write" })], routes: route });
+    await expect(needsYouAddTool(w.env, "co-1", agent, ask)).rejects.toThrow(/client sign-off is automatic[\s\S]*create-preview/);
+    const manual = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ task_type: "page-write" })], routes: route });
+    await expect(needsYouAddTool(manual.env, "co-1", agent, ask)).resolves.toBeTruthy();
   });
 });
