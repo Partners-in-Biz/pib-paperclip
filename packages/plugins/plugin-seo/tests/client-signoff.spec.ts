@@ -337,3 +337,30 @@ describe("a page that keeps failing, on automatic sign-off, is dropped instead o
     expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("keeps failing the check");
   });
 });
+
+describe("on automatic sign-off a page's change is never handed to a person", () => {
+  const blockParams = { taskId: "t1", reason: "Home page change set drafted", humanAsk: "Apply the home page change set in wp-admin" };
+  it("refuses block-task on a page-writing task that has no preview, and tells the agent to make one", async () => {
+    const { blockTask } = await import("../src/service/tasks.js");
+    const w = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })] });
+    await expect(blockTask(w.env, "co-1", agent, blockParams)).rejects.toThrow(/client sign-off is automatic[\s\S]*create-preview/);
+  });
+
+  it("allows it once a preview exists, and on a manual sprint (the controls)", async () => {
+    const { blockTask } = await import("../src/service/tasks.js");
+    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 LIMIT 1/, () => [{ "?column?": 1 }]]] });
+    await expect(blockTask(withPreview.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
+    const manual = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })] });
+    await expect(blockTask(manual.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
+  });
+
+  it("takes back a hand-off made before the rule: closes the Needs you line, returns the task to the agent and wakes it", async () => {
+    const { reclaimPersonHandOffs } = await import("../src/service/tasks.js");
+    const route: Route[] = [[/FROM plugin_seo_8099f8879a\.sprint_tasks t JOIN plugin_seo_8099f8879a\.sprints s ON s\.id = t\.sprint_id\s+WHERE s\.status = 'active' AND s\.client_signoff = 'auto'/, () => [{ id: "t1", company_id: "co-1", sprint_id: "sp-real", issue_id: "iss-1", evidence: {} }]]];
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "agent", task_type: "page-write", human_ask: "Apply the change set" })], routes: route });
+    expect(await reclaimPersonHandOffs(w.env)).toBe(1);
+    expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent", human_ask: null });
+    expect(w.wakeups).toEqual(["iss-1"]);
+    expect(w.comments.at(-1)!.body).toMatch(/create-preview/);
+  });
+});

@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.13: on automatic sign-off a page's change is never handed to a person
+Found on Agri Auctions SA (2026-10-05): for the home page the agent wrote a change set "to apply in wp-admin" for a person (`block-task` + Needs you), with no preview and no client email: the old manual path, which would have put a change on the live site without the client's sign-off flow. `block-task` now refuses a `page-write` task of an auto-sign-off sprint that has no preview yet and tells the agent to make previews. `reclaimPersonHandOffs` (5-minute job) takes back a hand-off made before the rule (closes the Needs you line, returns the task to the agent, wakes it), once per task.
+
 ## 0.26.12: the idle-task nudge also covers issues left in progress
 Found on Hunt and Gun (2026-10-05): the category task's issue (PAR-620) had been `in_progress` with the agent since 3 October and no run had touched it, so seven rejected pages waited on nobody. `nudgeIdleAgentTasks` now covers issues in `in_progress` as well as `todo` (still only without a queued or running run, 25 minutes apart, at most 4 wakes).
 

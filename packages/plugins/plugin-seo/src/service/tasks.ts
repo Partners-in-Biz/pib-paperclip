@@ -41,9 +41,10 @@ import {
 } from "./common.js";
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { isAutoSignoff } from "./client-signoff.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
-import { addNeedsYou } from "./needs-you.js";
+import { addNeedsYou, closeNeedsYouItems } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
@@ -458,6 +459,12 @@ export async function blockTask(env: Env, companyId: string, actor: Actor, param
   const reason = reqStr(params, "reason", { max: 4000 });
   const humanAsk = reqStr(params, "humanAsk", { max: 4000 });
   const review = bool(params, "review") ?? false;
+  // Automatic client sign-off: a page's copy goes to the client as a preview, never as a change set for a person to apply by hand.
+  if (isAutoSignoff(sprint) && task.taskType === "page-write" && !(await taskHasPreview(env, companyId, task.id))) {
+    throw new SeoError(
+      "This sprint's client sign-off is automatic: do not hand this page's change to a person. Make a preview of each page with partnersinbiz.seo:create-preview (taskId " + task.id + "), then end your turn: the plugin parks the task on the client, drafts the approval email and wakes you with what to apply. If you truly cannot make a preview (for example the page is not reachable), say why in a comment and ask through the Cockpit, not with block-task.",
+    );
+  }
   const links = strList(params, "links", { max: 20, itemMax: 1000 });
   const status: TaskStatus = review ? "in_progress" : "blocked";
   const handoff = { reason, humanAsk, review, links, by: actorId(actor), at: new Date().toISOString() };
@@ -868,4 +875,48 @@ export async function reissueTask(env: Env, companyId: string, taskId: string, o
   });
   const opened = await materialiseDueTasks(env, { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId }, { onlyTaskIds: [task.id] });
   return opened.created > 0;
+}
+
+
+/** Whether any client preview has been made for the task. */
+export async function taskHasPreview(env: Env, companyId: string, taskId: string): Promise<boolean> {
+  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 LIMIT 1`, [companyId, taskId]);
+  return rows.length > 0;
+}
+
+/**
+ * A page-writing task of a sprint on automatic client sign-off that an agent handed to a person ("apply this change set in wp-admin")
+ * before this was refused: the Needs you line is closed and the task goes back to the agent, told to make previews. Found on Agri Auctions SA
+ * (2026-10-05). Once per task. Runs from the 5-minute job; returns how many tasks it took back.
+ */
+export async function reclaimPersonHandOffs(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND s.client_signoff = 'auto' AND t.task_type = 'page-write' AND t.status = 'blocked' AND t.issue_id IS NOT NULL
+        AND t.human_ask IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
+  );
+  let taken = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    try {
+      const evidence = typeof row.evidence === "string" ? (JSON.parse(String(row.evidence)) as Record<string, any>) : ((row.evidence ?? {}) as Record<string, any>);
+      if (evidence.reclaimedHandOff) continue;
+      const task = await db.getTask(env.ctx.db, companyId, String(row.id));
+      if (!task || !task.issueId || !isAutoSignoff(await requireSprintOrNull(env, companyId, task.sprintId))) continue;
+      const { sprint, info } = await loadSprintContext(env, companyId, task.sprintId);
+      await closeNeedsYouItems(env, info, sprint, [`task:${task.id}`], "plugin", "Taken back: on this sprint a page's change goes to the client as a preview, not to a person.").catch(() => 0);
+      if (!(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) continue;
+      await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null, human_ask: null, evidence: { ...(task.evidence ?? {}), reclaimedHandOff: true } });
+      await commentOn(env, companyId, task.issueId, `Client sign-off is automatic on this sprint, so this page's change is not handed to a person. The Needs you line was closed. Make a preview of each page with partnersinbiz.seo:create-preview (taskId ${task.id}) and end your turn: the plugin parks the task on the client, drafts the approval email and wakes you when they answer.`);
+      await wakeIssue(env.ctx, task.issueId, companyId, "Make previews instead of a hand-off");
+      taken += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO person hand-off not taken back", { taskId: String(row.id), error: errorMessage(error) });
+    }
+  }
+  return taken;
+}
+
+async function requireSprintOrNull(env: Env, companyId: string, sprintId: string): Promise<db.Sprint> {
+  return (await db.getSprint(env.ctx.db, companyId, sprintId)) as db.Sprint;
 }
