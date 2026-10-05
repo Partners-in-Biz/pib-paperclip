@@ -30,9 +30,9 @@ import { liftWriteLock } from "./signoff.js";
 
 /** How long the client's approval keeps the sign-off lock open for the agent to apply it. */
 export const AUTO_APPLY_HOURS = 6;
-/** A batch of passed previews becomes one email once nothing new has passed for this long, or its oldest has waited the maximum. */
-export const DRAFT_QUIET_MINUTES = 30;
-export const DRAFT_MAX_WAIT_HOURS = 4;
+/** The previews of tasks that are parked on the client become one email once nothing new has been parked for this long, or the oldest has waited the maximum. */
+export const DRAFT_QUIET_MINUTES = 10;
+export const DRAFT_MAX_WAIT_HOURS = 1;
 export const DRAFT_KIND = "seo-approval";
 const PREVIEW_OPEN_DAYS = 30;
 
@@ -118,14 +118,16 @@ export function draftKeyFor(sprintId: string, previewIds: string[]): string {
   return `seo-approval:${sprintId}:${createHash("sha1").update([...previewIds].sort().join(",")).digest("hex").slice(0, 16)}`;
 }
 
-/** Passed, unanswered, not yet in a draft: the newest preview of each page. */
+/** Passed, unanswered, not yet in a draft, and its task is parked on the client (every preview of the task has been looked at): the newest preview of each page. */
 async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date }>> {
   const rows = await env.ctx.db.query(
     `SELECT id, page_url, title, reviewed_at FROM (
-        SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, status, review_status, draft_key, expires_at
+        SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, status, review_status, draft_key, expires_at, task_id
           FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY page_url, created_at DESC
       ) latest
-      WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NULL AND expires_at > now() ORDER BY reviewed_at`,
+      WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NULL AND expires_at > now()
+        AND (task_id IS NULL OR task_id IN (SELECT id FROM ${t("sprint_tasks")} WHERE company_id = $1 AND assignee_kind = 'client'))
+      ORDER BY reviewed_at`,
     [sprint.companyId, sprint.id],
   );
   return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)) }));

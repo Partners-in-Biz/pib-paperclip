@@ -97,7 +97,7 @@ describe("the approval email draft", () => {
   ];
 
   it("waits for a batch to settle, then asks the Mailbox for ONE draft with every page", async () => {
-    const recent = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a", { reviewed_at: "2026-10-03T07:50:00Z" })]) });
+    const recent = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a", { reviewed_at: "2026-10-03T07:55:00Z" })]) });
     expect(await draftApprovalRequests(recent.env)).toBe(0);
     expect(emitted(recent)).toEqual([]);
 
