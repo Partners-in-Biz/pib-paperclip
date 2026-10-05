@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.7: a page cannot fall between tasks
+Found on Agri Studies (2026-10-05, ten product pages in one task): (1) pages the Reviewer sent back were forgotten while the task was parked on the client for the pages that passed: `reviveOrphanedChanges` (5-minute job) takes the task back to the SEO agent, with the pages and the Reviewer's reasons, when a page's newest preview was sent back 30+ minutes ago and nobody (no open developer fix of that page, not the agent) is on it; at most 3 times per page. (2) A developer's corrected preview made without a `taskId` detached from the task: `create-preview` now inherits the task of the page's earlier preview.
+
 ## 0.26.6: stalled reviews are nudged
 Found on Agri Studies (2026-10-05): a plugin worker reload (a src-only deploy) took `review-preview` out of the Reviewer's tool list mid-run; it handed the review issue to another agent that lacked the tool too, and the preview waited an hour. `nudgeStalledReviews` (5-minute job) reopens the review issue for the Reviewer and wakes it again for a preview without a verdict after 30 minutes, up to 3 tries 30 minutes apart, then asks the owner once.
 

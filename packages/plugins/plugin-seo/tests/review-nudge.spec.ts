@@ -3,9 +3,9 @@
  * while the SEO plugin reloaded, handed the issue to another agent that also lacked them, and nothing ever retried).
  */
 import { describe, expect, it } from "vitest";
-import { nudgeStalledReviews, REVIEW_MAX_NUDGES } from "../src/service/preview.js";
+import { nudgeStalledReviews, reviveOrphanedChanges, REVIEW_MAX_NUDGES } from "../src/service/preview.js";
 import { sprintFor, world } from "./helpers/rehearsal-world.js";
-import { executed, type Route, type Row } from "./helpers/seo-host.js";
+import { executed, taskRow, type Route, type Row } from "./helpers/seo-host.js";
 
 const row = (extra: Row = {}): Row => ({ id: "p1", company_id: "co-1", sprint_id: "sp-real", task_id: "t1", page_url: "https://agristudies.co.za/product/farm/", title: "Farm machinery", review_issue_id: "rev-1", stats: {}, ...extra });
 const routes = (rows: Row[]): Route[] => [[/FROM plugin_seo_8099f8879a\.previews\s+WHERE review_status = 'pending' AND review_issue_id IS NOT NULL/, () => rows]];
@@ -35,5 +35,51 @@ describe("stalled reviews", () => {
     const w = world({ sprints: [sprintFor("real", { root_issue_id: "root-1", status: "paused" })], routes: routes([row()]) });
     expect(await nudgeStalledReviews(w.env)).toBe(0);
     expect(w.wakeups).toEqual([]);
+  });
+});
+
+describe("pages the Reviewer sent back with nobody on them", () => {
+  const changed = (extra: Row = {}): Row => ({ id: "p9", company_id: "co-1", sprint_id: "sp-real", task_id: "t1", page_url: "https://agristudies.co.za/product/animal-health/", review_note: "Remove the unapproved claim.", stats: {}, ...extra });
+  const orphanRoutes = (rows: Row[]): Route[] => [[/FROM \(\s*SELECT DISTINCT ON \(sprint_id, page_url\)/, () => rows]];
+  const parked = (extra: Row = {}) => taskRow({ id: "t1", sprint_id: "sp-real", template_key: "w3-products", week: 3, status: "blocked", issue_id: "iss-1", assignee_kind: "client", due_day: 6, ...extra });
+
+  it("takes a parked task back to the agent, lists the pages with the Reviewer's reasons and wakes the agent once", async () => {
+    const w = world({ sprints: [sprint()], tasks: [parked()], routes: orphanRoutes([changed(), changed({ id: "p10", page_url: "https://agristudies.co.za/product/national-cert/", review_note: "Two H1s." })]) });
+    expect(await reviveOrphanedChanges(w.env)).toBe(1);
+    expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent", blocker_reason: null });
+    expect(w.wakeups).toEqual(["iss-1"]);
+    const body = w.comments.find((c) => c.id === "iss-1")!.body;
+    expect(body).toContain("animal-health");
+    expect(body).toContain("Two H1s.");
+    expect(body).toMatch(/pages that already passed stay as they are/);
+    expect(executed(w, /SET stats = stats \|\| \$2::jsonb/)).toHaveLength(2);
+  });
+
+  it("leaves a page alone when the agent has the task, a developer fix of that page is open, or it was tried three times", async () => {
+    const withAgent = world({ sprints: [sprint()], tasks: [parked({ status: "in_progress", assignee_kind: "agent" })], routes: orphanRoutes([changed()]) });
+    expect(await reviveOrphanedChanges(withAgent.env)).toBe(0);
+    const fix = { builds: [{ issueId: "fix-9", agentId: "dev-1", at: "x", kind: "preview-fix", level: "developer", pageUrl: "https://agristudies.co.za/product/animal-health/" }] };
+    const fixing = world({ sprints: [sprint()], tasks: [parked({ evidence: fix })], routes: orphanRoutes([changed()]) });
+    expect(await reviveOrphanedChanges(fixing.env)).toBe(0);
+    const tired = world({ sprints: [sprint()], tasks: [parked()], routes: orphanRoutes([changed({ stats: { revivals: 3, revivedAt: "2026-10-01T00:00:00Z" } })]) });
+    expect(await reviveOrphanedChanges(tired.env)).toBe(0);
+    expect(tired.wakeups).toEqual([]);
+  });
+});
+
+describe("a corrected preview made without a taskId", () => {
+  it("belongs to the task the page's earlier preview belonged to (a developer's fix would otherwise detach from the task)", async () => {
+    const { createPreview } = await import("../src/service/preview.js");
+    const live = `<html><head><title>Old</title></head><body><h1>Old</h1><main><div class="entry-content">${"<p>course words here </p>".repeat(40)}</div></main></body></html>`;
+    const w = world({
+      sprints: [sprint()],
+      tasks: [taskRow({ id: "t1", sprint_id: "sp-real", template_key: "w3-products", week: 3, status: "in_progress", issue_id: "iss-1", assignee_kind: "agent", due_day: 6 })],
+      routes: [[/SELECT task_id FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND sprint_id = \$2 AND page_url = \$3 AND task_id IS NOT NULL/, () => [{ task_id: "t1" }]]],
+    });
+    (w.env as unknown as { site: unknown }).site = async (url: string) => ({ status: 200, url, redirects: [], headers: {}, text: live, ms: 1 });
+    await createPreview(w.env, "co-1", { kind: "agent", agentId: "dev-1", runId: "r", responsibleUserId: null }, { sprintId: "sp-real", pageUrl: "https://agristudies.co.za/product/beekeeping-course/", h1: "Beekeeping", bodyHtml: "<p>Learn how to keep bees through the seasons.</p>" });
+    const insert = executed(w, /INSERT INTO plugin_seo_8099f8879a\.previews/)[0]!;
+    expect(insert.params[3]).toBe("t1");
+    expect(insert.params[4]).toBe("iss-1");
   });
 });

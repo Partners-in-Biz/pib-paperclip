@@ -49,7 +49,7 @@ import {
 } from "./service/agent.js";
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
-import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows } from "./service/preview.js";
+import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, reviveOrphanedChanges } from "./service/preview.js";
 import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
@@ -108,6 +108,7 @@ const plugin = definePlugin({
         for (const companyId of companies) await openIdleGroups(e, companyId).catch(() => 0);
       }).catch((error) => ctx.logger.info("SEO idle page groups not advanced", { error: errorMessage(error) }));
       await nudgeStalledReviews(e).catch((error) => ctx.logger.info("SEO stalled reviews not nudged", { error: errorMessage(error) }));
+      await reviveOrphanedChanges(e).catch((error) => ctx.logger.info("SEO orphaned changes not handed back", { error: errorMessage(error) }));
       await handStuckPreviewsToSenior(e).catch((error) => ctx.logger.info("SEO stuck previews not handed over", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });

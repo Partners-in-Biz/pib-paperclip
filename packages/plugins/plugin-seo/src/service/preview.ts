@@ -52,7 +52,12 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   };
   const allowReplace = bool(params, "allowReplace") ?? false;
   if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css) throw new SeoError("Send at least one proposed change: title, metaDescription, h1 or bodyHtml.");
-  const taskId = str(params, "taskId", { max: 80 });
+  let taskId = str(params, "taskId", { max: 80 });
+  // A corrected preview made without a taskId (a developer's fix) belongs to the task the page's earlier preview belonged to.
+  if (!taskId) {
+    const earlier = await env.ctx.db.query(`SELECT task_id FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND page_url = $3 AND task_id IS NOT NULL ORDER BY created_at DESC LIMIT 1`, [companyId, sprintId, pageUrl]);
+    if (earlier[0]?.task_id) taskId = String(earlier[0].task_id);
+  }
   const task = taskId ? await db.getTask(env.ctx.db, companyId, taskId) : null;
   if (taskId && (!task || task.sprintId !== sprintId)) throw new SeoError("No such task on this sprint.");
   const redesign = task?.taskType === "redesign";
@@ -674,4 +679,80 @@ export async function nudgeStalledReviews(env: Env): Promise<number> {
     }
   }
   return nudged;
+}
+
+/** A page the Reviewer sent back with nobody working on it this long is handed back to the SEO agent. */
+export const CHANGES_ORPHAN_MINUTES = 30;
+export const CHANGES_MAX_REVIVALS = 3;
+
+/**
+ * Pages whose newest preview the Reviewer sent back (changes needed) and that nobody is working on: no developer fix open for the
+ * page, and the task is parked (on the Reviewer or the client) instead of with the agent. The task goes back to the SEO agent with
+ * the list of pages and the Reviewer's reasons, and the agent is woken once per task. A task covering many pages is parked on the
+ * client for the pages that passed while other pages were sent back: this is what keeps those pages from being forgotten.
+ * Runs from the 5-minute job; returns how many tasks it handed back.
+ */
+export async function reviveOrphanedChanges(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, company_id, sprint_id, task_id, page_url, review_note, stats FROM (
+        SELECT DISTINCT ON (sprint_id, page_url) id, company_id, sprint_id, task_id, page_url, review_note, review_status, status, reviewed_at, expires_at, stats
+          FROM ${t("previews")} ORDER BY sprint_id, page_url, created_at DESC
+      ) latest
+      WHERE review_status = 'changes_needed' AND status = 'pending' AND task_id IS NOT NULL AND expires_at > now()
+        AND reviewed_at < now() - ($1::int * interval '1 minute') ORDER BY reviewed_at LIMIT 40`,
+    [CHANGES_ORPHAN_MINUTES],
+  );
+  const byTask = new Map<string, Array<Record<string, any>>>();
+  for (const r of rows) {
+    const list = byTask.get(String(r.task_id)) ?? [];
+    list.push(r);
+    byTask.set(String(r.task_id), list);
+  }
+  let handed = 0;
+  for (const [taskId, previews] of byTask) {
+    const first = previews[0]!;
+    const companyId = String(first.company_id);
+    try {
+      const task = await db.getTask(env.ctx.db, companyId, taskId);
+      if (!task || !task.issueId || (task.status !== "blocked" && task.status !== "in_progress" && task.status !== "not_started")) continue;
+      const sprint = await db.getSprint(env.ctx.db, companyId, task.sprintId);
+      if (!sprint || sprint.status !== "active" || isRehearsalSprint(sprint)) continue;
+      // The agent already has the task, or a developer is on one of its fixes (the fix issue is still open).
+      if (task.status === "in_progress" && task.assigneeKind === "agent") continue;
+      const open: string[] = [];
+      for (const p of previews) {
+        const stats = typeof p.stats === "string" ? (JSON.parse(String(p.stats)) as Record<string, any>) : ((p.stats ?? {}) as Record<string, any>);
+        const revivals = Number(stats.revivals ?? 0);
+        const last = stats.revivedAt ? new Date(String(stats.revivedAt)).getTime() : 0;
+        if (revivals >= CHANGES_MAX_REVIVALS || env.now().getTime() - last < CHANGES_ORPHAN_MINUTES * 60_000) continue;
+        const fixes = (typeof task.evidence === "object" && task.evidence ? ((task.evidence as { builds?: Array<{ issueId: string; pageUrl?: string; kind?: string }> }).builds ?? []) : []).filter((b) => b.kind === "preview-fix" && b.pageUrl === String(p.page_url));
+        let fixOpen = false;
+        for (const f of fixes) {
+          const issue = await getIssue(env, companyId, f.issueId);
+          if (issue && !["done", "cancelled"].includes(String(issue.status))) fixOpen = true;
+        }
+        if (!fixOpen) open.push(String(p.id));
+      }
+      if (open.length === 0) continue;
+      const chosen = previews.filter((p) => open.includes(String(p.id)));
+      if (task.status === "blocked" && !(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) continue;
+      await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+      const lines = chosen.map((p) => `- ${String(p.page_url)}: ${String(p.review_note ?? "see the Reviewer's note on the preview (list-previews)").replace(/\s+/g, " ").slice(0, 280)}`);
+      await commentOn(
+        env,
+        companyId,
+        task.issueId,
+        `The Reviewer sent ${chosen.length === 1 ? "this page" : "these pages"} back and nobody has revised ${chosen.length === 1 ? "it" : "them"} (${CHANGES_ORPHAN_MINUTES}+ minutes). Revise ${chosen.length === 1 ? "it" : "each"} and make a new preview (the Reviewer checks it; the pages that already passed stay as they are):\n${lines.join("\n")}\nUse partnersinbiz.seo:get-client-facts and propose-client-facts for any claim; keep the client's own wording.`,
+        { dedupeKey: `revive:${task.id}:${commentFingerprint(lines.join("|"))}` },
+      );
+      await wakeIssue(env.ctx, task.issueId, companyId, "Pages the Reviewer sent back need revising");
+      for (const p of chosen) {
+        await env.ctx.db.execute(`UPDATE ${t("previews")} SET stats = stats || $2::jsonb WHERE id = $1`, [String(p.id), JSON.stringify({ revivals: Number((typeof p.stats === "string" ? JSON.parse(String(p.stats)) : p.stats ?? {}).revivals ?? 0) + 1, revivedAt: env.now().toISOString() })]);
+      }
+      handed += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO orphaned changes not handed back", { taskId, error: errorMessage(error) });
+    }
+  }
+  return handed;
 }
