@@ -95,6 +95,15 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.25.0: pacing (automatic or manual, per sprint)
+A sprint is on **automatic** pacing (every sprint until now): plan tasks open by the calendar. On **manual** pacing nothing from the plan opens until a person presses **Start** on a week (or **Start now** on one task); then that week's tasks open one after another in plan order, within the usual cap of 8 in flight.
+- *Switch:* sprint menu → "Switch to manual pacing" / "Switch to automatic pacing" (page-only action `set-pacing`, a signed-in person only; there is no agent tool). `create-sprint` takes `pacing: "manual"` so a sprint can start held (nothing opens at creation). Switching to manual releases the not-started template tasks of weeks that already have an issue open, so a week under way finishes; every other week waits. Switching back to automatic: the calendar decides again, so a backlog of past-due tasks opens through the cap.
+- *What a held task is:* `SprintTask.held`, derived in the SELECT (`TASK_SELECT` in db.ts): not started, `source = 'template'`, no `released_at`, no issue, on a sprint whose `pacing = 'manual'`. It is never due, late, overdue or "agent work" (`engine/due.ts`, `selectDueTasks`), so the numbers, the next-step line and the badge do not count it as late. Tasks that come from an approved proposal, a person's own added task or a redesign are not template tasks and open as before.
+- *Still runs on manual:* the daily run's housekeeping (Search Console, PageSpeed, Bing, audit snapshots, measurements, healing, the sprint's root issue and Needs you), the weekly detectors and proposals (and the approval issue), and tasks created by approving a proposal.
+- *Who may start a week:* a person only. `start-tasks-now` is refused for an agent on a manual sprint, even in full autopilot.
+- *Calendar:* the day/week/phase clock and the day-30/60/90 audit snapshots still follow the start date; manual pacing moves the work, not the clock. Move the start date (`update-sprint`) if you want the audits to follow the work.
+- *Migration 022:* `sprints.pacing` (default `auto`, so nothing changes for a running sprint) and `sprint_tasks.released_at`.
+
 ## 0.23.2: a rehearsal opens no work
 
 Why: the Acceptance agent's first live runs. Its `seo-sprint-draft` journey calls `create-sprint` for the fixture site `https://canary.invalid` on the canary client and then `archive-sprint`. Live, one run opened the root issue "SEO sprint: PiB Canary Co" and nine "SEO W0" task issues assigned to the owner, and archiving left them open: ten tasks in the owner's queue per run. A rehearsal on a fake client must never create work for a person or an agent.

@@ -7,11 +7,14 @@ import { daysBetween } from "./time.js";
 
 export type SprintStatus = "pre_launch" | "active" | "compounding" | "paused" | "archived";
 export type AutopilotMode = "off" | "safe" | "full";
+/** auto: template tasks open by the calendar. manual: they open only when a person starts their week or the task. */
+export type Pacing = "auto" | "manual";
 export type TaskStatus = "not_started" | "in_progress" | "blocked" | "done" | "skipped" | "na";
 export type TaskSource = "template" | "manual" | "optimization";
 
 export const SPRINT_STATUSES: SprintStatus[] = ["pre_launch", "active", "compounding", "paused", "archived"];
 export const AUTOPILOT_MODES: AutopilotMode[] = ["off", "safe", "full"];
+export const PACINGS: Pacing[] = ["auto", "manual"];
 export const TASK_STATUSES: TaskStatus[] = ["not_started", "in_progress", "blocked", "done", "skipped", "na"];
 export const OPEN_TASK_STATUSES: TaskStatus[] = ["not_started", "in_progress", "blocked"];
 export const TERMINAL_TASK_STATUSES: TaskStatus[] = ["done", "skipped", "na"];
@@ -57,6 +60,8 @@ export interface DueCandidate {
   issueId: string | null;
   /** Sprint day the task is due; null = due immediately. */
   dueDay: number | null;
+  /** A template task of a manual-pacing sprint nobody has started: not due, whatever its day. */
+  held?: boolean;
 }
 
 export function isDue(task: Pick<DueCandidate, "dueDay">, day: number): boolean {
@@ -65,7 +70,7 @@ export function isDue(task: Pick<DueCandidate, "dueDay">, day: number): boolean 
 
 /** Tasks that should get a Paperclip issue now. */
 export function selectDueTasks<T extends DueCandidate>(tasks: T[], day: number): T[] {
-  return tasks.filter((task) => task.status === "not_started" && !task.issueId && isDue(task, day));
+  return tasks.filter((task) => task.status === "not_started" && !task.issueId && !task.held && isDue(task, day));
 }
 
 /**

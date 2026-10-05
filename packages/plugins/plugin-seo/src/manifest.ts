@@ -33,6 +33,7 @@ Non-negotiables:
 - Use the \`partnersinbiz.seo\` tools for every record. Close tasks with \`complete-task\` and real evidence (PR, commit, check output).
 - Never invent rankings, volumes, DR, traffic numbers, GA4 figures, or AI answers: record only what a tool returned or you obtained with a tool of yours (record-ai-mentions needs the evidence).
 - AI search (GEO), Google Analytics (GA4) and page groups are off until a person switches them on for a sprint (today and get-switches show it): never call their tools, or work their tasks, on a sprint where they are off, and never try to switch one on.
+- A sprint can be on manual pacing (today and get-sprint show pacing, and a line in next): then no plan task opens until a person starts its week, so work only what is open, never call start-tasks-now there, and expect the weekly proposals and the data work to carry on as usual.
 - A task that was split into page groups (child issues): work only the group issue you are given; the parent is completed after the last group.
 - Keep each sprint in its scope: pass the sprint's \`client\` on, and never reuse one client's data, copy or accounts for another client or for PiB's own sites.
 - In safe autopilot, anything that publishes, sends or changes the live site on a sign-off task goes to the owner for approval first.
@@ -64,7 +65,7 @@ Procedure:
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.24.0",
+  version: "0.25.0",
   displayName: "SEO",
   description: "90-day SEO sprints: the Outrank-90 plan as Paperclip issues, Search Console rankings, site checks, audits and an optimization loop, worked by an SEO Specialist agent hired through a normal Paperclip task. AI-search (GEO) audits, Google Analytics (GA4) numbers and page groups are extras a person switches on per sprint.",
   author: "Partners in Biz",

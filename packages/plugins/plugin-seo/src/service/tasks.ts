@@ -344,6 +344,8 @@ function taskView(task: db.SprintTask) {
     blockerReason: task.blockerReason,
     humanAsk: task.humanAsk,
     dueDay: task.dueDay,
+    /** On a manual-pacing sprint: not started and waiting for a person to start its week. Do not open or work it. */
+    ...(task.held ? { held: true } : {}),
     completedAt: task.completedAt,
   };
 }
@@ -359,7 +361,7 @@ export async function listTasksTool(env: Env, companyId: string, params: Params)
   });
   const { clock } = await loadSprintContext(env, companyId, sprintId);
   const dueOnly = bool(params, "dueOnly") ?? false;
-  const list = dueOnly ? tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day) : tasks;
+  const list = dueOnly ? tasks.filter((t) => !t.held && (t.dueDay == null || t.dueDay <= clock.day)) : tasks;
   return { sprintId, day: clock.day, week: clock.week, count: list.length, tasks: list.map(taskView) };
 }
 
@@ -621,7 +623,7 @@ export async function openNextQueuedTask(env: Env, companyId: string, finished: 
     // Work an agent holds counts; a task waiting on a person (blocked, sign-off, Needs you) does not hold the queue.
     const inFlight = tasks.some((t) => t.id !== finished.id && t.issueId && (t.status === "not_started" || t.status === "in_progress") && (!t.assigneeKind || t.assigneeKind === "agent" || t.assigneeKind === "unassigned"));
     if (inFlight) return null;
-    const next = inPlanOrder(tasks).find((t) => t.status === "not_started" && !t.issueId && t.dueDay != null && t.dueDay <= ctx.clock.day);
+    const next = inPlanOrder(tasks).find((t) => t.status === "not_started" && !t.issueId && !t.held && t.dueDay != null && t.dueDay <= ctx.clock.day);
     if (!next) return null;
     const result = await materialiseDueTasks(
       env,
@@ -668,6 +670,10 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
   if (taskId && week != null) throw new SeoError("Send taskId or week, not both.");
   const ctx = await loadSprintContext(env, companyId, sprintId);
   assertWritable(ctx.sprint);
+  const manual = ctx.sprint.pacing === "manual";
+  if (actor.kind === "agent" && manual) {
+    throw new SeoError("This sprint is on manual pacing: only a person starts its weeks. Ask the owner to press Start on the week on the SEO page.");
+  }
   if (actor.kind === "agent" && ctx.sprint.autopilotMode !== "full") {
     throw new SeoError("Only a person can start tasks early unless the sprint's autopilot is full. The plan follows its dates; ask the owner to press Start now on the SEO page.");
   }
@@ -676,7 +682,8 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
   if (!ctx.sprint.rootIssueId) throw new SeoError("The sprint has no root issue yet, so task issues cannot be opened.");
   const today = ctx.clock.day;
   const open = await db.listTasks(env.ctx.db, companyId, sprintId, { status: ["not_started"] });
-  const isUpcoming = (t: db.SprintTask) => t.dueDay != null && t.dueDay > today;
+  // On a manual sprint a held task is startable whatever its day: its week has not been started, so it is waiting, not upcoming.
+  const isUpcoming = (t: db.SprintTask) => t.held || (t.dueDay != null && t.dueDay > today);
   const wanted = taskId ? open.filter((t) => t.id === taskId) : open.filter((t) => t.week === week);
   if (taskId && wanted.length === 0) {
     const task = await db.getTask(env.ctx.db, companyId, taskId);
@@ -690,7 +697,8 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
     return { sprintId, started: 0, tasks: [], alreadyDue, note: alreadyDue > 0 ? "Those tasks are already due; the daily run or the agent has them." : "Nothing upcoming to start." };
   }
   const dueDay = today <= 0 ? null : today;
-  for (const task of picked) await db.updateTask(env.ctx.db, companyId, task.id, { due_day: dueDay });
+  const releasedAt = new Date().toISOString();
+  for (const task of picked) await db.updateTask(env.ctx.db, companyId, task.id, { due_day: dueDay, ...(manual ? { released_at: releasedAt } : {}) });
   const materialised = await materialiseDueTasks(
     env,
     { info: ctx.info, sprint: ctx.sprint, day: today, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId },

@@ -144,6 +144,8 @@ export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "set-client-facts": (env, c, a, p) => facts.setClientFacts(env, c, a, p),
   // A signed-in person turns an extra on or off (the handler checks the actor itself and records who).
   "set-switch": (env, c, a, p) => switches.setSwitchTool(env, c, a, p),
+  // A signed-in person chooses automatic or manual pacing for a sprint (the handler checks the actor itself).
+  "set-pacing": (env, c, a, p) => sprints.setPacing(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {

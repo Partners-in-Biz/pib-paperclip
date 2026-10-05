@@ -12,7 +12,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { NAMESPACE } from "./namespace.js";
-import type { AutopilotMode, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
+import type { AutopilotMode, Pacing, SprintStatus, TaskSource, TaskStatus } from "./engine/sprint.js";
 import type { TaskOwner } from "./templates/outrank-90.js";
 import { CHANGE_POLICIES, SITE_ACCESS, type ChangePolicy, type SiteAccess } from "./engine/site-change.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
@@ -204,6 +204,8 @@ export interface Sprint {
   geoEnabled: boolean;
   ga4Enabled: boolean;
   chunksEnabled: boolean;
+  /** auto: template tasks open by the calendar. manual: they open only when a person starts their week (engine/sprint.ts). */
+  pacing: Pacing;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -212,7 +214,7 @@ const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, c
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
   last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, client_project_id, site_access, site_id, repo_url, default_branch, framework,
-  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, created_at, updated_at`;
+  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, pacing, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
   return {
@@ -258,6 +260,7 @@ function sprintFrom(row: Row): Sprint {
     geoEnabled: flag(row.geo_enabled),
     ga4Enabled: flag(row.ga4_enabled),
     chunksEnabled: flag(row.chunks_enabled),
+    pacing: String(row.pacing) === "manual" ? "manual" : "auto",
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -282,6 +285,7 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   template_id: "text",
   template_version: "int",
   autopilot_mode: "text",
+  pacing: "text",
   owner_user_id: "text",
   project_id: "text",
   root_issue_id: "text",
@@ -454,13 +458,19 @@ export interface SprintTask {
   startedAt: string | null;
   completedAt: string | null;
   completedBy: string | null;
+  /** When a person started the task's week (or the task) on a manual-pacing sprint; null until then. */
+  releasedAt: string | null;
+  /** Derived: a template task of a manual-pacing sprint that nobody has started yet. It is not due, whatever its day. */
+  held: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 }
 
 const TASK_SELECT = `id, company_id, sprint_id, template_key, week, phase, due_day, focus, title, description, task_type, owner,
   autopilot_eligible, playbook_key, status, source, parent_optimization_id, context, issue_id, issue_identifier, issue_status,
-  assignee_kind, blocker_reason, human_ask, evidence, started_at, completed_at, completed_by, created_at, updated_at, issue_project_id`;
+  assignee_kind, blocker_reason, human_ask, evidence, started_at, completed_at, completed_by, created_at, updated_at, issue_project_id, released_at,
+  (status = 'not_started' AND source = 'template' AND released_at IS NULL AND issue_id IS NULL
+    AND EXISTS (SELECT 1 FROM ${t("sprints")} sp WHERE sp.id = ${t("sprint_tasks")}.sprint_id AND sp.pacing = 'manual')) AS held`;
 
 function taskFrom(row: Row): SprintTask {
   return {
@@ -493,6 +503,8 @@ function taskFrom(row: Row): SprintTask {
     startedAt: iso(row.started_at),
     completedAt: iso(row.completed_at),
     completedBy: s(row.completed_by),
+    releasedAt: iso(row.released_at),
+    held: flag(row.held),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -522,6 +534,7 @@ const TASK_COLUMNS: Record<string, ColumnKind> = {
   started_at: "ts",
   completed_at: "ts",
   completed_by: "text",
+  released_at: "ts",
   updated_at: "ts",
 };
 
@@ -617,6 +630,20 @@ export async function listTasks(
     params,
   );
   return rows.map(taskFrom);
+}
+
+/**
+ * Switching a sprint to manual pacing: template tasks that have not started, in weeks that already have an issue open, are
+ * released so the week under way finishes. Returns how many tasks it released.
+ */
+export async function releaseOpenWeeks(db: SeoDb, companyId: string, sprintId: string): Promise<number> {
+  const result = await db.execute(
+    `UPDATE ${t("sprint_tasks")} q SET released_at = now(), updated_at = now()
+      WHERE q.company_id = $1 AND q.sprint_id = $2 AND q.status = 'not_started' AND q.source = 'template' AND q.released_at IS NULL AND q.issue_id IS NULL
+        AND EXISTS (SELECT 1 FROM ${t("sprint_tasks")} o WHERE o.sprint_id = q.sprint_id AND o.week = q.week AND o.issue_id IS NOT NULL)`,
+    [companyId, sprintId],
+  );
+  return result.rowCount;
 }
 
 export async function getTask(db: SeoDb, companyId: string, id: string): Promise<SprintTask | null> {

@@ -96,6 +96,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       startDate: text("Day 0 (launch day), YYYY-MM-DD; default today"),
       ownerUserId: text("User who owns the sprint and receives human tasks; default: the person responsible for this run. 'none' for no owner"),
       autopilotMode: choice(["off", "safe"], "Agents may create sprints in off or safe mode only"),
+      pacing: choice(["auto", "manual"], "auto (default): plan tasks open by the calendar. manual: nothing opens until a person starts each week on the SEO page; use it only when the owner asked for it"),
       notes: text("Site access and constraints for the agent (repo, CMS, who deploys)"),
     }),
   },
@@ -254,7 +255,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "start-tasks-now",
     displayName: "Start tasks early",
     description:
-      "Pull upcoming plan tasks forward: send taskId (one task) or week (every task of that week that has not started) and they become due today with their issues opened, instead of waiting for their day. The plan does not move otherwise. People decide the pace (the Start now buttons on the SEO plan); an agent may only use it when the sprint's autopilot is full. Works on tasks that have not started; up to 25 per call.",
+      "Pull upcoming plan tasks forward: send taskId (one task) or week (every task of that week that has not started) and they become due today with their issues opened, instead of waiting for their day. The plan does not move otherwise. People decide the pace (the Start now buttons on the SEO plan); an agent may only use it when the sprint's autopilot is full, and never on a sprint on manual pacing (get-sprint shows pacing): there only a person starts a week. Works on tasks that have not started; up to 25 per call.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       taskId: text("One task to start now (from list-tasks)."),

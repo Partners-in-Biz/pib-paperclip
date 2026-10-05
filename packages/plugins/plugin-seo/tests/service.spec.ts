@@ -118,7 +118,7 @@ describe("issue sync", () => {
     id: "t-1", companyId: "co-1", sprintId: "sp-1", templateKey: null, week: 1, phase: 1, dueDay: 1, focus: "", title: "t", description: null,
     taskType: "custom", owner: "agent", autopilotEligible: true, playbookKey: null, status: "not_started", source: "template",
     parentOptimizationId: null, context: null, issueId: "iss-1", issueIdentifier: null, issueStatus: "todo", assigneeKind: "agent",
-    blockerReason: null, humanAsk: null, evidence: null, startedAt: null, completedAt: null, completedBy: null, createdAt: null, updatedAt: null, ...extra,
+    blockerReason: null, humanAsk: null, evidence: null, startedAt: null, completedAt: null, completedBy: null, releasedAt: null, held: false, createdAt: null, updatedAt: null, ...extra,
   });
 
   it("marks the task done when a person closes the issue (idempotently)", async () => {

@@ -10,6 +10,7 @@ import { announcementLine } from "./handoff.js";
 import { digestComment, rootIssueDescription, rootIssueTitle } from "../engine/copy.js";
 import {
   AUTOPILOT_MODES,
+  PACINGS,
   isRunning,
   nextSprintStatus,
   OPEN_TASK_STATUSES,
@@ -214,6 +215,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     notes: str(params, "notes", { max: 4000 }) ?? null,
     switches: start.switches,
   });
+  // Manual pacing is set before the plan is seeded, so none of its tasks opens on the calendar: a person starts each week.
+  if (oneOf(params, "pacing", PACINGS) === "manual") await db.updateSprint(env.ctx.db, companyId, id, { pacing: "manual" });
   await logStartingSwitches(env, companyId, id, start, actor).catch((error: unknown) => env.ctx.logger.info("SEO switch trail not written for a new sprint", { sprintId: id, error: errorMessage(error) }));
   let sprint = await requireSprint(env, companyId, id);
   // The client's one WordPress site at this URL with a connected Connector: link it now (best effort, never fails creation).
@@ -338,6 +341,8 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     businessType: businessTypeOf(sprint.templateId),
     plan: plan.label,
     autopilotMode: sprint.autopilotMode,
+    /** auto: tasks open by the calendar. manual: a person starts each week (set-pacing). */
+    pacing: sprint.pacing,
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
@@ -419,7 +424,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const clock = clockFor(sprint, info.today);
   // Tasks whose runs stop at the workspace check are stuck, not blocked on a person (engine/due.ts).
   const tasks = await withRunFailures(env.ctx.db, sprint.companyId, await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: OPEN_TASK_STATUSES }));
-  const due = tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day);
+  const due = tasks.filter((t) => !t.held && (t.dueDay == null || t.dueDay <= clock.day));
   // A site-wide task split into page groups: the agent works the group issues, not the parent (service/chunks.ts).
   const groups = await groupViews(env, sprint.companyId, sprint.id).catch(() => new Map());
   const brief = (t: db.SprintTask) => ({
@@ -457,6 +462,10 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const rehearsal = isRehearsalSprint(sprint);
   if (rehearsal) next.push(REHEARSAL_NOTE);
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
+  if (sprint.pacing === "manual") {
+    const waiting = tasks.filter((t) => t.held).length;
+    next.push(`Manual pacing: a person starts each plan week, nothing opens by the calendar${waiting > 0 ? ` (${plural(waiting, "task")} wait for their week to be started)` : ""}. Never pull a week forward yourself; work what is open and keep the data and proposals moving.`);
+  }
   if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
     if (sa.key) {
       next.push(
@@ -555,6 +564,37 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     health: sprint.health,
     next,
   };
+}
+
+/**
+ * Pacing: a person chooses whether the plan's tasks open by the calendar (auto) or only when they press Start on a week
+ * (manual). Manual keeps everything else running: data pulls, snapshots, measurements, the weekly proposals, tasks from
+ * approved proposals and work already open. Switching to manual lets the weeks that already have an open issue finish.
+ */
+export async function setPacing(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user" || !actor.userId?.trim()) throw new SeoError("Only a signed-in person can change how a sprint is paced.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  assertWritable(sprint);
+  const pacing = oneOf(params, "pacing", PACINGS);
+  if (!pacing) throw new SeoError('Send pacing: "auto" (tasks open by the calendar) or "manual" (a person starts each week).');
+  if (pacing === sprint.pacing) return { sprintId: sprint.id, pacing, unchanged: true };
+  let released = 0;
+  if (pacing === "manual") {
+    // A week that already has an issue open keeps going; every other week waits for its Start.
+    released = await db.releaseOpenWeeks(env.ctx.db, companyId, sprint.id);
+  }
+  await db.updateSprint(env.ctx.db, companyId, sprint.id, { pacing });
+  if (sprint.rootIssueId) {
+    await commentOn(
+      env,
+      companyId,
+      sprint.rootIssueId,
+      pacing === "manual"
+        ? `Pacing set to manual by ${actorLabel(actor)}: no plan task opens until a person starts its week.${released > 0 ? ` The ${plural(released, "task")} in weeks already under way carry on.` : ""}`
+        : `Pacing set to automatic by ${actorLabel(actor)}: plan tasks open by the calendar again.`,
+    );
+  }
+  return { sprintId: sprint.id, pacing, previous: sprint.pacing, released };
 }
 
 export async function setAutopilot(env: Env, companyId: string, actor: Actor, params: Params) {
