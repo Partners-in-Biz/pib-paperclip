@@ -21,7 +21,7 @@ const TASK: Row = {
 };
 const LIVE = `<html><head><title>Old</title></head><body><h1>Old heading</h1><main><div class="entry-content">${"<p>auction lot listing word </p>".repeat(40)}</div></main></body></html>`;
 
-function host(previewRow?: Row, rounds = 0) {
+function host(previewRow?: Row, rounds = 0, evidence: Row | null = null) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ id: string; body: string }> = [];
@@ -32,7 +32,7 @@ function host(previewRow?: Row, rounds = 0) {
       namespace: NAMESPACE,
       async query(sql: string) {
         if (/FROM plugin_seo_8099f8879a\.sprints WHERE id/.test(sql)) return [SPRINT];
-        if (/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id/.test(sql)) return [TASK];
+        if (/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id/.test(sql)) return [{ ...TASK, evidence }];
         if (/count\(\*\)/.test(sql)) return [{ n: rounds }];
         if (/needs_you/.test(sql)) return [];
         if (/FROM plugin_seo_8099f8879a\.previews/.test(sql)) return previewRow ? [previewRow] : [];
@@ -117,8 +117,8 @@ describe("review-preview", () => {
 
 describe("a page that keeps failing", () => {
   const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
-  it("goes to the owner after two rounds instead of back to the agent", async () => {
-    const h = host(row, 2);
+  it("goes to the owner after two rounds once the Senior Developer has had a go, instead of back to the agent", async () => {
+    const h = host(row, 2, { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior" }] });
     const out = await reviewPreview(h.env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Claims the client's terms contradict" });
     expect(out).toMatchObject({ escalatedToOwner: true });
     expect(h.wakes).toEqual([]);

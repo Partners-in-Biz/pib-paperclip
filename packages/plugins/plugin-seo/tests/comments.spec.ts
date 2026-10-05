@@ -72,6 +72,7 @@ describe("repeat notices", () => {
 type Row = Record<string, unknown>;
 
 function host(options: { previewRow?: Row; rounds?: number; stateBroken?: boolean; refuse?: boolean } = {}) {
+  const seniorFix = { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-03T07:00:00Z", kind: "preview-fix", level: "senior" }] };
   const comments: Array<{ id: string; body: string }> = [];
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const wakes: string[] = [];
@@ -90,6 +91,7 @@ function host(options: { previewRow?: Row; rounds?: number; stateBroken?: boolea
     context: null, issue_id: "iss-1", issue_identifier: "PAR-9", issue_status: "in_progress", assignee_kind: "agent", blocker_reason: null, human_ask: null, evidence: null,
     started_at: null, completed_at: null, completed_by: null, created_at: null, updated_at: null,
   };
+  task.evidence = seniorFix;
   const ctx = {
     db: {
       namespace: NAMESPACE,

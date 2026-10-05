@@ -16,8 +16,8 @@ import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
 import { companyInfo } from "./common.js";
-import { startPreviewFix } from "./build.js";
-import { addNeedsYou, closeSignoffItems } from "./needs-you.js";
+import { seniorTried, startPreviewFix } from "./build.js";
+import { addNeedsYou, closeNeedsYouItems, closeSignoffItems } from "./needs-you.js";
 import { afterPreviewPassed, handleClientAnswer, isAutoSignoff } from "./client-signoff.js";
 import { commentOn, openIssue, patchIssue } from "./issues.js";
 
@@ -346,7 +346,7 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
   const verdict = oneOf(params, "verdict", ["pass", "changes"] as const);
   if (!verdict) throw new SeoError("verdict must be pass or changes.");
   const notes = str(params, "notes", { max: 4000 });
-  const fixBy = oneOf(params, "fixBy", ["seo", "developer", "senior"] as const) ?? "seo";
+  let fixBy = oneOf(params, "fixBy", ["seo", "developer", "senior"] as const) ?? "seo";
   if (verdict === "changes" && !notes) throw new SeoError("Say what is wrong: notes are required with verdict changes.");
   const rows = await env.ctx.db.query(
     `SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM ${t("previews")} WHERE id = $1 AND company_id = $2 AND sprint_id = $3 LIMIT 1`,
@@ -370,23 +370,34 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
   const issueId = row.issue_id ? String(row.issue_id) : null;
   const taskId = row.task_id ? String(row.task_id) : null;
   const pageUrl = String(row.page_url);
-  // A page that keeps failing the check goes to the owner instead of round and round.
+  // A page that keeps failing the check: the Senior Developer gets one go (the developer's own fix was the last try so far), then the owner is asked instead of going round and round.
+  let forcedSenior = false;
+  const escalateToOwner = async () => {
+    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
+    const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId!, pageUrl, String(row.title), notes!, Number(rounds[0]?.n));
+    if (!escalated) return null;
+    // Once per page: the Reviewer's last reason is on the owner's Needs you item and in previews.review_note, not repeated here every round.
+    if (issueId) {
+      await commentOn(
+        env,
+        companyId,
+        issueId,
+        `The preview of ${pageUrl} has now been sent back ${rounds[0]?.n} times by the Reviewer, the Senior Developer's fix included. It is on the owner's Needs you list; do not make another preview for this page until it is answered. The Reviewer's last reason is on that item.`,
+        { dedupeKey: `escalated:${taskId}:${commentFingerprint(pageUrl)}` },
+      );
+    }
+    return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, escalatedToOwner: true, next: "Set your review issue to done. The owner decides what happens with this page." };
+  };
   if (verdict === "changes" && taskId) {
     const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
     if (Number(rounds[0]?.n ?? 0) >= MAX_REVIEW_ROUNDS) {
-      const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId, pageUrl, String(row.title), notes!, Number(rounds[0]?.n));
-      if (escalated) {
-        // Once per page: the Reviewer's last reason is on the owner's Needs you item and in previews.review_note, not repeated here every round.
-        if (issueId) {
-          await commentOn(
-            env,
-            companyId,
-            issueId,
-            `The preview of ${pageUrl} has now been sent back ${rounds[0]?.n} times by the Reviewer. It is on the owner's Needs you list; do not make another preview for this page until it is answered. The Reviewer's last reason is on that item.`,
-            { dedupeKey: `escalated:${taskId}:${commentFingerprint(pageUrl)}` },
-          );
-        }
-        return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, escalatedToOwner: true, next: "Set your review issue to done. The owner decides what happens with this page." };
+      const task = await db.getTask(env.ctx.db, companyId, taskId);
+      if (task && !seniorTried(task)) {
+        fixBy = "senior";
+        forcedSenior = true;
+      } else {
+        const escalated = await escalateToOwner();
+        if (escalated) return escalated;
       }
     }
   }
@@ -403,6 +414,11 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
       reviewUrl: row.review_key ? `${previewLink(pageUrl, previewId)}/review?key=${String(row.review_key)}` : null,
       changes,
     });
+  }
+  if (forcedSenior && fix && "fallback" in fix) {
+    // Nobody could take the Senior Developer's go: the owner decides.
+    const escalated = await escalateToOwner();
+    if (escalated) return escalated;
   }
   const handedToDeveloper = fix !== null && "issueId" in fix;
   // On automatic client sign-off a passed preview parks the task on the client instead of handing it back to the agent.
@@ -541,4 +557,55 @@ async function escalateStuckPreview(env: Env, companyId: string, sprintId: strin
     env.ctx.logger.info("SEO stuck preview escalation failed", { taskId, error: errorMessage(error) });
     return false;
   }
+}
+
+/**
+ * A page that was put on the owner's list ("keeps failing the check") before the Senior Developer had a go: hand it to the Senior
+ * Developer now and close the owner's line. Runs from the 5-minute job; a page the Senior Developer already tried stays with the
+ * owner. Returns how many pages it handed over.
+ */
+export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
+  let handed = 0;
+  const companies = await env.ctx.db.query(`SELECT DISTINCT company_id FROM ${t("sprints")} WHERE status = 'active'`);
+  for (const c of companies) {
+    const companyId = String(c.company_id);
+    for (const digest of await db.openNeedsYouDigests(env.ctx.db, companyId)) {
+      for (const item of digest.items) {
+        if (item.status !== "open" || !item.key.startsWith("preview-stuck:")) continue;
+        const taskId = (item.taskIds ?? [])[0];
+        if (!taskId) continue;
+        try {
+          const task = await db.getTask(env.ctx.db, companyId, taskId);
+          if (!task || !task.issueId || seniorTried(task)) continue;
+          const keyed = item.key.slice(`preview-stuck:${taskId}:`.length);
+          const rows = await env.ctx.db.query(
+            `SELECT id, page_url, changes, review_note, review_key FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url LIKE $3 ORDER BY created_at DESC LIMIT 1`,
+            [companyId, taskId, `${keyed}%`],
+          );
+          const row = rows[0];
+          if (!row) continue;
+          const pageUrl = String(row.page_url);
+          const changes = typeof row.changes === "string" ? (JSON.parse(String(row.changes)) as Record<string, unknown>) : ((row.changes ?? {}) as Record<string, unknown>);
+          const fix = await startPreviewFix(env, companyId, {
+            previewId: String(row.id),
+            taskId,
+            pageUrl,
+            notes: String(row.review_note ?? item.why),
+            level: "senior",
+            reviewUrl: row.review_key ? `${previewLink(pageUrl, String(row.id))}/review?key=${String(row.review_key)}` : null,
+            changes,
+          });
+          if (!("issueId" in fix)) continue;
+          const { sprint } = await loadSprintContext(env, companyId, digest.sprintId);
+          const info = await companyInfo(env, companyId);
+          await closeNeedsYouItems(env, info, sprint, [item.key], "plugin", `Handed to ${fix.builder}: the Senior Developer gets one go before the owner decides.`);
+          await commentOn(env, companyId, task.issueId, `The preview of ${pageUrl} kept failing the Reviewer's check. ${fix.builder} (Senior Developer) is fixing it (issue ${fix.issueId}) and makes the corrected preview; this task stays parked. You are woken when it passes the Reviewer.`);
+          handed += 1;
+        } catch (error) {
+          env.ctx.logger.info("SEO stuck preview not handed to the Senior Developer", { key: item.key, error: errorMessage(error) });
+        }
+      }
+    }
+  }
+  return handed;
 }

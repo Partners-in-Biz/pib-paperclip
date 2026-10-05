@@ -248,3 +248,34 @@ describe("propose-client-facts: the system drafts the fact sheet from the client
     expect(normaliseForMatch("It’s “ours”")).toBe("it's 'ours'");
   });
 });
+
+describe("a page already on the owner's list is handed to the Senior Developer", () => {
+  const item = (taskId: string) => ({ key: `preview-stuck:${taskId}:https://agristudies.co.za/`, kind: "task", title: "Preview of https://agristudies.co.za/ keeps failing the check", why: "The Reviewer has sent the preview back 2 times.", steps: [], links: [], after: "", check: "manual", taskIds: [taskId], status: "open", addedAt: "2026-10-05T13:19:00Z" });
+  let listed: unknown[] = [];
+  const routes = (): Route[] => [
+    [/FROM plugin_seo_8099f8879a\.needs_you n JOIN/, () => [{ sprint_id: "sp-real", items: listed }]],
+    [/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 AND page_url LIKE \$3/, () => [{ id: "p2", page_url: "https://agristudies.co.za/", changes: { title: "T", bodyHtml: "<p>x</p>" }, review_note: "Looks dropped in; restyle it", review_key: "rk" }]],
+    [/SELECT DISTINCT company_id FROM plugin_seo_8099f8879a\.sprints WHERE status = 'active'/, () => [{ company_id: "co-1" }]],
+  ];
+
+  it("opens one Senior Developer fix, closes the owner's line and does nothing a second time", async () => {
+    const { handStuckPreviewsToSenior } = await import("../src/service/preview.js");
+    listed = [item("t1")];
+    const w = world({
+      sprints: [wp()],
+      tasks: [parked({ status: "in_progress", assignee_kind: "reviewer" })],
+      needsYouRecent: [{ id: "ny-1", company_id: "co-1", sprint_id: "sp-real", week_start: "2026-09-28", issue_id: "ny-issue", issue_identifier: "PAR-1", items: [item("t1")], status: "open" }],
+      routes: routes(),
+      agent: { id: "agent-1", status: "idle" },
+    });
+    (w.ctx as unknown as { agents: { list: () => Promise<unknown[]> } }).agents.list = async () => [{ id: "dev-1", name: "Developer", status: "idle" }, { id: "sen-1", name: "Senior Developer", status: "idle" }];
+    (w.ctx as unknown as { authorization: unknown }).authorization = { grants: { list: async () => [{ permissionKey: "tools:use", scope: { providerType: "paperclip_plugin" } }] } };
+    expect(await handStuckPreviewsToSenior(w.env)).toBe(1);
+    expect(w.created.some((c) => c.input.assigneeAgentId === "sen-1")).toBe(true);
+    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain('"status":"done"');
+    expect(w.comments.some((c) => /Senior Developer\) is fixing it/.test(c.body))).toBe(true);
+    // The task now records the Senior Developer's go: the next run leaves the page alone.
+    w.store.tasks[0]!.evidence = { builds: [{ issueId: "x", agentId: "sen-1", at: "2026-10-05T13:30:00Z", kind: "preview-fix", level: "senior" }] };
+    expect(await handStuckPreviewsToSenior(w.env)).toBe(0);
+  });
+});

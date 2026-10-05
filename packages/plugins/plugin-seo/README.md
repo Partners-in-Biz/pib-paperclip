@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.1: a page that keeps failing goes to the Senior Developer before the owner
+At the round cap (two Reviewer "changes" on one page) the fix now goes to the Senior Developer once (`BuildRef.level`, `seniorTried`), whoever the Reviewer named; only after that, or with nobody to take it, does the page go on the owner's Needs you list. `handStuckPreviewsToSenior` (5-minute job) hands a page that was already on the owner's list before the Senior Developer's go over and closes the owner's line.
+
 ## 0.26.0: automatic client sign-off, run the plan by itself, fact sheet from the client's pages
 For WordPress sites on `pr_only` (Hunt and Gun, Agri Auctions SA, Agri Studies) the client must approve anything visible before it goes live. Until 0.26.0 a person carried every preview link from the Reviewer to the client and back. A sprint can now be set to **automatic client sign-off** (sprint menu, page-only `set-signoff-mode`):
 1. The agent makes one `create-preview` per page and ends its turn. The Reviewer checks each (unchanged). When every preview of the task has a verdict and none is with the agent for changes, the plugin **parks the task on the client** (blocked, `assignee_kind = client`, not in flight), so the rest of the week and the next weeks carry on. The agent is not woken and never uses Needs you or `block-task` for sign-off.

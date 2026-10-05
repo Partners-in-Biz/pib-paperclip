@@ -95,6 +95,13 @@ interface BuildRef {
   reported?: string;
   /** preview-fix: opened by the plugin after the Reviewer sent a preview back for a build problem. */
   kind?: "preview-fix";
+  /** preview-fix: which builder level took it (a Senior Developer attempt is the last one before the owner is asked). */
+  level?: "developer" | "senior";
+}
+
+/** The Senior Developer already took a preview fix of this task: the next stop is the owner. */
+export function seniorTried(task: db.SprintTask): boolean {
+  return buildsOf(task).some((b) => b.kind === "preview-fix" && b.level === "senior");
 }
 
 /** Developer fixes of a preview the plugin opens for one task before it hands the problem to the owner. */
@@ -301,7 +308,7 @@ export async function startPreviewFix(env: Env, companyId: string, input: Previe
     wake: true,
     wakeReason: `Reviewer sent a preview back: ${task.title}`,
   });
-  const builds = [...buildsOf(task), { issueId: created.id, agentId: builder.id, at: env.now().toISOString(), kind: "preview-fix" as const } satisfies BuildRef];
+  const builds = [...buildsOf(task), { issueId: created.id, agentId: builder.id, at: env.now().toISOString(), kind: "preview-fix" as const, level: input.level === "senior" ? ("senior" as const) : ("developer" as const) } satisfies BuildRef];
   await db.updateTask(env.ctx.db, companyId, task.id, { evidence: { ...(task.evidence ?? {}), builds }, blocker_reason: `Waiting for ${builder.name} to fix the preview the Reviewer sent back` });
   return { issueId: created.id, builder: builder.name };
 }
