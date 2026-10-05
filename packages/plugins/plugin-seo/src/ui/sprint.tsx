@@ -158,7 +158,7 @@ export function SprintCockpit({
   const [bundle, setBundle] = useState<SprintBundle | null>(null);
   const [tab, setTab] = useState<TabId>(SPRINT_TAB_IDS.includes(initialTab) ? initialTab : "plan");
   const [working, setWorking] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"link" | "autopilot" | "plan" | "archive" | "start" | null>(null);
+  const [dialog, setDialog] = useState<"link" | "autopilot" | "plan" | "archive" | "start" | "through" | null>(null);
   const client = scope ? `${scope.kind}:${scope.id}` : null;
 
   const reload = useCallback(async () => {
@@ -241,6 +241,7 @@ export function SprintCockpit({
     ...(s.site?.siteAccess === "wordpress" && s.site?.changePolicy === "pr_only"
       ? [{ key: "signoff", label: autoSignoff ? "Client sign-off: switch to manual" : "Client sign-off: switch to automatic", hint: autoSignoff ? "You carry the preview links and press Apply" : "Approval email drafted in Gmail, approved changes applied by the agent", disabled: s.legacy || s.status === "archived", onSelect: () => void call("set-signoff-mode", { sprintId, mode: autoSignoff ? "manual" : "auto" }, autoSignoff ? "Client sign-off is manual." : "Client sign-off is automatic: passed previews are drafted as one email in Gmail, and what the client approves is applied.").then(() => onChanged()) }]
       : []),
+    { key: "through", label: "Run the plan by itself…", hint: s.releaseThrough != null ? `Now: through week ${s.releaseThrough}` : "Now: you start each week", disabled: s.legacy || paused, onSelect: () => setDialog("through") },
     { key: "autopilot", label: "Change autopilot…", hint: `Now: ${AUTOPILOT[s.autopilotMode]?.label ?? s.autopilotMode}`, disabled: s.status === "archived", onSelect: () => setDialog("autopilot") },
     { key: "plan", label: "Change plan type…", hint: `Now: ${s.plan}`, disabled: s.legacy || s.status === "archived", onSelect: () => setDialog("plan") },
     ...(s.rootIssueId ? [{ kind: "link" as const, key: "issue", label: "Open the sprint issue", hint: s.rootIssueIdentifier ?? undefined, link: nav.linkProps(`/issues/${s.rootIssueIdentifier ?? s.rootIssueId}`) }] : []),
@@ -252,7 +253,7 @@ export function SprintCockpit({
   ];
   const tabs = tabsForPhone(TABS.map((t) => ({ id: t.id, label: t.label, icon: t.icon, ...tabCount(t.id, bundle, canWork) })), narrow);
   const autopilot = AUTOPILOT[s.autopilotMode]?.label ?? s.autopilotMode;
-  const facts = s.legacy ? ["No 90-day plan yet"] : [`${s.plan} plan`, sprintStatusText(s), `Autopilot: ${autopilot.toLowerCase()}`, ...(manual ? ["Manual pacing"] : []), ...(autoSignoff ? ["Client sign-off automatic"] : [])];
+  const facts = s.legacy ? ["No 90-day plan yet"] : [`${s.plan} plan`, sprintStatusText(s), `Autopilot: ${autopilot.toLowerCase()}`, ...(manual ? ["Manual pacing"] : []), ...(autoSignoff ? ["Client sign-off automatic"] : []), ...(s.releaseThrough != null ? [`Runs through week ${s.releaseThrough}`] : [])];
 
   return (
     <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
@@ -292,6 +293,7 @@ export function SprintCockpit({
       {tab === "playbook" ? <PlaybookTab sprintId={sprintId} onChanged={reload} onMessage={onMessage} /> : null}
       {tab === "integrations" ? <IntegrationsTab companyId={companyId} bundle={bundle} load={load} call={call} reload={reload} onMessage={onMessage} working={working} /> : null}
       {dialog === "link" ? <LinkClientModal sprint={s} onClose={() => setDialog(null)} call={call} /> : null}
+      {dialog === "through" ? <RunThroughModal sprint={s} onClose={() => setDialog(null)} call={call} onChanged={onChanged} /> : null}
       {dialog === "autopilot" ? <AutopilotModal sprint={s} onClose={() => setDialog(null)} call={call} onChanged={onChanged} /> : null}
       {dialog === "plan" ? <ChangePlanModal sprint={s} onClose={() => setDialog(null)} call={call} onChanged={onChanged} onMessage={onMessage} /> : null}
       {dialog === "archive" ? (
@@ -346,6 +348,35 @@ function StartPlanInline({ sprint, onClose, onDone, onError }: { sprint: SprintS
       )}
     >
       <BusinessTypeField value={type} onChange={setType} required hint={sprint.client ? "Most clients are local service businesses." : undefined} />
+    </Modal>
+  );
+}
+
+function RunThroughModal({ sprint, onClose, call, onChanged }: { sprint: SprintSummary; onClose: () => void; call: CallFn; onChanged: () => Promise<void> }) {
+  const [week, setWeek] = useState<string>(sprint.releaseThrough != null ? String(sprint.releaseThrough) : "");
+  const current = sprint.releaseThrough != null ? String(sprint.releaseThrough) : "";
+  return (
+    <Modal
+      open
+      title="Run the plan by itself"
+      description="The SEO agent works the plan week by week up to the week you pick. A week starts when nothing of an earlier week is waiting for the agent: work waiting on you or on the client's approval does not hold it back. Past that week, nothing starts until you start it."
+      onClose={onClose}
+      footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={week === current} onClick={() => void call("set-release-through", { sprintId: sprint.sprintId, ...(week === "" ? {} : { week: Number(week) }) }, week === "" ? "Stopped: you start each week." : `The plan runs by itself through week ${week}.`).then(() => onChanged()).finally(onClose)}>Save</Button>
+        </>
+      )}
+    >
+      <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
+        Run through
+        <Select aria-label="Run through week" value={week} onChange={(e) => setWeek(e.target.value)}>
+          <option value="">Stop: I start each week myself</option>
+          {Array.from({ length: 14 }, (_, w) => (
+            <option key={w} value={String(w)}>{`Week ${w}`}</option>
+          ))}
+        </Select>
+      </label>
     </Modal>
   );
 }

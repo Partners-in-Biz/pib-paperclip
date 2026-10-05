@@ -63,7 +63,7 @@ import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
 import { findClient, scopeParam } from "./service/scope.js";
-import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
+import { advanceReleasedWeeks, integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
 import { displayTitle, sprintOverviews, withRunFailures } from "./service/overview.js";
 import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
@@ -101,6 +101,8 @@ const plugin = definePlugin({
       await syncSignoff(e).catch((error) => ctx.logger.info("SEO sign-off sync failed", { error: errorMessage(error) }));
       await parkTasksWaitingOnYou(e).catch((error) => ctx.logger.info("SEO park waiting tasks failed", { error: errorMessage(error) }));
       await advanceQueuedWeeks(e).catch((error) => ctx.logger.info("SEO queued week advance failed", { error: errorMessage(error) }));
+      // "Run through week N": the next week starts when nothing of an earlier week is waiting for the agent.
+      await advanceReleasedWeeks(e).catch((error) => ctx.logger.info("SEO run-through week failed", { error: errorMessage(error) }));
       // A page group the host refused to create, or whose close was missed: the next group opens within minutes, not at the next hourly run.
       await db.listSprintCompanies(ctx.db).then(async (companies) => {
         for (const companyId of companies) await openIdleGroups(e, companyId).catch(() => 0);

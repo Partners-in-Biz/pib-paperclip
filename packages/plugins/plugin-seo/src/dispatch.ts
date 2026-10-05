@@ -150,6 +150,8 @@ export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "set-pacing": (env, c, a, p) => sprints.setPacing(env, c, a, p),
   // A signed-in person chooses automatic or manual client sign-off for a sprint (the handler checks the actor itself).
   "set-signoff-mode": (env, c, a, p) => clientSignoff.setSignoffMode(env, c, a, p),
+  // A signed-in person says how far the plan runs by itself (the handler checks the actor itself).
+  "set-release-through": (env, c, a, p) => sprints.setReleaseThrough(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {

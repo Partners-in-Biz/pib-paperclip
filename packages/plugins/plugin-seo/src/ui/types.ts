@@ -54,6 +54,8 @@ export type SprintSummary = {
   pacing?: "auto" | "manual";
   /** auto: the plugin handles the client's approval end to end (WordPress sites on pr_only). */
   clientSignoff?: "auto" | "manual";
+  /** Manual pacing: the plan runs by itself through this week; null = a person starts each week. */
+  releaseThrough?: number | null;
   ownerUserId: string | null;
   rootIssueId: string | null;
   rootIssueIdentifier: string | null;

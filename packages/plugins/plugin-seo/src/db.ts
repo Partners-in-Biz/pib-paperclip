@@ -208,6 +208,8 @@ export interface Sprint {
   pacing: Pacing;
   /** auto: the plugin waits for the client, drafts the approval email and applies what the client approved (service/client-signoff.ts). */
   clientSignoff: SignoffMode;
+  /** Manual pacing: the plugin starts each week in order up to this one (engine/pacing.ts); null = a person starts every week. */
+  releaseThrough: number | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -216,7 +218,7 @@ const SPRINT_SELECT = `id, company_id, name, site_url, site_name, client_kind, c
   template_id, template_version, autopilot_mode, owner_user_id, project_id, root_issue_id, root_issue_identifier, agent_id, notes,
   paused_reason, health, scoreboard, today, current_day, current_week, current_phase, last_daily_on::text AS last_daily_on,
   last_weekly_on::text AS last_weekly_on, audit_days_done, seeded_at, site_project_id, client_project_id, site_access, site_id, repo_url, default_branch, framework,
-  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, pacing, client_signoff, created_at, updated_at`;
+  hosting, change_policy, verification, geo_enabled, ga4_enabled, chunks_enabled, pacing, client_signoff, release_through, created_at, updated_at`;
 
 function sprintFrom(row: Row): Sprint {
   return {
@@ -264,6 +266,7 @@ function sprintFrom(row: Row): Sprint {
     chunksEnabled: flag(row.chunks_enabled),
     pacing: String(row.pacing) === "manual" ? "manual" : "auto",
     clientSignoff: String(row.client_signoff) === "auto" ? "auto" : "manual",
+    releaseThrough: n(row.release_through),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -290,6 +293,7 @@ const SPRINT_COLUMNS: Record<string, ColumnKind> = {
   autopilot_mode: "text",
   pacing: "text",
   client_signoff: "text",
+  release_through: "int",
   owner_user_id: "text",
   project_id: "text",
   root_issue_id: "text",

@@ -35,6 +35,7 @@ import {
   companyInfo,
   errorMessage,
   isoDateParam,
+  num,
   oneOf,
   reqStr,
   SeoError,
@@ -48,7 +49,8 @@ import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy 
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
 import { cancelRehearsalIssues } from "./rehearsal.js";
-import { materialiseDueTasks } from "./tasks.js";
+import { materialiseDueTasks, startTasksNow } from "./tasks.js";
+import { nextWeekToRelease } from "../engine/pacing.js";
 import { groupViews } from "./chunks.js";
 import { geoSummary } from "./geo.js";
 import { ga4Line } from "./analytics.js";
@@ -345,6 +347,8 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     pacing: sprint.pacing,
     /** auto: the plugin waits for the client, drafts the approval email and applies what they approve (set-signoff-mode). */
     clientSignoff: sprint.clientSignoff,
+    /** Manual pacing: the plan runs by itself through this week (set-release-through); null = a person starts each week. */
+    releaseThrough: sprint.releaseThrough,
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
@@ -600,6 +604,52 @@ export async function setPacing(env: Env, companyId: string, actor: Actor, param
     );
   }
   return { sprintId: sprint.id, pacing, previous: sprint.pacing, released };
+}
+
+
+/** The actor the plugin uses when it starts a week for "run through week N" (it is the person's standing instruction, not an agent). */
+const RELEASE_ACTOR: Actor = { kind: "system" };
+
+/**
+ * Starts the next week of every manual sprint that has a "run through week N" ceiling, when nothing of an earlier week is in the
+ * agent's hands (engine/pacing.ts). One week per sprint per run. Runs from the 5-minute job. Returns how many weeks it started.
+ */
+export async function advanceReleasedWeeks(env: Env, only?: { companyId: string; sprintId: string }): Promise<number> {
+  const rows = only
+    ? [{ id: only.sprintId, company_id: only.companyId }]
+    : await env.ctx.db.query(`SELECT id, company_id FROM ${db.t("sprints")} WHERE status = 'active' AND pacing = 'manual' AND release_through IS NOT NULL`);
+  let started = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    try {
+      const sprint = await db.getSprint(env.ctx.db, companyId, String(row.id));
+      if (!sprint || sprint.status !== "active" || sprint.pacing !== "manual" || sprint.releaseThrough == null || isRehearsalSprint(sprint) || !sprint.rootIssueId) continue;
+      const tasks = await db.listTasks(env.ctx.db, companyId, sprint.id, { status: OPEN_TASK_STATUSES });
+      const week = nextWeekToRelease(tasks, sprint.releaseThrough);
+      if (week == null) continue;
+      await startTasksNow(env, companyId, RELEASE_ACTOR, { sprintId: sprint.id, week });
+      if (sprint.rootIssueId) await commentOn(env, companyId, sprint.rootIssueId, `Week ${week} started (run through week ${sprint.releaseThrough}): nothing of an earlier week is waiting for the SEO agent.`, { dedupeKey: `release:${sprint.id}:${week}` });
+      started += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO run-through week not started", { sprintId: String(row.id), error: errorMessage(error) });
+    }
+  }
+  return started;
+}
+
+/** A person says: run the plan through week N by itself (or stop: a person starts each week). Switches the sprint to manual pacing first. */
+export async function setReleaseThrough(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user" || !actor.userId?.trim()) throw new SeoError("Only a signed-in person can choose how far the plan runs by itself.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  assertWritable(sprint);
+  const week = num(params, "week", { integer: true, min: 0, max: 200 }) ?? null;
+  if (week !== null && sprint.pacing !== "manual") await setPacing(env, companyId, actor, { sprintId: sprint.id, pacing: "manual" });
+  await db.updateSprint(env.ctx.db, companyId, sprint.id, { release_through: week });
+  if (sprint.rootIssueId) {
+    await commentOn(env, companyId, sprint.rootIssueId, week === null ? `Run-through stopped by ${actorLabel(actor)}: a person starts each week.` : `The plan runs by itself through week ${week} (set by ${actorLabel(actor)}): each week starts when nothing of an earlier week is waiting for the SEO agent. Work waiting on a person or the client does not hold it back.`);
+  }
+  const started = week !== null && sprint.status === "active" ? await advanceReleasedWeeks(env, { companyId, sprintId: sprint.id }) : 0;
+  return { sprintId: sprint.id, releaseThrough: week, weekStarted: started > 0 };
 }
 
 export async function setAutopilot(env: Env, companyId: string, actor: Actor, params: Params) {

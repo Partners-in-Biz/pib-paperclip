@@ -7,6 +7,10 @@ ALTER TABLE plugin_seo_8099f8879a.sprints ADD COLUMN client_signoff text NOT NUL
 
 ALTER TABLE plugin_seo_8099f8879a.sprints ADD CONSTRAINT sprints_client_signoff_check CHECK (client_signoff IN ('manual', 'auto'));
 
+-- Run through week N: on a manual-pacing sprint the plugin starts each week itself, in order, until this week. A week starts when
+-- nothing of an earlier week is still with the agent (work waiting on a person or the client does not hold it). Null: a person starts every week.
+ALTER TABLE plugin_seo_8099f8879a.sprints ADD COLUMN release_through integer;
+
 ALTER TABLE plugin_seo_8099f8879a.previews ADD COLUMN draft_key text;
 
 ALTER TABLE plugin_seo_8099f8879a.previews ADD COLUMN draft_status text;
