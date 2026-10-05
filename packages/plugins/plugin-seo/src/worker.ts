@@ -49,7 +49,7 @@ import {
 } from "./service/agent.js";
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
-import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, reviveOrphanedChanges } from "./service/preview.js";
+import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
 import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
@@ -110,6 +110,7 @@ const plugin = definePlugin({
       await reblockParkedTasks(e).catch((error) => ctx.logger.info("SEO parked tasks not re-blocked", { error: errorMessage(error) }));
       await nudgeIdleAgentTasks(e).catch((error) => ctx.logger.info("SEO idle tasks not woken", { error: errorMessage(error) }));
       await nudgeStalledReviews(e).catch((error) => ctx.logger.info("SEO stalled reviews not nudged", { error: errorMessage(error) }));
+      await refreshStalePreviews(e).catch((error) => ctx.logger.info("SEO stale previews not refreshed", { error: errorMessage(error) }));
       await reviveOrphanedChanges(e).catch((error) => ctx.logger.info("SEO orphaned changes not handed back", { error: errorMessage(error) }));
       await handStuckPreviewsToSenior(e).catch((error) => ctx.logger.info("SEO stuck previews not handed over", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);

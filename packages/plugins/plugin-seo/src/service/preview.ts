@@ -803,3 +803,60 @@ export async function reviveOrphanedChanges(env: Env): Promise<number> {
   }
   return handed;
 }
+
+/** A passed preview that was never put in front of the client this long is stale: the live page may have changed since it was built. */
+export const PREVIEW_STALE_HOURS = 48;
+
+/**
+ * On a sprint with automatic client sign-off, previews that passed the Reviewer but were never put in a draft (so never in front of the
+ * client) within PREVIEW_STALE_HOURS are withdrawn, and their task goes back to the SEO agent to rebuild them from the current live page.
+ * Found when Hunt and Gun was restarted: two previews from 2 October, built before the live site was changed on 4 October, would otherwise
+ * have been sent for approval. Previews already in a draft keep their 30 days (the client has them). Runs from the 5-minute job.
+ */
+export async function refreshStalePreviews(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, company_id, sprint_id, task_id, page_url FROM (
+        SELECT DISTINCT ON (sprint_id, page_url) id, company_id, sprint_id, task_id, page_url, review_status, status, draft_key, created_at, expires_at
+          FROM ${t("previews")} ORDER BY sprint_id, page_url, created_at DESC
+      ) latest
+      WHERE review_status = 'passed' AND status = 'pending' AND draft_key IS NULL AND task_id IS NOT NULL AND expires_at > now()
+        AND created_at < now() - ($1::int * interval '1 hour') LIMIT 40`,
+    [PREVIEW_STALE_HOURS],
+  );
+  const byTask = new Map<string, Array<Record<string, any>>>();
+  for (const r of rows) {
+    const list = byTask.get(String(r.task_id)) ?? [];
+    list.push(r);
+    byTask.set(String(r.task_id), list);
+  }
+  let refreshed = 0;
+  for (const [taskId, previews] of byTask) {
+    const companyId = String(previews[0]!.company_id);
+    try {
+      const task = await db.getTask(env.ctx.db, companyId, taskId);
+      if (!task || !task.issueId || !["blocked", "in_progress", "not_started"].includes(task.status)) continue;
+      const sprint = await db.getSprint(env.ctx.db, companyId, task.sprintId);
+      if (!sprint || sprint.status !== "active" || !isAutoSignoff(sprint)) continue;
+      for (const p of previews) {
+        await env.ctx.db.execute(`UPDATE ${t("previews")} SET expires_at = now() WHERE id = $1 AND status = 'pending'`, [String(p.id)]);
+      }
+      const needsAgent = !(task.status === "in_progress" && task.assigneeKind === "agent");
+      if (needsAgent) {
+        if (task.status === "blocked" && !(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) continue;
+        await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+      }
+      await commentOn(
+        env,
+        companyId,
+        task.issueId,
+        `${previews.length === 1 ? "A preview" : `${previews.length} previews`} passed the Reviewer more than ${PREVIEW_STALE_HOURS} hours ago but never reached the client, so ${previews.length === 1 ? "it is" : "they are"} withdrawn: the live page may have changed since. Make a fresh preview from the CURRENT live page for ${previews.length === 1 ? "this page" : "each page"} (the Reviewer checks it again):\n${previews.map((p) => `- ${String(p.page_url)}`).join("\n")}`,
+        { dedupeKey: `stale:${task.id}:${commentFingerprint(previews.map((p) => String(p.id)).join("|"))}` },
+      );
+      if (needsAgent) await wakeIssue(env.ctx, task.issueId, companyId, "Stale previews were withdrawn: rebuild them");
+      refreshed += previews.length;
+    } catch (error) {
+      env.ctx.logger.info("SEO stale previews not refreshed", { taskId, error: errorMessage(error) });
+    }
+  }
+  return refreshed;
+}

@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.10: previews that never reached the client go stale
+On a sprint with automatic client sign-off, a preview that passed the Reviewer but was in no approval draft (so never in front of the client) after 48 hours is withdrawn and its task goes back to the agent to rebuild it from the current live page (`refreshStalePreviews`). Found when Hunt and Gun was restarted: two previews from 2 October, built before the live site changed on 4 October, would otherwise have been sent for approval. Previews already in a draft keep their 30 days.
+
 ## 0.26.9: parked tasks stay parked; a task nobody picks up is woken again
 Found on Agri Studies (2026-10-05): (1) a task parked on the Reviewer or the client whose issue was flipped back to `in_progress` (a wake made the agent check it out) made the host re-wake the agent every 30 seconds (`issue_continuation_needed`): 20+ runs and an 81 KB thread in 15 minutes. `reblockParkedTasks` (5-minute job) puts such an issue back to `blocked` (not an `in_review` sign-off). (2) A wake can be coalesced by the host into an execution that is already ending ("issue_execution_same_name"), and then no run starts: `nudgeIdleAgentTasks` wakes a task handed to the agent whose issue sat in `todo` with no queued or running run for 25 minutes, up to 4 times.
 

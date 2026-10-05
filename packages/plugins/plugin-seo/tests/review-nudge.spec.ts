@@ -114,3 +114,20 @@ describe("a parked task keeps its issue blocked", () => {
     expect(w.store.tasks[0]).toMatchObject({ status: "blocked", issue_status: "blocked" });
   });
 });
+
+describe("previews that never reached the client go stale", () => {
+  it("withdraws a passed preview older than 48 hours that is in no draft and sends its task back to the agent to rebuild it", async () => {
+    const { refreshStalePreviews } = await import("../src/service/preview.js");
+    const route: Route[] = [[/FROM \(\s*SELECT DISTINCT ON \(sprint_id, page_url\) id, company_id, sprint_id, task_id, page_url, review_status, status, draft_key, created_at/, () => [{ id: "p1", company_id: "co-1", sprint_id: "sp-real", task_id: "t1", page_url: "https://huntandgun.co.za/" }]]];
+    const auto = () => sprintFor("real", { root_issue_id: "root-1", status: "active", site_access: "wordpress", site_id: "s1", change_policy: "pr_only", client_signoff: "auto" });
+    const w = world({ sprints: [auto()], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "blocked", assignee_kind: "client", issue_id: "iss-1", issue_status: "blocked" })], routes: route });
+    expect(await refreshStalePreviews(w.env)).toBe(1);
+    expect(executed(w, /UPDATE plugin_seo_8099f8879a\.previews SET expires_at = now\(\) WHERE id = \$1 AND status = 'pending'/)).toHaveLength(1);
+    expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent" });
+    expect(w.comments.at(-1)!.body).toMatch(/withdrawn[\s\S]*CURRENT live page/);
+    expect(w.wakeups).toContain("iss-1");
+    // A sprint with manual sign-off is left alone (the control).
+    const manual = world({ sprints: [sprintFor("real", { root_issue_id: "root-1", status: "active", client_signoff: "manual" })], tasks: [taskRow({ id: "t1", sprint_id: "sp-real", status: "blocked", assignee_kind: "client", issue_id: "iss-1" })], routes: route });
+    expect(await refreshStalePreviews(manual.env)).toBe(0);
+  });
+});
