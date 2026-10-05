@@ -237,7 +237,7 @@ export async function selectFacts(
   options: { mode: "brief" | "search"; maxFacts: number; allClients?: boolean; includeArchived?: boolean },
 ): Promise<{ selection: Selection; model: string | null; jevInputTokens: number }> {
   const now = env.now();
-  // A brief never mixes clients. An explicit search without a client looks at every client (each result names its client).
+  // A brief holds only the facts of the task's own client(s) (a person who works for several companies brings each of theirs) plus company-wide ones, never another client's. An explicit search without a client looks at every client (each result names its client).
   const scope = options.mode === "search" && task.clientRefs.length === 0 && options.allClients ? "all" : task.clientRefs;
   const withArchived = options.mode === "search" && options.includeArchived === true;
   const scanned = (await store.scanCandidates(env.ctx, companyId, scope, SELECTION.scanLimit, { includeArchived: withArchived }))

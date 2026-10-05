@@ -90,8 +90,9 @@ export async function crmClient(ctx: PluginContext, companyId: string, ref: stri
 
 /**
  * The names (and domains) that identify each client in text, companies
- * first so a company wins over one of its people. A contact who belongs to a
- * known CRM company names that company. Memory-only clients (facts saved
+ * first so a company wins over one of its people. A contact who belongs to
+ * known CRM companies names each of them (sorted by id, so the order never
+ * depends on how the CRM listed the links). Memory-only clients (facts saved
  * before the CRM copy existed) come last.
  */
 export function knownClientsFrom(crm: CrmClientRow[], memory: Array<{ clientRef: string; clientName: string }>): KnownClient[] {
@@ -113,8 +114,10 @@ export function knownClientsFrom(crm: CrmClientRow[], memory: Array<{ clientRef:
   }
   for (const row of crm.filter((c) => c.kind === "contact")) {
     if (!matchableContactName(row.name)) continue;
-    const employer = row.accountIds.find((id) => companies.has(id));
-    add({ clientRef: employer ? `company:${employer}` : `contact:${row.id}`, clientName: row.name.trim(), source: "crm-contact" });
+    // A person who works for several known companies names every one of them: work for them draws on each company's facts.
+    const employers = [...new Set(row.accountIds.filter((id) => companies.has(id)))].sort();
+    if (employers.length === 0) add({ clientRef: `contact:${row.id}`, clientName: row.name.trim(), source: "crm-contact" });
+    for (const employer of employers) add({ clientRef: `company:${employer}`, clientName: row.name.trim(), source: "crm-contact" });
   }
   for (const known of memory) {
     if (!parseClientParam(known.clientRef)) continue;

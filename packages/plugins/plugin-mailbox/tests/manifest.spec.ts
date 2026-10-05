@@ -29,7 +29,7 @@ describe("manifest", () => {
   });
 
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.6.2");
+    expect(manifest.version).toBe("0.6.3");
     for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "issue.comments.create", "ui.page.register", "agents.read", "webhooks.receive"]) {
       expect(manifest.capabilities).toContain(cap);
     }

@@ -8,13 +8,20 @@ import { CLIENT_SITES_SKILL, IOS_RELEASE_SKILL } from "./skills-sites.js";
 
 export const CRM_RECORDS_SKILL = `# CRM records and the client lifecycle
 
-The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is a CRM company, or a contact with no company (a sole trader). Name it as \`company:<id>\` or \`contact:<id>\` everywhere, never by name alone; every module's client workspace uses that ref (\`?client=company:<id>\`). Our own work has no client. One client per task.
+The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is a CRM company, or a contact with no company (a sole trader). Name it as \`company:<id>\` or \`contact:<id>\` everywhere, never by name alone; every module's client workspace uses that ref (\`?client=company:<id>\`). Our own work has no client. One client per task, except for a person who works for several companies (see below).
 
 ## Find the client first
 - \`find-records\` by name, email, domain, phone or tag before you create anything. Create only when nothing matches, then link people to their company with \`link-contact\`.
 - \`get-company\` / \`get-contact\` give the profile, people, open deals, the last 10 activities and \`workspaceLinks\` to each module's client workspace.
 - \`get-client-profile\` says how to talk for the client (brand voice, audience, services they buy from a fixed list, website, booking link, banned words, tone) and holds their brand kit (logo key, colours, fonts, tone examples) and proposal references. Read it before you write anything for or to them.
 - "Record is not visible": stop. Never invent a substitute record.
+
+## A person who works for several companies
+\`get-contact\` lists every company they are linked to (\`companies\`, each with its ref, role and lifecycle). Work for or to that person (an email, a call, a quote) draws on every one of those companies, not just the first:
+1. For each company: \`get-company\` (profile, deals, activity), \`get-client-profile\` (voice, banned words) and \`partnersinbiz.cockpit:memory-recall\` with that \`company:<id>\` as \`client\`. Recall for the issue alone also covers all of them when the person's name is in the issue, but a call per company is the sure way.
+2. Say which company each fact comes from. Never put one company's prices, deals, brand voice or private details into a message that is about another, and tell the person only what they are entitled to hear: a company's private details go only to someone who works there in a role that may know them.
+3. Use the voice and banned words of the company the message is about. A message about several of them uses ours.
+4. Log the result on the person (\`log-activity\`) and, when a lesson belongs to one company, save it with \`partnersinbiz.cockpit:memory-add\` and that company as \`client\`; the Learned: line of a closing comment files under only one of them.
 
 ## Keeping records
 - Money is an integer in minor units plus a currency: R 1,500.00 is \`150000\` ZAR.
