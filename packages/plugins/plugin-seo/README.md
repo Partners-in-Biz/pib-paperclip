@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.6: stalled reviews are nudged
+Found on Agri Studies (2026-10-05): a plugin worker reload (a src-only deploy) took `review-preview` out of the Reviewer's tool list mid-run; it handed the review issue to another agent that lacked the tool too, and the preview waited an hour. `nudgeStalledReviews` (5-minute job) reopens the review issue for the Reviewer and wakes it again for a preview without a verdict after 30 minutes, up to 3 tries 30 minutes apart, then asks the owner once.
+
 ## 0.26.5: the Gmail draft link opens the right account
 Verified live: the first approval email was a real Gmail draft, but the link the Mailbox built (`mail/u/<account>/#drafts…`) showed a Gmail 404 where the account is not the first signed in. The Mailbox (0.6.5) now builds `mail/?authuser=<account>#drafts?compose=<id>`, and `repairDraftLinks` (5-minute job) rewrites links stored in the old form and refreshes the Needs you line.
 

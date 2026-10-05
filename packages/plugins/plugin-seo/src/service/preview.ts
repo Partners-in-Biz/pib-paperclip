@@ -19,7 +19,7 @@ import { companyInfo } from "./common.js";
 import { seniorTried, startPreviewFix } from "./build.js";
 import { addNeedsYou, closeNeedsYouItems, closeSignoffItems } from "./needs-you.js";
 import { afterPreviewPassed, handleClientAnswer, isAutoSignoff } from "./client-signoff.js";
-import { commentOn, openIssue, patchIssue } from "./issues.js";
+import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
@@ -609,4 +609,69 @@ export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
     }
   }
   return handed;
+}
+
+/** A review that nobody has answered for this long is nudged (the Reviewer's run may have lost its tools to a worker reload, or crashed). */
+export const REVIEW_STALL_MINUTES = 30;
+export const REVIEW_MAX_NUDGES = 3;
+
+/**
+ * Previews still waiting for a verdict after REVIEW_STALL_MINUTES: the review issue is reopened for the Reviewer and the Reviewer is
+ * woken again (a review that was handed to another agent, set to in_review or closed without recording a verdict comes back). At most
+ * REVIEW_MAX_NUDGES nudges, REVIEW_STALL_MINUTES apart; after that the owner is asked once. Runs from the 5-minute job.
+ */
+export async function nudgeStalledReviews(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, company_id, sprint_id, task_id, page_url, title, review_issue_id, stats FROM ${t("previews")}
+      WHERE review_status = 'pending' AND review_issue_id IS NOT NULL AND status = 'pending' AND expires_at > now()
+        AND created_at < now() - ($1::int * interval '1 minute')
+        AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.sprint_id = ${t("previews")}.sprint_id AND n.page_url = ${t("previews")}.page_url AND n.created_at > ${t("previews")}.created_at)
+      ORDER BY created_at LIMIT 20`,
+    [REVIEW_STALL_MINUTES],
+  );
+  let nudged = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    const previewId = String(row.id);
+    try {
+      const stats = typeof row.stats === "string" ? (JSON.parse(String(row.stats)) as Record<string, any>) : ((row.stats ?? {}) as Record<string, any>);
+      const nudges = Number(stats.reviewNudges ?? 0);
+      const last = stats.reviewNudgedAt ? new Date(String(stats.reviewNudgedAt)).getTime() : 0;
+      if (nudges >= REVIEW_MAX_NUDGES || env.now().getTime() - last < REVIEW_STALL_MINUTES * 60_000) continue;
+      const reviewIssueId = String(row.review_issue_id);
+      const issue = await getIssue(env, companyId, reviewIssueId);
+      if (!issue) continue;
+      const reviewer = await reviewerAgentId(env.ctx, companyId);
+      const sprint = await db.getSprint(env.ctx.db, companyId, String(row.sprint_id));
+      if (!sprint || sprint.status !== "active" || isRehearsalSprint(sprint)) continue;
+      await patchIssue(env, companyId, reviewIssueId, { status: "todo", ...(reviewer ? { assigneeAgentId: reviewer, assigneeUserId: null } : {}) } as Parameters<typeof patchIssue>[3]);
+      await commentOn(
+        env,
+        companyId,
+        reviewIssueId,
+        `Nobody has recorded a verdict on this preview for ${REVIEW_STALL_MINUTES}+ minutes (attempt ${nudges + 1} of ${REVIEW_MAX_NUDGES}). Check it again and record the verdict with partnersinbiz.seo:review-preview (sprintId ${String(row.sprint_id)}, previewId ${previewId}); the tool may have been unavailable to the earlier run while the SEO plugin reloaded. If the tool is still missing, say so in a comment and end your turn: the plugin tries again. The review page link is in this issue's description.`,
+        { dedupeKey: `review-nudge:${previewId}:${nudges}` },
+      );
+      await wakeIssue(env.ctx, reviewIssueId, companyId, "A client preview is still waiting for a verdict");
+      await env.ctx.db.execute(`UPDATE ${t("previews")} SET stats = stats || $2::jsonb WHERE id = $1`, [previewId, JSON.stringify({ reviewNudges: nudges + 1, reviewNudgedAt: env.now().toISOString() })]);
+      nudged += 1;
+      if (nudges + 1 >= REVIEW_MAX_NUDGES) {
+        const info = await companyInfo(env, companyId);
+        await addNeedsYou(env, info, sprint, {
+          key: `review-stalled:${previewId}`.slice(0, 120),
+          kind: "task",
+          title: `A preview has waited for the Reviewer through ${REVIEW_MAX_NUDGES} tries: ${String(row.page_url)}`,
+          why: `The Reviewer was asked ${REVIEW_MAX_NUDGES} times to check "${String(row.title)}" and has not recorded a verdict. The review issue is ${reviewIssueId}.`,
+          steps: ["Open the review issue and see what the Reviewer said (a tool missing, a crashed run).", "Fix the cause, or record the verdict yourself on the preview (SEO page, Content tab)."],
+          links: [],
+          after: "The preview is checked and the client is asked as usual.",
+          check: "manual",
+          taskIds: [],
+        }).catch(() => undefined);
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO stalled review not nudged", { previewId, error: errorMessage(error) });
+    }
+  }
+  return nudged;
 }
