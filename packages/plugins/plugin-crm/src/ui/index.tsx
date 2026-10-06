@@ -1013,6 +1013,11 @@ interface WorkspaceCompany {
   currency: string;
   tags: string[];
   humanOwned: string[];
+  billingEmail: string | null;
+  phone: string | null;
+  address: string | null;
+  vatNumber: string | null;
+  registrationNumber: string | null;
 }
 
 interface WorkspaceContact {
@@ -1834,6 +1839,11 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
   const [lifecycle, setLifecycle] = useState("lead");
   const [currency, setCurrency] = useState("ZAR");
   const [tags, setTags] = useState("");
+  const [billingEmail, setBillingEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [vatNumber, setVatNumber] = useState("");
+  const [registrationNumber, setRegistrationNumber] = useState("");
 
   function startEdit() {
     setName(company.name);
@@ -1841,13 +1851,18 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     setLifecycle(company.lifecycle);
     setCurrency(company.currency);
     setTags(company.tags.join(", "));
+    setBillingEmail(company.billingEmail ?? "");
+    setPhone(company.phone ?? "");
+    setAddress(company.address ?? "");
+    setVatNumber(company.vatNumber ?? "");
+    setRegistrationNumber(company.registrationNumber ?? "");
     setEditing(true);
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
-    const ok = await onSave({ name, domain, lifecycle, currency, tags: splitList(tags) });
+    const ok = await onSave({ name, domain, lifecycle, currency, tags: splitList(tags), billingEmail, phone, address, vatNumber, registrationNumber });
     setSaving(false);
     if (ok) setEditing(false);
   }
@@ -1858,6 +1873,11 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={company.lifecycle} /> },
     { key: "currency", label: "Currency", value: company.currency },
     { key: "tags", label: "Tags", value: company.tags.join(", ") || <NotSet /> },
+    { key: "billingEmail", label: "Billing email", value: company.billingEmail ? <span style={{ overflowWrap: "anywhere" }}>{company.billingEmail}</span> : <NotSet /> },
+    { key: "phone", label: "Phone", value: company.phone || <NotSet /> },
+    { key: "address", label: "Address", value: company.address ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{company.address}</span> : <NotSet /> },
+    { key: "vatNumber", label: "VAT no.", value: company.vatNumber || <NotSet /> },
+    { key: "registrationNumber", label: "Reg. no.", value: company.registrationNumber || <NotSet /> },
   ];
 
   return (
@@ -1885,6 +1905,23 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
           <Field label="Tags (comma separated)">
             <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="retainer, priority" />
           </Field>
+          <Field label="Billing email">
+            <Input type="email" value={billingEmail} maxLength={254} onChange={(event) => setBillingEmail(event.target.value)} placeholder="accounts@northwind.test" />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} maxLength={64} onChange={(event) => setPhone(event.target.value)} />
+          </Field>
+          <Field label="Address">
+            <TextArea value={address} rows={3} maxLength={500} onChange={(event) => setAddress(event.target.value)} placeholder={"12 Main Road\nCape Town\n8001"} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12 }}>
+            <Field label="VAT no.">
+              <Input value={vatNumber} maxLength={64} onChange={(event) => setVatNumber(event.target.value)} />
+            </Field>
+            <Field label="Reg. no.">
+              <Input value={registrationNumber} maxLength={64} onChange={(event) => setRegistrationNumber(event.target.value)} />
+            </Field>
+          </div>
           <EditButtons saving={saving} onCancel={() => setEditing(false)} />
         </Form>
       ) : (
