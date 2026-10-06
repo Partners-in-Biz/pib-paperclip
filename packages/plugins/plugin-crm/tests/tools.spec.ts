@@ -53,6 +53,17 @@ describe("the CRM tool surface", () => {
     expect(lifecycle.properties!.lifecycle!.enum).toEqual(FIXED.lifecycle);
   });
 
+  it("create-company and update-company take the five billing details, each described", () => {
+    for (const name of ["create-company", "update-company"]) {
+      const props = (CRM_TOOLS.find((t) => t.name === name)!.parametersSchema as Schema).properties!;
+      for (const key of ["billingEmail", "phone", "address", "vatNumber", "registrationNumber"]) {
+        expect(props[key], `${name}.${key}`).toMatchObject({ type: "string" });
+        expect(props[key]!.description!.length).toBeGreaterThan(10);
+      }
+      expect(props.address!.description).toMatch(/multi-line postal address as printed on invoices/i);
+    }
+  });
+
   it("has the read and search tools, and no complete-step", () => {
     const names = CRM_TOOLS.map((tool) => tool.name);
     for (const name of ["find-records", "get-company", "get-contact", "list-deals", "list-stages", "list-sequences", "get-client-profile", "update-client-profile", "set-email-status"]) expect(names).toContain(name);

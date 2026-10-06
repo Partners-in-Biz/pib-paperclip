@@ -31,6 +31,11 @@ interface AccountRow {
   owner_user_id: string | null;
   assignee_agent_id: string | null;
   tags: unknown;
+  billing_email: string | null;
+  phone: string | null;
+  address: string | null;
+  vat_number: string | null;
+  registration_number: string | null;
 }
 
 interface ContactRow {
@@ -55,6 +60,8 @@ interface ContactRow {
   lead_scored_at?: unknown;
 }
 
+const ACCOUNT_COLUMNS = `id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields,
+  owner_user_id, assignee_agent_id, tags, billing_email, phone, address, vat_number, registration_number`;
 const CONTACT_COLUMNS = `id, company_id, name, emails, phones, lifecycle, custom, human_owned_fields,
             owner_user_id, assignee_agent_id, tags, next_action_kind, next_action_due_at,
             email_status, lead_fit, lead_intent, lead_urgency, lead_confidence, lead_scored_at`;
@@ -184,6 +191,11 @@ function mapAccount(row: AccountRow): AccountDraft {
     companyId: row.company_id,
     name: row.name,
     domain: row.domain,
+    billingEmail: row.billing_email ?? null,
+    phone: row.phone ?? null,
+    address: row.address ?? null,
+    vatNumber: row.vat_number ?? null,
+    registrationNumber: row.registration_number ?? null,
     lifecycle: row.lifecycle as Lifecycle,
     currency: row.currency,
     custom: asRecord(row.custom),
@@ -286,8 +298,7 @@ export async function grantsFor(ctx: PluginContext, recordType: RecordType, comp
 
 export async function listAccounts(ctx: PluginContext, companyId: string): Promise<AccountDraft[]> {
   const rows = await ctx.db.query<AccountRow>(
-    `SELECT id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields,
-            owner_user_id, assignee_agent_id, tags
+    `SELECT ${ACCOUNT_COLUMNS}
        FROM ${table(ctx, "companies")}
       WHERE company_id = $1
          OR id IN (
@@ -302,8 +313,7 @@ export async function listAccounts(ctx: PluginContext, companyId: string): Promi
 
 export async function getAccount(ctx: PluginContext, id: string): Promise<AccountDraft | null> {
   const rows = await ctx.db.query<AccountRow>(
-    `SELECT id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields,
-            owner_user_id, assignee_agent_id, tags
+    `SELECT ${ACCOUNT_COLUMNS}
        FROM ${table(ctx, "companies")} WHERE id = $1 LIMIT 1`,
     [id],
   );
@@ -313,8 +323,9 @@ export async function getAccount(ctx: PluginContext, id: string): Promise<Accoun
 export async function insertAccount(ctx: PluginContext, account: AccountDraft): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "companies")}
-      (id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields, owner_user_id, assignee_agent_id, tags)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11::jsonb)`,
+      (id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields, owner_user_id, assignee_agent_id, tags,
+       billing_email, phone, address, vat_number, registration_number)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)`,
     [
       account.id,
       account.companyId,
@@ -327,6 +338,11 @@ export async function insertAccount(ctx: PluginContext, account: AccountDraft): 
       account.ownerUserId,
       account.assigneeAgentId,
       json(account.tags),
+      account.billingEmail,
+      account.phone,
+      account.address,
+      account.vatNumber,
+      account.registrationNumber,
     ],
   );
 }
@@ -335,9 +351,25 @@ export async function saveAccount(ctx: PluginContext, account: AccountDraft): Pr
   await ctx.db.execute(
     `UPDATE ${table(ctx, "companies")}
         SET name = $2, domain = $3, lifecycle = $4, currency = $5, custom = $6::jsonb,
-            human_owned_fields = $7::jsonb, tags = $8::jsonb, updated_at = now()
+            human_owned_fields = $7::jsonb, tags = $8::jsonb,
+            billing_email = $9, phone = $10, address = $11, vat_number = $12, registration_number = $13,
+            updated_at = now()
       WHERE id = $1`,
-    [account.id, account.name, account.domain, account.lifecycle, account.currency, json(account.custom), json(account.humanOwned), json(account.tags)],
+    [
+      account.id,
+      account.name,
+      account.domain,
+      account.lifecycle,
+      account.currency,
+      json(account.custom),
+      json(account.humanOwned),
+      json(account.tags),
+      account.billingEmail,
+      account.phone,
+      account.address,
+      account.vatNumber,
+      account.registrationNumber,
+    ],
   );
 }
 
@@ -994,8 +1026,7 @@ export async function contactsByPhone(ctx: PluginContext, companyId: string, pho
 /** Companies with this website domain (compared without scheme or `www.`), else this exact name; oldest first. */
 export async function companiesByDomainOrName(ctx: PluginContext, companyId: string, domain: string | null, name: string): Promise<AccountDraft[]> {
   const rows = await ctx.db.query<AccountRow>(
-    `SELECT id, company_id, name, domain, lifecycle, currency, custom, human_owned_fields,
-            owner_user_id, assignee_agent_id, tags
+    `SELECT ${ACCOUNT_COLUMNS}
        FROM ${table(ctx, "companies")} a
       WHERE a.company_id = $1
         AND (($2::text IS NOT NULL

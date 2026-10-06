@@ -19,6 +19,11 @@ interface CompanyEventRow {
   name: string;
   domain: string | null;
   lifecycle: string | null;
+  billing_email: string | null;
+  phone: string | null;
+  address: string | null;
+  vat_number: string | null;
+  registration_number: string | null;
   updated_at: unknown;
 }
 
@@ -40,7 +45,20 @@ function iso(value: unknown): string {
 }
 
 export function companyEvent(row: CompanyEventRow): CrmCompanyEvent {
-  return { id: row.id, name: row.name, domain: row.domain ?? null, lifecycle: row.lifecycle ?? null, updatedAt: iso(row.updated_at) };
+  return {
+    id: row.id,
+    name: row.name,
+    domain: row.domain ?? null,
+    lifecycle: row.lifecycle ?? null,
+    updatedAt: iso(row.updated_at),
+    billing: {
+      email: row.billing_email ?? null,
+      phone: row.phone ?? null,
+      address: row.address ?? null,
+      vatNumber: row.vat_number ?? null,
+      registrationNumber: row.registration_number ?? null,
+    },
+  };
 }
 
 export function contactEvent(row: ContactEventRow): CrmContactEvent {
@@ -67,7 +85,7 @@ export async function emitChanges(
 ): Promise<{ companies: number; contacts: number }> {
   const since = sinceSeconds == null ? null : Math.max(1, Math.floor(sinceSeconds));
   const companies = await ctx.db.query<CompanyEventRow>(
-    `SELECT id, name, domain, lifecycle, updated_at
+    `SELECT id, name, domain, lifecycle, billing_email, phone, address, vat_number, registration_number, updated_at
        FROM ${table(ctx, "companies")}
       WHERE company_id = $1 AND ($2::int IS NULL OR updated_at > now() - make_interval(secs => $2::int))
       ORDER BY updated_at`,
