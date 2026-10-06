@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { formatMoneyMinor } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, type CrmCompanyBilling } from "@partnersinbiz/pib-plugin-kit";
 
 export class BillingError extends Error {
   constructor(message: string) {
@@ -65,6 +65,46 @@ export function markSent<T extends InvoiceState>(invoice: T, now: string): T {
     customerSnapshot: invoice.customer,
     sentAt: now,
   };
+}
+
+function filled(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Lay a CRM company's billing details over a document's customer block. The CRM owns address, phone,
+ * VAT no. and reg. no. (nothing else sets them on a document, so a CRM null clears them); name and email
+ * stay as the document holds them (a hand override) and are only filled when empty. An email the CRM filled
+ * earlier is marked `emailFromCrm` and keeps following the CRM; a hand-typed one never has the mark. `null` details
+ * (a contact client, an unknown company, an old CRM) leave the document as it is.
+ */
+export function mergeCustomer(document: Record<string, unknown>, details: CrmCompanyBilling | null): Record<string, unknown> {
+  if (!details) return document;
+  const merged: Record<string, unknown> = { ...document };
+  const owned: Array<[string, unknown]> = [
+    ["address", details.address],
+    ["phone", details.phone],
+    ["vatNumber", details.vatNumber],
+    ["registrationNumber", details.registrationNumber],
+  ];
+  for (const [key, value] of owned) {
+    const text = filled(value);
+    if (text) merged[key] = text;
+    else delete merged[key];
+  }
+  const email = filled(details.email);
+  if (merged.emailFromCrm === true) {
+    // The address was filled from the CRM earlier, not typed by hand: it follows the CRM, so a changed or cleared billing email reaches drafts and recurring copies.
+    if (email) merged.email = email;
+    else {
+      delete merged.email;
+      delete merged.emailFromCrm;
+    }
+  } else if (!filled(merged.email) && email) {
+    merged.email = email;
+    merged.emailFromCrm = true;
+  }
+  return merged;
 }
 
 export function markPaid<T extends InvoiceState>(invoice: T): T {
