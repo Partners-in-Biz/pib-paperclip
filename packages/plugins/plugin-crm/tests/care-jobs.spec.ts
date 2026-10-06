@@ -20,7 +20,7 @@ describe("what the plugin declares", () => {
     expect(manifest.capabilities).toContain("http.outbound");
     expect(manifest.database?.coreReadTables).toEqual(expect.arrayContaining(["heartbeat_runs", "issues", "cost_events"]));
     expect(manifest.version).toBe(PLUGIN_VERSION);
-    expect(PLUGIN_VERSION).toBe("0.14.6");
+    expect(PLUGIN_VERSION).toBe("0.15.0");
   });
 
   it("declares each care tool once, with the tool surface the CRM already had, and every one runs as a tool and as a page action", async () => {

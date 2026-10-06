@@ -30,6 +30,8 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 - One record per person and company: the CRM refuses a second contact with the same email or phone (it updates the existing one) and a second company with the same website. Contacts that share an email are merged with \`merge-contacts\` (the Data Steward's job); likely but uncertain duplicates go to a person.
 - New and changed clients reach the other modules within 15 minutes. If a module does not show a client yet, wait 15 minutes; do not ask anyone to resync.
 
+A company's billing details (billingEmail, phone, address, vatNumber, registrationNumber on create-company / update-company) print in the Bill to block of its quotes and invoices, and a set billing email receives them. Fill them at onboarding from the signed proposal or ask the client; never guess a VAT or registration number. A person can lock them like any field.
+
 ## The client lifecycle
 1. **Lead.** New person or company (lifecycle \`lead\`). Qualify: an owner-led business that needs what we sell, with budget and a reason to start soon. Not a fit: log why and set lifecycle \`churned\`.
 2. **Qualified.** Set lifecycle \`prospect\` and \`create-deal\` with the value and the client. Fix a deal later with \`update-deal\` (title, value, its client, its stage): a deal without its client or value cannot be quoted, and the CRM overview lists it.

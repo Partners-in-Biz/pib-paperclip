@@ -97,6 +97,11 @@ export interface AccountDraft {
   companyId: string;
   name: string;
   domain: string | null;
+  billingEmail: string | null;
+  phone: string | null;
+  address: string | null;
+  vatNumber: string | null;
+  registrationNumber: string | null;
   lifecycle: Lifecycle;
   currency: string;
   custom: Record<string, unknown>;
@@ -209,7 +214,9 @@ export interface PatchResult {
   refused: string[];
 }
 
-const ACCOUNT_COLUMNS = ["name", "domain", "lifecycle", "currency", "tags"];
+export const BILLING_KEYS = ["billingEmail", "phone", "address", "vatNumber", "registrationNumber"] as const;
+export type BillingKey = (typeof BILLING_KEYS)[number];
+const ACCOUNT_COLUMNS = ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS];
 const CONTACT_COLUMNS = ["name", "emails", "phones", "lifecycle", "tags", "nextActionKind", "nextActionDueAt"];
 const DEAL_COLUMNS = ["title", "amountMinor", "currency", "stageId", "tags", "nextActionKind", "nextActionDueAt"];
 
@@ -328,10 +335,39 @@ export function applyFieldPatch(input: {
   return { columns, custom, facts, refused };
 }
 
+const BILLING_LIMITS: Record<BillingKey, number> = { billingEmail: 254, phone: 64, address: 500, vatNumber: 64, registrationNumber: 64 };
+const BILLING_LABELS: Record<BillingKey, string> = {
+  billingEmail: "Billing email",
+  phone: "Phone",
+  address: "Address",
+  vatNumber: "VAT number",
+  registrationNumber: "Registration number",
+};
+
+/** Trims; empty is null. The email is lowercased and must look like one; the address keeps its line breaks. VAT and registration numbers are not format-checked (clients may be foreign). */
+export function normalizeBillingField(key: BillingKey, value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string") throw new CrmError(`${BILLING_LABELS[key]} must be text`);
+  let text = value.trim();
+  if (key === "address") text = text.replace(/\r\n?/g, "\n");
+  if (!text) return null;
+  if (key === "billingEmail") {
+    text = normalizeEmail(text);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) throw new CrmError("Billing email is not a valid email address");
+  }
+  if (text.length > BILLING_LIMITS[key]) throw new CrmError(`${BILLING_LABELS[key]} must be at most ${BILLING_LIMITS[key]} characters`);
+  return text;
+}
+
 export function createAccount(input: {
   companyId: string;
   name: string;
   domain?: string | null;
+  billingEmail?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  vatNumber?: string | null;
+  registrationNumber?: string | null;
   lifecycle?: string;
   currency?: string;
   custom?: Record<string, unknown>;
@@ -347,6 +383,11 @@ export function createAccount(input: {
     companyId: input.companyId,
     name,
     domain: input.domain?.trim() || null,
+    billingEmail: normalizeBillingField("billingEmail", input.billingEmail),
+    phone: normalizeBillingField("phone", input.phone),
+    address: normalizeBillingField("address", input.address),
+    vatNumber: normalizeBillingField("vatNumber", input.vatNumber),
+    registrationNumber: normalizeBillingField("registrationNumber", input.registrationNumber),
     lifecycle: assertLifecycle(input.lifecycle ?? "lead"),
     currency: assertCurrency(input.currency ?? "ZAR"),
     custom: input.custom ?? {},
