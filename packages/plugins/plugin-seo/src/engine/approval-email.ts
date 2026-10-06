@@ -7,6 +7,8 @@ export interface ApprovalPage {
   title: string;
   pageUrl: string;
   link: string;
+  /** One sentence on why we changed it and how it should help search. */
+  why?: string;
 }
 
 export interface ApprovalEmailInput {
@@ -38,10 +40,10 @@ export function approvalEmail(input: ApprovalEmailInput): { subject: string; tex
   const open = `${n === 1 ? "the page" : `each of the ${n} pages`}`;
   const intro = `We have prepared ${n === 1 ? "a proposed change" : `proposed changes`} for ${input.siteName}. Nothing on your website changes until you approve it.`;
   const how = `Open ${open} below. You will see your page with the proposed changes on it. Press Approve if you are happy, or Request changes and tell us what to adjust. We only publish what you approve. The links stay open for ${input.openDays} days.`;
-  const lines = input.pages.map((p, i) => `${i + 1}. ${p.title}\n   ${p.pageUrl}\n   ${p.link}`);
+  const lines = input.pages.map((p, i) => `${i + 1}. ${p.title}\n   ${p.pageUrl}\n   ${p.link}${p.why ? `\n   Why: ${p.why}` : ""}`);
   const text = [`${greeting(input.firstNames)},`, "", intro, "", how, "", ...lines, "", "Kind regards,", input.signature].join("\n");
   const items = input.pages
-    .map((p) => `<li style="margin:0 0 12px"><strong>${esc(p.title)}</strong><br><span style="color:#555">${esc(p.pageUrl)}</span><br><a href="${esc(p.link)}">View and approve</a></li>`)
+    .map((p) => `<li style="margin:0 0 12px"><strong>${esc(p.title)}</strong><br><span style="color:#555">${esc(p.pageUrl)}</span><br><a href="${esc(p.link)}">View and approve</a>${p.why ? `<br><span>Why: ${esc(p.why)}</span>` : ""}</li>`)
     .join("");
   const html = [
     `<p>${esc(greeting(input.firstNames))},</p>`,

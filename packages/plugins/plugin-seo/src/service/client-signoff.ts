@@ -19,6 +19,8 @@ import { createHash } from "node:crypto";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { approvalEmail, approverAddresses } from "../engine/approval-email.js";
+import type { PreviewChanges } from "../engine/preview.js";
+import { whyOf } from "../engine/why.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { SIGNOFF_MODES, type SignoffMode } from "../engine/sprint.js";
 import { actorLabel, companyInfo, errorMessage, oneOf, reqStr, SeoError, type Actor, type Env, type Params } from "./common.js";
@@ -119,10 +121,10 @@ export function draftKeyFor(sprintId: string, previewIds: string[]): string {
 }
 
 /** Passed, unanswered, not yet in a draft, and its task is parked on the client (every preview of the task has been looked at): the newest preview of each page. */
-async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date }>> {
+async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
   const rows = await env.ctx.db.query(
-    `SELECT id, page_url, title, reviewed_at FROM (
-        SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, status, review_status, draft_key, expires_at, task_id
+    `SELECT id, page_url, title, reviewed_at, changes FROM (
+        SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, changes, status, review_status, draft_key, expires_at, task_id
           FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY page_url, created_at DESC
       ) latest
       WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NULL AND expires_at > now()
@@ -130,7 +132,7 @@ async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id:
       ORDER BY reviewed_at`,
     [sprint.companyId, sprint.id],
   );
-  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)) }));
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)), why: whyOf((typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {}) as PreviewChanges) }));
 }
 
 /** Runs from the 5-minute job: one approval email draft per batch of passed previews, per auto sprint. Returns how many drafts it requested. */
@@ -158,7 +160,7 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
       const mail = approvalEmail({
         siteName: sprint.siteName,
         firstNames: to.map((a) => a.name.split(/\s+/)[0] ?? ""),
-        pages: waiting.map((p) => ({ title: p.title, pageUrl: p.pageUrl, link: previewLink(p.pageUrl, p.id) })),
+        pages: waiting.map((p) => ({ title: p.title, pageUrl: p.pageUrl, link: previewLink(p.pageUrl, p.id), why: p.why })),
         openDays: PREVIEW_OPEN_DAYS,
         signature: "Partners in Biz",
       });

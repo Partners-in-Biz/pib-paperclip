@@ -8,6 +8,7 @@ import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { checkClaims } from "../engine/claims.js";
+import { checkWhy } from "../engine/why.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
@@ -58,6 +59,9 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
   };
+  const why = checkWhy(str(params, "why", { max: 1000 }));
+  if (why.error) throw new SeoError(why.error);
+  if (why.why) changes.why = why.why;
   const allowReplace = bool(params, "allowReplace") ?? false;
   if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css) throw new SeoError("Send at least one proposed change: title, metaDescription, h1 or bodyHtml.");
   let taskId = str(params, "taskId", { max: 80 });
@@ -73,7 +77,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
 
   // The claims rule: statements about how the business works need an approved wording from the fact sheet.
   const sheet = await loadFacts(env, companyId, sprintId);
-  const violations = checkClaims([changes.title, changes.metaDescription, changes.h1, changes.bodyHtml], sheet.facts);
+  const violations = checkClaims([changes.title, changes.metaDescription, changes.h1, changes.bodyHtml, changes.why], sheet.facts);
   if (violations.length > 0) {
     const approved = sheet.facts.filter((f) => f.kind === "say").slice(0, 12).map((f) => `- ${f.text}`);
     throw new SeoError(

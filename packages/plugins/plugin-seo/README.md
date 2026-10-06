@@ -95,6 +95,9 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.18: a one-sentence why under each page of the approval email
+`create-preview` takes `why`: one plain sentence for the client on why the change was made and how it should help search. It is stored with the preview's changes (not shown on the preview page) and printed under the live-page and preview links in the approval email draft. A sentence that promises a result (guarantee, will rank, number one, a percentage) is refused, and the claims rule also reads it. A preview made without one gets a plain sentence from the fields it changes (`engine/why.ts`), so no page in an email is without one.
+
 ## 0.26.17: a dropped page no longer expires a newer revision; draft-progress-report
 Found on Agri Auctions SA (2026-10-06): `dropFailingPage` expired every live preview of a page, including a newer revision made while the Senior Developer was working, so good copy vanished with the failing one. It now does nothing when a newer pending or passed preview of the page exists, and otherwise expires only previews made at or before the one the Reviewer failed.
 

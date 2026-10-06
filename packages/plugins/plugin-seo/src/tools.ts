@@ -280,6 +280,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       bodyMode: choice(["before", "after", "replace"], "before (default, above the existing content), after (below it) or replace (whole content area; needs allowReplace)"),
       css: text("Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). Imports, scripts and event handlers are removed."),
       allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
+      why: text("One sentence for the client, under this page in their approval email: why we changed it and how it should help search. Say should or helps; never promise a result."),
       label: text("Short name for the proposal, shown on the Needs you item."),
     }),
   },
