@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertAgentMaySend, assertFrequency, assertQuoteStatus, assertTaxRate, buildInvoiceHtml, canSeeInvoice, createCreditNote, createExpense, createPayment, lineTotal, markPaid, markSent, nextNumber, nextRunDate, totalWithTax, type InvoiceState } from "../src/domain.js";
+import { assertAgentMaySend, assertFrequency, assertQuoteStatus, assertTaxRate, buildInvoiceHtml, canSeeInvoice, createCreditNote, createExpense, createPayment, lineTotal, markPaid, markSent, mergeCustomer, nextNumber, nextRunDate, totalWithTax, type InvoiceState } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 
 const draft: InvoiceState = {
@@ -157,5 +157,44 @@ describe("billing credit notes", () => {
   it("rejects a zero or negative amount", () => {
     expect(() => createCreditNote({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: 0 })).toThrow(/positive integer/);
     expect(() => createCreditNote({ companyId: "workspace-a", invoiceId: "inv-1", amountMinor: -5 })).toThrow(/positive integer/);
+  });
+});
+
+describe("mergeCustomer", () => {
+  const details = { email: "ap@acme.test", phone: "021 555 0100", address: "1 Long Street", vatNumber: "4123456789", registrationNumber: "2019/1" };
+  const empty = { email: null, phone: null, address: null, vatNumber: null, registrationNumber: null };
+
+  it("returns the document as it is without details", () => {
+    const doc = { name: "Ada", email: "ada@x.test", address: "old" };
+    expect(mergeCustomer(doc, null)).toBe(doc);
+  });
+
+  it("lets the CRM win for address, phone, VAT no. and reg. no.", () => {
+    const doc = { name: "Acme", address: "old", phone: "old", vatNumber: "old", registrationNumber: "old" };
+    expect(mergeCustomer(doc, details)).toMatchObject({ name: "Acme", address: "1 Long Street", phone: "021 555 0100", vatNumber: "4123456789", registrationNumber: "2019/1" });
+  });
+
+  it("clears those four when the CRM has none, and does not change the input", () => {
+    const doc = { name: "Acme", address: "old", phone: "old", vatNumber: "old", registrationNumber: "old" };
+    expect(mergeCustomer(doc, empty)).toEqual({ name: "Acme" });
+    expect(doc.address).toBe("old");
+  });
+
+  it("treats blank CRM values as none", () => {
+    expect(mergeCustomer({ name: "Acme", vatNumber: "old" }, { ...empty, vatNumber: "  " })).toEqual({ name: "Acme" });
+  });
+
+  it("keeps a name and email the document holds, and fills the email when empty", () => {
+    expect(mergeCustomer({ name: "Acme Trading", email: "peter@acme.test" }, details)).toMatchObject({ name: "Acme Trading", email: "peter@acme.test" });
+    expect(mergeCustomer({ name: "Acme", email: "" }, details)).toMatchObject({ name: "Acme", email: "ap@acme.test" });
+    expect(mergeCustomer({ name: "Acme" }, details)).toMatchObject({ email: "ap@acme.test" });
+  });
+
+  it("lets an email the CRM filled follow the CRM, and drops it when the CRM clears it", () => {
+    const filled = mergeCustomer({ name: "Acme" }, details);
+    expect(mergeCustomer(filled, { ...details, email: "new@acme.test" })).toMatchObject({ email: "new@acme.test", emailFromCrm: true });
+    const cleared = mergeCustomer(filled, { ...details, email: null });
+    expect(cleared.email).toBeUndefined();
+    expect(cleared.emailFromCrm).toBeUndefined();
   });
 });

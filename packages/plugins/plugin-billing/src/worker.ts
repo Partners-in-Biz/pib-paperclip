@@ -103,7 +103,7 @@ import {
   table,
   type InvoiceRow,
 } from "./db.js";
-import { clientBillingSummary, assertFrequency, assertTaxRate, BillingError, buildInvoiceHtml, canSeeInvoice, QUOTE_STATUSES, type ClientSummary } from "./domain.js";
+import { clientBillingSummary, assertFrequency, assertTaxRate, BillingError, buildInvoiceHtml, canSeeInvoice, mergeCustomer, QUOTE_STATUSES, type ClientSummary } from "./domain.js";
 import { BILLING_DONE_CHECKS } from "./donechecks.js";
 import { plannedReminders, runDunningFor } from "./dunning.js";
 import { DEAL_WON_EVENT, onDealWon, syncDraftsDigest, syncOverdueDigest } from "./followups.js";
@@ -120,6 +120,7 @@ import {
   copyLines,
   createInvoice,
   createQuote,
+  customerDetails,
   customerNameOf,
   documentPdf,
   invoiceView,
@@ -372,7 +373,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
@@ -1000,6 +1001,7 @@ async function runRecurring(ctx: PluginContext) {
           recurring_id: schedule.id,
           recurring_key: key,
         });
+        invoice.customer = mergeCustomer(asObject(invoice.customer), await customerDetails(ctx, template.company_id, template.customer_kind, template.customer_ref));
         if ((await insertInvoice(ctx, invoice)) > 0) {
           await copyLines(ctx, template.id, invoice.id, schedule.company_id);
           await recomputeInvoice(ctx, invoice);

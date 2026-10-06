@@ -55,7 +55,7 @@ describe("the invoice-draft skill", () => {
   it("only names Billing tools that exist and says what only a person can do", () => {
     const names = new Set(BILLING_TOOLS.map((t) => t.name));
     const mentioned = [...INVOICE_DRAFT_SKILL.matchAll(/`([a-z]+(?:-[a-z]+)+)`/g)].map((m) => m[1]!).filter((n) => !n.startsWith("za-"));
-    const billingLike = mentioned.filter((n) => /^(create|add|update|remove|list|request|record|set|convert|invoice|quote|customer|bill|start|stop|log|pause|resume|billing)-/.test(n) && !["create-company", "create-contact", "create-draft", "find-records", "list-deal-products"].includes(n));
+    const billingLike = mentioned.filter((n) => /^(create|add|update|remove|list|request|record|set|convert|invoice|quote|customer|bill|start|stop|log|pause|resume|billing)-/.test(n) && !["create-company", "create-contact", "create-draft", "find-records", "list-deal-products", "update-company"].includes(n));
     for (const name of billingLike) expect(names.has(name), name).toBe(true);
     for (const tool of ["request-invoice-send", "request-quote-send", "request-payment-check", "request-reminder-send", "record-payment", "create-credit-note", "convert-quote", "set-quote-status", "billing-report", "list-open-invoices"]) {
       expect(INVOICE_DRAFT_SKILL).toContain(`\`${tool}\``);
