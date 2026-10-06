@@ -1,6 +1,6 @@
 # PiB Platform: agent guide
 
-This fork of Paperclip carries the Partners in Biz plugins: CRM, Social, Billing, Mailbox, SEO, Partners, Campaigns, Accounting, Payroll, Cockpit and Setup, the shared `pib-plugin-kit` and `pib-plugin-ui`, and the WordPress connector. They run inside our own Paperclip (one company; clients are CRM companies). Plugin install is instance-wide, plugin settings are per company.
+This fork of Paperclip carries the Partners in Biz plugins: CRM, Social, Billing, Mailbox, SEO, Partners, Campaigns, Accounting, Payroll, Cockpit, Setup and Ads (not installed yet), the shared `pib-plugin-kit` and `pib-plugin-ui`, and the WordPress connector. They run inside our own Paperclip (one company; clients are CRM companies). Plugin install is instance-wide, plugin settings are per company.
 
 Every rule below was checked on 2026-10-06. If the code disagrees, trust the code and fix this file in your PR. The root `AGENTS.md` is Paperclip's own contributor guide for the whole product. Where it conflicts with this file, this file wins for work in this project.
 
@@ -27,7 +27,7 @@ Every rule below was checked on 2026-10-06. If the code disagrees, trust the cod
 
 ## What a release needs
 
-- Bump the plugin's version in its `package.json` and everywhere its manifest takes it from: a `version:` literal in `src/manifest.ts` or a `VERSION` constant it imports (it differs per plugin, so run `grep -rn "<old version>" packages/plugins/<pkg>/src`). The deploy refuses a build whose manifest version differs from `package.json`, or a version that is not higher than the live one.
+- Bump the plugin's version in its `package.json` and everywhere its manifest takes it from: a `version:` literal in `src/manifest.ts` or a `VERSION` constant it imports (it differs per plugin, so run `grep -rn "<old version>" packages/plugins/<pkg>/src`). The deploy refuses a build whose manifest version differs from `package.json`, or a version that is already live.
 - Migrations are additive. Add the next numbered file in `<plugin>/migrations/`. Never edit or delete one that has been applied: a rolled-back deploy keeps its migrations, so the old code must run on the newer schema.
 - A new migration file, or a changed `capabilities` or `coreReadTables` list, makes the release stop-first: it waits for a quiet moment, stops Paperclip and restarts it. Say so in the PR title or description. Anything else ships src-only with no restart.
 - A plugin's skill text reaches every company's agents on the next deploy. Say in the PR when a change alters what agents do for clients.
@@ -36,7 +36,7 @@ Every rule below was checked on 2026-10-06. If the code disagrees, trust the cod
 
 ## Deploying
 
-- You do not deploy. After the merge, the Delivery Lead asks the deploy runner: `pib-deploy-request deploy <plugin> --issue PAR-n --sha <merge commit on development>`. A src-only release goes at once. A stop-first release waits for 01:00 to 04:00 UTC and never forces a restart. The result comes back as a comment on the issue.
+- You do not deploy. After the merge, the Delivery Lead asks the deploy runner: `pib-deploy-request deploy <plugin> --issue PAR-n --sha <merge commit on development>`. A src-only release goes live within minutes. A stop-first release waits for the night window and for no agent run in flight, and never forces a restart. The result comes back as a comment on the issue.
 - The runner can refuse (a hold on that plugin, the daily cap, a failed earlier deploy). Read the reason in `pib-deploy-request status <id>` and comment it on the issue. Do not try another route: no ssh, no root, no deploy scripts.
 - Installing a plugin that is not on the server yet (`plugin-ads` is the first) is Peet's, not a normal release.
 
