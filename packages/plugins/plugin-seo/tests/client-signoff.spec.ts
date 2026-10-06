@@ -397,3 +397,32 @@ describe("a hand-off line with a custom key is taken back too, and needs-you-add
     await expect(needsYouAddTool(manual.env, "co-1", agent, ask)).resolves.toBeTruthy();
   });
 });
+
+describe("dropping a failing page does not kill a newer revision of it", () => {
+  const page = "https://agriauctionssa.co.za/category/skape-sheep/";
+  const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
+  const base = (): Route[] => [
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
+  ];
+  const run = async (newer: boolean) => {
+    const { reviewPreview } = await import("../src/service/preview.js");
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "reviewer", evidence: seniorTried })], routes: [...base(), [/SELECT 1 FROM plugin_seo_8099f8879a\.previews n WHERE n\.company_id = \$1/, () => (newer ? [{ "?column?": 1 }] : [])]] });
+    await reviewPreview(w.env, "co-1", { kind: "user", userId: "user-peet" }, { sprintId: "sp-real", previewId: "p1", verdict: "changes", notes: "Duplicate meta tags" });
+    return w;
+  };
+
+  it("leaves the page and its fresh preview alone while a newer revision is waiting", async () => {
+    const w = await run(true);
+    expect(executed(w, /SET expires_at = now\(\) WHERE company_id = \$1 AND sprint_id = \$2 AND page_url = \$3/)).toHaveLength(0);
+    expect(JSON.stringify(w.needsYou.at(-1)?.items ?? [])).not.toContain("Skipped after");
+  });
+
+  it("drops it, expiring only the previews up to the one reviewed, when there is no newer revision (the control)", async () => {
+    const w = await run(false);
+    const expiry = executed(w, /SET expires_at = now\(\) WHERE company_id = \$1 AND sprint_id = \$2 AND page_url = \$3/);
+    expect(expiry).toHaveLength(1);
+    expect(expiry[0]!.sql).toMatch(/created_at <= \(SELECT created_at FROM plugin_seo_8099f8879a\.previews WHERE id = \$4\)/);
+    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("Skipped after");
+  });
+});

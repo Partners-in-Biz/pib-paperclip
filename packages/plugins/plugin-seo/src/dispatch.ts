@@ -19,6 +19,7 @@ import * as redesign from "./service/redesign.js";
 import * as build from "./service/build.js";
 import * as signoff from "./service/signoff.js";
 import * as clientSignoff from "./service/client-signoff.js";
+import * as report from "./service/report.js";
 import * as preview from "./service/preview.js";
 import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
@@ -58,6 +59,7 @@ export const HANDLERS: Record<string, Handler> = {
   // Client previews
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
+  "draft-progress-report": (env, c, a, p) => report.draftProgressReport(env, c, a, p),
   "propose-client-facts": (env, c, a, p) => facts.proposeClientFacts(env, c, a, p),
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
   "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),

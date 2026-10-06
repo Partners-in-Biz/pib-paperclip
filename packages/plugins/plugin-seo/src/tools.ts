@@ -298,6 +298,18 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   {
+    group: "Sprints",
+    name: "draft-progress-report",
+    displayName: "Draft an SEO progress email",
+    description:
+      "Drafts, in the company's Gmail Drafts, an email to a client's owner about the sprints you name: per site what was done in weeks 0 to 3, the pages written and approved, what is still open and for whom, and what the plan does in weeks 4 to 7. The plugin writes it from the sprints' own records (nothing free-form), never sends it, and a person reads and sends it. Use it only when a person asked for a progress email.",
+    parametersSchema: schema(["sprintIds", "to"], {
+      sprintIds: list("The sprints the email covers (list-sprints gives the ids), at most 10"),
+      to: list("Who the draft is addressed to: one to five email addresses"),
+      greetingName: text("First name for the greeting, for example Pieter"),
+    }),
+  },
+  {
     group: "Site",
     name: "propose-client-facts",
     displayName: "Add wordings from the client's own pages to the fact sheet",

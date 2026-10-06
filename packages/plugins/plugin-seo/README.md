@@ -95,6 +95,11 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.26.17: a dropped page no longer expires a newer revision; draft-progress-report
+Found on Agri Auctions SA (2026-10-06): `dropFailingPage` expired every live preview of a page, including a newer revision made while the Senior Developer was working, so good copy vanished with the failing one. It now does nothing when a newer pending or passed preview of the page exists, and otherwise expires only previews made at or before the one the Reviewer failed.
+
+New agent tool `draft-progress-report` (`sprintIds`, `to`, `greetingName`): the plugin writes a per-site progress email (done in weeks 0 to 3, pages written and approved, what is open and for whom, the plan for weeks 4 to 7) from the sprints' own records (`engine/progress-email.ts`, `service/report.ts`) and asks the Mailbox for a Gmail draft. It never sends: a person reads and sends it.
+
 ## 0.26.16: an idle agent is told once per version that earlier tool failures are fixed
 Found on Agri Auctions SA (2026-10-05): after the NUL-byte fault in `create-preview` was fixed, the home-page agent kept answering "create-preview still fails, the plugin fix is not live yet" and never retried, so every wake ended with no concrete action (the host's "plan only" liveness state). `nudgeIdleAgentTasks` now comments once per plugin version and issue that the plugin was updated and a tool that failed earlier should be called again. The version lives in `namespace.ts` (`PLUGIN_VERSION`, used by the manifest).
 
