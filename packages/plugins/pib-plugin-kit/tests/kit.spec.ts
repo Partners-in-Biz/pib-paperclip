@@ -7,6 +7,7 @@ import { SecretResolver } from "../src/config.js";
 import { safeFetch } from "../src/safe-fetch.js";
 import { oauthCallbackUrl, parsePluginUiBase, requirePublicBaseUrl } from "../src/index.js";
 import { pluginUiBaseFromModule } from "../src/oauth-bridge/client.js";
+import { getCrmCompany, registerCrmProjection, type CrmCompanyBilling } from "../src/crm-projection.js";
 
 describe("crypto", () => {
   const keyring = buildKeyring({ purpose: "social", companyId: "co-1", secret: "a-very-long-secret-value" });
@@ -185,5 +186,70 @@ describe("urls", () => {
     expect(requirePublicBaseUrl("http://localhost:3100/")).toBe("http://localhost:3100");
     expect(() => requirePublicBaseUrl("http://example.com")).toThrow();
     expect(() => requirePublicBaseUrl("")).toThrow();
+  });
+});
+
+describe("CRM company projection billing option", () => {
+  const billing: CrmCompanyBilling = {
+    email: "accounts@acme.test",
+    phone: "+27 21 000 0000",
+    address: "1 Long St, Cape Town",
+    vatNumber: "4123456789",
+    registrationNumber: "2020/123456/07",
+  };
+  const event = { id: "c1", name: "Acme", domain: "acme.test", lifecycle: "customer", updatedAt: "2026-10-06T00:00:00Z" };
+
+  function harness(options?: Parameters<typeof registerCrmProjection>[2], queryRows: unknown[] = []) {
+    const handlers = new Map<string, (e: unknown) => Promise<void>>();
+    const execute = vi.fn(async (..._args: unknown[]) => ({ rowCount: 1 }));
+    const query = vi.fn(async (..._args: unknown[]) => queryRows);
+    const ctx = {
+      events: { on: (name: string, fn: (e: unknown) => Promise<void>) => void handlers.set(name, fn) },
+      db: { execute, query },
+      logger: { info: vi.fn() },
+    } as unknown as PluginContext;
+    if (options) registerCrmProjection(ctx, "plugin_x", options);
+    else registerCrmProjection(ctx, "plugin_x");
+    const emit = (payload: Record<string, unknown>) =>
+      handlers.get("plugin.partnersinbiz.crm.company.upserted")!({ companyId: "co-1", payload });
+    return { ctx, execute, query, emit };
+  }
+
+  it("keeps today's SQL and six parameters when the option is off", async () => {
+    for (const options of [undefined, { companyBilling: false }]) {
+      const { execute, emit } = harness(options);
+      await emit({ ...event, billing });
+      const [sql, params] = execute.mock.calls[0] as [string, unknown[]];
+      expect(params).toHaveLength(6);
+      expect(sql).not.toContain("billing");
+    }
+  });
+
+  it("writes billing as the seventh parameter when the option is on", async () => {
+    const { execute, emit } = harness({ companyBilling: true });
+    await emit({ ...event, billing });
+    const [sql, params] = execute.mock.calls[0] as [string, unknown[]];
+    expect(params).toHaveLength(7);
+    expect(params[6]).toBe(JSON.stringify(billing));
+    expect(sql).toContain("$7::jsonb");
+    expect(sql).toContain("billing = EXCLUDED.billing");
+  });
+
+  it("writes JSON null when the event has no billing key", async () => {
+    const { execute, emit } = harness({ companyBilling: true });
+    await emit(event);
+    const [, params] = execute.mock.calls[0] as [string, unknown[]];
+    expect(params).toHaveLength(7);
+    expect(params[6]).toBe("null");
+  });
+
+  it("reads billing only when asked", async () => {
+    const row = { id: "c1", name: "Acme", domain: null, lifecycle: null, billing };
+    const { ctx, query } = harness(undefined, [row]);
+    expect(await getCrmCompany(ctx, "plugin_x", "co-1", "c1")).toEqual(row);
+    expect(query.mock.calls[0]![0]).not.toContain("billing");
+    const withBilling = await getCrmCompany(ctx, "plugin_x", "co-1", "c1", { billing: true });
+    expect(query.mock.calls[1]![0]).toContain("billing");
+    expect(withBilling?.billing).toEqual(billing);
   });
 });
