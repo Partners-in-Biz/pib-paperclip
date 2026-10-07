@@ -48,6 +48,63 @@ import {
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { logger } from "../middleware/logger.js";
+
+export const TOOL_AUDIT_WRITE_FAILED_CODE = "audit_write_failed";
+
+const RETRYABLE_TOOL_CALL_EVENT_SQLSTATES = new Set(["40P01", "40001"]);
+const TOOL_CALL_EVENT_INSERT_ATTEMPTS = 3;
+const TOOL_CALL_EVENT_RETRY_BACKOFF_MS = 50;
+const toolAuditWriteFailures = new WeakSet<object>();
+
+/** Drizzle wraps the driver error; the SQLSTATE lives on `cause`. */
+export function postgresErrorFields(error: unknown) {
+  const source = (error as { cause?: unknown } | null)?.cause ?? error;
+  const pg = (typeof source === "object" && source !== null ? source : {}) as {
+    code?: unknown;
+    detail?: unknown;
+    constraint_name?: unknown;
+    constraint?: unknown;
+  };
+  return {
+    code: typeof pg.code === "string" ? pg.code : null,
+    detail: typeof pg.detail === "string" ? pg.detail : null,
+    constraintName:
+      typeof pg.constraint_name === "string"
+        ? pg.constraint_name
+        : typeof pg.constraint === "string"
+          ? pg.constraint
+          : null,
+  };
+}
+
+/**
+ * Retry a single-statement `tool_call_events` insert after a deadlock or
+ * serialization failure. The aborted statement left no row, so a retry cannot
+ * double-insert.
+ */
+export async function retryTransientToolCallEventInsert<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      const { code } = postgresErrorFields(error);
+      if (
+        attempt >= TOOL_CALL_EVENT_INSERT_ATTEMPTS ||
+        !code ||
+        !RETRYABLE_TOOL_CALL_EVENT_SQLSTATES.has(code)
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TOOL_CALL_EVENT_RETRY_BACKOFF_MS * attempt));
+    }
+  }
+}
+
+/** True when `writeAudit` failed while inserting its audit rows. */
+export function isToolAuditWriteFailure(error: unknown): boolean {
+  return typeof error === "object" && error !== null && toolAuditWriteFailures.has(error);
+}
 
 type ToolAccessContext = {
   companyId: string;
@@ -1489,6 +1546,7 @@ export function toolAccessPolicyService(db: Db) {
     input: ToolAccessDecisionInput,
     accessDecision: ToolAccessDecision,
     eventType: ToolAuditEventType = "policy_decision",
+    invocationId: string | null = null,
   ) {
     const loaded = await loadContext(input);
     const redaction = loaded.redaction;
@@ -1539,7 +1597,7 @@ export function toolAccessPolicyService(db: Db) {
           rateLimitState: accessDecision.rateLimitState ?? null,
         },
       }).returning();
-      const [toolCallEvent] = await db.insert(toolCallEvents).values({
+      const [toolCallEvent] = await retryTransientToolCallEventInsert(() => db.insert(toolCallEvents).values({
         companyId: input.companyId,
         eventType: eventType as typeof toolCallEvents.$inferInsert["eventType"],
         actorType: ctx.actorType,
@@ -1570,10 +1628,15 @@ export function toolAccessPolicyService(db: Db) {
           upstreamToolName: ctx.upstreamToolName,
           riskLevel: ctx.riskLevel,
         },
-      }).returning();
+      }).returning());
       return { legacyAuditEvent, toolCallEvent };
     } catch (error) {
       await recordToolRuntimeAuditWriteFailure(db, input.companyId);
+      logger.error(
+        { ...postgresErrorFields(error), toolName: ctx.toolName, eventType, invocationId },
+        "tool audit insert failed",
+      );
+      if (typeof error === "object" && error !== null) toolAuditWriteFailures.add(error);
       throw error;
     }
   }
@@ -1586,11 +1649,29 @@ export function toolAccessPolicyService(db: Db) {
     const idempotencyKey = input.request.idempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
     if (idempotencyKey) {
-      const [existing] = await db.select().from(toolInvocations).where(and(
-        eq(toolInvocations.companyId, input.companyId),
-        eq(toolInvocations.idempotencyKey, idempotencyKey),
-      ));
-      if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+      for (let pass = 0; pass < 2; pass += 1) {
+        const [existing] = await db.select().from(toolInvocations).where(and(
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.idempotencyKey, idempotencyKey),
+        ));
+        if (!existing) break;
+        // Only this service marks a row `audit_write_failed`, and only before the tool starts.
+        // Replaying it would hand the caller an empty result for a call that never ran, so free
+        // the key and record a fresh invocation. Every other status keeps replaying.
+        if (existing.status !== "failed" || existing.errorCode !== TOOL_AUDIT_WRITE_FAILED_CODE) {
+          return { invocation: existing, replayed: true, actionRequest: null };
+        }
+        const released = await db.update(toolInvocations).set({
+          idempotencyKey: `${idempotencyKey}:superseded:${existing.id}`,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(toolInvocations.id, existing.id),
+          eq(toolInvocations.idempotencyKey, idempotencyKey),
+          eq(toolInvocations.status, "failed"),
+          eq(toolInvocations.errorCode, TOOL_AUDIT_WRITE_FAILED_CODE),
+        )).returning({ id: toolInvocations.id });
+        if (released.length > 0) break;
+      }
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"

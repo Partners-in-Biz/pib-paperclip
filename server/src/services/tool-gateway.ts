@@ -130,7 +130,11 @@ import {
   remoteUrlCredentialMatchesPublicUrl,
 } from "./remote-url-credentials.js";
 import {
+  TOOL_AUDIT_WRITE_FAILED_CODE,
   createToolAccessDecisionCache,
+  isToolAuditWriteFailure,
+  postgresErrorFields,
+  retryTransientToolCallEventInsert,
   runContextSnapshotString,
   toolAccessPolicyService,
   type ToolAccessDecisionCache,
@@ -2098,7 +2102,8 @@ export function createToolGatewayService(
     tool?: ToolGatewayDescriptor | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
-    await db.insert(toolCallEvents).values({
+    try {
+      await retryTransientToolCallEventInsert(() => db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
       invocationId: input.invocationId ?? null,
       actionRequestId: input.actionRequestId ?? null,
@@ -2140,7 +2145,63 @@ export function createToolGatewayService(
               ...(input.metadata ?? {}),
             }
           : null,
-    });
+      }));
+    } catch (error) {
+      await recordToolRuntimeAuditWriteFailure(db, input.session.companyId);
+      logger.error(
+        {
+          ...postgresErrorFields(error),
+          toolName: input.toolName,
+          eventType: input.eventType,
+          invocationId: input.invocationId ?? null,
+        },
+        "tool call event insert failed",
+      );
+      // After the tool ran, a lost audit row must not turn a finished call into an error.
+      const afterExecution =
+        input.eventType === "call_completed" ||
+        (input.eventType === "call_failed" && input.reasonCode !== "elicitation_required");
+      if (!afterExecution) throw error;
+    }
+  }
+
+  /**
+   * Record the invocation and its policy audit. If the audit cannot be written, close a fresh
+   * invocation as failed so a retry with the same key records a new one instead of replaying
+   * a row that never ran.
+   */
+  async function recordInvocationWithAudit(
+    decisionInput: Parameters<typeof policyService.recordInvocation>[0],
+    accessDecision: Parameters<typeof policyService.recordInvocation>[1],
+  ) {
+    const recorded = await policyService.recordInvocation(decisionInput, accessDecision);
+    try {
+      await policyService.writeAudit(decisionInput, accessDecision, "policy_decision", recorded.invocation.id);
+    } catch (error) {
+      if (!isToolAuditWriteFailure(error)) throw error;
+      if (!recorded.replayed) {
+        await db
+          .update(toolInvocations)
+          .set({
+            status: "failed",
+            errorCode: TOOL_AUDIT_WRITE_FAILED_CODE,
+            errorMessage: "Tool audit could not be recorded",
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(toolInvocations.id, recorded.invocation.id),
+            eq(toolInvocations.status, "authorized"),
+          ));
+      }
+      throw new ToolGatewayHttpError(
+        503,
+        "Tool audit could not be recorded, retry the call",
+        TOOL_AUDIT_WRITE_FAILED_CODE,
+        { invocationId: recorded.invocation.id },
+      );
+    }
+    return recorded;
   }
 
   async function reflectToolActionInteractionLifecycle(input: {
@@ -9210,11 +9271,7 @@ export function createToolGatewayService(
         consumeRateLimit: true,
       });
       const accessDecision = await policyService.decide(decisionInput);
-      const recorded = await policyService.recordInvocation(
-        decisionInput,
-        accessDecision,
-      );
-      await policyService.writeAudit(decisionInput, accessDecision);
+      const recorded = await recordInvocationWithAudit(decisionInput, accessDecision);
       const invocationId = recorded.invocation.id;
 
       if (accessDecision.decision === "require_approval") {
@@ -10469,11 +10526,7 @@ export function createToolGatewayService(
         if (accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && SLACK_TOOLS.some(t => t.name === tool.upstreamToolName && t.risk === "approval")) {
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }
-        const recorded = await policyService.recordInvocation(
-          decisionInput,
-          accessDecision,
-        );
-        await policyService.writeAudit(decisionInput, accessDecision);
+        const recorded = await recordInvocationWithAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
         const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
@@ -10951,11 +11004,7 @@ export function createToolGatewayService(
         consumeRateLimit: true,
       });
       const accessDecision = await policyService.decide(decisionInput);
-      const recorded = await policyService.recordInvocation(
-        decisionInput,
-        accessDecision,
-      );
-      await policyService.writeAudit(decisionInput, accessDecision);
+      const recorded = await recordInvocationWithAudit(decisionInput, accessDecision);
       invocationId = recorded.invocation.id;
 
       if (recorded.replayed) {

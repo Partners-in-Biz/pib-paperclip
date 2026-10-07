@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -28,7 +28,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import {
+  postgresErrorFields,
+  retryTransientToolCallEventInsert,
+  toolAccessPolicyService,
+} from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 
@@ -853,6 +857,87 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(replay.invocation.id).toBe(first.invocation.id);
   });
 
+  it("releases the idempotency key of an invocation that failed on audit_write_failed", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "send_email" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: "send_email",
+        arguments: { to: "ops@example.com" },
+        sideEffecting: true,
+        idempotencyKey: "send-email-audit-failed",
+      },
+    };
+    const svc = toolAccessPolicyService(db);
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    await db.update(toolInvocations).set({
+      status: "failed",
+      errorCode: "audit_write_failed",
+      completedAt: new Date(),
+    }).where(eq(toolInvocations.id, first.invocation.id));
+
+    const second = await svc.recordInvocation(input, decision);
+
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.id).not.toBe(first.invocation.id);
+    expect(second.invocation.status).toBe("authorized");
+    const [old] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, first.invocation.id));
+    expect(old?.idempotencyKey).toBe(`${first.invocation.idempotencyKey}:superseded:${first.invocation.id}`);
+
+    const replay = await svc.recordInvocation(input, decision);
+    expect(replay.replayed).toBe(true);
+    expect(replay.invocation.id).toBe(second.invocation.id);
+  });
+
+  it("keeps replaying a failed invocation that did not fail on audit_write_failed", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "send_email" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: "send_email",
+        arguments: { to: "ops@example.com" },
+        sideEffecting: true,
+        idempotencyKey: "send-email-upstream-failed",
+      },
+    };
+    const svc = toolAccessPolicyService(db);
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    await db.update(toolInvocations).set({
+      status: "failed",
+      errorCode: "upstream_error",
+      completedAt: new Date(),
+    }).where(eq(toolInvocations.id, first.invocation.id));
+
+    const second = await svc.recordInvocation(input, decision);
+
+    expect(second.replayed).toBe(true);
+    expect(second.invocation.id).toBe(first.invocation.id);
+  });
+
   it("derives a canonical idempotency key for side-effecting calls without caller-supplied keys", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -1640,6 +1725,43 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("fails closed with audit_write_failed when the policy audit cannot be written, then lets the same key run again", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const run = await createRun(db, company.id, agent.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const call = () => gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "ship" },
+      idempotencyKey: "note-update-audit-fail",
+    });
+
+    await db.execute(sql`create or replace function public.test_fail_tool_call_event() returns trigger as $$ begin raise exception 'audit insert blocked'; end $$ language plpgsql`);
+    await db.execute(sql`create trigger test_fail_tool_call_event before insert on tool_call_events for each row execute function public.test_fail_tool_call_event()`);
+    try {
+      await expect(call()).rejects.toMatchObject({ status: 503, reasonCode: "audit_write_failed" });
+    } finally {
+      await db.execute(sql`drop trigger test_fail_tool_call_event on tool_call_events`);
+      await db.execute(sql`drop function public.test_fail_tool_call_event()`);
+    }
+
+    const [failed] = await db.select().from(toolInvocations);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "audit_write_failed" });
+
+    const retried = await call();
+    expect(retried).toMatchObject({ status: "completed" });
+    expect(retried.invocationId).not.toBe(failed!.id);
+  });
+
   it("rejects cross-company owner agents and credential secret refs before persisting tool access records", async () => {
     const company = await createCompany(db);
     const otherCompany = await createCompany(db);
@@ -1666,5 +1788,55 @@ describeEmbeddedPostgres("tool access policy service", () => {
         configPath: "headers.Authorization",
       }],
     })).rejects.toThrow(/same company/);
+  });
+});
+
+describe("tool call event insert retry", () => {
+  const pgError = (code: string) =>
+    Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("pg"), { code }) });
+
+  it("retries a deadlock and returns the later result", async () => {
+    let calls = 0;
+    const result = await retryTransientToolCallEventInsert(async () => {
+      calls += 1;
+      if (calls < 3) throw pgError("40P01");
+      return "ok";
+    });
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("gives up after three attempts", async () => {
+    let calls = 0;
+    await expect(retryTransientToolCallEventInsert(async () => {
+      calls += 1;
+      throw pgError("40001");
+    })).rejects.toThrow("Failed query");
+    expect(calls).toBe(3);
+  });
+
+  it("does not retry other errors", async () => {
+    let calls = 0;
+    await expect(retryTransientToolCallEventInsert(async () => {
+      calls += 1;
+      throw pgError("23503");
+    })).rejects.toThrow("Failed query");
+    expect(calls).toBe(1);
+  });
+
+  it("reads the SQLSTATE and constraint from the wrapped driver error", () => {
+    const error = Object.assign(new Error("Failed query"), {
+      cause: Object.assign(new Error("pg"), {
+        code: "23503",
+        detail: "Key is not present",
+        constraint_name: "tool_call_events_run_id_fkey",
+      }),
+    });
+    expect(postgresErrorFields(error)).toEqual({
+      code: "23503",
+      detail: "Key is not present",
+      constraintName: "tool_call_events_run_id_fkey",
+    });
+    expect(postgresErrorFields(new Error("plain"))).toEqual({ code: null, detail: null, constraintName: null });
   });
 });
