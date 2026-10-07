@@ -78,6 +78,21 @@ describe("the company operating manual (company-os)", () => {
   });
 });
 
+describe("hand-off issues always carry a project", () => {
+  // A task with no project has no repository: it runs in the agent's empty home folder (2026-10-07, PAR-1553 and PAR-877 failed
+  // at setup for the Code Reviewer this way). Both texts that teach the hand-off must say so.
+  it("the operating manual says to set projectId, with the PiB Platform case", () => {
+    const body = companySkillBody();
+    expect(body).toContain("always a `projectId`");
+    expect(body).toContain("PiB Platform");
+  });
+  it("the Operator skill says to set projectId, the PiB Platform case, and what to do when unsure", () => {
+    expect(OPERATOR_SKILL_BODY).toContain("**Always set `projectId`**");
+    expect(OPERATOR_SKILL_BODY).toContain("PiB Platform");
+    expect(OPERATOR_SKILL_BODY).toContain("instead of creating it without one");
+  });
+});
+
 describe("the Operator skill", () => {
   it("speaks of the owner, never a name, in the skill, the hire and the routines", () => {
     for (const s of SKILLS) expect([s.markdown, ...((s as { files?: Array<{ content: string }> }).files ?? []).map((f) => f.content)].join("\n"), s.slug).not.toMatch(/\bPeet\b/);
