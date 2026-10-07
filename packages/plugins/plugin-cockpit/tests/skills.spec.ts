@@ -93,6 +93,17 @@ describe("hand-off issues always carry a project", () => {
   });
 });
 
+describe("attaching a skill to another agent", () => {
+  it("the operating manual teaches pib-skill-request, the frontmatter rule, what it refuses and not to work around it", () => {
+    const body = companySkillBody();
+    expect(body).toContain("## Skills");
+    expect(body).toContain("`pib-skill-request attach <slug> --agent <Name> [--agent <Name>...] --issue <PAR-n>`");
+    expect(body).toContain("holding `name` (equal to the slug) and `description`");
+    expect(body).toContain("Delivery Lead, Operator, Reflection Coach, Developer, Senior Developer, Mac Builder");
+    expect(body).toContain("never work around a refusal");
+  });
+});
+
 describe("the Operator skill", () => {
   it("speaks of the owner, never a name, in the skill, the hire and the routines", () => {
     for (const s of SKILLS) expect([s.markdown, ...((s as { files?: Array<{ content: string }> }).files ?? []).map((f) => f.content)].join("\n"), s.slug).not.toMatch(/\bPeet\b/);
