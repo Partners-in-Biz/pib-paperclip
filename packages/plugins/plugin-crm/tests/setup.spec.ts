@@ -67,7 +67,7 @@ describe("CRM setup status", () => {
     expect(manifest.jobs?.map((job) => job.jobKey)).toContain("setup-status");
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["api.routes.register", "events.emit", "plugin.state.read"]));
     expect(manifest.version).toBe(PLUGIN_VERSION);
-    expect(PLUGIN_VERSION).toBe("0.15.0");
+    expect(PLUGIN_VERSION).toBe("0.15.1");
   });
 
   it("an unconfigured company: settings missing, the rest optional, settings link falls back to the plugin list", async () => {
