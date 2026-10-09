@@ -15543,6 +15543,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(after.runs).toHaveLength(4);
     });
 
+    it("a comment or attachment from the run before the chain does not exempt the cap", async () => {
+      for (const kind of ["comment", "attachment"] as const) {
+        const { agentId, issueId, runId, firstAt } = await seedChain(3);
+        const at = new Date(firstAt - 30 * 1000);
+        let commentId: string | null = null;
+        if (kind === "comment") {
+          await db.insert(issueComments).values({
+            companyId: (await db.select().from(issues).where(eq(issues.id, issueId)))[0].companyId,
+            issueId,
+            authorAgentId: agentId,
+            createdByRunId: runId,
+            body: "assignment run note",
+            createdAt: at,
+            updatedAt: at,
+          });
+        } else {
+          const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+          const assetId = randomUUID();
+          await db.insert(assets).values({
+            id: assetId,
+            companyId: issue.companyId,
+            provider: "local_disk",
+            objectKey: `par-1838/${assetId}`,
+            contentType: "image/png",
+            byteSize: 1,
+            sha256: assetId.replace(/-/g, ""),
+          });
+          await db.insert(issueAttachments).values({
+            companyId: issue.companyId,
+            issueId,
+            assetId,
+            issueCommentId: commentId,
+            originatingRunId: runId,
+            createdAt: at,
+          });
+        }
+        const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+        expect(result, kind).toMatchObject({ automaticWakeCapEscalated: 1, continuationRequeued: 0, recentProgressExempted: 0 });
+        expect((await readState(issueId, agentId)).issue.status).toBe("blocked");
+      }
+    });
+
     it("re-queues below the cap", async () => {
       const { agentId, issueId, chainRunIds } = await seedChain(2);
       const result = await heartbeatService(db).reconcileStrandedAssignedIssues();

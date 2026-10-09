@@ -1149,7 +1149,9 @@ export function recoveryService(
       if (!row.retryOfRunId || (next && next.id !== row.retryOfRunId)) break;
       chain.push(row);
     }
-    if (chain.length === 0) return { count: 0, runIds: [] as string[] };
+    if (chain.length === 0) {
+      return { count: 0, runIds: [] as string[], startedAt: null as Date | null };
+    }
 
     const chainIds = chain.map((row) => row.id);
     const oldest = chain[chain.length - 1];
@@ -1173,7 +1175,11 @@ export function recoveryService(
     const kept = foreignComment
       ? chain.filter((row) => row.createdAt > foreignComment.createdAt)
       : chain;
-    return { count: kept.length, runIds: kept.map((row) => row.id) };
+    return {
+      count: kept.length,
+      runIds: kept.map((row) => row.id),
+      startedAt: kept.length > 0 ? kept[kept.length - 1].createdAt : null,
+    };
   }
 
   async function hasActiveExecutionPath(
@@ -1961,9 +1967,14 @@ export function recoveryService(
     issueId: string,
     assigneeAgentId: string,
     windowMs: number,
-    options: { excludeCommentRunIds?: string[] } = {},
+    options: { excludeCommentRunIds?: string[]; notBefore?: Date | null } = {},
   ) {
-    const since = new Date(Date.now() - windowMs);
+    const windowStart = new Date(Date.now() - windowMs);
+    // PAR-1838: progress from before the chain began (the assignment run's
+    // comment, an earlier attachment) must not exempt the chain.
+    const since =
+      options.notBefore && options.notBefore > windowStart ? options.notBefore : windowStart;
+    const scoped = options.excludeCommentRunIds !== undefined;
     const excludeRunIds = options.excludeCommentRunIds ?? [];
     const [comment, attachment] = await Promise.all([
       db
@@ -1975,10 +1986,12 @@ export function recoveryService(
             eq(issueComments.issueId, issueId),
             // PAR-1838: people's comments count too; chain runs' own comments
             // never do (they are what kept the PAR-1748 loop alive).
-            or(
-              eq(issueComments.authorAgentId, assigneeAgentId),
-              isNotNull(issueComments.authorUserId),
-            ),
+            scoped
+              ? or(
+                  eq(issueComments.authorAgentId, assigneeAgentId),
+                  isNotNull(issueComments.authorUserId),
+                )
+              : eq(issueComments.authorAgentId, assigneeAgentId),
             gt(issueComments.createdAt, since),
             ...(excludeRunIds.length > 0
               ? [
@@ -5485,7 +5498,7 @@ export function recoveryService(
             issue.id,
             agentId,
             STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
-            { excludeCommentRunIds: chain.runIds },
+            { excludeCommentRunIds: chain.runIds, notBefore: chain.startedAt },
           );
           const hitHardCeiling = chain.count >= cap * 10;
           if (hitHardCeiling || (!progress && chain.count >= cap)) {
