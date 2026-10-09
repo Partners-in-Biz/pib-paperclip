@@ -1073,6 +1073,23 @@ describe("esp.prefer = marketing: SES carries marketing only", () => {
     expect(t.gmail.sent).toHaveLength(0);
   });
 
+  it("a Gmail from carried by SES drops the carrier's Reply-To, so replies land in Gmail", async () => {
+    const t = sesSetup(PREFER);
+    await addEspDomain(t, { provider: "ses", domain: "partnersinbiz.online", address: "hello@partnersinbiz.online", client: null, replyTo: "ops@partnersinbiz.online" });
+    expect(await handleSendRequested(t.env, sendEvent(campaign({ from: GMAIL })))).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.ses.sends[0]!.mime).not.toContain("ops@partnersinbiz.online");
+    expect(t.ses.sends[0]!.mime).not.toMatch(/^Reply-To:/mi);
+  });
+
+  it.each(["gmail", "transactional", "marketing"] as const)("a named Resend from, non-marketing, under provider = ses (prefer=%s) fails and never reaches SES", async (prefer) => {
+    const t = sesSetup({ esp: { ...SES_ON.esp, prefer } });
+    await addEspDomain(t, { provider: "resend", domain: "r.test", address: "hi@r.test", client: null, id: "esp-r" });
+    expect(await pick(t, invoice({ from: "hi@r.test" }))).toMatchObject({ kind: "failed" });
+    const result = await handleSendRequested(t.env, sendEvent(invoice({ from: "hi@r.test" })));
+    expect(result).toMatchObject({ status: "failed" });
+    expect(t.ses.sends).toHaveLength(0);
+  });
+
   it("a Gmail from on a domain SES has not verified fails naming the domain", async () => {
     const t = sesSetup(PREFER);
     await own(t, { provider: "ses" });

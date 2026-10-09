@@ -94,6 +94,8 @@ export async function pickSender(env: Pick<Env, "store" | "ctx" | "now">, loaded
     if (account && isEspProvider(account.provider) && account.status !== "disconnected") {
       // Under `marketing` an SES account takes marketing only.
       if (prefer === "marketing" && account.provider === "ses") return failure(`Not sent: ${email} is an Amazon SES account, and SES carries marketing mail only. This message goes out from a Gmail account.`);
+      // An account of the provider that is not configured is never picked: its mail would go out through the wrong adapter.
+      if (account.provider !== loaded.config.esp.provider) return failure(`Not sent: ${email} is a ${providerName(account.provider)} account, but this company's email provider is ${providerName(loaded.config.esp.provider)} (Mailbox settings, Email provider). Send from a ${providerName(loaded.config.esp.provider)} address or a Gmail address.`);
       return espPick(env, account);
     }
     return { kind: "gmail", account: account && gmailUsable(account) ? account : null, domain: null };

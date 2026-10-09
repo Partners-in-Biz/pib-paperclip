@@ -330,7 +330,9 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
     const generation = generationOf(before);
     const providerKey = loaded.config.esp.provider;
     // A Gmail `from` carried by this account: the From header (and the SES envelope sender) is the named address, which sits on the verified domain; replies reach that mailbox.
-    const built = buildEspEmail({ companyId, account: pick.fromAddress ? { ...account, address: pick.fromAddress } : account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation, sendTag: providerKey === "ses" });
+    // The carrier's Reply-To and display name do not apply to it: the only Reply-To is the request's own.
+    const named = pick.fromAddress ? await env.store.findAccountByAddress(companyId, pick.fromAddress) : null;
+    const built = buildEspEmail({ companyId, account: pick.fromAddress ? { ...account, address: pick.fromAddress, reply_to: null, from_name: named?.from_name ?? null } : account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation, sendTag: providerKey === "ses" });
     // After a definitive answer the next attempt (by hand, once the cause is fixed) must not reuse the key the provider may have kept with it,
     // and the mark of an earlier unanswered attempt belonged to that key. (Only the notes change: `delivery_status` is the provider's, and a
     // "failed" left there would hide a later "delivered" once the retry by hand goes out.)
