@@ -186,6 +186,24 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// PAR-1838: cap on consecutive automatic continuation wakes the stranded-issue
+// sweeper queues for one `in_progress` issue without a status change. Read per
+// sweep so a restart with a new env value (and tests) pick it up. Clamped 1..10;
+// anything unparsable or below 1 falls back to the default of 3. The hard
+// ceiling for chains kept alive only by attachments is 10 x the cap.
+export const DEFAULT_AUTOMATIC_WAKE_CAP = 3;
+export function readAutomaticWakeCap() {
+  const raw = Number(process.env.STRANDED_AUTOMATIC_WAKE_CAP);
+  const value = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_AUTOMATIC_WAKE_CAP;
+  return Math.min(10, Math.max(1, value));
+}
+
+type AutomaticWakeCapChain = {
+  runIds: string[];
+  cap: number;
+  kind: "cap" | "hard_ceiling";
+};
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -249,6 +267,7 @@ export type StrandedRecoveryCause =
   | "provider_transport_failed"
   | "provider_frame_too_large"
   | "execution_review_participant_recovery"
+  | "automatic_wake_cap"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 const NATIVE_RUNNER_RECOVERY_CAUSES = new Set<StrandedRecoveryCause>([
@@ -307,6 +326,8 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
       return "reviewer recovery failed";
     case "provider_quota":
       return "provider quota unavailable";
+    case "automatic_wake_cap":
+      return "automatic wake cap reached";
     case SUCCESSFUL_RUN_MISSING_STATE_REASON:
       return "missing disposition recovery failed";
     default:
@@ -1060,6 +1081,99 @@ export function recoveryService(
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
     }
     return { consecutive, latestFinishedAt };
+  }
+
+  // PAR-1838: the run of consecutive sweeper-queued continuation wakes ending at
+  // the issue's latest run. A run is in the chain while it carries the sweeper's
+  // own context (retryReason + source, never invocation source), succeeded, links
+  // to the next older row through retryOfRunId, and is newer than the last
+  // automatic_wake_cap escalation. A comment not written by a chain run (a person,
+  // another agent, a non-chain run of the assignee) drops every older chain run.
+  async function summarizeAutomaticContinuationChain(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    cap: number,
+  ) {
+    const [rows, lastCap] = await Promise.all([
+      db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(cap * 10 + 1),
+      db
+        .select({ createdAt: issueRecoveryActions.createdAt })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+            eq(issueRecoveryActions.cause, "automatic_wake_cap"),
+          ),
+        )
+        .orderBy(desc(issueRecoveryActions.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null),
+    ]);
+
+    const chain: typeof rows = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      const ctx = parseObject(row.contextSnapshot);
+      if (
+        readNonEmptyString(ctx.retryReason) !== "issue_continuation_needed" ||
+        readNonEmptyString(ctx.source) !==
+          "issue.productive_terminal_continuation_recovery" ||
+        row.status !== "succeeded" ||
+        (lastCap && row.createdAt <= lastCap.createdAt)
+      ) {
+        break;
+      }
+      // The next older row must be the run this one retried; the chain's
+      // oldest member links to the run that started it (not required to be a
+      // chain run, but must exist when the row has a retryOfRunId).
+      const next = rows[i + 1];
+      if (!row.retryOfRunId || (next && next.id !== row.retryOfRunId)) break;
+      chain.push(row);
+    }
+    if (chain.length === 0) return { count: 0, runIds: [] as string[] };
+
+    const chainIds = chain.map((row) => row.id);
+    const oldest = chain[chain.length - 1];
+    const foreignComment = await db
+      .select({ createdAt: issueComments.createdAt })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          gt(issueComments.createdAt, oldest.createdAt),
+          or(
+            isNull(issueComments.createdByRunId),
+            notInArray(issueComments.createdByRunId, chainIds),
+          ),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    const kept = foreignComment
+      ? chain.filter((row) => row.createdAt > foreignComment.createdAt)
+      : chain;
+    return { count: kept.length, runIds: kept.map((row) => row.id) };
   }
 
   async function hasActiveExecutionPath(
@@ -1847,8 +1961,10 @@ export function recoveryService(
     issueId: string,
     assigneeAgentId: string,
     windowMs: number,
+    options: { excludeCommentRunIds?: string[] } = {},
   ) {
     const since = new Date(Date.now() - windowMs);
+    const excludeRunIds = options.excludeCommentRunIds ?? [];
     const [comment, attachment] = await Promise.all([
       db
         .select({ id: issueComments.id })
@@ -1857,8 +1973,21 @@ export function recoveryService(
           and(
             eq(issueComments.companyId, companyId),
             eq(issueComments.issueId, issueId),
-            eq(issueComments.authorAgentId, assigneeAgentId),
+            // PAR-1838: people's comments count too; chain runs' own comments
+            // never do (they are what kept the PAR-1748 loop alive).
+            or(
+              eq(issueComments.authorAgentId, assigneeAgentId),
+              isNotNull(issueComments.authorUserId),
+            ),
             gt(issueComments.createdAt, since),
+            ...(excludeRunIds.length > 0
+              ? [
+                  or(
+                    isNull(issueComments.createdByRunId),
+                    notInArray(issueComments.createdByRunId, excludeRunIds),
+                  ),
+                ]
+              : []),
           ),
         )
         .limit(1)
@@ -2393,7 +2522,19 @@ export function recoveryService(
     issue: typeof issues.$inferSelect;
     recoveryCause: StrandedRecoveryCause;
     latestRun: LatestIssueRun;
+    automaticWakeChain?: AutomaticWakeCapChain | null;
   }) {
+    // A re-armed issue that caps again is a new chain: key on its oldest run.
+    const oldestChainRunId = input.automaticWakeChain?.runIds.at(-1);
+    if (input.recoveryCause === "automatic_wake_cap" && oldestChainRunId) {
+      return [
+        "source_scoped_recovery",
+        input.issue.companyId,
+        input.issue.id,
+        input.recoveryCause,
+        oldestChainRunId,
+      ].join(":");
+    }
     if (input.recoveryCause === "workspace_validation_failed") {
       const workspaceFingerprint = readWorkspaceValidationFingerprint(
         input.latestRun,
@@ -2441,6 +2582,7 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     recoveryCause: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    automaticWakeChain?: AutomaticWakeCapChain | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
     const workspaceValidation =
@@ -2467,6 +2609,13 @@ export function recoveryService(
       maxHandoffAttempts:
         input.successfulRunHandoffEvidence?.maxHandoffAttempts ?? null,
       ...(workspaceValidation ? { workspaceValidation } : {}),
+      ...(input.automaticWakeChain
+        ? {
+            automaticWakeChainRunIds: input.automaticWakeChain.runIds,
+            automaticWakeCap: input.automaticWakeChain.cap,
+            automaticWakeCapKind: input.automaticWakeChain.kind,
+          }
+        : {}),
     };
   }
 
@@ -2476,6 +2625,7 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    automaticWakeChain?: AutomaticWakeCapChain | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
@@ -2507,6 +2657,7 @@ export function recoveryService(
         issue: input.issue,
         recoveryCause,
         latestRun: input.latestRun,
+        automaticWakeChain: input.automaticWakeChain,
       }),
       evidence: {
         ...buildStrandedRecoveryActionEvidence({
@@ -2515,6 +2666,7 @@ export function recoveryService(
           previousStatus: input.previousStatus,
           recoveryCause,
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+          automaticWakeChain: input.automaticWakeChain,
         }),
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
@@ -2554,6 +2706,8 @@ export function recoveryService(
                       : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
+                    : recoveryCause === "automatic_wake_cap"
+                      ? "Comment on the issue, reassign it, or set it back to in_progress to re-arm automatic recovery."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
       wakePolicy: isProviderQuotaWait
         ? {
@@ -3906,6 +4060,7 @@ export function recoveryService(
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    automaticWakeChain?: AutomaticWakeCapChain | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -3925,6 +4080,7 @@ export function recoveryService(
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      automaticWakeChain: input.automaticWakeChain,
     });
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
@@ -4341,6 +4497,7 @@ export function recoveryService(
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      automaticWakeCapEscalated: 0,
       dispositionRepairRequeued: 0,
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
@@ -5309,34 +5466,67 @@ export function recoveryService(
         }
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
-          // GGU-809: skip escalation if the assignee has shown visible progress
-          // (comment or attachment) within the exemption window. Falling
-          // through here lets the normal continuation-retry path enqueue the
-          // next wake, which is the correct behaviour for batch workflows.
-          const exempted = await hasRecentVisibleProgress(
+          // PAR-1838: the cap replaces the old one-wake brake in this lane.
+          // Below `cap` consecutive sweeper-queued wakes the sweeper re-queues;
+          // at `cap` with no progress from outside the chain (a person's
+          // comment, an attachment) it blocks the issue. GGU-809 batch
+          // workflows attach per heartbeat, so attachments keep them running up
+          // to the hard ceiling of 10 x cap. The cap check runs before the
+          // budget check: blocking is a visibility action, not an invocation.
+          const cap = readAutomaticWakeCap();
+          const chain = await summarizeAutomaticContinuationChain(
+            issue.companyId,
+            issue.id,
+            agentId,
+            cap,
+          );
+          const progress = await hasRecentVisibleProgress(
             issue.companyId,
             issue.id,
             agentId,
             STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+            { excludeCommentRunIds: chain.runIds },
           );
-          if (!exempted) {
+          const hitHardCeiling = chain.count >= cap * 10;
+          if (hitHardCeiling || (!progress && chain.count >= cap)) {
+            const kind = hitHardCeiling ? "hard_ceiling" : "cap";
+            const runList = chain.runIds.map((id) => `\`${id}\``).join(", ");
             const updated = await escalateStrandedAssignedIssue({
               issue,
               previousStatus: "in_progress",
               latestRun: successfulRun,
-              comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              recoveryCause: "automatic_wake_cap",
+              automaticWakeChain: { runIds: chain.runIds, cap, kind },
+              notice: {
+                title: "Automatic wake cap reached",
+                tone: "danger",
+                body: hitHardCeiling
+                  ? `Paperclip woke this issue ${chain.count} times automatically (hard ceiling ${cap * 10}) while it kept attaching files but never changed status. Moving it to \`blocked\`. ` +
+                    `A comment from a person, a reassignment, or setting it back to \`in_progress\` re-arms automatic recovery. Runs (newest first): ${runList}.`
+                  : `Paperclip woke this issue ${chain.count} times automatically (cap ${cap}) with no status change and no progress from outside those runs. Moving it to \`blocked\`. ` +
+                    `A comment from a person, a reassignment, or setting it back to \`in_progress\` re-arms automatic recovery. Runs (newest first): ${runList}.`,
+              },
             });
             if (updated) {
+              result.automaticWakeCapEscalated += 1;
               result.escalated += 1;
               result.issueIds.push(issue.id);
+              logger.warn(
+                {
+                  issueId: issue.id,
+                  identifier: issue.identifier,
+                  cap,
+                  kind,
+                  runIds: chain.runIds,
+                },
+                "stranded issue hit automatic wake cap",
+              );
             } else {
               result.skipped += 1;
             }
             continue;
           }
-          result.recentProgressExempted += 1;
+          if (progress) result.recentProgressExempted += 1;
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
