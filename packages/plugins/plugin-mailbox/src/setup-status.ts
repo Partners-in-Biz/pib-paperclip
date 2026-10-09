@@ -431,7 +431,7 @@ export async function publishAllSetupStatus(ctx: PluginContext, store: AccountSo
 async function emailProviderItems(ctx: PluginContext, companyId: string, loaded: Awaited<ReturnType<typeof loadMailboxConfig>>, store: AccountSource, settings: string, settingsDone: boolean): Promise<SetupItem[]> {
   const esp = loaded.config.esp;
   const readiness = espReadiness(esp);
-  const webhookUrl = espWebhookUrl(loaded.config.publicBaseUrl);
+  const webhookUrl = espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider);
   const state = await readEspState(ctx, companyId);
   const refused = Boolean(state && !state.ok);
   const domains = store.listEspDomains ? await store.listEspDomains(companyId).catch(() => []) : [];

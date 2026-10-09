@@ -13,6 +13,7 @@ import type { DnsRecord, EspDomainRow } from "../../src/esp/types.js";
 import { rememberCompany } from "../../src/setup-status.js";
 import type { EspAccountQuota } from "../../src/esp/types.js";
 import { fakeDns } from "./dns.js";
+import { markSesTopicConfirmed } from "../../src/esp/topic-state.js";
 import { FakeSes, hostFetch, SES_ACCESS_KEY_ID, SES_CONFIGURATION_SET, SES_REGION, SES_SECRET_ACCESS_KEY } from "./fake-ses.js";
 import { CO } from "./memory.js";
 import { setup } from "./setup.js";
@@ -62,8 +63,16 @@ export function espSetup(config: Record<string, unknown> = {}) {
   return { ...base, provider, dns };
 }
 
+/** The SNS topic of the SES setups below (same region as SES_REGION). */
+export const SES_TOPIC_ARN = "arn:aws:sns:eu-north-1:123456789012:pib-ses-events";
+
+/** Records the topic as confirmed in company state, as T2's webhook does. Sync in effect: the test state store writes at once. */
+export function confirmSesTopic(ctx: { state: Parameters<typeof markSesTopicConfirmed>[0]["state"] }, topicArn = SES_TOPIC_ARN, companyId = CO): Promise<void> {
+  return markSesTopicConfirmed(ctx, companyId, topicArn, Date.now());
+}
+
 /** Amazon SES switched on: both keys and the configuration set saved (literals; the runtime reads a secret reference the same way). */
-export const SES_ON = { esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: SES_REGION, accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET } } };
+export const SES_ON = { esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: SES_REGION, accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET, snsTopicArn: SES_TOPIC_ARN } } };
 
 /** The mock provider behind SES settings: `idempotentSends` and `batching` false like the real adapter, so the sender's SES rules run without HTTP. */
 export function sesMockSetup(config: Record<string, unknown> = {}, options: { idempotentSends?: boolean; batching?: boolean; quota?: EspAccountQuota } = {}) {
@@ -71,6 +80,7 @@ export function sesMockSetup(config: Record<string, unknown> = {}, options: { id
   forgetLimiters();
   forgetWebhookCandidates();
   const base = setup({ ...SES_ON, ...config });
+  void confirmSesTopic(base.host.ctx);
   const provider = new MockEmailProvider({ idempotentSends: false, batching: false, ...options });
   base.env.esp = { provider: () => provider };
   base.env.dns = fakeDns(dnsVerified());
@@ -83,6 +93,7 @@ export function sesSetup(config: Record<string, unknown> = {}) {
   forgetLimiters();
   forgetWebhookCandidates();
   const base = setup({ ...SES_ON, ...config });
+  void confirmSesTopic(base.host.ctx);
   const ses = new FakeSes();
   base.env.esp = { fetch: hostFetch(ses.handle) };
   base.env.dns = fakeDns(dnsVerified());

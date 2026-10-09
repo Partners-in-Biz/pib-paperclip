@@ -211,8 +211,14 @@ export async function performSend(env: Env, companyId: string, request: MailSend
 
   const loaded = await loadMailboxConfig(env.ctx, companyId);
   const picked = await pickSender(env, loaded, companyId, request);
+  // Marketing the provider cannot take is refused for good, never moved to Gmail.
+  if (picked.kind === "failed") {
+    const message = picked.problem!;
+    await env.store.recordSendFailure({ key: request.key, companyId, sourcePlugin: options.sourcePlugin, accountId: null, fromAddress: request.from ?? null, to: request.to, subject: request.subject, context: request.context, request }, message, true, []);
+    return failed(request, message);
+  }
   // A send-only account of the email provider is sent by its own path (the same answer, the same rules around it).
-  if (picked.kind === "esp") return performEspSend(env, loaded, { account: picked.account!, domain: picked.domain }, request, options, before, problem);
+  if (picked.kind === "esp") return performEspSend(env, loaded, { account: picked.account!, domain: picked.domain, fromAddress: picked.fromAddress }, request, options, before, problem);
   const account = picked.account;
   const record: SendRecordInput = {
     key: request.key,

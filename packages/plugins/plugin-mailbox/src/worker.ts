@@ -181,7 +181,7 @@ const plugin = definePlugin({
         clientRef: optionalString(params, "clientRef") ?? null,
         region: optionalString(params, "region") ?? null,
         createdBy: userId,
-        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider) },
       });
       return { created, ...view };
     });
@@ -419,7 +419,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
         clientRef: optionalString(body, "clientRef") ?? null,
         region: optionalString(body, "region") ?? null,
         createdBy: `agent:${run.agentId}`,
-        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider) },
       });
       return { content: `${view.domain}: ${view.ready ? "ready to send" : view.status === "verified" ? "verified" : "waiting for DNS records"}${created ? " (registered now)" : ""}`, data: { created, ...view } };
     }
@@ -915,7 +915,7 @@ async function sendingDomainsOverview(ctx: PluginContext, companyId: string, dom
     enabled: config.enabled,
     ready: { domains: readiness.domains, sending: readiness.sending },
     blockers: readiness.blockers,
-    webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl),
+    webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider),
     /** What the provider last answered about the Mailbox's key: set when it was refused or the quota is used up. */
     providerState: state && !state.ok ? { code: state.code, detail: state.detail, at: state.at } : null,
     domains: views,

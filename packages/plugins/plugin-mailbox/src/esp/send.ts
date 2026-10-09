@@ -84,6 +84,8 @@ export const ESP_MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 export interface EspPick {
   account: AccountRow;
   domain: EspDomainRow | null;
+  /** A Gmail address the request named, carried by this (SES owner) account: the From header is this address, the sending account stays `account`. */
+  fromAddress?: string;
 }
 
 const recipientsOf = (request: Pick<MailSendRequested, "to" | "cc" | "bcc">) => [...request.to, ...(request.cc ?? []), ...(request.bcc ?? [])];
@@ -327,12 +329,13 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
 
     const generation = generationOf(before);
     const providerKey = loaded.config.esp.provider;
-    const built = buildEspEmail({ companyId, account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation, sendTag: providerKey === "ses" });
+    // A Gmail `from` carried by this account: the From header (and the SES envelope sender) is the named address, which sits on the verified domain; replies reach that mailbox.
+    const built = buildEspEmail({ companyId, account: pick.fromAddress ? { ...account, address: pick.fromAddress } : account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation, sendTag: providerKey === "ses" });
     // After a definitive answer the next attempt (by hand, once the cause is fixed) must not reuse the key the provider may have kept with it,
     // and the mark of an earlier unanswered attempt belonged to that key. (Only the notes change: `delivery_status` is the provider's, and a
     // "failed" left there would hide a later "delivered" once the retry by hand goes out.)
     const answeredForGood = async () => env.store.patchSendDelivery(companyId, request.key, { gen: generation + 1, maybeAcceptedAt: null }).catch(() => undefined);
-    if (built.replyToMissing) warnings.push(`No Reply-To: replies go to ${account.address}, which nobody reads. Give the account a reply-to address (add-sending-domain with replyTo, or the request's replyTo).`);
+    if (built.replyToMissing && !pick.fromAddress) warnings.push(`No Reply-To: replies go to ${account.address}, which nobody reads. Give the account a reply-to address (add-sending-domain with replyTo, or the request's replyTo).`);
 
     const provider = await espProviderFor(env, loaded, { forSending: true });
     if (!provider.ok) {
