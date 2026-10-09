@@ -146,6 +146,7 @@ const FULL_TTL_MS = 5_000;
 type Entry<T> = { at: number; promise: Promise<T> };
 const baseCache = new Map<string, Entry<BaseData>>();
 const fullCache = new Map<string, Entry<RawData>>();
+const liveCache = new Map<string, Entry<Record<string, CockpitSnapshot | null>>>();
 
 function shared<T>(cache: Map<string, Entry<T>>, key: string, ttl: number, now: () => number, fresh: boolean, run: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
@@ -161,14 +162,23 @@ function shared<T>(cache: Map<string, Entry<T>>, key: string, ttl: number, now: 
 
 /**
  * Everything the Cockpit needs for one company. `light` (the sidebar and the
- * widget) skips live snapshots, agents, activity, runs and backups. `fresh`
+ * widget) skips agents, activity, runs and backups. `fresh`
  * (the Refresh button) asks again instead of reusing a recent load.
  */
 export async function loadRawData(companyId: string, loadAction: LoadAction, light: boolean, options: { fresh?: boolean; now?: () => number } = {}): Promise<RawData> {
   const now = options.now ?? Date.now;
   const fresh = options.fresh === true;
   const base = () => shared(baseCache, companyId, BASE_TTL_MS, now, fresh, () => loadBase(companyId, loadAction));
-  if (light) return rawFrom(await base());
+  if (light) {
+    // The widget and sidebar read live snapshots too: the stored ones only move when a plugin
+    // publishes an event, so a payment recorded in Billing left the Overdue tile stale (PAR-1905).
+    const b = await base();
+    const live = await shared(liveCache, companyId, BASE_TTL_MS, now, fresh, async () => {
+      const keys = await livePluginKeys(b);
+      return Object.fromEntries(await Promise.all(keys.map(async (key) => [key, await fetchLiveSnapshot(key, companyId)] as const)));
+    });
+    return rawFrom(b, { live });
+  }
   return shared(fullCache, companyId, FULL_TTL_MS, now, fresh, async () => {
     const b = await base();
     const keys = await livePluginKeys(b);
@@ -249,6 +259,7 @@ export function clearSidebarCache(): void {
   sidebarCache.clear();
   baseCache.clear();
   fullCache.clear();
+  liveCache.clear();
 }
 
 /** Refreshes when you move between pages and once a minute (within the 30-second sharing window). */

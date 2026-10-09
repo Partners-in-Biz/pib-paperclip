@@ -16,7 +16,7 @@ import { createEnv } from "../src/register.js";
 import { buildView, type LoadResult } from "../src/view.js";
 import { ActivityList, AgentsTable, HealthList, TodayHero, WaitingRow, agentRunHref, agentStatusLabel } from "../src/ui/components.js";
 import { clearSidebarCache, livePluginKeys, loadRawData, setupCount, sharedSidebarView } from "../src/ui/data.js";
-import { Overview } from "../src/ui/index.js";
+import { Overview, prefixFromPath, withCompanyPrefix } from "../src/ui/index.js";
 import { dedupeKpis, isQuietKpi, kpiParts, readableDates, visibleKpis } from "../src/ui/kpis.js";
 import { clientOptions, listParams, plainMemoryMessage, refsFor, DEFAULT_FILTERS } from "../src/ui/memory-model.js";
 import { LegalCopiesNote } from "../src/ui/profile.js";
@@ -269,6 +269,28 @@ describe("loading once", () => {
     // Refresh asks again.
     await loadRawData("co-1", loadAction, false, { fresh: true });
     expect(loads).toBe(2);
+  });
+
+  it("the light load (widget, sidebar) reads live snapshots, not only the stored ones", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      const body = String(url) === "/api/plugins" ? JSON.stringify([{ pluginKey: "partnersinbiz.billing", id: "b1", status: "ready" }]) : "[]";
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    await loadRawData("co-live", async () => load, true);
+    expect(urls.some((u) => u.includes("/api/plugins/partnersinbiz.billing/api/cockpit?companyId=co-live"))).toBe(true);
+    expect(urls.filter((u) => u.includes("/heartbeat-runs"))).toHaveLength(0);
+  });
+
+  it("prefixes widget links with the company prefix once", () => {
+    expect(prefixFromPath("/PAR/dashboard")).toBe("PAR");
+    expect(prefixFromPath("/dashboard")).toBeNull();
+    expect(withCompanyPrefix("/cockpit", "PAR")).toBe("/PAR/cockpit");
+    expect(withCompanyPrefix("/billing?tab=invoices", "PAR")).toBe("/PAR/billing?tab=invoices");
+    expect(withCompanyPrefix("/PAR/billing", "PAR")).toBe("/PAR/billing");
+    expect(withCompanyPrefix("https://x.test/a", "PAR")).toBe("https://x.test/a");
+    expect(withCompanyPrefix("/cockpit", null)).toBe("/cockpit");
   });
 
   it("uses Setup's own count when it sends one", () => {
