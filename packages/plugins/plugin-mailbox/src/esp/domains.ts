@@ -6,7 +6,7 @@
  * so the client's reputation is the client's and an opt-out or a complaint lands on the client's list. The flow:
  *
  * 1. `addSendingDomain` (the tool `add-sending-domain`, or a person on the Mailbox page) registers the domain at the
- *    provider, stores the records the provider asked for, and creates a send-only account (`provider = resend`, status
+ *    provider, stores the records the provider asked for, and creates a send-only account (`provider` = the configured provider's key, status
  *    `pending`) for the From address. It returns the EXACT records to add, in order, and who adds them. **DNS is never
  *    edited by an agent**: the records go to the owner, or the client or their web host, in one ask.
  * 2. The Mailbox asks the provider to look at the DNS again every hour (and when `check-sender-domain` runs) and reads
@@ -179,6 +179,30 @@ export interface AddSendingDomainInput {
 
 /** What to tell the owner when the provider is not ready: the steps, in order, with where each is done. */
 export function ownerSteps(config: EspConfig, links: { settings: string; webhookUrl: string | null }): string[] {
+  return config.provider === "ses" ? sesOwnerSteps(config, links) : resendOwnerSteps(config, links);
+}
+
+/** The company's provider, in words for an error: "Resend" or "Amazon SES". */
+export const providerName = (key: string): string => (key === "ses" ? "Amazon SES" : key === "resend" ? "Resend" : key);
+
+/** Amazon SES: the steps are done in the AWS console by a person (the wording is refined with the surfaces in T3). */
+function sesOwnerSteps(config: EspConfig, links: { settings: string; webhookUrl: string | null }): string[] {
+  const steps: string[] = [];
+  if (!config.hasCredentials) {
+    steps.push(
+      `In the AWS console (region ${config.ses.region}) create an IAM user with an access key that may call SES (send, GetAccount and the email identity calls).`,
+      `Open the Mailbox settings (${links.settings}), find Email provider, pick Amazon SES, create Paperclip secrets for the access key id and the secret access key and pick them under Amazon SES, and switch the provider on.`,
+    );
+  } else if (!config.enabled) {
+    steps.push(`Open the Mailbox settings (${links.settings}), find Email provider and switch it on.`);
+  }
+  if (!config.ses.configurationSet) {
+    steps.push(`In the SES console create a configuration set with an event destination (an SNS topic) for the send, delivery, bounce, complaint and reject events, and save its name in the Mailbox settings (${links.settings}) under Amazon SES.`);
+  }
+  return steps;
+}
+
+function resendOwnerSteps(config: EspConfig, links: { settings: string; webhookUrl: string | null }): string[] {
   const steps: string[] = [];
   if (!config.hasCredentials) {
     steps.push(
@@ -243,12 +267,15 @@ export async function addSendingDomain(env: Env, companyId: string, input: AddSe
   if (!provider.ok) {
     const steps = ownerSteps(loaded.config.esp, input.ownerLinks ?? { settings: "Settings, Plugins, Mailbox", webhookUrl: null });
     throw new MailboxError(
-      `The email provider is not ready: ${provider.blockers.join(" ")} An agent cannot create the Resend account or its API key. Ask the owner ONCE (partnersinbiz.cockpit:ask-owner) to do these one-time steps, then run this again:${steps.map((step, index) => ` (${index + 1}) ${step}`).join("")}`,
+      `The email provider is not ready: ${provider.blockers.join(" ")} An agent cannot create the ${providerName(loaded.config.esp.provider)} account or its ${loaded.config.esp.provider === "ses" ? "access keys" : "API key"}. Ask the owner ONCE (partnersinbiz.cockpit:ask-owner) to do these one-time steps, then run this again:${steps.map((step, index) => ` (${index + 1}) ${step}`).join("")}`,
     );
   }
 
   const s = env.store;
   const existing = await s.getEspDomain(companyId, domain);
+  if (existing && existing.provider !== loaded.config.esp.provider) {
+    throw new MailboxError(`${domain} is registered with ${providerName(existing.provider)}, but the Mailbox is set to ${providerName(loaded.config.esp.provider)}. Switch the provider back in the Mailbox settings to manage it, or ask the owner to move the domain.`);
+  }
   if (existing?.client_ref && input.clientRef?.trim() && existing.client_ref !== input.clientRef.trim()) {
     throw new MailboxError(`${domain} already belongs to another client (${existing.client_kind ?? "company"}:${existing.client_ref}). A domain sends for one client only.`);
   }
@@ -296,7 +323,7 @@ export async function addSendingDomain(env: Env, companyId: string, input: AddSe
       if (error instanceof EspApiError && error.kind === "exists") {
         try {
           const listed = (await provider.provider.listDomains()).find((entry) => entry.name === domain);
-          if (!listed) throw new MailboxError(`Resend says ${domain} is registered, but not under this API key's team. Remove it from the other Resend team, or use that team's key.`);
+          if (!listed) throw new MailboxError(`${providerName(loaded.config.esp.provider)} says ${domain} is registered, but not under these credentials. Remove it from the other account, or use that account's keys.`);
           remote = await provider.provider.getDomain(listed.id);
         } catch (inner) {
           if (inner instanceof MailboxError) throw inner;
@@ -313,7 +340,7 @@ export async function addSendingDomain(env: Env, companyId: string, input: AddSe
   const base: EspDomainRow = existing ?? {
     company_id: companyId,
     domain,
-    provider: "resend",
+    provider: loaded.config.esp.provider,
     provider_domain_id: remote.id,
     region: remote.region,
     status: remote.status,
@@ -344,10 +371,10 @@ export async function addSendingDomain(env: Env, companyId: string, input: AddSe
   if (!account) {
     const id = randomUUID();
     try {
-      await s.insertEspAccount({ id, companyId, provider: "resend", address: fromAddress, status: row.status === "verified" ? "connected" : "pending", fromName: fromName ?? clientName, replyTo, clientKind, clientRef, createdBy: input.createdBy });
+      await s.insertEspAccount({ id, companyId, provider: loaded.config.esp.provider, address: fromAddress, status: row.status === "verified" ? "connected" : "pending", fromName: fromName ?? clientName, replyTo, clientKind, clientRef, createdBy: input.createdBy });
     } catch (error) {
       // The unique index on a company's send-only addresses: another add-sending-domain for this domain got there first.
-      if (/accounts_resend_address|duplicate key|unique/i.test(errorMessage(error))) throw new MailboxError(`Another add-sending-domain for ${domain} has just created ${fromAddress}. Run list-sending-domains to see it, and add-sending-domain again if it is not there.`);
+      if (/accounts_(resend|ses)_address|duplicate key|unique/i.test(errorMessage(error))) throw new MailboxError(`Another add-sending-domain for ${domain} has just created ${fromAddress}. Run list-sending-domains to see it, and add-sending-domain again if it is not there.`);
       throw error;
     }
     await s.patchEspDomain(companyId, domain, { account_id: id });
@@ -398,6 +425,8 @@ export async function refreshSendingDomain(env: Env, loaded: LoadedConfig, compa
   if (!row) throw new MailboxError(`${domain} is not a sending domain of the email provider. add-sending-domain registers it.`);
   const provider = await espProviderFor(env, loaded, { forSending: false });
   if (!provider.ok) throw new MailboxError(`The email provider is not ready: ${provider.blockers.join(" ")}`);
+  // A domain registered with the other provider is not asked about at this one (SES would not know it).
+  if (row.provider !== loaded.config.esp.provider) throw new MailboxError(`${domain} is registered with ${providerName(row.provider)}, not ${providerName(loaded.config.esp.provider)}, which the Mailbox is set to.`);
   const now = env.now();
   let asked = false;
   try {
@@ -433,7 +462,7 @@ export async function refreshPendingDomains(env: Env, companyId: string): Promis
   const loaded = await loadMailboxConfig(env.ctx, companyId);
   const result = { looked: 0, verified: 0 };
   if (!loaded.config.esp.enabled || !loaded.config.esp.hasCredentials) return result;
-  const pending = (await env.store.listEspDomains(companyId)).filter((row) => row.status !== "verified").slice(0, REFRESH_PER_RUN);
+  const pending = (await env.store.listEspDomains(companyId)).filter((row) => row.status !== "verified" && row.provider === loaded.config.esp.provider).slice(0, REFRESH_PER_RUN);
   for (const row of pending) {
     try {
       const outcome = await refreshSendingDomain(env, loaded, companyId, row.domain);

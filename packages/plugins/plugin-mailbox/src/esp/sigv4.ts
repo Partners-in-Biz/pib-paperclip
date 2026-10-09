@@ -85,10 +85,10 @@ export const sesHost = (region: string): string => `email.${region}.amazonaws.co
  * The headers to send with a SESv2 request: `content-type`, `x-amz-date`, `x-amz-content-sha256` and `authorization`. `host` is signed but
  * not returned: the fetch sets it from the URL, to the same value.
  */
-export function signSesRequest(input: { method: string; path: string; body: string; region: string; credentials: SigV4Credentials; at: Date }): Record<string, string> {
+export function signSesRequest(input: { method: string; path: string; query?: Record<string, string>; body: string; region: string; credentials: SigV4Credentials; at: Date }): Record<string, string> {
   const host = sesHost(input.region);
   const payloadHash = sha256Hex(Buffer.from(input.body, "utf8"));
   const headers = { host, "content-type": "application/json", "x-amz-date": amzDate(input.at), "x-amz-content-sha256": payloadHash };
-  const signed = signV4({ method: input.method, path: input.path, headers, body: input.body, region: input.region, service: SES_SERVICE, at: input.at, credentials: input.credentials });
+  const signed = signV4({ method: input.method, path: input.path, ...(input.query ? { query: input.query } : {}), headers, body: input.body, region: input.region, service: SES_SERVICE, at: input.at, credentials: input.credentials });
   return { "content-type": headers["content-type"], "x-amz-date": headers["x-amz-date"], "x-amz-content-sha256": payloadHash, authorization: signed.authorization };
 }

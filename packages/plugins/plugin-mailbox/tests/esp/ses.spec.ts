@@ -5,7 +5,7 @@ import { effectiveEspRate, espProviderFor, QUOTA_TTL_MS } from "../../src/esp/ru
 import { classifySesFailure, SesProvider, sesErrorCode, toSesPayload } from "../../src/esp/ses.js";
 import type { EspEmail } from "../../src/esp/types.js";
 import { CO } from "../helpers/memory.js";
-import { API_KEY, sesMockSetup, sesSetup } from "../helpers/esp.js";
+import { API_KEY, SES_TOPIC_ARN, sesMockSetup, sesSetup } from "../helpers/esp.js";
 import { FakeSes, hostFetch, SES_ACCESS_KEY_ID, SES_CONFIGURATION_SET, SES_REGION, SES_SECRET_ACCESS_KEY } from "../helpers/fake-ses.js";
 
 const email = (over: Partial<EspEmail> = {}): EspEmail => ({
@@ -219,15 +219,15 @@ describe("the runtime builds the provider by esp.provider", () => {
   });
 
   it("builds no batcher for SES even with esp.batch on, and one for a batching provider", async () => {
-    const ses = sesMockSetup({ esp: { enabled: true, provider: "ses", batch: true, ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET } } });
+    const ses = sesMockSetup({ esp: { enabled: true, provider: "ses", batch: true, ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET, snsTopicArn: SES_TOPIC_ARN } } });
     expect(await espProviderFor(ses.env, await loadMailboxConfig(ses.env.ctx, CO), { forSending: true })).toMatchObject({ ok: true, batcher: null });
-    const resend = sesMockSetup({ esp: { enabled: true, provider: "ses", batch: true, ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET } } }, { batching: true });
+    const resend = sesMockSetup({ esp: { enabled: true, provider: "ses", batch: true, ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET, snsTopicArn: SES_TOPIC_ARN } } }, { batching: true });
     const built = await espProviderFor(resend.env, await loadMailboxConfig(resend.env.ctx, CO), { forSending: true });
     expect(built.ok && built.batcher).toBeTruthy();
   });
 
   it("needs the configuration set to send, and says so", async () => {
-    const t = sesSetup({ esp: { enabled: true, provider: "ses", ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY } } });
+    const t = sesSetup({ esp: { enabled: true, provider: "ses", ses: { accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, snsTopicArn: SES_TOPIC_ARN } } });
     const result = await espProviderFor(t.env, await loadMailboxConfig(t.env.ctx, CO), { forSending: true });
     expect(result).toMatchObject({ ok: false, blockers: [expect.stringMatching(/configuration set/)] });
     expect(JSON.stringify(result)).not.toContain(SES_SECRET_ACCESS_KEY);
@@ -281,5 +281,105 @@ describe("toSesPayload", () => {
     const body = toSesPayload(email(), { at: new Date("2026-10-09T00:00:00Z") });
     expect(body.ConfigurationSetName).toBeUndefined();
     expect(body.EmailTags).toHaveLength(2);
+  });
+});
+
+describe("SES domains", () => {
+  const DOMAIN = "partnersinbiz.online";
+  const calls = (ses: FakeSes, method: string, suffix = "") => ses.identityCalls(method, suffix);
+
+  it("addDomain creates the identity, sets MAIL FROM mail.<domain> on it, and returns three DKIM CNAMEs plus the MAIL FROM MX and TXT", async () => {
+    const ses = new FakeSes();
+    const domain = await provider(ses).addDomain({ name: DOMAIN });
+    expect(calls(ses, "POST")[0]!.body).toEqual({ EmailIdentity: DOMAIN });
+    const put = calls(ses, "PUT", "/mail-from");
+    expect(put).toHaveLength(1);
+    expect(put[0]!.path).toBe(`/v2/email/identities/${DOMAIN}/mail-from`);
+    expect(put[0]!.body).toMatchObject({ MailFromDomain: `mail.${DOMAIN}`, BehaviorOnMxFailure: "USE_DEFAULT_VALUE" });
+    expect(domain).toMatchObject({ id: DOMAIN, name: DOMAIN, status: "pending", region: SES_REGION, returnPathHost: `mail.${DOMAIN}`, spfInclude: "amazonses.com" });
+    const dkim = domain.records.filter((r) => r.type === "CNAME");
+    expect(dkim).toHaveLength(3);
+    for (const r of dkim) {
+      const token = r.name.replace("._domainkey", "");
+      expect(r).toMatchObject({ record: "DKIM", fqdn: `${token}._domainkey.${DOMAIN}`, value: `${token}.dkim.amazonses.com` });
+    }
+    expect(domain.records.find((r) => r.type === "MX")).toMatchObject({ fqdn: `mail.${DOMAIN}`, value: `feedback-smtp.${SES_REGION}.amazonses.com`, priority: 10 });
+    expect(domain.records.find((r) => r.type === "TXT")).toMatchObject({ fqdn: `mail.${DOMAIN}`, value: "v=spf1 include:amazonses.com ~all" });
+    expect(ses.signatureProblems).toEqual([]);
+  });
+
+  it("addDomain on an identity that already exists returns it without error and never calls PutEmailIdentityMailFromAttributes", async () => {
+    const ses = new FakeSes();
+    ses.identities.set(DOMAIN, { verifiedForSending: true, dkimStatus: "SUCCESS" });
+    const domain = await provider(ses).addDomain({ name: DOMAIN });
+    expect(calls(ses, "PUT")).toEqual([]);
+    expect(domain.status).toBe("verified");
+    // No custom MAIL FROM on it: DKIM CNAMEs only, and no return-path host.
+    expect(domain.records.map((r) => r.type)).toEqual(["CNAME", "CNAME", "CNAME"]);
+    expect(domain.returnPathHost).toBeNull();
+  });
+
+  it("an existing identity that has a MAIL FROM keeps it, and its MX and TXT are listed", async () => {
+    const ses = new FakeSes();
+    ses.identities.set(DOMAIN, { verifiedForSending: true, dkimStatus: "SUCCESS", mailFromDomain: `bounce.${DOMAIN}`, mailFromStatus: "SUCCESS" });
+    const domain = await provider(ses).addDomain({ name: DOMAIN });
+    expect(calls(ses, "PUT")).toEqual([]);
+    expect(domain.returnPathHost).toBe(`bounce.${DOMAIN}`);
+    expect(domain.records.filter((r) => r.type !== "CNAME").map((r) => [r.type, r.fqdn, r.status])).toEqual([["MX", `bounce.${DOMAIN}`, "verified"], ["TXT", `bounce.${DOMAIN}`, "verified"]]);
+  });
+
+  it("a refused MAIL FROM call on a new identity still returns the identity (default MAIL FROM, no MX or TXT)", async () => {
+    const ses = new FakeSes();
+    ses.errors.push({ status: 403, type: "AccessDeniedException", on: /mail-from/ });
+    const domain = await provider(ses).addDomain({ name: DOMAIN });
+    expect(domain.records.map((r) => r.type)).toEqual(["CNAME", "CNAME", "CNAME"]);
+  });
+
+  it("verified needs VerifiedForSendingStatus AND DKIM SUCCESS; the other states map as named", async () => {
+    const ses = new FakeSes();
+    const cases: Array<[Parameters<FakeSes["identities"]["set"]>[1], string]> = [
+      [{ verifiedForSending: true, dkimStatus: "SUCCESS" }, "verified"],
+      [{ verifiedForSending: false, dkimStatus: "SUCCESS" }, "pending"],
+      [{ verifiedForSending: true, dkimStatus: "PENDING" }, "pending"],
+      [{ verifiedForSending: false, dkimStatus: "PENDING" }, "pending"],
+      [{ verifiedForSending: false, dkimStatus: "FAILED" }, "failed"],
+      [{ verifiedForSending: true, dkimStatus: "FAILED" }, "failed"],
+      [{ verifiedForSending: false, dkimStatus: "TEMPORARY_FAILURE" }, "temporary_failure"],
+      [{ verifiedForSending: false, dkimStatus: "NOT_STARTED" }, "not_started"],
+    ];
+    for (const [identity, status] of cases) {
+      ses.identities.set("x.example.com", identity);
+      expect((await provider(ses).getDomain("x.example.com")).status, JSON.stringify(identity)).toBe(status);
+    }
+  });
+
+  it("getDomain of an identity SES does not have is not_found", async () => {
+    await expect(provider(new FakeSes()).getDomain("nope.example.com")).rejects.toMatchObject({ kind: "not_found" });
+  });
+
+  it("verifyDomain is a no-op: no request at all", async () => {
+    const ses = new FakeSes();
+    await provider(ses).verifyDomain(DOMAIN);
+    expect(ses.requests).toEqual([]);
+  });
+
+  it("listDomains returns DOMAIN identities only, across pages", async () => {
+    const ses = new FakeSes();
+    ses.identities.set("a.example.com", { type: "DOMAIN", verifiedForSending: true, dkimStatus: "SUCCESS" });
+    ses.identities.set("peet@example.com", { type: "EMAIL_ADDRESS", verifiedForSending: true });
+    ses.identities.set("b.example.com", { type: "DOMAIN" });
+    ses.identities.set("managed.example.com", { type: "MANAGED_DOMAIN" });
+    const listed = await provider(ses).listDomains();
+    expect(listed.map((d) => d.name)).toEqual(["a.example.com", "b.example.com"]);
+    expect(ses.identityCalls("GET").some((r) => r.path === "/v2/email/identities")).toBe(true);
+    expect(ses.signatureProblems).toEqual([]);
+  });
+
+  it("an SES refusal of the keys is a typed error, and the secret is nowhere in it", async () => {
+    const ses = new FakeSes();
+    ses.errors.push({ status: 403, type: "AccessDeniedException", message: "not authorized", on: /identities/ });
+    const error = await provider(ses).getDomain(DOMAIN).catch((e) => e);
+    expect(error).toMatchObject({ kind: "config", status: 403 });
+    expect(JSON.stringify(error.message)).not.toContain(SES_SECRET_ACCESS_KEY);
   });
 });

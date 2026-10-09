@@ -114,9 +114,11 @@ export interface DmarcReport {
 
 /** What the email provider needs of a domain, read from DNS. */
 export interface EspReport {
+  /** The provider's key (`resend`, `ses`). Reports stored before 0.7.0 have none: they are Resend's. */
+  provider?: string;
   providerStatus: ProviderDomainStatus;
-  /** The return-path host the provider's SPF and MX records are at. */
-  returnPathHost: string;
+  /** The return-path host the provider's SPF and MX records are at. null (SES without a custom MAIL FROM): there is none to read. */
+  returnPathHost: string | null;
   spf: SpfReport;
   /** The provider's include is in the SPF record. */
   spfAuthorisesProvider: boolean;
@@ -127,6 +129,8 @@ export interface EspReport {
 
 /** What `checkDomain` needs to know about a provider domain. */
 export interface EspCheck {
+  /** The provider the domain row belongs to; default `resend`. */
+  provider?: string | null;
   returnPathHost: string | null;
   dkimSelector: string | null;
   spfInclude: string | null;
@@ -339,30 +343,40 @@ export interface CheckOptions {
   sendingSince?: string | null;
 }
 
+/**
+ * SES signs with three CNAMEs (`<token>._domainkey.<domain>` → `<token>.dkim.amazonses.com`). A resolver that does not follow the CNAME
+ * returns no TXT, so what the DNS shows says nothing about whether SES signs: SES's own `DkimAttributes.Status` (the provider status) is the
+ * truth, and the DNS read of its key is informational only.
+ */
+const dkimIsInformational = (esp: Pick<EspReport, "provider">): boolean => esp.provider === "ses";
+
 /** Reads the DNS of one domain and judges it. Never throws: a failed lookup is `unreadable`. */
 export async function checkDomain(resolver: DnsResolver, domain: string, options: CheckOptions = {}): Promise<DomainReport> {
   const esp = options.esp ?? null;
   const espOnly = esp !== null && options.gmail !== true;
-  const espSelector = esp?.dkimSelector ?? "resend";
+  const espProvider = esp?.provider ?? "resend";
+  const espSelector = esp?.dkimSelector ?? (espProvider === "resend" ? "resend" : "default");
   // A domain only the provider sends for has one DKIM selector worth reading; the usual list is for a domain with a mail provider of its own.
   const selectors = espOnly ? [espSelector] : options.selectors?.length ? options.selectors : [...DEFAULT_DKIM_SELECTORS];
   const unreadableSpf = (): SpfReport => ({ state: "unreadable", record: null, all: null, lookups: 0, lookupsApprox: false, includes: [], authorisesGoogle: false });
-  const returnPathHost = esp ? esp.returnPathHost ?? `send.${domain}` : null;
+  // Resend always has a return-path host (`send.<domain>`); SES has one only when a custom MAIL FROM is set.
+  const returnPathHost = esp ? esp.returnPathHost ?? (espProvider === "resend" ? `send.${domain}` : null) : null;
   const [mx, spf, dkim, dmarc, espReads] = await Promise.all([
     readMx(resolver, domain).catch((): MxReport => ({ state: "unreadable", hosts: [], provider: null })),
     readSpf(resolver, domain).catch(unreadableSpf),
     readDkim(resolver, domain, selectors).catch((): DkimReport => ({ state: "unreadable", found: [], selectors: [] })),
     readDmarc(resolver, domain).catch((): DmarcReport => ({ state: "unreadable", record: null, policy: null, subdomainPolicy: null, pct: null, rua: [], inheritedFrom: null })),
-    esp && returnPathHost
+    esp
       ? Promise.all([
-        readSpf(resolver, returnPathHost).catch(unreadableSpf),
-        readMx(resolver, returnPathHost).catch((): MxReport => ({ state: "unreadable", hosts: [], provider: null })),
+        returnPathHost ? readSpf(resolver, returnPathHost).catch(unreadableSpf) : Promise.resolve(unreadableSpf()),
+        returnPathHost ? readMx(resolver, returnPathHost).catch((): MxReport => ({ state: "unreadable", hosts: [], provider: null })) : Promise.resolve<MxReport>({ state: "unreadable", hosts: [], provider: null }),
         espOnly ? Promise.resolve(null) : readDkim(resolver, domain, [espSelector]).catch((): DkimReport => ({ state: "unreadable", found: [], selectors: [] })),
       ])
       : Promise.resolve(null),
   ]);
-  const espParts = esp && returnPathHost && espReads
+  const espParts = esp && espReads
     ? {
+      provider: espProvider,
       providerStatus: esp.providerStatus,
       returnPathHost,
       spf: espReads[0],
@@ -451,7 +465,9 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
 
   for (const problem of options.reputation?.problems ?? []) add(problem.code, problem.severity, problem.message, problem.fix, problem.blocks);
 
-  const espUnreadable = esp !== null && (esp.spf.state === "unreadable" || esp.dkim.state === "unreadable");
+  const espSpfRead = esp !== null && esp.returnPathHost !== null;
+  const espDkimCounts = esp !== null && !dkimIsInformational(esp);
+  const espUnreadable = esp !== null && ((espSpfRead && esp.spf.state === "unreadable") || (espDkimCounts && esp.dkim.state === "unreadable"));
   const unreadable = espOnly
     ? dmarc.state === "unreadable" || espUnreadable
     : mx.state === "unreadable" || spf.state === "unreadable" || dkim.state === "unreadable" || dmarc.state === "unreadable" || espUnreadable;
@@ -460,13 +476,15 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
   }
 
   const allUnreadable = espOnly
-    ? esp!.spf.state === "unreadable" && esp!.dkim.state === "unreadable" && dmarc.state === "unreadable"
+    ? (!espSpfRead || esp!.spf.state === "unreadable") && (!espDkimCounts || esp!.dkim.state === "unreadable") && dmarc.state === "unreadable"
     : mx.state === "unreadable" && spf.state === "unreadable" && dkim.state === "unreadable" && dmarc.state === "unreadable";
   const status: DomainStatus = allUnreadable ? "unknown" : problems.some((p) => p.severity === "bad") ? "bad" : problems.some((p) => p.severity === "warn") ? "warn" : "healthy";
   const dmarcPresent = dmarc.state === "monitor" || dmarc.state === "enforced";
+  // The provider's own records: its SPF at the return-path host (when it has one) and its DKIM key (read for the status only when the provider says so).
+  const espRecordsOk = esp ? (!espSpfRead || (esp.spf.state === "ok" && esp.spfAuthorisesProvider)) && (!espDkimCounts || esp.dkim.state === "ok") && esp.providerStatus === "verified" : true;
   const sendReady = espOnly
-    ? esp!.spf.state === "ok" && esp!.spfAuthorisesProvider && esp!.dkim.state === "ok" && dmarcPresent && esp!.providerStatus === "verified"
-    : spf.state === "ok" && dkim.state === "ok" && dmarcPresent && (esp ? esp.spf.state === "ok" && esp.dkim.state === "ok" && esp.providerStatus === "verified" : true);
+    ? espRecordsOk && dmarcPresent
+    : spf.state === "ok" && dkim.state === "ok" && dmarcPresent && (esp ? espRecordsOk && (!espSpfRead || esp.spf.state === "ok") : true);
   return {
     domain,
     checkedAt: new Date(now).toISOString(),
@@ -478,7 +496,7 @@ export function evaluateDomain(parts: { domain: string; mx: MxReport; spf: SpfRe
     sendReady,
     problems,
     unreadable,
-    manual: unreadable ? [...digCommands(domain, parts.selectors), ...(esp ? [`dig +short TXT ${esp.returnPathHost}`, `dig +short MX ${esp.returnPathHost}`] : [])] : [],
+    manual: unreadable ? [...digCommands(domain, parts.selectors), ...(esp?.returnPathHost ? [`dig +short TXT ${esp.returnPathHost}`, `dig +short MX ${esp.returnPathHost}`] : [])] : [],
     ...(esp ? { esp, espOnly } : {}),
   };
 }
@@ -490,17 +508,24 @@ function addEspProblems(esp: EspReport, domain: string, add: (code: string, seve
   } else if (esp.providerStatus !== "verified" && esp.providerStatus !== "unknown") {
     add("esp_waiting_for_dns", "warn", `The email provider has not verified ${domain} yet: it is waiting for its DNS records.`, "Add the records the Mailbox lists for this domain (list-sending-domains) at the DNS host. DNS can take a few hours; the Mailbox asks the provider to look again every hour.");
   }
-  if (esp.spf.state === "missing") {
+  // A provider with no return-path host of its own to read (SES on its default MAIL FROM) has no SPF or MX of its own to judge.
+  const hasReturnPath = esp.returnPathHost !== null;
+  if (!hasReturnPath) {
+    // nothing at a return-path host
+  } else if (esp.spf.state === "missing") {
     add("esp_spf_missing", "bad", `${esp.returnPathHost} has no SPF record: mail from the email provider would fail SPF for ${domain}.`, `Add the provider's SPF TXT record at ${esp.returnPathHost} (list-sending-domains shows its value).`);
   } else if (esp.spf.state === "multiple") {
     add("esp_spf_multiple", "bad", `${esp.returnPathHost} has more than one SPF record, which receivers treat as an error.`, "Merge them into one record.");
   } else if (esp.spf.state === "ok" && !esp.spfAuthorisesProvider) {
     add("esp_spf_wrong", "bad", `The SPF record at ${esp.returnPathHost} does not include the email provider.`, "Replace it with the value the provider gave (list-sending-domains).");
   }
-  if (esp.mx.state === "missing") {
+  if (hasReturnPath && esp.mx.state === "missing") {
     add("esp_return_mx_missing", "warn", `${esp.returnPathHost} has no MX record, so bounces cannot come back to the provider and SPF will not align with ${domain}.`, `Add the provider's MX record at ${esp.returnPathHost} (list-sending-domains shows it).`);
   }
-  if (esp.dkim.state === "missing") {
+  if (dkimIsInformational(esp)) {
+    // The DNS read of an SES key never holds a send (see dkimIsInformational): at most a note, and only when the provider itself is not verified.
+    if (esp.dkim.state === "missing" && esp.providerStatus === "verified") add("esp_dkim_not_visible", "info", `${esp.selector}._domainkey.${domain} showed no DKIM key to this DNS lookup. SES's DKIM records are CNAMEs to amazonses.com and a resolver that does not follow them shows nothing; SES itself reports DKIM as verified, which is what counts.`, "Nothing to do while SES reports the domain verified.");
+  } else if (esp.dkim.state === "missing") {
     add("esp_dkim_missing", "bad", `No DKIM key was found at ${esp.selector}._domainkey.${domain}, so the provider's mail is not signed as ${domain}.`, `Add the provider's DKIM TXT record at ${esp.selector}._domainkey.${domain} (list-sending-domains shows its value).`);
   }
 }
@@ -578,7 +603,7 @@ export interface DomainHealthEvent {
   clientKind?: string | null;
   clientRef?: string | null;
   /**
-   * `resend` when only the email provider sends from this domain (no Gmail mailbox on it): then every problem here is one that holds a send from it
+   * The provider's key (`resend`, `ses`) when only the email provider sends from this domain (no Gmail mailbox on it): then every problem here is one that holds a send from it
    * back, and a sender may refuse to launch from it. null for a domain with a Gmail mailbox: the Mailbox still sends from it, so a problem is a warning.
    */
   provider?: string | null;
@@ -598,7 +623,7 @@ export function domainHealthEvent(row: DomainCheckRow, mailboxes: string[]): Dom
     mailboxes,
     clientKind: row.client_kind,
     clientRef: row.client_ref,
-    provider: report.esp && report.espOnly ? "resend" : null,
+    provider: report.esp && report.espOnly ? report.esp.provider ?? "resend" : null,
   };
 }
 
@@ -646,7 +671,7 @@ export async function sendingDomains(store: Pick<GmailStore, "listAccounts" | "l
   // A domain registered at the email provider is judged on the provider's records, whether or not a Gmail mailbox is on it too.
   for (const row of store.listEspDomains ? await store.listEspDomains(companyId) : []) {
     const entry = byDomain.get(row.domain) ?? { domain: row.domain, mailboxes: [], receives: false, gmail: false, sendingSince: row.created_at, source: "account" as const, clientKind: row.client_kind, clientRef: row.client_ref };
-    entry.esp = { returnPathHost: row.return_path_host, dkimSelector: row.dkim_selector, spfInclude: row.spf_include, providerStatus: row.status };
+    entry.esp = { provider: row.provider, returnPathHost: row.return_path_host, dkimSelector: row.dkim_selector, spfInclude: row.spf_include, providerStatus: row.status };
     entry.sendingSince = earliest(entry.sendingSince, row.first_sent_at, row.created_at);
     entry.clientKind = entry.clientKind ?? row.client_kind;
     entry.clientRef = entry.clientRef ?? row.client_ref;

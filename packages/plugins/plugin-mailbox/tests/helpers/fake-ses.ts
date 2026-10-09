@@ -41,6 +41,15 @@ export interface ScriptedSesError {
   body?: unknown;
 }
 
+export interface FakeIdentity {
+  type?: "DOMAIN" | "EMAIL_ADDRESS" | "MANAGED_DOMAIN";
+  verifiedForSending?: boolean;
+  dkimStatus?: "PENDING" | "SUCCESS" | "FAILED" | "TEMPORARY_FAILURE" | "NOT_STARTED";
+  tokens?: string[];
+  mailFromDomain?: string | null;
+  mailFromStatus?: string;
+}
+
 export class FakeSes {
   requests: SesRequest[] = [];
   /** Signature problems found on arriving requests (empty when every request was signed right). */
@@ -49,7 +58,27 @@ export class FakeSes {
   account = { maxSendRate: 14, max24HourSend: 50_000, sentLast24Hours: 120, productionAccessEnabled: true, sendingEnabled: true };
   accessKeyId = SES_ACCESS_KEY_ID;
   secretAccessKey = SES_SECRET_ACCESS_KEY;
+  /** Identities in the account, keyed by name. Add one to stand for an identity somebody verified in the console. */
+  identities = new Map<string, FakeIdentity>();
+  /** What a newly created identity looks like once SES has looked at the DNS. */
+  newIdentityDkim: "PENDING" | "SUCCESS" | "FAILED" | "TEMPORARY_FAILURE" | "NOT_STARTED" = "PENDING";
   private seq = 0;
+
+  /** Requests to the identities API by method and path suffix, e.g. `PUT /mail-from`. */
+  identityCalls(method: string, suffix = ""): SesRequest[] {
+    return this.requests.filter((r) => r.method === method && r.path.startsWith("/v2/email/identities") && r.path.endsWith(suffix));
+  }
+
+  private identityBody(name: string, id: FakeIdentity): Record<string, unknown> {
+    const tokens = id.tokens ?? ["tok1abc", "tok2def", "tok3ghi"].map((t) => `${t}${name.length}`);
+    return {
+      IdentityType: id.type ?? "DOMAIN",
+      VerifiedForSendingStatus: id.verifiedForSending ?? false,
+      VerificationStatus: id.verifiedForSending ? "SUCCESS" : "PENDING",
+      DkimAttributes: { SigningEnabled: true, Status: id.dkimStatus ?? "PENDING", Tokens: tokens, SigningAttributesOrigin: "AWS_SES" },
+      MailFromAttributes: id.mailFromDomain ? { MailFromDomain: id.mailFromDomain, MailFromDomainStatus: id.mailFromStatus ?? "PENDING", BehaviorOnMxFailure: "USE_DEFAULT_VALUE" } : { MailFromDomain: "", MailFromDomainStatus: "FAILED", BehaviorOnMxFailure: "USE_DEFAULT_VALUE" },
+    };
+  }
 
   get sends(): SesRequest[] {
     return this.requests.filter((r) => r.path === "/v2/email/outbound-emails");
@@ -59,7 +88,7 @@ export class FakeSes {
     return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
   }
 
-  private checkSignature(method: string, path: string, headers: Record<string, string>, rawBody: string): void {
+  private checkSignature(method: string, path: string, search: URLSearchParams, headers: Record<string, string>, rawBody: string): void {
     const auth = headers.authorization ?? "";
     const match = /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/ses\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(auth);
     if (!match) return void this.signatureProblems.push("malformed Authorization header");
@@ -70,7 +99,7 @@ export class FakeSes {
     const date = headers["x-amz-date"] ?? "";
     const at = new Date(`${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${date.slice(9, 11)}:${date.slice(11, 13)}:${date.slice(13, 15)}Z`);
     const signed = Object.fromEntries(signedList!.split(";").map((name) => [name, headers[name] ?? ""]));
-    const expected = signV4({ method, path, headers: signed, body: rawBody, region: region!, service: "ses", at, credentials: { accessKeyId: this.accessKeyId, secretAccessKey: this.secretAccessKey } });
+    const expected = signV4({ method, path, query: Object.fromEntries(search.entries()), headers: signed, body: rawBody, region: region!, service: "ses", at, credentials: { accessKeyId: this.accessKeyId, secretAccessKey: this.secretAccessKey } });
     if (expected.signature !== signature) this.signatureProblems.push("signature does not match");
     if (headers.host !== `email.${region}.amazonaws.com`) this.signatureProblems.push(`host was ${headers.host}`);
   }
@@ -89,7 +118,7 @@ export class FakeSes {
     const mime = typeof body?.Content?.Raw?.Data === "string" ? Buffer.from(body.Content.Raw.Data, "base64").toString("utf8") : null;
     this.requests.push({ method, path: target.pathname, headers, rawBody, body, mime });
     if (target.protocol !== "https:" || !/^email\.[a-z0-9-]+\.amazonaws\.com$/.test(target.hostname)) return this.json(400, { message: "wrong host" });
-    this.checkSignature(method, target.pathname, headers, rawBody);
+    this.checkSignature(method, target.pathname, target.searchParams, headers, rawBody);
     const scripted = this.errors[0] && (this.errors[0].on ?? /outbound-emails/).test(target.pathname) ? this.errors.shift() : undefined;
     if (scripted) {
       if (scripted.throws) throw new Error(scripted.throws);
@@ -104,8 +133,48 @@ export class FakeSes {
       const a = this.account;
       return this.json(200, { SendQuota: { Max24HourSend: a.max24HourSend, MaxSendRate: a.maxSendRate, SentLast24Hours: a.sentLast24Hours }, ProductionAccessEnabled: a.productionAccessEnabled, SendingEnabled: a.sendingEnabled });
     }
+    const identity = this.handleIdentities(method, target, body);
+    if (identity) return identity;
     return this.json(404, { message: "not found" }, { "x-amzn-ErrorType": "NotFoundException" });
   };
+
+  private handleIdentities(method: string, target: URL, body: Record<string, any> | null): Response | null {
+    const path = target.pathname;
+    const error = (status: number, type: string, message: string) => this.json(status, { message }, { "x-amzn-ErrorType": `${type}:http://internal.amazon.com/coral/com.amazonaws.maestro.service.v20201210/` });
+    if (method === "POST" && path === "/v2/email/identities") {
+      const name = String(body?.EmailIdentity ?? "");
+      if (this.identities.has(name)) return error(400, "AlreadyExistsException", `Identity <${name}> already exists.`);
+      this.identities.set(name, { type: "DOMAIN", dkimStatus: this.newIdentityDkim, verifiedForSending: this.newIdentityDkim === "SUCCESS" });
+      const id = this.identities.get(name)!;
+      const { IdentityType, VerifiedForSendingStatus, DkimAttributes } = this.identityBody(name, id) as any;
+      return this.json(200, { IdentityType, VerifiedForSendingStatus, DkimAttributes });
+    }
+    if (method === "GET" && path === "/v2/email/identities") {
+      const size = Number(target.searchParams.get("PageSize") ?? 1000);
+      const all = [...this.identities.entries()];
+      const start = Number(target.searchParams.get("NextToken") ?? 0);
+      const page = all.slice(start, start + size);
+      return this.json(200, {
+        EmailIdentities: page.map(([name, id]) => ({ IdentityName: name, IdentityType: id.type ?? "DOMAIN", SendingEnabled: true, VerificationStatus: id.verifiedForSending ? "SUCCESS" : "PENDING" })),
+        ...(start + size < all.length ? { NextToken: String(start + size) } : {}),
+      });
+    }
+    const mailFrom = /^\/v2\/email\/identities\/([^/]+)\/mail-from$/.exec(path);
+    if (method === "PUT" && mailFrom) {
+      const id = this.identities.get(decodeURIComponent(mailFrom[1]!));
+      if (!id) return error(404, "NotFoundException", "not found");
+      id.mailFromDomain = String(body?.MailFromDomain ?? "");
+      id.mailFromStatus = "PENDING";
+      return this.json(200, {});
+    }
+    const one = /^\/v2\/email\/identities\/([^/]+)$/.exec(path);
+    if (method === "GET" && one) {
+      const name = decodeURIComponent(one[1]!);
+      const id = this.identities.get(name);
+      return id ? this.json(200, this.identityBody(name, id)) : error(404, "NotFoundException", `Identity <${name}> does not exist.`);
+    }
+    return null;
+  }
 }
 
 /** The host's guarded fetch in front of `inner`: header names lower-cased, `Host` set from the URL, `Content-Length` added, nothing else touched. */

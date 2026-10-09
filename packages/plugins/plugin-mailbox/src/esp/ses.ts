@@ -18,14 +18,18 @@
  *   TooManyRequestsException (429). The API reference names NO separate daily-quota exception for SendEmail; SES reports an exhausted
  *   daily quota as `LimitExceededException` (or in the text "Daily message quota exceeded"), so both are read as `quota`.
  *
- * Domain calls are T1b of PAR-1848 and are not here yet.
+ *  * Domains (PAR-1848 T1b), the SESv2 identities API: `CreateEmailIdentity` (Easy DKIM, no `DkimSigningAttributes`), `GetEmailIdentity`,
+ *   `PutEmailIdentityMailFromAttributes` and `ListEmailIdentities`. The provider domain id is the domain name. An identity somebody
+ *   already created in the console (`AlreadyExistsException`) is adopted and NEVER changed: MAIL FROM is set only on an identity this
+ *   adapter created in the same call. A domain is `verified` only when `VerifiedForSendingStatus` is true AND `DkimAttributes.Status` is
+ *   `SUCCESS`. SES verifies on its own schedule, so `verifyDomain` does nothing.
  */
 import { toMailAddress } from "../gmail/headers.js";
 import { buildMime, messageIdFor } from "../gmail/mime.js";
 import type { HttpFetch } from "./resend.js";
 import type { RateLimiter } from "./limiter.js";
 import { signSesRequest, sesHost } from "./sigv4.js";
-import { EspApiError, type BatchOutcome, type EmailProvider, type EspAccountQuota, type EspEmail, type ProviderDomain, type SendFailureKind, type SendOutcome } from "./types.js";
+import { EspApiError, type BatchOutcome, type EmailProvider, type EspAccountQuota, type EspEmail, type DnsRecord, type ProviderDomain, type ProviderDomainStatus, type SendFailureKind, type SendOutcome } from "./types.js";
 
 export const SES_TIMEOUT_MS = 25_000;
 
@@ -44,6 +48,10 @@ export interface SesOptions {
 type Obj = Record<string, unknown>;
 const obj = (value: unknown): Obj => (value && typeof value === "object" && !Array.isArray(value) ? (value as Obj) : {});
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+const queryString = (query?: Record<string, string>): string => {
+  const parts = Object.entries(query ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+};
 const short = (message: string): string => message.replace(/\s+/g, " ").trim().slice(0, 300);
 
 // ---------------------------------------------------------------------------
@@ -140,15 +148,15 @@ export class SesProvider implements EmailProvider {
   }
 
   /** One signed request. A rate-limited wait that is too long comes back as `limited`; a thrown error is "no answer". */
-  private async call(method: "GET" | "POST", path: string, body: string): Promise<{ status: number; json: unknown; headers: { get(name: string): string | null } } | { limited: true }> {
+  private async call(method: "GET" | "POST" | "PUT", path: string, body: string, query?: Record<string, string>): Promise<{ status: number; json: unknown; headers: { get(name: string): string | null } } | { limited: true }> {
     if (this.options.limiter && !(await this.options.limiter.acquire())) return { limited: true };
-    const headers = signSesRequest({ method, path, body, region: this.options.region, credentials: { accessKeyId: this.options.accessKeyId.trim(), secretAccessKey: this.options.secretAccessKey.trim() }, at: new Date(this.now()) });
+    const headers = signSesRequest({ method, path, ...(query ? { query } : {}), body, region: this.options.region, credentials: { accessKeyId: this.options.accessKeyId.trim(), secretAccessKey: this.options.secretAccessKey.trim() }, at: new Date(this.now()) });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error(`SES did not answer within ${Math.round(this.timeoutMs / 1000)} seconds`)), this.timeoutMs);
     });
     try {
-      const res = await Promise.race([this.options.fetch(`${this.base}${path}`, { method, headers, ...(method === "POST" ? { body } : {}) }), deadline]);
+      const res = await Promise.race([this.options.fetch(`${this.base}${path}${queryString(query)}`, { method, headers, ...(method === "GET" ? {} : { body }) }), deadline]);
       const raw = await res.text().catch(() => "");
       let json: unknown = null;
       try {
@@ -228,17 +236,133 @@ export class SesProvider implements EmailProvider {
     };
   }
 
-  // Domains are T1b of PAR-1848.
-  async addDomain(_input: { name: string; region?: string | null }): Promise<ProviderDomain> {
-    throw new EspApiError("SES domains are not implemented in T1a", "rejected", null, "not_implemented");
+  // -------------------------------------------------------------------------
+  // Domains
+  // -------------------------------------------------------------------------
+
+  /** One identities call; throws `EspApiError` for anything but a 2xx (`exists` for AlreadyExistsException, `not_found` for a 404). */
+  private async identityCall(method: "GET" | "POST" | "PUT", path: string, body: unknown, query?: Record<string, string>): Promise<Obj> {
+    let answer;
+    try {
+      answer = await this.call(method, path, method === "GET" ? "" : JSON.stringify(body ?? {}), query);
+    } catch (error) {
+      throw new EspApiError(`SES did not answer: ${short(error instanceof Error ? error.message : String(error))}`, "unknown", null);
+    }
+    if ("limited" in answer) throw new EspApiError("Waiting for the SES request rate; try again in a moment", "retry", null, "local_rate_limit");
+    if (answer.status >= 200 && answer.status < 300) return obj(answer.json);
+    const failure = this.failure(answer);
+    if (failure.code === "AlreadyExistsException") throw new EspApiError(failure.error, "exists", answer.status, failure.code);
+    if (answer.status === 404 || failure.code === "NotFoundException") throw new EspApiError(failure.error, "not_found", answer.status, failure.code);
+    throw new EspApiError(failure.error, failure.kind, answer.status, failure.code);
   }
-  async getDomain(_id: string): Promise<ProviderDomain> {
-    throw new EspApiError("SES domains are not implemented in T1a", "rejected", null, "not_implemented");
+
+  /** `GetEmailIdentity`: the identity as the seam's domain. */
+  private async readDomain(name: string): Promise<ProviderDomain> {
+    return toProviderDomain(name, this.options.region, await this.identityCall("GET", `/v2/email/identities/${encodeURIComponent(name)}`, null));
   }
-  async verifyDomain(_id: string): Promise<void> {
-    throw new EspApiError("SES domains are not implemented in T1a", "rejected", null, "not_implemented");
+
+  async addDomain(input: { name: string; region?: string | null }): Promise<ProviderDomain> {
+    const name = input.name.trim().toLowerCase();
+    let created = true;
+    try {
+      await this.identityCall("POST", "/v2/email/identities", { EmailIdentity: name });
+    } catch (error) {
+      // An identity somebody verified in the console is adopted as it is.
+      if (error instanceof EspApiError && error.kind === "exists") created = false;
+      else throw error;
+    }
+    if (created) {
+      // Only an identity this call created gets a custom MAIL FROM; the Mailbox never changes one it did not create.
+      // A refusal here (an IAM key without the permission) leaves a working identity on SES's default MAIL FROM, so the domain is still returned.
+      await this.identityCall("PUT", `/v2/email/identities/${encodeURIComponent(name)}/mail-from`, { MailFromDomain: `mail.${name}`, BehaviorOnMxFailure: "USE_DEFAULT_VALUE" }).catch(() => undefined);
+    }
+    return this.readDomain(name);
   }
+
+  async getDomain(id: string): Promise<ProviderDomain> {
+    return this.readDomain(id);
+  }
+
+  /** SES looks at the DNS on its own schedule; there is nothing to ask. */
+  async verifyDomain(_id: string): Promise<void> {}
+
   async listDomains(): Promise<ProviderDomain[]> {
-    throw new EspApiError("SES domains are not implemented in T1a", "rejected", null, "not_implemented");
+    const names: string[] = [];
+    let token: string | null = null;
+    // Bounded: a page is up to 1000 identities.
+    for (let page = 0; page < 20; page += 1) {
+      const body = await this.identityCall("GET", "/v2/email/identities", null, { PageSize: "1000", ...(token ? { NextToken: token } : {}) });
+      for (const entry of Array.isArray(body.EmailIdentities) ? body.EmailIdentities : []) {
+        const item = obj(entry);
+        const name = text(item.IdentityName);
+        if (name && item.IdentityType === "DOMAIN") names.push(name);
+      }
+      token = text(body.NextToken);
+      if (!token) break;
+    }
+    const domains: ProviderDomain[] = [];
+    for (const name of names) domains.push(await this.readDomain(name));
+    return domains;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Identities as domains
+// ---------------------------------------------------------------------------
+
+const STATUS_BY_SES: Record<string, ProviderDomainStatus> = { SUCCESS: "verified", PENDING: "pending", FAILED: "failed", TEMPORARY_FAILURE: "temporary_failure", NOT_STARTED: "not_started" };
+
+/** SES's word for a DKIM or MAIL FROM status, as the seam names it. */
+export function sesStatus(value: unknown): ProviderDomainStatus {
+  return typeof value === "string" ? STATUS_BY_SES[value] ?? "unknown" : "unknown";
+}
+
+/** Verified needs `VerifiedForSendingStatus` and DKIM `SUCCESS`; anything else is the DKIM status (a verified-for-sending identity whose DKIM is not done yet is pending). */
+export function sesDomainStatus(identity: Obj): ProviderDomainStatus {
+  const dkim = sesStatus(obj(identity.DkimAttributes).Status);
+  if (identity.VerifiedForSendingStatus === true && dkim === "verified") return "verified";
+  if (dkim === "verified") return "pending";
+  if (dkim !== "unknown") return dkim;
+  return sesStatus(identity.VerificationStatus) === "verified" ? "pending" : sesStatus(identity.VerificationStatus);
+}
+
+/** The records for an identity: the three DKIM CNAMEs, and the MAIL FROM MX and TXT only when a custom MAIL FROM is set. */
+export function sesRecords(name: string, region: string, identity: Obj): DnsRecord[] {
+  const dkim = obj(identity.DkimAttributes);
+  const dkimStatus = sesStatus(dkim.Status);
+  const records: DnsRecord[] = [];
+  for (const token of Array.isArray(dkim.Tokens) ? dkim.Tokens : []) {
+    const t = text(token);
+    if (!t) continue;
+    records.push({ record: "DKIM", type: "CNAME", name: `${t}._domainkey`, fqdn: `${t}._domainkey.${name}`, value: `${t}.dkim.amazonses.com`, priority: null, ttl: null, status: dkimStatus, purpose: "DKIM: lets receivers check that SES signed the mail as this domain." });
+  }
+  const mailFrom = obj(identity.MailFromAttributes);
+  const mailFromDomain = text(mailFrom.MailFromDomain);
+  if (mailFromDomain) {
+    const status = sesStatus(mailFrom.MailFromDomainStatus);
+    records.push(
+      { record: "SPF", type: "MX", name: mailFromDomain.endsWith(`.${name}`) ? mailFromDomain.slice(0, -name.length - 1) : mailFromDomain, fqdn: mailFromDomain, value: `feedback-smtp.${region}.amazonses.com`, priority: 10, ttl: null, status, purpose: "Custom MAIL FROM: bounces come back to SES at this host." },
+      { record: "SPF", type: "TXT", name: mailFromDomain.endsWith(`.${name}`) ? mailFromDomain.slice(0, -name.length - 1) : mailFromDomain, fqdn: mailFromDomain, value: "v=spf1 include:amazonses.com ~all", priority: null, ttl: null, status, purpose: "SPF for the custom MAIL FROM host, so SPF aligns with the domain." },
+    );
+  }
+  return records;
+}
+
+export function toProviderDomain(name: string, region: string, identity: Obj): ProviderDomain {
+  const dkim = obj(identity.DkimAttributes);
+  const firstToken = (Array.isArray(dkim.Tokens) ? dkim.Tokens : []).map(text).find((t): t is string => Boolean(t)) ?? null;
+  const mailFromDomain = text(obj(identity.MailFromAttributes).MailFromDomain);
+  return {
+    id: name,
+    name,
+    status: sesDomainStatus(identity),
+    region,
+    records: sesRecords(name, region, identity),
+    returnPathHost: mailFromDomain,
+    dkimSelector: firstToken,
+    spfInclude: "amazonses.com",
+    // Tracking belongs to the configuration set (the Mailbox's has none), never to the identity.
+    openTracking: false,
+    clickTracking: false,
+  };
 }
