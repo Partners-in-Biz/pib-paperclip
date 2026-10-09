@@ -11,11 +11,18 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–009 untouched and adds 010", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql"]);
+  it("keeps 001–010 untouched and adds 011", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql", "011_ses.sql"]);
   });
 
-  it("never edits a migration that has been applied (001–009 are live): each file still has the hash it was applied with", () => {
+  it("011 adds one partial unique index for SES accounts and nothing else", () => {
+    const sql = readFileSync(new URL("011_ses.sql", migrationsDir), "utf8");
+    const statements = splitSqlStatements(sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")).map((statement) => statement.trim());
+    expect(statements).toEqual([`CREATE UNIQUE INDEX accounts_ses_address ON ${NAMESPACE}.accounts (company_id, address) WHERE provider = 'ses'`]);
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+  });
+
+  it("never edits a migration that has been applied (001–010 are live): each file still has the hash it was applied with", () => {
     const applied: Record<string, string> = {
       "001_mailbox.sql": "13599162008f53d0fd835d2f442e852edf091087c9921afa19364af9482bc68d",
       "002_mailbox.sql": "a99a3f9dfdf1c82324cd55230651d9a4478f610caee5f73e3929dfe76a94b85c",
@@ -26,8 +33,9 @@ describe("migrations", () => {
       "007_suppressions_outbox.sql": "d54feb1dc21efcefde7252e930cda210213202797c8d048bc79314cf72720c8c",
       "008_wave3_delegations_senders_domains.sql": "6685350caecdf073aabb8e18ebed473d027dc399023e4d7aac6e6ff5cd93fb47",
       "009_esp_send_only_accounts.sql": "907033f1be0f8e28dd73f4b27f946156a8ca30b118568d54fc082125fb20e35a",
+      "010_client_messages_holds_tracking.sql": "5297e3f905b9660846d01069c720a3265896fce9ee7163ad78bf167f5b97076d",
     };
-    for (const [file, hash] of Object.entries(applied)) expect(createHash("sha256").update(readFileSync(new URL(file, migrationsDir))).digest("hex"), `${file} was edited after it was applied: add 011 instead`).toBe(hash);
+    for (const [file, hash] of Object.entries(applied)) expect(createHash("sha256").update(readFileSync(new URL(file, migrationsDir))).digest("hex"), `${file} was edited after it was applied: add 012 instead`).toBe(hash);
   });
 
   it("010 adds the reputation clearance, the tracking flags, the audit table and the index of client messages, and nothing that could lose data", () => {
@@ -89,7 +97,7 @@ describe("migrations", () => {
   it("pass the host migration guard statement by statement", () => {
     for (const file of files.slice(2)) {
       const sql = readFileSync(new URL(file, migrationsDir), "utf8");
-      const statements = splitSqlStatements(sql);
+      const statements = splitSqlStatements(sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")).map((statement) => statement.trim());
       expect(statements.length, file).toBeGreaterThan(0);
       for (const statement of statements) {
         expect(() => validateMigrationStatement(statement, NAMESPACE), `${file}: ${statement.slice(0, 80)}`).not.toThrow();

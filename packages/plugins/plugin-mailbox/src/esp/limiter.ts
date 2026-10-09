@@ -79,6 +79,11 @@ export function limiterFor(companyId: string, perSecond: number, overrides: Pick
   return limiter;
 }
 
+/** The rate the company's limiter runs at now (null: none built yet). */
+export function limiterRateFor(companyId: string): number | null {
+  return limiters.get(companyId)?.perSecond ?? null;
+}
+
 export function forgetLimiters(): void {
   limiters.clear();
 }

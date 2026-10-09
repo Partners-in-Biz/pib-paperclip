@@ -314,7 +314,7 @@ export async function espHealth(ctx: PluginContext, companyId: string, store: Pi
   const config = loaded.config.esp;
   const domains = await store.listEspDomains(companyId);
   // A company that never set the provider up has nothing to report.
-  if (!config.enabled && !config.hasApiKey && domains.length === 0) return out;
+  if (!config.enabled && !config.hasCredentials && domains.length === 0) return out;
   const readiness = espReadiness(config);
   const state = await readEspState(ctx, companyId);
   const HREF_ESP = "/mailbox?tab=mailboxes";

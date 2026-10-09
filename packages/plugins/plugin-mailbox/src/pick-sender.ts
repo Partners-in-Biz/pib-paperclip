@@ -47,7 +47,7 @@ export async function pickSender(env: Pick<Env, "store" | "ctx" | "now">, loaded
   }
   const esp = loaded.config.esp;
   // Without a provider switched on there is nothing to choose between: the default Gmail account, as always.
-  if (esp.enabled && esp.hasApiKey) {
+  if (esp.enabled && esp.hasCredentials) {
     const accounts = (await env.store.listAccounts(companyId)).filter((account) => isEspProvider(account.provider) && account.status !== "disconnected");
     if (accounts.length > 0) {
       const clientRef = request.context?.clientRef?.trim();

@@ -21,13 +21,42 @@
  *   with access to the DNS adds.
  */
 
-export type EspProviderKey = "resend" | "mock";
+export type EspProviderKey = "resend" | "ses" | "mock";
 
 /** Providers a real account can use. `mock` is for tests and dry runs only: no account row ever has it. */
-export const REAL_ESP_PROVIDERS: ReadonlyArray<EspProviderKey> = ["resend"];
+export const REAL_ESP_PROVIDERS: ReadonlyArray<EspProviderKey> = ["resend", "ses"];
 
-export function isEspProvider(value: unknown): value is "resend" {
-  return value === "resend";
+export function isEspProvider(value: unknown): value is "resend" | "ses" {
+  return value === "resend" || value === "ses";
+}
+
+/** What building a provider takes. Values are read from secrets by the runtime and live in memory only. */
+export interface ResendCredentials {
+  apiKey: string;
+}
+
+export interface SesCredentials {
+  /** The AWS region of the SES account (`eu-north-1`). */
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+export type EspCredentials = ResendCredentials | SesCredentials;
+
+export const isSesCredentials = (value: EspCredentials): value is SesCredentials => "secretAccessKey" in value;
+
+/** What the provider says about the account's sending limits (SES `GetAccount`). */
+export interface EspAccountQuota {
+  /** Most messages a second. */
+  maxSendRate: number;
+  /** Most messages in a rolling 24 hours. */
+  max24HourSend: number;
+  sentLast24Hours: number;
+  /** false: the account is in the sandbox (verified recipients only, 200 a day, 1 a second). */
+  productionAccessEnabled: boolean;
+  /** false: sending is paused for the whole account. */
+  sendingEnabled: boolean;
 }
 
 /** What the provider is asked to deliver. Everything is already cleaned (one line headers, plain addresses). */
@@ -135,6 +164,13 @@ export class EspApiError extends Error {
 
 export interface EmailProvider {
   readonly key: EspProviderKey;
+  /**
+   * The provider remembers an idempotency key, so a send whose outcome is unknown may be repeated with the same key. false (SES): such a
+   * send is never repeated; it fails for good and a person looks in the provider's console.
+   */
+  readonly idempotentSends: boolean;
+  /** The provider takes several distinct messages in one request (`sendBatch`). false: no batcher is built, even with `esp.batch` on. */
+  readonly batching: boolean;
   send(email: EspEmail): Promise<SendOutcome>;
   /** Up to 100 messages in one request, no attachments. The key covers the whole batch. */
   sendBatch(emails: EspEmail[], batchKey: string): Promise<BatchOutcome>;
@@ -144,6 +180,8 @@ export interface EmailProvider {
   /** Asks the provider to look at the DNS again. The domain is `pending` until it has. */
   verifyDomain(id: string): Promise<void>;
   listDomains(): Promise<ProviderDomain[]>;
+  /** The account's sending limits and state, for providers that report them (SES). */
+  getAccountQuota?(): Promise<EspAccountQuota>;
 }
 
 /** Most messages one batch request may carry. */

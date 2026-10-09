@@ -188,7 +188,7 @@ describe("what an agent sees", () => {
 
 describe("the skill and the settings", () => {
   it("keeps the adapter OFF by default: nothing is on until the owner switches it on and the secrets exist", () => {
-    expect(parseMailboxConfig({}).esp).toMatchObject({ enabled: false, hasApiKey: false, hasWebhookSecret: false });
+    expect(parseMailboxConfig({}).esp).toMatchObject({ enabled: false, hasCredentials: false, hasWebhookSecret: false });
     const esp = (manifest.instanceConfigSchema as { properties: Record<string, { properties: Record<string, Record<string, unknown>> }> }).properties.esp!;
     expect(esp.properties.enabled).toMatchObject({ type: "boolean", default: false });
     expect(esp.properties.apiKey).toMatchObject({ format: "secret-ref" });
@@ -196,7 +196,7 @@ describe("the skill and the settings", () => {
     expect(esp.properties.webhookSecret).toMatchObject({ format: "secret-ref" });
     expect(esp.properties.prefer).toMatchObject({ enum: ["gmail", "transactional"], default: "gmail" });
     expect(esp.properties.batch).toMatchObject({ default: false });
-    expect(esp.properties.provider).toMatchObject({ enum: ["resend"] });
+    expect(esp.properties.provider).toMatchObject({ enum: ["resend", "ses"] });
   });
 
   it("teaches the rules an agent must keep: DNS is never edited, one ask, no tests, no bypassing an approval, no Gmail as the client", () => {

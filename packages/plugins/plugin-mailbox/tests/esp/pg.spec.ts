@@ -4,7 +4,8 @@
  * journey from nothing to mail going out as a client's own domain. The provider's API is the in-memory Resend of
  * `fake-resend.ts` behind the host's `ctx.http.fetch`, and public DNS is a records table behind the same fetch.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { HANDOFF_EVENTS, MAIL_EVENTS, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import { resetEnsureMemo } from "../../src/delegations.js";
@@ -671,4 +672,48 @@ describe.skipIf(!available)("the provider's SQL, statement by statement", () => 
     await s.redactSends(CO, ["k1"]);
     expect((await s.getSend(CO, "k1"))!.delivery).toEqual({});
   });
+});
+
+describe.skipIf(!available)("migration 011 (SES)", () => {
+  const INDEX = "accounts_ses_address";
+  const ELEVEN = "011_ses.sql";
+  let pg: PgHarness | null = null;
+  afterEach(async () => {
+    await pg?.stop();
+    pg = null;
+  });
+  const names = async (text: string, params: unknown[] = []) => ((await pg!.client.query(text, params)).rows as Array<Record<string, string>>).map((row) => Object.values(row)[0]!);
+  const insertAccount = (id: string, company: string, provider: string, address: string) =>
+    pg!.client.query(`INSERT INTO ${NAMESPACE}.accounts (id, company_id, provider, address, status) VALUES ($1, $2, $3, $4, 'connected')`, [id, company, provider, address]);
+
+  it("applies on the 0.6.5 schema (001–010, with rows in it) and on an empty one, and creates only the index", async () => {
+    const all = readdirSync(new URL("../../migrations/", import.meta.url)).filter((f) => f.endsWith(".sql")).sort();
+    expect(all.at(-1)).toBe(ELEVEN);
+    // 0.6.5: everything before 011, with a Gmail and a Resend account already there.
+    pg = await startPg({ migrations: all.filter((f) => f !== ELEVEN) });
+    await insertAccount("g1", CO, "gmail", "peet@partnersinbiz.online");
+    await insertAccount("r1", CO, "resend", "hello@updates.client.co.za");
+    const before = await names(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}'`);
+    expect(before).not.toContain(INDEX);
+    await pg.client.query(readFileSync(new URL(`../../migrations/${ELEVEN}`, import.meta.url), "utf8"));
+    const after = await names(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}'`);
+    expect(after.filter((name) => !before.includes(name))).toEqual([INDEX]);
+    expect(await names(`SELECT count(*)::text FROM ${NAMESPACE}.accounts`)).toEqual(["2"]);
+    await pg.stop();
+    // An empty schema takes all eleven in order.
+    pg = await startPg();
+    expect((await pg.client.query(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}' AND indexname = $1`, [INDEX])).rows).toHaveLength(1);
+  }, 180_000);
+
+  it("refuses two ses accounts with one address in a company, and ignores Gmail and Resend rows and other companies", async () => {
+    pg = await startPg();
+    await insertAccount("s1", CO, "ses", "hello@pib.test");
+    await expect(insertAccount("s2", CO, "ses", "hello@pib.test")).rejects.toThrow(INDEX);
+    // The same address elsewhere is fine: another company, another provider, Gmail.
+    await insertAccount("s3", "co-2", "ses", "hello@pib.test");
+    await insertAccount("r1", CO, "resend", "hello@pib.test");
+    await insertAccount("g1", CO, "gmail", "hello@pib.test");
+    await insertAccount("g2", CO, "gmail", "hello@pib.test").catch(() => undefined);
+    expect(await names(`SELECT id FROM ${NAMESPACE}.accounts WHERE provider = 'ses' ORDER BY id`)).toEqual(["s1", "s3"]);
+  }, 180_000);
 });

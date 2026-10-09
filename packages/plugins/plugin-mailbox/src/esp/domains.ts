@@ -180,7 +180,7 @@ export interface AddSendingDomainInput {
 /** What to tell the owner when the provider is not ready: the steps, in order, with where each is done. */
 export function ownerSteps(config: EspConfig, links: { settings: string; webhookUrl: string | null }): string[] {
   const steps: string[] = [];
-  if (!config.hasApiKey) {
+  if (!config.hasCredentials) {
     steps.push(
       "Create a Resend account at https://resend.com/signup (or sign in at https://resend.com/login).",
       "Create an API key with Full access at https://resend.com/api-keys (Full access is needed to add domains as well as send).",
@@ -432,7 +432,7 @@ export async function refreshSendingDomain(env: Env, loaded: LoadedConfig, compa
 export async function refreshPendingDomains(env: Env, companyId: string): Promise<{ looked: number; verified: number }> {
   const loaded = await loadMailboxConfig(env.ctx, companyId);
   const result = { looked: 0, verified: 0 };
-  if (!loaded.config.esp.enabled || !loaded.config.esp.hasApiKey) return result;
+  if (!loaded.config.esp.enabled || !loaded.config.esp.hasCredentials) return result;
   const pending = (await env.store.listEspDomains(companyId)).filter((row) => row.status !== "verified").slice(0, REFRESH_PER_RUN);
   for (const row of pending) {
     try {

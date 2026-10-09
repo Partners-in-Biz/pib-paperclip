@@ -449,7 +449,7 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
       ? `Resend ${state!.code === "quota" ? "says the sending quota is used up" : "refused the Mailbox's API key"}${state!.detail ? ` (${state!.detail})` : ""}. Mail through the provider waits and is tried again; Gmail is not affected.`
       : accountDone
         ? "The provider is switched on and its API key is saved. Agents can register a client's sending domain."
-        : !esp.enabled && esp.hasApiKey
+        : !esp.enabled && esp.hasCredentials
           ? "The API key is saved but the provider is switched off in the Mailbox settings."
           : "Optional. Lets the Mailbox send as a client's own verified domain through Resend, with bounce and complaint handling, instead of only from one Gmail account. Gmail stays the default.",
     href: settings,
@@ -457,7 +457,7 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
     steps: accountDone
       ? undefined
       : [
-        ...(esp.hasApiKey ? [] : [
+        ...(esp.hasCredentials ? [] : [
           "Create a Resend account at https://resend.com/signup (or sign in at https://resend.com/login).",
           "Open https://resend.com/api-keys, click Create API Key, choose Full access (the Mailbox adds domains as well as sending), and copy the key once.",
           "In Paperclip, create a secret for it (Settings, Secrets), then open the Mailbox settings, find Email provider, and pick that secret under Resend API key.",

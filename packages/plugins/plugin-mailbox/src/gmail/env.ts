@@ -2,15 +2,15 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GmailStore } from "../db.js";
 import type { DnsResolver } from "../dns.js";
 import type { HttpFetch } from "../esp/resend.js";
-import type { EmailProvider, EspProviderKey } from "../esp/types.js";
+import type { EmailProvider, EspCredentials, EspProviderKey } from "../esp/types.js";
 import type { FetchLike } from "./api.js";
 
 /** The email provider's seams: tests pass a mock provider (and a fake fetch); production builds Resend over the host's guarded fetch. */
 export interface EspEnv {
   /** HTTP for the provider API; the host's `ctx.http.fetch` when absent. */
   fetch?: HttpFetch;
-  /** Builds the provider from the saved API key; Resend when absent. */
-  provider?: (key: EspProviderKey, apiKey: string) => EmailProvider;
+  /** Builds the provider from the saved credentials (`{ apiKey }` for Resend, `{ region, accessKeyId, secretAccessKey }` for SES); the real adapter when absent. */
+  provider?: (key: EspProviderKey, credentials: EspCredentials) => EmailProvider;
 }
 
 /** Everything the Gmail logic needs; tests swap the store and fetch. */

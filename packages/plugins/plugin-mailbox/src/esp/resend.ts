@@ -324,6 +324,8 @@ export function parseResendEvent(rawBody: string): ResendEvent | null {
 
 export class ResendProvider implements EmailProvider {
   readonly key = "resend" as const;
+  readonly idempotentSends = true;
+  readonly batching = true;
   private readonly base: string;
   private readonly timeoutMs: number;
 

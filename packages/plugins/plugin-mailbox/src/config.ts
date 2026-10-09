@@ -126,13 +126,25 @@ export const instanceConfigSchema: JsonSchema = {
         "A second way to send, beside Gmail: a send-only account for each domain the provider is allowed to send as (a client's own domain, or PiB's). Off until it is switched on here AND the API key is saved. Sending also needs the webhook signing secret, so bounces and complaints are never missed. Gmail stays the default sender; nothing changes for mail that names no provider account.",
       properties: {
         enabled: { type: "boolean", title: "Switch the email provider on", description: "Off by default. With it on, the Mailbox can register sending domains and send from them once their DNS records are in place.", default: false },
-        provider: { type: "string", title: "Provider", enum: ["resend"], default: "resend" },
+        provider: { type: "string", title: "Provider", enum: ["resend", "ses"], default: "resend", description: "resend (default) or ses (Amazon SES). SES needs the keys and the configuration set in the SES block below." },
         apiKey: secretField("Resend API key", "A Paperclip secret holding a Resend API key with full access (it registers domains as well as sending): resend.com, API Keys, Create API Key."),
         webhookSecret: secretField("Resend webhook signing secret", "A Paperclip secret holding the signing secret (whsec_...) of the Resend webhook that points at this Paperclip: resend.com, Webhooks. Without it nothing is sent through the provider."),
         ratePerSecond: { type: "integer", title: "Requests per second", description: "Most requests per second the Mailbox makes to the provider (Resend allows 10 by default, shared by every key of the team).", default: 4, minimum: 1, maximum: 10 },
         steadyDailyCap: { type: "integer", title: "Daily cap once a domain is warmed up", description: "Most recipients one domain is handed to the provider per UTC day after its warm-up (the first 13 days ramp up from 50). A person can give one domain its own cap.", default: DEFAULT_STEADY_CAP, minimum: 1, maximum: 1000000 },
         prefer: { type: "string", title: "Mail the provider takes when no sender is named", enum: ["gmail", "transactional"], default: "gmail", description: "gmail (default): mail that names no sender goes out from the default Gmail account. transactional: invoices, payslips and replies that name no sender go from the company's own provider account when it is ready (marketing always goes from the sender it names, or the client's own domain when the client has one)." },
         defaultFrom: { type: "string", title: "The company's own provider address", description: "The send-only address (on a domain you registered) that transactional mail uses when the setting above is transactional. Empty: the oldest ready company-owned provider account." },
+        ses: {
+          type: "object",
+          title: "Amazon SES (when the provider is ses)",
+          description: "The SES account the Mailbox sends through (SESv2). Keys are Paperclip secrets; the IAM user needs ses:SendEmail and ses:GetAccount (and the identity calls for domains).",
+          properties: {
+            region: { type: "string", title: "AWS region", default: "eu-north-1", description: "The region of the SES account, e.g. eu-north-1." },
+            accessKeyId: secretField("AWS access key id", "A Paperclip secret holding the IAM user's access key id."),
+            secretAccessKey: secretField("AWS secret access key", "A Paperclip secret holding the IAM user's secret access key."),
+            configurationSet: { type: "string", title: "Configuration set", description: "The SES configuration set every send names; it publishes the bounce, complaint and delivery events." },
+            snsTopicArn: { type: "string", title: "SNS topic ARN", description: "The SNS topic the configuration set publishes to (arn:aws:sns:<region>:<account>:<name>)." },
+          },
+        },
         batch: { type: "boolean", title: "Send messages that arrive together in one request", description: "Off by default. Up to 100 messages without attachments go in one provider request. A batch the provider did not answer is never sent again message by message, so a person checks the provider's log for those.", default: false },
       },
     },
@@ -167,8 +179,11 @@ export interface MailboxConfig {
 /** The `esp` settings. A secret's presence is read without resolving it (the host allows 30 secret resolves a minute per company). */
 export interface EspConfig {
   enabled: boolean;
-  provider: "resend";
-  hasApiKey: boolean;
+  provider: "resend" | "ses";
+  /** The provider can be used: Resend, the API key is saved; SES, both access keys are saved. */
+  hasCredentials: boolean;
+  /** Amazon SES settings (read whatever the provider is, so switching provider keeps them). */
+  ses: { region: string; hasAccessKeyId: boolean; hasSecretAccessKey: boolean; configurationSet: string | null; snsTopicArn: string | null };
   hasWebhookSecret: boolean;
   ratePerSecond: number;
   steadyDailyCap: number;
@@ -178,6 +193,8 @@ export interface EspConfig {
 }
 
 export const DEFAULT_ESP_RATE = 4;
+export const DEFAULT_SES_REGION = "eu-north-1";
+const SES_REGION = /^[a-z]{2}(-[a-z]+)+-\d$/;
 
 function hasSecret(value: unknown): boolean {
   return typeof value === "string" ? value.trim().length > 0 : isSecretRef(value) && Boolean(value.secretId);
@@ -188,10 +205,16 @@ export function parseEspConfig(raw: Record<string, unknown>): EspConfig {
   const rate = Number(esp.ratePerSecond);
   const cap = Number(esp.steadyDailyCap);
   const from = typeof esp.defaultFrom === "string" ? esp.defaultFrom.trim().toLowerCase() : "";
+  const ses = (esp.ses && typeof esp.ses === "object" && !Array.isArray(esp.ses) ? esp.ses : {}) as Record<string, unknown>;
+  const region = typeof ses.region === "string" ? ses.region.trim().toLowerCase() : "";
+  const setting = (value: unknown, pattern: RegExp) => (typeof value === "string" && pattern.test(value.trim()) ? value.trim() : null);
+  const provider = esp.provider === "ses" ? "ses" : "resend";
+  const sesKeys = { hasAccessKeyId: hasSecret(ses.accessKeyId), hasSecretAccessKey: hasSecret(ses.secretAccessKey) };
   return {
     enabled: esp.enabled === true,
-    provider: "resend",
-    hasApiKey: hasSecret(esp.apiKey),
+    provider,
+    hasCredentials: provider === "ses" ? sesKeys.hasAccessKeyId && sesKeys.hasSecretAccessKey : hasSecret(esp.apiKey),
+    ses: { region: SES_REGION.test(region) ? region : DEFAULT_SES_REGION, ...sesKeys, configurationSet: setting(ses.configurationSet, /^[A-Za-z0-9_-]{1,64}$/), snsTopicArn: setting(ses.snsTopicArn, /^arn:aws[a-z-]*:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/) },
     hasWebhookSecret: hasSecret(esp.webhookSecret),
     ratePerSecond: Number.isInteger(rate) && rate >= 1 && rate <= 10 ? rate : DEFAULT_ESP_RATE,
     steadyDailyCap: Number.isInteger(cap) && cap >= 1 && cap <= 1_000_000 ? cap : DEFAULT_STEADY_CAP,
@@ -218,8 +241,16 @@ export function espWebhookUrl(publicBaseUrl: string | null): string | null {
 export function espReadiness(config: EspConfig): EspReadiness {
   const blockers: string[] = [];
   if (!config.enabled) blockers.push("The email provider is switched off in the Mailbox settings.");
-  if (!config.hasApiKey) blockers.push("The Resend API key is not saved as a Paperclip secret in the Mailbox settings.");
-  const domains = config.enabled && config.hasApiKey;
+  if (config.provider === "ses") {
+    if (!config.ses.hasAccessKeyId) blockers.push("The AWS access key id is not saved as a Paperclip secret in the Mailbox settings (Email provider, Amazon SES).");
+    if (!config.ses.hasSecretAccessKey) blockers.push("The AWS secret access key is not saved as a Paperclip secret in the Mailbox settings (Email provider, Amazon SES).");
+    const domains = config.enabled && config.hasCredentials;
+    // Without a configuration set SES publishes no events, so bounces and complaints would be missed. (The topic and its confirmation are T1c/T2.)
+    if (domains && !config.ses.configurationSet) blockers.push("The SES configuration set is not saved in the Mailbox settings: until it is, nothing is sent through SES, because bounces and complaints would be missed.");
+    return { domains, sending: domains && Boolean(config.ses.configurationSet), blockers };
+  }
+  if (!config.hasCredentials) blockers.push("The Resend API key is not saved as a Paperclip secret in the Mailbox settings.");
+  const domains = config.enabled && config.hasCredentials;
   if (domains && !config.hasWebhookSecret) blockers.push("The Resend webhook signing secret is not saved: until it is, nothing is sent through the provider, because bounces and complaints would be missed.");
   return { domains, sending: domains && config.hasWebhookSecret, blockers };
 }
@@ -362,6 +393,12 @@ export function validateMailboxConfig(raw: Record<string, unknown>): { ok: boole
       const cap = Number(block.steadyDailyCap);
       if (!Number.isInteger(cap) || cap < 1 || cap > 1_000_000) errors.push("The daily cap must be a whole number from 1 to 1000000");
     }
+    const ses = block.ses && typeof block.ses === "object" && !Array.isArray(block.ses) ? (block.ses as Record<string, unknown>) : {};
+    for (const [key, label] of [["accessKeyId", "AWS access key id"], ["secretAccessKey", "AWS secret access key"]] as const) {
+      if (typeof ses[key] === "string" && String(ses[key]).trim()) warnings.push(`The ${label} was typed as plain text. Pick a Paperclip secret instead.`);
+    }
+    if (typeof ses.region === "string" && ses.region.trim() && !SES_REGION.test(ses.region.trim().toLowerCase())) errors.push("The AWS region should look like eu-north-1");
+    if (block.provider != null && block.provider !== "" && block.provider !== "resend" && block.provider !== "ses") errors.push("The email provider must be resend or ses");
     if (typeof block.defaultFrom === "string" && block.defaultFrom.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(block.defaultFrom.trim())) errors.push("The company's own provider address is not an email address");
   }
   return { ok: errors.length === 0, errors, warnings };

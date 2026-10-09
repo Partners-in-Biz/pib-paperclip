@@ -6,7 +6,7 @@
  * records somebody adds to DNS, and a send from a domain that is not verified is refused. Failures are scripted per call
  * (`failNext`) so the tests can walk every branch of the sender: a 429, a timeout, a rejected message.
  */
-import { EspApiError, MAX_BATCH, type BatchOutcome, type DnsRecord, type EmailProvider, type EspEmail, type ProviderDomain, type ProviderDomainStatus, type SendOutcome } from "./types.js";
+import { EspApiError, MAX_BATCH, type BatchOutcome, type EspAccountQuota, type DnsRecord, type EmailProvider, type EspEmail, type ProviderDomain, type ProviderDomainStatus, type SendOutcome } from "./types.js";
 
 export interface MockSend {
   email: EspEmail;
@@ -38,6 +38,24 @@ function recordsFor(name: string): DnsRecord[] {
 
 export class MockEmailProvider implements EmailProvider {
   readonly key = "mock" as const;
+  readonly idempotentSends: boolean;
+  readonly batching: boolean;
+  /** What `getAccountQuota` answers (change it in a test to change the answer). Reported only when the mock was built with a quota, like SES; Resend reports none. */
+  quota: EspAccountQuota | null = null;
+  quotaCalls = 0;
+  getAccountQuota?: () => Promise<EspAccountQuota>;
+
+  constructor(options: { idempotentSends?: boolean; batching?: boolean; quota?: EspAccountQuota } = {}) {
+    this.idempotentSends = options.idempotentSends ?? true;
+    this.batching = options.batching ?? true;
+    if (options.quota) {
+      this.quota = options.quota;
+      this.getAccountQuota = async () => {
+        this.quotaCalls += 1;
+        return { ...this.quota! };
+      };
+    }
+  }
   sent: MockSend[] = [];
   /** Every message handed to send or sendBatch, accepted or not. */
   received: EspEmail[] = [];
