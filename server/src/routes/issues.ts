@@ -315,7 +315,11 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  deliverAgentUnblockNotification,
+  isSelfOwnedUnblockDescriptor,
+  isSelfOwnedUnblockWakeSkipEnabled,
+} from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -13821,11 +13825,31 @@ export function issueRoutes(
         let ownerNotifiedAt: Date | null = null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
+          actorAgentId: actor.actorType === "agent" ? actor.agentId : null,
           wakeup: heartbeat.wakeup,
           markNotified: async (blockedOwnerNotifiedAt) => {
             ownerNotifiedAt = blockedOwnerNotifiedAt;
           },
         });
+        if (
+          !ownerNotifiedAt &&
+          actor.actorType === "agent" &&
+          isSelfOwnedUnblockWakeSkipEnabled() &&
+          isSelfOwnedUnblockDescriptor(blockedIssue, actor.agentId)
+        ) {
+          await logActivity(db, {
+            companyId: blockedIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.self_owned_unblock_wake_skipped",
+            entityType: "issue",
+            entityId: blockedIssue.id,
+            details: { identifier: blockedIssue.identifier, ownerAgentId: actor.agentId },
+          });
+        }
         if (ownerNotifiedAt) {
           await db
             .update(issueRows)

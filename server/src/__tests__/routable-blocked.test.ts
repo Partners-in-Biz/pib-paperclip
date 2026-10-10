@@ -73,4 +73,45 @@ describe("routable blocked notifications", () => {
       idempotencyKey: expect.stringContaining(secondTransition.toISOString()),
     });
   });
+
+  it("does not wake or mark notified when the acting agent names itself", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({ issue: blockedIssue(), actorAgentId: agentId, wakeup, markNotified }))
+      .resolves.toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(markNotified).not.toHaveBeenCalled();
+  });
+
+  it("still wakes when a different actor names the agent", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    await expect(deliverAgentUnblockNotification({ issue: blockedIssue(), actorAgentId: null, wakeup, markNotified }))
+      .resolves.toBe(true);
+    await expect(deliverAgentUnblockNotification({
+      issue: blockedIssue(),
+      actorAgentId: "00000000-0000-4000-8000-000000000009",
+      wakeup,
+      markNotified,
+    })).resolves.toBe(true);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the self-wake when PAPERCLIP_SKIP_SELF_OWNED_UNBLOCK_WAKE=0", async () => {
+    vi.stubEnv("PAPERCLIP_SKIP_SELF_OWNED_UNBLOCK_WAKE", "0");
+    try {
+      const wakeup = vi.fn(async () => undefined);
+      await expect(deliverAgentUnblockNotification({
+        issue: blockedIssue(),
+        actorAgentId: agentId,
+        wakeup,
+        markNotified: async () => undefined,
+      })).resolves.toBe(true);
+      expect(wakeup).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
