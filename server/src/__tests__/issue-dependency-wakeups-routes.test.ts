@@ -671,6 +671,98 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it("carries the dependent's remaining wait into the blockers-resolved wake context", async () => {
+    const reviewIssueId = "11111111-1111-4111-8111-111111111111";
+    const releaseIssueId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(issueRecord({ id: reviewIssueId, status: "in_progress" }));
+    mockIssueService.update.mockResolvedValue(issueRecord({ id: reviewIssueId, status: "done" }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: releaseIssueId,
+        assigneeAgentId: "agent-release",
+        blockerIssueIds: [reviewIssueId],
+        blockedTransitionAt: null,
+        remainingWait: "Waiting on the client's sign-off",
+      },
+    ]);
+
+    const res = await request(await createApp()).patch(`/api/issues/${reviewIssueId}`).send({ status: "done" });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-release",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          contextSnapshot: expect.objectContaining({
+            issueId: releaseIssueId,
+            remainingWait: "Waiting on the client's sign-off",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("carries the descriptor action into a restored-dependency wake and omits it without one", async () => {
+    const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(issueRecord({ id: parentIssueId, status: "todo", assigneeAgentId: "agent-2" }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: parentIssueId,
+      status: "blocked",
+      assigneeAgentId: "agent-2",
+      unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+    }));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: parentIssueId,
+      blockerIssueIds: [childIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+      });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          contextSnapshot: expect.objectContaining({
+            source: "issue.blockers_restored",
+            remainingWait: "Review the restored dependency",
+          }),
+        }),
+      );
+    });
+
+    // Re-asserting the list on an already blocked issue, no descriptor.
+    mockWakeup.mockClear();
+    mockIssueService.getById.mockResolvedValue(issueRecord({ id: parentIssueId, status: "blocked", assigneeAgentId: "agent-2" }));
+    mockIssueService.update.mockResolvedValue(issueRecord({ id: parentIssueId, status: "blocked", assigneeAgentId: "agent-2" }));
+    const withoutDescriptor = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({ blockedByIssueIds: [childIssueId] });
+    expect(withoutDescriptor.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({ reason: "issue_blockers_resolved" }),
+      );
+    });
+    const [, wake] = mockWakeup.mock.calls.find(([agentId]) => agentId === "agent-2") as unknown as [
+      string,
+      { contextSnapshot: Record<string, unknown> },
+    ];
+    expect(wake.contextSnapshot).not.toHaveProperty("remainingWait");
+  });
+
   it("does not emit a dependency wake when an unresolved or cancelled blocker remains", async () => {
     mockIssueService.getById.mockResolvedValue(issueRecord({ status: "in_progress" }));
     mockIssueService.update.mockResolvedValue(issueRecord({ status: "done" }));
