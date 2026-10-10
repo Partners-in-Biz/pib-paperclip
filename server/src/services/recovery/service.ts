@@ -112,6 +112,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  readIssueRemainingWait,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
@@ -5575,6 +5576,7 @@ export function recoveryService(
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
+            unblockDescriptor: issues.unblockDescriptor,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -5591,6 +5593,7 @@ export function recoveryService(
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
+          unblockDescriptor: issues.unblockDescriptor,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -5723,6 +5726,9 @@ export function recoveryService(
         }
 
         try {
+          const remainingWait = readIssueRemainingWait(
+            candidate.unblockDescriptor,
+          );
           const wake = await deps.enqueueWakeup(agentId, {
             source: "automation",
             triggerDetail: "system",
@@ -5743,6 +5749,7 @@ export function recoveryService(
               source,
               resolvedBlockerIssueId,
               blockerIssueIds: readiness.blockerIssueIds,
+              ...(remainingWait ? { remainingWait } : {}),
             },
           });
           if (!wake) {

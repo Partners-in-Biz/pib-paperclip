@@ -1961,7 +1961,11 @@ export async function commitNativeStatusDecision(input: {
             blockerIssueIds: dependent.blockerIssueIds,
             ...(childCompletionContext ?? {}),
           },
-          contextSnapshot: childCompletionContext ?? undefined,
+          contextSnapshot:
+            childCompletionContext ??
+            (dependent.remainingWait
+              ? { remainingWait: dependent.remainingWait }
+              : undefined),
         });
         materialized.push({
           effectKind: isCompletedChildParent

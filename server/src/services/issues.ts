@@ -139,6 +139,7 @@ import {
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
+import { readIssueRemainingWait } from "./issue-dependency-wakeups.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -9045,6 +9046,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           blockedTransitionAt: issues.blockedTransitionAt,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -9092,7 +9094,74 @@ export function issueService(db: Db) {
           assigneeAgentId: candidate.assigneeAgentId!,
           blockerIssueIds: readiness.blockerIssueIds,
           blockedTransitionAt: candidate.blockedTransitionAt,
+          remainingWait: readIssueRemainingWait(candidate.unblockDescriptor),
         }));
+    },
+
+    /**
+     * Blocker ids to drop when an agent (re-)blocks an issue whose every listed
+     * blocker is done (PAR-1963). Uses the same test as `getDependencyReadiness`:
+     * done and past the workspace-finalize barrier. Returns [] when the list is
+     * empty or any blocker is still open, so callers keep today's behaviour.
+     * `requestedBlockerIssueIds` is the list the request writes; null means the
+     * issue's stored list.
+     */
+    listResolvedBlockerIdsToPrune: async (input: {
+      companyId: string;
+      issueId: string;
+      requestedBlockerIssueIds: string[] | null;
+    }): Promise<string[]> => {
+      if (input.requestedBlockerIssueIds === null) {
+        const readiness = (
+          await listIssueDependencyReadinessMap(db, input.companyId, [
+            input.issueId,
+          ])
+        ).get(input.issueId);
+        return readiness?.isDependencyReady &&
+          readiness.blockerIssueIds.length > 0
+          ? [...new Set(readiness.blockerIssueIds)].sort()
+          : [];
+      }
+      const blockerIssueIds = [
+        ...new Set(input.requestedBlockerIssueIds.filter(Boolean)),
+      ].sort();
+      if (blockerIssueIds.length === 0) return [];
+      const blockerRows = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          executionWorkspaceId: issues.executionWorkspaceId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, input.companyId),
+            inArray(issues.id, blockerIssueIds),
+          ),
+        );
+      // Unknown ids are left for the update's own validation to reject.
+      if (
+        blockerRows.length !== blockerIssueIds.length ||
+        blockerRows.some((row) => row.status !== "done")
+      ) {
+        return [];
+      }
+      const pendingFinalizeBlockerIssueIds =
+        await listPendingFinalizeBlockerIssueIds(
+          db,
+          input.companyId,
+          blockerRows.flatMap((row) =>
+            row.executionWorkspaceId
+              ? [
+                  {
+                    blockerIssueId: row.id,
+                    executionWorkspaceId: row.executionWorkspaceId,
+                  },
+                ]
+              : [],
+          ),
+        );
+      return pendingFinalizeBlockerIssueIds.size > 0 ? [] : blockerIssueIds;
     },
 
     getWakeableParentAfterChildCompletion: async (
