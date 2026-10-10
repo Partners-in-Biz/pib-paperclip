@@ -55,6 +55,7 @@ export function costRoutes(
   });
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
+    cancelQueuedWorkForAgent: heartbeat.cancelQueuedWorkForAgent,
   };
   const costs = costService(db, budgetHooks);
   const finance = financeService(db);
