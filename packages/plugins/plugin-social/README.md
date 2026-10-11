@@ -18,8 +18,19 @@ Every account, post, media asset, RSS feed and inbox item belongs to one scope: 
 2. Open the Social page once, then register the redirect URI it shows with every OAuth provider:
    `<publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html`.
    The host serves plugin files only by installation id (not by plugin key); the id changes only if the plugin is uninstalled and installed again.
+   Connect accounts only from the public base URL's own address. The pending sign-in lives in the browser's localStorage and the session cookie is per host, so a sign-in started on another address (for example the sslip.io host) cannot finish there. Since 0.8.2 the Social page says so and keeps the Connect buttons off on any other address.
 3. R2 bucket CORS must allow the Paperclip origin to `PUT` with a `Content-Type` header.
 4. **Setup → Team → Social agent**: hire one or pick an agent you already have, then Resume it once its adapter has a working model key. See "The Social agent" below.
+
+## LinkedIn company pages
+
+To post to LinkedIn company pages and manage their inbox, set up a second LinkedIn app with the Community Management API (separate from the personal LinkedIn app that handles individual profiles):
+
+1. In **Settings → Plugins → Social → Platforms → LinkedIn Pages app (Community Management API only)**, add the client ID and client secret. The app requires these scopes: `w_organization_social`, `r_organization_social`, `rw_organization_admin`.
+2. Register the same redirect URI as other apps: `<publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html`.
+3. On the **Accounts** tab, click **LinkedIn Page** to connect company pages. The personal LinkedIn app (personal profiles) and the Pages app are separate; connecting a personal profile uses the first app, company pages use the second.
+4. Accounts saved from the Pages app carry `meta.app = "linkedinPages"` and are refreshed, published to, and have their inbox polled with the Pages app credentials. The personal app (meta.app unset or `"linkedin"`) is untouched.
+5. The deprecated **LinkedIn company pages** toggle (`linkedinOrgPages`) is ignored; remove it when upgrading.
 
 ## The Social agent
 

@@ -1060,6 +1060,14 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   } catch {
     redirectUri = null;
   }
+  // Check if linkedinPages app is configured
+  let linkedinPagesConfigured = false;
+  try {
+    await config.linkedinPages();
+    linkedinPagesConfigured = true;
+  } catch {
+    linkedinPagesConfigured = false;
+  }
   return {
     scope: scope ? formatClientParam(scope) : null,
     client: target.client ? clientOut(target.client) : null,
@@ -1071,10 +1079,10 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
       encryptionKey: config.encryptionKeyConfigured,
       r2: config.r2Configured,
       timezone: config.timezone,
-      linkedinOrgPages: config.linkedinOrgPages,
       allowAgentReplies: config.allowAgentReplies,
       blueskyDefaultPds: config.blueskyDefaultPds,
       mastodonDefaultInstance: config.mastodonDefaultInstance,
+      linkedinPagesConfigured,
       jev: jevKeySet(config.raw),
     },
     platforms: ALL_PLATFORMS.map((platform) => {

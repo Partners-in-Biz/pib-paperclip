@@ -232,7 +232,11 @@ async function listOrganizations(env: ProviderEnv, token: string): Promise<Array
 export const linkedinProvider: SocialProvider = {
   platform: "linkedin",
   refreshKind: "refresh_token",
-  defaultScopes: (env) => (env.linkedinOrgPages ? [...LINKEDIN_PERSONAL_SCOPES, ...LINKEDIN_ORG_SCOPES] : LINKEDIN_PERSONAL_SCOPES),
+  defaultScopes: (env) => {
+    const appKey = env.linkedinAppKey ?? "linkedin";
+    if (appKey === "linkedinPages") return LINKEDIN_ORG_SCOPES;
+    return LINKEDIN_PERSONAL_SCOPES;
+  },
   authorize(env, state) {
     const qs = new URLSearchParams({
       response_type: "code",
@@ -262,25 +266,15 @@ export const linkedinProvider: SocialProvider = {
       refreshExpiresAt: expiresAtFrom(data.refresh_token_expires_in),
       scopes,
     };
-    const me = await getJson<{ sub?: string; name?: string; picture?: string; email?: string }>(`${API}/v2/userinfo`, { Authorization: `Bearer ${data.access_token}` }, "LinkedIn profile");
-    if (!me.sub) throw new Error("LinkedIn did not return the member id (openid scope missing?)");
-    const personUrn = `urn:li:person:${me.sub}`;
-    const candidates: ConnectCandidate[] = [{
-      key: `person:${me.sub}`,
-      platform: "linkedin",
-      kind: "person",
-      externalId: personUrn,
-      displayName: me.name ?? "LinkedIn member",
-      handle: me.email ?? null,
-      avatarUrl: me.picture ?? null,
-      token,
-      expiresAt,
-      scopes,
-      meta: { authorUrn: personUrn, kind: "person" },
-    }];
-    if (env.linkedinOrgPages && scopes.some((s) => s.includes("organization"))) {
-      const orgs = await bestEffort(() => listOrganizations(env, data.access_token!));
-      for (const org of orgs.value ?? []) {
+
+    const appKey = env.linkedinAppKey ?? "linkedin";
+    const candidates: ConnectCandidate[] = [];
+
+    if (appKey === "linkedinPages") {
+      // Pages app: list organizations only, no personal profile
+      const orgs = await listOrganizations(env, data.access_token!);
+      if (orgs.length === 0) throw new Error("No LinkedIn company pages found where you are an administrator. Verify that your account has administrator rights on at least one company page.");
+      for (const org of orgs) {
         candidates.push({
           key: `org:${org.id}`,
           platform: "linkedin",
@@ -292,10 +286,29 @@ export const linkedinProvider: SocialProvider = {
           token,
           expiresAt,
           scopes,
-          meta: { authorUrn: org.urn, kind: "organization", memberUrn: personUrn },
+          meta: { authorUrn: org.urn, kind: "organization", app: "linkedinPages" },
         });
       }
+    } else {
+      // Personal app: get user info and optionally list organizations
+      const me = await getJson<{ sub?: string; name?: string; picture?: string; email?: string }>(`${API}/v2/userinfo`, { Authorization: `Bearer ${data.access_token}` }, "LinkedIn profile");
+      if (!me.sub) throw new Error("LinkedIn did not return the member id (openid scope missing?)");
+      const personUrn = `urn:li:person:${me.sub}`;
+      candidates.push({
+        key: `person:${me.sub}`,
+        platform: "linkedin",
+        kind: "person",
+        externalId: personUrn,
+        displayName: me.name ?? "LinkedIn member",
+        handle: me.email ?? null,
+        avatarUrl: me.picture ?? null,
+        token,
+        expiresAt,
+        scopes,
+        meta: { authorUrn: personUrn, kind: "person" },
+      });
     }
+
     return { candidates };
   },
   async refresh(env, account) {

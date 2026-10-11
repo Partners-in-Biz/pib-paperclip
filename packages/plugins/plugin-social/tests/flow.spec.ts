@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildKeyring, sealJson } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../src/namespace.js";
-import { completeOAuth, confirmPicker, pendingOptions } from "../src/oauth/flow.js";
+import { completeOAuth, confirmPicker, pendingOptions, startOAuth } from "../src/oauth/flow.js";
 import { publishDueJob } from "../src/publish.js";
 import { fakeCtx, fastNetwork, json, mockFetch } from "./helpers.js";
 
@@ -297,5 +297,271 @@ describe("OAuth completion through the bridge", () => {
     const { ctx } = sessionWorld();
     await expect(completeOAuth(ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { error: "access_denied", error_description: "User cancelled" } }))
       .rejects.toThrow("User cancelled");
+  });
+
+  describe("LinkedIn Pages app (linkedinAppKey: linkedinPages)", () => {
+    it("rejects startOAuth with app linkedinPages when not configured", async () => {
+      const ctx = fakeCtx(hostServices().services);
+      await expect(startOAuth(ctx, "co", "user-1", { platform: "linkedin", app: "linkedinPages" }))
+        .rejects.toThrow(/linkedinPages|not configured/);
+    });
+
+    it("startOAuth with linkedinPages configured returns correct scopes and session extra", async () => {
+      const world = sessionWorld(
+        { clientRef: null, linkedinAppKey: "linkedinPages" },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedinPages: { clientId: "ln-pages-id", clientSecret: REF("ln-pages") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-pages": "ln-pages-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      const result = await startOAuth(world.ctx, "co", "user-1", { platform: "linkedin", app: "linkedinPages" });
+      expect(result.authorizeUrl).toContain("client_id=ln-pages-id");
+      expect(result.authorizeUrl).toContain("w_organization_social");
+      expect(result.authorizeUrl).toContain("r_organization_social");
+      expect(result.authorizeUrl).toContain("rw_organization_admin");
+      expect(result.authorizeUrl).not.toContain("openid");
+      expect(result.authorizeUrl).not.toContain("profile");
+      expect(result.authorizeUrl).not.toContain("email");
+      expect(result.authorizeUrl).not.toContain("w_member_social");
+    });
+
+    it("completeOAuth for Pages app uses Pages client_id, has correct scopes, no /v2/userinfo call", async () => {
+      const world = sessionWorld(
+        { clientRef: null, linkedinAppKey: "linkedinPages" },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedinPages: { clientId: "ln-pages-id", clientSecret: REF("ln-pages") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-pages": "ln-pages-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      world.session.platform = "linkedin";
+      world.session.account_label = "LinkedIn Page";
+      const fetchCalls: Array<{ method?: string; url: string; body?: string }> = [];
+      mockFetch([
+        ["POST https://www.linkedin.com/oauth/v2/accessToken", (url, init) => {
+          fetchCalls.push({ method: init?.method, url: url.toString(), body: init?.body as string | undefined });
+          const body = new URLSearchParams(init?.body as string);
+          // Assert it's using the Pages client ID
+          expect(body.get("client_id")).toBe("ln-pages-id");
+          return json({ access_token: "page-token", expires_in: 5184000 });
+        }],
+        ["GET https://api.linkedin.com/rest/organizationAcls", () => json({ elements: [
+          { organization: "urn:li:organization:1234567", role: "ADMINISTRATOR", state: "APPROVED" },
+        ] })],
+        ["GET https://api.linkedin.com/rest/organizations/1234567", () => json({ localizedName: "Test Company", vanityName: "test-company" })],
+      ]);
+      const result = await completeOAuth(world.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c" } });
+      expect(world.inserted).toHaveLength(1);
+      // Verify no /v2/userinfo call was made
+      const userinfoCall = fetchCalls.find((c) => c.url.includes("/v2/userinfo"));
+      expect(userinfoCall).toBeUndefined();
+      // Verify the account was saved with meta.app = linkedinPages
+      const accountParams = world.inserted[0];
+      const metaStr = String(accountParams![10]);
+      const meta = JSON.parse(metaStr);
+      expect(meta.app).toBe("linkedinPages");
+    });
+
+    it("completeOAuth for personal app uses personal client_id and calls /v2/userinfo", async () => {
+      const world = sessionWorld(
+        { clientRef: null, linkedinAppKey: undefined },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedin: { clientId: "ln-personal-id", clientSecret: REF("ln-personal") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-personal": "ln-personal-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      world.session.platform = "linkedin";
+      world.session.account_label = "LinkedIn";
+      const fetchCalls: Array<{ url: string; method?: string }> = [];
+      mockFetch([
+        ["POST https://www.linkedin.com/oauth/v2/accessToken", (url, init) => {
+          fetchCalls.push({ url: url.toString(), method: init?.method });
+          const body = new URLSearchParams(init?.body as string);
+          // Assert it's using the personal client ID
+          expect(body.get("client_id")).toBe("ln-personal-id");
+          return json({ access_token: "personal-token", expires_in: 5184000 });
+        }],
+        ["GET https://api.linkedin.com/v2/userinfo", (url) => {
+          fetchCalls.push({ url: url.toString() });
+          return json({ sub: "12345", name: "John Doe", picture: "https://example.com/pic.jpg" });
+        }],
+      ]);
+      const result = await completeOAuth(world.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c" } });
+      expect(world.inserted).toHaveLength(1);
+      // Verify /v2/userinfo was called
+      const userinfoCall = fetchCalls.find((c) => c.url.includes("/v2/userinfo"));
+      expect(userinfoCall).toBeDefined();
+      // Verify the account was saved without meta.app = linkedinPages
+      const accountParams = world.inserted[0];
+      const metaStr = String(accountParams![10]);
+      const meta = JSON.parse(metaStr);
+      expect(meta.app).not.toBe("linkedinPages");
+    });
+
+    it("reconnect of linkedinPages account starts with Pages app even without input.app", async () => {
+      const pageAccount = {
+        id: "existing-pages-account",
+        company_id: "co",
+        platform: "linkedin",
+        external_id: "urn:li:organization:1234567",
+        meta: { app: "linkedinPages", kind: "organization", authorUrn: "urn:li:organization:1234567" },
+        display_name: "Test Company",
+        scope: "org",
+        owner_user_id: null,
+        client_kind: null,
+        client_ref: null,
+        client_name: null,
+      };
+      const world = sessionWorld(
+        { clientRef: null },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedinPages: { clientId: "ln-pages-id", clientSecret: REF("ln-pages") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-pages": "ln-pages-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      // Modify fakeCtx's queryResult to return the pages account
+      const originalQuery = (world.ctx as any).db.query;
+      (world.ctx as any).db.query = async (sql: string, params: unknown[]) => {
+        if (sql.includes("WHERE id = $1") && params[0] === "existing-pages-account") {
+          return [pageAccount];
+        }
+        return originalQuery(sql, params);
+      };
+      // startOAuth without input.app should still use linkedinPages based on the existing account
+      const result = await startOAuth(world.ctx, "co", "user-1", { platform: "linkedin", reconnectAccountId: "existing-pages-account" });
+      expect(result.authorizeUrl).toContain("client_id=ln-pages-id");
+      expect(result.authorizeUrl).toContain("w_organization_social");
+    });
+
+    it("reconnect of personal LinkedIn account uses personal app", async () => {
+      const personalAccount = {
+        id: "existing-personal-account",
+        company_id: "co",
+        platform: "linkedin",
+        external_id: "urn:li:person:12345",
+        meta: { kind: "person", authorUrn: "urn:li:person:12345" },
+        display_name: "John Doe",
+        scope: "org",
+        owner_user_id: null,
+        client_kind: null,
+        client_ref: null,
+        client_name: null,
+      };
+      const world = sessionWorld(
+        { clientRef: null },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedin: { clientId: "ln-personal-id", clientSecret: REF("ln-personal") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-personal": "ln-personal-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      // Modify fakeCtx's queryResult to return the personal account
+      const originalQuery = (world.ctx as any).db.query;
+      (world.ctx as any).db.query = async (sql: string, params: unknown[]) => {
+        if (sql.includes("WHERE id = $1") && params[0] === "existing-personal-account") {
+          return [personalAccount];
+        }
+        return originalQuery(sql, params);
+      };
+      // startOAuth without input.app should use personal app for personal account
+      const result = await startOAuth(world.ctx, "co", "user-1", { platform: "linkedin", reconnectAccountId: "existing-personal-account" });
+      expect(result.authorizeUrl).toContain("openid");
+      expect(result.authorizeUrl).toContain("profile");
+      expect(result.authorizeUrl).toContain("email");
+      expect(result.authorizeUrl).toContain("w_member_social");
+    });
+
+    it("saves accounts with meta.app = linkedinPages when the session carries linkedinAppKey", async () => {
+      const world = sessionWorld({
+        clientRef: null,
+        linkedinAppKey: "linkedinPages",
+      }, {
+        config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+          ...CONFIG,
+          platforms: {
+            ...CONFIG.platforms,
+            linkedinPages: { clientId: "ln-pages-id", clientSecret: REF("ln-pages") },
+          },
+        } : {})) },
+        secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-pages": "ln-pages-secret" })[ref.secretId] ?? "") },
+      });
+      world.session.platform = "linkedin";
+      world.session.account_label = "LinkedIn Page";
+      mockFetch([
+        ["POST https://www.linkedin.com/oauth/v2/accessToken", () => json({ access_token: "page-token", expires_in: 5184000 })],
+        ["GET https://api.linkedin.com/rest/organizationAcls", () => json({ elements: [
+          { organization: "urn:li:organization:1234567", role: "ADMINISTRATOR", state: "APPROVED" },
+        ] })],
+        ["GET https://api.linkedin.com/rest/organizations/1234567", () => json({ localizedName: "Test Company", vanityName: "test-company" })],
+      ]);
+      const result = await completeOAuth(world.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c" } });
+      expect(world.inserted).toHaveLength(1);
+      // Check that the account was saved with meta.app = linkedinPages
+      const accountParams = world.inserted[0];
+      const metaStr = String(accountParams![10]);
+      const meta = JSON.parse(metaStr);
+      expect(meta.app).toBe("linkedinPages");
+    });
+
+    it("saves accounts with platform linkedin and app linkedinPages", async () => {
+      const world = sessionWorld(
+        { clientRef: null, linkedinAppKey: "linkedinPages" },
+        {
+          config: { get: vi.fn(async (companyId: string) => (companyId === "co" ? {
+            ...CONFIG,
+            platforms: {
+              ...CONFIG.platforms,
+              linkedinPages: { clientId: "ln-pages-id", clientSecret: REF("ln-pages") },
+            },
+          } : {})) },
+          secrets: { resolve: vi.fn(async (ref: { secretId: string }) => ({ ...SECRETS, "ln-pages": "ln-pages-secret" })[ref.secretId] ?? "") },
+        },
+      );
+      world.session.platform = "linkedin";
+      world.session.account_label = "LinkedIn Page";
+      mockFetch([
+        ["POST https://www.linkedin.com/oauth/v2/accessToken", () => json({ access_token: "page-token", expires_in: 5184000 })],
+        ["GET https://api.linkedin.com/rest/organizationAcls", () => json({ elements: [
+          { organization: "urn:li:organization:1234567", role: "ADMINISTRATOR", state: "APPROVED" },
+        ] })],
+        ["GET https://api.linkedin.com/rest/organizations/1234567", () => json({ localizedName: "Test Company", vanityName: "test-company" })],
+      ]);
+      await completeOAuth(world.ctx, { companyId: "co", userId: "user-1", state: "st-1", params: { code: "c" } });
+      expect(world.inserted).toHaveLength(1);
+      // Platform should be linkedin and meta should have app = linkedinPages
+      const accountParams = world.inserted[0];
+      expect(accountParams![2]).toBe("linkedin"); // platform
+      const metaStr = String(accountParams![10]);
+      const meta = JSON.parse(metaStr);
+      expect(meta.app).toBe("linkedinPages");
+    });
   });
 });

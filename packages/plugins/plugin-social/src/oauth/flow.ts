@@ -81,6 +81,8 @@ async function mastodonApp(ctx: PluginContext, config: SocialConfig, instanceUrl
 
 export interface StartInput {
   platform: string;
+  /** For LinkedIn: "linkedin" (personal, default) or "linkedinPages" (company pages). */
+  app?: string;
   instanceUrl?: string;
   defaultSubreddit?: string;
   reconnectAccountId?: string;
@@ -100,10 +102,28 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
   const sessionExtraInput: Record<string, unknown> = {};
   const authorizeInput: Record<string, string> = {};
   let app: ProviderApp;
+  let linkedinAppKey: "linkedin" | "linkedinPages" | undefined;
+
+  // For reconnects, look up the existing account early to determine which LinkedIn app to use
+  let target = input.target ?? OWN;
+  if (input.reconnectAccountId) {
+    const existing = await getAccount(ctx, companyId, input.reconnectAccountId);
+    if (!existing) throw new SocialError("The account to reconnect was not found");
+    sessionExtraInput.reconnectAccountId = existing.id;
+    target = rowScope(existing);
+    // For LinkedIn reconnects, check if the existing account uses the Pages app
+    if (platform === "linkedin" && existing.meta && typeof existing.meta === "object" && "app" in existing.meta && existing.meta.app === "linkedinPages") {
+      linkedinAppKey = "linkedinPages";
+    }
+  }
+
   if (platform === "mastodon") {
     const instanceUrl = await publicOrigin(input.instanceUrl || config.mastodonDefaultInstance || "https://mastodon.social", "Mastodon instance URL");
     app = await mastodonApp(ctx, config, instanceUrl);
     authorizeInput.instanceUrl = instanceUrl;
+  } else if (platform === "linkedin" && (input.app === "linkedinPages" || linkedinAppKey === "linkedinPages")) {
+    linkedinAppKey = "linkedinPages";
+    app = await config.linkedinPages();
   } else {
     const status = config.platform(platform);
     if (!status.configured) {
@@ -111,16 +131,12 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
     }
     app = { platform, clientId: status.clientId!, apiVersion: status.apiVersion ?? undefined, scopes: status.scopes ?? undefined };
   }
-  let target = input.target ?? OWN;
-  if (input.reconnectAccountId) {
-    const existing = await getAccount(ctx, companyId, input.reconnectAccountId);
-    if (!existing) throw new SocialError("The account to reconnect was not found");
-    sessionExtraInput.reconnectAccountId = existing.id;
-    target = rowScope(existing);
-  }
+
   if (input.defaultSubreddit) sessionExtraInput.defaultSubreddit = input.defaultSubreddit;
+  if (linkedinAppKey) sessionExtraInput.linkedinAppKey = linkedinAppKey;
   Object.assign(sessionExtraInput, sessionScopeExtra(target));
-  const env: ProviderEnv = { app, redirectUri, linkedinOrgPages: config.linkedinOrgPages };
+
+  const env: ProviderEnv = { app, redirectUri, linkedinAppKey };
   const state = randomBytes(24).toString("base64url");
   const result = await provider.authorize(env, state, authorizeInput);
   await createOauthSession(ctx, {
@@ -233,7 +249,8 @@ export async function completeOAuth(
       if (!instanceUrl) throw new OAuthFlowError("The Mastodon sign-in lost its instance URL. Start again.");
       env = { app: await mastodonApp(ctx, config, instanceUrl), redirectUri: config.redirectUri() };
     } else {
-      env = await envFor(config, platform, {});
+      const linkedinAppKey = typeof extra.linkedinAppKey === "string" ? (extra.linkedinAppKey as "linkedin" | "linkedinPages") : undefined;
+      env = await envFor(config, platform, linkedinAppKey ? { app: linkedinAppKey } : {});
     }
     const { candidates } = await provider.exchange(env, input.params, extra);
     if (candidates.length === 0) throw new OAuthFlowError(`No ${PLATFORM_LABELS[platform]} accounts were returned.`);
