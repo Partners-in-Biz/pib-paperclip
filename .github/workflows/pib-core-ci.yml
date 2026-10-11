@@ -1,0 +1,65 @@
+# Light CI for our own patches to Paperclip core (server, ui, cli, packages outside our plugins).
+#
+# Added 2026-10-11 (Actions-minutes slim, approved by Peet) to replace upstream's ~40-job PR suite (pr.yml), which
+# now only runs on PRs into master or with the `full-upstream-ci` label. PiB plugin code is covered by
+# pib-plugins-ci.yml. This runs one job: install, typecheck the workspace, and the vitest tests related to the files
+# the PR changes (vitest --changed against the base branch).
+name: PiB core CI
+
+on:
+  pull_request:
+    branches: [development]
+    paths:
+      - 'server/**'
+      - 'ui/**'
+      - 'cli/**'
+      - 'packages/**'
+      - '!packages/plugins/**'
+      - 'packages/plugins/sdk/**'
+      - 'patches/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/pib-core-ci.yml'
+      - '!**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: PiB core CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
+      # light job does not start). Make it blocking by deleting continue-on-error.
+      - name: Tests related to the changed files
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref || 'development' }}
+        run: pnpm exec vitest run --changed "origin/${BASE_REF}" --passWithNoTests
