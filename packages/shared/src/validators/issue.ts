@@ -569,13 +569,17 @@ export const resolveIssueRecoveryActionSchema = z
       .optional(),
     actionId: z.string().guid().optional(),
     outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-    sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
+    // Optional only for `restored`: omitted means "restore the status recorded
+    // by the recovery action" (wake loop breaker, PAR-1963). The route rejects
+    // the omission for every other action.
+    sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]).optional(),
     resolutionNote: multilineTextSchema.optional().nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (value.outcome === "restored") {
       if (
+        value.sourceIssueStatus !== undefined &&
         value.sourceIssueStatus !== "todo" &&
         value.sourceIssueStatus !== "done" &&
         value.sourceIssueStatus !== "in_review"
