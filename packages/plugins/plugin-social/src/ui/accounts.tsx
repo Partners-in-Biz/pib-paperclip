@@ -399,6 +399,36 @@ export function AccountsTab({ snapshot, companyId, run }: {
               </div>
             );
           })}
+          {/* LinkedIn Page option for company pages with Community Management API */}
+          {(() => {
+            const linkedinPagesDisabled = !ready || !snapshot.config.linkedinPagesConfigured || busy !== "";
+            const linkedinPagesConnected = accounts.filter((a) => a.platform === "linkedin" && a.kind === "page").length;
+            const hint = wrongOrigin
+              ? "Open Paperclip on its public address"
+              : !ready
+              ? "Save the settings first"
+              : !snapshot.config.linkedinPagesConfigured
+                ? "Add the LinkedIn Pages app in settings"
+                : "OAuth";
+            return (
+              <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}`, minWidth: 0 }}>
+                <Row style={{ justifyContent: "space-between" }}>
+                  <Row style={{ flexWrap: "nowrap", minWidth: 0 }}>
+                    <PlatformBadge platform="linkedin" size={24} />
+                    <strong style={{ fontSize: 13 }}>LinkedIn Page</strong>
+                    {linkedinPagesConnected ? <StatusDot tone="ok" label={`${linkedinPagesConnected} connected`} /> : null}
+                  </Row>
+                  <SmallButton
+                    disabled={linkedinPagesDisabled}
+                    onClick={() => void connect("linkedin", { app: "linkedinPages" })}
+                  >
+                    {busy === "linkedin" ? "Opening…" : "Connect"}
+                  </SmallButton>
+                </Row>
+                <Muted style={!ready || !snapshot.config.linkedinPagesConfigured ? { color: tone("warn").fg } : undefined}>{hint}</Muted>
+              </div>
+            );
+          })()}
         </div>
       </SectionCard>
 

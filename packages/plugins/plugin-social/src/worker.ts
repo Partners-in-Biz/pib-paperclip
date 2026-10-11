@@ -337,6 +337,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.oauth-start": async (ctx, v, p) =>
     startOAuth(ctx, v.companyId, requireUser(v, "connect an account"), {
       platform: requiredString(p, "platform"),
+      app: optionalString(p, "app"),
       instanceUrl: optionalString(p, "instanceUrl"),
       defaultSubreddit: optionalString(p, "defaultSubreddit"),
       reconnectAccountId: optionalString(p, "reconnectAccountId"),

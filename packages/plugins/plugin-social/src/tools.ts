@@ -108,6 +108,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       "A person connects accounts (signing in is a one-time grant). Returns the deep link and exact steps to put in one partnersinbiz.cockpit:ask-owner request, and the effect to pass on that ask. Pass the issue you are working on: when the account is connected the plugin comments on it, hands it back to you and wakes you, so do not poll.",
     parametersSchema: schema(["platform"], {
       platform: choice(ALL_PLATFORMS, "Platform to connect"),
+      app: choice(["linkedin", "linkedinPages"], 'For LinkedIn: "linkedin" (personal, default) or "linkedinPages" (company pages). Ignored for other platforms.'),
       issueId: text("The issue you are working on (id or identifier). Default: read from your run."),
       ...scope,
     }),

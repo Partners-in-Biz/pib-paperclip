@@ -13,7 +13,8 @@ export interface ProviderEnv {
   app: ProviderApp;
   /** The bridge redirect URI registered with the provider. */
   redirectUri: string;
-  linkedinOrgPages?: boolean;
+  /** For LinkedIn: which app to use ("linkedin" personal or "linkedinPages" for company pages). Default: "linkedin". */
+  linkedinAppKey?: "linkedin" | "linkedinPages";
   /** Stable id used for idempotency keys (destination id) when publishing. */
   idempotencyKey?: string;
 }

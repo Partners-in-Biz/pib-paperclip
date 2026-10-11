@@ -45,6 +45,9 @@ const CLIENT_ID_LABEL: Partial<Record<SocialPlatform, string>> = {
   dribbble: "Client ID",
 };
 
+// For linkedinPages (not in SocialPlatform union, but we need a label for the UI)
+const LINKEDIN_PAGES_LABEL = "LinkedIn Pages app (Community Management API only)";
+
 const PLATFORM_HINT: Partial<Record<SocialPlatform, string>> = {
   facebook: "Facebook Login. Connecting lists every Page you manage plus the Instagram business accounts linked to them.",
   instagram: "Optional. Instagram business accounts linked to a Page can also be connected through Facebook.",
@@ -123,6 +126,23 @@ function platformSchema(platform: SocialPlatform): JsonSchema {
 export function buildInstanceConfigSchema(): JsonSchema {
   const platforms: Record<string, JsonSchema> = {};
   for (const platform of ALL_PLATFORMS) platforms[platform] = platformSchema(platform);
+
+  // LinkedIn Pages app (separate from the personal LinkedIn app)
+  platforms.linkedinPages = {
+    type: "object",
+    title: LINKEDIN_PAGES_LABEL,
+    description: "Community Management API app for LinkedIn company pages (separate from the personal LinkedIn app). Products: Community Management API. Required scopes are auto-set.",
+    properties: {
+      clientId: { type: "string", title: "Client ID" },
+      clientSecret: secretField("Client secret", "Stored as a Paperclip secret.") as JsonSchema,
+      apiVersion: {
+        type: "string",
+        title: "API version",
+        description: "LinkedIn-Version header (YYYYMM). Leave empty to use a recent version automatically.",
+      },
+    },
+  };
+
   return {
     type: "object",
     title: "Social",
@@ -165,8 +185,8 @@ export function buildInstanceConfigSchema(): JsonSchema {
       },
       linkedinOrgPages: {
         type: "boolean",
-        title: "LinkedIn company pages",
-        description: "Turn on once the LinkedIn Community Management API is approved for the app.",
+        title: "LinkedIn company pages (deprecated)",
+        description: "Deprecated: ignored. Configure the LinkedIn Pages app instead.",
         default: false,
       },
       approvalBaseUrl: {
@@ -234,7 +254,6 @@ export interface SocialConfig {
   publicBaseUrl: string | null;
   publicBaseUrlError: string | null;
   timezone: string;
-  linkedinOrgPages: boolean;
   allowAgentReplies: boolean;
   /** The client approval page's base address (settings, else the default), no trailing slash. */
   approvalBaseUrl: string;
@@ -247,8 +266,10 @@ export interface SocialConfig {
   /** The bridge redirect URI. Throws when publicBaseUrl is missing or invalid. */
   redirectUri(): string;
   platform(platform: SocialPlatform): PlatformStatus;
+  /** LinkedIn Pages app (separate from personal LinkedIn app). Throws when not configured. */
+  linkedinPages(): Promise<ProviderApp>;
   /** Resolve app credentials, including the client secret. Throws when not configured. */
-  app(platform: SocialPlatform): Promise<ProviderApp>;
+  app(platform: SocialPlatform | "linkedinPages"): Promise<ProviderApp>;
   keyring(): Promise<TokenKeyring>;
   r2(): Promise<R2Config>;
 }
@@ -314,6 +335,24 @@ export function socialConfigFrom(ctx: PluginContext, companyId: string, raw: Rec
     };
   };
 
+  const linkedinPagesStatus = (): PlatformStatus => {
+    const p = obj(platforms.linkedinPages);
+    const clientId = str(p.clientId);
+    const hasSecret = hasValue(p.clientSecret);
+    const missing: string[] = [];
+    if (!clientId) missing.push("platforms.linkedinPages.clientId");
+    if (!hasSecret) missing.push("platforms.linkedinPages.clientSecret");
+    return {
+      platform: "linkedin",
+      configured: missing.length === 0,
+      clientId,
+      hasSecret,
+      apiVersion: str(p.apiVersion) ?? null,
+      scopes: null,
+      missing,
+    };
+  };
+
   return {
     companyId,
     raw,
@@ -321,7 +360,6 @@ export function socialConfigFrom(ctx: PluginContext, companyId: string, raw: Rec
     publicBaseUrl,
     publicBaseUrlError,
     timezone: str(raw.timezone) ?? DEFAULT_TIMEZONE,
-    linkedinOrgPages: raw.linkedinOrgPages === true,
     allowAgentReplies: raw.allowAgentReplies === true,
     approvalBaseUrl: (str(raw.approvalBaseUrl) ?? DEFAULT_APPROVAL_BASE).replace(/\/+$/, ""),
     approvalBaseUrlSet: Boolean(str(raw.approvalBaseUrl)),
@@ -335,17 +373,33 @@ export function socialConfigFrom(ctx: PluginContext, companyId: string, raw: Rec
       return bridgeRedirectUri(publicBaseUrl, uiBase);
     },
     platform: platformStatus,
+    async linkedinPages() {
+      const status = linkedinPagesStatus();
+      if (!status.configured) {
+        throw new Error(`${LINKEDIN_PAGES_LABEL} is not configured. Add ${status.missing.join(" and ")} in the Social plugin settings.`);
+      }
+      const clientSecret = await secrets.require("platforms.linkedinPages.clientSecret", "LinkedIn Pages app client secret");
+      return {
+        platform: "linkedin",
+        clientId: status.clientId!,
+        clientSecret,
+        apiVersion: status.apiVersion ?? undefined,
+      };
+    },
     async app(platform) {
-      const status = platformStatus(platform);
-      if (!NEEDS_APP_CREDENTIALS[platform]) {
-        return { platform, clientId: "", apiVersion: status.apiVersion ?? undefined };
+      if (platform === "linkedinPages") {
+        return this.linkedinPages();
+      }
+      const status = platformStatus(platform as SocialPlatform);
+      if (!NEEDS_APP_CREDENTIALS[platform as SocialPlatform]) {
+        return { platform: platform as SocialPlatform, clientId: "", apiVersion: status.apiVersion ?? undefined };
       }
       if (!status.configured) {
-        throw new Error(`${PLATFORM_LABELS[platform]} is not configured. Add ${status.missing.join(" and ")} in the Social plugin settings.`);
+        throw new Error(`${PLATFORM_LABELS[platform as SocialPlatform]} is not configured. Add ${status.missing.join(" and ")} in the Social plugin settings.`);
       }
-      const clientSecret = await secrets.require(`platforms.${platform}.clientSecret`, `${PLATFORM_LABELS[platform]} client secret`);
+      const clientSecret = await secrets.require(`platforms.${platform}.clientSecret`, `${PLATFORM_LABELS[platform as SocialPlatform]} client secret`);
       return {
-        platform,
+        platform: platform as SocialPlatform,
         clientId: status.clientId!,
         clientSecret,
         apiVersion: status.apiVersion ?? undefined,

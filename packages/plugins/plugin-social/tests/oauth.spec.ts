@@ -61,11 +61,17 @@ describe("authorize URLs", () => {
     for (const s of parsed.searchParams.get("scope")!.split(" ")) expect(s).toMatch(/^https:\/\/www\.googleapis\.com\/auth\/youtube/);
   });
 
-  it("linkedin adds organization scopes only when company pages are on", async () => {
-    const off = (await authorize("linkedin")).parsed.searchParams.get("scope")!;
-    const on = (await authorize("linkedin", { linkedinOrgPages: true })).parsed.searchParams.get("scope")!;
-    expect(off).not.toContain("w_organization_social");
-    expect(on.split(" ")).toEqual(expect.arrayContaining(["w_organization_social", "r_organization_social"]));
+  it("linkedin personal app uses personal scopes only", async () => {
+    const personal = (await authorize("linkedin")).parsed.searchParams.get("scope")!;
+    expect(personal).toBe("openid profile email w_member_social");
+    expect(personal).not.toContain("w_organization_social");
+  });
+
+  it("linkedin pages app uses organization scopes only", async () => {
+    const pages = (await authorize("linkedin", { linkedinAppKey: "linkedinPages" })).parsed.searchParams.get("scope")!;
+    expect(pages.split(" ")).toEqual(expect.arrayContaining(["w_organization_social", "r_organization_social", "rw_organization_admin"]));
+    expect(pages).not.toContain("openid");
+    expect(pages).not.toContain("profile");
   });
 
   it("x uses PKCE S256 and keeps the verifier in the session", async () => {
@@ -106,5 +112,28 @@ describe("authorize URLs", () => {
   it("uses the configured Graph version", async () => {
     const result = await PROVIDERS.facebook.authorize!({ app: { platform: "facebook", clientId: "id", apiVersion: "v23.0" }, redirectUri: REDIRECT }, "s", {});
     expect(result.url.startsWith("https://www.facebook.com/v23.0/dialog/oauth?")).toBe(true);
+  });
+});
+
+describe("LinkedIn Pages app (linkedinAppKey)", () => {
+  it("linkedin pages app sends only org scopes, not personal scopes", async () => {
+    const { parsed } = await authorize("linkedin", { linkedinAppKey: "linkedinPages" });
+    expect(parsed.searchParams.get("scope")!.split(" ")).toEqual(expect.arrayContaining(["w_organization_social", "r_organization_social", "rw_organization_admin"]));
+    expect(parsed.searchParams.get("scope")).not.toContain("openid");
+    expect(parsed.searchParams.get("profile")).toBeNull();
+    expect(parsed.searchParams.get("email")).toBeNull();
+  });
+
+  it("personal linkedin app differs from pages app in scopes", async () => {
+    const personal = (await authorize("linkedin", { linkedinAppKey: "linkedin" })).parsed.searchParams.get("scope")!;
+    const pages = (await authorize("linkedin", { linkedinAppKey: "linkedinPages" })).parsed.searchParams.get("scope")!;
+    expect(personal).toContain("w_member_social");
+    expect(pages).not.toContain("w_member_social");
+    expect(pages).toContain("w_organization_social");
+  });
+
+  it("linkedin with no app key defaults to personal scopes", async () => {
+    const { parsed } = await authorize("linkedin", {});
+    expect(parsed.searchParams.get("scope")).toBe("openid profile email w_member_social");
   });
 });
