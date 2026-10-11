@@ -23,8 +23,9 @@ on:
     branches: [development]
   workflow_dispatch:
   # A daily run of the same checks: tests that quietly depend on today's date (a fixed fixture clock against code that reads the real one) pass for a day and then fail the deploy gate; this shows them as a red run overnight instead.
+  # Was daily ("17 3 * * *"); weekly since 2026-10-11 (Actions-minutes slim), Mondays 03:17 UTC.
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -114,6 +115,7 @@ jobs:
     needs: package
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: All packages passed
         run: |

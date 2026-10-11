@@ -1,8 +1,10 @@
 name: Runner Direct Live Protocol Evals
 
 on:
-  schedule:
-    - cron: "23 9 * * 0"
+  # schedule removed 2026-10-11 (Actions-minutes slim): upstream weekly eval.
+  # Manual workflow_dispatch (and workflow_call) still work. Restore:
+  #   schedule:
+  #   - cron: "23 9 * * 0"
   workflow_dispatch:
     inputs:
       target_branch:

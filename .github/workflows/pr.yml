@@ -1,7 +1,14 @@
 name: PR
 
+# Actions-minutes slim (2026-10-11, approved by Peet): this calls upstream's
+# full trusted PR suite (~40 jobs: 12 server shards, 9 serialized shards, 8 e2e
+# shards, runner lanes). In this fork it failed on every PR and only covers
+# upstream code. It now runs only on PRs into master (upstream syncs/releases),
+# or on any PR that carries the label `full-upstream-ci`.
+# Restore: delete the `if:` below and the `types`/`branches` filter.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   actions: read
@@ -10,6 +17,9 @@ permissions:
 
 jobs:
   ci:
+    if: >-
+      github.base_ref == 'master' ||
+      contains(github.event.pull_request.labels.*.name, 'full-upstream-ci')
     # Master requires CODEOWNERS review for .github/**, including this workflow.
     # The AWS runner group permits pr-trusted.yml@refs/heads/master.
     uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master

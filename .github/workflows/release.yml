@@ -5,9 +5,11 @@ on:
   push:
     branches:
       - master
-  schedule:
-    # Nightly cut at 09:00 UTC, after the workday's merges have settled.
-    - cron: "0 9 * * *"
+  # schedule removed 2026-10-11 (Actions-minutes slim): upstream's nightly npm
+  # cut ran daily in this fork. Manual workflow_dispatch only.
+  # Restore:
+  #   schedule:
+  #     - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       channel:
