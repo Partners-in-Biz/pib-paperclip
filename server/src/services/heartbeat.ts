@@ -358,6 +358,15 @@ import {
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import {
+  WAKE_LOOP_TRIPPED_REASON,
+  checkWakeLoopBreaker,
+  readWakeLoopBreakerConfig,
+  rearmWakeLoopBreaker,
+  shouldEvaluateWakeLoopBreaker,
+  tripWakeLoopBreaker,
+} from "./issue-wake-loop-breaker.js";
+import { opsAlertService } from "./ops-alerts.js";
+import {
   logActivity,
   publishPluginDomainEvent,
   type LogActivityInput,
@@ -9469,6 +9478,9 @@ export function heartbeatService(
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const opsAlerts = opsAlertService(db, {
+    wakeup: (agentId, wakeOpts) => enqueueWakeup(agentId, wakeOpts),
+  });
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -26719,6 +26731,16 @@ export function heartbeatService(
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      // Set only when this admission newly tripped the wake loop breaker.
+      // Assigned inside the transaction callback; the cast keeps TS from
+      // narrowing it to null at the use site.
+      let wakeLoopTrip = null as {
+        companyId: string;
+        issueId: string;
+        recoveryActionId: string;
+        runsInWindow: number;
+        alert: { key: string; body: string };
+      } | null;
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -26973,6 +26995,24 @@ export function heartbeatService(
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          // PAR-1963: a user wake re-arms a tripped wake loop breaker for this
+          // pair, even when the wake is later coalesced into a live run.
+          if (opts.requestedByActorType === "user") {
+            const rearm = await rearmWakeLoopBreaker(tx as unknown as Db, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              agentId,
+              actor: {
+                actorType: "user",
+                actorId: opts.requestedByActorId ?? "board",
+              },
+              source: "user_wake",
+              restoreStatus: true,
+              resolutionNote: "Re-armed by a user wake.",
+            });
+            if (rearm.restoredStatus) issue.status = rearm.restoredStatus;
           }
 
           if (opts.failedRunId) {
@@ -27750,6 +27790,90 @@ export function heartbeatService(
             // so fall through to the ordinary queue path below.
           }
 
+          // PAR-1963: wake loop breaker, before the rewake throttle. This wake
+          // would start a fresh run for the pair; refuse it once the agent has
+          // already started maxRuns non-retry runs on the issue in the window,
+          // or while a tripped breaker action for the pair is still active.
+          const wakeLoopConfig = readWakeLoopBreakerConfig();
+          if (
+            shouldEvaluateWakeLoopBreaker({
+              config: wakeLoopConfig,
+              issueId: issue.id,
+              requestedByActorType: opts.requestedByActorType,
+            })
+          ) {
+            const breakerNow = new Date();
+            const breakerCheck = await checkWakeLoopBreaker(
+              tx as unknown as Db,
+              {
+                companyId: issue.companyId,
+                issueId: issue.id,
+                agentId,
+                config: wakeLoopConfig,
+                now: breakerNow,
+              },
+            );
+            if (breakerCheck.kind !== "pass") {
+              let recoveryActionId: string | null =
+                breakerCheck.kind === "refuse"
+                  ? breakerCheck.recoveryActionId
+                  : null;
+              let runsInWindow: number | null = null;
+              if (breakerCheck.kind === "trip") {
+                const trip = await tripWakeLoopBreaker(tx as unknown as Db, {
+                  issue: {
+                    id: issue.id,
+                    companyId: issue.companyId,
+                    identifier: issue.identifier,
+                  },
+                  agent: { id: agentId, name: agent.name },
+                  config: wakeLoopConfig,
+                  runs: breakerCheck.runs,
+                  requestedReason: reason ?? null,
+                  now: breakerNow,
+                });
+                recoveryActionId = trip.recoveryActionId;
+                runsInWindow = breakerCheck.runs.length;
+                if (trip.kind === "tripped") {
+                  cancelledRunsToEmit.push(...trip.cancelledRuns);
+                  wakeLoopTrip = {
+                    companyId: issue.companyId,
+                    issueId: issue.id,
+                    recoveryActionId: trip.recoveryActionId,
+                    runsInWindow,
+                    alert: trip.alert,
+                  };
+                }
+              }
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: WAKE_LOOP_TRIPPED_REASON,
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  heartbeatSkip: {
+                    reason: WAKE_LOOP_TRIPPED_REASON,
+                    requestedReason: reason,
+                    runsInWindow,
+                    maxRuns: wakeLoopConfig.maxRuns,
+                    windowMinutes: wakeLoopConfig.windowMinutes,
+                    recoveryActionId,
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: breakerNow,
+              });
+              return { kind: "skipped" as const };
+            }
+          }
+
           // PAP-13775: no live run holds the lock, so this wake would start a
           // fresh adapter session. If this agent's recent runs on this issue
           // keep succeeding without any issue-visible progress and the wake
@@ -28103,6 +28227,34 @@ export function heartbeatService(
       // lookup must not delay them.
       for (const cancelledRun of cancelledRunsToEmit) {
         void emitAgentTaskRun(db, cancelledRun);
+      }
+
+      // After commit, so a rolled-back admission never alerts. One alert per
+      // newly inserted breaker action is the dedupe.
+      const committedWakeLoopTrip: typeof wakeLoopTrip = outcome.kind === "skipped" ? wakeLoopTrip : null;
+      if (committedWakeLoopTrip) {
+        logger.warn(
+          {
+            companyId: committedWakeLoopTrip.companyId,
+            issueId: committedWakeLoopTrip.issueId,
+            agentId,
+            recoveryActionId: committedWakeLoopTrip.recoveryActionId,
+            runsInWindow: committedWakeLoopTrip.runsInWindow,
+          },
+          "issue wake loop breaker tripped",
+        );
+        await opsAlerts
+          .postOpsAlert({
+            companyId: committedWakeLoopTrip.companyId,
+            key: committedWakeLoopTrip.alert.key,
+            body: committedWakeLoopTrip.alert.body,
+          })
+          .catch((err) => {
+            logger.error(
+              { err, issueId: committedWakeLoopTrip.issueId, key: committedWakeLoopTrip.alert.key },
+              "ops_alert.failed",
+            );
+          });
       }
 
       if (outcome.kind === "durable") {

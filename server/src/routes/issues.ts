@@ -1,6 +1,7 @@
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { WAKE_LOOP_BREAKER_CAUSE, rearmWakeLoopBreaker } from "../services/issue-wake-loop-breaker.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
@@ -4401,6 +4402,16 @@ export function issueRoutes(
           )
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
+    // A tripped wake loop breaker must survive the looping agent's own
+    // writes (an in-flight run may still PATCH the issue). Board and user
+    // changes keep today's semantics; a cancelled breaker action also anchors
+    // the breaker's next count.
+    if (
+      activeRecoveryAction.cause === WAKE_LOOP_BREAKER_CAUSE &&
+      input.actor?.actorType !== "user"
+    ) {
+      return activeRecoveryAction;
+    }
 
     const resolutionNote = await classifySourceRecoveryRevalidation(input);
     if (!resolutionNote) return activeRecoveryAction;
@@ -9256,6 +9267,53 @@ export function issueRoutes(
           activeRecoveryAction,
           { source: "recovery_action_resolution" },
         );
+
+        // Omitting sourceIssueStatus re-arms a wake loop breaker and restores
+        // the status recorded at the trip. An explicit status is a board
+        // override and takes the ordinary path below.
+        if (sourceIssueStatus === undefined) {
+          if (
+            activeRecoveryAction.cause !== WAKE_LOOP_BREAKER_CAUSE ||
+            executionReconciliation
+          ) {
+            throw unprocessable(
+              "sourceIssueStatus is required to resolve this recovery action",
+            );
+          }
+          await requireRecoverySourceMutationAuthority(req, lockedIssue);
+          const rearm = await rearmWakeLoopBreaker(tx as unknown as Db, {
+            companyId: lockedIssue.companyId,
+            issueId: lockedIssue.id,
+            agentId: null,
+            actionId: activeRecoveryAction.id,
+            actor: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId ?? null,
+              runId: actor.runId ?? null,
+            },
+            source: "recovery_action_resolution",
+            restoreStatus: true,
+            resolutionNote:
+              resolutionNote ?? "Re-armed by recovery action resolution.",
+          });
+          const resolvedAction = rearm.resolved[0];
+          if (!resolvedAction) throw notFound("Active recovery action not found");
+          const [rearmedIssue] = await tx
+            .select()
+            .from(issueRows)
+            .where(
+              and(
+                eq(issueRows.companyId, lockedIssue.companyId),
+                eq(issueRows.id, lockedIssue.id),
+              ),
+            );
+          return {
+            issue: rearmedIssue ?? lockedIssue,
+            recoveryAction: issueRecoveryActionReadModel(resolvedAction),
+            chatRetry: null,
+          };
+        }
 
         // Retrying an exhausted disposition repair is an explicit retry of the
         // recorded owner, never permission to reopen a stopped/completed task or

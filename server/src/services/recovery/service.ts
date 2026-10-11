@@ -138,6 +138,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { WAKE_LOOP_BREAKER_CAUSE } from "../issue-wake-loop-breaker.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -249,6 +250,9 @@ export type StrandedRecoveryCause =
   | "provider_transport_failed"
   | "provider_frame_too_large"
   | "execution_review_participant_recovery"
+  // PAR-1963: written at wake admission by the wake loop breaker; board-owned,
+  // settled only by a user wake or an explicit resolution.
+  | typeof WAKE_LOOP_BREAKER_CAUSE
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 const NATIVE_RUNNER_RECOVERY_CAUSES = new Set<StrandedRecoveryCause>([
@@ -3409,6 +3413,12 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
+      // The breaker's refusal is keyed on its active action; only a user wake
+      // or an explicit board resolution may settle it (PAR-1963).
+      if (action.cause === WAKE_LOOP_BREAKER_CAUSE) {
+        result.skipped += 1;
+        continue;
+      }
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
       if (

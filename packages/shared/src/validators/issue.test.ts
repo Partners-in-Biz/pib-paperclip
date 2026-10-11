@@ -306,6 +306,16 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("lets a restored resolution omit the status so the route restores the recorded one", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({ outcome: "restored" }),
+    ).toEqual({ outcome: "restored" });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({ outcome: "blocked" }).success,
+    ).toBe(false);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
