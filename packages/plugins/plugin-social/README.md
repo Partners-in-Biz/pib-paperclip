@@ -18,6 +18,7 @@ Every account, post, media asset, RSS feed and inbox item belongs to one scope: 
 2. Open the Social page once, then register the redirect URI it shows with every OAuth provider:
    `<publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html`.
    The host serves plugin files only by installation id (not by plugin key); the id changes only if the plugin is uninstalled and installed again.
+   Connect accounts only from the public base URL's own address. The pending sign-in lives in the browser's localStorage and the session cookie is per host, so a sign-in started on another address (for example the sslip.io host) cannot finish there. Since 0.8.2 the Social page says so and keeps the Connect buttons off on any other address.
 3. R2 bucket CORS must allow the Paperclip origin to `PUT` with a `Content-Type` header.
 4. **Setup → Team → Social agent**: hire one or pick an agent you already have, then Resume it once its adapter has a working model key. See "The Social agent" below.
 
