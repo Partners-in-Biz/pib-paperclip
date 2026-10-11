@@ -86,6 +86,10 @@ interface ActivityRow {
   created_at: unknown;
 }
 
+/** A website contact form's notification mail (BCC'd to us, sent from the client's own address): the client's enquiry, not correspondence with us. */
+const FORM_NOTIFICATION = /^\s*(?:(?:new|website|web|online)\s+(?:enquiry|inquiry|lead|contact(?:\s+form)?|form|submission)|contact\s+form|(?:enquiry|inquiry)\s+from|form\s+submission|new\s+message\s+from\s+your\s+(?:website|site))/i;
+export const isFormNotification = (body: string) => FORM_NOTIFICATION.test(body);
+
 const avg = (numbers: number[]) => (numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null);
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -199,7 +203,7 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
 
   // Our contact with them.
   const contactKinds = activities.filter((a) => ["call", "meeting"].includes(a.kind)).length;
-  const emails = activities.filter((a) => a.kind === "email_received" || a.kind === "email_sent").length;
+  const emails = activities.filter((a) => (a.kind === "email_received" && !isFormNotification(a.body)) || a.kind === "email_sent").length;
   if (contactKinds || emails) {
     sections.push({ module: "contact", title: "Our work together", source: "crm", headline: [...(contactKinds ? [{ label: "Calls and meetings", value: String(contactKinds), delta: null as string | null }] : []), ...(emails ? [{ label: "Emails exchanged", value: String(emails), delta: null as string | null }] : [])], bullets: [] });
   }
