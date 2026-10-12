@@ -178,6 +178,7 @@ import {
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
+import { pluginWebhookBodyParser } from "./middleware/plugin-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -531,6 +532,13 @@ export async function createApp(
     "/api/chat-webhooks",
     createChatWebhookDiagnostics(),
     chatWebhookBodyParser,
+  );
+  // Plugin webhooks may be posted from providers using non-JSON content types
+  // (e.g., Amazon SNS with text/plain). Capture raw bytes before the global
+  // JSON parser so the plugin receives the exact request body for verification.
+  app.use(
+    "/api/plugins/:pluginId/webhooks/:endpointKey",
+    pluginWebhookBodyParser,
   );
   app.use(
     express.json({
