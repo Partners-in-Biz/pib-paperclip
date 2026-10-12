@@ -43,6 +43,50 @@ describe("sanitizeBody", () => {
   });
 });
 
+describe("Google Translate widget filtering", () => {
+  it("ignores the Google Translate widget when counting visible words", () => {
+    const liveWithWidget = `<html><head></head><body>
+      <main><div class="entry-content"><p>real content words here</p></div></main>
+      <div id="google_translate_element" class="skiptranslate goog-te-gadget">
+        <div class="goog-te-menu-value"><span class="goog-te-menu-value">Language</span></div>
+        <select class="goog-te-combo"><option>English</option><option>Spanish</option></select>
+      </div>
+    </body></html>`;
+
+    const liveWithoutWidget = `<html><head></head><body>
+      <main><div class="entry-content"><p>real content words here</p></div></main>
+    </body></html>`;
+
+    const previewHtml = `<html><head></head><body>
+      <main><div class="entry-content"><p>real content words here</p><p>new words added</p></div></main>
+      <div id="pib-preview-bar"></div>
+    </body></html>`;
+
+    const statsWithWidget = previewStats(liveWithWidget, previewHtml);
+    const statsWithoutWidget = previewStats(liveWithoutWidget, previewHtml);
+
+    // Both should have the same kept percentage since the widget words should be ignored
+    expect(statsWithWidget.liveWords).toBe(statsWithoutWidget.liveWords);
+    expect(statsWithWidget.keptPct).toBe(statsWithoutWidget.keptPct);
+    expect(statsWithWidget.keptPct).toBeGreaterThan(90);
+  });
+
+  it("ignores elements with VIpgJd classes (Google Translate generated UI)", () => {
+    const live = `<html><head></head><body>
+      <p>page text</p>
+      <div class="VIpgJd-obfuscate"><span class="VIpgJd-dEh-Heb">Hidden UI</span></div>
+    </body></html>`;
+
+    const preview = `<html><head></head><body>
+      <p>page text</p>
+    </body></html>`;
+
+    const stats = previewStats(live, preview);
+    expect(stats.keptPct).toBe(100);
+    expect(stats.removedWords).toBe(0);
+  });
+});
+
 describe("how copy is added and what is kept", () => {
   const opts = { token: "t" };
   it("adds before or after the existing content by default and keeps the live text", () => {

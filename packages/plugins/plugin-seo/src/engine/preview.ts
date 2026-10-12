@@ -29,11 +29,25 @@ export interface PreviewStats {
   removedWords: number;
 }
 
-const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+const WORD = /[\p{L}\p{N}][\p{L}\p{N}’’-]*/gu;
 
-/** Visible words of a page: no scripts, styles, tags or the preview's own bar. */
+/** Remove Google Translate widget elements to avoid counting their text as page content. */
+function stripGoogleTranslateWidget(html: string): string {
+  // Remove the main Google Translate widget container
+  html = html.replace(/<div\s+id\s*=\s*["’]?google_translate_element["’]?[^>]*>[\s\S]*?<\/div>/gi, " ");
+
+  // Remove elements with skiptranslate class (used by Google Translate)
+  html = html.replace(/<(\w+)\b[^>]*class\s*=\s*["’]?[^"’>]*skiptranslate[^"’>]*["’]?[^>]*>[\s\S]*?<\/\1>/gi, " ");
+
+  // Remove elements with goog-te-* classes (Google Translate generated elements)
+  html = html.replace(/<(\w+)\b[^>]*class\s*=\s*["’]?[^"’>]*(goog-te|VIpgJd)[^"’>]*["’]?[^>]*>[\s\S]*?<\/\1>/gi, " ");
+
+  return html;
+}
+
+/** Visible words of a page: no scripts, styles, tags or the preview’s own bar. */
 export function visibleWords(html: string): string[] {
-  const text = html
+  const text = stripGoogleTranslateWidget(html)
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")

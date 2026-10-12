@@ -80,9 +80,24 @@ async function readForm(req) {
 
 const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+const WORD = /[\p{L}\p{N}][\p{L}\p{N}’’-]*/gu;
+
+/** Remove Google Translate widget elements to avoid counting their text as page content. */
+function stripGoogleTranslateWidget(html) {
+  // Remove the main Google Translate widget container
+  html = html.replace(/<div\s+id\s*=\s*["’]?google_translate_element["’]?[^>]*>[\s\S]*?<\/div>/gi, " ");
+
+  // Remove elements with skiptranslate class (used by Google Translate)
+  html = html.replace(/<(\w+)\b[^>]*class\s*=\s*["’]?[^"’>]*skiptranslate[^"’>]*["’]?[^>]*>[\s\S]*?<\/\1>/gi, " ");
+
+  // Remove elements with goog-te-* classes (Google Translate generated elements)
+  html = html.replace(/<(\w+)\b[^>]*class\s*=\s*["’]?[^"’>]*(goog-te|VIpgJd)[^"’>]*["’]?[^>]*>[\s\S]*?<\/\1>/gi, " ");
+
+  return html;
+}
+
 function wordsOf(html) {
-  const text = html
+  const text = stripGoogleTranslateWidget(html)
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
