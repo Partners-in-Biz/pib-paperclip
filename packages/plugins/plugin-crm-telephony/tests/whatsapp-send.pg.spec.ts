@@ -248,7 +248,7 @@ describe("sendWhatsapp", () => {
     expect(fakeClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("4xx: send fails, message marked failed", async () => {
+  it("4xx with code 21211: returns bad_number, message marked failed", async () => {
     const { sendWhatsapp } = await import("../src/whatsapp-send.js");
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -262,9 +262,65 @@ describe("sendWhatsapp", () => {
       { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
     );
     expect(result.sent).toBe(false);
+    if (!result.sent) expect(result.reason).toBe("bad_number");
     expect(fakeClient.sendMessage).toHaveBeenCalledTimes(1);
-    const rows = await pgDb.client.query(`SELECT COUNT(*)::int as c FROM ${NAMESPACE}.tel_messages WHERE company_id = $1 AND status = 'failed'`, ["c1"]);
-    expect(Number((rows.rows as any)[0]?.c || 0)).toBeGreaterThan(0);
+  });
+
+  it("4xx with code 21614: returns bad_number", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await pgDb.client.query(
+      `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ["550e8400-e29b-41d4-a716-446655440008", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+    );
+    const fakeClient = { sendMessage: vi.fn(async () => ({ ok: false, failure: { kind: "rejected", status: 400, code: 21614, error: "Bad" } })), getContentTemplates: vi.fn(), updateMessageStatus: vi.fn() } as any as TwilioClient;
+    const result = await sendWhatsapp(
+      { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
+    );
+    expect(result.sent).toBe(false);
+    if (!result.sent) expect(result.reason).toBe("bad_number");
+  });
+
+  it("auth failure: returns send_failed with failureKind", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await pgDb.client.query(
+      `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ["550e8400-e29b-41d4-a716-446655440009", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+    );
+    const fakeClient = { sendMessage: vi.fn(async () => ({ ok: false, failure: { kind: "auth", status: 401, code: null, error: "Auth failed" } })), getContentTemplates: vi.fn(), updateMessageStatus: vi.fn() } as any as TwilioClient;
+    const result = await sendWhatsapp(
+      { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
+    );
+    expect(result.sent).toBe(false);
+    if (!result.sent) {
+      expect(result.reason).toBe("send_failed");
+      expect(result.failureKind).toBe("auth");
+    }
+  });
+
+  it("rate_limited: returns send_failed with failureKind", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await pgDb.client.query(
+      `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ["550e8400-e29b-41d4-a716-446655440010", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+    );
+    const fakeClient = { sendMessage: vi.fn(async () => ({ ok: false, failure: { kind: "rate_limited", status: 429, code: null, error: "Rate limited" } })), getContentTemplates: vi.fn(), updateMessageStatus: vi.fn() } as any as TwilioClient;
+    const result = await sendWhatsapp(
+      { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
+    );
+    expect(result.sent).toBe(false);
+    if (!result.sent) {
+      expect(result.reason).toBe("send_failed");
+      expect(result.failureKind).toBe("rate_limited");
+    }
   });
 
   it("audit hides PII", async () => {

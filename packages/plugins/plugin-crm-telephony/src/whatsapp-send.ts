@@ -16,7 +16,9 @@ export type SendOutcome =
       | "bad_body"
       | "window_closed_template_required"
       | "template_not_approved"
+      | "send_failed"
       | "unknown_outcome"
+    ; failureKind?: string
     };
 
 export interface SendWhatsappInput {
@@ -365,7 +367,13 @@ export async function sendWhatsapp(
           code: failure.code,
         },
       });
-      return { sent: false, reason: "bad_number" };
+
+      // Only return bad_number for invalid-recipient codes
+      if (failure.code === 21211 || failure.code === 21614) {
+        return { sent: false, reason: "bad_number" };
+      }
+
+      return { sent: false, reason: "send_failed", failureKind: failure.kind };
     }
 
     return { sent: false, reason: "unknown_outcome" };
