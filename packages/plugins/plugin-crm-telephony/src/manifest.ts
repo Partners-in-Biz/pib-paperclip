@@ -12,6 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "automation"],
   capabilities: [
     "agent.tools.register",
+    "companies.read",
     "http.outbound",
     "secrets.read-ref",
     "jobs.schedule",
