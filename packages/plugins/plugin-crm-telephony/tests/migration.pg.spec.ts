@@ -48,6 +48,7 @@ describe("CRM Telephony migrations", () => {
     ).rejects.toThrow();
   });
 
+<<<<<<< HEAD
   it("tel_messages has ambiguous column with default false", async () => {
     const res = await db.client.query(
       "SELECT column_name, is_nullable, column_default FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'tel_messages' AND column_name = 'ambiguous' ORDER BY column_name",
@@ -126,5 +127,14 @@ describe("CRM Telephony migrations", () => {
     const res = await db.client.query(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = $1`, [NAMESPACE]);
     const count = Number(((res.rows[0] as unknown) as { count: string }).count);
     expect(count).toBeGreaterThan(0);
+  });
+
+  it("tel_recordings has company_id and dead_issue_id columns", async () => {
+    const res = await db.client.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'tel_recordings' AND column_name IN ('company_id', 'dead_issue_id') ORDER BY column_name",
+      [NAMESPACE],
+    );
+    const cols = (res.rows as unknown[]).map((r: unknown) => (r as { column_name: string }).column_name);
+    expect(cols).toEqual(["company_id", "dead_issue_id"]);
   });
 });

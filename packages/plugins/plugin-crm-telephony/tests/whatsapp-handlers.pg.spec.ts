@@ -1,18 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { computeTwilioSignature, buildPublicWebhookUrl, parseFormParams } from "../src/twilio-signature.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
-import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
-import {
-  createMockDbClient,
-  createMockContext,
-  buildSignedWebhookInput,
-  seedContact,
-  readAuditRows,
-  readOptOutRows,
-  readPrefRows,
-  readMessageRows,
-} from "./helpers/test-utils.js";
+import { createMockDbClient, createMockContext, seedContact, readAuditRows, readOptOutRows, readPrefRows, readMessageRows } from "./helpers/test-utils.js";
 import { insertOnce } from "../src/idempotency.js";
 
 let pgDb: PgDb;
@@ -39,11 +31,41 @@ describe("WhatsApp webhook handlers", () => {
     it("accepts first message on empty table when company token verifies", async () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
-      const mockCtx = createMockContext(["company-1", "company-2"], { "company-1": "wrong", "company-2": authToken });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
+      const authToken1 = "wrong-token-123";
+      const authToken2 = "test-auth-token";
+      const mockCtx = createMockContext(
+        ["company-1", "company-2"],
+        { "company-1": authToken1, "company-2": authToken2 },
+      );
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
+
+      const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
+      const params = parseFormParams(formBody);
+      const correctSignature = computeTwilioSignature(authToken2, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-1",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": correctSignature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const messages = await readMessageRows(pgDb, "company-2", "SM123");
@@ -56,10 +78,22 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound } = await import("../src/whatsapp.js");
       const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
-      input.headers["x-twilio-signature"] = "bad-signature";
+      const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
+      const badSignature = "bad-signature-value";
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const input: PluginWebhookInput = {
+        requestId: "test-request-2",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "example.com",
+          "x-twilio-signature": badSignature,
+        },
+        rawBody: formBody,
+        parsedBody: {},
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("bad_signature");
 
       const messages = await readMessageRows(pgDb, "company-1", "SM123");
@@ -71,9 +105,33 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound } = await import("../src/whatsapp.js");
       const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hi", authToken, "wa-inbound", "https", "custom-host.com");
+      const proto = "https";
+      const host = "derived-host.example.com";
+      const baseUrl = `${proto}://${host}`;
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
+
+      const formBody = "MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hi";
+      const params = parseFormParams(formBody);
+      const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-3",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": correctSignature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const messages = await readMessageRows(pgDb, "company-1", "SM456");
@@ -101,9 +159,33 @@ describe("WhatsApp webhook handlers", () => {
         received_at: null,
       });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM789&MessageStatus=delivered", authToken, "wa-status");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
 
-      const result = await handleWaStatus(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-status",
+      });
+
+      const formBody = "MessageSid=SM789&MessageStatus=delivered";
+      const params = parseFormParams(formBody);
+      const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-4",
+        endpointKey: "wa-status",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": correctSignature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaStatus(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const messages = await readMessageRows(pgDb, "company-1", "SM789");
@@ -120,9 +202,32 @@ describe("WhatsApp webhook handlers", () => {
 
       await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-5",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const messages = await readMessageRows(pgDb, "company-1", "SM123");
@@ -138,9 +243,32 @@ describe("WhatsApp webhook handlers", () => {
       await seedContact(pgDb, "contact-1", "company-1", "John", ["0821234567"]);
       await seedContact(pgDb, "contact-2", "company-1", "Jane", ["0821234567"]);
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Test", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const formBody = "MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Test";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-6",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const messages = await readMessageRows(pgDb, "company-1", "SM456");
@@ -155,9 +283,32 @@ describe("WhatsApp webhook handlers", () => {
 
       await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM789&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const formBody = "MessageSid=SM789&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-7",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const prefs = await readPrefRows(pgDb, "company-1", "contact-1");
@@ -173,9 +324,32 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound } = await import("../src/whatsapp.js");
       const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SM999&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const formBody = "MessageSid=SM999&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-8",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const numRows = await readOptOutRows(pgDb, "company-1", "+27821234567");
@@ -194,9 +368,32 @@ describe("WhatsApp webhook handlers", () => {
       await seedContact(pgDb, "contact-1", "company-1", "John", ["0821234567"]);
       await seedContact(pgDb, "contact-2", "company-1", "Jane", ["0821234567"]);
 
-      const { input } = buildSignedWebhookInput("MessageSid=SMABC&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
 
-      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const formBody = "MessageSid=SMABC&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-9",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
+
+      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       const numRows = await readOptOutRows(pgDb, "company-1", "+27821234567");
@@ -216,17 +413,40 @@ describe("WhatsApp webhook handlers", () => {
 
       await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
 
-      const { input } = buildSignedWebhookInput("MessageSid=SMDUP&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
+
+      const formBody = "MessageSid=SMDUP&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-10",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
 
       // First delivery
-      let result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      let result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       // Delete contact pref to simulate recovery scenario
       await pgDb.client.query(`DELETE FROM ${NAMESPACE}.tel_contact_prefs WHERE company_id = $1 AND contact_id = $2`, ["company-1", "contact-1"]);
 
       // Second delivery (same MessageSid, so message insert is no-op, opt-out applies again, but number row already exists)
-      result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       // Should have applied opt-out again
@@ -243,17 +463,40 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound } = await import("../src/whatsapp.js");
       const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const { input } = buildSignedWebhookInput("MessageSid=SMHEAL&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+      const proto = "https";
+      const host = "example.com";
+      const baseUrl = `${proto}://${host}`;
+      const webhookUrl = buildPublicWebhookUrl({
+        baseUrl,
+        pluginId: PLUGIN_ID,
+        endpointKey: "wa-inbound",
+      });
+
+      const formBody = "MessageSid=SMHEAL&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP";
+      const params = parseFormParams(formBody);
+      const signature = computeTwilioSignature(authToken, webhookUrl, params);
+
+      const input: PluginWebhookInput = {
+        requestId: "test-request-11",
+        endpointKey: "wa-inbound",
+        headers: {
+          "x-forwarded-proto": proto,
+          "x-forwarded-host": host,
+          "x-twilio-signature": signature,
+        },
+        rawBody: formBody,
+        parsedBody: params,
+      };
 
       // First delivery
-      let result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      let result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       // Delete the number-level opt-out row to simulate accidental cleanup
       await pgDb.client.query(`DELETE FROM ${NAMESPACE}.tel_number_optouts WHERE company_id = $1 AND e164 = $2`, ["company-1", "+27821234567"]);
 
       // Second delivery (same MessageSid)
-      result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
       // Verify number-level row is restored
