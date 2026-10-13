@@ -151,3 +151,8 @@ export async function readMessageRows(
   const result = await pgDb.client.query(query, params);
   return (result.rows || []) as any[];
 }
+
+export function createSecretsRecorder() {
+  const resolved: Array<{ secretName: string; companyId: string }> = [];
+  return { resolved, record: (secretName: string, companyId: string) => resolved.push({ secretName, companyId }) };
+}

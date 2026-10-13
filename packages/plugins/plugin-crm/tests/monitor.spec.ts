@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { daysUntil, isPublicAddress, parseRdapExpiry, rdapProblem, rdapUrl, registrableDomain, tlsExpiry } from "../src/monitor-net.js";
-import { afterPageCheck, checkPage, defaultIo, downMinutes, emptyMonitor, listMonitors, runSiteMonitor, setSiteMonitoringTool, siteIssueResolved, siteMonitorHealth, uptimeFigures, type MonitorIo, type PageResult } from "../src/monitor.js";
+import { afterPageCheck, checkPage, defaultIo, downMinutes, emptyMonitor, listMonitors, runSiteMonitor, setSiteMonitoringTool, siteIssueResolved, siteMonitorHealth, uptimeFigures, outsideVerdict, type MonitorIo, type PageResult } from "../src/monitor.js";
 import { BOARD, bootCare, careSeed, CO, DAY, issuesWith, tool, toolRaw, type Booted } from "./helpers/care.js";
 
 const MIN = 60_000;
@@ -266,6 +266,49 @@ describe("the monitor run", () => {
     await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 20 * MIN) });
     await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 25 * MIN) });
     expect(await issuesWith(harness, "crm:site-down:")).toHaveLength(2);
+  });
+
+  it("only our server cannot reach it (outside check says up): no issue, a warning in the log", async () => {
+    const { harness } = await bootSites();
+    const outside = vi.fn(async () => ({ verdict: "up" as const, detail: "3 of 3 outside nodes got an answer" }));
+    const warn = vi.spyOn(harness.ctx.logger, "warn");
+    const mocks = io({ page: vi.fn(async () => down), outside });
+    await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+    expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 5 * MIN) })).issues).toBe(0);
+    expect(outside).toHaveBeenCalledWith("https://www.acme.co.za/");
+    expect(await issuesWith(harness, "crm:site-down:")).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("down from outside too (or the outside check cannot run): the issue opens and names the outside result", async () => {
+    for (const verdict of ["down", "unknown"] as const) {
+      const { harness } = await bootSites();
+      const mocks = io({ page: vi.fn(async () => down), outside: vi.fn(async () => ({ verdict, detail: `outside ${verdict}` })) });
+      await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+      expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 5 * MIN) })).issues).toBe(1);
+      const [outage] = await issuesWith(harness, "crm:site-down:");
+      expect(outage!.description).toContain(`Outside check: outside ${verdict}.`);
+    }
+  });
+
+  it("back up closes the outage's issue by itself", async () => {
+    const { harness } = await bootSites();
+    const mocks = io({ page: vi.fn(async () => down) });
+    await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+    await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 5 * MIN) });
+    const update = vi.spyOn(harness.ctx.issues, "update");
+    mocks.page.mockImplementation(async () => ({ ok: true, status: 200, ms: 120, error: null }));
+    await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => new Date(T0.getTime() + 10 * MIN) });
+    const [outage] = await issuesWith(harness, "crm:site-down:");
+    expect(update).toHaveBeenCalledWith(outage!.id, { status: "done" }, CO);
+  });
+
+  it("reads a check-host result: any answer is up, all failed is down, pending is unknown", () => {
+    expect(outsideVerdict({ a: [[1, 2.1, "OK", "200", "1.2.3.4"]], b: null }).verdict).toBe("up");
+    expect(outsideVerdict({ a: [[0, 30, "Connection timed out", null, null]], b: [[0, 30, "timeout", null, null]] }).verdict).toBe("down");
+    expect(outsideVerdict({ a: null, b: null }).verdict).toBe("unknown");
+    expect(outsideVerdict({ a: [[1, 1, "Server Error", "503", "1.2.3.4"]] }).verdict).toBe("down");
+    expect(outsideVerdict(null).verdict).toBe("unknown");
   });
 
   it("the Delivery Lead's issue falls back to the Account Manager when there is no Delivery Lead", async () => {
