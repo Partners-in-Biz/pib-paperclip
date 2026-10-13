@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_ATTEMPTS, runMediaPipeline, raiseDeadIssues, type PipelineSteps, type PipelineStepCtx, type StepResult } from "../src/pipeline.js";
+import { ErasedError, MAX_ATTEMPTS, runMediaPipeline, raiseDeadIssues, type PipelineSteps, type PipelineStepCtx, type StepResult } from "../src/pipeline.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
 
@@ -472,5 +472,88 @@ describe("media pipeline", () => {
     expect(row[0].last_error).not.toContain("sk_test_abc123xyz");
     expect(row[0].last_error).not.toContain("AC0123456789abcdef0123456789abcd");
     expect(row[0].last_error).toContain("[redacted]");
+  });
+
+  it("step tombstones mid-flight and returns success: abandoned counted, row state stays 'erased'", async () => {
+    const recordingId = randomUUID();
+    await seedRecording(recordingId);
+    const { ctx: mockCtx } = createMockCtx();
+
+    const steps: PipelineSteps = {
+      received: async (sc: PipelineStepCtx) => {
+        await sc.extendLease();
+        // Tombstone the row
+        await sc.ctx.db.execute(
+          `UPDATE ${NAMESPACE}.tel_recordings SET erased_at = now(), state = 'erased', lease_token = NULL, lease_until = NULL WHERE id = $1::uuid`,
+          [sc.row.id],
+        );
+        // Return success as if nothing happened
+        return { state: "downloaded", patch: { r2Key: "s3://bucket/rec1", bytes: 12345, sha256: "abc123" } };
+      },
+    };
+
+    const result = await runMediaPipeline(mockCtx, { steps, namespace: NAMESPACE });
+    expect(result.abandoned).toBe(1);
+    expect(result.processed).toBe(0);
+
+    const row = await db.db.query<{ state: string; r2_key: string | null; erased_at: unknown }>(
+      `SELECT state, r2_key, erased_at FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
+      [recordingId],
+    );
+    expect(row[0].state).toBe("erased");
+    expect(row[0].r2_key).toBeNull();
+    expect(row[0].erased_at).not.toBeNull();
+  });
+
+  it("step tombstones and throws normal Error: failure UPDATE does not resurrect state", async () => {
+    const recordingId = randomUUID();
+    await seedRecording(recordingId);
+    const { ctx: mockCtx } = createMockCtx();
+
+    const steps: PipelineSteps = {
+      received: async (sc: PipelineStepCtx) => {
+        await sc.extendLease();
+        // Tombstone the row
+        await sc.ctx.db.execute(
+          `UPDATE ${NAMESPACE}.tel_recordings SET erased_at = now(), state = 'erased', lease_token = NULL, lease_until = NULL WHERE id = $1::uuid`,
+          [sc.row.id],
+        );
+        // Then throw a normal error
+        throw new Error("Something failed after tombstone");
+      },
+    };
+
+    const result = await runMediaPipeline(mockCtx, { steps, namespace: NAMESPACE });
+    expect(result.abandoned).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const row = await db.db.query<{ state: string; attempts: number }>(
+      `SELECT state, attempts FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
+      [recordingId],
+    );
+    expect(row[0].state).toBe("erased");
+    expect(row[0].attempts).toBe(0);
+  });
+
+  it("step throws ErasedError: abandoned 1, attempts not incremented", async () => {
+    const recordingId = randomUUID();
+    await seedRecording(recordingId, { attempts: 2 });
+    const { ctx: mockCtx } = createMockCtx();
+
+    const steps: PipelineSteps = {
+      received: async () => {
+        throw new ErasedError();
+      },
+    };
+
+    const result = await runMediaPipeline(mockCtx, { steps, namespace: NAMESPACE });
+    expect(result.abandoned).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const row = await db.db.query<{ attempts: number }>(
+      `SELECT attempts FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
+      [recordingId],
+    );
+    expect(row[0].attempts).toBe(2);
   });
 });
