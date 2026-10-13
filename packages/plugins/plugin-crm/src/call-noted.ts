@@ -166,7 +166,18 @@ export function registerCallNotedSubscriber(ctx: PluginContext): void {
 
     const payload = parseCallNoted(event.payload);
     if (!payload) {
-      ctx.logger.warn("CRM call.noted malformed payload", { payload: event.payload });
+      // Log only non-PII identifiers to avoid leaking transcript, recordingUrl, summary, or nextActions
+      const safePii: Record<string, unknown> = {
+        companyId: event.companyId,
+      };
+      const rawPayload = asRecord(event.payload);
+      if (typeof rawPayload.callSid === "string") {
+        safePii.callSid = rawPayload.callSid;
+      }
+      if (typeof rawPayload.contactId === "string") {
+        safePii.contactId = rawPayload.contactId;
+      }
+      ctx.logger.warn("CRM call.noted malformed payload", safePii);
       return;
     }
 

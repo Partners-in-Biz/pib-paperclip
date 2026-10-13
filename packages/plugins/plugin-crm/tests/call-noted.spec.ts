@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { boot, CO, contact, seed } from "./helpers/crm.js";
 import { buildCallNoteBody, parseCallNoted } from "../src/call-noted.js";
 
@@ -360,6 +360,57 @@ describe("call-noted", () => {
 
       // No ack should be emitted
       expect(emit).not.toHaveBeenCalledWith("activity.logged", expect.anything(), expect.anything());
+    });
+
+    it("does not log sensitive data in malformed payload warning", async () => {
+      const storeData = { ...seed() };
+      storeData.contacts = [contact("ada", "Ada Lovelace")];
+      const { harness } = await boot({ store: storeData });
+
+      const SECRET_TEXT = "SECRET-TRANSCRIPT-DATA";
+      const malformed = {
+        companyId: CO,
+        callSid: "call-123",
+        contactId: null, // Invalid type to trigger malformed payload
+        transcript: SECRET_TEXT,
+        summary: "ANOTHER-SECRET",
+        nextActions: ["SECRET-ACTION"],
+        recordingUrl: "https://example.com/SECRET-RECORDING.mp3",
+      };
+
+      // Spy on the logger.warn method
+      const warnSpy = vi.spyOn(harness.ctx.logger, "warn");
+
+      await harness.emit(`plugin.${TELEPHONY_PLUGIN_ID}.${CALL_NOTED_EVENT}`, malformed, { companyId: CO });
+
+      // Verify logger.warn was called
+      expect(warnSpy).toHaveBeenCalledWith(
+        "CRM call.noted malformed payload",
+        expect.any(Object)
+      );
+
+      // Get the logged object
+      const loggedArgs = warnSpy.mock.calls[0];
+      const loggedObject = loggedArgs?.[1];
+      const loggedString = JSON.stringify(loggedObject);
+
+      // Verify PII is NOT in the logs
+      expect(loggedString).not.toContain(SECRET_TEXT);
+      expect(loggedString).not.toContain("ANOTHER-SECRET");
+      expect(loggedString).not.toContain("SECRET-ACTION");
+      expect(loggedString).not.toContain("SECRET-RECORDING");
+
+      // Verify safe identifiers ARE in the logs (contactId is null so it won't be logged)
+      expect(loggedObject).toEqual(
+        expect.objectContaining({
+          companyId: CO,
+          callSid: "call-123",
+        })
+      );
+      // contactId should not be logged since it was null
+      expect(loggedObject).not.toHaveProperty("contactId");
+
+      warnSpy.mockRestore();
     });
   });
 });
