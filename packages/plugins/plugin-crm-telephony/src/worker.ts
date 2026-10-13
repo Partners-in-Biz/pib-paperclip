@@ -5,6 +5,7 @@ import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
 import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
+import { registerTimelineHandlers } from "./timeline-handlers.js";
 
 let ctx: PluginContext | null = null;
 
@@ -29,6 +30,8 @@ const plugin = definePlugin({
         return { data: { settings, secrets: status } };
       });
     }
+
+    await registerTimelineHandlers(pluginCtx);
   },
 
   async onWebhook(input: PluginWebhookInput) {
