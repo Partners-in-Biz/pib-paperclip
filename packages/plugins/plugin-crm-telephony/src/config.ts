@@ -11,7 +11,7 @@ export const SECRET_REFS = [
   "TWILIO_API_KEY_SECRET",
   "TWILIO_TWIML_APP_SID",
   "DEEPGRAM_API_KEY",
-  "SMS_PROVIDER_KEY",
+  "SMS_PROVIDER_API_KEY",
 ] as const;
 
 export const instanceConfigSchema: JsonSchema = {
@@ -25,6 +25,6 @@ export const instanceConfigSchema: JsonSchema = {
     TWILIO_API_KEY_SECRET: secretField("Twilio API Key Secret"),
     TWILIO_TWIML_APP_SID: secretField("Twilio TwiML App SID"),
     DEEPGRAM_API_KEY: secretField("Deepgram API Key"),
-    SMS_PROVIDER_KEY: secretField("SMS provider API key"),
+    SMS_PROVIDER_API_KEY: secretField("SMS provider API key"),
   },
 };

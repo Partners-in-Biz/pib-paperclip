@@ -20,7 +20,7 @@ const plugin = definePlugin({
       const settings = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>;
 
       // Check presence of configured secrets
-      const secretRefs = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_TWIML_APP_SID", "DEEPGRAM_API_KEY", "SMS_PROVIDER_KEY"];
+      const secretRefs = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_TWIML_APP_SID", "DEEPGRAM_API_KEY", "SMS_PROVIDER_API_KEY"];
       const secretsStatus = await secretStatus(ctx, companyId, secretRefs);
 
       return {
@@ -89,7 +89,7 @@ const plugin = definePlugin({
         const normalized = normalizeSettings(settings);
 
         // Check presence of configured secrets (never return values)
-        const secretRefs = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_TWIML_APP_SID", "DEEPGRAM_API_KEY", "SMS_PROVIDER_KEY"];
+        const secretRefs = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_TWIML_APP_SID", "DEEPGRAM_API_KEY", "SMS_PROVIDER_API_KEY"];
         const secretsStatus = await secretStatus(ctx, companyId, secretRefs);
 
         return { data: { settings: normalized, secretsStatus } };
