@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMediaSteps } from "../src/media-steps.js";
+import { ErasedError } from "../src/pipeline.js";
 import type { PipelineStepCtx } from "../src/pipeline.js";
 import { sha256Hex } from "../src/sigv4.js";
 
@@ -76,6 +77,7 @@ describe("media-steps", () => {
         ...overrides?.row,
       },
       extendLease: async () => true,
+      isErased: overrides?.isErased ?? (async () => false),
     } as any as PipelineStepCtx;
   }
 
@@ -387,5 +389,71 @@ describe("media-steps", () => {
     const sc = { ...ctx, extendLease: async () => true };
 
     await expect(steps.received!(sc)).rejects.toThrow(/R2 not configured/);
+  });
+
+  it("erased before Twilio GET: throws ErasedError, no fetch calls", async () => {
+    const calls: any[] = [];
+    const steps = createMediaSteps({ fetch: makeFetch(calls) as any, r2Config: mockR2Config() });
+    const ctx = mockCtx({ isErased: async () => true });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const err = await steps.received!(sc).catch((e) => e);
+    expect(err).toBeInstanceOf(ErasedError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("erased after R2 PUT: deletes R2 object and throws ErasedError", async () => {
+    const calls: any[] = [];
+    let isErasedCallCount = 0;
+    const ctx = mockCtx({
+      isErased: async () => {
+        isErasedCallCount++;
+        return isErasedCallCount > 1; // false on first call, true on second
+      },
+    });
+    const fetch = async (input: any, init?: RequestInit) => {
+      const url = getUrl(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url });
+
+      if (url.includes("r2.cloudflarestorage.com")) {
+        if (method === "PUT") {
+          const key = new URL(url).pathname.slice(1);
+          r2Store.set(key, { body: new Uint8Array(init?.body as ArrayBuffer), sha256: (init?.headers as Record<string, string>)?.["x-amz-meta-sha256"] ?? null });
+          return new Response(null, { status: 200 });
+        }
+        if (method === "DELETE") {
+          const key = new URL(url).pathname.slice(1);
+          r2Store.delete(key);
+          return new Response(null, { status: 204 });
+        }
+      }
+
+      if (url.includes("Recordings/") && method === "GET") return new Response(FIXTURE.buffer, { status: 200 });
+      return new Response(null, { status: 404 });
+    };
+
+    const steps = createMediaSteps({ fetch: fetch as any, r2Config: mockR2Config() });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const err = await steps.received!(sc).catch((e) => e);
+    expect(err).toBeInstanceOf(ErasedError);
+    expect(calls.filter((c) => c.method === "DELETE").length).toBe(1);
+    expect(r2Store.size).toBe(0);
+  });
+
+  it("downloaded erased: throws ErasedError, no Twilio DELETE", async () => {
+    const calls: any[] = [];
+    const key = "crm-telephony/recordings/CA123/RE123.wav";
+    // Pre-populate r2Store with the object
+    r2Store.set(key, { body: FIXTURE, sha256: FIXTURE_SHA });
+
+    const ctx = mockCtx({ isErased: async () => true, row: { r2_key: key, bytes: FIXTURE.length, sha256: FIXTURE_SHA } });
+    const steps = createMediaSteps({ fetch: makeFetch(calls) as any, r2Config: mockR2Config() });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const err = await steps.downloaded!(sc).catch((e) => e);
+    expect(err).toBeInstanceOf(ErasedError);
+    expect(calls.filter((c) => c.method === "DELETE" && c.url.includes("Recordings/"))).toHaveLength(0);
   });
 });
