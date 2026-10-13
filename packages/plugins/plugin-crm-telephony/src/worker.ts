@@ -6,6 +6,7 @@ import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
 import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
+import { createMediaSteps } from "./media-steps.js";
 
 let ctx: PluginContext | null = null;
 
@@ -21,7 +22,7 @@ const plugin = definePlugin({
     registerCrmProjection(pluginCtx, pluginCtx.db.namespace, { companies: false, contacts: true });
 
     pluginCtx.jobs.register("media-pipeline", async () => {
-      const result = await runMediaPipeline(pluginCtx);
+      const result = await runMediaPipeline(pluginCtx, { steps: createMediaSteps() });
       pluginCtx.logger.debug(`media-pipeline: processed=${result.processed} failed=${result.failed} dead=${result.dead} abandoned=${result.abandoned} issuesRaised=${result.issuesRaised}`);
     });
 

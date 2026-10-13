@@ -1,4 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { isSecretRef, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import type { R2Config } from "./r2-store.js";
 
 export interface TelephonySettings {
   recordingEnabled: boolean;
@@ -163,4 +165,46 @@ export async function secretStatus(ctx: PluginContext, companyId: string, refs: 
     }
   }
   return result;
+}
+
+
+function hasSecret(value: unknown): boolean {
+  return typeof value === "string" ? value.trim().length > 0 : isSecretRef(value) && Boolean(value.secretId);
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Check if R2 settings are filled in (the secret may still fail to resolve). */
+export function r2Configured(raw: Record<string, unknown>): boolean {
+  const r2 = (raw.r2 && typeof raw.r2 === "object" ? raw.r2 : {}) as Record<string, unknown>;
+  return Boolean(text(r2.accountId) && text(r2.bucket) && text(r2.accessKeyId) && r2.secretAccessKey);
+}
+
+/** Resolve R2 config for a company. Returns null if not configured or secret missing. */
+export async function readR2Config(ctx: PluginContext, companyId: string): Promise<R2Config | null> {
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = await readConfig(ctx, companyId);
+  } catch {
+    return null;
+  }
+
+  if (!r2Configured(raw)) return null;
+
+  const r2Raw = raw.r2 as Record<string, unknown>;
+  const secretResolver = new SecretResolver(ctx, companyId, r2Raw);
+  const secretAccessKey = await secretResolver.get("secretAccessKey");
+  if (!secretAccessKey) return null;
+
+  const prefix = (text(r2Raw.prefix) ?? "crm-telephony").replace(/^\/+|\/+$/g, "").replace(/[^A-Za-z0-9/_-]/g, "-") || "crm-telephony";
+
+  return {
+    accountId: text(r2Raw.accountId)!,
+    bucket: text(r2Raw.bucket)!,
+    accessKeyId: text(r2Raw.accessKeyId)!,
+    secretAccessKey,
+    prefix,
+  };
 }

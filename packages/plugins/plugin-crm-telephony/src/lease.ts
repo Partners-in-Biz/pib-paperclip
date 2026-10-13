@@ -14,6 +14,9 @@ export interface RecordingRow {
   twilio_url: string;
   r2_key: string | null;
   next_attempt_at: string;
+  company_id: string | null;
+  bytes: number | null;
+  sha256: string | null;
 }
 
 export async function claimRecordings(
@@ -48,7 +51,7 @@ export async function claimRecordings(
   }
 
   const rows = await db.query<RecordingRow>(
-    `SELECT id, call_sid, recording_sid, state, attempts, twilio_url, r2_key, next_attempt_at
+    `SELECT id, call_sid, recording_sid, state, attempts, twilio_url, r2_key, next_attempt_at, company_id, bytes, sha256
      FROM ${ns}.tel_recordings WHERE lease_token = $1::uuid AND lease_until > now() AND erased_at IS NULL`,
     [token],
   );
