@@ -1,4 +1,6 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { readSettings, secretStatus } from "./settings.js";
+import { TELEPHONY_TOOLS } from "./tools.js";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -6,6 +8,14 @@ const plugin = definePlugin({
       ctx.logger.debug("media-pipeline job running");
       // Real pipeline handlers come in PR1b+
     });
+
+    for (const tool of TELEPHONY_TOOLS) {
+      ctx.tools.register(tool.name, tool, async (_params, run: ToolRunContext) => {
+        const settings = await readSettings(ctx, run.companyId);
+        const status = await secretStatus(ctx, run.companyId, []);
+        return { data: { settings, secrets: status } };
+      });
+    }
   },
 
   async onWebhook() {

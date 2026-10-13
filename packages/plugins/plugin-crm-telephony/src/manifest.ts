@@ -1,5 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
+import { TELEPHONY_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -10,6 +11,7 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Partners in Biz",
   categories: ["connector", "automation"],
   capabilities: [
+    "agent.tools.register",
     "http.outbound",
     "secrets.read-ref",
     "jobs.schedule",
@@ -18,6 +20,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "database.namespace.migrate",
   ],
+  tools: TELEPHONY_TOOLS,
   entrypoints: { worker: "./dist/worker.js" },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
   jobs: [
