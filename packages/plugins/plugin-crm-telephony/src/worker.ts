@@ -15,6 +15,16 @@ function requireCtx(): PluginContext {
   return ctx;
 }
 
+export async function telephonyToolHandler(
+  pluginCtx: PluginContext,
+  _params: unknown,
+  run: ToolRunContext,
+) {
+  const settings = await readSettings(pluginCtx, run.companyId);
+  const status = await secretStatus(pluginCtx, run.companyId, []);
+  return { data: { settings, secrets: status } };
+}
+
 const plugin = definePlugin({
   async setup(pluginCtx) {
     ctx = pluginCtx;
@@ -27,11 +37,9 @@ const plugin = definePlugin({
     });
 
     for (const tool of TELEPHONY_TOOLS) {
-      pluginCtx.tools.register(tool.name, tool, async (_params, run: ToolRunContext) => {
-        const settings = await readSettings(pluginCtx, run.companyId);
-        const status = await secretStatus(pluginCtx, run.companyId, []);
-        return { data: { settings, secrets: status } };
-      });
+      pluginCtx.tools.register(tool.name, tool, (params, run) =>
+        telephonyToolHandler(pluginCtx, params, run),
+      );
     }
 
     pluginCtx.actions.register("voice-token", async (_params, context: PluginPerformActionContext) => {
