@@ -47,4 +47,13 @@ describe("CRM Telephony migrations", () => {
       db.client.query(`INSERT INTO ${NAMESPACE}.tel_recordings (id, call_sid, recording_sid, twilio_url) VALUES ($1, 'cs2', 'rs1', 'http://test')`, [id2]),
     ).rejects.toThrow();
   });
+
+  it("tel_recordings has company_id and dead_issue_id columns", async () => {
+    const res = await db.client.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'tel_recordings' AND column_name IN ('company_id', 'dead_issue_id') ORDER BY column_name",
+      [NAMESPACE],
+    );
+    const cols = (res.rows as unknown[]).map((r: unknown) => (r as { column_name: string }).column_name);
+    expect(cols).toEqual(["company_id", "dead_issue_id"]);
+  });
 });
