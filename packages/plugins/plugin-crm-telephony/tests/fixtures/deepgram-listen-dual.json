@@ -1,0 +1,30 @@
+{
+  "results": {
+    "utterances": [
+      {
+        "channel": 0,
+        "start": 0.5,
+        "end": 3.2,
+        "transcript": "Hello, how can I help you today?"
+      },
+      {
+        "channel": 1,
+        "start": 4.1,
+        "end": 7.8,
+        "transcript": "I need to check my account balance."
+      },
+      {
+        "channel": 0,
+        "start": 8.3,
+        "end": 12.5,
+        "transcript": "Certainly. Let me look that up for you now."
+      },
+      {
+        "channel": 1,
+        "start": 13.0,
+        "end": 15.6,
+        "transcript": "Dankie, ek wag."
+      }
+    ]
+  }
+}
