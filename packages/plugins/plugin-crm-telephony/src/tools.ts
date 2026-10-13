@@ -33,4 +33,38 @@ export const TELEPHONY_TOOLS: PluginToolDeclaration[] = [
       "Fetch the current list of WhatsApp content templates from Twilio Content API, check their approval status, and update the local database. Templates outside the 24-hour marketing window require pre-approval by WhatsApp. Syncing may take up to a minute for many templates.",
     parametersSchema: schema([], {}),
   },
+  {
+    name: "whatsapp-send",
+    displayName: "Send a WhatsApp message",
+    description:
+      "Send a WhatsApp message to a contact via Twilio. Messages can be either service (transactional) or marketing. Service messages can be sent anytime; marketing messages require an approved template and can only be sent within the 24-hour customer response window. Use whatsapp-templates to pick a template ID. On unknown_outcome, the message may have been delivered; do NOT retry or mark the number bad—check status first.",
+    parametersSchema: schema(["toE164"], {
+      contactId: {
+        type: "string",
+        description: "UUID of the CRM contact to associate with this message.",
+      },
+      toE164: {
+        type: "string",
+        description: "Recipient phone number in E.164 format (e.g., +27xxxxxxxxx or +1xxxxxxxxxx).",
+      },
+      kind: {
+        type: "string",
+        enum: ["service", "marketing"],
+        description: "Message category: service (transactional, anytime) or marketing (requires approved template and 24h window).",
+      },
+      body: {
+        type: "string",
+        description: "Plain text message body. Use this for service messages or simple text; omit if using templateId.",
+      },
+      templateId: {
+        type: "string",
+        description: "UUID of an approved WhatsApp template (from whatsapp-templates). Use for marketing messages or templated service messages.",
+      },
+      variables: {
+        type: "array",
+        items: { type: "string" },
+        description: "Ordered list of template variable values if using templateId. Must match the template's variable count.",
+      },
+    }),
+  },
 ];
