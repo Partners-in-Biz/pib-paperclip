@@ -7,6 +7,7 @@ import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
 import { createMediaSteps } from "./media-steps.js";
+import { runRetention } from "./retention.js";
 
 let ctx: PluginContext | null = null;
 
@@ -24,6 +25,11 @@ const plugin = definePlugin({
     pluginCtx.jobs.register("media-pipeline", async () => {
       const result = await runMediaPipeline(pluginCtx, { steps: createMediaSteps() });
       pluginCtx.logger.debug(`media-pipeline: processed=${result.processed} failed=${result.failed} dead=${result.dead} abandoned=${result.abandoned} issuesRaised=${result.issuesRaised}`);
+    });
+
+    pluginCtx.jobs.register("retention", async () => {
+      const result = await runRetention(pluginCtx, { namespace: NAMESPACE });
+      pluginCtx.logger.debug(`retention: tombstoned=${result.tombstoned} purged=${result.purged} transcriptsTrimmed=${result.transcriptsTrimmed} skipped=${result.skipped} errors=${result.errors}`);
     });
 
     for (const tool of TELEPHONY_TOOLS) {
