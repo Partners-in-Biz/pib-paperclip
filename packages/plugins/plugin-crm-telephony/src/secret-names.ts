@@ -12,6 +12,7 @@ export const TELEPHONY_SECRET_NAMES = [
   "DEEPGRAM_API_KEY",
   "SMS_PROVIDER_API_KEY",
   "TEL_BRIDGE_AGENT_NUMBER",
+  "ANTHROPIC_API_KEY",
 ] as const;
 
 export type TelephonySecretName = (typeof TELEPHONY_SECRET_NAMES)[number];

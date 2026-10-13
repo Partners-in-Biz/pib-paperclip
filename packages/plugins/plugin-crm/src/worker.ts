@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
+import { registerCallNotedSubscriber } from "./call-noted.js";
 import {
   definePlugin,
   runWorker,
@@ -268,6 +269,8 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     // What the other modules say about a client (for the report and the health score), and the erasure and consent hand-offs.
     registerClientSignals(ctx);
+    // Subscribe to call.noted events from the Telephony plugin to write idempotent call notes.
+    registerCallNotedSubscriber(ctx);
     registerPrivacy(ctx);
     const registerAction = (
       key: string,
