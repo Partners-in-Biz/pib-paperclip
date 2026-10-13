@@ -6,7 +6,7 @@ import packageJson from "../package.json" with { type: "json" };
 const VALID_CAPS = new Set([
   "database.namespace.read", "database.namespace.write", "database.namespace.migrate",
   "http.outbound", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
-  "agent.tools.register", "companies.read",
+  "agent.tools.register", "companies.read", "ui.page.register",
 ]);
 
 describe("CRM Telephony manifest", () => {
