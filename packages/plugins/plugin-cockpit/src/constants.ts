@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.7.9";
+export const VERSION = "0.7.10";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
