@@ -13,6 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "agent.tools.register",
     "companies.read",
+    "events.emit",
     "events.subscribe",
     "http.outbound",
     "issues.create",
