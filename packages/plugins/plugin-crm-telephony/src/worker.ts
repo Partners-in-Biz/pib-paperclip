@@ -7,6 +7,9 @@ import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
 import { voiceTokenAction } from "./voice-token-action.js";
+import { makeTranscribeStep } from "./transcribe.js";
+import { makeSummariseStep } from "./summarise.js";
+import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 
 let ctx: PluginContext | null = null;
 
@@ -31,9 +34,33 @@ const plugin = definePlugin({
 
     registerCrmProjection(pluginCtx, pluginCtx.db.namespace, { companies: false, contacts: true });
 
+    // Register call note ack listener
+    registerNoteAck(pluginCtx);
+
     pluginCtx.jobs.register("media-pipeline", async () => {
-      const result = await runMediaPipeline(pluginCtx);
+      // Build pipeline steps: media recording -> transcribe -> summarise -> note
+      const audioUrlStub = async () => {
+        throw new Error("audioUrl presign not configured: R2 infrastructure not yet deployed");
+      };
+
+      const steps = {
+        twilio_deleted: makeTranscribeStep({ audioUrl: audioUrlStub }),
+        transcribed: makeSummariseStep(),
+        summarised: makeNoteStep(),
+      };
+
+      const result = await runMediaPipeline(pluginCtx, { steps, namespace: NAMESPACE });
       pluginCtx.logger.debug(`media-pipeline: processed=${result.processed} failed=${result.failed} dead=${result.dead} abandoned=${result.abandoned} issuesRaised=${result.issuesRaised}`);
+
+      // Sweep un-acked notes for re-emission
+      try {
+        const sweepResult = await sweepUnackedNotes(pluginCtx, NAMESPACE);
+        if (sweepResult.reemitted > 0 || sweepResult.gaveUp > 0) {
+          pluginCtx.logger.debug(`note-sweep: reemitted=${sweepResult.reemitted} gaveUp=${sweepResult.gaveUp}`);
+        }
+      } catch (err) {
+        pluginCtx.logger.debug(`note-sweep failed: ${err}`);
+      }
     });
 
     for (const tool of TELEPHONY_TOOLS) {
