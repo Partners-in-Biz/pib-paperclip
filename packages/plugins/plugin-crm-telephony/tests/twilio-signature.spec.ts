@@ -126,7 +126,7 @@ describe("Twilio Signature", () => {
     it("handles JSON variant with valid body hash and signature", () => {
       const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
       const url = `https://example.com/webhook?bodySHA256=${hash}`;
-      const sig = computeTwilioSignature("secret", url.split("?")[0]);
+      const sig = computeTwilioSignature("secret", url);
       expect(verifyTwilioWebhook({ authToken: "secret", headers: { "x-twilio-signature": sig }, rawBody: "", url })).toEqual({ ok: true, variant: "json" });
     });
 
@@ -136,8 +136,28 @@ describe("Twilio Signature", () => {
     ])("returns %s for JSON variant", (reason, body) => {
       const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
       const url = `https://example.com/webhook?bodySHA256=${hash}`;
-      const sig = reason === "bad_body_hash" ? computeTwilioSignature("secret", url.split("?")[0]) : "badsignature";
+      const sig = reason === "bad_body_hash" ? computeTwilioSignature("secret", url) : "badsignature";
       expect(verifyTwilioWebhook({ authToken: "secret", headers: { "x-twilio-signature": sig }, rawBody: body, url })).toEqual({ ok: false, reason });
+    });
+
+    it("rejects JSON variant when signature is computed over stripped URL", () => {
+      const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      const url = `https://example.com/webhook?bodySHA256=${hash}`;
+      // Compute signature incorrectly over the stripped URL
+      const sig = computeTwilioSignature("secret", url.split("?")[0]);
+      expect(verifyTwilioWebhook({ authToken: "secret", headers: { "x-twilio-signature": sig }, rawBody: "", url })).toEqual({ ok: false, reason: "bad_signature" });
+    });
+
+    it("includes other query params in JSON variant signature", () => {
+      const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      const url = `https://example.com/webhook?bodySHA256=${hash}&token=abc123`;
+      // Compute valid signature over full URL with both query params
+      const sig = computeTwilioSignature("secret", url);
+      expect(verifyTwilioWebhook({ authToken: "secret", headers: { "x-twilio-signature": sig }, rawBody: "", url })).toEqual({ ok: true, variant: "json" });
+
+      // Change the token param and signature should fail
+      const tamperedUrl = `https://example.com/webhook?bodySHA256=${hash}&token=xyz789`;
+      expect(verifyTwilioWebhook({ authToken: "secret", headers: { "x-twilio-signature": sig }, rawBody: "", url: tamperedUrl })).toEqual({ ok: false, reason: "bad_signature" });
     });
   });
 });

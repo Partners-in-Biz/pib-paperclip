@@ -46,6 +46,8 @@ export function buildPublicWebhookUrl({
     result += `?${query}`;
   }
 
+  // NOTE: Port-bearing URLs are signed exactly as configured (no with/without-port retry),
+  // so the configured baseUrl must match the URL registered in the Twilio console.
   return result;
 }
 
@@ -113,9 +115,8 @@ export function verifyTwilioWebhook({
         return { ok: false, reason: "bad_body_hash" };
       }
 
-      // Compute signature over URL without params (no form params)
-      const urlWithoutQuery = url.split("?")[0];
-      const expectedSignature = computeTwilioSignature(authToken, urlWithoutQuery);
+      // Compute signature over the full URL (including all query params) with no form params
+      const expectedSignature = computeTwilioSignature(authToken, url);
 
       if (!timingSafeStringEqual(signature, expectedSignature)) {
         return { ok: false, reason: "bad_signature" };
