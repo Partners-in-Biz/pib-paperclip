@@ -10,7 +10,7 @@ import { startHostDb } from "./helpers/host-db.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const deepgramFixture = JSON.parse(readFileSync(join(here, "fixtures/deepgram-listen-dual.json"), "utf8"));
 
-let db: any;
+let db: Awaited<ReturnType<typeof startHostDb>>;
 
 async function seedCall(callId: string, opts?: { callSid?: string; companyId?: string; contactId?: string }) {
   const callSid = opts?.callSid || `call_${Date.now()}`;
