@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { NAMESPACE } from "../../src/namespace.js";
 import * as guard from "./sql-guard.js";
+import { freePort } from "./free-port.js";
 
 const DB_PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../db/node_modules");
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -16,10 +17,11 @@ export async function startHostDb() {
   const postgres = (await import(`${DB_PKG}/postgres/src/index.js`)).default;
 
   const dir = mkdtempSync(path.join(tmpdir(), "tel-host-db-"));
-  const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port: 54322, persistent: false, onLog: () => {}, onError: () => {} });
+  const port = await freePort();
+  const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port, persistent: false, onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();
-  const client = postgres({ host: "127.0.0.1", port: 54322, user: "t", password: "t", database: "postgres", onnotice: () => {} });
+  const client = postgres({ host: "127.0.0.1", port, user: "t", password: "t", database: "postgres", onnotice: () => {} });
   const orm = drizzle(client);
   await client.unsafe(`CREATE SCHEMA ${NAMESPACE}`);
   for (const f of readdirSync(path.join(here, "../../migrations")).sort())
