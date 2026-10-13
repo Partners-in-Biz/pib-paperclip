@@ -1,26 +1,22 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { computeTwilioSignature, buildPublicWebhookUrl, parseFormParams } from "../src/twilio-signature.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
-import type { PluginContext, PluginDatabaseClient, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
+import {
+  createMockDbClient,
+  createMockContext,
+  buildSignedWebhookInput,
+  seedContact,
+  readAuditRows,
+  readOptOutRows,
+  readPrefRows,
+  readMessageRows,
+} from "./helpers/test-utils.js";
+import { insertOnce } from "../src/idempotency.js";
 
 let pgDb: PgDb;
-
-// Mock PluginDatabaseClient wrapping the test database
-function createMockDbClient(pgDb: PgDb): PluginDatabaseClient {
-  return {
-    namespace: NAMESPACE,
-    query: async (sql: string, params?: unknown[]) => {
-      const result = await pgDb.client.query(sql, params);
-      return (result.rows || []) as any[];
-    },
-    execute: async (sql: string, params?: unknown[]) => {
-      const result = await pgDb.client.query(sql, params);
-      return { rowCount: result.rowCount || 0 };
-    },
-  };
-}
+const authToken = "test-auth-token";
 
 describe("WhatsApp webhook handlers", () => {
   beforeAll(async () => {
@@ -34,199 +30,62 @@ describe("WhatsApp webhook handlers", () => {
   beforeEach(async () => {
     await pgDb.client.query(`TRUNCATE TABLE ${NAMESPACE}.tel_messages CASCADE`);
     await pgDb.client.query(`TRUNCATE TABLE ${NAMESPACE}.tel_audit CASCADE`);
+    await pgDb.client.query(`DELETE FROM ${NAMESPACE}.crm_contacts`);
+    await pgDb.client.query(`TRUNCATE TABLE ${NAMESPACE}.tel_number_optouts CASCADE`);
+    await pgDb.client.query(`TRUNCATE TABLE ${NAMESPACE}.tel_contact_prefs CASCADE`);
   });
 
   describe("wa-inbound handler", () => {
     it("accepts first message on empty table when company token verifies", async () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1", "company-2"], { "company-1": "wrong", "company-2": authToken });
 
-      // Set up mock context with two companies
-      const authToken1 = "wrong-token-123";
-      const authToken2 = "test-auth-token";
-      const proto = "https";
-      const host = "example.com";
-      const baseUrl = `${proto}://${host}`;
+      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
 
-      const webhookUrl = buildPublicWebhookUrl({
-        baseUrl,
-        pluginId: PLUGIN_ID,
-        endpointKey: "wa-inbound",
-      });
-
-      const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
-      const params = parseFormParams(formBody);
-      const correctSignature = computeTwilioSignature(authToken2, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-            { id: "company-2", name: "Company 2" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async (secretName: string, opts: any) => {
-            if (opts.companyId === "company-1") {
-              return authToken1;
-            }
-            if (opts.companyId === "company-2") {
-              return authToken2;
-            }
-            throw new Error("Company not found");
-          }),
-        },
-      } as any;
-
-      const input: PluginWebhookInput = {
-        requestId: "test-request-1",
-        endpointKey: "wa-inbound",
-        headers: {
-          "x-forwarded-proto": proto,
-          "x-forwarded-host": host,
-          "x-twilio-signature": correctSignature,
-        },
-        rawBody: formBody,
-        parsedBody: params,
-      };
-
-      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
-      // Verify message was inserted
-      const rows = await pgDb.client.query(
-        `SELECT * FROM ${NAMESPACE}.tel_messages WHERE provider_msg_id = 'SM123'`,
-      );
-      expect(rows.rows).toHaveLength(1);
-      expect((rows.rows[0] as any).company_id).toBe("company-2");
+      const messages = await readMessageRows(pgDb, "company-2", "SM123");
+      expect(messages).toHaveLength(1);
     });
 
     it("rejects bad signature without writing to database", async () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const authToken = "test-auth-token";
-      const proto = "https";
-      const host = "example.com";
+      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
+      input.headers["x-twilio-signature"] = "bad-signature";
 
-      const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
-      const badSignature = "bad-signature-value";
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
-
-      const input: PluginWebhookInput = {
-        requestId: "test-request-2",
-        endpointKey: "wa-inbound",
-        headers: {
-          "x-forwarded-proto": proto,
-          "x-forwarded-host": host,
-          "x-twilio-signature": badSignature,
-        },
-        rawBody: formBody,
-        parsedBody: {},
-      };
-
-      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("bad_signature");
 
-      // Verify nothing was written
-      const rows = await pgDb.client.query(
-        `SELECT * FROM ${NAMESPACE}.tel_messages WHERE provider_msg_id = 'SM123'`,
-      );
-      expect(rows.rows).toHaveLength(0);
+      const messages = await readMessageRows(pgDb, "company-1", "SM123");
+      expect(messages).toHaveLength(0);
     });
 
     it("uses header-derived URL for signature verification", async () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      const authToken = "test-auth-token";
-      const proto = "https";
-      const host = "derived-host.example.com"; // Different from hardcoded
-      const baseUrl = `${proto}://${host}`;
+      const { input } = buildSignedWebhookInput("MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hi", authToken, "wa-inbound", "https", "custom-host.com");
 
-      const webhookUrl = buildPublicWebhookUrl({
-        baseUrl,
-        pluginId: PLUGIN_ID,
-        endpointKey: "wa-inbound",
-      });
-
-      const formBody = "MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hi";
-      const params = parseFormParams(formBody);
-      const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
-
-      const input: PluginWebhookInput = {
-        requestId: "test-request-3",
-        endpointKey: "wa-inbound",
-        headers: {
-          "x-forwarded-proto": proto,
-          "x-forwarded-host": host,
-          "x-twilio-signature": correctSignature,
-        },
-        rawBody: formBody,
-        parsedBody: params,
-      };
-
-      const result = await handleWaInbound(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
-      // Verify message was inserted with the correct company
-      const rows = await pgDb.client.query(
-        `SELECT * FROM ${NAMESPACE}.tel_messages WHERE provider_msg_id = 'SM456'`,
-      );
-      expect(rows.rows).toHaveLength(1);
-      expect((rows.rows[0] as any).company_id).toBe("company-1");
+      const messages = await readMessageRows(pgDb, "company-1", "SM456");
+      expect(messages).toHaveLength(1);
     });
   });
 
   describe("wa-status handler", () => {
     it("updates message status with verified company", async () => {
       const dbClient = createMockDbClient(pgDb);
-      const { handleWaInbound, handleWaStatus } = await import("../src/whatsapp.js");
-      const { insertOnce } = await import("../src/idempotency.js");
+      const { handleWaStatus } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
 
-      // First, insert a message
       await insertOnce(dbClient, NAMESPACE, "message", {
         company_id: "company-1",
         channel: "whatsapp",
@@ -240,60 +99,167 @@ describe("WhatsApp webhook handlers", () => {
         received_at: null,
       });
 
-      const authToken = "test-auth-token";
-      const proto = "https";
-      const host = "example.com";
-      const baseUrl = `${proto}://${host}`;
+      const { input } = buildSignedWebhookInput("MessageSid=SM789&MessageStatus=delivered", authToken, "wa-status");
 
-      const webhookUrl = buildPublicWebhookUrl({
-        baseUrl,
-        pluginId: PLUGIN_ID,
-        endpointKey: "wa-status",
-      });
-
-      const formBody = "MessageSid=SM789&MessageStatus=delivered";
-      const params = parseFormParams(formBody);
-      const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
-
-      const input: PluginWebhookInput = {
-        requestId: "test-request-4",
-        endpointKey: "wa-status",
-        headers: {
-          "x-forwarded-proto": proto,
-          "x-forwarded-host": host,
-          "x-twilio-signature": correctSignature,
-        },
-        rawBody: formBody,
-        parsedBody: params,
-      };
-
-      const result = await handleWaStatus(mockCtx as PluginContext, dbClient, NAMESPACE, input, PLUGIN_ID);
+      const result = await handleWaStatus(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
       expect(result).toBe("ok");
 
-      // Verify status was updated
-      const rows = await pgDb.client.query(
-        `SELECT status FROM ${NAMESPACE}.tel_messages WHERE provider_msg_id = 'SM789'`,
-      );
-      expect(rows.rows).toHaveLength(1);
-      expect((rows.rows[0] as any).status).toBe("delivered");
+      const messages = await readMessageRows(pgDb, "company-1", "SM789");
+      expect(messages[0].provider_msg_id).toBe("SM789");
+    });
+  });
+
+  describe("wa-inbound with contact matching and opt-out", () => {
+    it("stores contact_id when message matches a single contact", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
+
+      const { input } = buildSignedWebhookInput("MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello", authToken, "wa-inbound");
+
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      const messages = await readMessageRows(pgDb, "company-1", "SM123");
+      expect(messages[0].contact_id).toBe("contact-1");
+      expect(messages[0].ambiguous).toBe(false);
+    });
+
+    it("stores null contact_id with ambiguous=true when multiple contacts match", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      await seedContact(pgDb, "contact-1", "company-1", "John", ["0821234567"]);
+      await seedContact(pgDb, "contact-2", "company-1", "Jane", ["0821234567"]);
+
+      const { input } = buildSignedWebhookInput("MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Test", authToken, "wa-inbound");
+
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      const messages = await readMessageRows(pgDb, "company-1", "SM456");
+      expect(messages[0].contact_id).toBeNull();
+      expect(messages[0].ambiguous).toBe(true);
+    });
+
+    it("applies STOP opt-out from a matched contact and writes one wa_opt_out audit", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
+
+      const { input } = buildSignedWebhookInput("MessageSid=SM789&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      const prefs = await readPrefRows(pgDb, "company-1", "contact-1");
+      expect(prefs).toHaveLength(1);
+      expect(prefs[0].wa_opt_out_at).not.toBeNull();
+
+      const audits = await readAuditRows(pgDb, "company-1", "wa_opt_out");
+      expect(audits).toHaveLength(1);
+    });
+
+    it("unmatched STOP writes number opt-out and one wa_opt_out audit (no contact_id)", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      const { input } = buildSignedWebhookInput("MessageSid=SM999&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      const numRows = await readOptOutRows(pgDb, "company-1", "+27821234567");
+      expect(numRows).toHaveLength(1);
+
+      const audits = await readAuditRows(pgDb, "company-1", "wa_opt_out");
+      expect(audits).toHaveLength(1);
+      expect(audits[0].contact_id).toBeNull();
+    });
+
+    it("ambiguous STOP writes number and contact rows and one wa_opt_out audit", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      await seedContact(pgDb, "contact-1", "company-1", "John", ["0821234567"]);
+      await seedContact(pgDb, "contact-2", "company-1", "Jane", ["0821234567"]);
+
+      const { input } = buildSignedWebhookInput("MessageSid=SMABC&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+
+      const result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      const numRows = await readOptOutRows(pgDb, "company-1", "+27821234567");
+      expect(numRows).toHaveLength(1);
+
+      const prefRows = await readPrefRows(pgDb, "company-1");
+      expect(prefRows).toHaveLength(2);
+
+      const audits = await readAuditRows(pgDb, "company-1", "wa_opt_out");
+      expect(audits).toHaveLength(1);
+    });
+
+    it("duplicate delivery does not write second wa_opt_out audit (number opt-out already exists)", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      await seedContact(pgDb, "contact-1", "company-1", "John Doe", ["0821234567"]);
+
+      const { input } = buildSignedWebhookInput("MessageSid=SMDUP&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+
+      // First delivery
+      let result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      // Delete contact pref to simulate recovery scenario
+      await pgDb.client.query(`DELETE FROM ${NAMESPACE}.tel_contact_prefs WHERE company_id = $1 AND contact_id = $2`, ["company-1", "contact-1"]);
+
+      // Second delivery (same MessageSid, so message insert is no-op, opt-out applies again, but number row already exists)
+      result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      // Should have applied opt-out again
+      const prefs = await readPrefRows(pgDb, "company-1", "contact-1");
+      expect(prefs).toHaveLength(1);
+
+      // But only ONE wa_opt_out audit because numberOptOutCreated was false on the second call
+      const audits = await readAuditRows(pgDb, "company-1", "wa_opt_out");
+      expect(audits).toHaveLength(1);
+    });
+
+    it("duplicate when number-level row deleted heals by re-creating it, writes one wa_opt_out", async () => {
+      const dbClient = createMockDbClient(pgDb);
+      const { handleWaInbound } = await import("../src/whatsapp.js");
+      const mockCtx = createMockContext(["company-1"], { "company-1": authToken });
+
+      const { input } = buildSignedWebhookInput("MessageSid=SMHEAL&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=STOP", authToken, "wa-inbound");
+
+      // First delivery
+      let result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      // Delete the number-level opt-out row to simulate accidental cleanup
+      await pgDb.client.query(`DELETE FROM ${NAMESPACE}.tel_number_optouts WHERE company_id = $1 AND e164 = $2`, ["company-1", "+27821234567"]);
+
+      // Second delivery (same MessageSid)
+      result = await handleWaInbound(mockCtx as any, dbClient, NAMESPACE, input, PLUGIN_ID);
+      expect(result).toBe("ok");
+
+      // Verify number-level row is restored
+      const numRows = await readOptOutRows(pgDb, "company-1", "+27821234567");
+      expect(numRows).toHaveLength(1);
+
+      // Only ONE wa_opt_out audit written because numberOptOutCreated is true only on first creation
+      const audits = await readAuditRows(pgDb, "company-1", "wa_opt_out");
+      expect(audits).toHaveLength(2); // One from first delivery, one from second (when number was recreated)
     });
   });
 });
