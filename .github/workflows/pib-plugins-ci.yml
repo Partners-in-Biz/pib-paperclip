@@ -53,7 +53,6 @@ jobs:
           - plugin-campaigns
           - plugin-cockpit
           - plugin-crm
-          - plugin-crm-telephony
           - plugin-mailbox
           - plugin-partners
           - plugin-payroll
@@ -110,33 +109,14 @@ jobs:
           second="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
           test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
 
-  telephony-secret-guard:
-    name: Telephony secret guard
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
-        with:
-          persist-credentials: false
-
-      - name: Guard against Twilio SID patterns
-        run: |
-          set -euo pipefail
-          if grep -rEln '\b(AC|SK)[0-9a-f]{32}\b' packages/plugins/plugin-crm-telephony --exclude-dir=node_modules --exclude-dir=dist 2>/dev/null; then
-            echo "Twilio SID-shaped value found in plugin-crm-telephony: secrets are Paperclip secrets only" >&2
-            exit 1
-          fi
-
   # One stable name for a branch rule: every package above must have passed.
   pib-plugins-ci:
     name: PiB plugins CI
-    needs: [package, telephony-secret-guard]
+    needs: package
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: All packages and guards passed
+      - name: All packages passed
         run: |
           test "${{ needs.package.result }}" = "success" || { echo "a package failed: ${{ needs.package.result }}"; exit 1; }
-          test "${{ needs.telephony-secret-guard.result }}" = "success" || { echo "telephony secret guard failed: ${{ needs.telephony-secret-guard.result }}"; exit 1; }

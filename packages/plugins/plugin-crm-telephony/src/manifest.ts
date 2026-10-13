@@ -1,6 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
-import { instanceConfigSchema } from "./settings.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -10,7 +9,6 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts.",
   author: "Partners in Biz",
   categories: ["connector", "automation"],
-  instanceConfigSchema,
   capabilities: [
     "http.outbound",
     "secrets.read-ref",
@@ -19,23 +17,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "database.namespace.migrate",
-    "agent.tools.register",
     "ui.page.register",
   ],
   entrypoints: { worker: "./dist/worker.js" },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
-  tools: [
-    {
-      name: "telephony-status",
-      displayName: "Telephony status",
-      description: "Check telephony settings and secret configuration status",
-      parametersSchema: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
-    },
-  ],
   jobs: [
     {
       jobKey: "media-pipeline",
