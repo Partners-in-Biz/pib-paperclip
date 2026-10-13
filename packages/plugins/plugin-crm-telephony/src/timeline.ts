@@ -1,4 +1,5 @@
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
+import { writeAudit } from "./audit.js";
 
 export interface TimelineItem {
   id: string;
@@ -22,6 +23,11 @@ export interface TimelineResult {
     do_not_record: boolean;
     language: string;
   };
+}
+
+export interface ContactPrefs {
+  do_not_record: boolean;
+  language: string;
 }
 
 /**
@@ -158,4 +164,123 @@ export async function getTranscript(
     summary: row.summary as string | undefined,
     next_actions: row.next_actions,
   };
+}
+
+/**
+ * List calls and messages with no contact_id match, grouped by external number.
+ */
+export async function listUnmatched(
+  dbClient: PluginDatabaseClient,
+  namespace: string,
+  {
+    companyId,
+    limit = 50,
+  }: {
+    companyId: string;
+    limit?: number;
+  },
+): Promise<
+  Array<{
+    number: string;
+    type: "inbound_call" | "outbound_call" | "inbound_message" | "outbound_message";
+    count: number;
+    last_activity: string;
+  }>
+> {
+  if (limit < 1 || limit > 100) throw new Error("limit must be 1-100");
+
+  const rows = await dbClient.query(
+    `
+    SELECT
+      COALESCE(calls.number, msgs.number) as number,
+      COALESCE(calls.type, msgs.type) as type,
+      COALESCE(calls.count, msgs.count) as count,
+      COALESCE(calls.last_activity, msgs.last_activity) as last_activity
+    FROM (
+      SELECT
+        CASE WHEN direction = 'inbound' THEN from_e164 ELSE to_e164 END as number,
+        CASE WHEN direction = 'inbound' THEN 'inbound_call' ELSE 'outbound_call' END as type,
+        COUNT(*) as count,
+        MAX(created_at) as last_activity
+      FROM ${namespace}.tel_calls
+      WHERE company_id = $1 AND contact_id IS NULL
+      GROUP BY number, direction
+    ) calls
+    FULL OUTER JOIN (
+      SELECT
+        CASE WHEN direction = 'inbound' THEN from_e164 ELSE to_e164 END as number,
+        CASE WHEN direction = 'inbound' THEN 'inbound_message' ELSE 'outbound_message' END as type,
+        COUNT(*) as count,
+        MAX(created_at) as last_activity
+      FROM ${namespace}.tel_messages
+      WHERE company_id = $1 AND contact_id IS NULL
+      GROUP BY number, direction
+    ) msgs ON calls.number = msgs.number AND calls.type = msgs.type
+    ORDER BY COALESCE(calls.last_activity, msgs.last_activity) DESC
+    LIMIT $2
+    `,
+    [companyId, limit],
+  );
+
+  return rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      number: r.number as string,
+      type: r.type as "inbound_call" | "outbound_call" | "inbound_message" | "outbound_message",
+      count: r.count as number,
+      last_activity: new Date(r.last_activity as string).toISOString(),
+    };
+  });
+}
+
+/**
+ * Set contact preferences (do not record, language).
+ */
+export async function setContactPrefs(
+  dbClient: PluginDatabaseClient,
+  namespace: string,
+  {
+    companyId,
+    contactId,
+    userId,
+    doNotRecord,
+    language,
+  }: {
+    companyId: string;
+    contactId: string;
+    userId: string;
+    doNotRecord?: boolean;
+    language?: "af" | "en";
+  },
+): Promise<void> {
+  // Validate language
+  if (language && !["af", "en"].includes(language)) {
+    throw new Error("language must be 'af' or 'en'");
+  }
+
+  // Build the detail for audit (changed fields only)
+  const detail: Record<string, unknown> = {};
+  if (doNotRecord !== undefined) detail.do_not_record = doNotRecord;
+  if (language !== undefined) detail.language = language;
+
+  // Single statement: INSERT with defaults, ON CONFLICT keeps existing values if not provided
+  await dbClient.execute(
+    `INSERT INTO ${namespace}.tel_contact_prefs (company_id, contact_id, do_not_record, language, updated_by, updated_at)
+     VALUES ($1, $2, COALESCE($3::boolean, false), COALESCE($4, 'en'), $5, now())
+     ON CONFLICT (company_id, contact_id) DO UPDATE SET
+       do_not_record = COALESCE($3::boolean, ${namespace}.tel_contact_prefs.do_not_record),
+       language = COALESCE($4, ${namespace}.tel_contact_prefs.language),
+       updated_by = $5,
+       updated_at = now()`,
+    [companyId, contactId, doNotRecord ?? null, language ?? null, userId],
+  );
+
+  // Write audit
+  await writeAudit(dbClient, namespace, {
+    companyId,
+    userId,
+    action: "contact.prefs.update",
+    contactId,
+    detail,
+  });
 }
