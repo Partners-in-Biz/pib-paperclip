@@ -14,7 +14,7 @@ export interface RecordingRow {
   twilio_url: string;
   r2_key: string | null;
   next_attempt_at: string;
-  company_id: string | null;
+  company_id: string;
   bytes: number | null;
   sha256: string | null;
 }

@@ -41,7 +41,7 @@ describe("secret-guard", () => {
 
   it("src: tokens in allowlist", () => {
     const tokens = new Set<string>();
-    for (const m of srcText.matchAll(/\b(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL)_[A-Z0-9_]{3,}\b/g)) {
+    for (const m of srcText.matchAll(/\b(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL|ANTHROPIC)_[A-Z0-9_]{3,}\b/g)) {
       tokens.add(m[0]!);
     }
     const allowed = new Set(TELEPHONY_SECRET_NAMES);
@@ -52,7 +52,7 @@ describe("secret-guard", () => {
 
   it("allowlist: pattern + no dupes", () => {
     const seen = new Set<string>();
-    const pat = /^(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL)_[A-Z0-9_]{3,}$/;
+    const pat = /^(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL|ANTHROPIC)_[A-Z0-9_]{3,}$/;
     for (const name of TELEPHONY_SECRET_NAMES) {
       expect(pat.test(name) && !seen.has(name)).toBe(true);
       seen.add(name);
@@ -62,7 +62,7 @@ describe("secret-guard", () => {
   it("positive: detects violation", () => {
     const vio: string[] = [];
     const allowed = new Set(TELEPHONY_SECRET_NAMES);
-    for (const m of "TWILIO_FAKE_SECRET_NOT_ALLOWED".matchAll(/\b(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL)_[A-Z0-9_]{3,}\b/g)) {
+    for (const m of "TWILIO_FAKE_SECRET_NOT_ALLOWED".matchAll(/\b(TWILIO|DEEPGRAM|SMS_PROVIDER|TEL|ANTHROPIC)_[A-Z0-9_]{3,}\b/g)) {
       if (!allowed.has(m[0] as never)) vio.push(m[0]!);
     }
     expect(vio).toEqual(["TWILIO_FAKE_SECRET_NOT_ALLOWED"]);
