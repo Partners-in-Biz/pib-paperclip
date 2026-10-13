@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NAMESPACE } from "../../src/namespace.js";
+import { freePort } from "./free-port.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const PLUGIN_ROOT = join(here, "../..");
@@ -29,7 +30,8 @@ export async function startPg(): Promise<PgDb> {
     };
   };
   const dir = mkdtempSync(join(tmpdir(), "tel-pg-"));
-  const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port: 54321, persistent: false, onLog: () => {}, onError: () => {} });
+  const port = await freePort();
+  const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port, persistent: false, onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();
   const client = pg.getPgClient();
