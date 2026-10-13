@@ -281,8 +281,9 @@ describe("retention", () => {
     const transcripts = await db.db.query<{ id: string }>(`SELECT id FROM ${NAMESPACE}.tel_transcripts WHERE recording_id = $1::uuid`, [recordingId]);
     expect(transcripts).toHaveLength(1);
 
-    // R2 keys for this call should be deleted, but other_call should survive
-    expect(mockR2.data.size).toBe(1);
+    // R2 key for this recording should be deleted, but other_file.txt and other_call should survive
+    expect(mockR2.data.size).toBe(2);
+    expect(mockR2.data.has(`crm-telephony/recordings/${callSid}/other_file.txt`)).toBe(true);
     expect(mockR2.data.has(`crm-telephony/recordings/other_call/${recordingSid}.wav`)).toBe(true);
   });
 
