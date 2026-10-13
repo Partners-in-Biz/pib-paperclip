@@ -1,0 +1,27 @@
+{
+  "id": "msg_test123",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "tool_use_123",
+      "name": "record_summary",
+      "input": {
+        "summary": "Client called to discuss quarterly pricing review and contract renewal. Agreed to schedule follow-up meeting next week.",
+        "next_actions": [
+          "Schedule follow-up meeting with client for contract renewal",
+          "Prepare pricing proposal based on discussion"
+        ],
+        "sentiment": "positive"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 150,
+    "output_tokens": 120
+  }
+}
