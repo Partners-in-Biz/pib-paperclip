@@ -141,11 +141,11 @@ export async function readMessageRows(
   pgDb: PgDb,
   companyId: string,
   providerId?: string,
-): Promise<Array<{ provider_msg_id: string; contact_id: string | null; ambiguous: boolean }>> {
+): Promise<Array<{ company_id: string; provider_msg_id: string; contact_id: string | null; ambiguous: boolean; status: string }>> {
   const query = providerId
-    ? `SELECT provider_msg_id, contact_id, ambiguous FROM ${NAMESPACE}.tel_messages
+    ? `SELECT company_id, provider_msg_id, contact_id, ambiguous, status FROM ${NAMESPACE}.tel_messages
        WHERE company_id = $1 AND provider_msg_id = $2`
-    : `SELECT provider_msg_id, contact_id, ambiguous FROM ${NAMESPACE}.tel_messages
+    : `SELECT company_id, provider_msg_id, contact_id, ambiguous, status FROM ${NAMESPACE}.tel_messages
        WHERE company_id = $1`;
   const params = providerId ? [companyId, providerId] : [companyId];
   const result = await pgDb.client.query(query, params);

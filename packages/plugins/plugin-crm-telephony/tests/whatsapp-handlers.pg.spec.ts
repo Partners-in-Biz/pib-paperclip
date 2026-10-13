@@ -48,6 +48,7 @@ describe("WhatsApp webhook handlers", () => {
 
       const messages = await readMessageRows(pgDb, "company-2", "SM123");
       expect(messages).toHaveLength(1);
+      expect(messages[0].company_id).toBe("company-2");
     });
 
     it("rejects bad signature without writing to database", async () => {
@@ -77,6 +78,7 @@ describe("WhatsApp webhook handlers", () => {
 
       const messages = await readMessageRows(pgDb, "company-1", "SM456");
       expect(messages).toHaveLength(1);
+      expect(messages[0].company_id).toBe("company-1");
     });
   });
 
@@ -106,6 +108,7 @@ describe("WhatsApp webhook handlers", () => {
 
       const messages = await readMessageRows(pgDb, "company-1", "SM789");
       expect(messages[0].provider_msg_id).toBe("SM789");
+      expect(messages[0].status).toBe("delivered");
     });
   });
 
