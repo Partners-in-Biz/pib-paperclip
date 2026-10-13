@@ -1,4 +1,5 @@
 import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
 import { readSettings, secretStatus } from "./settings.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
 import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
@@ -55,6 +56,8 @@ async function buildTwilioClientForSecrets(
 const plugin = definePlugin({
   async setup(pluginCtx) {
     ctx = pluginCtx;
+
+    registerCrmProjection(pluginCtx, pluginCtx.db.namespace, { companies: false, contacts: true });
 
     pluginCtx.jobs.register("media-pipeline", async () => {
       const result = await runMediaPipeline(pluginCtx);

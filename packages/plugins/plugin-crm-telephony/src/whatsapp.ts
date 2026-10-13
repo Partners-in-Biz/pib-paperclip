@@ -5,6 +5,8 @@ import { writeAudit } from "./audit.js";
 import { insertOnce } from "./idempotency.js";
 import { getPublicBaseUrl, resolveVerifiedCompany } from "./company-resolve.js";
 import { isWindowOpen } from "./wa-window.js";
+import { matchContactsByPhone } from "./contact-match.js";
+import { applyWaOptOut } from "./optout.js";
 
 /**
  * Webhook handler status codes.
@@ -93,18 +95,31 @@ export async function handleWaInbound(
     return "unparseable_number";
   }
 
+  // Match the inbound number to a contact
+  const match = await matchContactsByPhone(dbClient, namespace, verifiedCompanyId, fromE164);
+
   // Insert the message (idempotent by MessageSid)
   const inserted = await insertOnce(dbClient, namespace, "message", {
     company_id: verifiedCompanyId,
     channel: "whatsapp",
     direction: "inbound",
     provider_msg_id: messageSid,
-    contact_id: null, // No contact matching in this PR
+    contact_id: match.contactId,
+    ambiguous: match.ambiguous,
     from_e164: fromE164,
     to_e164: toE164,
     body: body || null,
     status: "received",
     received_at: new Date(),
+  });
+
+  // Apply opt-out on EVERY delivery (including duplicates)
+  const optOutResult = await applyWaOptOut(dbClient, namespace, {
+    companyId: verifiedCompanyId,
+    e164: fromE164,
+    candidateIds: match.candidateIds,
+    providerMsgId: messageSid,
+    body: body || "",
   });
 
   // Write audit entry (only if this is a new message)
@@ -113,12 +128,28 @@ export async function handleWaInbound(
       companyId: verifiedCompanyId,
       userId: "system",
       action: "wa.inbound",
-      contactId: null,
+      contactId: match.contactId,
       detail: {
         sid: messageSid,
         from: fromE164,
         to: toE164,
         numMedia,
+        ambiguous: match.ambiguous,
+        candidateCount: match.candidateIds.length,
+        optOut: optOutResult.optedOut,
+      },
+    });
+  }
+
+  // Write separate audit action for opt-out only when the number opt-out was first created
+  if (optOutResult.optedOut && optOutResult.numberOptOutCreated) {
+    await writeAudit(dbClient, namespace, {
+      companyId: verifiedCompanyId,
+      userId: "system",
+      action: "wa_opt_out",
+      contactId: match.contactId,
+      detail: {
+        candidateCount: match.candidateIds.length,
       },
     });
   }

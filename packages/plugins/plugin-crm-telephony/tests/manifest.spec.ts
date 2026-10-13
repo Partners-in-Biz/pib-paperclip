@@ -5,7 +5,7 @@ import packageJson from "../package.json" with { type: "json" };
 
 const VALID_CAPS = new Set([
   "database.namespace.read", "database.namespace.write", "database.namespace.migrate",
-  "http.outbound", "issues.create", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
+  "events.subscribe", "http.outbound", "issues.create", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
   "agent.tools.register", "companies.read", "ui.page.register",
 ]);
 
@@ -24,6 +24,11 @@ describe("CRM Telephony manifest", () => {
   it("has agent.tools.register capability", () => {
     const caps = manifest.capabilities ?? [];
     expect(caps).toContain("agent.tools.register");
+  });
+
+  it("has events.subscribe capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).toContain("events.subscribe");
   });
 
   it("has ui.page.register capability", () => {
