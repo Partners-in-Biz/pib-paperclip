@@ -8,6 +8,14 @@ export interface DialerParams {
 }
 
 /**
+ * Normalize dial input by removing formatting characters.
+ * Strips spaces, dashes, parentheses, and dots.
+ */
+export function normalizeDialInput(raw: string): string {
+  return raw.trim().replace(/[\s\-().]/g, "");
+}
+
+/**
  * Parse Dialer page query parameters.
  * to: trimmed, accepted only if E.164 format, else empty string
  * contactId: trimmed, max 64 chars, only [A-Za-z0-9_-], else empty string
@@ -19,8 +27,7 @@ export function parseDialerParams(search: string): DialerParams {
   let to: string | undefined;
   const toParam = params.get("to");
   if (toParam) {
-    const trimmed = toParam.trim();
-    const normalized = trimmed.replace(/[\s\-()]/g, "");
+    const normalized = normalizeDialInput(toParam);
     if (isDialable(normalized)) {
       to = normalized;
     }

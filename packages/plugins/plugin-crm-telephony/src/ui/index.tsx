@@ -11,7 +11,7 @@ import {
   Form,
   Field,
 } from "@partnersinbiz/pib-plugin-ui";
-import { parseDialerParams, isDialable, buildDialEvent } from "./dialer.js";
+import { parseDialerParams, normalizeDialInput, isDialable, buildDialEvent } from "./dialer.js";
 
 /**
  * Dialer page: dial outbound calls with optional contact context.
@@ -31,8 +31,9 @@ export function DialerPage({ context }: PluginPageProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (isDialable(toNumber)) {
-      window.dispatchEvent(buildDialEvent(toNumber, contactId));
+    const dialTo = normalizeDialInput(toNumber);
+    if (isDialable(dialTo)) {
+      window.dispatchEvent(buildDialEvent(dialTo, contactId));
     }
   };
 
@@ -55,7 +56,7 @@ export function DialerPage({ context }: PluginPageProps) {
               </Field>
             )}
             <div className="flex gap-2 mt-6">
-              <Button type="submit" disabled={!isDialable(toNumber)}>
+              <Button type="submit" disabled={!isDialable(normalizeDialInput(toNumber))}>
                 Call
               </Button>
             </div>

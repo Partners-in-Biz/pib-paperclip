@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseDialerParams,
+  normalizeDialInput,
   isDialable,
   buildDialEvent,
   DIAL_EVENT,
@@ -22,6 +23,10 @@ describe("Dialer UI utilities", () => {
 
     it("strips spaces from to parameter and validates", () => {
       expect(parseDialerParams("?to=%2B27%20123%20456%20789")).toEqual({ to: "+27123456789" });
+    });
+
+    it("accepts URL-encoded typed format like +27 82 123 4567", () => {
+      expect(parseDialerParams("?to=%2B27%2082%20123%204567")).toEqual({ to: "+27821234567" });
     });
 
     it("strips dashes from to parameter and validates", () => {
@@ -93,6 +98,44 @@ describe("Dialer UI utilities", () => {
 
     it("returns undefined for missing parameters", () => {
       expect(parseDialerParams("?to=%2B27123456789").contactId).toBeUndefined();
+    });
+  });
+
+  describe("normalizeDialInput", () => {
+    it("strips spaces from input", () => {
+      expect(normalizeDialInput("+27 82 123 4567")).toBe("+27821234567");
+    });
+
+    it("strips dashes from input", () => {
+      expect(normalizeDialInput("+27-82-123-4567")).toBe("+27821234567");
+    });
+
+    it("strips parentheses from input", () => {
+      expect(normalizeDialInput("+1 (555) 123-4567")).toBe("+15551234567");
+    });
+
+    it("strips dots from input", () => {
+      expect(normalizeDialInput("+27.82.123.4567")).toBe("+27821234567");
+    });
+
+    it("trims leading and trailing whitespace", () => {
+      expect(normalizeDialInput("  +27821234567  ")).toBe("+27821234567");
+    });
+
+    it("handles already-clean input", () => {
+      expect(normalizeDialInput("+27821234567")).toBe("+27821234567");
+    });
+
+    it("combines multiple formatting characters", () => {
+      expect(normalizeDialInput("  +1 (555) 123-4567.x123  ")).toBe("+15551234567x123");
+    });
+
+    it("returns empty string for empty input", () => {
+      expect(normalizeDialInput("")).toBe("");
+    });
+
+    it("returns empty string for whitespace-only input", () => {
+      expect(normalizeDialInput("   ")).toBe("");
     });
   });
 
