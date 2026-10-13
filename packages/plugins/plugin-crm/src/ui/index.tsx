@@ -82,6 +82,7 @@ import { crmTabBadges, dealClientLabel, dealsByStage, displayText, followUpDue, 
 import { DealSheet, type DealView } from "./deal.js";
 import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts.js";
 import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
+import { dialerHref, TELEPHONY_PLUGIN_KEY } from "../phone-link.js";
 
 interface Account {
   id: string;
@@ -1844,6 +1845,7 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
   const [address, setAddress] = useState("");
   const [vatNumber, setVatNumber] = useState("");
   const [registrationNumber, setRegistrationNumber] = useState("");
+  const contributions = useUiContributions();
 
   function startEdit() {
     setName(company.name);
@@ -1874,7 +1876,19 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     { key: "currency", label: "Currency", value: company.currency },
     { key: "tags", label: "Tags", value: company.tags.join(", ") || <NotSet /> },
     { key: "billingEmail", label: "Billing email", value: company.billingEmail ? <span style={{ overflowWrap: "anywhere" }}>{company.billingEmail}</span> : <NotSet /> },
-    { key: "phone", label: "Phone", value: company.phone || <NotSet /> },
+    {
+      key: "phone",
+      label: "Phone",
+      value: company.phone ? (
+        moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) && dialerHref(company.phone) ? (
+          <a href={dialerHref(company.phone) || "#"}>{company.phone}</a>
+        ) : (
+          company.phone
+        )
+      ) : (
+        <NotSet />
+      ),
+    },
     { key: "address", label: "Address", value: company.address ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{company.address}</span> : <NotSet /> },
     { key: "vatNumber", label: "VAT no.", value: company.vatNumber || <NotSet /> },
     { key: "registrationNumber", label: "Reg. no.", value: company.registrationNumber || <NotSet /> },
@@ -1946,6 +1960,7 @@ function ContactDetails({ contact, onSave, locking, onLock }: {
   const [tags, setTags] = useState("");
   const [nextKind, setNextKind] = useState("");
   const [nextDue, setNextDue] = useState("");
+  const contributions = useUiContributions();
 
   function startEdit() {
     setName(contact.name);
@@ -1981,7 +1996,26 @@ function ContactDetails({ contact, onSave, locking, onLock }: {
       label: contact.emails.length > 1 ? "Emails" : "Email",
       value: contact.emails.length ? <span style={{ display: "grid", gap: 2, minWidth: 0 }}>{contact.emails.map((email) => <EmailText key={email} email={email} />)}</span> : <NotSet />,
     },
-    { key: "phones", label: contact.phones.length > 1 ? "Phones" : "Phone", value: contact.phones.join(", ") || <NotSet /> },
+    {
+      key: "phones",
+      label: contact.phones.length > 1 ? "Phones" : "Phone",
+      value: contact.phones.length ? (
+        <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
+          {contact.phones.map((phone) => {
+            const href = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) ? dialerHref(phone, contact.id) : null;
+            return href ? (
+              <a key={phone} href={href}>
+                {phone}
+              </a>
+            ) : (
+              <div key={phone}>{phone}</div>
+            );
+          })}
+        </span>
+      ) : (
+        <NotSet />
+      ),
+    },
     { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={contact.lifecycle} /> },
     {
       key: "nextAction",
