@@ -263,31 +263,16 @@ export async function setContactPrefs(
   if (doNotRecord !== undefined) detail.do_not_record = doNotRecord;
   if (language !== undefined) detail.language = language;
 
-  // For updates, we want to keep the old value if not provided
-  // First, get current values if row exists
-  const existing = await dbClient.query(
-    `SELECT do_not_record, language FROM ${namespace}.tel_contact_prefs WHERE company_id = $1 AND contact_id = $2`,
-    [companyId, contactId],
-  );
-
-  const finalDoNotRecord =
-    doNotRecord !== undefined
-      ? doNotRecord
-      : existing.length > 0
-        ? ((existing[0] as Record<string, unknown>).do_not_record as boolean)
-        : false;
-  const finalLanguage =
-    language || (existing.length > 0 ? ((existing[0] as Record<string, unknown>).language as string) : "en");
-
+  // Single statement: INSERT with defaults, ON CONFLICT keeps existing values if not provided
   await dbClient.execute(
     `INSERT INTO ${namespace}.tel_contact_prefs (company_id, contact_id, do_not_record, language, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+     VALUES ($1, $2, COALESCE($3::boolean, false), COALESCE($4, 'en'), $5, now())
      ON CONFLICT (company_id, contact_id) DO UPDATE SET
-       do_not_record = $3,
-       language = $4,
+       do_not_record = COALESCE($3::boolean, ${namespace}.tel_contact_prefs.do_not_record),
+       language = COALESCE($4, ${namespace}.tel_contact_prefs.language),
        updated_by = $5,
        updated_at = now()`,
-    [companyId, contactId, finalDoNotRecord, finalLanguage, userId],
+    [companyId, contactId, doNotRecord ?? null, language ?? null, userId],
   );
 
   // Write audit

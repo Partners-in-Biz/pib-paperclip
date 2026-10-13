@@ -1,6 +1,5 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { checkVoiceAccess } from "./access.js";
-import { playRecording, type PlaybackError } from "./playback.js";
 import { getTimeline, getTranscript, listUnmatched, setContactPrefs, type TimelineResult } from "./timeline.js";
 import { readSettings } from "./settings.js";
 import { NAMESPACE } from "./namespace.js";
@@ -76,6 +75,14 @@ function optionalEnum<T extends string | boolean>(obj: unknown, key: string, val
     throw new Error(`${key} must be one of: ${values.join(", ")}`);
   }
   return enumVal;
+}
+
+function optionalBoolean(obj: unknown, key: string): boolean | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  const val = (obj as Record<string, unknown>)[key];
+  if (val == null) return undefined;
+  if (typeof val !== "boolean") throw new Error(`${key} must be a boolean`);
+  return val;
 }
 
 export async function registerTimelineHandlers(ctx: PluginContext): Promise<void> {
@@ -165,8 +172,7 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
 
     try {
       const contactId = requiredString(params, "contactId");
-      const doNotRecordRaw = optionalEnum(params, "doNotRecord", [true, false]);
-      const doNotRecord = doNotRecordRaw as boolean | undefined;
+      const doNotRecord = optionalBoolean(params, "doNotRecord");
       const language = optionalEnum(params, "language", ["af", "en"] as const);
 
       await setContactPrefs(ctx.db, NAMESPACE, {
@@ -179,65 +185,6 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
 
       return { data: { ok: true } };
     } catch (error) {
-      return { status: 400, error: String(error) };
-    }
-  });
-
-  ctx.actions.register("telephony.recording.play", async (params, context) => {
-    const companyId = requiredCompany(context);
-    const settings = await readSettings(ctx, companyId);
-
-    // Check access (user only, requires userId)
-    const access = checkVoiceAccess(actorFromContext(context), settings.voiceAllowedUserIds);
-    if (!access.ok) return { status: access.status, error: access.error };
-
-    if (!context.actor.userId) {
-      return { status: 403, error: "This action requires a signed-in user" };
-    }
-
-    try {
-      const callSid = requiredString(params, "callSid");
-      const contactId = optionalString(params, "contactId");
-
-      // Resolve R2 config from secrets
-      let r2Config = null;
-      try {
-        const [accountId, bucket, accessKeyId, secretAccessKey] = await Promise.all([
-          ctx.secrets.resolve("R2_ACCOUNT_ID", { companyId }),
-          ctx.secrets.resolve("R2_BUCKET", { companyId }),
-          ctx.secrets.resolve("R2_ACCESS_KEY_ID", { companyId }),
-          ctx.secrets.resolve("R2_SECRET_ACCESS_KEY", { companyId }),
-        ]);
-
-        if (accountId && bucket && accessKeyId && secretAccessKey) {
-          r2Config = { accountId, bucket, accessKeyId, secretAccessKey };
-        }
-      } catch {
-        // Secrets not configured
-      }
-
-      const result = await playRecording(ctx.db, NAMESPACE, {
-        companyId,
-        userId: context.actor.userId,
-        callSid,
-        contactId,
-        r2Config,
-      });
-
-      return { data: result };
-    } catch (error) {
-      if (error instanceof Error && "code" in error && typeof error.code === "string") {
-        const code = error.code as string;
-        const codeMap: Record<string, number> = {
-          not_found: 404,
-          r2_not_configured: 503,
-          recording_erased: 410,
-          no_r2_key: 503,
-          invalid_state: 400,
-        };
-        const status = codeMap[code] ?? 500;
-        return { status, error: error.message };
-      }
       return { status: 400, error: String(error) };
     }
   });
