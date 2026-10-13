@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-crm-telephony",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts.",
@@ -17,12 +17,14 @@
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui"
   },
   "license": "MIT",
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
@@ -31,6 +33,8 @@
     "node": ">=24.11.0"
   },
   "dependencies": {
-    "@partnersinbiz/pib-plugin-kit": "workspace:*"
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
+    "@partnersinbiz/pib-plugin-ui": "workspace:*",
+    "react": "^19.0.0"
   }
 }

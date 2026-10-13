@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { instanceConfigSchema } from "./config.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 
 const manifest: PaperclipPluginManifestV1 = {
@@ -9,6 +10,7 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts.",
   author: "Partners in Biz",
   categories: ["connector", "automation"],
+  instanceConfigSchema,
   capabilities: [
     "http.outbound",
     "secrets.read-ref",
@@ -17,8 +19,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "database.namespace.migrate",
+    "plugin.state.read",
+    "plugin.state.write",
+    "ui.page.register",
   ],
-  entrypoints: { worker: "./dist/worker.js" },
+  entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
   jobs: [
     {
@@ -60,6 +65,11 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Webhook for incoming SMS messages",
     },
   ],
+  ui: {
+    slots: [
+      { type: "page", id: "telephony-settings", displayName: "Telephony Settings", exportName: "TelephonySettingsPage", routePath: "telephony-settings" },
+    ],
+  },
 };
 
 export default manifest;
