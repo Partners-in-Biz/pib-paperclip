@@ -6,7 +6,7 @@ import packageJson from "../package.json" with { type: "json" };
 const VALID_CAPS = new Set([
   "database.namespace.read", "database.namespace.write", "database.namespace.migrate",
   "events.subscribe", "http.outbound", "issues.create", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
-  "agent.tools.register", "companies.read",
+  "agent.tools.register", "companies.read", "ui.page.register",
 ]);
 
 describe("CRM Telephony manifest", () => {
@@ -29,6 +29,24 @@ describe("CRM Telephony manifest", () => {
   it("has events.subscribe capability", () => {
     const caps = manifest.capabilities ?? [];
     expect(caps).toContain("events.subscribe");
+  });
+
+  it("has ui.page.register capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).toContain("ui.page.register");
+  });
+
+  it("does not have appShellOverlay capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).not.toContain("ui.appShellOverlay.register");
+  });
+
+  it("has only one UI slot (dialer-page)", () => {
+    const slots = manifest.ui?.slots ?? [];
+    expect(slots).toHaveLength(1);
+    expect(slots[0].id).toBe("dialer-page");
+    expect(slots[0].exportName).toBe("DialerPage");
+    expect(slots[0].type).toBe("page");
   });
 
   it("has telephony-status tool", () => {

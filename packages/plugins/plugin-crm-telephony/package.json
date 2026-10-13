@@ -17,20 +17,26 @@
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
   },
   "license": "MIT",
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
+  },
+  "peerDependencies": {
+    "react": ">=18"
   },
   "engines": {
     "node": ">=24.11.0"
   },
   "dependencies": {
-    "@partnersinbiz/pib-plugin-kit": "workspace:*"
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
   }
 }
