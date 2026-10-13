@@ -1,4 +1,4 @@
-import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
 import { readSettings, secretStatus } from "./settings.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
@@ -6,6 +6,7 @@ import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
 import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
+import { voiceTokenAction } from "./voice-token-action.js";
 
 let ctx: PluginContext | null = null;
 
@@ -32,6 +33,10 @@ const plugin = definePlugin({
         return { data: { settings, secrets: status } };
       });
     }
+
+    pluginCtx.actions.register("voice-token", async (_params, context: PluginPerformActionContext) => {
+      return voiceTokenAction(pluginCtx, context);
+    });
   },
 
   async onWebhook(input: PluginWebhookInput) {
