@@ -232,11 +232,13 @@ describe("sendWhatsapp", () => {
     const dbClient = createMockDbClient(pgDb);
     const now = new Date();
     const fakeClient = makeFakeClient();
-    for (let i = 0; i < 200; i++)
+    for (let i = 0; i < 200; i++) {
+      const uuid = `550e8400-e29b-41d4-a716-${(4466 + i).toString().padStart(12, "0")}`;
       await pgDb.client.query(
         `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, provider_msg_id, from_e164, to_e164, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [`550e8400-e29b-41d4-a716-44665544000${i % 10}`, "c1", "whatsapp", "outbound", `S${i}`, "+27821234567", "+27829876543", "sent", now.toISOString()]
+        [uuid, "c1", "whatsapp", "outbound", `S${i}`, "+27821234567", "+27829876543", "sent", now.toISOString()]
       );
+    }
     const result = await sendWhatsapp(
       { db: dbClient, namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
       { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
@@ -261,8 +263,8 @@ describe("sendWhatsapp", () => {
     );
     expect(result.sent).toBe(false);
     expect(fakeClient.sendMessage).toHaveBeenCalledTimes(1);
-    const rows = await pgDb.client.query(`SELECT COUNT(*) as c FROM ${NAMESPACE}.tel_messages WHERE company_id = $1 AND status = 'failed'`, ["c1"]);
-    expect((rows.rows as any)[0]?.c).toBeGreaterThan(0);
+    const rows = await pgDb.client.query(`SELECT COUNT(*)::int as c FROM ${NAMESPACE}.tel_messages WHERE company_id = $1 AND status = 'failed'`, ["c1"]);
+    expect(Number((rows.rows as any)[0]?.c || 0)).toBeGreaterThan(0);
   });
 
   it("audit hides PII", async () => {
