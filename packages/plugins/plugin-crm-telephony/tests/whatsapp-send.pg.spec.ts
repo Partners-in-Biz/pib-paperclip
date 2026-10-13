@@ -235,7 +235,7 @@ describe("sendWhatsapp", () => {
     for (let i = 0; i < 200; i++)
       await pgDb.client.query(
         `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, provider_msg_id, from_e164, to_e164, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [`m${i}`, "c1", "whatsapp", "outbound", `S${i}`, "+27821234567", "+27829876543", "sent", now.toISOString()]
+        [`550e8400-e29b-41d4-a716-44665544000${i % 10}`, "c1", "whatsapp", "outbound", `S${i}`, "+27821234567", "+27829876543", "sent", now.toISOString()]
       );
     const result = await sendWhatsapp(
       { db: dbClient, namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
@@ -252,7 +252,7 @@ describe("sendWhatsapp", () => {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     await pgDb.client.query(
       `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      ["m6", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+      ["550e8400-e29b-41d4-a716-446655440006", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
     );
     const fakeClient = { sendMessage: vi.fn(async () => ({ ok: false, failure: { kind: "rejected", status: 400, code: 21211, error: "Bad" } })), getContentTemplates: vi.fn(), updateMessageStatus: vi.fn() } as any as TwilioClient;
     const result = await sendWhatsapp(
@@ -271,7 +271,7 @@ describe("sendWhatsapp", () => {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     await pgDb.client.query(
       `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      ["m7", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+      ["550e8400-e29b-41d4-a716-446655440007", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
     );
     await sendWhatsapp(
       { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: makeFakeClient(), settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
