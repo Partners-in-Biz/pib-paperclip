@@ -102,40 +102,31 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
         continue;
       }
 
-      // Delete from R2: list all keys under the recording's call_sid prefix
-      const listPrefix = `${r2cfg.prefix || "crm-telephony"}/recordings/${row.call_sid}/`;
-      let r2Keys: string[] = [];
+      // Delete from R2: delete only this recording's wav file
+      const expectedKey = `${r2cfg.prefix || "crm-telephony"}/recordings/${row.call_sid}/${row.recording_sid}.wav`;
       let r2Error = false;
 
       try {
-        r2Keys = await r2List(r2cfg, listPrefix, fetchFn, now);
+        await r2Delete(r2cfg, expectedKey, fetchFn, now);
       } catch (err) {
-        ctx.logger.warn(`Failed to list R2 keys for ${row.recording_sid}: ${err}`);
+        ctx.logger.warn(`Failed to delete R2 key for ${row.recording_sid}: ${err}`);
         errors++;
         r2Error = true;
-      }
-
-      if (!r2Error) {
-        for (const key of r2Keys) {
-          try {
-            await r2Delete(r2cfg, key, fetchFn, now);
-          } catch (err) {
-            ctx.logger.warn(`Failed to delete R2 key for ${row.recording_sid}: ${err}`);
-            errors++;
-            r2Error = true;
-            break;
-          }
-        }
       }
 
       if (r2Error) {
         continue; // Skip DB cleanup if R2 delete failed
       }
 
-      // Delete from Twilio (if parseable)
+      // Delete from Twilio
       let twilioError = false;
       const accountMatch = row.twilio_url.match(/\/Accounts\/(AC[0-9a-f]+)\//i);
-      if (accountMatch) {
+      if (!accountMatch) {
+        // Unparseable Twilio URL: treat as error and keep row
+        ctx.logger.warn(`Unparseable Twilio URL for ${row.recording_sid}: ${row.twilio_url}`);
+        errors++;
+        twilioError = true;
+      } else {
         const accountSid = accountMatch[1];
         try {
           let apiKey: string;
