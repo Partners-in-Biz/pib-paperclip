@@ -38,8 +38,11 @@ interface AnthropicBlock {
 export function makeSummariseStep(): PipelineStep {
   return async (sc: PipelineStepCtx): Promise<StepResult> => {
     const { ctx, namespace, row } = sc;
-    const recCheck = await ctx.db.query<{ erased_at: unknown; company_id: string | null }>(
-      `SELECT erased_at, company_id FROM ${namespace}.tel_recordings WHERE id = $1::uuid`,
+    const companyId = row.company_id;
+    if (!companyId) throw new Error("company_id missing on recording");
+
+    const recCheck = await ctx.db.query<{ erased_at: unknown }>(
+      `SELECT erased_at FROM ${namespace}.tel_recordings WHERE id = $1::uuid`,
       [row.id],
     );
     if (recCheck.length === 0) throw new Error("recording not found");
@@ -58,9 +61,7 @@ export function makeSummariseStep(): PipelineStep {
       return { state: "summarised" };
     }
 
-    const { company_id } = recCheck[0];
-    if (!company_id) throw new Error("company_id missing on recording");
-    const apiKey = await ctx.secrets.resolve("ANTHROPIC_API_KEY", { companyId: company_id });
+    const apiKey = await ctx.secrets.resolve("ANTHROPIC_API_KEY", { companyId });
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
     await sc.extendLease();

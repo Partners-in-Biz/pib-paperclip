@@ -33,16 +33,17 @@ export function makeTranscribeStep(deps: TranscribeDeps): PipelineStep {
     );
     if (erasureCheck.length === 0 || erasureCheck[0].erased_at) return { state: "erased" };
 
+    // Use company_id from recording row
+    const companyId = row.company_id;
+    if (!companyId) throw new Error("company_id missing on recording");
+
     // Get call details and language preference
-    const callRows = await ctx.db.query<{ company_id: string; contact_id: string | null }>(
-      `SELECT company_id, contact_id FROM ${namespace}.tel_calls WHERE call_sid = $1`,
+    const callRows = await ctx.db.query<{ contact_id: string | null }>(
+      `SELECT contact_id FROM ${namespace}.tel_calls WHERE call_sid = $1`,
       [row.call_sid],
     );
 
-    const companyId = (row as any).company_id || callRows[0]?.company_id;
     const contactId = callRows[0]?.contact_id;
-
-    if (!companyId) throw new Error("call not found");
 
     let language = "en";
     if (contactId) {

@@ -55,7 +55,7 @@ describe("summarise pipeline step", () => {
     const fetchMock = vi.fn(async () => ({ status: 200, json: async () => fixture }));
     const ctx = createMockCtx(fetchMock, "key123");
     const step = makeSummariseStep();
-    const result = await step({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
+    const result = await step({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() });
 
     expect(result.state).toBe("summarised");
     const callArgs = fetchMock.mock.calls[0] as unknown[];
@@ -77,7 +77,7 @@ describe("summarise pipeline step", () => {
     const fetchMock = vi.fn(async () => ({ status: 200, json: async () => ({ content: [] }) }));
     const ctx = createMockCtx(fetchMock);
     const step = makeSummariseStep();
-    await step({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
+    await step({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() });
 
     const callArgs = (fetchMock.mock.calls as unknown[])[0] as unknown[];
     const body = JSON.parse((callArgs[1] as any).body);
@@ -96,7 +96,7 @@ describe("summarise pipeline step", () => {
     }));
 
     const ctx = createMockCtx(fetchMock);
-    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
+    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() });
     expect(result.state).toBe("summarised");
     expect(ctx.logger.warn).toHaveBeenCalled();
   });
@@ -107,7 +107,7 @@ describe("summarise pipeline step", () => {
       const companyId = randomUUID(), recordingId = randomUUID();
       await seedRecordingAndTranscript(recordingId, companyId, "Test call");
       const ctx = createMockCtx(vi.fn(async () => ({ status, json: async () => ({}) })));
-      await expect(makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() }))
+      await expect(makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() }))
         .rejects.toThrow(new RegExp(`anthropic http ${status}`));
     }
   });
@@ -116,7 +116,7 @@ describe("summarise pipeline step", () => {
     const companyId = randomUUID(), recordingId = randomUUID();
     await seedRecordingAndTranscript(recordingId, companyId, "Test call");
     const ctx = createMockCtx(undefined, null);
-    await expect(makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() }))
+    await expect(makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() }))
       .rejects.toThrow("ANTHROPIC_API_KEY not set");
   });
 
@@ -125,7 +125,7 @@ describe("summarise pipeline step", () => {
     await seedRecordingAndTranscript(recordingId, companyId, "Test call", { erasedAt: true });
     const fetchMock = vi.fn();
     const ctx = createMockCtx(fetchMock);
-    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
+    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() });
     expect(result.state).toBe("erased");
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -135,7 +135,7 @@ describe("summarise pipeline step", () => {
     await seedRecordingAndTranscript(recordingId, companyId, "   ");
     const fetchMock = vi.fn();
     const ctx = createMockCtx(fetchMock);
-    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
+    const result = await makeSummariseStep()({ ctx, namespace: NAMESPACE, row: { id: recordingId, company_id: companyId } as any, extendLease: vi.fn() });
     expect(result.state).toBe("summarised");
     expect(fetchMock).not.toHaveBeenCalled();
   });
