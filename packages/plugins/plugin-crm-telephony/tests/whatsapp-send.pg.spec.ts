@@ -226,4 +226,60 @@ describe("sendWhatsapp", () => {
     expect(result.sent).toBe(false);
     if (!result.sent) expect(result.reason).toBe("window_closed_template_required");
   });
+
+  it("daily cap: send refused, client not called", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const dbClient = createMockDbClient(pgDb);
+    const now = new Date();
+    const fakeClient = makeFakeClient();
+    for (let i = 0; i < 200; i++)
+      await pgDb.client.query(
+        `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, provider_msg_id, from_e164, to_e164, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [`m${i}`, "c1", "whatsapp", "outbound", `S${i}`, "+27821234567", "+27829876543", "sent", now.toISOString()]
+      );
+    const result = await sendWhatsapp(
+      { db: dbClient, namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
+    );
+    expect(result.sent).toBe(false);
+    if (!result.sent) expect(result.reason).toBe("cap_reached");
+    expect(fakeClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("4xx: send fails, message marked failed", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await pgDb.client.query(
+      `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ["m6", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+    );
+    const fakeClient = { sendMessage: vi.fn(async () => ({ ok: false, failure: { kind: "rejected", status: 400, code: 21211, error: "Bad" } })), getContentTemplates: vi.fn(), updateMessageStatus: vi.fn() } as any as TwilioClient;
+    const result = await sendWhatsapp(
+      { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: fakeClient, settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: null, toE164: "+27829876543", kind: "marketing", body: "T" }
+    );
+    expect(result.sent).toBe(false);
+    expect(fakeClient.sendMessage).toHaveBeenCalledTimes(1);
+    const rows = await pgDb.client.query(`SELECT COUNT(*) as c FROM ${NAMESPACE}.tel_messages WHERE company_id = $1 AND status = 'failed'`, ["c1"]);
+    expect((rows.rows as any)[0]?.c).toBeGreaterThan(0);
+  });
+
+  it("audit hides PII", async () => {
+    const { sendWhatsapp } = await import("../src/whatsapp-send.js");
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    await pgDb.client.query(
+      `INSERT INTO ${NAMESPACE}.tel_messages (id, company_id, channel, direction, to_e164, from_e164, provider_msg_id, status, received_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      ["m7", "c1", "whatsapp", "inbound", "+27821234567", "+27829876543", "SM000", "received", oneHourAgo.toISOString(), oneHourAgo.toISOString()]
+    );
+    await sendWhatsapp(
+      { db: createMockDbClient(pgDb), namespace: NAMESPACE, client: makeFakeClient(), settings: makeSettings(), fromWhatsapp: "+27821234567", now: () => now },
+      { companyId: "c1", userId: "u1", contactId: "c1", toE164: "+27829876543", kind: "marketing", body: "SecretMsg" }
+    );
+    const rows = await pgDb.client.query(`SELECT detail FROM ${NAMESPACE}.tel_audit WHERE action = 'wa.send' AND company_id = $1`, ["c1"]);
+    const detail = JSON.stringify((rows.rows as any)[0]?.detail || {});
+    expect(detail).not.toContain("SecretMsg");
+    expect(detail).not.toContain("+27829876543");
+  });
 });
