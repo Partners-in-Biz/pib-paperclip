@@ -7,6 +7,7 @@ describe("media-steps", () => {
   const FIXTURE = new Uint8Array([1, 2, 3, 4, 5]);
   const FIXTURE_SHA = sha256Hex(FIXTURE);
   const r2Store = new Map<string, { body: Uint8Array; sha256: string | null }>();
+  const TEST_ACCOUNT_SID = `AC${"0123456789abcdef".repeat(2)}`; // Generates valid 32-hex format
 
   function getUrl(input: string | URL | Request): string {
     if (typeof input === "string") return input;
@@ -69,7 +70,7 @@ describe("media-steps", () => {
         company_id: "comp-1",
         call_sid: "CA123",
         recording_sid: "RE123",
-        twilio_url: "https://api.twilio.com/2010-04-01/Accounts/AC123/Recordings/RE123",
+        twilio_url: `https://api.twilio.com/2010-04-01/Accounts/${TEST_ACCOUNT_SID}/Recordings/RE123`,
         r2_key: null,
         bytes: null,
         sha256: null,
@@ -387,5 +388,121 @@ describe("media-steps", () => {
     const sc = { ...ctx, extendLease: async () => true };
 
     await expect(steps.received!(sc)).rejects.toThrow(/R2 not configured/);
+  });
+
+  it("non-Twilio host: dead state, no fetch", async () => {
+    const calls: any[] = [];
+    const steps = createMediaSteps({
+      fetch: makeFetch(calls) as any,
+      r2Config: mockR2Config(),
+    });
+    const ctx = mockCtx({ row: { twilio_url: "https://evil.example.com/Accounts/AC123/Recordings/RE123" } });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const res = await steps.received!(sc);
+    expect(res.state).toBe("dead");
+    expect(res.error).toContain("not api.twilio.com");
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(0);
+  });
+
+  it("http protocol: dead state, no fetch", async () => {
+    const calls: any[] = [];
+    const steps = createMediaSteps({
+      fetch: makeFetch(calls) as any,
+      r2Config: mockR2Config(),
+    });
+    const ctx = mockCtx({ row: { twilio_url: "http://api.twilio.com/Accounts/AC123/Recordings/RE123" } });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const res = await steps.received!(sc);
+    expect(res.state).toBe("dead");
+    expect(res.error).toContain("https");
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(0);
+  });
+
+  it("Content-Length over cap: dead state, no PUT", async () => {
+    const calls: any[] = [];
+    const fetch = async (input: any, init?: RequestInit) => {
+      const url = getUrl(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url });
+
+      if (url.includes("Recordings/") && method === "GET") {
+        return new Response(FIXTURE.buffer, {
+          status: 200,
+          headers: { "content-length": String(250 * 1024 * 1024) },
+        });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const steps = createMediaSteps({
+      fetch: fetch as any,
+      r2Config: mockR2Config(),
+      maxRecordingBytes: 200 * 1024 * 1024,
+    });
+    const ctx = mockCtx();
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const res = await steps.received!(sc);
+    expect(res.state).toBe("dead");
+    expect(res.error).toContain("exceeds size limit");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("body over cap (no Content-Length): dead state, no PUT", async () => {
+    const calls: any[] = [];
+    const bigData = new Uint8Array(250 * 1024 * 1024); // 250 MB
+    const fetch = async (input: any, init?: RequestInit) => {
+      const url = getUrl(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url });
+
+      if (url.includes("Recordings/") && method === "GET") {
+        return new Response(bigData.buffer, { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    };
+
+    const steps = createMediaSteps({
+      fetch: fetch as any,
+      r2Config: mockR2Config(),
+      maxRecordingBytes: 200 * 1024 * 1024,
+    });
+    const ctx = mockCtx();
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const res = await steps.received!(sc);
+    expect(res.state).toBe("dead");
+    expect(res.error).toContain("exceeds size limit");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("invalid AccountSid format: throws", async () => {
+    const calls: any[] = [];
+    const fetch = async (input: any, init?: RequestInit) => {
+      const url = getUrl(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url });
+
+      if (url.includes("r2.cloudflarestorage.com")) {
+        if (method === "PUT") return new Response(null, { status: 200 });
+        if (method === "HEAD") return new Response(null, { status: 200, headers: { "content-length": String(FIXTURE.length), "x-amz-meta-sha256": FIXTURE_SHA } });
+      }
+
+      if (url.includes("Recordings/") && method === "GET") return new Response(FIXTURE.buffer, { status: 200 });
+      return new Response(null, { status: 404 });
+    };
+
+    const steps = createMediaSteps({ fetch: fetch as any, r2Config: mockR2Config() });
+    const ctx = mockCtx({
+      row: { twilio_url: "https://api.twilio.com/2010-04-01/Accounts/ACTOOSHORT/Recordings/RE123" },
+    });
+    const sc = { ...ctx, extendLease: async () => true };
+
+    const res = await steps.received!(sc);
+    setRowPatch(sc, res.patch);
+
+    await expect(steps.downloaded!(sc)).rejects.toThrow(/Could not parse AccountSid/);
   });
 });

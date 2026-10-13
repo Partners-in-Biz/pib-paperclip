@@ -4,6 +4,8 @@ import { readR2Config } from "./settings.js";
 import { r2Head, r2Put, recordingKey, type R2Config } from "./r2-store.js";
 import { sha256Hex } from "./sigv4.js";
 
+const MAX_RECORDING_BYTES = 200 * 1024 * 1024; // 200 MB
+
 /**
  * Create media pipeline steps for Twilio recording storage.
  * Handles downloading from Twilio, storing in R2, and cleaning up from Twilio.
@@ -12,9 +14,11 @@ export function createMediaSteps(deps?: {
   fetch?: typeof fetch;
   now?: () => Date;
   r2Config?: (ctx: PluginContext, companyId: string) => Promise<R2Config | null>;
+  maxRecordingBytes?: number;
 }): PipelineSteps {
   const fetchFn = deps?.fetch ?? globalThis.fetch;
   const readR2ConfigFn = deps?.r2Config ?? readR2Config;
+  const maxBytes = deps?.maxRecordingBytes ?? MAX_RECORDING_BYTES;
 
   /**
    * Resolve Twilio API Key SID and Secret, return Basic auth header.
@@ -60,6 +64,28 @@ export function createMediaSteps(deps?: {
       url = url + ".wav";
     }
 
+    // SECURITY: Validate Twilio URL host before sending credentials
+    try {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== "https:") {
+        return {
+          state: "dead",
+          error: "Recording URL protocol is not https; refusing to send credentials",
+        };
+      }
+      if (parsedUrl.hostname !== "api.twilio.com") {
+        return {
+          state: "dead",
+          error: "Recording URL host is not api.twilio.com; refusing to send credentials",
+        };
+      }
+    } catch {
+      return {
+        state: "dead",
+        error: "Recording URL is invalid",
+      };
+    }
+
     const authHeader = await twilioAuth(sc.ctx, sc.row.company_id);
 
     const leaseOk = await sc.extendLease();
@@ -82,7 +108,29 @@ export function createMediaSteps(deps?: {
       throw new Error(`Twilio download failed: HTTP ${response.status}`);
     }
 
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    // SECURITY: Check Content-Length header before reading body
+    const contentLength = response.headers.get("content-length");
+    if (contentLength) {
+      const length = parseInt(contentLength, 10);
+      if (!Number.isNaN(length) && length > maxBytes) {
+        return {
+          state: "dead",
+          error: `Recording exceeds size limit: ${length} > ${maxBytes}`,
+        };
+      }
+    }
+
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    // SECURITY: Check actual body size
+    if (bytes.length > maxBytes) {
+      return {
+        state: "dead",
+        error: `Recording exceeds size limit: ${bytes.length} > ${maxBytes}`,
+      };
+    }
+
     const sha = sha256Hex(bytes);
     const key = recordingKey(r2cfg, sc.row.call_sid, sc.row.recording_sid);
 
@@ -140,7 +188,7 @@ export function createMediaSteps(deps?: {
     }
 
     // Extract AccountSid from twilio_url
-    const accountMatch = sc.row.twilio_url.match(/\/Accounts\/(AC[0-9a-f]+)\//i);
+    const accountMatch = sc.row.twilio_url.match(/\/Accounts\/(AC[0-9a-fA-F]{32})\//);
     if (!accountMatch) {
       throw new Error("Could not parse AccountSid from Twilio URL");
     }
