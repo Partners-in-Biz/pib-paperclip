@@ -14,6 +14,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "companies.read",
     "http.outbound",
+    "issues.create",
     "secrets.read-ref",
     "jobs.schedule",
     "webhooks.receive",

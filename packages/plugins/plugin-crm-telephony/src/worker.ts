@@ -2,7 +2,9 @@ import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, t
 import { readSettings, secretStatus } from "./settings.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
 import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
+import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
+import { runMediaPipeline } from "./pipeline.js";
 
 let ctx: PluginContext | null = null;
 
@@ -16,8 +18,8 @@ const plugin = definePlugin({
     ctx = pluginCtx;
 
     pluginCtx.jobs.register("media-pipeline", async () => {
-      pluginCtx.logger.debug("media-pipeline job running");
-      // Real pipeline handlers come in PR1b+
+      const result = await runMediaPipeline(pluginCtx);
+      pluginCtx.logger.debug(`media-pipeline: processed=${result.processed} failed=${result.failed} dead=${result.dead} abandoned=${result.abandoned} issuesRaised=${result.issuesRaised}`);
     });
 
     for (const tool of TELEPHONY_TOOLS) {
@@ -41,6 +43,11 @@ const plugin = definePlugin({
 
     if (endpointKey === "wa-status") {
       await handleWaStatus(pluginCtx, pluginCtx.db, NAMESPACE, input, PLUGIN_ID);
+      return;
+    }
+
+    if (endpointKey === "recording-status") {
+      await handleRecordingStatus(pluginCtx, pluginCtx.db, NAMESPACE, input, PLUGIN_ID);
       return;
     }
 
