@@ -128,4 +128,48 @@ describe("Telephony Settings", () => {
     const result = await readSettings(mockCtx(cfg), "c1");
     expect(result.voiceAllowedUserIds).toEqual(["user-1", "user-2"]);
   });
+
+  it.each([
+    ["none", "none"],
+    ["pending", "pending"],
+    ["approved", "approved"],
+    ["rejected", "rejected"],
+    ["invalid", "none"],
+  ])("usSmsCampaignStatus: %s -> %s", async (input, expected) => {
+    const result = await readSettings(mockCtx({ usSmsCampaignStatus: input }), "c1");
+    expect(result.usSmsCampaignStatus).toBe(expected);
+  });
+
+  it("usMessagingServiceSid: defaults to null, accepts valid, rejects invalid", async () => {
+    const valid = "MGd3200a283d8d4dd9827e5b6d5f5e5e5a";
+    const invalid = ["MG123", "SM1234567890abcdef1234567890abcdef", "twilio"];
+
+    expect((await readSettings(mockCtx({}), "c1")).usMessagingServiceSid).toBeNull();
+    expect((await readSettings(mockCtx({ usMessagingServiceSid: valid }), "c1")).usMessagingServiceSid).toBe(valid);
+
+    for (const sid of invalid) {
+      const result = await readSettings(mockCtx({ usMessagingServiceSid: sid }), "c1");
+      expect(result.usMessagingServiceSid).toBeNull();
+    }
+  });
+
+  it("smsHolidays: defaults empty, accepts ISO dates, rejects bad formats", async () => {
+    expect((await readSettings(mockCtx({}), "c1")).smsHolidays).toEqual([]);
+
+    const valid = { smsHolidays: ["2026-12-25", "2026-01-01"] };
+    const r1 = await readSettings(mockCtx(valid), "c1");
+    expect(r1.smsHolidays).toContain("2026-12-25");
+
+    const invalid = { smsHolidays: ["2026-12-25", "25/12/2026", "12-25-2026", "2026-02-30"] };
+    const r2 = await readSettings(mockCtx(invalid), "c1");
+    expect(r2.smsHolidays).toEqual(["2026-12-25"]);
+
+    const dups = { smsHolidays: ["2026-12-25", "2026-12-25", "2026-01-01"] };
+    const r3 = await readSettings(mockCtx(dups), "c1");
+    expect(r3.smsHolidays).toHaveLength(2);
+
+    const many = { smsHolidays: Array.from({ length: 50 }, (_, i) => `2026-0${(i % 9) + 1}-01`) };
+    const r4 = await readSettings(mockCtx(many), "c1");
+    expect(r4.smsHolidays.length).toBeLessThanOrEqual(40);
+  });
 });
