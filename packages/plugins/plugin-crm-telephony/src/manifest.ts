@@ -21,9 +21,21 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "database.namespace.migrate",
+    "ui.page.register",
   ],
   tools: TELEPHONY_TOOLS,
-  entrypoints: { worker: "./dist/worker.js" },
+  entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
+  ui: {
+    slots: [
+      {
+        type: "page",
+        id: "dialer-page",
+        displayName: "Dialer",
+        exportName: "DialerPage",
+        routePath: "dialer",
+      },
+    ],
+  },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
   jobs: [
     {
