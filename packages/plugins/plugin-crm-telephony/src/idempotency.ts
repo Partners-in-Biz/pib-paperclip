@@ -37,11 +37,6 @@ export async function insertOnce(
     throw new Error(`Missing or empty SID column '${sidColumn}'`);
   }
 
-  // Check table is allowlisted
-  if (!Object.values(SID_TARGETS).find((t) => t.table === target.table)) {
-    throw new Error(`Disallowed table: ${target.table}`);
-  }
-
   const cols = Object.keys(values);
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(",");
   const sql = `INSERT INTO ${namespace}.${target.table} (${cols.join(",")}) VALUES (${placeholders}) ON CONFLICT (${sidColumn}) DO NOTHING`;
