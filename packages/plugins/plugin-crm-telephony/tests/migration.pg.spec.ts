@@ -48,7 +48,6 @@ describe("CRM Telephony migrations", () => {
     ).rejects.toThrow();
   });
 
-<<<<<<< HEAD
   it("tel_messages has ambiguous column with default false", async () => {
     const res = await db.client.query(
       "SELECT column_name, is_nullable, column_default FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'tel_messages' AND column_name = 'ambiguous' ORDER BY column_name",
