@@ -7,7 +7,7 @@ import { NAMESPACE } from "../src/namespace.js";
 import { makeSummariseStep, parseSummary } from "../src/summarise.js";
 import { startHostDb } from "./helpers/host-db.js";
 
-let db: any;
+let db: Awaited<ReturnType<typeof startHostDb>>;
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 async function seedRecordingAndTranscript(recordingId: string, companyId: string, transcriptText: string, opts?: { erasedAt?: boolean }) {
@@ -79,7 +79,8 @@ describe("summarise pipeline step", () => {
     const step = makeSummariseStep();
     await step({ ctx, namespace: NAMESPACE, row: { id: recordingId } as any, extendLease: vi.fn() });
 
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    const callArgs = (fetchMock.mock.calls as unknown[])[0] as unknown[];
+    const body = JSON.parse((callArgs[1] as any).body);
     expect(body.messages[0].content).toContain(evilTranscript);
     expect(body.tools).toHaveLength(1);
     expect(body.tools[0].name).toBe("record_summary");
