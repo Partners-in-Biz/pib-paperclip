@@ -1,3 +1,5 @@
+export const TWILIO_AUTH_TOKEN = "TWILIO_AUTH_TOKEN" as const;
+
 export const TELEPHONY_SECRET_NAMES = [
   "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
