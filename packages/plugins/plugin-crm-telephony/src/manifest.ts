@@ -23,9 +23,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.migrate",
     "plugin.state.read",
     "plugin.state.write",
+    "ui.page.register",
   ],
   tools: TELEPHONY_TOOLS,
-  entrypoints: { worker: "./dist/worker.js" },
+  entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
   jobs: [
     {
@@ -67,6 +68,11 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Webhook for incoming SMS messages",
     },
   ],
+  ui: {
+    slots: [
+      { type: "page", id: "telephony-settings", displayName: "Telephony Settings", exportName: "TelephonySettingsPage", routePath: "telephony-settings" },
+    ],
+  },
 };
 
 export default manifest;
