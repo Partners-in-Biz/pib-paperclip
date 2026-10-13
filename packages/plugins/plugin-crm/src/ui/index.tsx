@@ -190,7 +190,7 @@ export function CrmPage(props: PluginPageProps) {
   const location = useHostLocation();
   const client = clientScopeFromSearch(location.search);
   if (client) {
-    return <ClientWorkspace key={`${client.kind}:${client.id}`} companyId={props.context.companyId ?? null} client={client} />;
+    return <ClientWorkspace key={`${client.kind}:${client.id}`} companyId={props.context.companyId ?? null} client={client} companyPrefix={props.context.companyPrefix} />;
   }
   return <CrmList {...props} />;
 }
@@ -1103,7 +1103,7 @@ const WORK_SOURCES = [
 
 type WorkSource = (typeof WORK_SOURCES)[number];
 
-function ClientWorkspace({ companyId, client }: { companyId: string | null; client: ClientRef }) {
+function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: string | null; client: ClientRef; companyPrefix: string | null }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
   const load = usePluginAction("crm.client-workspace");
@@ -1387,8 +1387,8 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
-          {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
+          {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
+          {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
           {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
           {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} /> : null}
           {company || companies.length === 0 ? (
@@ -1827,11 +1827,12 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   );
 }
 
-function CompanyDetails({ company, onSave, locking, onLock }: {
+function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
   company: WorkspaceCompany;
   onSave: (patch: Patch) => Promise<boolean>;
   locking: boolean;
   onLock: (keys: string[], lock: boolean, label: string) => void;
+  companyPrefix: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1879,13 +1880,15 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     {
       key: "phone",
       label: "Phone",
-      value: company.phone ? (
-        moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) && dialerHref(company.phone) ? (
-          <a href={dialerHref(company.phone) || "#"}>{company.phone}</a>
+      value: company.phone ? (() => {
+        const telephonyInstalled = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) === true;
+        const phoneHref = telephonyInstalled ? dialerHref(company.phone, null, companyPrefix) : null;
+        return phoneHref ? (
+          <a href={phoneHref}>{company.phone}</a>
         ) : (
           company.phone
-        )
-      ) : (
+        );
+      })() : (
         <NotSet />
       ),
     },
@@ -1945,11 +1948,12 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
   );
 }
 
-function ContactDetails({ contact, onSave, locking, onLock }: {
+function ContactDetails({ contact, onSave, locking, onLock, companyPrefix }: {
   contact: WorkspaceContact;
   onSave: (patch: Patch) => Promise<boolean>;
   locking: boolean;
   onLock: (keys: string[], lock: boolean, label: string) => void;
+  companyPrefix: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2002,7 +2006,8 @@ function ContactDetails({ contact, onSave, locking, onLock }: {
       value: contact.phones.length ? (
         <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
           {contact.phones.map((phone) => {
-            const href = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) ? dialerHref(phone, contact.id) : null;
+            const telephonyInstalled = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) === true;
+            const href = telephonyInstalled ? dialerHref(phone, contact.id, companyPrefix) : null;
             return href ? (
               <a key={phone} href={href}>
                 {phone}

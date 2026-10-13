@@ -52,11 +52,15 @@ function encodePhoneForUrl(phone: string): string {
  * Generate a dialer href for a phone number.
  * @param phone - the phone number (can be in various formats)
  * @param contactId - optional contact ID to link the dial to
- * @param base - optional base path (defaults to "/plugin")
- * @returns the href string for the dialer, or null if phone is invalid
+ * @param prefix - company prefix (required; returns null if missing)
+ * @returns the href string for the dialer, or null if phone is invalid or prefix is missing
  */
-export function dialerHref(phone: string, contactId?: string | null, base?: string): string | null {
+export function dialerHref(phone: string, contactId?: string | null, prefix?: string | null): string | null {
   if (!phone) return null;
+
+  // Prefix is required; return null if missing or empty
+  if (!prefix || !prefix.trim()) return null;
+  const trimmedPrefix = prefix.trim();
 
   // Normalize the input
   const normalized = normalizePhoneInput(phone);
@@ -76,15 +80,12 @@ export function dialerHref(phone: string, contactId?: string | null, base?: stri
     }
   }
 
-  // Build the URL
-  const baseUrl = base || "/plugin";
-  const url = new URL(`${baseUrl}/${TELEPHONY_PLUGIN_KEY}/dialer`, "http://localhost");
-  url.searchParams.set("to", converted);
+  // Build the href using string concatenation
+  let href = `/${encodeURIComponent(trimmedPrefix)}/dialer?to=${encodeURIComponent(converted)}`;
 
   if (contactId && contactId.trim()) {
-    url.searchParams.set("contactId", contactId.trim());
+    href += `&contactId=${encodeURIComponent(contactId.trim())}`;
   }
 
-  // Return the pathname + search, removing the http://localhost part
-  return url.pathname + url.search;
+  return href;
 }
