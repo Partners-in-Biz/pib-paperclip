@@ -209,6 +209,56 @@ export interface MonitorIo {
   tls(host: string): Promise<TlsResult>;
   rdap(domain: string): Promise<DomainResult>;
   sleep(ms: number): Promise<void>;
+  /** A check of the same address from outside our network (optional: without it the monitor trusts its own check). */
+  outside?(url: string): Promise<OutsideResult>;
+}
+
+/** What an independent outside check saw: "up" when any outside node got an answer, "down" when every node failed, "unknown" when the check itself could not run. */
+export interface OutsideResult {
+  verdict: "up" | "down" | "unknown";
+  detail: string;
+}
+
+export const OUTSIDE_API = "https://check-host.net";
+const OUTSIDE_NODES = 3;
+const OUTSIDE_WAIT_MS = 12_000;
+
+/** Reads a check-host.net check-result body: any node with a 2xx-4xx answer is up; every node answered with a failure is down; anything else is unknown. */
+export function outsideVerdict(body: unknown): OutsideResult {
+  if (!body || typeof body !== "object") return { verdict: "unknown", detail: "no result from the outside check" };
+  const nodes = Object.entries(body as Record<string, unknown>);
+  let up = 0;
+  let failed = 0;
+  for (const [, value] of nodes) {
+    if (!Array.isArray(value) || !Array.isArray(value[0])) continue;
+    const row = value[0] as unknown[];
+    const code = Number(row[3]);
+    if (row[0] === 1 && Number.isFinite(code) && code < 500) up += 1;
+    else failed += 1;
+  }
+  if (up > 0) return { verdict: "up", detail: `${up} of ${nodes.length} outside nodes got an answer` };
+  if (failed > 0 && failed === nodes.length) return { verdict: "down", detail: `all ${failed} outside nodes failed` };
+  return { verdict: "unknown", detail: `outside check incomplete (${failed} failed, ${nodes.length - failed} pending)` };
+}
+
+async function outsideCheck(ctx: PluginContext, url: string, sleep: (ms: number) => Promise<void>): Promise<OutsideResult> {
+  try {
+    const target = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    const start = await safeFetch(ctx, `${OUTSIDE_API}/check-http?host=${encodeURIComponent(target)}&max_nodes=${OUTSIDE_NODES}`, { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "application/json" }, maxRedirects: 2, maxChars: 20_000 });
+    const requestId = start.status === 200 ? (JSON.parse(start.text) as { request_id?: string }).request_id : undefined;
+    if (!requestId || !/^[a-z0-9]+$/i.test(requestId)) return { verdict: "unknown", detail: `outside check did not start (${start.status})` };
+    let last: OutsideResult = { verdict: "unknown", detail: "outside check pending" };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await sleep(OUTSIDE_WAIT_MS);
+      const res = await safeFetch(ctx, `${OUTSIDE_API}/check-result/${requestId}`, { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "application/json" }, maxRedirects: 2, maxChars: 20_000 });
+      if (res.status !== 200) continue;
+      last = outsideVerdict(JSON.parse(res.text) as unknown);
+      if (last.verdict !== "unknown") return last;
+    }
+    return last;
+  } catch (error) {
+    return { verdict: "unknown", detail: `outside check failed (${(error instanceof Error ? error.message : String(error)).slice(0, 120)})` };
+  }
 }
 
 /** One GET of the site's own address through the host's guarded fetch. A server error or no answer is down; a 4xx means the site answered. */
@@ -236,6 +286,7 @@ export function defaultIo(ctx: PluginContext): MonitorIo {
       }
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    outside: (url) => outsideCheck(ctx, url, (ms) => new Promise((resolve) => setTimeout(resolve, ms))),
   };
 }
 
@@ -375,7 +426,7 @@ async function checkSite(
     state = { ...state, domain };
   }
   await saveMonitor(ctx, state);
-  run.issues += await raiseAlarms(ctx, site, prev, state, now);
+  run.issues += await raiseAlarms(ctx, site, prev, state, now, io);
 }
 
 async function recordUptimeDay(ctx: PluginContext, companyId: string, siteId: string, failed: boolean, now: Date): Promise<void> {
@@ -415,7 +466,7 @@ export async function uptimeFigures(ctx: PluginContext, companyId: string, siteI
 
 const compact = (isoTime: string) => isoTime.replace(/[-:T]/g, "").slice(0, 12);
 
-async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorRow, state: MonitorRow, now: Date): Promise<number> {
+async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorRow, state: MonitorRow, now: Date, io?: MonitorIo): Promise<number> {
   let opened = 0;
   const name = siteName(site);
   const info = await clientInfo(ctx, site.companyId, site.client).catch(() => null);
@@ -427,12 +478,17 @@ async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorR
 
   if (state.status === "down" && state.downSince && downMinutes(state, now.getTime()) >= DOWN_AFTER_MINUTES) {
     const before = (await ctx.issues.list({ companyId: site.companyId, originKind: "plugin:partnersinbiz.crm", originId: originFor.siteDown(site.id, compact(state.downSince)), limit: 1 }).catch(() => []))[0];
-    await openIssueOnce(ctx, {
+    // Before a new issue: is it down for everyone, or only unreachable from our server (a host firewall blocking our IP)?
+    const outside = !before && io?.outside ? await io.outside(site.url) : null;
+    if (outside?.verdict === "up") {
+      ctx.logger.warn("CRM site monitor: only our server cannot reach this site; no issue opened", { siteId: site.id, url: site.url, downSince: state.downSince, lastError: state.lastError, outside: outside.detail });
+    } else await openIssueOnce(ctx, {
       ...common,
       originId: originFor.siteDown(site.id, compact(state.downSince)),
       title: `Site down: ${name} (${clientName})`.slice(0, 200),
       description: [
         `${site.url} has not answered since ${state.downSince} (${downMinutes(state, now.getTime())} minutes, ${state.failures} failed checks). Last error: ${state.lastError ?? "none recorded"}.`,
+        ...(outside ? [`Outside check: ${outside.detail}.`] : []),
         "",
         "Find out why and fix it, or tell the client. Look at: the host and DNS, the certificate, a failed deploy or plugin update (the client's repo project and the deploy log), and whether a person changed something. Keep the client informed through a Mailbox draft a person approves; never promise a time you cannot keep.",
         "",
@@ -442,12 +498,16 @@ async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorR
       ].join("\n"),
       wakeReason: "A client's website is down",
     });
-    if (!before) opened += 1;
+    if (!before && outside?.verdict !== "up") opened += 1;
   }
   // Back up: say so on the outage's issue.
   if (prev.status === "down" && state.status === "up" && prev.downSince) {
     const issue = (await ctx.issues.list({ companyId: site.companyId, originKind: "plugin:partnersinbiz.crm", originId: originFor.siteDown(site.id, compact(prev.downSince)), limit: 1 }).catch(() => []))[0];
-    if (issue) await ctx.issues.createComment(issue.id, `${site.url} answers again (checked ${now.toISOString()}). It was down from ${prev.downSince}.`, site.companyId).catch(() => undefined);
+    if (issue) {
+      await ctx.issues.createComment(issue.id, `${site.url} answers again (checked ${now.toISOString()}). It was down from ${prev.downSince}. Closing this issue automatically.`, site.companyId).catch(() => undefined);
+      const open = !["done", "cancelled"].includes(String((issue as { status?: string }).status ?? ""));
+      if (open) await ctx.issues.update(issue.id, { status: "done" }, site.companyId).catch((error: unknown) => ctx.logger.info("CRM site-down auto-close failed", { issueId: issue.id, error: error instanceof Error ? error.message : String(error) }));
+    }
   }
 
   const tlsDays = daysUntil(state.tlsExpiresAt, now.getTime());
