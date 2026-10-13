@@ -1,26 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { computeTwilioSignature, buildPublicWebhookUrl, parseFormParams } from "../src/twilio-signature.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
-import type { PluginContext, PluginDatabaseClient, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
+import { createMockDbClient, createMockCtx } from "./helpers/webhook-mocks.js";
 
 let pgDb: PgDb;
-
-// Mock PluginDatabaseClient wrapping the test database
-function createMockDbClient(pgDb: PgDb): PluginDatabaseClient {
-  return {
-    namespace: NAMESPACE,
-    query: async (sql: string, params?: unknown[]) => {
-      const result = await pgDb.client.query(sql, params);
-      return (result.rows || []) as any[];
-    },
-    execute: async (sql: string, params?: unknown[]) => {
-      const result = await pgDb.client.query(sql, params);
-      return { rowCount: result.rowCount || 0 };
-    },
-  };
-}
 
 describe("WhatsApp webhook handlers", () => {
   beforeAll(async () => {
@@ -41,9 +27,13 @@ describe("WhatsApp webhook handlers", () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
 
-      // Set up mock context with two companies
       const authToken1 = "wrong-token-123";
       const authToken2 = "test-auth-token";
+      const mockCtx = createMockCtx({
+        "company-1": authToken1,
+        "company-2": authToken2,
+      });
+
       const proto = "https";
       const host = "example.com";
       const baseUrl = `${proto}://${host}`;
@@ -57,33 +47,6 @@ describe("WhatsApp webhook handlers", () => {
       const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
       const params = parseFormParams(formBody);
       const correctSignature = computeTwilioSignature(authToken2, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-            { id: "company-2", name: "Company 2" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async (secretName: string, opts: any) => {
-            if (opts.companyId === "company-1") {
-              return authToken1;
-            }
-            if (opts.companyId === "company-2") {
-              return authToken2;
-            }
-            throw new Error("Company not found");
-          }),
-        },
-      } as any;
 
       const input: PluginWebhookInput = {
         requestId: "test-request-1",
@@ -112,37 +75,19 @@ describe("WhatsApp webhook handlers", () => {
       const dbClient = createMockDbClient(pgDb);
       const { handleWaInbound } = await import("../src/whatsapp.js");
 
-      const authToken = "test-auth-token";
-      const proto = "https";
-      const host = "example.com";
+      const mockCtx = createMockCtx({
+        "company-1": "test-auth-token",
+      });
 
       const formBody = "MessageSid=SM123&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hello";
       const badSignature = "bad-signature-value";
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
 
       const input: PluginWebhookInput = {
         requestId: "test-request-2",
         endpointKey: "wa-inbound",
         headers: {
-          "x-forwarded-proto": proto,
-          "x-forwarded-host": host,
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "example.com",
           "x-twilio-signature": badSignature,
         },
         rawBody: formBody,
@@ -164,8 +109,12 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound } = await import("../src/whatsapp.js");
 
       const authToken = "test-auth-token";
+      const mockCtx = createMockCtx({
+        "company-1": authToken,
+      });
+
       const proto = "https";
-      const host = "derived-host.example.com"; // Different from hardcoded
+      const host = "derived-host.example.com";
       const baseUrl = `${proto}://${host}`;
 
       const webhookUrl = buildPublicWebhookUrl({
@@ -177,24 +126,6 @@ describe("WhatsApp webhook handlers", () => {
       const formBody = "MessageSid=SM456&From=whatsapp:+27821234567&To=whatsapp:+27821234568&Body=Hi";
       const params = parseFormParams(formBody);
       const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
 
       const input: PluginWebhookInput = {
         requestId: "test-request-3",
@@ -226,6 +157,11 @@ describe("WhatsApp webhook handlers", () => {
       const { handleWaInbound, handleWaStatus } = await import("../src/whatsapp.js");
       const { insertOnce } = await import("../src/idempotency.js");
 
+      const authToken = "test-auth-token";
+      const mockCtx = createMockCtx({
+        "company-1": authToken,
+      });
+
       // First, insert a message
       await insertOnce(dbClient, NAMESPACE, "message", {
         company_id: "company-1",
@@ -240,7 +176,6 @@ describe("WhatsApp webhook handlers", () => {
         received_at: null,
       });
 
-      const authToken = "test-auth-token";
       const proto = "https";
       const host = "example.com";
       const baseUrl = `${proto}://${host}`;
@@ -254,24 +189,6 @@ describe("WhatsApp webhook handlers", () => {
       const formBody = "MessageSid=SM789&MessageStatus=delivered";
       const params = parseFormParams(formBody);
       const correctSignature = computeTwilioSignature(authToken, webhookUrl, params);
-
-      const mockCtx: Partial<PluginContext> = {
-        logger: {
-          warn: vi.fn(),
-          debug: vi.fn(),
-          info: vi.fn(),
-          error: vi.fn(),
-        },
-        companies: {
-          list: vi.fn(async () => [
-            { id: "company-1", name: "Company 1" } as any,
-          ]),
-          get: vi.fn(),
-        },
-        secrets: {
-          resolve: vi.fn(async () => authToken),
-        },
-      } as any;
 
       const input: PluginWebhookInput = {
         requestId: "test-request-4",
