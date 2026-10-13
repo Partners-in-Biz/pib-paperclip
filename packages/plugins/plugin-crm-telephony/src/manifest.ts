@@ -17,7 +17,6 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "database.namespace.migrate",
-    "ui.page.register",
   ],
   entrypoints: { worker: "./dist/worker.js" },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
