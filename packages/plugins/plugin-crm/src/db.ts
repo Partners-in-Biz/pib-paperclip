@@ -993,6 +993,24 @@ export async function insertActivityOnce(
 }
 
 /**
+ * Look up the activity ID by source_key (for deduplication and ack emission).
+ * Returns null if not found.
+ */
+export async function getActivityIdBySourceKey(
+  ctx: PluginContext,
+  companyId: string,
+  sourceKey: string,
+): Promise<string | null> {
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "activities")}
+      WHERE company_id = $1 AND source_key = $2
+      LIMIT 1`,
+    [companyId, sourceKey],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
  * Contacts in this workspace with this email address (case-insensitive),
  * oldest first so the match is deterministic.
  */
