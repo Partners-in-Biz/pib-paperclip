@@ -21,6 +21,19 @@ describe("CRM Telephony manifest", () => {
     expect(invalid).toEqual([]);
   });
 
+  it("has agent.tools.register capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).toContain("agent.tools.register");
+  });
+
+  it("has telephony-status tool", () => {
+    const tools = manifest.tools ?? [];
+    const tool = tools.find((t) => t.name === "telephony-status");
+    expect(tool).toBeDefined();
+    expect(tool?.displayName).toBeTruthy();
+    expect(tool?.description).toBeTruthy();
+  });
+
   it("has 6 webhooks with required fields", () => {
     const webhooks = manifest.webhooks ?? [];
     expect(webhooks).toHaveLength(6);

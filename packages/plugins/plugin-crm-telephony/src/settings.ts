@@ -1,3 +1,5 @@
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+
 /**
  * Company settings for telephony: recording, hours, caller IDs, caps, users, Twilio status.
  * Stored in plugin state (company scope, key "settings") separate from instanceConfigSchema secrets.
@@ -27,6 +29,10 @@ export interface TelephonySettings {
 export interface FieldError {
   field: string;
   message: string;
+}
+
+export interface SecretStatus {
+  [key: string]: "set" | "missing";
 }
 
 const HOUR_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -206,4 +212,22 @@ export function normalizeSettings(raw: Record<string, unknown>): TelephonySettin
     allowlistUserIds,
     tenDlcStatus,
   };
+}
+
+/**
+ * Check the presence of configured secrets.
+ * Returns a map of secret ref to "set" | "missing".
+ * Secret values are never returned.
+ */
+export async function secretStatus(ctx: PluginContext, companyId: string, refs: string[]): Promise<SecretStatus> {
+  const result: SecretStatus = {};
+  for (const ref of refs) {
+    try {
+      const value = await ctx.secrets.resolve(ref, { companyId });
+      result[ref] = value ? "set" : "missing";
+    } catch {
+      result[ref] = "missing";
+    }
+  }
+  return result;
 }

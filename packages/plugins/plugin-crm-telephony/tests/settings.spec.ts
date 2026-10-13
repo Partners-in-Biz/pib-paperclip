@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { DEFAULT_SETTINGS, normalizeSettings, validateSettings } from "../src/settings.js";
+import { describe, it, expect, vi } from "vitest";
+import { DEFAULT_SETTINGS, normalizeSettings, validateSettings, secretStatus } from "../src/settings.js";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 
-describe("Telephony settings", () => {
+describe("Telephony settings validation and normalization", () => {
   it("defaults are valid", () => {
     const errors = validateSettings(DEFAULT_SETTINGS as unknown as Record<string, unknown>);
     expect(errors).toHaveLength(0);
@@ -65,5 +66,51 @@ describe("Telephony settings", () => {
       const normalized = normalizeSettings(raw);
       expect(normalized.tenDlcStatus).toBe(status);
     }
+  });
+});
+
+describe("Secret status resolution", () => {
+  const mockCtx = (resolveMap: Record<string, string | null> = {}) => ({
+    secrets: {
+      resolve: vi.fn(async (ref: string) => {
+        if (ref in resolveMap) {
+          const val = resolveMap[ref];
+          if (val === null) throw new Error("not found");
+          return val;
+        }
+        throw new Error("not found");
+      }),
+    },
+  } as unknown as PluginContext);
+
+  it("returns 'set' for resolved secrets", async () => {
+    const ctx = mockCtx({ TWILIO_ACCOUNT_SID: "ACxxxxxxxx" });
+    const status = await secretStatus(ctx, "c1", ["TWILIO_ACCOUNT_SID"]);
+    expect(status).toEqual({ TWILIO_ACCOUNT_SID: "set" });
+  });
+
+  it("returns 'missing' for unresolved secrets", async () => {
+    const ctx = mockCtx({});
+    const status = await secretStatus(ctx, "c1", ["TWILIO_AUTH_TOKEN"]);
+    expect(status).toEqual({ TWILIO_AUTH_TOKEN: "missing" });
+  });
+
+  it("returns 'missing' when resolve throws", async () => {
+    const ctx = mockCtx({ TWILIO_ACCOUNT_SID: null });
+    const status = await secretStatus(ctx, "c1", ["TWILIO_ACCOUNT_SID"]);
+    expect(status).toEqual({ TWILIO_ACCOUNT_SID: "missing" });
+  });
+
+  it("handles multiple refs", async () => {
+    const ctx = mockCtx({ TWILIO_ACCOUNT_SID: "ACxxxxxxxx" });
+    const status = await secretStatus(ctx, "c1", ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]);
+    expect(status).toEqual({ TWILIO_ACCOUNT_SID: "set", TWILIO_AUTH_TOKEN: "missing" });
+  });
+
+  it("never returns secret values, only presence", async () => {
+    const ctx = mockCtx({ TWILIO_API_KEY_SID: "SKsuperSecret123" });
+    const status = await secretStatus(ctx, "c1", ["TWILIO_API_KEY_SID"]);
+    expect(status.TWILIO_API_KEY_SID).toBe("set");
+    expect(JSON.stringify(status)).not.toMatch(/superSecret/);
   });
 });

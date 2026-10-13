@@ -3,8 +3,9 @@ import { usePluginAction, type PluginPageProps } from "@paperclipai/plugin-sdk/u
 import type { TelephonySettings, FieldError } from "../settings.js";
 
 export function TelephonySettingsPage(_props: PluginPageProps) {
-  const [data, setData] = useState<{ settings: TelephonySettings; secretPresence: Array<{ key: string; set: boolean }> } | null>(null);
+  const [data, setData] = useState<{ settings: TelephonySettings; secretsStatus: Record<string, "set" | "missing"> } | null>(null);
   const [errors, setErrors] = useState<FieldError[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncingSent, setSyncingSent] = useState(false);
 
@@ -13,16 +14,22 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
   const syncTemplates = usePluginAction("telephony.settings.sync-templates");
 
   useEffect(() => {
-    get({}).then((result: any) => {
-      setData(result);
-      setErrors([]);
-    });
+    get({})
+      .then((result: any) => {
+        setData(result);
+        setErrors([]);
+        setErrorMessage(null);
+      })
+      .catch((err: any) => {
+        setErrorMessage("Failed to load telephony settings. Please try again.");
+        setData(null);
+      });
   }, []);
 
-  if (!data) return <div className="p-4">Loading...</div>;
+  if (!data) return <div className="p-4">{errorMessage ? <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{errorMessage}</div> : "Loading..."}</div>;
 
   const settings = data.settings;
-  const secretPresence = data.secretPresence;
+  const secretsStatus = data.secretsStatus || {};
 
   const handleChange = (field: string, value: any) => {
     setData((prev) => {
@@ -41,13 +48,18 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
 
   const handleSave = async () => {
     setSaving(true);
+    setErrorMessage(null);
     try {
       const result: any = await save(data.settings as unknown as Record<string, unknown>);
       if (result.ok) {
         setErrors([]);
+        setErrorMessage(null);
       } else {
         setErrors(result.errors || []);
+        setErrorMessage(null);
       }
+    } catch (err: any) {
+      setErrorMessage("Failed to save settings. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -55,9 +67,15 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
 
   const handleSync = async () => {
     setSyncingSent(true);
+    setErrorMessage(null);
     try {
       await syncTemplates({});
-      await get({}).then((result: any) => setData(result));
+      await get({}).then((result: any) => {
+        setData(result);
+        setErrorMessage(null);
+      });
+    } catch (err: any) {
+      setErrorMessage("Failed to request template sync. Please try again.");
     } finally {
       setSyncingSent(false);
     }
@@ -67,6 +85,8 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
 
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
+      {errorMessage && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{errorMessage}</div>}
+
       <div>
         <h1 className="text-2xl font-bold">Telephony Settings</h1>
         <p className="text-gray-600">Configure voice, SMS, and WhatsApp messaging.</p>
@@ -179,11 +199,12 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
       {/* Secrets */}
       <div className="border rounded p-4 space-y-3">
         <h3 className="font-semibold">API credentials</h3>
+        <p className="text-sm text-gray-600">allowlistUserIds is stored but not yet enforced by call/message actions. Enforcement lands with the click-to-call PR.</p>
         <div className="space-y-2">
-          {secretPresence.map(({ key, set }) => (
+          {Object.entries(secretsStatus).map(([key, status]) => (
             <div key={key} className="flex items-center justify-between">
               <span className="text-sm">{key}</span>
-              <span className={`text-xs font-medium ${set ? "text-green-600" : "text-gray-500"}`}>{set ? "set" : "missing"}</span>
+              <span className={`text-xs font-medium ${status === "set" ? "text-green-600" : "text-gray-500"}`}>{status}</span>
             </div>
           ))}
         </div>
