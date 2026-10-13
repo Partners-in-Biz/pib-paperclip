@@ -952,6 +952,9 @@ importers:
       '@partnersinbiz/pib-plugin-kit':
         specifier: workspace:*
         version: link:../pib-plugin-kit
+      '@partnersinbiz/pib-plugin-ui':
+        specifier: workspace:*
+        version: link:../pib-plugin-ui
     devDependencies:
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
@@ -959,6 +962,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2

@@ -26,6 +26,24 @@ describe("CRM Telephony manifest", () => {
     expect(caps).toContain("agent.tools.register");
   });
 
+  it("has ui.page.register capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).toContain("ui.page.register");
+  });
+
+  it("does not have appShellOverlay capability", () => {
+    const caps = manifest.capabilities ?? [];
+    expect(caps).not.toContain("ui.appShellOverlay.register");
+  });
+
+  it("has only one UI slot (dialer-page)", () => {
+    const slots = manifest.ui?.slots ?? [];
+    expect(slots).toHaveLength(1);
+    expect(slots[0].id).toBe("dialer-page");
+    expect(slots[0].exportName).toBe("DialerPage");
+    expect(slots[0].type).toBe("page");
+  });
+
   it("has telephony-status tool", () => {
     const tools = manifest.tools ?? [];
     const tool = tools.find((t) => t.name === "telephony-status");

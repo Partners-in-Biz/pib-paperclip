@@ -33,12 +33,6 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "DialerPage",
         routePath: "dialer",
       },
-      {
-        type: "appShellOverlay",
-        id: "softphone-overlay",
-        displayName: "Softphone",
-        exportName: "SoftphoneOverlay",
-      },
     ],
   },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },

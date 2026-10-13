@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   parseDialerParams,
-  formatDuration,
-  isValidDtmf,
-  softphoneReducer,
-  initialSoftphoneState,
-  type SoftphoneState,
+  isDialable,
+  buildDialEvent,
+  DIAL_EVENT,
 } from "../src/ui/dialer.js";
 
 describe("Dialer UI utilities", () => {
@@ -14,15 +12,73 @@ describe("Dialer UI utilities", () => {
       expect(parseDialerParams("")).toEqual({});
     });
 
-    it("parses to parameter", () => {
+    it("parses valid E.164 to parameter", () => {
       expect(parseDialerParams("?to=%2B27123456789")).toEqual({ to: "+27123456789" });
     });
 
-    it("parses contactId parameter", () => {
+    it("accepts valid E.164 with URL encoding", () => {
+      expect(parseDialerParams("?to=%2B1234567890")).toEqual({ to: "+1234567890" });
+    });
+
+    it("strips spaces from to parameter and validates", () => {
+      expect(parseDialerParams("?to=%2B27%20123%20456%20789")).toEqual({ to: "+27123456789" });
+    });
+
+    it("strips dashes from to parameter and validates", () => {
+      expect(parseDialerParams("?to=%2B27-123-456-789")).toEqual({ to: "+27123456789" });
+    });
+
+    it("strips parentheses from to parameter and validates", () => {
+      expect(parseDialerParams("?to=%2B27(123)456789")).toEqual({ to: "+27123456789" });
+    });
+
+    it("rejects invalid E.164 format in to parameter", () => {
+      expect(parseDialerParams("?to=invalid").to).toBeUndefined();
+    });
+
+    it("rejects to without + prefix", () => {
+      expect(parseDialerParams("?to=27123456789").to).toBeUndefined();
+    });
+
+    it("rejects to with leading zero after +", () => {
+      expect(parseDialerParams("?to=%2B027123456789").to).toBeUndefined();
+    });
+
+    it("rejects to with too few digits", () => {
+      expect(parseDialerParams("?to=%2B123456").to).toBeUndefined();
+    });
+
+    it("rejects to with too many digits (16+)", () => {
+      expect(parseDialerParams("?to=%2B1234567890123456").to).toBeUndefined();
+    });
+
+    it("parses valid contactId parameter", () => {
       expect(parseDialerParams("?contactId=contact-123")).toEqual({ contactId: "contact-123" });
     });
 
-    it("parses both parameters", () => {
+    it("accepts contactId with alphanumeric and dashes/underscores", () => {
+      expect(parseDialerParams("?contactId=Contact_123-ABC")).toEqual({ contactId: "Contact_123-ABC" });
+    });
+
+    it("trims whitespace from contactId", () => {
+      expect(parseDialerParams("?contactId=%20contact-123%20")).toEqual({ contactId: "contact-123" });
+    });
+
+    it("rejects contactId with invalid characters", () => {
+      expect(parseDialerParams("?contactId=contact@123").contactId).toBeUndefined();
+    });
+
+    it("rejects contactId exceeding 64 characters", () => {
+      const longId = "a".repeat(65);
+      expect(parseDialerParams(`?contactId=${longId}`).contactId).toBeUndefined();
+    });
+
+    it("accepts contactId with exactly 64 characters", () => {
+      const longId = "a".repeat(64);
+      expect(parseDialerParams(`?contactId=${longId}`).contactId).toBe(longId);
+    });
+
+    it("parses both to and contactId parameters", () => {
       expect(parseDialerParams("?to=%2B27123456789&contactId=contact-123")).toEqual({
         to: "+27123456789",
         contactId: "contact-123",
@@ -40,155 +96,85 @@ describe("Dialer UI utilities", () => {
     });
   });
 
-  describe("formatDuration", () => {
-    it("formats duration without hours", () => {
-      expect(formatDuration(65)).toBe("01:05");
+  describe("isDialable", () => {
+    it("accepts valid E.164 format", () => {
+      expect(isDialable("+27123456789")).toBe(true);
     });
 
-    it("formats duration with hours", () => {
-      expect(formatDuration(3665)).toBe("01:01:05");
+    it("accepts minimum length E.164 (7 digits after +)", () => {
+      expect(isDialable("+1234567")).toBe(true);
     });
 
-    it("formats zero seconds", () => {
-      expect(formatDuration(0)).toBe("00:00");
+    it("accepts maximum length E.164 (15 digits after +)", () => {
+      expect(isDialable("+123456789012345")).toBe(true);
     });
 
-    it("formats 59 seconds", () => {
-      expect(formatDuration(59)).toBe("00:59");
+    it("rejects E.164 without + prefix", () => {
+      expect(isDialable("27123456789")).toBe(false);
     });
 
-    it("formats multiple hours", () => {
-      expect(formatDuration(7325)).toBe("02:02:05");
+    it("rejects E.164 with leading zero", () => {
+      expect(isDialable("+027123456789")).toBe(false);
+    });
+
+    it("rejects too short E.164", () => {
+      expect(isDialable("+123456")).toBe(false);
+    });
+
+    it("rejects too long E.164 (16+ digits)", () => {
+      expect(isDialable("+12345678901234567")).toBe(false);
+    });
+
+    it("rejects E.164 with spaces", () => {
+      expect(isDialable("+27 123 456 789")).toBe(false);
+    });
+
+    it("rejects E.164 with dashes", () => {
+      expect(isDialable("+27-123-456-789")).toBe(false);
+    });
+
+    it("rejects empty string", () => {
+      expect(isDialable("")).toBe(false);
+    });
+
+    it("rejects non-numeric after +", () => {
+      expect(isDialable("+27abc456789")).toBe(false);
     });
   });
 
-  describe("isValidDtmf", () => {
-    it("accepts digits 0-9", () => {
-      for (let i = 0; i < 10; i++) {
-        expect(isValidDtmf(String(i))).toBe(true);
-      }
+  describe("buildDialEvent", () => {
+    it("creates custom event with correct type", () => {
+      const event = buildDialEvent("+27123456789");
+      expect(event.type).toBe(DIAL_EVENT);
     });
 
-    it("accepts * and #", () => {
-      expect(isValidDtmf("*")).toBe(true);
-      expect(isValidDtmf("#")).toBe(true);
+    it("sets dial event constant correctly", () => {
+      expect(DIAL_EVENT).toBe("pib-telephony:dial");
     });
 
-    it("rejects non-DTMF characters", () => {
-      expect(isValidDtmf("a")).toBe(false);
-      expect(isValidDtmf("+")).toBe(false);
-      expect(isValidDtmf(" ")).toBe(false);
-      expect(isValidDtmf("")).toBe(false);
+    it("includes to in detail", () => {
+      const event = buildDialEvent("+27123456789");
+      expect(event.detail.to).toBe("+27123456789");
     });
 
-    it("rejects multi-character strings", () => {
-      expect(isValidDtmf("12")).toBe(false);
-    });
-  });
-
-  describe("softphoneReducer", () => {
-    let state: SoftphoneState;
-
-    const setUpInitial = () => {
-      state = initialSoftphoneState;
-    };
-
-    it("starts in idle state", () => {
-      setUpInitial();
-      expect(state.status).toBe("idle");
-      expect(state.durationSeconds).toBe(0);
-      expect(state.isMuted).toBe(false);
-      expect(state.isRecording).toBe(false);
+    it("includes contactId in detail when provided", () => {
+      const event = buildDialEvent("+27123456789", "contact-123");
+      expect(event.detail.contactId).toBe("contact-123");
     });
 
-    it("transitions to dialing on dial action", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      expect(state.status).toBe("dialing");
-      expect(state.currentNumber).toBe("+27123456789");
-      expect(state.durationSeconds).toBe(0);
-      expect(state.error).toBeUndefined();
+    it("omits contactId in detail when not provided", () => {
+      const event = buildDialEvent("+27123456789");
+      expect(event.detail.contactId).toBeUndefined();
     });
 
-    it("transitions to ringing on ring action", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "ring" });
-      expect(state.status).toBe("ringing");
+    it("event bubbles", () => {
+      const event = buildDialEvent("+27123456789");
+      expect(event.bubbles).toBe(true);
     });
 
-    it("transitions to connected and resets duration", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "connect" });
-      expect(state.status).toBe("connected");
-      expect(state.durationSeconds).toBe(0);
-      expect(state.isMuted).toBe(false);
-    });
-
-    it("increments duration on tick when connected", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "connect" });
-      state = softphoneReducer(state, { type: "tick" });
-      expect(state.durationSeconds).toBe(1);
-      state = softphoneReducer(state, { type: "tick" });
-      expect(state.durationSeconds).toBe(2);
-    });
-
-    it("ignores tick when not connected", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "tick" });
-      expect(state.durationSeconds).toBe(0);
-    });
-
-    it("resets to idle on hangup", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "connect" });
-      state = softphoneReducer(state, { type: "tick" });
-      state = softphoneReducer(state, { type: "hangup" });
-      expect(state.status).toBe("idle");
-      expect(state.durationSeconds).toBe(0);
-      expect(state.currentNumber).toBeUndefined();
-    });
-
-    it("toggles mute state", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "connect" });
-      expect(state.isMuted).toBe(false);
-      state = softphoneReducer(state, { type: "mute" });
-      expect(state.isMuted).toBe(true);
-      state = softphoneReducer(state, { type: "unmute" });
-      expect(state.isMuted).toBe(false);
-    });
-
-    it("toggles recording state", () => {
-      setUpInitial();
-      expect(state.isRecording).toBe(false);
-      state = softphoneReducer(state, { type: "recordingStart" });
-      expect(state.isRecording).toBe(true);
-      state = softphoneReducer(state, { type: "recordingStop" });
-      expect(state.isRecording).toBe(false);
-    });
-
-    it("sets error state with message", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "error", message: "Connection failed" });
-      expect(state.status).toBe("error");
-      expect(state.error).toBe("Connection failed");
-    });
-
-    it("resets to initial state", () => {
-      setUpInitial();
-      state = softphoneReducer(state, { type: "dial", number: "+27123456789" });
-      state = softphoneReducer(state, { type: "connect" });
-      state = softphoneReducer(state, { type: "tick" });
-      state = softphoneReducer(state, { type: "mute" });
-      state = softphoneReducer(state, { type: "reset" });
-      expect(state).toEqual(initialSoftphoneState);
+    it("event is cancelable", () => {
+      const event = buildDialEvent("+27123456789");
+      expect(event.cancelable).toBe(true);
     });
   });
 });

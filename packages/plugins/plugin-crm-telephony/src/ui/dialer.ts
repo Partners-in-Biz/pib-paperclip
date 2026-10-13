@@ -9,90 +9,54 @@ export interface DialerParams {
 
 /**
  * Parse Dialer page query parameters.
+ * to: trimmed, accepted only if E.164 format, else empty string
+ * contactId: trimmed, max 64 chars, only [A-Za-z0-9_-], else empty string
  */
 export function parseDialerParams(search: string): DialerParams {
   if (!search) return {};
   const params = new URLSearchParams(search);
-  const to = params.get("to") ?? undefined;
-  const contactId = params.get("contactId") ?? undefined;
+
+  let to: string | undefined;
+  const toParam = params.get("to");
+  if (toParam) {
+    const trimmed = toParam.trim();
+    const normalized = trimmed.replace(/[\s\-()]/g, "");
+    if (isDialable(normalized)) {
+      to = normalized;
+    }
+  }
+
+  let contactId: string | undefined;
+  const contactIdParam = params.get("contactId");
+  if (contactIdParam) {
+    const trimmed = contactIdParam.trim();
+    if (trimmed.length <= 64 && /^[A-Za-z0-9_-]+$/.test(trimmed)) {
+      contactId = trimmed;
+    }
+  }
+
   return { to, contactId };
 }
 
 /**
- * Format duration in seconds as HH:MM:SS.
+ * Check if a number is valid E.164 format: +[1-9]\d{6,14}
  */
-export function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  const parts = [h, m, s].map((n) => String(n).padStart(2, "0"));
-  return h > 0 ? parts.join(":") : parts.slice(1).join(":");
+export function isDialable(to: string): boolean {
+  return /^\+[1-9]\d{6,14}$/.test(to);
 }
 
 /**
- * Validate DTMF digit: 0-9, *, or #.
+ * Event type for dial intent.
  */
-export function isValidDtmf(digit: string): boolean {
-  return /^[0-9*#]$/.test(digit);
-}
+export const DIAL_EVENT = "pib-telephony:dial";
 
 /**
- * Softphone state machine reducer.
+ * Build dial intent custom event.
  */
-export interface SoftphoneState {
-  status: "idle" | "dialing" | "ringing" | "connected" | "error";
-  currentNumber?: string;
-  durationSeconds: number;
-  isMuted: boolean;
-  isRecording: boolean;
-  error?: string;
-}
-
-export type SoftphoneAction =
-  | { type: "dial"; number: string }
-  | { type: "ring" }
-  | { type: "connect" }
-  | { type: "tick" }
-  | { type: "hangup" }
-  | { type: "mute" }
-  | { type: "unmute" }
-  | { type: "recordingStart" }
-  | { type: "recordingStop" }
-  | { type: "error"; message: string }
-  | { type: "reset" };
-
-export const initialSoftphoneState: SoftphoneState = {
-  status: "idle",
-  durationSeconds: 0,
-  isMuted: false,
-  isRecording: false,
-};
-
-export function softphoneReducer(state: SoftphoneState, action: SoftphoneAction): SoftphoneState {
-  switch (action.type) {
-    case "dial":
-      return { ...state, status: "dialing", currentNumber: action.number, durationSeconds: 0, error: undefined };
-    case "ring":
-      return { ...state, status: "ringing" };
-    case "connect":
-      return { ...state, status: "connected", durationSeconds: 0, isMuted: false };
-    case "tick":
-      return state.status === "connected" ? { ...state, durationSeconds: state.durationSeconds + 1 } : state;
-    case "hangup":
-      return { ...initialSoftphoneState };
-    case "mute":
-      return { ...state, isMuted: true };
-    case "unmute":
-      return { ...state, isMuted: false };
-    case "recordingStart":
-      return { ...state, isRecording: true };
-    case "recordingStop":
-      return { ...state, isRecording: false };
-    case "error":
-      return { ...state, status: "error", error: action.message };
-    case "reset":
-      return { ...initialSoftphoneState };
-    default:
-      return state;
-  }
+export function buildDialEvent(to: string, contactId?: string): CustomEvent<{ to: string; contactId?: string }> {
+  return new CustomEvent(DIAL_EVENT, {
+    detail: { to, contactId },
+    bubbles: true,
+    cancelable: true,
+  });
 }
