@@ -1,6 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { R2Config } from "./r2-store.js";
-import { r2Delete, r2List } from "./r2-store.js";
+import { r2Delete, recordingKey } from "./r2-store.js";
 import { readR2Config } from "./settings.js";
 
 export const QUIESCE_SECONDS = 3600;
@@ -103,7 +103,7 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
       }
 
       // Delete from R2: delete only this recording's wav file
-      const expectedKey = `${r2cfg.prefix || "crm-telephony"}/recordings/${row.call_sid}/${row.recording_sid}.wav`;
+      const expectedKey = recordingKey(r2cfg, row.call_sid, row.recording_sid);
       let r2Error = false;
 
       try {

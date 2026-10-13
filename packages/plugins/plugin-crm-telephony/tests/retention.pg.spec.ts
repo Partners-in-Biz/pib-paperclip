@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runRetention } from "../src/retention.js";
+import { recordingKey } from "../src/r2-store.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
 
@@ -197,5 +198,79 @@ describe("retention purge", () => {
 
     // Verify warning was logged
     expect(warningLogs.some(w => w.includes("Unparseable Twilio URL"))).toBe(true);
+  });
+
+  it("purge deletes R2 key matching recordingKey() for seeded row", async () => {
+    const callSid = "call_test_123";
+    const recordingSid = "RE_test_456";
+    const id = randomUUID();
+    const companyId = randomUUID();
+    const expiredDate = new Date();
+    expiredDate.setDate(expiredDate.getDate() - 1);
+
+    // Seed using recordingKey() to ensure consistency
+    const r2cfg = { prefix: "crm-telephony" };
+    const expectedKey = recordingKey(r2cfg, callSid, recordingSid);
+
+    await db.db.execute(
+      `INSERT INTO ${NAMESPACE}.tel_recordings (id, call_sid, recording_sid, twilio_url, state, company_id, expires_at)
+       VALUES ($1::uuid, $2, $3, $4, 'received', $5::uuid, $6::timestamptz)`,
+      [id, callSid, recordingSid, "https://api.twilio.com/Accounts/AC123/Recordings/RE.json", companyId, expiredDate.toISOString()]
+    );
+
+    const deletedKeys: string[] = [];
+    const fakeFetch = vi.fn(async (input: string | URL | Request, opts?: any): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (opts?.method === "DELETE" && url.includes("r2.cloudflarestorage.com")) {
+        const keyMatch = url.match(/r2\.cloudflarestorage\.com\/(.+)$/);
+        if (keyMatch) {
+          deletedKeys.push(keyMatch[1]);
+        }
+        return new Response(null, { status: 204 });
+      }
+      if (opts?.method === "DELETE" && url.includes("twilio.com")) {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    const r2ConfigFn = vi.fn(async () => ({
+      accountId: "acc123",
+      bucket: "recordings",
+      accessKeyId: "key",
+      secretAccessKey: "secret",
+      prefix: "crm-telephony",
+    }));
+
+    const mockCtx = {
+      db: db.db,
+      logger: { warn: vi.fn(), debug: vi.fn() },
+      secrets: {
+        resolve: vi.fn(async (name: string) => {
+          if (name === "TWILIO_API_KEY_SID") return "AC123";
+          if (name === "TWILIO_API_KEY_SECRET") return "secret";
+          throw new Error(`Unknown secret: ${name}`);
+        }),
+      },
+    };
+
+    const now = new Date();
+    await runRetention(mockCtx as any, {
+      now,
+      fetch: fakeFetch,
+      r2Config: r2ConfigFn,
+      namespace: NAMESPACE,
+    });
+
+    const laterTime = new Date(now.getTime() + 3610 * 1000);
+    await runRetention(mockCtx as any, {
+      now: laterTime,
+      fetch: fakeFetch,
+      r2Config: r2ConfigFn,
+      namespace: NAMESPACE,
+    });
+
+    // Verify the key deleted matches recordingKey()
+    expect(deletedKeys).toContain(expectedKey);
   });
 });
