@@ -10,6 +10,7 @@ export interface TelephonySettings {
   recordingRetentionDays: number;
   allowedHours: { start: string; end: string; timezone: string };
   callerIds: string[];
+  voiceAllowedUserIds: string[];
 }
 
 export interface SecretStatus {
@@ -52,6 +53,21 @@ function dedupeE164(arr: unknown[]): string[] {
   return result.slice(0, 10);
 }
 
+function dedupeStringList(arr: unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of arr) {
+    if (typeof item === "string") {
+      const trimmed = item.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        result.push(trimmed);
+      }
+    }
+  }
+  return result.slice(0, 50);
+}
+
 export async function readSettings(ctx: PluginContext, companyId: string): Promise<TelephonySettings> {
   let raw: Record<string, unknown> = {};
   try {
@@ -66,6 +82,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     : {}) as Record<string, unknown>;
 
   const callerIdList = Array.isArray(raw.callerIds) ? raw.callerIds : [];
+  const userIdList = Array.isArray(raw.voiceAllowedUserIds) ? raw.voiceAllowedUserIds : [];
 
   return {
     recordingEnabled: raw.recordingEnabled === true,
@@ -81,6 +98,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
       timezone: "Africa/Johannesburg",
     },
     callerIds: dedupeE164(callerIdList),
+    voiceAllowedUserIds: dedupeStringList(userIdList),
   };
 }
 

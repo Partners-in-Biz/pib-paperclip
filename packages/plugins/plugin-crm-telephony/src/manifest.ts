@@ -19,6 +19,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "database.namespace.migrate",
+    "api.routes.register",
   ],
   tools: TELEPHONY_TOOLS,
   entrypoints: { worker: "./dist/worker.js" },
@@ -61,6 +62,24 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: "sms-inbound",
       displayName: "SMS inbound",
       description: "Webhook for incoming SMS messages",
+    },
+  ],
+  apiRoutes: [
+    {
+      routeKey: "voice-token",
+      method: "POST",
+      path: "/voice/token",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
+    {
+      routeKey: "calls-start",
+      method: "POST",
+      path: "/calls/start",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
     },
   ],
 };
