@@ -16,8 +16,8 @@ export async function startHostDb() {
   const sql = (await import(`${DB_PKG}/drizzle-orm/sql/sql.js`)).sql as any;
   const postgres = (await import(`${DB_PKG}/postgres/src/index.js`)).default;
 
-  const dir = mkdtempSync(path.join(tmpdir(), "tel-host-db-"));
   const port = await freePort();
+  const dir = mkdtempSync(path.join(tmpdir(), "tel-host-db-"));
   const pg = new EmbeddedPostgres({ databaseDir: dir, user: "t", password: "t", port, persistent: false, onLog: () => {}, onError: () => {} });
   await pg.initialise();
   await pg.start();
@@ -55,7 +55,19 @@ export async function startHostDb() {
         return JSON.parse(JSON.stringify([...(await orm.execute(bindSql(text, params)) as Iterable<unknown>)])) as T[];
       },
     },
-    async reset() { await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_recordings CASCADE`); },
+    async reset() {
+      await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_recordings CASCADE`);
+      // Also truncate audit table and related tables for timeline tests
+      try {
+        await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_calls CASCADE`);
+        await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_messages CASCADE`);
+        await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_transcripts CASCADE`);
+        await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_contact_prefs CASCADE`);
+        await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_audit CASCADE`);
+      } catch {
+        // Ignore errors for tables that may not be used in all tests
+      }
+    },
     async stop() { await client.end(); await pg.stop(); rmSync(dir, { recursive: true, force: true }); },
   };
 }
