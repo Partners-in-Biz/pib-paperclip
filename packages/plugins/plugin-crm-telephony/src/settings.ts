@@ -10,6 +10,7 @@ export interface TelephonySettings {
   recordingRetentionDays: number;
   allowedHours: { start: string; end: string; timezone: string };
   callerIds: string[];
+  voiceAllowedUserIds: string[];
   usSmsCampaignStatus: "none" | "pending" | "approved" | "rejected";
   usMessagingServiceSid: string | null;
   smsHolidays: string[];
@@ -53,6 +54,21 @@ function dedupeE164(arr: unknown[]): string[] {
     }
   }
   return result.slice(0, 10);
+}
+
+function dedupeStringList(arr: unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of arr) {
+    if (typeof item === "string") {
+      const trimmed = item.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        result.push(trimmed);
+      }
+    }
+  }
+  return result.slice(0, 50);
 }
 
 function validateMessagingServiceSid(value: unknown): string | null {
@@ -112,6 +128,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     : {}) as Record<string, unknown>;
 
   const callerIdList = Array.isArray(raw.callerIds) ? raw.callerIds : [];
+  const userIdList = Array.isArray(raw.voiceAllowedUserIds) ? raw.voiceAllowedUserIds : [];
   const holidaysList = Array.isArray(raw.smsHolidays) ? raw.smsHolidays : [];
 
   return {
@@ -128,6 +145,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
       timezone: "Africa/Johannesburg",
     },
     callerIds: dedupeE164(callerIdList),
+    voiceAllowedUserIds: dedupeStringList(userIdList),
     usSmsCampaignStatus: validateSmsCampaignStatus(raw.usSmsCampaignStatus),
     usMessagingServiceSid: validateMessagingServiceSid(raw.usMessagingServiceSid),
     smsHolidays: validateSmsHolidays(holidaysList),
