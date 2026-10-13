@@ -57,7 +57,7 @@ export async function startHostDb() {
     },
     async reset() {
       await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_recordings CASCADE`);
-      // Also truncate audit table and related tables for timeline/playback tests
+      // Also truncate audit table and related tables for timeline tests
       try {
         await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_calls CASCADE`);
         await client.unsafe(`TRUNCATE TABLE ${NAMESPACE}.tel_messages CASCADE`);
