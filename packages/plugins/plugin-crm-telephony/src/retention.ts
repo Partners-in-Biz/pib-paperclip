@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { R2Config } from "./r2-store.js";
 import { r2Delete, recordingKey } from "./r2-store.js";
+import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { readR2Config } from "./settings.js";
 
 export const QUIESCE_SECONDS = 3600;
@@ -13,6 +14,33 @@ export interface RetentionOpts {
   r2Config?: (ctx: PluginContext, companyId: string) => Promise<R2Config | null>;
   namespace?: string;
   batch?: number;
+  /**
+   * Companies whose retention is switched on. When set, retention-driven work (tombstoning,
+   * purging retention-tombstoned rows, transcript trimming) only touches these companies.
+   * Erasure-request purges always run. When undefined, no company filter is applied.
+   */
+  companyIds?: string[];
+}
+
+/**
+ * Retention is off by default. A company opts in with `retentionEnabled: true` in its
+ * plugin config. Returns the ids of the companies that have it on.
+ */
+export async function retentionEnabledCompanyIds(ctx: PluginContext, namespace: string): Promise<string[]> {
+  if (!/^[a-z0-9_]+$/.test(namespace)) throw new Error(`Invalid namespace: ${namespace}`);
+  const rows = await ctx.db.query<{ company_id: string }>(
+    `SELECT DISTINCT company_id FROM ${namespace}.tel_recordings WHERE company_id IS NOT NULL`,
+  );
+  const enabled: string[] = [];
+  for (const row of rows) {
+    try {
+      const raw = await readConfig(ctx, row.company_id);
+      if (raw.retentionEnabled === true) enabled.push(row.company_id);
+    } catch {
+      // Unreadable config means off.
+    }
+  }
+  return enabled;
 }
 
 export interface RetentionResult {
@@ -46,18 +74,23 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
   let skipped = 0;
   let errors = 0;
 
+  const scoped = opts?.companyIds !== undefined;
+  const scopeIds = (opts?.companyIds ?? []).join(",");
+
   // Phase 1: TOMBSTONE
   // Mark expired/failed/skipped/dead rows for eventual purge
-  const tombstoneRows = await ctx.db.query<{ id: string; recording_sid: string }>(
-    `SELECT id, recording_sid FROM ${namespace}.tel_recordings
-     WHERE erased_at IS NULL AND (
-       state IN ('failed', 'skipped')
-       OR (state = 'dead' AND (dead_issue_id IS NOT NULL OR company_id IS NULL))
-       OR (expires_at IS NOT NULL AND expires_at <= $1::timestamptz)
-     )
-     LIMIT $2::int`,
-    [now.toISOString(), batch],
-  );
+  const tombstoneRows = scoped && !scopeIds
+    ? []
+    : await ctx.db.query<{ id: string; recording_sid: string }>(
+        `SELECT id, recording_sid FROM ${namespace}.tel_recordings
+         WHERE erased_at IS NULL AND (
+           state IN ('failed', 'skipped')
+           OR (state = 'dead' AND (dead_issue_id IS NOT NULL OR company_id IS NULL))
+           OR (expires_at IS NOT NULL AND expires_at <= $1::timestamptz)
+         )${scoped ? " AND company_id = ANY(string_to_array($3, ',')::uuid[])" : ""}
+         LIMIT $2::int`,
+        scoped ? [now.toISOString(), batch, scopeIds] : [now.toISOString(), batch],
+      );
 
   for (const row of tombstoneRows) {
     const result = await ctx.db.execute(
@@ -82,9 +115,11 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
     erased_at: string;
   }>(
     `SELECT id, recording_sid, call_sid, twilio_url, company_id, r2_key, last_error, erased_at FROM ${namespace}.tel_recordings
-     WHERE erased_at IS NOT NULL AND erased_at <= $1::timestamptz
+     WHERE erased_at IS NOT NULL AND erased_at <= $1::timestamptz${
+       scoped ? ` AND (last_error IS DISTINCT FROM '${RETENTION_MARKER}' OR company_id = ANY(string_to_array($3, ',')::uuid[]))` : ""
+     }
      LIMIT $2::int`,
-    [quiesceTime.toISOString(), batch],
+    scoped ? [quiesceTime.toISOString(), batch, scopeIds] : [quiesceTime.toISOString(), batch],
   );
 
   for (const row of purgeRows) {
@@ -200,12 +235,16 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
   cutoff.setUTCMonth(cutoff.getUTCMonth() - TRANSCRIPT_RETENTION_MONTHS);
   cutoff.setUTCHours(0, 0, 0, 0);
 
-  const trimResult = await ctx.db.execute(
-    `UPDATE ${namespace}.tel_transcripts SET text = '', segments = NULL, updated_at = now()
-     WHERE created_at <= $1::timestamptz AND text <> ''`,
-    [cutoff.toISOString()],
-  );
-  transcriptsTrimmed = trimResult.rowCount;
+  if (!scoped || scopeIds) {
+    const trimResult = await ctx.db.execute(
+      `UPDATE ${namespace}.tel_transcripts SET text = '', segments = NULL, updated_at = now()
+       WHERE created_at <= $1::timestamptz AND text <> ''${
+         scoped ? ` AND recording_id IN (SELECT id FROM ${namespace}.tel_recordings WHERE company_id = ANY(string_to_array($2, ',')::uuid[]))` : ""
+       }`,
+      scoped ? [cutoff.toISOString(), scopeIds] : [cutoff.toISOString()],
+    );
+    transcriptsTrimmed = trimResult.rowCount;
+  }
 
   ctx.logger.debug(
     `retention: tombstoned=${tombstoned} purged=${purged} transcriptsTrimmed=${transcriptsTrimmed} skipped=${skipped} errors=${errors}`,
