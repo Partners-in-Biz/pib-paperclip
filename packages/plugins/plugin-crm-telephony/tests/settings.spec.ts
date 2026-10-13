@@ -93,4 +93,39 @@ describe("Telephony Settings", () => {
     expect(result.KEY).toBe("missing");
     expect(JSON.stringify(result)).not.toContain("not found");
   });
+
+  it("defaults voiceAllowedUserIds to empty array", async () => {
+    const result = await readSettings(mockCtx({}), "c1");
+    expect(result.voiceAllowedUserIds).toEqual([]);
+  });
+
+  it("filters non-string entries from voiceAllowedUserIds", async () => {
+    const cfg = { voiceAllowedUserIds: ["user-1", 123, null, "user-2"] };
+    const result = await readSettings(mockCtx(cfg), "c1");
+    expect(result.voiceAllowedUserIds).toEqual(["user-1", "user-2"]);
+  });
+
+  it("trims whitespace from voiceAllowedUserIds entries", async () => {
+    const cfg = { voiceAllowedUserIds: ["  user-1  ", "user-2\n", "\tuser-3"] };
+    const result = await readSettings(mockCtx(cfg), "c1");
+    expect(result.voiceAllowedUserIds).toEqual(["user-1", "user-2", "user-3"]);
+  });
+
+  it("deduplicates voiceAllowedUserIds", async () => {
+    const cfg = { voiceAllowedUserIds: ["user-1", "user-2", "user-1", "user-2"] };
+    const result = await readSettings(mockCtx(cfg), "c1");
+    expect(result.voiceAllowedUserIds).toEqual(["user-1", "user-2"]);
+  });
+
+  it("limits voiceAllowedUserIds to 50 entries", async () => {
+    const ids = Array.from({ length: 60 }, (_, i) => `user-${i}`);
+    const result = await readSettings(mockCtx({ voiceAllowedUserIds: ids }), "c1");
+    expect(result.voiceAllowedUserIds).toHaveLength(50);
+  });
+
+  it("filters out empty strings from voiceAllowedUserIds", async () => {
+    const cfg = { voiceAllowedUserIds: ["user-1", "", "user-2", "   "] };
+    const result = await readSettings(mockCtx(cfg), "c1");
+    expect(result.voiceAllowedUserIds).toEqual(["user-1", "user-2"]);
+  });
 });

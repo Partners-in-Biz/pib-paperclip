@@ -1,25 +1,39 @@
-import { definePlugin, runWorker, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type ToolRunContext, type PluginApiRequestInput, type PluginApiResponse, type PluginContext, type PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { readSettings, secretStatus } from "./settings.js";
+import { handleApiRequest } from "./routes.js";
+import { handleWebhook } from "./webhooks.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
 
+let ctx: PluginContext | null = null;
+
 const plugin = definePlugin({
-  async setup(ctx) {
-    ctx.jobs.register("media-pipeline", async () => {
-      ctx.logger.debug("media-pipeline job running");
+  async setup(pluginCtx) {
+    ctx = pluginCtx;
+
+    pluginCtx.jobs.register("media-pipeline", async () => {
+      pluginCtx.logger.debug("media-pipeline job running");
       // Real pipeline handlers come in PR1b+
     });
 
     for (const tool of TELEPHONY_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (_params, run: ToolRunContext) => {
-        const settings = await readSettings(ctx, run.companyId);
-        const status = await secretStatus(ctx, run.companyId, []);
+      pluginCtx.tools.register(tool.name, tool, async (_params, run: ToolRunContext) => {
+        const settings = await readSettings(pluginCtx, run.companyId);
+        const status = await secretStatus(pluginCtx, run.companyId, []);
         return { data: { settings, secrets: status } };
       });
     }
   },
 
-  async onWebhook() {
-    // Webhook handlers come in PR1b+; acknowledge and return
+  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+    if (!ctx) {
+      return { status: 503, body: { error: "Telephony plugin is not ready" } };
+    }
+    return await handleApiRequest(ctx, input);
+  },
+
+  async onWebhook(input: PluginWebhookInput) {
+    if (!ctx) return;
+    await handleWebhook(ctx, input);
   },
 
   async onHealth() {
