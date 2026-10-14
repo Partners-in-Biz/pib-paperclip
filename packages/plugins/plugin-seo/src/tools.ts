@@ -342,6 +342,14 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   {
     group: "Site",
+    name: "confirm-client-facts",
+    displayName: "Confirm a client fact sheet",
+    description:
+      "After proposing client facts from the site's own pages, run this to verify all wordings still appear as visitor-visible text and lock the sheet so copy can use them. Fetches all source pages in parallel with a 20-second budget, checks each wording is present with correct word boundaries, and returns a compare-and-set result. On mismatches (wording not found, fetch failure, off-site URL, non-HTML, oversized page), returns the list and leaves the sheet draft for you to review. If the sheet changed between the check and the write, retries are safe.",
+    parametersSchema: schema(["sprintId"], { sprintId }),
+  },
+  {
+    group: "Site",
     name: "list-previews",
     displayName: "List client previews",
     description:

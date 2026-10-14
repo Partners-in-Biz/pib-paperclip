@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Frequently Asked Questions</title>
+  <meta charset="UTF-8">
+  <!-- Hidden metadata comment: secret text that should not appear -->
+  <script>
+    // JavaScript code: this should be stripped
+    var hidden = "secret from script";
+  </script>
+  <style>
+    /* CSS styles should be removed */
+    .hidden { display: none; }
+  </style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "JSON-LD text should not appear",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "This is from JSON-LD and should be hidden"
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>FAQ</h1>
+  </header>
+
+  <main>
+    <section>
+      <h2>Pricing & Fees</h2>
+      <p>Our pricing is transparent and fair.</p>
+      <p>Price</p><p>R500</p>
+
+      <p>We offer <strong>free delivery</strong> on all orders&nbsp;within&nbsp;3&nbsp;days.</p>
+
+      <!-- Hidden section that should not be visible -->
+      <div hidden>
+        <p>This text is in a hidden div and should not appear in normalized text</p>
+      </div>
+
+      <p aria-hidden="true">This text has aria-hidden and should be skipped</p>
+
+      <p style="display:none">This inline display:none should not appear</p>
+
+      <p>Our guarantee: we offer the best price available.</p>
+    </section>
+
+    <section>
+      <h2>Shipping & Delivery</h2>
+      <p>We deliver within 5 business days.</p>
+
+      <noscript>
+        <p>You need JavaScript enabled to see this content</p>
+      </noscript>
+
+      <p>For returns, see our policy &ldquo;Return within 30 days&rdquo; with &#8216;single quotes&#8217;.</p>
+
+      <p>Items remain the property of the seller until &nbsp;payment&nbsp; is complete.</p>
+    </section>
+
+    <section>
+      <h2>Legal & Compliance</h2>
+      <p>All transactions comply with FICA regulations.</p>
+      <p>Refunds are processed within 14 days after cancellation.</p>
+
+      <template>
+        <p>Template content should not appear in the output</p>
+      </template>
+
+      <p>We are accredited by industry bodies.</p>
+    </section>
+
+    <section>
+      <h2>Support</h2>
+      <p>We're available 24/7 to help.</p>
+      <p>Open 24/7 for customer support.</p>
+
+      <!-- Edge case: text adjacent to block elements -->
+      <div>Opening hours:</div>
+      <div>Monday to Sunday</div>
+    </section>
+
+    <section>
+      <h2>Verification</h2>
+      <p>All items are verified before listing.</p>
+      <p>Inspections are conducted by our team.</p>
+      <br>
+      <p>Warranty covers manufacturing defects.</p>
+    </section>
+  </main>
+</body>
+</html>
