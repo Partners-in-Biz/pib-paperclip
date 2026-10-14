@@ -537,6 +537,137 @@ describe("confirmClientFacts handler", () => {
       expect(result.mismatches![0]!.reason).not.toContain("192.168.1.1");
       expect(result.mismatches![0]!.reason).not.toContain("302");
     });
+
+    it("source on client host redirects to different PUBLIC host -> stays draft, no DB write, reason generic", async () => {
+      const { store, executes, ctx } = createHost();
+      store.set("sp-1", {
+        sprintId: "sp-1",
+        facts: [
+          {
+            kind: "say",
+            text: "We deliver within 5 business days.",
+            source: "https://acme.co.za/faq",
+          },
+        ],
+        status: "draft",
+        updated_by: "user-peet",
+        updated_at: "2026-10-01T10:00:00Z",
+      });
+
+      // safeFetch returns 200 OK with content that would match,
+      // but the final URL is on a different host (attacker.example.net)
+      vi.mocked(kit.safeFetch).mockResolvedValue({
+        status: 200,
+        url: "https://attacker.example.net/faq",
+        redirects: [],
+        headers: { "content-type": "text/html; charset=utf-8" },
+        text: faqFixtureHtml, // Content matches, so host check is the only thing that blocks it
+        ms: 50,
+      });
+
+      const env = createEnv(ctx, { now: () => new Date("2026-10-02T12:00:00Z") });
+      const result = await confirmClientFacts(env, "co-1", agent, { sprintId: "sp-1" });
+
+      expect(result.confirmed).toBe(false);
+      expect(result.mismatches).toHaveLength(1);
+      expect(result.mismatches![0]!.reason).toBe("source not on client site");
+      // Verify the attacker host is not leaked in the JSON
+      expect(JSON.stringify(result)).not.toContain("attacker.example.net");
+      // Verify source in mismatch is the original URL, not the redirect target
+      expect(result.mismatches![0]!.source).toBe("https://acme.co.za/faq");
+
+      // Verify no UPDATE was attempted
+      const updateCount = executes.filter((e) => /UPDATE.*client_facts/.test(e.sql)).length;
+      expect(updateCount).toBe(0);
+
+      // Verify row is still draft with original author
+      const row = store.get("sp-1")!;
+      expect(row.status).toBe("draft");
+      expect(row.updated_by).toBe("user-peet");
+    });
+
+    it("source on client host redirects to same host (http->https or www) -> confirms", async () => {
+      const { store, executes, ctx } = createHost();
+      store.set("sp-1", {
+        sprintId: "sp-1",
+        facts: [
+          {
+            kind: "say",
+            text: "We deliver within 5 business days.",
+            source: "http://acme.co.za/faq",
+          },
+          {
+            kind: "say",
+            text: "Refunds are processed within 14 days after cancellation.",
+            source: "http://acme.co.za/faq",
+          },
+        ],
+        status: "draft",
+        updated_by: "user-peet",
+        updated_at: "2026-10-01T10:00:00Z",
+      });
+
+      // safeFetch returns the HTTPS + www version (same host, different scheme/subdomain)
+      vi.mocked(kit.safeFetch).mockResolvedValue({
+        status: 200,
+        url: "https://www.acme.co.za/faq", // Redirected to HTTPS with www
+        redirects: [],
+        headers: { "content-type": "text/html; charset=utf-8" },
+        text: faqFixtureHtml,
+        ms: 50,
+      });
+
+      const env = createEnv(ctx, { now: () => new Date("2026-10-02T12:00:00Z") });
+      const result = await confirmClientFacts(env, "co-1", agent, { sprintId: "sp-1" });
+
+      // Should succeed: www-insensitive comparison allows the redirect
+      expect(result.confirmed).toBe(true);
+      expect(result.status).toBe("confirmed");
+      expect(result.checked).toBe(2);
+
+      // Verify UPDATE was executed
+      const updateCount = executes.filter((e) => /UPDATE.*client_facts/.test(e.sql)).length;
+      expect(updateCount).toBe(1);
+
+      // Verify row is confirmed
+      const row = store.get("sp-1")!;
+      expect(row.status).toBe("confirmed");
+      expect(row.updated_by).toBe("agent-1");
+    });
+
+    it("safeFetch returns empty/unparseable final URL -> returns draft with generic reason", async () => {
+      const { store, ctx } = createHost();
+      store.set("sp-1", {
+        sprintId: "sp-1",
+        facts: [
+          {
+            kind: "say",
+            text: "We deliver within 5 business days.",
+            source: "https://acme.co.za/faq",
+          },
+        ],
+        status: "draft",
+        updated_by: "user-peet",
+        updated_at: "2026-10-01T10:00:00Z",
+      });
+
+      // safeFetch returns with empty URL (or it could be invalid)
+      vi.mocked(kit.safeFetch).mockResolvedValue({
+        status: 200,
+        url: "", // Empty final URL
+        redirects: [],
+        headers: { "content-type": "text/html" },
+        text: faqFixtureHtml,
+        ms: 50,
+      });
+
+      const env = createEnv(ctx, { now: () => new Date("2026-10-02T12:00:00Z") });
+      const result = await confirmClientFacts(env, "co-1", agent, { sprintId: "sp-1" });
+
+      expect(result.confirmed).toBe(false);
+      expect(result.mismatches).toHaveLength(1);
+      expect(result.mismatches![0]!.reason).toBe("source not on client site");
+    });
   });
 
   describe("case 4: CAS race (facts modified during fetch)", () => {

@@ -150,6 +150,15 @@ export async function proposeClientFacts(env: Env, companyId: string, _actor: Ac
   };
 }
 
+/** Normalize a URL's hostname to www-insensitive form, returning null on parse failure. */
+function normHost(urlStr: string): string | null {
+  try {
+    return new URL(urlStr).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 /** Confirm a draft client fact sheet: verify all say-wordings still appear on their source pages, then lock the sheet. */
 export async function confirmClientFacts(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprintId = reqStr(params, "sprintId");
@@ -210,16 +219,14 @@ export async function confirmClientFacts(env: Env, companyId: string, actor: Act
   if (sourceUrls.size > 5) throw new SeoError(`Too many distinct source URLs (max 5): ${sourceUrls.size}.`);
 
   // Get site host
-  let siteHost: string;
-  try {
-    siteHost = new URL(sprint.siteUrl).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
+  const siteHost = normHost(sprint.siteUrl);
+  if (!siteHost) {
     throw new SeoError("Cannot read sprint site host.");
   }
 
   // Verify all sources are on the client site
   for (const url of sourceUrls) {
-    const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    const host = normHost(url);
     if (host !== siteHost) {
       return {
         sprintId,
@@ -234,7 +241,8 @@ export async function confirmClientFacts(env: Env, companyId: string, actor: Act
   const deadline = Date.now() + 20_000;
   const { safeFetch } = await import("@partnersinbiz/pib-plugin-kit");
 
-  const fetchPromises = Array.from(sourceUrls).map((url) =>
+  const urlList = Array.from(sourceUrls);
+  const fetchPromises = urlList.map((url) =>
     safeFetch(env.ctx, url, { maxRedirects: 3, maxChars: 2_000_000 }).catch(() => null),
   );
 
@@ -269,9 +277,24 @@ export async function confirmClientFacts(env: Env, companyId: string, actor: Act
   }
   const pages = new Map<string, string>();
 
-  for (const result of results) {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i]!;
+    const sourceUrl = urlList[i]!;
+
     if (result.status === "fulfilled" && result.value) {
       const res = result.value as { status: number; headers: Record<string, string>; text: string; url: string };
+
+      // Check that the final URL host matches the site host (catches redirects to different hosts)
+      const finalHost = normHost(res.url);
+      if (finalHost !== siteHost) {
+        return {
+          sprintId,
+          status: "draft",
+          confirmed: false,
+          mismatches: [{ index: 0, text: sayFacts[0]?.text?.slice(0, 120) ?? "", source: sourceUrl, reason: "source not on client site" }],
+        };
+      }
+
       if (res.status >= 200 && res.status < 300) {
         const contentType = res.headers["content-type"] ?? "";
         if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml")) {
@@ -296,7 +319,7 @@ export async function confirmClientFacts(env: Env, companyId: string, actor: Act
             sprintId,
             status: "draft",
             confirmed: false,
-            mismatches: [{ index: 0, text: sayFacts[0]?.text?.slice(0, 120) ?? "", source: res.url, reason: "not html" }],
+            mismatches: [{ index: 0, text: sayFacts[0]?.text?.slice(0, 120) ?? "", source: sourceUrl, reason: "not html" }],
           };
         }
       } else {
