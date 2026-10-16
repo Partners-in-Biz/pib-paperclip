@@ -108,6 +108,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       "A person connects accounts (signing in is a one-time grant). Returns the deep link and exact steps to put in one partnersinbiz.cockpit:ask-owner request, and the effect to pass on that ask. Pass the issue you are working on: when the account is connected the plugin comments on it, hands it back to you and wakes you, so do not poll.",
     parametersSchema: schema(["platform"], {
       platform: choice(ALL_PLATFORMS, "Platform to connect"),
+      app: choice(["linkedin", "linkedinPages"], 'For LinkedIn: "linkedin" (personal, default) or "linkedinPages" (company pages). Ignored for other platforms.'),
       issueId: text("The issue you are working on (id or identifier). Default: read from your run."),
       ...scope,
     }),
@@ -130,6 +131,19 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       visibility: choice(["org", "personal"], "org (default): a company or client page. personal: a person's own profile, only that person's accounts."),
       ...post,
       ...experimentTag,
+    }),
+  },
+  {
+    name: "create-personal-draft",
+    displayName: "Create personal draft",
+    description:
+      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, and per-platform overrides.",
+    parametersSchema: schema(["targetUserId", "body"], {
+      targetUserId: text("User id whose My Social queue gets the draft"),
+      body: text("Main post text"),
+      mediaAssetIds: ids("Media asset ids (personal accounts of the target user)"),
+      firstComment: text("Posted as the first comment where the platform allows"),
+      overrides: OVERRIDES,
     }),
   },
   {

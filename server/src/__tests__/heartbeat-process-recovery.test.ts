@@ -3,6 +3,7 @@ import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } f
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
+import { readAutomaticWakeCap } from "../services/recovery/service.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -55,6 +56,8 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  assets,
+  issueAttachments,
   issueComments,
   issueApprovals,
   issueDocuments,
@@ -137,6 +140,25 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+
+// PAR-1838: lets a test simulate an invocation budget block for the sweeper.
+const mockBudgetInvocationBlocked = vi.hoisted(() => ({ value: false }));
+vi.mock("../services/budgets.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/budgets.js")>("../services/budgets.js");
+  return {
+    ...actual,
+    budgetService: (...args: Parameters<typeof actual.budgetService>) => {
+      const service = actual.budgetService(...args);
+      return {
+        ...service,
+        getInvocationBlock: async (...blockArgs: Parameters<typeof service.getInvocationBlock>) =>
+          mockBudgetInvocationBlocked.value
+            ? ({ scopeType: "agent", reason: "test budget block" } as never)
+            : service.getInvocationBlock(...blockArgs),
+      };
+    },
+  };
+});
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -479,6 +501,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockBudgetInvocationBlocked.value = false;
     // A recovery policy can stop before adapter dispatch; do not leak an
     // unused one-shot failure into the next test's otherwise healthy run.
     mockAdapterExecute.mockReset();
@@ -565,6 +589,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
+    await db.delete(issueAttachments);
+    await db.delete(assets);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -15388,6 +15414,334 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
+  });
+
+  describe("automatic wake cap (PAR-1838)", () => {
+    const MIN = 60 * 1000;
+
+    // Seeds an in_progress issue whose initial run is non-chain, then `length`
+    // sweeper-queued succeeded runs linked by retryOfRunId, oldest first. The
+    // newest chain run is created 25 minutes ago: past the host's re-wake
+    // throttle cooldown, inside the 30 minute progress window.
+    async function seedChain(
+      length: number,
+      opts: { comments?: boolean; attachments?: boolean; commentAgeMs?: number } = {},
+    ) {
+      const fixture = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: "advanced",
+      });
+      const { companyId, agentId, issueId } = fixture;
+      const newestAt = Date.now() - 25 * MIN;
+      const firstAt = newestAt - (length - 1) * MIN;
+      // The legacy continuation lane owns non-native runs; only native runs reach the capped lane.
+      await db.update(heartbeatRuns).set({ createdAt: new Date(firstAt - MIN), runtimeMode: "native" }).where(eq(heartbeatRuns.id, fixture.runId));
+      const chainRunIds: string[] = [];
+      let previousId = fixture.runId;
+      for (let i = 0; i < length; i += 1) {
+        const id = randomUUID();
+        const createdAt = new Date(firstAt + i * MIN);
+        await db.insert(heartbeatRuns).values({
+          id,
+          companyId,
+          agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          runtimeMode: "native",
+          status: "succeeded",
+          retryOfRunId: previousId,
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            wakeReason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "issue.productive_terminal_continuation_recovery",
+            retryOfRunId: previousId,
+          },
+          startedAt: createdAt,
+          finishedAt: createdAt,
+          createdAt,
+          updatedAt: createdAt,
+          livenessState: "advanced",
+          resultJson: {},
+        });
+        let commentId: string | null = null;
+        if (opts.comments !== false) {
+          commentId = randomUUID();
+          const commentAt = new Date(opts.commentAgeMs ? Date.now() - opts.commentAgeMs : createdAt.getTime() + 1000);
+          await db.insert(issueComments).values({
+            id: commentId,
+            companyId,
+            issueId,
+            authorAgentId: agentId,
+            createdByRunId: id,
+            body: "still waiting on the frame batch",
+            createdAt: commentAt,
+            updatedAt: commentAt,
+          });
+        }
+        if (opts.attachments) {
+          const assetId = randomUUID();
+          await db.insert(assets).values({
+            id: assetId,
+            companyId,
+            provider: "local_disk",
+            objectKey: `par-1838/${assetId}`,
+            contentType: "image/png",
+            byteSize: 1,
+            sha256: assetId.replace(/-/g, ""),
+          });
+          await db.insert(issueAttachments).values({
+            companyId,
+            issueId,
+            assetId,
+            issueCommentId: commentId,
+            originatingRunId: id,
+            createdAt: new Date(Date.now() - (length - i) * 1000),
+          });
+        }
+        chainRunIds.push(id);
+        previousId = id;
+      }
+      return { ...fixture, chainRunIds, firstAt, newestAt };
+    }
+
+    async function readState(issueId: string, agentId: string) {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const comments = await db.select().from(issueComments).where(and(eq(issueComments.issueId, issueId), eq(issueComments.authorType, "system")));
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return { issue, comments, actions, runs };
+    }
+
+    it("stops the PAR-1748 chain at the cap and posts one notice", async () => {
+      const { agentId, issueId, chainRunIds } = await seedChain(3);
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ automaticWakeCapEscalated: 1, escalated: 1, continuationRequeued: 0, recentProgressExempted: 0 });
+      const state = await readState(issueId, agentId);
+      expect(state.issue.status).toBe("blocked");
+      expect(state.comments).toHaveLength(1);
+      for (const id of chainRunIds) expect(state.comments[0].body).toContain(id);
+      expect(state.comments[0].body).toContain("cap 3");
+      expect(state.actions).toHaveLength(1);
+      expect(state.actions[0]).toMatchObject({ cause: "automatic_wake_cap", kind: "stranded_assigned_issue" });
+      expect(state.actions[0].evidence).toMatchObject({
+        automaticWakeChainRunIds: [...chainRunIds].reverse(),
+        automaticWakeCap: 3,
+        automaticWakeCapKind: "cap",
+      });
+      expect(state.runs).toHaveLength(4);
+
+      const second = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(second.automaticWakeCapEscalated).toBe(0);
+      const after = await readState(issueId, agentId);
+      expect(after.comments).toHaveLength(1);
+      expect(after.actions).toHaveLength(1);
+      expect(after.runs).toHaveLength(4);
+    });
+
+    it("a comment or attachment from the run before the chain does not exempt the cap", async () => {
+      for (const kind of ["comment", "attachment"] as const) {
+        const { agentId, issueId, runId, firstAt } = await seedChain(3);
+        const at = new Date(firstAt - 30 * 1000);
+        let commentId: string | null = null;
+        if (kind === "comment") {
+          await db.insert(issueComments).values({
+            companyId: (await db.select().from(issues).where(eq(issues.id, issueId)))[0].companyId,
+            issueId,
+            authorAgentId: agentId,
+            createdByRunId: runId,
+            body: "assignment run note",
+            createdAt: at,
+            updatedAt: at,
+          });
+        } else {
+          const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+          const assetId = randomUUID();
+          await db.insert(assets).values({
+            id: assetId,
+            companyId: issue.companyId,
+            provider: "local_disk",
+            objectKey: `par-1838/${assetId}`,
+            contentType: "image/png",
+            byteSize: 1,
+            sha256: assetId.replace(/-/g, ""),
+          });
+          await db.insert(issueAttachments).values({
+            companyId: issue.companyId,
+            issueId,
+            assetId,
+            issueCommentId: commentId,
+            originatingRunId: runId,
+            createdAt: at,
+          });
+        }
+        const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+        expect(result, kind).toMatchObject({ automaticWakeCapEscalated: 1, continuationRequeued: 0, recentProgressExempted: 0 });
+        expect((await readState(issueId, agentId)).issue.status).toBe("blocked");
+      }
+    });
+
+    it("re-queues below the cap", async () => {
+      const { agentId, issueId, chainRunIds } = await seedChain(2);
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 1, escalated: 0, automaticWakeCapEscalated: 0, recentProgressExempted: 0 });
+      const state = await readState(issueId, agentId);
+      expect(state.issue.status).toBe("in_progress");
+      const queued = state.runs.find((run) => run.status !== "succeeded");
+      expect(queued?.contextSnapshot).toMatchObject({ retryOfRunId: chainRunIds[1] });
+    });
+
+    it("blocks a stale chain too: the cap is the brake, not the window", async () => {
+      const { agentId, issueId } = await seedChain(3, { commentAgeMs: 31 * MIN });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.automaticWakeCapEscalated).toBe(1);
+      expect((await readState(issueId, agentId)).issue.status).toBe("blocked");
+    });
+
+    it("a person's comment resets the chain", async () => {
+      const { companyId, agentId, issueId } = await seedChain(3);
+      await db.insert(issueComments).values({ companyId, issueId, authorUserId: "board-user", body: "keep going", createdAt: new Date() });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 1, automaticWakeCapEscalated: 0 });
+      expect((await readState(issueId, agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("a person's comment between runs leaves a shorter chain that still re-queues", async () => {
+      const { companyId, agentId, issueId, firstAt } = await seedChain(3);
+      // Newer than run 1 and its comment, older than runs 2 and 3.
+      await db.insert(issueComments).values({ companyId, issueId, authorUserId: "board-user", body: "note", createdAt: new Date(firstAt + 30 * 1000) });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 1, automaticWakeCapEscalated: 0 });
+      expect((await readState(issueId, agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("a coalesced person wake does not count as a chain run", async () => {
+      const { companyId, agentId, issueId, chainRunIds, firstAt } = await seedChain(3);
+      const personCommentId = randomUUID();
+      await db.insert(issueComments).values({ id: personCommentId, companyId, issueId, authorUserId: "board-user", body: "go on", createdAt: new Date(firstAt + 90 * 1000) });
+      const [run3] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, chainRunIds[2]));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...(run3.contextSnapshot as Record<string, unknown>), wakeCommentIds: [personCommentId] } }).where(eq(heartbeatRuns.id, run3.id));
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 1, automaticWakeCapEscalated: 0 });
+      expect((await readState(issueId, agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("a non-chain run as the latest run keeps the lane from capping", async () => {
+      const { companyId, agentId, issueId } = await seedChain(3);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId, invocationSource: "on_demand", triggerDetail: "manual", runtimeMode: "native", status: "succeeded",
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+        livenessState: "advanced", resultJson: {}, createdAt: new Date(), updatedAt: new Date(),
+      });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.automaticWakeCapEscalated).toBe(0);
+      expect((await readState(issueId, agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("keeps a GGU-809 attachment-per-heartbeat batch running", async () => {
+      const { agentId, issueId } = await seedChain(4, { attachments: true });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ continuationRequeued: 1, automaticWakeCapEscalated: 0, recentProgressExempted: 1 });
+      expect((await readState(issueId, agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("stops an attachment loop at the hard ceiling", async () => {
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "1");
+      const { agentId, issueId } = await seedChain(10, { attachments: true });
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ automaticWakeCapEscalated: 1, continuationRequeued: 0 });
+      const state = await readState(issueId, agentId);
+      expect(state.issue.status).toBe("blocked");
+      expect(state.comments[0].body).toContain("hard ceiling");
+      expect(state.actions[0].evidence).toMatchObject({ automaticWakeCapKind: "hard_ceiling", automaticWakeCap: 1 });
+    });
+
+    it("re-arm starts a fresh count and a re-cap posts a new notice", async () => {
+      // Old chain comments are outside the progress window, as they would be by the time a person re-arms.
+      const first = await seedChain(3, { commentAgeMs: 31 * MIN });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect((await readState(first.issueId, first.agentId)).issue.status).toBe("blocked");
+
+      // A person sets it back to in_progress without commenting. The board-owned
+      // action is resolved by the existing recovery-action flow when work resumes;
+      // while it is active the sweeper leaves the issue alone.
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, first.issueId));
+      await db.update(issueRecoveryActions).set({ status: "resolved" }).where(eq(issueRecoveryActions.sourceIssueId, first.issueId));
+      const rearmed = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(rearmed).toMatchObject({ continuationRequeued: 1, automaticWakeCapEscalated: 0 });
+      let state = await readState(first.issueId, first.agentId);
+      expect(state.issue.status).toBe("in_progress");
+      expect(state.actions).toHaveLength(1);
+
+      // The queued wake finishes and the sweeper chains two more; cap again.
+      const queued = state.runs.find((run) => run.status !== "succeeded")!;
+      await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", livenessState: "advanced", createdAt: new Date(Date.now() + 1000) }).where(eq(heartbeatRuns.id, queued.id));
+      let previousId = queued.id;
+      for (let i = 0; i < 2; i += 1) {
+        const id = randomUUID();
+        const createdAt = new Date(Date.now() + (i + 2) * 1000);
+        await db.insert(heartbeatRuns).values({
+          id, companyId: first.companyId, agentId: first.agentId, invocationSource: "automation", triggerDetail: "system", runtimeMode: "native",
+          status: "succeeded", retryOfRunId: previousId,
+          contextSnapshot: { issueId: first.issueId, taskId: first.issueId, retryReason: "issue_continuation_needed", source: "issue.productive_terminal_continuation_recovery", retryOfRunId: previousId },
+          livenessState: "advanced", resultJson: {}, createdAt, updatedAt: createdAt,
+        });
+        previousId = id;
+      }
+      const recapped = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(recapped.automaticWakeCapEscalated).toBe(1);
+      state = await readState(first.issueId, first.agentId);
+      expect(state.issue.status).toBe("blocked");
+      expect(state.actions).toHaveLength(2);
+      expect(state.comments).toHaveLength(2);
+    });
+
+    it("reads the cap from the environment, clamped to 1..10", () => {
+      expect(readAutomaticWakeCap()).toBe(3);
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "5");
+      expect(readAutomaticWakeCap()).toBe(5);
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "12");
+      expect(readAutomaticWakeCap()).toBe(10);
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "0");
+      expect(readAutomaticWakeCap()).toBe(3);
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "abc");
+      expect(readAutomaticWakeCap()).toBe(3);
+    });
+
+    it("honours a cap of 1 and a cap of 5", async () => {
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "1");
+      const one = await seedChain(1);
+      const heartbeat = heartbeatService(db);
+      expect((await heartbeat.reconcileStrandedAssignedIssues()).automaticWakeCapEscalated).toBe(1);
+      expect((await readState(one.issueId, one.agentId)).issue.status).toBe("blocked");
+
+      vi.stubEnv("STRANDED_AUTOMATIC_WAKE_CAP", "5");
+      const five = await seedChain(3);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(1);
+      expect((await readState(five.issueId, five.agentId)).issue.status).toBe("in_progress");
+    });
+
+    it("leaves budget-blocked agents to the existing over-budget path, at the cap and below it", async () => {
+      // The sweeper's over-budget check runs before the continuation lane, so a
+      // budget-blocked issue never reaches the cap: it is blocked as before and no
+      // wake is queued.
+      mockBudgetInvocationBlocked.value = true;
+      const heartbeat = heartbeatService(db);
+      for (const length of [3, 2]) {
+        const seeded = await seedChain(length);
+        const result = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(result).toMatchObject({ automaticWakeCapEscalated: 0, continuationRequeued: 0 });
+        const state = await readState(seeded.issueId, seeded.agentId);
+        expect(state.issue.status).toBe("blocked");
+        expect(state.runs).toHaveLength(length + 1);
+      }
+    });
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

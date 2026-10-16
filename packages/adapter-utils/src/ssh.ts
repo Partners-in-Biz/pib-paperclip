@@ -1574,7 +1574,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: [".git", ".paperclip-runtime", ".paperclip"],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1595,7 +1595,7 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".paperclip-runtime", ".paperclip"],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
@@ -1674,8 +1674,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime"],
-      preserveLocalEntries: [".git"],
+      exclude: [".git", ".paperclip-runtime", ".paperclip"],
+      preserveLocalEntries: [".git", ".paperclip"],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1686,7 +1686,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
     spec: input.spec,
     remoteDir,
     localDir: input.localDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".paperclip-runtime", ".paperclip"],
+    preserveLocalEntries: [".paperclip"],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });

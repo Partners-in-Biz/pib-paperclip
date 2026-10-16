@@ -14,7 +14,7 @@ describe("migrations", () => {
 
   it("every statement passes the host migration guard", () => {
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-    expect(files.slice(-5)).toEqual(["011_social.sql", "012_social.sql", "013_social.sql", "014_social.sql", "015_social.sql"]);
+    expect(files.slice(-5)).toEqual(["013_social.sql", "014_social.sql", "015_social.sql", "016_social.sql", "017_social.sql"]);
     for (const file of files) {
       for (const statement of splitStatements(readFileSync(new URL(file, MIGRATIONS), "utf8"))) {
         expect(() => assertMigrationStatement(statement), `${file}: ${statement.slice(0, 70)}`).not.toThrow();
@@ -74,8 +74,8 @@ describe("runtime SQL passes the host guard", () => {
       () => db.getAccount(ctx, "co", "a1"),
       () => db.companiesWithAccounts(ctx),
       () => db.accountsExpiringBefore(ctx, "co", new Date().toISOString()),
-      () => db.upsertAccount(ctx, { company_id: "co", platform: "facebook", display_name: "P", external_id: "p1", handle: null, avatar_url: null, token_enc: "v1.x", token_expires_at: null, scopes: ["a"], meta: { pageId: "p1" }, key_version: 1, client_kind: null, client_ref: null, client_name: null, created_by_user_id: "u" }),
-      () => db.upsertAccount(fakeCtx(), { company_id: "co", platform: "x", display_name: "P", external_id: "x1", handle: "h", avatar_url: null, token_enc: "v1.x", token_expires_at: "2026-10-01T00:00:00Z", scopes: [], meta: {}, key_version: 1, client_kind: "company", client_ref: "c", client_name: "C", created_by_user_id: null }),
+      () => db.upsertAccount(ctx, { company_id: "co", platform: "facebook", display_name: "P", external_id: "p1", handle: null, avatar_url: null, token_enc: "v1.x", token_expires_at: null, scopes: ["a"], meta: { pageId: "p1" }, key_version: 1, scope: "org", owner_user_id: null, client_kind: null, client_ref: null, client_name: null, created_by_user_id: "u" }),
+      () => db.upsertAccount(fakeCtx(), { company_id: "co", platform: "x", display_name: "P", external_id: "x1", handle: "h", avatar_url: null, token_enc: "v1.x", token_expires_at: "2026-10-01T00:00:00Z", scopes: [], meta: {}, key_version: 1, scope: "org", owner_user_id: null, client_kind: "company", client_ref: "c", client_name: "C", created_by_user_id: null }),
       () => db.saveAccountToken(ctx, "a1", { tokenEnc: "v1.y", keyVersion: 1, expiresAt: null, status: "connected", meta: { a: 1 } }),
       () => db.setAccountState(ctx, "a1", { status: "needs_reconnect", lastError: "x", reconnectIssueId: "i" }),
       () => db.updateAccountSettings(ctx, "co", "a1", { meta: { boardId: "b" }, status: "disabled" }),
@@ -121,14 +121,14 @@ describe("runtime SQL passes the host guard", () => {
       () => db.markMetricWindows(ctx, "d", ["1h", "24h"]),
       () => db.setDestinationExternal(ctx, "d", "e", null),
       () => db.listTemplates(ctx, "co"),
-      () => db.insertTemplate(ctx, { id: "t", company_id: "co", name: "n", body: "b", platform: null }),
+      () => db.insertTemplate(ctx, { id: "t", company_id: "co", name: "n", body: "b", platform: null, scope: "org", owner_user_id: null }),
       () => db.insertMetrics(ctx, { companyId: "co", postId: "p", destinationId: "d", accountId: "a", platform: "x", window: "1h", views: 1, likes: 2, comments: 3, shares: 4, raw: { a: 1 } }),
       () => db.metricsForPost(ctx, "co", "p"),
       () => db.metricsForCompany(ctx, "co"),
       () => db.metricsForCompany(ctx, "co", null),
       () => db.metricsForCompany(ctx, "co", { kind: "company", id: "c1" }),
       () => db.accountMetrics(ctx, "co"),
-      () => db.insertMediaAsset(ctx, { id: "m", company_id: "co", name: "n", url: "https://m", kind: "image", r2_key: "k", mime: "image/png", bytes: 1, width: 1, height: 1, duration_s: null, alt_text: null, client_kind: null, client_ref: null, client_name: null, source_url: null }),
+      () => db.insertMediaAsset(ctx, { id: "m", company_id: "co", name: "n", url: "https://m", kind: "image", r2_key: "k", mime: "image/png", bytes: 1, width: 1, height: 1, duration_s: null, alt_text: null, scope: "org", owner_user_id: null, client_kind: null, client_ref: null, client_name: null, source_url: null }),
       () => db.listMediaAssets(ctx, "co"),
       () => db.listMediaAssets(ctx, "co", { kind: "contact", id: "ct" }),
       () => db.getMediaAssets(ctx, "co", ["m1", "m2"]),

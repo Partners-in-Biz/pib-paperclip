@@ -118,6 +118,23 @@ export async function listSignals(ctx: PluginContext, companyId: string, client:
   return rows.map(mapSignal);
 }
 
+/** Delete one signal (by module and period) and return its payload if it existed. */
+export async function deleteSignal(
+  ctx: PluginContext,
+  input: { companyId: string; client: ClientKey; module: string; period: string },
+): Promise<SignalRow | null> {
+  const existing = await ctx.db.query<SignalDbRow>(
+    `SELECT ${SIGNAL_COLUMNS} FROM ${table(ctx, "client_signals")} WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND module = $4 AND period = $5 LIMIT 1`,
+    [input.companyId, input.client.kind, input.client.id, input.module, input.period],
+  );
+  if (!existing[0]) return null;
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "client_signals")} WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND module = $4 AND period = $5`,
+    [input.companyId, input.client.kind, input.client.id, input.module, input.period],
+  );
+  return mapSignal(existing[0]);
+}
+
 // ---------------------------------------------------------------------------
 // Monthly reports
 // ---------------------------------------------------------------------------

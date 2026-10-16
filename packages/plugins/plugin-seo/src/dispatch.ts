@@ -59,6 +59,7 @@ export const HANDLERS: Record<string, Handler> = {
   // Client previews
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
+  "confirm-client-facts": (env, c, a, p) => facts.confirmClientFacts(env, c, a, p),
   "draft-progress-report": (env, c, a, p) => report.draftProgressReport(env, c, a, p),
   "propose-client-facts": (env, c, a, p) => facts.proposeClientFacts(env, c, a, p),
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),

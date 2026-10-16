@@ -21,10 +21,10 @@ const FULL = {
   publicBaseUrl: "https://paperclip.partnersinbiz.online/",
   encryptionKey: REF("enc"),
   timezone: "Africa/Johannesburg",
-  linkedinOrgPages: true,
   platforms: {
     facebook: { clientId: "fb-id", clientSecret: REF("fb"), apiVersion: "v22.0" },
     linkedin: { clientId: "li-id" },
+    linkedinPages: { clientId: "li-pages-id", clientSecret: REF("fb") },
   },
   r2: { accountId: "acc", bucket: "media", accessKeyId: "AK", secretAccessKey: REF("r2"), publicMediaBaseUrl: "https://media.partnersinbiz.online/" },
 };
@@ -36,7 +36,6 @@ describe("loadSocialConfig", () => {
     expect(get).toHaveBeenCalledWith("co-1");
     expect(resolve).not.toHaveBeenCalled();
     expect(config.redirectUri()).toBe("https://paperclip.partnersinbiz.online/_plugins/e588ce00-a14b-49fc-b62d-54b0208daafa/ui/oauth-callback.html");
-    expect(config.linkedinOrgPages).toBe(true);
 
     const app = await config.app("facebook");
     expect(app).toMatchObject({ clientId: "fb-id", clientSecret: "facebook-secret", apiVersion: "v22.0" });
@@ -44,6 +43,9 @@ describe("loadSocialConfig", () => {
 
     await config.app("facebook");
     expect(resolve).toHaveBeenCalledTimes(1);
+
+    const linkedinPages = await config.linkedinPages();
+    expect(linkedinPages).toMatchObject({ clientId: "li-pages-id", clientSecret: "facebook-secret" });
 
     const r2 = await config.r2();
     expect(r2).toMatchObject({ bucket: "media", secretAccessKey: "r2-secret", publicBaseUrl: "https://media.partnersinbiz.online" });

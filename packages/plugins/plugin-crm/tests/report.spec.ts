@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runClientCareJob } from "../src/care-jobs.js";
-import { reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
+import { isFormNotification, reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
 import { atAGlance, currentPeriod, EMPTY_NARRATIVE, escapeHtml, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type ReportData } from "../src/report-render.js";
 import { answerSend, bootCare, careSeed, CO, company, contact, DAY, decide, issuesWith, OWNER, sentMail, tool, toolRaw, type Booted, type Route } from "./helpers/care.js";
 
@@ -121,6 +121,25 @@ describe("the report as documents", () => {
     expect(html).toContain("What we need from you");
     expect(html).not.toMatch(/PAR-12|Effort|tokens/);
     expect(escapeHtml(`a<b>&"'`)).toBe("a&lt;b&gt;&amp;&quot;&#39;");
+  });
+});
+
+describe("the client's own form notifications", () => {
+  it("are recognised, and real mail is not", () => {
+    for (const body of ["New enquiry from Willem Prinsloo Name: Willem Email: w@x.test", "New contact form submission\n\nName: x", "Contact form: Jane", "Website enquiry from Jane", "New lead from your website", "New message from your website"]) expect(isFormNotification(body), body).toBe(true);
+    for (const body of ["Hi", "Re: invoice", "Quick question about the new enquiry page\n\nCan we talk?", "Meeting on Tuesday"]) expect(isFormNotification(body), body).toBe(false);
+  });
+
+  it("are not counted as emails exchanged; with nothing else to say the section is left out", async () => {
+    const monthStart = new Date(periodBounds(PERIOD).from);
+    const mid = new Date(monthStart.getTime() + 3600_000).toISOString();
+    const row = (id: string, body: string) => ({ id, company_id: CO, record_type: "contact", record_id: "ada", kind: "email_received", body, created_at: mid, meta: null, source_key: id, issue_id: null });
+    const store = reportSeed({ activities: [row("f1", "New enquiry from Jo Name: Jo Email: jo@x.test"), row("f2", "New enquiry from Sam Name: Sam Email: sam@x.test")] });
+    const booted = await bootCare({ store, routes: [WORK, COST] });
+    booted.harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: BRAND } as never] });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.sections.map((s: any) => s.title)).not.toContain("Our work together");
+    expect(result.preview).not.toContain("Emails exchanged");
   });
 });
 
@@ -508,6 +527,55 @@ describe("writing and sending the report", () => {
     const booted = await ready();
     const listed = await tool<Record<string, any>>(booted.harness, "list-client-reports", { client: "company:acme" });
     expect(listed.reports).toEqual([expect.objectContaining({ client: "company:acme", period: PERIOD, status: "built", narrativeWritten: false })]);
+  });
+});
+
+describe("certificate and domain expiry display", () => {
+  it("shows the actual certificate expiry date, not a stale day count", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.preview).toContain("security certificate valid until 31 October 2026");
+    expect(result.preview).not.toMatch(/more days/);
+  });
+
+  it("reports an expired certificate with its expiry date", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-08-15T12:00:00Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.preview).toContain("security certificate expired on 15 August 2026");
+  });
+});
+
+describe("website section in reports", () => {
+  it("a website signal alone is rendered as a single section", async () => {
+    const booted = await bootReport();
+    await tool(booted.harness, "record-client-signal", { client: "company:acme", module: "website", period: PERIOD, headline: [{ label: "Page load time", value: "1.2s" }], bullets: ["Mobile performance improved."] });
+    const built = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain("Mobile performance improved.");
+    expect(rec.markdown).toContain("## Website");
+    expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
+  });
+
+  it("monitors and a website signal are combined into a single section, not duplicated", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    await tool(booted.harness, "record-client-signal", { client: "company:acme", module: "website", period: PERIOD, headline: [{ label: "Page load time", value: "1.2s" }], bullets: ["Mobile performance improved."] });
+    const built = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain("## Your website");
+    expect(rec.markdown).toContain("Mobile performance improved.");
+    expect(rec.markdown).toContain("acme.co.za: 100% uptime, security certificate valid until 31 October 2026");
+    // Verify the signal bullet appears exactly once in the markdown and HTML
+    expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
+    expect((rec.html.match(/Mobile performance improved/g) || []).length).toBe(1);
   });
 });
 
