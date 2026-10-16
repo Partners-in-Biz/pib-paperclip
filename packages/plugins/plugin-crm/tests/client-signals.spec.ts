@@ -117,3 +117,61 @@ describe("record-client-signal", () => {
     expect((await toolRaw(harness, "record-client-signal", { client: "company:acme", module: "seo" })).error).toMatch(/at least one headline line/);
   });
 });
+
+describe("delete-client-signal", () => {
+  it("removes a recorded signal and reports what was deleted", async () => {
+    const { harness, store } = await bootCare();
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "website", period: "2026-09", headline: [{ label: "Leads", value: "42" }], bullets: ["Form submissions up 20%."] });
+    expect(store.client_signals).toHaveLength(1);
+    const result = await tool<Record<string, any>>(harness, "delete-client-signal", { client: "company:acme", module: "website", period: "2026-09" });
+    expect(result).toMatchObject({ module: "website", period: "2026-09", deleted: 1 });
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0]).toMatchObject({ headline: [{ label: "Leads", value: "42" }], bullets: ["Form submissions up 20%."] });
+    expect(store.client_signals).toHaveLength(0);
+  });
+
+  it("returns deleted 0 when nothing matched", async () => {
+    const { harness } = await bootCare();
+    const result = await tool<Record<string, any>>(harness, "delete-client-signal", { client: "company:acme", module: "website", period: "2026-09" });
+    expect(result).toMatchObject({ deleted: 0, removed: [] });
+  });
+
+  it("requires an explicit period (YYYY-MM or \"current\") and rejects missing/other values", async () => {
+    const { harness } = await bootCare();
+    expect((await toolRaw(harness, "delete-client-signal", { client: "company:acme", module: "website" })).error).toMatch(/period/);
+    expect((await toolRaw(harness, "delete-client-signal", { client: "company:acme", module: "website", period: "2026-13" })).error).toMatch(/period/);
+    expect((await toolRaw(harness, "delete-client-signal", { client: "company:acme", module: "website", period: "September" })).error).toMatch(/period/);
+  });
+
+  it("deletes the current state (period \"\") when \"current\" is passed, leaving monthly ones alone", async () => {
+    const { harness, store } = await bootCare();
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "seo", headline: [{ label: "Health", value: "85" }], health: { score: 85 } });
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "seo", period: "2026-09", headline: [{ label: "Clicks", value: "1200" }] });
+    expect(store.client_signals).toHaveLength(2);
+    const result = await tool<Record<string, any>>(harness, "delete-client-signal", { client: "company:acme", module: "seo", period: "current" });
+    expect(result).toMatchObject({ period: "current", deleted: 1 });
+    expect(store.client_signals).toHaveLength(1);
+    expect(store.client_signals![0]).toMatchObject({ period: "2026-09" });
+  });
+
+  it("checks the client and module; refuses a different company", async () => {
+    const { harness } = await bootCare();
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "website", period: "2026-09", headline: [{ label: "Leads", value: "42" }] });
+    expect((await toolRaw(harness, "delete-client-signal", { client: "company:nobody", module: "website", period: "2026-09" })).error).toMatch(/not found/);
+    expect((await toolRaw(harness, "delete-client-signal", { client: "company:acme", module: "tiktok", period: "2026-09" })).error).toMatch(/module must be one of/);
+  });
+
+  it("keeps current state when deleting a period, and a period when deleting current", async () => {
+    const { harness, store } = await bootCare();
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "seo", headline: [{ label: "Score", value: "72" }] });
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "seo", period: "2026-08", headline: [{ label: "Pos", value: "3" }] });
+    await tool(harness, "record-client-signal", { client: "company:acme", module: "seo", period: "2026-09", headline: [{ label: "Pos", value: "2" }] });
+    expect(store.client_signals).toHaveLength(3);
+    await tool(harness, "delete-client-signal", { client: "company:acme", module: "seo", period: "current" });
+    expect(store.client_signals).toHaveLength(2);
+    expect(store.client_signals!.map((s: any) => s.period).sort()).toEqual(["2026-08", "2026-09"]);
+    await tool(harness, "delete-client-signal", { client: "company:acme", module: "seo", period: "2026-08" });
+    expect(store.client_signals).toHaveLength(1);
+    expect(store.client_signals![0]!.period).toBe("2026-09");
+  });
+});

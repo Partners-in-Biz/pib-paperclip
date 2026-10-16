@@ -20,7 +20,7 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
-import { upsertSignal, type ClientKey, type SignalRow } from "./care-store.js";
+import { deleteSignal, upsertSignal, type ClientKey, type SignalRow } from "./care-store.js";
 import { asRecord } from "./db.js";
 import { CrmError, type Viewer } from "./domain.js";
 import { parseClientRef, requireClient } from "./lookup.js";
@@ -195,6 +195,32 @@ export async function recordClientSignalTool(ctx: PluginContext, viewer: Viewer,
     period: period || "current",
     stored,
     next: period ? "Run build-client-report again so the report carries it." : "The health score reads it at its next run.",
+  };
+}
+
+/** The agent tool: delete one recorded signal (by module and period). */
+export async function deleteClientSignalTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const client = parseClientRef(params.client);
+  const name = await requireClient(ctx, viewer, client);
+  const module = typeof params.module === "string" ? params.module : "";
+  if (![...REPORT_MODULES, "other"].includes(module as ReportModule | "other")) throw new CrmError(`module must be one of ${[...REPORT_MODULES, "other"].join(", ")}`);
+  if (params.period === undefined || params.period === null || params.period === "") throw new CrmError("period is required: pass YYYY-MM (the month) or the literal string \"current\" for the client's current state");
+  const period = typeof params.period === "string" && params.period === "current" ? "" : periodOrEmpty(params.period);
+  if (period === null) throw new CrmError("period must be YYYY-MM (the month), or the literal string \"current\" for the client's current state");
+  const removed = await deleteSignal(ctx, {
+    companyId: viewer.companyId,
+    client,
+    module,
+    period,
+  });
+  return {
+    client: refOf(client.kind, client.id),
+    name,
+    module,
+    period: period || "current",
+    deleted: removed ? 1 : 0,
+    removed: removed ? [{ headline: removed.payload.headline ?? [], bullets: removed.payload.bullets ?? [], note: removed.payload.note ?? "" }] : [],
+    next: period ? "Run build-client-report again (dry run first) so the report no longer carries it." : "The health score reads the change at its next run.",
   };
 }
 

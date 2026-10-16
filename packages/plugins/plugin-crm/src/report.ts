@@ -51,7 +51,7 @@ import { daysUntil } from "./monitor-net.js";
 import { originFor } from "./origins.js";
 import { approvalLink, requestApproval, withdrawOpenApprovals, type MailApprovalHooks } from "./outbound.js";
 import { brandName, companyPrefix, crmLink, refOf } from "./refs.js";
-import { currentPeriod, EMPTY_NARRATIVE, escapeHtml, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type MissingModule, type ReportData, type ReportSection } from "./report-render.js";
+import { currentPeriod, EMPTY_NARRATIVE, escapeHtml, formatExpiryDate, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type MissingModule, type ReportData, type ReportSection } from "./report-render.js";
 import { teamAssignee } from "./routing.js";
 import { SERVICES } from "./services.js";
 import { growthSection } from "./attribution.js";
@@ -120,8 +120,13 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
   const sections: ReportSection[] = [];
   const have = new Set<string>();
 
-  // What the other modules sent for this month.
+  // Check if we will have monitor data for the website (to avoid duplicate sections).
+  const ownSites = sites.filter((site) => site.client.kind === client.kind && site.client.id === client.id);
+  const willHaveWebsiteMonitors = ownSites.length > 0;
+
+  // What the other modules sent for this month (skip website if we have monitors, as they will be merged below).
   for (const module of REPORT_MODULES) {
+    if (module === "website" && willHaveWebsiteMonitors) continue;
     const signal = signalFor(signals, module, period);
     if (!signal) continue;
     have.add(module);
@@ -151,12 +156,11 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
   }
 
   // Website: uptime, certificate and domain.
-  const own = sites.filter((site) => site.client.kind === client.kind && site.client.id === client.id);
-  if (own.length) {
+  if (ownSites.length) {
     const states = new Map(monitors.map((m) => [m.siteId, m]));
     const bullets: string[] = [];
     const pcts: number[] = [];
-    for (const site of own) {
+    for (const site of ownSites) {
       const figures = await safe(ctx, "uptime", () => uptimeFigures(ctx, companyId, site.id, period), null);
       const state = states.get(site.id);
       const host = (site.label ?? site.url).replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -166,7 +170,16 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
         parts.push(`${figures.pct}% uptime`);
       }
       const tls = daysUntil(state?.tlsExpiresAt ?? null, toMs);
-      if (tls !== null) parts.push(`security certificate valid for ${Math.max(0, tls)} more days`);
+      if (tls !== null) {
+        const expiryDate = formatExpiryDate(state?.tlsExpiresAt ?? null);
+        if (expiryDate) {
+          if (tls < 0) {
+            parts.push(`security certificate expired on ${expiryDate}`);
+          } else {
+            parts.push(`security certificate valid until ${expiryDate}`);
+          }
+        }
+      }
       const domain = daysUntil(state?.domainExpiresAt ?? null, toMs);
       if (domain !== null) parts.push(`domain renews in ${Math.max(0, domain)} days`);
       if (parts.length) bullets.push(`${host}: ${parts.join(", ")}`);
