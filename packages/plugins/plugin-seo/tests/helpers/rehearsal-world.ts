@@ -72,7 +72,7 @@ export interface WorldInput {
 
 export function world(input: WorldInput = {}) {
   const sprints = (input.sprints ?? []).map((r) => ({ ...r }));
-  const store = memTables({ sprint_tasks: input.tasks ?? [], task_chunks: input.chunks ?? [] });
+  const store = memTables({ sprint_tasks: input.tasks ?? [], task_chunks: input.chunks ?? [] }, (sprintId) => sprints.find((s) => s.id === sprintId)?.pacing as string | undefined);
   const web = site();
   const issueStatus = new Map<string, string>(Object.entries(input.issues ?? {}));
   // The Needs you digests, applied as the plugin writes them, so one weekly digest and one issue come out of many lines.

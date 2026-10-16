@@ -30,6 +30,31 @@ function useLinkFor(): LinkPropsFor {
   return (href: string) => navigation.linkProps(href);
 }
 
+/**
+ * The company prefix from a host path (`/PAR/dashboard` gives `PAR`). The
+ * dashboard hands widgets no `companyPrefix`, so the host cannot prefix their
+ * links and `/billing` opens "Organization not found". Null for a path with
+ * only one segment.
+ */
+export function prefixFromPath(pathname: string | null | undefined): string | null {
+  const [first, second] = (pathname ?? "").split("/").filter(Boolean);
+  return first && second && /^[A-Za-z][A-Za-z0-9]{0,9}$/.test(first) ? first : null;
+}
+
+/** Prefix a relative host path with the company prefix; paths that already carry it or are absolute urls stay. */
+export function withCompanyPrefix(href: string, prefix: string | null): string {
+  if (!prefix || !href.startsWith("/") || href.startsWith("//")) return href;
+  const first = href.split(/[/?#]/)[1] ?? "";
+  return first.toUpperCase() === prefix.toUpperCase() ? href : `/${prefix.toUpperCase()}${href}`;
+}
+
+function useWidgetLinkFor(context: { companyPrefix?: string | null }): LinkPropsFor {
+  const navigation = useHostNavigation();
+  const location = useHostLocation();
+  const prefix = context.companyPrefix || prefixFromPath(location.pathname);
+  return (href: string) => navigation.linkProps(withCompanyPrefix(href, prefix));
+}
+
 function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
@@ -301,7 +326,7 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now
 
 export function CompanyTodayWidget({ context }: PluginWidgetProps) {
   const data = useCockpitData(context.companyId, { light: true });
-  const linkFor = useLinkFor();
+  const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.view) return null;
   return <TodayCard waiting={data.view.waiting.length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
 }

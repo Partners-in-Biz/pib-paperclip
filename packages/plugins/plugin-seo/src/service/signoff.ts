@@ -34,6 +34,13 @@ export async function syncSignoff(env: Env): Promise<number> {
   return sent;
 }
 
+/** Opens the sign-off lock for this sprint's WordPress site until `hours` from now. Returns when it closes (ISO). */
+export async function liftWriteLock(env: Env, sprint: Pick<db.Sprint, "companyId" | "siteId">, by: string, hours: number): Promise<string> {
+  const until = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
+  await env.ctx.events.emit(APPROVAL_EVENT, sprint.companyId, { siteId: sprint.siteId, until, by });
+  return until;
+}
+
 /** A person says the client signed off: agents may apply the approved changes through the Connector for a while. */
 export async function approveSiteWrites(env: Env, companyId: string, actor: Actor, params: Params) {
   if (actor.kind !== "user") throw new SeoError("Only a person can approve applying changes to a client's site.");
@@ -48,8 +55,7 @@ export async function approveSiteWrites(env: Env, companyId: string, actor: Acto
     [companyId, sprintId],
   );
   if (approved.length === 0) throw new SeoError("No client has approved a preview on this sprint yet. Send the preview link to the client first; their Approve click is what unlocks this.");
-  const until = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
-  await env.ctx.events.emit(APPROVAL_EVENT, companyId, { siteId: sprint.siteId, until, by: actorId(actor) });
+  const until = await liftWriteLock(env, sprint, actorId(actor), hours);
   // Page addresses only, at most 15: a long list would make the comment (and the thread) big; list-previews has the rest.
   const shown = approved.slice(0, 15).map((r) => `- ${String(r.page_url)}`);
   const more = approved.length > shown.length ? `\n- …and ${approved.length - shown.length} more: partnersinbiz.seo:list-previews with status approved (limit 100) shows all of them.` : "";

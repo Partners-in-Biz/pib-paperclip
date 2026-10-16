@@ -177,6 +177,7 @@ export interface Snapshot {
     r2: boolean;
     timezone: string;
     linkedinOrgPages: boolean;
+    linkedinPagesConfigured: boolean;
     allowAgentReplies: boolean;
     blueskyDefaultPds: string;
     mastodonDefaultInstance: string | null;

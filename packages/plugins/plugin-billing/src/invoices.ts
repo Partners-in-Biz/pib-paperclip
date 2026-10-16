@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
+import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, iso, refreshInvoiceStatus } from "./balances.js";
 import { defaultTaxCode, emailEnabled, loadBilling, privateR2, type BillingSettings } from "./config.js";
 import {
@@ -29,7 +29,7 @@ import {
   type QuoteRow,
 } from "./db.js";
 import { docFileName, renderDocument, type DocKind, type DocView } from "./documents.js";
-import { BillingError, canSeeInvoice, isOpenStatus, markSent, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
+import { BillingError, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
 import { nextDocumentNumber } from "./numbering.js";
@@ -50,6 +50,31 @@ export function senderFrom(settings: BillingSettings, override: string | undefin
   return base;
 }
 
+function detailsOf(record: { billing?: CrmCompanyBilling | null } | null): CrmCompanyBilling | null {
+  const billing = record?.billing;
+  return billing && typeof billing === "object" ? billing : null;
+}
+
+/**
+ * The CRM company's billing details, for a company client; null for a contact client or an unknown company.
+ * A failed read throws: a send must not freeze a Bill to block without the details because the projection hiccuped.
+ */
+export async function customerDetails(ctx: PluginContext, companyId: string, kind: string, ref: string): Promise<CrmCompanyBilling | null> {
+  if (kind !== "company") return null;
+  return detailsOf(await getCrmCompany(ctx, ctx.db.namespace, companyId, ref, { billing: true }));
+}
+
+/** A draft's customer block with today's CRM details. A document that has a frozen snapshot, or is past draft, is never merged. */
+async function currentCustomer(
+  ctx: PluginContext,
+  doc: { company_id: string; status: string; customer_kind: string; customer_ref: string; customer: unknown; customer_snapshot?: unknown },
+): Promise<Record<string, unknown>> {
+  if (doc.customer_snapshot != null) return asObject(doc.customer_snapshot);
+  const customer = asObject(doc.customer);
+  if (doc.status !== "draft") return customer;
+  return mergeCustomer(customer, await customerDetails(ctx, doc.company_id, doc.customer_kind, doc.customer_ref));
+}
+
 /** Customer name + details from the CRM projection, falling back to what the caller passed. */
 export async function customerFrom(
   ctx: PluginContext,
@@ -59,10 +84,11 @@ export async function customerFrom(
   explicitName: string | undefined,
   explicitEmail?: string,
 ): Promise<Record<string, unknown>> {
-  const customer: Record<string, unknown> = { refKind: kind, refId: ref };
+  let customer: Record<string, unknown> = { refKind: kind, refId: ref };
   if (kind === "company") {
-    const record = await getCrmCompany(ctx, ctx.db.namespace, companyId, ref).catch(() => null);
+    const record = await getCrmCompany(ctx, ctx.db.namespace, companyId, ref, { billing: true }).catch(() => null);
     if (record) customer.name = record.name;
+    customer = mergeCustomer(customer, detailsOf(record));
   } else {
     const record = await getCrmContact(ctx, ctx.db.namespace, companyId, ref).catch(() => null);
     if (record) {
@@ -71,7 +97,10 @@ export async function customerFrom(
     }
   }
   if (explicitName) customer.name = explicitName;
-  if (explicitEmail) customer.email = explicitEmail;
+  if (explicitEmail) {
+    customer.email = explicitEmail;
+    delete customer.emailFromCrm;
+  }
   if (typeof customer.name !== "string" || !customer.name) {
     throw new BillingError("customerName is required (the customer is not in the CRM client list yet)");
   }
@@ -558,12 +587,12 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
  */
 export async function convertQuoteRow(ctx: PluginContext, quote: QuoteRow, options: { invoiceId?: string; dealId?: string | null } = {}): Promise<{ quote: QuoteRow; invoice: InvoiceRow }> {
   const { settings } = await loadBilling(ctx, quote.company_id);
-  const customer = asObject(quote.customer);
   const dealId = quote.deal_id ?? options.dealId ?? null;
   const existing = options.invoiceId ? await getInvoice(ctx, options.invoiceId) : null;
   let invoice: InvoiceRow;
   if (existing && existing.company_id === quote.company_id) invoice = existing;
   else {
+    const customer = mergeCustomer(asObject(quote.customer), await customerDetails(ctx, quote.company_id, quote.customer_kind, quote.customer_ref));
     invoice = {
       id: options.invoiceId ?? randomUUID(),
       company_id: quote.company_id,
@@ -679,7 +708,7 @@ export async function invoiceView(ctx: PluginContext, invoice: InvoiceRow, setti
     issuedAt: iso(invoice.sent_at) ?? new Date().toISOString(),
     dueAt: iso(invoice.due_at),
     sender,
-    customer: asObject(invoice.customer_snapshot ?? invoice.customer),
+    customer: await currentCustomer(ctx, invoice),
     lines: lineViews(lines, totals),
     groups: totals.groups,
     subtotalMinor: totals.subtotalMinor,
@@ -708,7 +737,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     issuedAt: iso(quote.sent_at) ?? iso(quote.created_at) ?? new Date().toISOString(),
     dueAt: iso(quote.valid_until),
     sender: asObject(quote.sender),
-    customer: asObject(quote.customer),
+    customer: await currentCustomer(ctx, quote),
     lines: lineViews(lines, totals),
     groups: totals.groups,
     subtotalMinor: totals.subtotalMinor,
@@ -723,14 +752,19 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
 
 // ── Sending ────────────────────────────────────────────────────────────────
 
-/** Freeze sender (with today's EFT details) and customer at send time. */
-function freeze(invoice: { sender: unknown; customer: unknown }, settings: BillingSettings) {
+/** Freeze sender (with today's EFT details) and customer (with today's CRM billing details) at send time. */
+async function freeze(
+  ctx: PluginContext,
+  invoice: { company_id: string; customer_kind: string; customer_ref: string; sender: unknown; customer: unknown },
+  settings: BillingSettings,
+) {
   const sender = { ...asObject(invoice.sender) };
   for (const [key, value] of Object.entries(asObject(settings.sender))) {
     if (key !== "name" && typeof value === "string" && value.trim() && !sender[key]) sender[key] = value;
   }
   if (settings.payment && typeof settings.payment === "object") sender.payment = { ...settings.payment };
-  return { sender, customer: { ...asObject(invoice.customer) } };
+  const customer = mergeCustomer({ ...asObject(invoice.customer) }, await customerDetails(ctx, invoice.company_id, invoice.customer_kind, invoice.customer_ref));
+  return { sender, customer };
 }
 
 /** Render the PDF and store it privately; returns a 7-day link for the Mailbox, or null without R2. */
@@ -754,7 +788,7 @@ export async function markInvoiceSent(ctx: PluginContext, invoiceId: string, sen
     const state: InvoiceState = {
       status: invoice.status,
       sender: asObject(invoice.sender),
-      customer: asObject(invoice.customer),
+      customer: invoice.customer_snapshot == null ? await currentCustomer(ctx, invoice) : asObject(invoice.customer),
       senderSnapshot: invoice.sender_snapshot == null ? null : asObject(invoice.sender_snapshot),
       customerSnapshot: invoice.customer_snapshot == null ? null : asObject(invoice.customer_snapshot),
       sentAt: null,
@@ -798,7 +832,7 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
   if (!invoice) throw new BillingError("Invoice was not found");
   if (invoice.status !== "draft") throw new BillingError("Only a draft invoice can be sent");
   const { settings, resolver } = await loadBilling(ctx, invoice.company_id);
-  const frozen = freeze(invoice, settings);
+  const frozen = await freeze(ctx, invoice, settings);
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")} SET sender_snapshot = $2::jsonb, customer_snapshot = $3::jsonb, updated_at = now() WHERE id = $1`,
     [invoice.id, JSON.stringify(frozen.sender), JSON.stringify(frozen.customer)],
@@ -857,6 +891,11 @@ export async function startQuoteSend(ctx: PluginContext, quoteId: string, create
   const quote = await getQuote(ctx, quoteId);
   if (!quote) throw new BillingError("Quote was not found");
   const { settings, resolver } = await loadBilling(ctx, quote.company_id);
+  if (quote.status === "draft") {
+    // A quote has no snapshot: the customer block it is sent with is the stored one, so merge the CRM details in before anything renders or reads it.
+    quote.customer = await currentCustomer(ctx, quote);
+    await ctx.db.execute(`UPDATE ${table(ctx, "quotes")} SET customer = $2::jsonb WHERE id = $1 AND status = 'draft'`, [quote.id, JSON.stringify(quote.customer)]);
+  }
   const to = emailEnabled(settings) ? await recipientsFor(ctx, quote.company_id, quote) : [];
   if (!emailEnabled(settings) || to.length === 0) {
     quote.status = quote.status === "draft" ? "sent" : quote.status;
@@ -883,7 +922,7 @@ export async function markSentAction(ctx: PluginContext, context: PluginPerformA
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   if (invoice.status !== "draft") throw new BillingError("Only a draft invoice can be marked sent");
   const { settings } = await loadBilling(ctx, companyId);
-  const frozen = freeze(invoice, settings);
+  const frozen = await freeze(ctx, invoice, settings);
   await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET sender_snapshot = $2::jsonb, customer_snapshot = $3::jsonb WHERE id = $1`, [invoice.id, JSON.stringify(frozen.sender), JSON.stringify(frozen.customer)]);
   const fresh = await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
   return publicInvoice(fresh!);

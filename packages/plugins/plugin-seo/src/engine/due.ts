@@ -47,6 +47,8 @@ export interface TimedTask {
   status: string;
   /** Sprint day the task comes due; null = due at once. */
   dueDay: number | null;
+  /** Held back on a manual-pacing sprint until a person starts its week: never due, never late. */
+  held?: boolean | null;
   owner?: string | null;
   issueId?: string | null;
   issueStatus?: string | null;
@@ -78,7 +80,7 @@ export function isWaitingTask(task: TimedTask): boolean {
 
 /** The plan has reached the task's day (no day = due at once), or work on it has started. */
 export function isDueTask(task: TimedTask, day: number): boolean {
-  if (!isOpenTask(task)) return false;
+  if (!isOpenTask(task) || task.held) return false;
   return task.status === "in_progress" || task.dueDay == null || task.dueDay <= day;
 }
 

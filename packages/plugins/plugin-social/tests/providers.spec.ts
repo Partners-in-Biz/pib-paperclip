@@ -249,6 +249,68 @@ describe("LinkedIn", () => {
     expect(escapeLinkedInText("a_b *c* #tag (x)")).toBe("a\\_b \\*c\\* #tag \\(x\\)");
     expect(linkedinVersions(undefined, new Date("2026-09-15T00:00:00Z"))[0]).toBe("202607");
   });
+
+  it("exchanges linkedinPages app with org scopes and lists organizations", async () => {
+    const { calls } = mockFetch([
+      ["POST https://www.linkedin.com/oauth/v2/accessToken", () => json({ access_token: "li-tok", expires_in: 5_184_000, scope: "w_organization_social r_organization_social rw_organization_admin" })],
+      ["GET https://api.linkedin.com/rest/organizationAcls?q=roleAssignee", () => json({ elements: [
+        { organization: "urn:li:organization:123", role: "ADMINISTRATOR" },
+        { organization: "urn:li:organization:456", role: "CONTENT_ADMINISTRATOR" },
+      ] })],
+      ["GET https://api.linkedin.com/rest/organizations/123", () => json({ localizedName: "Company A", vanityName: "company-a" })],
+      ["GET https://api.linkedin.com/rest/organizations/456", () => json({ localizedName: "Company B" })],
+    ]);
+    const result = await linkedinProvider.exchange!(env("linkedin", { app: { platform: "linkedin", clientId: "pages-id", clientSecret: "pages-secret" }, linkedinAppKey: "linkedinPages" }), { code: "c" }, {});
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates[0]).toMatchObject({
+      externalId: "urn:li:organization:123",
+      kind: "organization",
+      displayName: "Company A",
+      meta: { authorUrn: "urn:li:organization:123", kind: "organization", app: "linkedinPages" }
+    });
+    expect(result.candidates[1]).toMatchObject({
+      externalId: "urn:li:organization:456",
+      displayName: "Company B",
+      meta: { app: "linkedinPages" }
+    });
+  });
+
+  it("pages app fails with a clear message when no organizations are found", async () => {
+    mockFetch([
+      ["POST https://www.linkedin.com/oauth/v2/accessToken", () => json({ access_token: "li-tok", expires_in: 5_184_000, scope: "w_organization_social r_organization_social rw_organization_admin" })],
+      ["GET https://api.linkedin.com/rest/organizationAcls?q=roleAssignee", () => json({ elements: [] })],
+    ]);
+    await expect(linkedinProvider.exchange!(env("linkedin", { linkedinAppKey: "linkedinPages" }), { code: "c" }, {})).rejects.toThrow(/No LinkedIn company pages/);
+  });
+
+  it("personal app authorize has personal scopes only", async () => {
+    const result = await linkedinProvider.authorize!(env("linkedin"), "state123", {});
+    const url = new URL(result.url);
+    const scope = url.searchParams.get("scope");
+    expect(scope).toBe("openid profile email w_member_social");
+    expect(scope).not.toContain("organization");
+  });
+
+  it("pages app authorize has org scopes only", async () => {
+    const result = await linkedinProvider.authorize!(env("linkedin", { linkedinAppKey: "linkedinPages" }), "state123", {});
+    const url = new URL(result.url);
+    const scope = url.searchParams.get("scope");
+    expect(scope).toBe("w_organization_social r_organization_social rw_organization_admin");
+    expect(scope).not.toContain("openid");
+    expect(scope).not.toContain("profile");
+  });
+
+  it("refresh for pages account posts pages client id and secret", async () => {
+    const { calls } = mockFetch([
+      ["POST https://www.linkedin.com/oauth/v2/accessToken", () => json({ access_token: "new-tok", expires_in: 5_184_000 })],
+    ]);
+    const result = await linkedinProvider.refresh!(env("linkedin", { app: { platform: "linkedin", clientId: "pages-id", clientSecret: "pages-secret" } }),
+      account("linkedin", { app: "linkedinPages", authorUrn: "urn:li:organization:123" }, { token: { accessToken: "old-tok", refreshToken: "li-ref" } }));
+    expect(result.token.accessToken).toBe("new-tok");
+    const form = formOf(calls[0]!);
+    expect(form.get("client_id")).toBe("pages-id");
+    expect(form.get("client_secret")).toBe("pages-secret");
+  });
 });
 
 describe("X", () => {

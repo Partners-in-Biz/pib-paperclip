@@ -230,6 +230,21 @@ describe("the owner's reply", () => {
     expect(await onAskIssueUpdated(s.env, { companyId: A, entityType: "issue", entityId: fourth.id })).toBe("open");
   });
 
+  it("the hourly check ignores a person's comment older than the ask, even when the host lists newest first", async () => {
+    const s = setup();
+    await saveTeam(s.env, A, { operatorAgentId: "op" }, "user-1");
+    const issue = await issueFor(s);
+    s.comments.push({ id: "c-old", issueId: issue.id, body: "Stale worktree removed. Back to todo.", companyId: A, authorUserId: "user-1", createdAt: "2020-01-01T00:00:00.000Z" });
+    await ask(s, { issueId: issue.id, ...QUESTION });
+    const list = s.ctx.issues.listComments;
+    s.ctx.issues.listComments = async (...args: Parameters<typeof list>) => [...(await list(...args))].reverse();
+    expect(await reconcileAsks(s.env, A)).toEqual({ answered: 0, closed: 0, open: 1 });
+    expect(s.store.asks![0].status).toBe("open");
+    s.userComment(issue.id, "Ask Northwind to do it.", "user-1");
+    expect(await reconcileAsks(s.env, A)).toEqual({ answered: 1, closed: 0, open: 0 });
+    expect(s.store.asks![0]).toMatchObject({ status: "answered", answer: "Ask Northwind to do it." });
+  });
+
   it("the hourly check picks up a reply whose event was missed", async () => {
     const s = await asked();
     s.userComment(s.issue.id, "Ask Northwind to do it.", "user-1");

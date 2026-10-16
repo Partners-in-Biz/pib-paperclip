@@ -33,6 +33,7 @@ None of these is opened for the canary (test) client (an id starting \`canary-\`
 
 - Every quote and invoice is for a CRM client: \`customerKind\` (\`company\` or \`contact\` for a person or sole trader) plus \`customerRef\`, the CRM id. Look the client up in the CRM first (\`partnersinbiz.crm:find-records\`); create it there (\`create-company\` / \`create-contact\`) only when it truly does not exist. Never use a name as an id.
 - The name and billing email come from the CRM. If Billing says it does not know the client yet (just created in the CRM), pass \`customerName\` (and \`customerEmail\`); the CRM syncs within 15 minutes.
+- Bill to comes from the CRM company's billing details (address, billing email, phone, VAT no., reg. no.). Before the first \`request-invoice-send\` for a client, check \`get-company\` and have them filled with \`update-company\`; a sent invoice keeps the block it was sent with. An invoice is emailed to its send-to address first, then the billing email, then the company's contacts.
 - Tools that take \`client\` want \`company:<crm id>\` or \`contact:<crm id>\`.
 
 ## 2. Quote (price not agreed in writing yet)

@@ -22,7 +22,7 @@ import {
   stageKind,
   table,
 } from "./db.js";
-import { canSeeRecord, CrmError, DEAL_STATUSES, FIND_KINDS, FIND_MAX, LIFECYCLES, type AccountDraft, type ContactDraft, type DealDraft, type Lifecycle, type Viewer } from "./domain.js";
+import { BILLING_KEYS, canSeeRecord, CrmError, DEAL_STATUSES, FIND_KINDS, FIND_MAX, LIFECYCLES, type AccountDraft, type ContactDraft, type DealDraft, type Lifecycle, type Viewer } from "./domain.js";
 import { companyPrefix, crmLink, refOf, workspaceLinks, type ClientKind } from "./refs.js";
 import { CANARY_RULES, isCanaryAccount, isCanaryContact, isCanaryId } from "./canary-flag.js";
 import { consentSummary } from "./consent.js";
@@ -130,6 +130,10 @@ export interface FoundRecord {
   name: string;
   lifecycle: string;
   domain?: string | null;
+  billingEmail?: string | null;
+  address?: string | null;
+  vatNumber?: string | null;
+  registrationNumber?: string | null;
   email?: string | null;
   phone?: string | null;
   tags: string[];
@@ -195,6 +199,7 @@ export async function findRecords(ctx: PluginContext, viewer: Viewer, params: Re
       if (match.length === 0) continue;
       found.push({
         ref: refOf("company", row.id), kind: "company", id: row.id, name: row.name, lifecycle: row.lifecycle, domain: row.domain,
+        ...Object.fromEntries(BILLING_KEYS.filter((key) => row[key]).map((key) => [key, row[key]])),
         tags: row.tags, match, link: crmLink(prefix, "company", row.id), score: rank(row.name, q),
       });
     }
@@ -315,6 +320,11 @@ export async function getCompany(ctx: PluginContext, viewer: Viewer, params: Rec
     id: account.id,
     name: account.name,
     domain: account.domain,
+    billingEmail: account.billingEmail,
+    phone: account.phone,
+    address: account.address,
+    vatNumber: account.vatNumber,
+    registrationNumber: account.registrationNumber,
     lifecycle: account.lifecycle,
     currency: account.currency,
     tags: account.tags,

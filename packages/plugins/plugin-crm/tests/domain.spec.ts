@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import {
   advanceEnrollment,
+  BILLING_KEYS,
+  normalizeBillingField,
   applyFieldPatch,
   canCompleteStep,
   canSeeRecord,
@@ -99,6 +101,73 @@ describe("crm records", () => {
     });
     expect(result.refused).toEqual([]);
     expect(result.columns.name).toBe("Ada");
+  });
+});
+
+describe("company billing details", () => {
+  const COLUMNS = columnKeysFor("company");
+
+  it("are account columns, so a person's lock covers them", () => {
+    for (const key of ["billingEmail", "phone", "address", "vatNumber", "registrationNumber"]) expect(COLUMNS).toContain(key);
+  });
+
+  it("an agent patch applies all five fields", () => {
+    const patch = { billingEmail: "a@x.test", phone: "+27 21 555 0100", address: "1 Main Rd", vatNumber: "4123456789", registrationNumber: "2020/123456/07" };
+    const result = applyFieldPatch({ columns: {}, custom: {}, humanOwned: [], columnKeys: COLUMNS, patch, source: "agent" });
+    expect(result.refused).toEqual([]);
+    expect(result.columns).toEqual(patch);
+    expect(result.custom).toEqual({});
+  });
+
+  it("a locked field that has a value is refused for an agent, and a person can still change it", () => {
+    const input = { columns: { vatNumber: "4111111111", phone: null }, custom: {}, humanOwned: ["vatNumber", "phone"], columnKeys: COLUMNS };
+    const agent = applyFieldPatch({ ...input, patch: { vatNumber: "4999999999", phone: "082 000 1111" }, source: "agent" });
+    expect(agent.refused).toEqual(["vatNumber"]);
+    expect(agent.columns).toMatchObject({ vatNumber: "4111111111", phone: "082 000 1111" });
+    const human = applyFieldPatch({ ...input, patch: { vatNumber: "4999999999" }, source: "human" });
+    expect(human.columns.vatNumber).toBe("4999999999");
+  });
+
+  it("are trimmed, an empty string is nothing, and the email is lower-cased", () => {
+    expect(normalizeBillingField("billingEmail", "  Accounts@Acme.TEST ")).toBe("accounts@acme.test");
+    expect(normalizeBillingField("vatNumber", "  4123456789 ")).toBe("4123456789");
+    for (const key of BILLING_KEYS) {
+      expect(normalizeBillingField(key, "")).toBeNull();
+      expect(normalizeBillingField(key, "   ")).toBeNull();
+      expect(normalizeBillingField(key, null)).toBeNull();
+      expect(normalizeBillingField(key, undefined)).toBeNull();
+    }
+  });
+
+  it("reject a malformed email and a non-text value", () => {
+    for (const bad of ["not-an-email", "a@b", "a b@c.test", "@c.test", "a@@c.test"]) expect(() => normalizeBillingField("billingEmail", bad), bad).toThrow(/valid email/);
+    expect(() => normalizeBillingField("phone", 27215550100)).toThrow(/must be text/);
+    expect(() => createAccount({ companyId: "w", name: "Acme", billingEmail: "nope" })).toThrow(/valid email/);
+  });
+
+  it("keep the line breaks of an address", () => {
+    expect(normalizeBillingField("address", " 1 Main Rd\nCape Town\r\n8001 ")).toBe("1 Main Rd\nCape Town\n8001");
+    expect(createAccount({ companyId: "w", name: "Acme", address: "1 Main Rd\nCape Town" }).address).toBe("1 Main Rd\nCape Town");
+  });
+
+  it("do not check the shape of a VAT or registration number (clients may be foreign)", () => {
+    expect(normalizeBillingField("vatNumber", "GB 123 4567 89")).toBe("GB 123 4567 89");
+    expect(normalizeBillingField("registrationNumber", "HRB 12345 B")).toBe("HRB 12345 B");
+  });
+
+  it("are capped: the address at 500 characters, the rest at 64 (the email at 254)", () => {
+    expect(normalizeBillingField("address", "a".repeat(500))).toHaveLength(500);
+    expect(() => normalizeBillingField("address", "a".repeat(501))).toThrow(/at most 500/);
+    for (const key of ["phone", "vatNumber", "registrationNumber"] as const) {
+      expect(normalizeBillingField(key, "9".repeat(64))).toHaveLength(64);
+      expect(() => normalizeBillingField(key, "9".repeat(65)), key).toThrow(/at most 64/);
+    }
+    expect(normalizeBillingField("billingEmail", `${"a".repeat(64)}@${"b".repeat(180)}.test`)).toHaveLength(64 + 1 + 180 + 5);
+    expect(() => normalizeBillingField("billingEmail", `a@${"b".repeat(250)}.test`)).toThrow(/at most 254/);
+  });
+
+  it("createAccount defaults them to null", () => {
+    expect(createAccount({ companyId: "w", name: "Acme" })).toMatchObject({ billingEmail: null, phone: null, address: null, vatNumber: null, registrationNumber: null });
   });
 });
 

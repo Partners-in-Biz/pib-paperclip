@@ -18,6 +18,8 @@ import * as geo from "./service/geo.js";
 import * as redesign from "./service/redesign.js";
 import * as build from "./service/build.js";
 import * as signoff from "./service/signoff.js";
+import * as clientSignoff from "./service/client-signoff.js";
+import * as report from "./service/report.js";
 import * as preview from "./service/preview.js";
 import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
@@ -57,6 +59,9 @@ export const HANDLERS: Record<string, Handler> = {
   // Client previews
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
+  "confirm-client-facts": (env, c, a, p) => facts.confirmClientFacts(env, c, a, p),
+  "draft-progress-report": (env, c, a, p) => report.draftProgressReport(env, c, a, p),
+  "propose-client-facts": (env, c, a, p) => facts.proposeClientFacts(env, c, a, p),
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
   "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),
   "list-previews": (env, c, _a, p) => preview.listPreviews(env, c, p),
@@ -144,6 +149,12 @@ export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "set-client-facts": (env, c, a, p) => facts.setClientFacts(env, c, a, p),
   // A signed-in person turns an extra on or off (the handler checks the actor itself and records who).
   "set-switch": (env, c, a, p) => switches.setSwitchTool(env, c, a, p),
+  // A signed-in person chooses automatic or manual pacing for a sprint (the handler checks the actor itself).
+  "set-pacing": (env, c, a, p) => sprints.setPacing(env, c, a, p),
+  // A signed-in person chooses automatic or manual client sign-off for a sprint (the handler checks the actor itself).
+  "set-signoff-mode": (env, c, a, p) => clientSignoff.setSignoffMode(env, c, a, p),
+  // A signed-in person says how far the plan runs by itself (the handler checks the actor itself).
+  "set-release-through": (env, c, a, p) => sprints.setReleaseThrough(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {

@@ -132,7 +132,7 @@ Approvals (sending, publishing, paying, launching) are not questions: they go th
 
 ## Hand-off tasks
 
-To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
+To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. **Always set \`projectId\`** (\`GET /api/companies/{companyId}/projects\`): the client's project, or **PiB Platform** for "own" platform work. A task with no project has no repository, so a code role cannot work on it; if you cannot tell the project, say so on the source issue instead of creating it without one. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
 
 ## Weekly retro (Mondays 08:00, routine)
 

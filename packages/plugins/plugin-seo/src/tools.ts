@@ -96,6 +96,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       startDate: text("Day 0 (launch day), YYYY-MM-DD; default today"),
       ownerUserId: text("User who owns the sprint and receives human tasks; default: the person responsible for this run. 'none' for no owner"),
       autopilotMode: choice(["off", "safe"], "Agents may create sprints in off or safe mode only"),
+      pacing: choice(["auto", "manual"], "auto (default): plan tasks open by the calendar. manual: nothing opens until a person starts each week on the SEO page; use it only when the owner asked for it"),
       notes: text("Site access and constraints for the agent (repo, CMS, who deploys)"),
     }),
   },
@@ -254,7 +255,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "start-tasks-now",
     displayName: "Start tasks early",
     description:
-      "Pull upcoming plan tasks forward: send taskId (one task) or week (every task of that week that has not started) and they become due today with their issues opened, instead of waiting for their day. The plan does not move otherwise. People decide the pace (the Start now buttons on the SEO plan); an agent may only use it when the sprint's autopilot is full. Works on tasks that have not started; up to 25 per call.",
+      "Pull upcoming plan tasks forward: send taskId (one task) or week (every task of that week that has not started) and they become due today with their issues opened, instead of waiting for their day. The plan does not move otherwise. People decide the pace (the Start now buttons on the SEO plan); an agent may only use it when the sprint's autopilot is full, and never on a sprint on manual pacing (get-sprint shows pacing): there only a person starts a week. Works on tasks that have not started; up to 25 per call.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       taskId: text("One task to start now (from list-tasks)."),
@@ -279,6 +280,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       bodyMode: choice(["before", "after", "replace"], "before (default, above the existing content), after (below it) or replace (whole content area; needs allowReplace)"),
       css: text("Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). Imports, scripts and event handlers are removed."),
       allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
+      why: text("One sentence for the client, under this page in their approval email: why we changed it and how it should help search. Say should or helps; never promise a result."),
       label: text("Short name for the proposal, shown on the Needs you item."),
     }),
   },
@@ -297,11 +299,53 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   {
+    group: "Sprints",
+    name: "draft-progress-report",
+    displayName: "Draft an SEO progress email",
+    description:
+      "Drafts, in the company's Gmail Drafts, an email to a client's owner about the sprints you name: per site what was done in weeks 0 to 3, the pages written and approved, what is still open and for whom, and what the plan does in weeks 4 to 7. The plugin writes it from the sprints' own records (nothing free-form), never sends it, and a person reads and sends it. Use it only when a person asked for a progress email.",
+    parametersSchema: schema(["sprintIds", "to"], {
+      sprintIds: list("The sprints the email covers (list-sprints gives the ids), at most 10"),
+      to: list("Who the draft is addressed to: one to five email addresses"),
+      greetingName: text("First name for the greeting, for example Pieter"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "propose-client-facts",
+    displayName: "Add wordings from the client's own pages to the fact sheet",
+    description:
+      "When create-preview refuses a claim because the fact sheet does not cover it, find where the client says it themselves (their terms, delivery, returns, FAQ or about page) and add it here: copy the sentence EXACTLY from that page and send the page's address. The plugin fetches the page and refuses any wording that is not on it, so nothing is invented. Accepted wordings join the sheet as a draft the owner can confirm later; copy may use them (shortened is fine, reworded is not). If the client does not say it anywhere, leave the claim out of the copy. Up to 20 per call.",
+    parametersSchema: schema(["sprintId", "say"], {
+      sprintId,
+      say: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            wording: text("The sentence, copied exactly from the client's page (at least 12 characters)"),
+            sourceUrl: text("The client's page it is on: absolute URL or a path like /delivery"),
+          },
+          required: ["wording", "sourceUrl"],
+        },
+        description: "Wordings to approve, each with the page it comes from",
+      },
+    }),
+  },
+  {
     group: "Site",
     name: "get-client-facts",
     displayName: "Read the client fact sheet",
     description:
       "Read it BEFORE writing copy for a client. It lists the approved wordings the copy may use for claims about how the business works (bidding, ownership, reserves, fees, delivery, guarantees, inspection, verification, licences, legal wording, refunds, time commitments) and what must never be said. create-preview refuses a sentence that makes such a claim without an approved wording; the Reviewer checks against it. If a fact you need is missing, ask the owner (Needs you); never invent or reword one.",
+    parametersSchema: schema(["sprintId"], { sprintId }),
+  },
+  {
+    group: "Site",
+    name: "confirm-client-facts",
+    displayName: "Confirm a client fact sheet",
+    description:
+      "After proposing client facts from the site's own pages, run this to verify all wordings still appear as visitor-visible text and lock the sheet so copy can use them. Fetches all source pages in parallel with a 20-second budget, checks each wording is present with correct word boundaries, and returns a compare-and-set result. On mismatches (wording not found, fetch failure, off-site URL, non-HTML, oversized page), returns the list and leaves the sheet draft for you to review. If the sheet changed between the check and the write, retries are safe.",
     parametersSchema: schema(["sprintId"], { sprintId }),
   },
   {
@@ -576,8 +620,14 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Indexing and Bing",
     name: "request-indexing",
     displayName: "Get pages crawled",
-    description: "Sitemap to Search Console, IndexNow ping (Bing and others; needs the live key file) and URL Inspection for up to 5 URLs (default: home + priority/live pages). The daily run re-inspects after 14 days and adds optional Search Console links to Needs you only for pages still not indexed.",
-    parametersSchema: schema(["sprintId"], { sprintId, urls: list("Absolute URLs or paths; default the core pages"), sitemapUrl: text("Sitemap URL or path to submit (default <site origin>/sitemap.xml)") }),
+    description: "Sitemap to Search Console, IndexNow ping (Bing and others; needs the live key file) and URL Inspection for up to 5 URLs (default: home + priority/live pages). The steps run in parallel and the call returns after waitSeconds (default 8, inside the gateway's 10 s) with whatever finished: a step that did not answer is marked timedOut / pending, never an error for the whole call. URL Inspection takes several seconds per page. The daily run re-inspects after 14 days and adds optional Search Console links to Needs you only for pages still not indexed.",
+    parametersSchema: schema(["sprintId"], {
+      sprintId,
+      urls: list("Absolute URLs or paths; default the core pages"),
+      sitemapUrl: text("Sitemap URL or path to submit (default <site origin>/sitemap.xml)"),
+      inspect: flag("Run URL Inspection on the URLs (default true); false = sitemap and IndexNow only"),
+      waitSeconds: int("Seconds to wait for the steps (1-50, default 8). Raise it together with the gateway call's timeoutMs when you want every inspection to finish."),
+    }),
   },
   { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (metaTags [{ name: \"msvalidate.01\", content }] or files [{ path: \"/BingSiteAuth.xml\", content }]; the result carries the call). Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
   { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }) },

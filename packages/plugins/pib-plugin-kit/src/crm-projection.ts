@@ -38,12 +38,22 @@ function jsonList(value: unknown): string {
   return JSON.stringify(Array.isArray(value) ? value.filter((item) => typeof item === "string") : []);
 }
 
+/** A company's billing details as the CRM holds them. Opt-in through `companyBilling`. */
+export type CrmCompanyBilling = {
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  vatNumber: string | null;
+  registrationNumber: string | null;
+};
+
 export interface CrmCompanyEvent {
   id: string;
   name: string;
   domain: string | null;
   lifecycle: string | null;
   updatedAt: string;
+  billing?: CrmCompanyBilling | null;
 }
 
 export interface CrmContactEvent {
@@ -62,6 +72,7 @@ export interface CrmCompanyRow {
   name: string;
   domain: string | null;
   lifecycle: string | null;
+  billing?: CrmCompanyBilling | null;
 }
 
 export interface CrmContactRow {
@@ -77,7 +88,12 @@ export interface CrmContactRow {
 export function registerCrmProjection(
   ctx: PluginContext,
   namespace: string,
-  options: { companies?: boolean; contacts?: boolean } = { companies: true, contacts: true },
+  options: {
+    companies?: boolean;
+    contacts?: boolean;
+    /** Also keep `billing` on crm_companies; the consumer adds a `billing jsonb` column itself. */
+    companyBilling?: boolean;
+  } = { companies: true, contacts: true },
 ): void {
   const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
     try {
@@ -90,6 +106,17 @@ export function registerCrmProjection(
     ctx.events.on(`plugin.${CRM_PLUGIN_ID}.company.upserted`, guard("company.upserted", async (event) => {
       const p = event.payload as CrmCompanyEvent;
       if (!p?.id || !event.companyId) return;
+      if (options.companyBilling === true) {
+        await ctx.db.execute(
+          `INSERT INTO ${namespace}.crm_companies (id, company_id, name, domain, lifecycle, updated_at, deleted, billing)
+           VALUES ($1, $2, $3, $4, $5, $6, false, $7::jsonb)
+           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, domain = EXCLUDED.domain, lifecycle = EXCLUDED.lifecycle,
+             updated_at = EXCLUDED.updated_at, deleted = false, billing = EXCLUDED.billing
+           WHERE ${namespace}.crm_companies.updated_at <= EXCLUDED.updated_at`,
+          [p.id, event.companyId, p.name, p.domain ?? null, p.lifecycle ?? null, p.updatedAt, JSON.stringify(p.billing ?? null)],
+        );
+        return;
+      }
       await ctx.db.execute(
         `INSERT INTO ${namespace}.crm_companies (id, company_id, name, domain, lifecycle, updated_at, deleted)
          VALUES ($1, $2, $3, $4, $5, $6, false)
@@ -134,9 +161,16 @@ export async function listCrmCompanies(ctx: PluginContext, namespace: string, co
   );
 }
 
-export async function getCrmCompany(ctx: PluginContext, namespace: string, companyId: string, id: string): Promise<CrmCompanyRow | null> {
+export async function getCrmCompany(
+  ctx: PluginContext,
+  namespace: string,
+  companyId: string,
+  id: string,
+  options: { billing?: boolean } = {},
+): Promise<CrmCompanyRow | null> {
+  const columns = options.billing === true ? "id, name, domain, lifecycle, billing" : "id, name, domain, lifecycle";
   const rows = await ctx.db.query<CrmCompanyRow>(
-    `SELECT id, name, domain, lifecycle FROM ${namespace}.crm_companies WHERE company_id = $1 AND id = $2 AND deleted = false`,
+    `SELECT ${columns} FROM ${namespace}.crm_companies WHERE company_id = $1 AND id = $2 AND deleted = false`,
     [companyId, id],
   );
   return rows[0] ?? null;

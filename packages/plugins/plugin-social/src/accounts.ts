@@ -72,8 +72,15 @@ export async function envFor(
   extra: Partial<ProviderEnv> = {},
 ): Promise<ProviderEnv> {
   const appPlatform = appPlatformFor(platform, meta);
-  const app = await config.app(appPlatform);
-  return { app, redirectUri: config.redirectUri(), linkedinOrgPages: config.linkedinOrgPages, ...extra };
+  let appKey: SocialPlatform | "linkedinPages" = appPlatform;
+
+  // For LinkedIn: check if using the Pages app
+  if (platform === "linkedin" && meta.app === "linkedinPages") {
+    appKey = "linkedinPages";
+  }
+
+  const app = await config.app(appKey);
+  return { app, redirectUri: config.redirectUri(), linkedinAppKey: platform === "linkedin" ? (appKey as "linkedin" | "linkedinPages") : undefined, ...extra };
 }
 
 /** Set needs_reconnect, remember the error and open one reconnect issue. */

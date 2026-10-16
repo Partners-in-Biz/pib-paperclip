@@ -111,6 +111,7 @@ import {
 import { retryPost } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { reviewStats } from "./review-outcomes.js";
+import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
@@ -239,6 +240,8 @@ export function accountVisible(viewer: Viewer, account: AccountRow): boolean {
 export function postVisible(viewer: Viewer, post: PostRow): boolean {
   if (post.company_id !== viewer.companyId) return false;
   if (post.scope === "org") return true;
+  // Personal: visible to owner, or to agents who created it
+  if (viewer.isAgent) return post.created_by_agent_id === viewer.agentId;
   return post.owner_user_id === viewer.userId;
 }
 
@@ -352,6 +355,7 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   const params = postParams(input);
   const body = requiredString(params, "body");
   const scope = postVisibility(params);
+  if (scope === "personal" && viewer.isAgent) throw new SocialError("Agents cannot create personal posts. Use create-personal-draft to draft in a user's My Social queue.");
   if (scope === "personal" && !viewer.userId) throw new SocialError("A personal post needs its owner");
   const scheduledAt = proposedTime(params) ?? null;
   // A draft for a repurposed SEO page is linked to it and stays in the page's scope (the repurpose done-check counts it).
@@ -397,6 +401,12 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
   const params = postParams(input);
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  // Agents can only update personal drafts they created themselves while status is draft
+  if (viewer.isAgent && post.scope === "personal") {
+    if (post.created_by_agent_id !== viewer.agentId || post.status !== "draft") {
+      throw new SocialError("Agents can only edit drafts in a personal queue that they created, while in draft status");
+    }
+  }
   assertEditable(post.status);
   const current = rowScope(post);
   const requested = scopeInput(params);
@@ -492,8 +502,20 @@ export async function validatePostRecord(ctx: PluginContext, viewer: Viewer, pos
 
 export async function attachDestination(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only attach destinations to personal drafts they created");
+  }
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
-  await attachAccounts(ctx, viewer, post, await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]));
+  const accounts = await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]);
+  // When viewer is agent and post is personal, account must be personal and owned by post owner
+  if (viewer.isAgent && post.scope === "personal") {
+    for (const account of accounts) {
+      if (account.scope !== "personal" || account.owner_user_id !== post.owner_user_id) {
+        throw new SocialError("Agents can only attach personal accounts owned by the post's owner");
+      }
+    }
+  }
+  await attachAccounts(ctx, viewer, post, accounts);
   // The accounts are part of what a sign-off and a client link cover: the client saw the post going to other accounts.
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
@@ -501,6 +523,9 @@ export async function attachDestination(ctx: PluginContext, viewer: Viewer, para
 
 export async function detachDestination(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only detach destinations from personal drafts they created");
+  }
   const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
@@ -509,6 +534,10 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
 
 export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId: string, to: PostStatus) {
   const post = await requirePost(ctx, viewer, postId);
+  // Agents cannot act on personal posts they didn't create
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only edit drafts in a personal queue that they created");
+  }
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
@@ -541,6 +570,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
 
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  if (viewer.isAgent && post.scope === "personal") {
+    throw new SocialError("Agents can only create personal drafts. The queue owner must schedule.");
+  }
+  requireCanActOnPost(viewer, post, "schedule");
   assertTransition(post.status, "scheduled");
   const scheduledAt = isoTime(requiredString(params, "scheduledAt"), "scheduledAt");
   const check = await validatePostRecord(ctx, viewer, post.id);
@@ -569,6 +602,9 @@ export async function bulkSchedule(ctx: PluginContext, viewer: Viewer, params: R
 
 export async function retryPostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   const post = await requirePost(ctx, viewer, postId);
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only retry personal posts they created");
+  }
   const result = await retryPost(ctx, viewer.companyId, post);
   return { ...result, message: `${result.reset} destination(s) will be retried within 5 minutes.`, post: await getPostDetail(ctx, viewer, post.id) };
 }
@@ -802,7 +838,7 @@ export async function createTemplateRecord(ctx: PluginContext, viewer: Viewer, p
     body: requiredString(params, "body"),
     platform: optionalString(params, "platform"),
   });
-  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform });
+  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform, scope: "org", owner_user_id: null });
   return template;
 }
 
@@ -1060,6 +1096,14 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   } catch {
     redirectUri = null;
   }
+  // Check if linkedinPages app is configured
+  let linkedinPagesConfigured = false;
+  try {
+    await config.linkedinPages();
+    linkedinPagesConfigured = true;
+  } catch {
+    linkedinPagesConfigured = false;
+  }
   return {
     scope: scope ? formatClientParam(scope) : null,
     client: target.client ? clientOut(target.client) : null,
@@ -1071,10 +1115,10 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
       encryptionKey: config.encryptionKeyConfigured,
       r2: config.r2Configured,
       timezone: config.timezone,
-      linkedinOrgPages: config.linkedinOrgPages,
       allowAgentReplies: config.allowAgentReplies,
       blueskyDefaultPds: config.blueskyDefaultPds,
       mastodonDefaultInstance: config.mastodonDefaultInstance,
+      linkedinPagesConfigured,
       jev: jevKeySet(config.raw),
     },
     platforms: ALL_PLATFORMS.map((platform) => {

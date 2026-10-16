@@ -23,13 +23,21 @@ function assignments(clause: string): Array<{ column: string; param: number | nu
   return out;
 }
 
-export function memTables(initial: { sprint_tasks?: Row[]; task_chunks?: Row[] }) {
+/**
+ * `pacingOf` answers a sprint's pacing; with it the task reads derive `held` the way the SELECT in src/db.ts does (a template
+ * task nobody started, on a manual sprint), so a test sees a task stop being held once the plugin writes released_at.
+ */
+export function memTables(initial: { sprint_tasks?: Row[]; task_chunks?: Row[] }, pacingOf?: (sprintId: string) => string | undefined) {
   const tasks = (initial.sprint_tasks ?? []).map((r) => ({ ...r }));
   const chunks = (initial.task_chunks ?? []).map((r) => ({ ...r }));
   const tables: Record<string, Row[]> = { sprint_tasks: tasks, task_chunks: chunks };
 
+  const withHeld = (rows: Row[]): Row[] =>
+    pacingOf
+      ? rows.map((t) => ({ ...t, held: t.status === "not_started" && t.source === "template" && t.released_at == null && t.issue_id == null && pacingOf(String(t.sprint_id)) === "manual" }))
+      : rows;
   const routes: Route[] = [
-    [/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id = \$1/, (p) => tasks.filter((t) => t.id === p[0])],
+    [/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id = \$1/, (p) => withHeld(tasks.filter((t) => t.id === p[0]))],
     [/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE issue_id = \$1/, (p) => tasks.filter((t) => t.issue_id === p[0])],
     [/FROM plugin_seo_8099f8879a\.task_chunks WHERE company_id = \$1 AND task_id = \$2/, (p) => chunks.filter((c) => c.task_id === p[1])],
     [/FROM plugin_seo_8099f8879a\.task_chunks WHERE company_id = \$1 AND sprint_id = \$2 AND status IN/, (p) => chunks.filter((c) => c.sprint_id === p[1] && ["queued", "open"].includes(String(c.status)))],
@@ -39,7 +47,7 @@ export function memTables(initial: { sprint_tasks?: Row[]; task_chunks?: Row[] }
     // listTasks: a sprint's tasks, narrowed by the status list when it has one (the other filters are not used by these flows).
     [/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE company_id = \$1 AND sprint_id = \$2/, (p, sql) => {
       const statuses = /status IN/.test(sql) ? (JSON.parse(String(p[2])) as string[]) : null;
-      return tasks.filter((t) => t.company_id === p[0] && t.sprint_id === p[1] && (!statuses || statuses.includes(String(t.status))));
+      return withHeld(tasks.filter((t) => t.company_id === p[0] && t.sprint_id === p[1] && (!statuses || statuses.includes(String(t.status)))));
     }],
     [/SELECT DISTINCT q\.task_id/, () => [...new Set(chunks.filter((q) => q.status === "queued" && !chunks.some((o) => o.task_id === q.task_id && o.parent_issue_id === q.parent_issue_id && o.status === "open")).map((q) => q.task_id))].map((task_id) => ({ task_id }))],
   ];

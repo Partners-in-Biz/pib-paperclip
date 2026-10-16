@@ -31,7 +31,7 @@ import { checkChangeScopeTool, getSiteLinkTool, linkSiteTool } from "../src/serv
 import { needsYouAddTool } from "../src/service/needs-you.js";
 import { autoLinkWordPressSite, setVerifyFailure } from "../src/service/wordpress.js";
 import { verificationKindOf, verifyRouteOf, versionAtLeast } from "../src/engine/verify-route.js";
-import { indexNowKeyTool, bingAddSiteTool } from "../src/service/indexing.js";
+import { indexNowKeyTool, bingAddSiteTool, requestIndexingTool } from "../src/service/indexing.js";
 import { evaluateWordPressChange, SEO_SCOPE_CATEGORIES, WORDPRESS_SCOPE_CATEGORIES } from "../src/engine/site-change.js";
 import { wpConnectorItem } from "../src/engine/items.js";
 import { siteSection } from "../src/engine/copy.js";
@@ -1244,5 +1244,79 @@ describe("setup checklist: verification on WordPress", () => {
     expect(find("available", "bing_site").detail).toMatch(/bing-add-site → wp-verify → bing-verify-site/);
     expect(find("none", "gsc_property").detail).toMatch(/client adds the service account/);
     expect(find("none", "gsc_property").steps.join(" ")).toMatch(/Send the client the email/);
+  });
+});
+
+describe("request-indexing finishes inside the gateway timeout", () => {
+  const property = "https://partnersinbiz.online/";
+  function indexingHost(opts: { inspect?: (url: string) => Promise<Response>; indexNow?: () => Promise<Response> }) {
+    const host = fakeHost({
+      config: SA_CONFIG,
+      integration: { property_url: property, status: "connected", settings: { auth: "service_account" } },
+      fetch: async (url, init) => {
+        if (url.startsWith("https://oauth2.googleapis.com/token")) return json({ access_token: "sa-token", expires_in: 3600 });
+        if (url.includes("urlInspection")) return opts.inspect!(String(JSON.parse(String(init?.body)).inspectionUrl));
+        if (url.startsWith("https://api.indexnow.org/")) return opts.indexNow ? opts.indexNow() : new Response("", { status: 200 });
+        return json({});
+      },
+    });
+    host.env.site = vi.fn(async (url: string) => ({ status: 200, text: new URL(url).pathname.slice(1).replace(/\.txt$/, ""), url, redirects: [], headers: {}, ms: 1 })) as never;
+    return host;
+  }
+  const verdict = (v: string) => json({ inspectionResult: { indexStatusResult: { verdict: v, coverageState: "Submitted and indexed" } } });
+  const never = () => new Promise<Response>(() => undefined);
+
+  it("runs the steps in parallel and returns the IndexNow status with every inspection", async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const host = indexingHost({ inspect: async (url) => { await delay(150); return verdict(url.endsWith("/b") ? "NEUTRAL" : "PASS"); } });
+    const started = Date.now();
+    const out = (await requestIndexingTool(host.env, "co-1", { sprintId: "sp-1", urls: ["https://partnersinbiz.online/a", "https://partnersinbiz.online/b", "https://partnersinbiz.online/c", "https://partnersinbiz.online/d", "https://partnersinbiz.online/e"] })) as Row;
+    expect(Date.now() - started).toBeLessThan(450);
+    expect(out.sitemap).toMatchObject({ submitted: true, property });
+    expect(out.indexNow).toMatchObject({ ok: true, status: 200, submitted: 5 });
+    expect((out.inspections as Row[]).map((i) => i.verdict)).toEqual(["PASS", "NEUTRAL", "PASS", "PASS", "PASS"]);
+    expect(out.notIndexed).toEqual(["https://partnersinbiz.online/b"]);
+    expect(out).not.toHaveProperty("uninspected");
+    expect((host.sprint.verification as Row).indexing).toMatchObject({ requestedOn: "2026-09-26", notIndexed: ["https://partnersinbiz.online/b"] });
+  });
+
+  it("returns the IndexNow status and partial inspections when URL Inspection is slower than the wait", async () => {
+    const host = indexingHost({ inspect: (url) => (url.endsWith("/slow") ? never() : Promise.resolve(verdict("PASS"))) });
+    const started = Date.now();
+    const out = (await requestIndexingTool(host.env, "co-1", { sprintId: "sp-1", urls: ["https://partnersinbiz.online/fast", "https://partnersinbiz.online/slow"], waitSeconds: 1 })) as Row;
+    expect(Date.now() - started).toBeLessThan(2500);
+    expect(out.indexNow).toMatchObject({ ok: true, status: 200 });
+    expect(out.sitemap).toMatchObject({ submitted: true });
+    expect(out.inspections).toMatchObject([{ url: "https://partnersinbiz.online/fast", verdict: "PASS" }, { url: "https://partnersinbiz.online/slow", pending: true }]);
+    expect(out.uninspected).toEqual(["https://partnersinbiz.online/slow"]);
+    expect(out.notIndexed).toEqual([]);
+    expect(String(out.note)).toMatch(/did not finish in time/);
+    expect((host.sprint.verification as Row).indexing).toMatchObject({ urls: ["https://partnersinbiz.online/fast", "https://partnersinbiz.online/slow"] });
+  });
+
+  it("marks a hung IndexNow ping as timed out and still returns the inspections", async () => {
+    const host = indexingHost({ inspect: () => Promise.resolve(verdict("PASS")), indexNow: never });
+    const out = (await requestIndexingTool(host.env, "co-1", { sprintId: "sp-1", urls: ["https://partnersinbiz.online/a"], waitSeconds: 1 })) as Row;
+    expect(out.indexNow).toMatchObject({ ok: false, timedOut: true });
+    expect(out.inspections).toMatchObject([{ verdict: "PASS" }]);
+  });
+
+  it("skips URL Inspection when inspect is false", async () => {
+    const inspect = vi.fn(async () => verdict("PASS"));
+    const host = indexingHost({ inspect });
+    const out = (await requestIndexingTool(host.env, "co-1", { sprintId: "sp-1", urls: ["https://partnersinbiz.online/a"], inspect: false })) as Row;
+    expect(inspect).not.toHaveBeenCalled();
+    expect(out.inspections).toEqual([]);
+    expect(out.indexNow).toMatchObject({ ok: true });
+  });
+
+  it("reports a Search Console failure per step without losing IndexNow", async () => {
+    const host = indexingHost({ inspect: async () => json({ error: { message: "denied" } }, 403) });
+    host.integration.property_url = null;
+    host.env.fetch = vi.fn(async (url: string) => (url.startsWith("https://oauth2.googleapis.com/token") ? json({ access_token: "t", expires_in: 3600 }) : url.includes("/webmasters/v3/sites") ? json({ siteEntry: [] }) : new Response("", { status: 200 }))) as never;
+    const out = (await requestIndexingTool(host.env, "co-1", { sprintId: "sp-1", urls: ["https://partnersinbiz.online/a"] })) as Row;
+    expect(out.sitemap).toMatchObject({ submitted: false });
+    expect(out.indexNow).toMatchObject({ ok: true, status: 200 });
+    expect(out.inspections).toMatchObject([{ url: "https://partnersinbiz.online/a", error: expect.any(String) }]);
   });
 });

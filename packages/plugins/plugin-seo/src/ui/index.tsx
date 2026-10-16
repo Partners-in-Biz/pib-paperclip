@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { CARRY, pageLocation, settleMessage, visibleMessage } from "./page-message.js";
 import {
   useHostContext,
   useHostLocation,
@@ -125,7 +126,16 @@ export function SeoPage({ context }: PluginPageProps) {
   const scopeKey = scopeParamValue(scope) ?? "own";
   const sprintId = search.get("sprint");
   const [data, setData] = useState<LoadResult | null>(null);
-  const [message, setMessage] = useState("");
+  // A message belongs to the page it was raised on ("Sprint paused." must not follow you to another sprint or client). Three
+  // messages are raised just before a navigation and are meant to follow it: those use `carry` and stay for the page they open.
+  const location = pageLocation(scopeKey, sprintId);
+  const [raised, setRaised] = useState<{ text: string; at: string }>({ text: "", at: "" });
+  const setMessage = useCallback((text: string) => setRaised({ text, at: location }), [location]);
+  const carry = (text: string) => setRaised({ text, at: CARRY });
+  const message = visibleMessage(raised, location);
+  useEffect(() => {
+    setRaised((m) => settleMessage(m, location));
+  }, [location]);
   const [creating, setCreating] = useState(false);
   const [starting, setStarting] = useState<SprintSummary | null>(null);
   const request = useRef(0);
@@ -159,7 +169,7 @@ export function SeoPage({ context }: PluginPageProps) {
   // A sprint opened from the wrong workspace reopens in the one it belongs to.
   const reopenIn = (id: string, client: string | null, clientName: string | null) => {
     const tab = search.get("tab");
-    setMessage(client ? `This sprint belongs to ${clientName ?? "a client"}, so it opens in that client's workspace.` : "This sprint is one of our own sites, so it opens under our own SEO.");
+    carry(client ? `This sprint belongs to ${clientName ?? "a client"}, so it opens in that client's workspace.` : "This sprint is one of our own sites, so it opens under our own SEO.");
     nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), tab ? { tab } : {}), { replace: true });
   };
 
@@ -247,7 +257,7 @@ export function SeoPage({ context }: PluginPageProps) {
           onCreated={async (id: string, target: ClientRef | null, note: string) => {
             setCreating(false);
             await refresh();
-            setMessage(note);
+            carry(note);
             openSprint(id, target);
           }}
           onError={setMessage}
@@ -259,7 +269,7 @@ export function SeoPage({ context }: PluginPageProps) {
         onStarted={async (s, note) => {
           setStarting(null);
           await refresh();
-          setMessage(note);
+          carry(note);
           openSummary(s);
         }}
         onError={setMessage}

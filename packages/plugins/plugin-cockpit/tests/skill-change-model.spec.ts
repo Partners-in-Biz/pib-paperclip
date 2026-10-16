@@ -167,7 +167,7 @@ describe("the pull request package", () => {
   });
 
   it("says what must pass before merge, who reviews and merges, and how to roll back", () => {
-    for (const part of ["skill-eval", "mode candidate", "evals/results.json", "No skill version ships if a scenario that passed at the baseline fails", "never `main`", "Code Reviewer", "Delivery Lead", "deploy-plugins.sh --rollback", "`imp123`", "2026-11-01"]) expect(pkg.body, part).toContain(part);
+    for (const part of ["skill-eval", "mode candidate", "evals/results.json", "No skill version ships if a scenario that passed at the baseline fails", "never `main`", "Code Reviewer", "Delivery Lead", "deploy-plugins.sh --rollback", "pib-deploy-request deploy", "agents cannot roll back", "`imp123`", "2026-11-01"]) expect(pkg.body, part).toContain(part);
   });
 
   it("lists the commands in order and the files to edit", () => {

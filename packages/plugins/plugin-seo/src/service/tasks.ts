@@ -41,9 +41,11 @@ import {
 } from "./common.js";
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { isAutoSignoff } from "./client-signoff.js";
+import { PLUGIN_VERSION } from "../namespace.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
-import { addNeedsYou } from "./needs-you.js";
+import { addNeedsYou, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
@@ -344,6 +346,8 @@ function taskView(task: db.SprintTask) {
     blockerReason: task.blockerReason,
     humanAsk: task.humanAsk,
     dueDay: task.dueDay,
+    /** On a manual-pacing sprint: not started and waiting for a person to start its week. Do not open or work it. */
+    ...(task.held ? { held: true } : {}),
     completedAt: task.completedAt,
   };
 }
@@ -359,7 +363,7 @@ export async function listTasksTool(env: Env, companyId: string, params: Params)
   });
   const { clock } = await loadSprintContext(env, companyId, sprintId);
   const dueOnly = bool(params, "dueOnly") ?? false;
-  const list = dueOnly ? tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day) : tasks;
+  const list = dueOnly ? tasks.filter((t) => !t.held && (t.dueDay == null || t.dueDay <= clock.day)) : tasks;
   return { sprintId, day: clock.day, week: clock.week, count: list.length, tasks: list.map(taskView) };
 }
 
@@ -456,6 +460,12 @@ export async function blockTask(env: Env, companyId: string, actor: Actor, param
   const reason = reqStr(params, "reason", { max: 4000 });
   const humanAsk = reqStr(params, "humanAsk", { max: 4000 });
   const review = bool(params, "review") ?? false;
+  // Automatic client sign-off: a page's copy goes to the client as a preview, never as a change set for a person to apply by hand.
+  if (isAutoSignoff(sprint) && task.taskType === "page-write" && !(await taskHasPreview(env, companyId, task.id))) {
+    throw new SeoError(
+      "This sprint's client sign-off is automatic: do not hand this page's change to a person. Make a preview of each page with partnersinbiz.seo:create-preview (taskId " + task.id + "), then end your turn: the plugin parks the task on the client, drafts the approval email and wakes you with what to apply. If you truly cannot make a preview (for example the page is not reachable), say why in a comment and ask through the Cockpit, not with block-task.",
+    );
+  }
   const links = strList(params, "links", { max: 20, itemMax: 1000 });
   const status: TaskStatus = review ? "in_progress" : "blocked";
   const handoff = { reason, humanAsk, review, links, by: actorId(actor), at: new Date().toISOString() };
@@ -621,7 +631,7 @@ export async function openNextQueuedTask(env: Env, companyId: string, finished: 
     // Work an agent holds counts; a task waiting on a person (blocked, sign-off, Needs you) does not hold the queue.
     const inFlight = tasks.some((t) => t.id !== finished.id && t.issueId && (t.status === "not_started" || t.status === "in_progress") && (!t.assigneeKind || t.assigneeKind === "agent" || t.assigneeKind === "unassigned"));
     if (inFlight) return null;
-    const next = inPlanOrder(tasks).find((t) => t.status === "not_started" && !t.issueId && t.dueDay != null && t.dueDay <= ctx.clock.day);
+    const next = inPlanOrder(tasks).find((t) => t.status === "not_started" && !t.issueId && !t.held && t.dueDay != null && t.dueDay <= ctx.clock.day);
     if (!next) return null;
     const result = await materialiseDueTasks(
       env,
@@ -668,6 +678,10 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
   if (taskId && week != null) throw new SeoError("Send taskId or week, not both.");
   const ctx = await loadSprintContext(env, companyId, sprintId);
   assertWritable(ctx.sprint);
+  const manual = ctx.sprint.pacing === "manual";
+  if (actor.kind === "agent" && manual) {
+    throw new SeoError("This sprint is on manual pacing: only a person starts its weeks. Ask the owner to press Start on the week on the SEO page.");
+  }
   if (actor.kind === "agent" && ctx.sprint.autopilotMode !== "full") {
     throw new SeoError("Only a person can start tasks early unless the sprint's autopilot is full. The plan follows its dates; ask the owner to press Start now on the SEO page.");
   }
@@ -676,7 +690,8 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
   if (!ctx.sprint.rootIssueId) throw new SeoError("The sprint has no root issue yet, so task issues cannot be opened.");
   const today = ctx.clock.day;
   const open = await db.listTasks(env.ctx.db, companyId, sprintId, { status: ["not_started"] });
-  const isUpcoming = (t: db.SprintTask) => t.dueDay != null && t.dueDay > today;
+  // On a manual sprint a held task is startable whatever its day: its week has not been started, so it is waiting, not upcoming.
+  const isUpcoming = (t: db.SprintTask) => t.held || (t.dueDay != null && t.dueDay > today);
   const wanted = taskId ? open.filter((t) => t.id === taskId) : open.filter((t) => t.week === week);
   if (taskId && wanted.length === 0) {
     const task = await db.getTask(env.ctx.db, companyId, taskId);
@@ -690,7 +705,8 @@ export async function startTasksNow(env: Env, companyId: string, actor: Actor, p
     return { sprintId, started: 0, tasks: [], alreadyDue, note: alreadyDue > 0 ? "Those tasks are already due; the daily run or the agent has them." : "Nothing upcoming to start." };
   }
   const dueDay = today <= 0 ? null : today;
-  for (const task of picked) await db.updateTask(env.ctx.db, companyId, task.id, { due_day: dueDay });
+  const releasedAt = new Date().toISOString();
+  for (const task of picked) await db.updateTask(env.ctx.db, companyId, task.id, { due_day: dueDay, ...(manual ? { released_at: releasedAt } : {}) });
   const materialised = await materialiseDueTasks(
     env,
     { info: ctx.info, sprint: ctx.sprint, day: today, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId },
@@ -745,4 +761,174 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
   // Code tasks that waited for the link open now (in the site project, or the SEO project without a repo or on WordPress).
   const opened = await materialiseDueTasks(env, mc);
   return { moved, opened: opened.created };
+}
+
+
+/** A task handed to the SEO agent whose issue has sat in todo or in_progress this long with no run is woken again (a wake can be coalesced into a run that was ending, and a run can end without anything finishing the task). */
+export const IDLE_TASK_MINUTES = 25;
+export const IDLE_TASK_MAX_NUDGES = 4;
+/** After this many wakes with no run, the task gets a fresh issue (at most IDLE_TASK_MAX_REISSUES times). */
+export const IDLE_TASK_REISSUE_AFTER = 3;
+export const IDLE_TASK_MAX_REISSUES = 2;
+
+/**
+ * Tasks the plugin handed back to the agent (a Reviewer or client answer, a page to revise) whose issue is still `todo` with nobody running
+ * it: the host coalesces a wake into an execution of the same issue that is already ending, and then nothing starts. The task is woken
+ * again, at most IDLE_TASK_MAX_NUDGES times, IDLE_TASK_MINUTES apart. Runs from the 5-minute job; returns how many it woke.
+ */
+export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.issue_id, t.evidence FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND t.status = 'in_progress' AND t.assignee_kind = 'agent' AND t.issue_id IS NOT NULL AND t.issue_status IN ('todo', 'in_progress')
+        AND t.updated_at < now() - ($1::int * interval '1 minute') LIMIT 30`,
+    [IDLE_TASK_MINUTES],
+  );
+  let woken = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    const issueId = String(row.issue_id);
+    try {
+      const evidence = typeof row.evidence === "string" ? (JSON.parse(String(row.evidence)) as Record<string, any>) : ((row.evidence ?? {}) as Record<string, any>);
+      const nudges = Number(evidence.idleNudges ?? 0);
+      const last = evidence.idleNudgedAt ? new Date(String(evidence.idleNudgedAt)).getTime() : 0;
+      if (nudges >= IDLE_TASK_MAX_NUDGES || env.now().getTime() - last < IDLE_TASK_MINUTES * 60_000) continue;
+      if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
+      const issue = await getIssue(env, companyId, issueId);
+      if (!issue || !["todo", "backlog", "in_progress"].includes(String(issue.status))) continue;
+      // Woken IDLE_TASK_REISSUE_AFTER times with no run ever starting: the host is holding this issue (a recovery action from an interrupted
+      // run: "execution reconciliation required", which waits for a board operator). The plugin opens a fresh issue for the task instead.
+      if (nudges >= IDLE_TASK_REISSUE_AFTER && Number(evidence.reissues ?? 0) < IDLE_TASK_MAX_REISSUES) {
+        if (await reissueTask(env, companyId, String(row.id), issueId, `The host would not start a run on this issue (${String(evidence.idleNudgeAnswer ?? "no run after repeated wakes")}).`)) woken += 1;
+        continue;
+      }
+      // An agent that met a tool failure keeps believing in it (found on Agri Auctions SA: create-preview failed with a NUL-byte fault, was fixed, and the agent
+      // went on answering "still failing" without trying again, which the host flagged as "plan only"). Said once per plugin version and issue.
+      await commentOn(env, companyId, issueId, `The SEO plugin was updated (version ${PLUGIN_VERSION}). If a tool failed earlier in this task (for example create-preview), call it again now before concluding it is broken: those faults are fixed. Then carry on with the task.`, { dedupeKey: `plugin-update:${PLUGIN_VERSION}:${issueId}` }).catch(() => false);
+      // The host's own answer is kept: it refuses a wake for reasons the kit's wakeIssue swallows (blockers, budget, workspace, no assignee).
+      let answer = "";
+      try {
+        const res = await env.ctx.issues.requestWakeup(issueId, companyId, { reason: "This task is waiting for the SEO agent", idempotencyKey: `idle:${issueId}:${Date.now()}` });
+        answer = res && (res as { queued?: boolean }).queued === false ? "not queued: the host started no run" : "";
+      } catch (error) {
+        answer = errorMessage(error);
+      }
+      await db.updateTask(env.ctx.db, companyId, String(row.id), { evidence: { ...evidence, idleNudges: nudges + 1, idleNudgedAt: env.now().toISOString(), idleNudgeAnswer: answer || "woken" } });
+      if (answer) env.ctx.logger.info("SEO idle task wake refused", { issueId, answer });
+      else woken += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO idle task not woken", { issueId, error: errorMessage(error) });
+    }
+  }
+  return woken;
+}
+
+
+/**
+ * A task parked on the Reviewer or the client has nothing for the agent to do. When its issue is flipped back to in_progress (a wake
+ * made the agent check it out) the host sees an in-progress issue with no live work and wakes the agent again every 30 seconds
+ * ("issue_continuation_needed"): found on Agri Studies (2026-10-05), 20+ runs and an 81 KB thread in 15 minutes. The issue is put back to
+ * blocked, which the host leaves alone. Runs from the 5-minute job; returns how many tasks it re-blocked.
+ */
+export async function reblockParkedTasks(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.issue_id FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND t.assignee_kind IN ('reviewer', 'client') AND t.status = 'in_progress' AND t.issue_id IS NOT NULL LIMIT 30`,
+  );
+  let blocked = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    const issueId = String(row.issue_id);
+    try {
+      const issue = await getIssue(env, companyId, issueId);
+      // in_review is a sign-off waiting for the Reviewer or the owner (block-task review): not this function's to change.
+      if (!issue || ["done", "cancelled", "blocked", "in_review"].includes(String(issue.status))) continue;
+      if (!(await patchIssue(env, companyId, issueId, { status: "blocked" }))) continue;
+      await db.updateTask(env.ctx.db, companyId, String(row.id), { status: "blocked", issue_status: "blocked" });
+      blocked += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO parked task not re-blocked", { issueId, error: errorMessage(error) });
+    }
+  }
+  return blocked;
+}
+
+
+/**
+ * The task's issue is stuck where the plugin cannot reach (the host holds it behind a recovery action): the old issue is cancelled with a
+ * pointer, the task loses its issue and a new one is opened for it, with the same description and owner. The agent's work is read from the
+ * live site by the task itself, so nothing is lost. Returns true when a new issue was opened.
+ */
+export async function reissueTask(env: Env, companyId: string, taskId: string, oldIssueId: string, why: string): Promise<boolean> {
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || task.issueId !== oldIssueId) return false;
+  const ctx = await loadSprintContext(env, companyId, task.sprintId);
+  // Only sprints a person put on automatic client sign-off: elsewhere a stuck task is for the owner to see.
+  if (ctx.sprint.status !== "active" || isRehearsalSprint(ctx.sprint) || !ctx.sprint.rootIssueId || ctx.sprint.clientSignoff !== "auto") return false;
+  const reissues = Number(((task.evidence ?? {}) as { reissues?: number }).reissues ?? 0);
+  await commentOn(env, companyId, oldIssueId, `Stuck: ${why} A new issue is opened for this task and this one is closed. Nothing is lost: the task reads the live state again.`);
+  await patchIssue(env, companyId, oldIssueId, { status: "cancelled" });
+  await db.updateTask(env.ctx.db, companyId, task.id, {
+    issue_id: null,
+    issue_identifier: null,
+    issue_status: null,
+    issue_project_id: null,
+    status: "not_started",
+    blocker_reason: null,
+    assignee_kind: null,
+    evidence: { ...(task.evidence ?? {}), reissues: reissues + 1, idleNudges: 0, idleNudgedAt: null, idleNudgeAnswer: null, previousIssueId: oldIssueId },
+  });
+  const opened = await materialiseDueTasks(env, { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId }, { onlyTaskIds: [task.id] });
+  return opened.created > 0;
+}
+
+
+/** Whether any client preview has been made for the task. */
+export async function taskHasPreview(env: Env, companyId: string, taskId: string): Promise<boolean> {
+  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 LIMIT 1`, [companyId, taskId]);
+  return rows.length > 0;
+}
+
+/**
+ * A page-writing task of a sprint on automatic client sign-off that an agent handed to a person ("apply this change set in wp-admin")
+ * before this was refused: the Needs you line is closed and the task goes back to the agent, told to make previews. Found on Agri Auctions SA
+ * (2026-10-05). Once per task. Runs from the 5-minute job; returns how many tasks it took back.
+ */
+export async function reclaimPersonHandOffs(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence, t.human_ask FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
+      WHERE s.status = 'active' AND s.client_signoff = 'auto' AND t.task_type = 'page-write' AND t.status = 'blocked' AND t.issue_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
+  );
+  let taken = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    try {
+      const evidence = typeof row.evidence === "string" ? (JSON.parse(String(row.evidence)) as Record<string, any>) : ((row.evidence ?? {}) as Record<string, any>);
+      if (evidence.reclaimedHandOff) continue;
+      const task = await db.getTask(env.ctx.db, companyId, String(row.id));
+      if (!task || !task.issueId) continue;
+      const { sprint, info } = await loadSprintContext(env, companyId, task.sprintId);
+      if (!isAutoSignoff(sprint)) continue;
+      // The hand-off lines about this task: a change set for a person to apply (any key), never a setup item (a login, a repo link).
+      const digests = await db.openNeedsYouDigests(env.ctx.db, companyId);
+      const lines = digests
+        .filter((d) => d.sprintId === sprint.id)
+        .flatMap((d) => d.items)
+        .filter((i) => i.status === "open" && (i.taskIds ?? []).includes(task.id) && ["task", "review", "pr"].includes(i.kind) && !(STANDARD_KEYS as readonly string[]).includes(i.key));
+      if (lines.length === 0 && !row.human_ask) continue;
+      if (lines.length > 0) await closeNeedsYouItems(env, info, sprint, lines.map((i) => i.key), "plugin", "Taken back: on this sprint a page's change goes to the client as a preview, not to a person.").catch(() => 0);
+      if (!(await patchIssue(env, companyId, task.issueId, { status: "todo" }))) continue;
+      await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null, human_ask: null, evidence: { ...(task.evidence ?? {}), reclaimedHandOff: true } });
+      await commentOn(env, companyId, task.issueId, `Client sign-off is automatic on this sprint, so this page's change is not handed to a person. The Needs you line was closed. Make a preview of each page with partnersinbiz.seo:create-preview (taskId ${task.id}) and end your turn: the plugin parks the task on the client, drafts the approval email and wakes you when they answer. (If create-preview failed before, that was a plugin fault that is fixed.)`);
+      await wakeIssue(env.ctx, task.issueId, companyId, "Make previews instead of a hand-off");
+      taken += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO person hand-off not taken back", { taskId: String(row.id), error: errorMessage(error) });
+    }
+  }
+  return taken;
+}
+
+async function requireSprintOrNull(env: Env, companyId: string, sprintId: string): Promise<db.Sprint> {
+  return (await db.getSprint(env.ctx.db, companyId, sprintId)) as db.Sprint;
 }

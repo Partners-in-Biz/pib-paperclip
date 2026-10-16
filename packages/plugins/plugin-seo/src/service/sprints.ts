@@ -10,6 +10,7 @@ import { announcementLine } from "./handoff.js";
 import { digestComment, rootIssueDescription, rootIssueTitle } from "../engine/copy.js";
 import {
   AUTOPILOT_MODES,
+  PACINGS,
   isRunning,
   nextSprintStatus,
   OPEN_TASK_STATUSES,
@@ -34,6 +35,7 @@ import {
   companyInfo,
   errorMessage,
   isoDateParam,
+  num,
   oneOf,
   reqStr,
   SeoError,
@@ -47,7 +49,8 @@ import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy 
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
 import { cancelRehearsalIssues } from "./rehearsal.js";
-import { materialiseDueTasks } from "./tasks.js";
+import { materialiseDueTasks, startTasksNow } from "./tasks.js";
+import { nextWeekToRelease } from "../engine/pacing.js";
 import { groupViews } from "./chunks.js";
 import { geoSummary } from "./geo.js";
 import { ga4Line } from "./analytics.js";
@@ -214,6 +217,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     notes: str(params, "notes", { max: 4000 }) ?? null,
     switches: start.switches,
   });
+  // Manual pacing is set before the plan is seeded, so none of its tasks opens on the calendar: a person starts each week.
+  if (oneOf(params, "pacing", PACINGS) === "manual") await db.updateSprint(env.ctx.db, companyId, id, { pacing: "manual" });
   await logStartingSwitches(env, companyId, id, start, actor).catch((error: unknown) => env.ctx.logger.info("SEO switch trail not written for a new sprint", { sprintId: id, error: errorMessage(error) }));
   let sprint = await requireSprint(env, companyId, id);
   // The client's one WordPress site at this URL with a connected Connector: link it now (best effort, never fails creation).
@@ -338,6 +343,12 @@ export function sprintView(sprint: db.Sprint, today: string, overview?: SprintOv
     businessType: businessTypeOf(sprint.templateId),
     plan: plan.label,
     autopilotMode: sprint.autopilotMode,
+    /** auto: tasks open by the calendar. manual: a person starts each week (set-pacing). */
+    pacing: sprint.pacing,
+    /** auto: the plugin waits for the client, drafts the approval email and applies what they approve (set-signoff-mode). */
+    clientSignoff: sprint.clientSignoff,
+    /** Manual pacing: the plan runs by itself through this week (set-release-through); null = a person starts each week. */
+    releaseThrough: sprint.releaseThrough,
     ownerUserId: sprint.ownerUserId,
     rootIssueId: sprint.rootIssueId,
     rootIssueIdentifier: sprint.rootIssueIdentifier,
@@ -419,7 +430,7 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const clock = clockFor(sprint, info.today);
   // Tasks whose runs stop at the workspace check are stuck, not blocked on a person (engine/due.ts).
   const tasks = await withRunFailures(env.ctx.db, sprint.companyId, await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: OPEN_TASK_STATUSES }));
-  const due = tasks.filter((t) => t.dueDay == null || t.dueDay <= clock.day);
+  const due = tasks.filter((t) => !t.held && (t.dueDay == null || t.dueDay <= clock.day));
   // A site-wide task split into page groups: the agent works the group issues, not the parent (service/chunks.ts).
   const groups = await groupViews(env, sprint.companyId, sprint.id).catch(() => new Map());
   const brief = (t: db.SprintTask) => ({
@@ -457,6 +468,13 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
   const rehearsal = isRehearsalSprint(sprint);
   if (rehearsal) next.push(REHEARSAL_NOTE);
   if (!isRunning(sprint.status)) next.push(`Sprint is ${sprint.status}; nothing runs until it is resumed.`);
+  if (sprint.clientSignoff === "auto") {
+    next.push("Client sign-off is automatic: for any page a client must approve, make previews with create-preview (one per page) and end your turn. The plugin parks the task, drafts the approval email and wakes you when the client has answered; never use Needs you or block-task for it. Carry on with the next due task meanwhile.");
+  }
+  if (sprint.pacing === "manual") {
+    const waiting = tasks.filter((t) => t.held).length;
+    next.push(`Manual pacing: a person starts each plan week, nothing opens by the calendar${waiting > 0 ? ` (${plural(waiting, "task")} wait for their week to be started)` : ""}. Never pull a week forward yourself; work what is open and keep the data and proposals moving.`);
+  }
   if (!gsc || gsc.status !== "connected" || !gsc.propertyUrl) {
     if (sa.key) {
       next.push(
@@ -555,6 +573,83 @@ export async function sprintToday(env: Env, info: CompanyInfo, sprint: db.Sprint
     health: sprint.health,
     next,
   };
+}
+
+/**
+ * Pacing: a person chooses whether the plan's tasks open by the calendar (auto) or only when they press Start on a week
+ * (manual). Manual keeps everything else running: data pulls, snapshots, measurements, the weekly proposals, tasks from
+ * approved proposals and work already open. Switching to manual lets the weeks that already have an open issue finish.
+ */
+export async function setPacing(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user" || !actor.userId?.trim()) throw new SeoError("Only a signed-in person can change how a sprint is paced.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  assertWritable(sprint);
+  const pacing = oneOf(params, "pacing", PACINGS);
+  if (!pacing) throw new SeoError('Send pacing: "auto" (tasks open by the calendar) or "manual" (a person starts each week).');
+  if (pacing === sprint.pacing) return { sprintId: sprint.id, pacing, unchanged: true };
+  let released = 0;
+  if (pacing === "manual") {
+    // A week that already has an issue open keeps going; every other week waits for its Start.
+    released = await db.releaseOpenWeeks(env.ctx.db, companyId, sprint.id);
+  }
+  await db.updateSprint(env.ctx.db, companyId, sprint.id, { pacing });
+  if (sprint.rootIssueId) {
+    await commentOn(
+      env,
+      companyId,
+      sprint.rootIssueId,
+      pacing === "manual"
+        ? `Pacing set to manual by ${actorLabel(actor)}: no plan task opens until a person starts its week.${released > 0 ? ` The ${plural(released, "task")} in weeks already under way carry on.` : ""}`
+        : `Pacing set to automatic by ${actorLabel(actor)}: plan tasks open by the calendar again.`,
+    );
+  }
+  return { sprintId: sprint.id, pacing, previous: sprint.pacing, released };
+}
+
+
+/** The actor the plugin uses when it starts a week for "run through week N" (it is the person's standing instruction, not an agent). */
+const RELEASE_ACTOR: Actor = { kind: "system" };
+
+/**
+ * Starts the next week of every manual sprint that has a "run through week N" ceiling, when nothing of an earlier week is in the
+ * agent's hands (engine/pacing.ts). One week per sprint per run. Runs from the 5-minute job. Returns how many weeks it started.
+ */
+export async function advanceReleasedWeeks(env: Env, only?: { companyId: string; sprintId: string }): Promise<number> {
+  const rows = only
+    ? [{ id: only.sprintId, company_id: only.companyId }]
+    : await env.ctx.db.query(`SELECT id, company_id FROM ${db.t("sprints")} WHERE status = 'active' AND pacing = 'manual' AND release_through IS NOT NULL`);
+  let started = 0;
+  for (const row of rows) {
+    const companyId = String(row.company_id);
+    try {
+      const sprint = await db.getSprint(env.ctx.db, companyId, String(row.id));
+      if (!sprint || sprint.status !== "active" || sprint.pacing !== "manual" || sprint.releaseThrough == null || isRehearsalSprint(sprint) || !sprint.rootIssueId) continue;
+      const tasks = await db.listTasks(env.ctx.db, companyId, sprint.id, { status: OPEN_TASK_STATUSES });
+      const week = nextWeekToRelease(tasks, sprint.releaseThrough);
+      if (week == null) continue;
+      await startTasksNow(env, companyId, RELEASE_ACTOR, { sprintId: sprint.id, week });
+      if (sprint.rootIssueId) await commentOn(env, companyId, sprint.rootIssueId, `Week ${week} started (run through week ${sprint.releaseThrough}): nothing of an earlier week is waiting for the SEO agent.`, { dedupeKey: `release:${sprint.id}:${week}` });
+      started += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO run-through week not started", { sprintId: String(row.id), error: errorMessage(error) });
+    }
+  }
+  return started;
+}
+
+/** A person says: run the plan through week N by itself (or stop: a person starts each week). Switches the sprint to manual pacing first. */
+export async function setReleaseThrough(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user" || !actor.userId?.trim()) throw new SeoError("Only a signed-in person can choose how far the plan runs by itself.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  assertWritable(sprint);
+  const week = num(params, "week", { integer: true, min: 0, max: 200 }) ?? null;
+  if (week !== null && sprint.pacing !== "manual") await setPacing(env, companyId, actor, { sprintId: sprint.id, pacing: "manual" });
+  await db.updateSprint(env.ctx.db, companyId, sprint.id, { release_through: week });
+  if (sprint.rootIssueId) {
+    await commentOn(env, companyId, sprint.rootIssueId, week === null ? `Run-through stopped by ${actorLabel(actor)}: a person starts each week.` : `The plan runs by itself through week ${week} (set by ${actorLabel(actor)}): each week starts when nothing of an earlier week is waiting for the SEO agent. Work waiting on a person or the client does not hold it back.`);
+  }
+  const started = week !== null && sprint.status === "active" ? await advanceReleasedWeeks(env, { companyId, sprintId: sprint.id }) : 0;
+  return { sprintId: sprint.id, releaseThrough: week, weekStarted: started > 0 };
 }
 
 export async function setAutopilot(env: Env, companyId: string, actor: Actor, params: Params) {

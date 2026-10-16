@@ -117,3 +117,29 @@ describe("the fact sheet", () => {
     expect(h.executes.some((e) => /INSERT INTO plugin_seo_8099f8879a\.client_facts/.test(e.sql))).toBe(true);
   });
 });
+
+describe("the claims rule for training and education sites (Agri Studies, 2026-10-05)", () => {
+  const FACTS: ClientFact[] = [{ kind: "say", text: "Study 100 percent online in English, Afrikaans, Zulu, Xhosa and Sesotho.", source: "https://agristudies.co.za/product/beekeeping-course/" }];
+  it("refuses accreditation, certification and study-time claims that no wording on the sheet covers", () => {
+    const v = checkClaims([
+      "<p>This QCTO-accredited beekeeping course gives you nationally recognised agricultural training.</p>",
+      "<ul><li>Study online at your own pace</li><li>Certified short course</li></ul>",
+    ], FACTS);
+    expect(v.map((x) => x.why)).toEqual([
+      expect.stringMatching(/accreditation or certification/),
+      expect.stringMatching(/when and how a course can be studied/),
+      expect.stringMatching(/accreditation or certification/),
+    ]);
+  });
+
+  it("lets a claim through when the client's own wording is on the sheet, and ordinary course copy through", () => {
+    expect(checkClaims(["<p>Study 100 percent online in English, Afrikaans, Zulu, Xhosa and Sesotho.</p>", "<p>Learn how to manage a hive through the seasons with practical modules.</p>"], FACTS)).toEqual([]);
+  });
+
+  it("an empty sheet tells the agent to build it from the client's own pages first (the note names the tool)", async () => {
+    const h = host([]);
+    const got = (await getClientFacts(h.env, "co-1", { sprintId: "sp-1" })) as { say: unknown[]; note: string };
+    expect(got.say).toEqual([]);
+    expect(got.note).toMatch(/BEFORE you write copy[\s\S]*propose-client-facts[\s\S]*EXACTLY/);
+  });
+});

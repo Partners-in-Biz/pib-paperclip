@@ -22,7 +22,7 @@ const task = (extra: Row = {}): Row => ({
 });
 const PREVIEW: Row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", review_key: "rk", changes: { title: "T", bodyHtml: "<p>x</p>" }, stats: { rendered: { keptPct: 96 } } };
 
-function host(opts: { task?: Row; agents?: Array<Record<string, unknown>>; newerPreview?: boolean } = {}) {
+function host(opts: { task?: Row; agents?: Array<Record<string, unknown>>; newerPreview?: boolean; rounds?: number } = {}) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ id: string; body: string }> = [];
@@ -34,6 +34,7 @@ function host(opts: { task?: Row; agents?: Array<Record<string, unknown>>; newer
       async query(sql: string) {
         if (/FROM plugin_seo_8099f8879a\.sprints WHERE id/.test(sql)) return [SPRINT];
         if (/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id/.test(sql)) return [opts.task ?? task()];
+        if (/count\(\*\)/.test(sql)) return [{ n: opts.rounds ?? 0 }];
         if (/SELECT id FROM plugin_seo_8099f8879a\.previews/.test(sql)) return opts.newerPreview ? [{ id: "p2" }] : [];
         if (/FROM plugin_seo_8099f8879a\.previews/.test(sql)) return [PREVIEW];
         return [];
@@ -95,7 +96,7 @@ describe("Reviewer sends a build problem to a developer", () => {
     expect(none.created).toHaveLength(0);
     expect(none.wakes).toEqual(["iss-1"]);
     expect(none.comments[0]!.body).toMatch(/meant for a developer but no Developer/);
-    const builds = [1, 2, 3].map((n) => ({ issueId: `f${n}`, agentId: "dev-1", at: "x", kind: "preview-fix", reported: "done" }));
+    const builds = [1, 2, 3].map((n) => ({ issueId: `f${n}`, agentId: "dev-1", at: "x", kind: "preview-fix", reported: "done", pageUrl: "https://acme.co.za/" }));
     const tired = host({ task: task({ evidence: { builds } }) });
     await reviewPreview(tired.env, "co-1", reviewer, { ...base, fixBy: "developer" });
     expect(tired.created).toHaveLength(0);
@@ -118,5 +119,48 @@ describe("developer finishes a preview fix", () => {
     await onBuildIssueUpdated(h.env, "co-1", "fix-1");
     expect(h.wakes).toEqual([]);
     expect(h.updates).toEqual([]);
+  });
+});
+
+
+describe("a page that keeps failing goes to the Senior Developer once before the owner", () => {
+  it("at the second failed round the fix goes to the Senior Developer, whoever the Reviewer named, and the owner is not asked yet", async () => {
+    const h = host({ rounds: 2 });
+    const out = (await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })) as { fixIssueId: string; fixedBy: string };
+    expect(out).toMatchObject({ fixIssueId: "fix-1", fixedBy: "Senior Developer" });
+    expect(h.created[0]).toMatchObject({ assigneeAgentId: "sen-1" });
+    expect(h.executes.some((e) => /needs_you/.test(e.sql))).toBe(false);
+    expect(h.executes.filter((e) => /sprint_tasks SET/.test(e.sql)).flatMap((e) => e.params).some((p) => typeof p === "string" && p.includes('"level":"senior"'))).toBe(true);
+  });
+
+  it("after the Senior Developer's go it is the owner's", async () => {
+    const seniorTask = task({ evidence: { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] } });
+    const h = host({ rounds: 3, task: seniorTask });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ escalatedToOwner: true });
+    expect(h.created).toEqual([]);
+  });
+
+  it("with nobody to take it, the owner is asked", async () => {
+    const h = host({ rounds: 2, agents: [] });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ escalatedToOwner: true });
+  });
+
+  it("the first rounds keep their routing (the control)", async () => {
+    const h = host({ rounds: 1 });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Developer" });
+  });
+});
+
+describe("each page of a many-page task has its own tries", () => {
+  it("the Senior Developer's go on one page does not use up the go of another page of the same task", async () => {
+    const other = task({ evidence: { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/other-page/" }] } });
+    const h = host({ rounds: 2, task: other });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Senior Developer" });
+  });
+
+  it("three earlier fixes of other pages do not stop a fix of this one", async () => {
+    const builds = ["a", "b", "c"].map((p) => ({ issueId: `f-${p}`, agentId: "dev-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "developer", pageUrl: `https://acme.co.za/${p}/` }));
+    const h = host({ rounds: 1, task: task({ evidence: { builds } }) });
+    expect(await reviewPreview(h.env, "co-1", reviewer, { ...base, fixBy: "developer" })).toMatchObject({ fixedBy: "Developer" });
   });
 });

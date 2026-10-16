@@ -70,6 +70,17 @@ export const CARE_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "delete-client-signal",
+    displayName: "Delete client signal",
+    description:
+      "Remove one module's recorded numbers for one client and month from the report. Use when a recorded signal is wrong or out of date: read the signal first via build-client-report (dryRun true to see without storing), delete it, then record the right numbers again and rebuild.",
+    parametersSchema: schema(["client", "module", "period"], {
+      client: P.client,
+      module: oneOf([...REPORT_MODULES, "other"], "Which module the signal is for."),
+      period: text("The month as YYYY-MM, or the literal string \"current\" for the client's current state (health inputs). Required."),
+    }),
+  },
+  {
     name: "set-report-narrative",
     displayName: "Write the report summary",
     description:

@@ -82,6 +82,7 @@ import { crmTabBadges, dealClientLabel, dealsByStage, displayText, followUpDue, 
 import { DealSheet, type DealView } from "./deal.js";
 import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts.js";
 import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
+import { dialerHref, TELEPHONY_PLUGIN_KEY } from "../phone-link.js";
 
 interface Account {
   id: string;
@@ -189,7 +190,7 @@ export function CrmPage(props: PluginPageProps) {
   const location = useHostLocation();
   const client = clientScopeFromSearch(location.search);
   if (client) {
-    return <ClientWorkspace key={`${client.kind}:${client.id}`} companyId={props.context.companyId ?? null} client={client} />;
+    return <ClientWorkspace key={`${client.kind}:${client.id}`} companyId={props.context.companyId ?? null} client={client} companyPrefix={props.context.companyPrefix} />;
   }
   return <CrmList {...props} />;
 }
@@ -1013,6 +1014,11 @@ interface WorkspaceCompany {
   currency: string;
   tags: string[];
   humanOwned: string[];
+  billingEmail: string | null;
+  phone: string | null;
+  address: string | null;
+  vatNumber: string | null;
+  registrationNumber: string | null;
 }
 
 interface WorkspaceContact {
@@ -1097,7 +1103,7 @@ const WORK_SOURCES = [
 
 type WorkSource = (typeof WORK_SOURCES)[number];
 
-function ClientWorkspace({ companyId, client }: { companyId: string | null; client: ClientRef }) {
+function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: string | null; client: ClientRef; companyPrefix: string | null }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
   const load = usePluginAction("crm.client-workspace");
@@ -1381,8 +1387,8 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
-          {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} /> : null}
+          {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
+          {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
           {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
           {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} /> : null}
           {company || companies.length === 0 ? (
@@ -1821,11 +1827,12 @@ function ClientWorkspace({ companyId, client }: { companyId: string | null; clie
   );
 }
 
-function CompanyDetails({ company, onSave, locking, onLock }: {
+function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
   company: WorkspaceCompany;
   onSave: (patch: Patch) => Promise<boolean>;
   locking: boolean;
   onLock: (keys: string[], lock: boolean, label: string) => void;
+  companyPrefix: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1834,6 +1841,12 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
   const [lifecycle, setLifecycle] = useState("lead");
   const [currency, setCurrency] = useState("ZAR");
   const [tags, setTags] = useState("");
+  const [billingEmail, setBillingEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [vatNumber, setVatNumber] = useState("");
+  const [registrationNumber, setRegistrationNumber] = useState("");
+  const contributions = useUiContributions();
 
   function startEdit() {
     setName(company.name);
@@ -1841,13 +1854,18 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     setLifecycle(company.lifecycle);
     setCurrency(company.currency);
     setTags(company.tags.join(", "));
+    setBillingEmail(company.billingEmail ?? "");
+    setPhone(company.phone ?? "");
+    setAddress(company.address ?? "");
+    setVatNumber(company.vatNumber ?? "");
+    setRegistrationNumber(company.registrationNumber ?? "");
     setEditing(true);
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
-    const ok = await onSave({ name, domain, lifecycle, currency, tags: splitList(tags) });
+    const ok = await onSave({ name, domain, lifecycle, currency, tags: splitList(tags), billingEmail, phone, address, vatNumber, registrationNumber });
     setSaving(false);
     if (ok) setEditing(false);
   }
@@ -1858,6 +1876,25 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
     { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={company.lifecycle} /> },
     { key: "currency", label: "Currency", value: company.currency },
     { key: "tags", label: "Tags", value: company.tags.join(", ") || <NotSet /> },
+    { key: "billingEmail", label: "Billing email", value: company.billingEmail ? <span style={{ overflowWrap: "anywhere" }}>{company.billingEmail}</span> : <NotSet /> },
+    {
+      key: "phone",
+      label: "Phone",
+      value: company.phone ? (() => {
+        const telephonyInstalled = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) === true;
+        const phoneHref = telephonyInstalled ? dialerHref(company.phone, null, companyPrefix) : null;
+        return phoneHref ? (
+          <a href={phoneHref}>{company.phone}</a>
+        ) : (
+          company.phone
+        );
+      })() : (
+        <NotSet />
+      ),
+    },
+    { key: "address", label: "Address", value: company.address ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{company.address}</span> : <NotSet /> },
+    { key: "vatNumber", label: "VAT no.", value: company.vatNumber || <NotSet /> },
+    { key: "registrationNumber", label: "Reg. no.", value: company.registrationNumber || <NotSet /> },
   ];
 
   return (
@@ -1885,6 +1922,23 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
           <Field label="Tags (comma separated)">
             <Input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="retainer, priority" />
           </Field>
+          <Field label="Billing email">
+            <Input type="email" value={billingEmail} maxLength={254} onChange={(event) => setBillingEmail(event.target.value)} placeholder="accounts@northwind.test" />
+          </Field>
+          <Field label="Phone">
+            <Input value={phone} maxLength={64} onChange={(event) => setPhone(event.target.value)} />
+          </Field>
+          <Field label="Address">
+            <TextArea value={address} rows={3} maxLength={500} onChange={(event) => setAddress(event.target.value)} placeholder={"12 Main Road\nCape Town\n8001"} />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 12 }}>
+            <Field label="VAT no.">
+              <Input value={vatNumber} maxLength={64} onChange={(event) => setVatNumber(event.target.value)} />
+            </Field>
+            <Field label="Reg. no.">
+              <Input value={registrationNumber} maxLength={64} onChange={(event) => setRegistrationNumber(event.target.value)} />
+            </Field>
+          </div>
           <EditButtons saving={saving} onCancel={() => setEditing(false)} />
         </Form>
       ) : (
@@ -1894,11 +1948,12 @@ function CompanyDetails({ company, onSave, locking, onLock }: {
   );
 }
 
-function ContactDetails({ contact, onSave, locking, onLock }: {
+function ContactDetails({ contact, onSave, locking, onLock, companyPrefix }: {
   contact: WorkspaceContact;
   onSave: (patch: Patch) => Promise<boolean>;
   locking: boolean;
   onLock: (keys: string[], lock: boolean, label: string) => void;
+  companyPrefix: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1909,6 +1964,7 @@ function ContactDetails({ contact, onSave, locking, onLock }: {
   const [tags, setTags] = useState("");
   const [nextKind, setNextKind] = useState("");
   const [nextDue, setNextDue] = useState("");
+  const contributions = useUiContributions();
 
   function startEdit() {
     setName(contact.name);
@@ -1944,7 +2000,27 @@ function ContactDetails({ contact, onSave, locking, onLock }: {
       label: contact.emails.length > 1 ? "Emails" : "Email",
       value: contact.emails.length ? <span style={{ display: "grid", gap: 2, minWidth: 0 }}>{contact.emails.map((email) => <EmailText key={email} email={email} />)}</span> : <NotSet />,
     },
-    { key: "phones", label: contact.phones.length > 1 ? "Phones" : "Phone", value: contact.phones.join(", ") || <NotSet /> },
+    {
+      key: "phones",
+      label: contact.phones.length > 1 ? "Phones" : "Phone",
+      value: contact.phones.length ? (
+        <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
+          {contact.phones.map((phone) => {
+            const telephonyInstalled = moduleInstalled(contributions, TELEPHONY_PLUGIN_KEY) === true;
+            const href = telephonyInstalled ? dialerHref(phone, contact.id, companyPrefix) : null;
+            return href ? (
+              <a key={phone} href={href}>
+                {phone}
+              </a>
+            ) : (
+              <div key={phone}>{phone}</div>
+            );
+          })}
+        </span>
+      ) : (
+        <NotSet />
+      ),
+    },
     { key: "lifecycle", label: "Lifecycle", value: <LifecyclePill lifecycle={contact.lifecycle} /> },
     {
       key: "nextAction",

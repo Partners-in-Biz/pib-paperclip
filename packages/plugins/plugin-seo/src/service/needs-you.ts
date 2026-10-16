@@ -543,6 +543,17 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
   }
   const kind = (str(params, "kind") ?? "grant") as NeedsYouItem["kind"];
   if (!KINDS.includes(kind as (typeof KINDS)[number])) throw new SeoError(`kind must be one of: ${KINDS.join(", ")}`);
+  // Automatic client sign-off: a page's copy goes to the client as a preview, not to a person as a change set to apply.
+  if (sprint.clientSignoff === "auto" && ["task", "review", "pr"].includes(kind) && taskIds.length > 0) {
+    const pages = await env.ctx.db.query(
+      `SELECT t.id FROM ${db.t("sprint_tasks")} t WHERE t.company_id = $1 AND t.id IN (SELECT jsonb_array_elements_text($2::jsonb)) AND t.task_type = 'page-write'
+         AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id)`,
+      [companyId, JSON.stringify(taskIds)],
+    );
+    if (pages.length > 0) {
+      throw new SeoError("This sprint's client sign-off is automatic: do not hand a page's change set to a person. Make a preview of each page with partnersinbiz.seo:create-preview (with the task's taskId) and end your turn: the plugin parks the task on the client, drafts the approval email and wakes you with what to apply. If create-preview itself fails, say so in a comment on the task and end your turn: the plugin retries.");
+    }
+  }
   const title = reqStr(params, "title", { max: 200 });
   const links = strList(params, "links", { max: 10, itemMax: 1000 }).map((entry) => {
     const [label, url] = entry.includes(" | ") ? entry.split(" | ") : [entry, entry];

@@ -95,6 +95,15 @@ interface BuildRef {
   reported?: string;
   /** preview-fix: opened by the plugin after the Reviewer sent a preview back for a build problem. */
   kind?: "preview-fix";
+  /** preview-fix: which builder level took it (a Senior Developer attempt is the last one before the owner is asked). */
+  level?: "developer" | "senior";
+  /** preview-fix: the page it is about. A task can cover many pages (ten product pages), and each page has its own tries. */
+  pageUrl?: string;
+}
+
+/** The Senior Developer already took a preview fix of THIS PAGE of the task: the next stop is the owner. */
+export function seniorTried(task: db.SprintTask, pageUrl: string): boolean {
+  return buildsOf(task).some((b) => b.kind === "preview-fix" && b.level === "senior" && b.pageUrl === pageUrl);
 }
 
 /** Developer fixes of a preview the plugin opens for one task before it hands the problem to the owner. */
@@ -259,7 +268,7 @@ export async function startPreviewFix(env: Env, companyId: string, input: Previe
   if (!task || !task.issueId) return { fallback: "the task has no open issue" };
   const { sprint } = await loadSprintContext(env, companyId, task.sprintId);
   if (isRehearsalSprint(sprint)) return { fallback: "this is a rehearsal sprint: nothing is built for it" };
-  const earlier = buildsOf(task).filter((b) => b.kind === "preview-fix").length;
+  const earlier = buildsOf(task).filter((b) => b.kind === "preview-fix" && b.pageUrl === input.pageUrl).length;
   if (earlier >= MAX_PREVIEW_FIXES) return { fallback: `${earlier} developer fixes of this page did not pass the check; put the question on Needs you for the owner` };
   const { developer, senior } = await findBuilders(env, companyId);
   const builder = input.level === "senior" ? senior ?? developer : developer ?? senior;
@@ -301,7 +310,7 @@ export async function startPreviewFix(env: Env, companyId: string, input: Previe
     wake: true,
     wakeReason: `Reviewer sent a preview back: ${task.title}`,
   });
-  const builds = [...buildsOf(task), { issueId: created.id, agentId: builder.id, at: env.now().toISOString(), kind: "preview-fix" as const } satisfies BuildRef];
+  const builds = [...buildsOf(task), { issueId: created.id, agentId: builder.id, at: env.now().toISOString(), kind: "preview-fix" as const, level: input.level === "senior" ? ("senior" as const) : ("developer" as const), pageUrl: input.pageUrl } satisfies BuildRef];
   await db.updateTask(env.ctx.db, companyId, task.id, { evidence: { ...(task.evidence ?? {}), builds }, blocker_reason: `Waiting for ${builder.name} to fix the preview the Reviewer sent back` });
   return { issueId: created.id, builder: builder.name };
 }

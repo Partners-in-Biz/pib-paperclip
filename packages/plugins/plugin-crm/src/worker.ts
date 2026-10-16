@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
+import { registerCallNotedSubscriber } from "./call-noted.js";
 import {
   definePlugin,
   runWorker,
@@ -124,6 +125,8 @@ import {
   normalizeEmail,
   normalizeEmails,
   normalizeDomain,
+  normalizeBillingField,
+  BILLING_KEYS,
   phoneMatchKey,
   fillContact,
   duplicateGroups,
@@ -266,6 +269,8 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     // What the other modules say about a client (for the report and the health score), and the erasure and consent hand-offs.
     registerClientSignals(ctx);
+    // Subscribe to call.noted events from the Telephony plugin to write idempotent call notes.
+    registerCallNotedSubscriber(ctx);
     registerPrivacy(ctx);
     const registerAction = (
       key: string,
@@ -1384,6 +1389,12 @@ async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<
       existing.domain = optionalString(params, "domain")!.trim();
       filled.push("domain");
     }
+    for (const key of BILLING_KEYS) {
+      const incoming = normalizeBillingField(key, optionalString(params, key));
+      if (!incoming || existing[key] || existing.humanOwned.includes(key)) continue;
+      existing[key] = incoming;
+      filled.push(key);
+    }
     const newTags = (stringList(params, "tags") ?? []).filter((t) => !existing.tags.some((have) => have.toLowerCase() === t.toLowerCase()));
     if (newTags.length && !(existing.humanOwned.includes("tags") && existing.tags.length)) {
       existing.tags = [...existing.tags, ...newTags];
@@ -1410,6 +1421,11 @@ async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<
     companyId: viewer.companyId,
     name,
     domain: optionalString(params, "domain"),
+    billingEmail: optionalString(params, "billingEmail"),
+    phone: optionalString(params, "phone"),
+    address: optionalString(params, "address"),
+    vatNumber: optionalString(params, "vatNumber"),
+    registrationNumber: optionalString(params, "registrationNumber"),
     lifecycle: optionalString(params, "lifecycle"),
     currency: optionalString(params, "currency"),
     tags: stringList(params, "tags"),
@@ -1431,11 +1447,16 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
       lifecycle: account.lifecycle,
       currency: account.currency,
       tags: account.tags,
+      billingEmail: account.billingEmail,
+      phone: account.phone,
+      address: account.address,
+      vatNumber: account.vatNumber,
+      registrationNumber: account.registrationNumber,
     },
     custom: account.custom,
     humanOwned: account.humanOwned,
     columnKeys: columnKeysFor("company"),
-    patch: patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags"]),
+    patch: patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS]),
     source,
   });
   normalizeAccountColumns(result.columns);
@@ -1444,6 +1465,7 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   account.lifecycle = assertLifecycle(String(result.columns.lifecycle ?? account.lifecycle));
   account.currency = assertCurrency(String(result.columns.currency ?? account.currency));
   account.tags = asStringList(result.columns.tags);
+  for (const key of BILLING_KEYS) account[key] = result.columns[key] as string | null;
   account.custom = result.custom;
   await saveAccount(ctx, account);
   await insertFacts(ctx, account.companyId, "company", account.id, result.facts);
@@ -2222,6 +2244,7 @@ function normalizeAccountColumns(columns: Record<string, unknown>): void {
   if (typeof columns.domain === "string") columns.domain = columns.domain.trim() || null;
   if (typeof columns.lifecycle === "string") columns.lifecycle = assertLifecycle(columns.lifecycle);
   if (typeof columns.currency === "string") columns.currency = assertCurrency(columns.currency);
+  for (const key of BILLING_KEYS) columns[key] = normalizeBillingField(key, columns[key]);
 }
 
 function completionModeOf(value: string | undefined): CompletionMode {

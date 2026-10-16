@@ -16,6 +16,8 @@ export interface PreviewChanges {
   bodyMode?: BodyMode;
   /** Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). */
   css?: string;
+  /** One client-facing sentence on why the change helps (shown in the approval email; not part of the page). */
+  why?: string;
 }
 
 export interface PreviewStats {

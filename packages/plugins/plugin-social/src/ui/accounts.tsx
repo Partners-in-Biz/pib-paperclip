@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { oauthOriginMismatch, rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { Button, EmptyState, Field, Input, Modal, Plug, SectionCard, StatusDot, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, type SocialPlatform } from "../platforms.js";
 import { AccountStatus, Avatar, Banner, BelongsToSelect, Card, Code, fmtDate, ignore, Muted, PlatformBadge, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
@@ -21,8 +21,14 @@ export function SetupBanners({ snapshot }: { snapshot: Snapshot }) {
       </Banner>
     );
   }
+  const wrongOrigin = typeof window !== "undefined" ? oauthOriginMismatch(c.redirectUri, window.location.origin, "accounts") : null;
   return (
     <>
+      {wrongOrigin ? (
+        <Banner tone="error" title="Connecting accounts only works on the public address">
+          {wrongOrigin}
+        </Banner>
+      ) : null}
       {c.publicBaseUrlError ? (
         <Banner tone="error" title="Public base URL is missing or invalid">
           {c.publicBaseUrlError} Once it is set, the redirect URI to register with every provider is <Code>{redirect}</Code>.
@@ -43,8 +49,11 @@ export async function startConnect(
   platform: SocialPlatform,
   extra: Record<string, unknown> = {},
 ): Promise<void> {
-  const result = (await run("social.oauth-start", { platform, ...extra })) as { authorizeUrl?: string; state?: string; label?: string } | undefined;
+  const result = (await run("social.oauth-start", { platform, ...extra })) as { authorizeUrl?: string; state?: string; label?: string; redirectUri?: string } | undefined;
   if (!result?.authorizeUrl || !result.state) throw new Error("The connection could not start");
+  // The sign-in can only finish on the redirect URI's own address (localStorage and the session cookie are per origin).
+  const wrongOrigin = oauthOriginMismatch(result.redirectUri, window.location.origin, result.label ?? platformLabel(platform));
+  if (wrongOrigin) throw new Error(wrongOrigin);
   rememberOAuthStart(result.state, {
     companyId,
     completeUrl: COMPLETE_ROUTE_PATH,
@@ -304,7 +313,9 @@ export function AccountsTab({ snapshot, companyId, run }: {
   const [bluesky, setBluesky] = useState<{ account: Account | null } | null>(null);
   const [editing, setEditing] = useState<Account | null>(null);
   const [busy, setBusy] = useState("");
-  const ready = snapshot.config.saved && !snapshot.config.publicBaseUrlError && snapshot.config.encryptionKey;
+  // On another address than the redirect URI's (e.g. the sslip.io host) a sign-in cannot finish: SetupBanners explains, buttons stay off.
+  const wrongOrigin = typeof window !== "undefined" ? oauthOriginMismatch(snapshot.config.redirectUri, window.location.origin) : null;
+  const ready = snapshot.config.saved && !snapshot.config.publicBaseUrlError && snapshot.config.encryptionKey && !wrongOrigin;
 
   // The snapshot holds this scope's accounts only.
   const accounts = snapshot.accounts;
@@ -343,7 +354,9 @@ export function AccountsTab({ snapshot, companyId, run }: {
         <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(210, "auto-fill") }}>
           {snapshot.platforms.map((p) => {
             const disabled = !ready || (p.mode === "oauth" && !p.configured) || busy !== "";
-            const hint = !ready
+            const hint = wrongOrigin
+              ? "Open Paperclip on its public address"
+              : !ready
               ? "Save the settings first"
               : p.mode === "oauth" && !p.configured
                 ? p.platform === "instagram"
@@ -386,6 +399,36 @@ export function AccountsTab({ snapshot, companyId, run }: {
               </div>
             );
           })}
+          {/* LinkedIn Page option for company pages with Community Management API */}
+          {(() => {
+            const linkedinPagesDisabled = !ready || !snapshot.config.linkedinPagesConfigured || busy !== "";
+            const linkedinPagesConnected = accounts.filter((a) => a.platform === "linkedin" && a.kind === "page").length;
+            const hint = wrongOrigin
+              ? "Open Paperclip on its public address"
+              : !ready
+              ? "Save the settings first"
+              : !snapshot.config.linkedinPagesConfigured
+                ? "Add the LinkedIn Pages app in settings"
+                : "OAuth";
+            return (
+              <div style={{ display: "grid", gap: 6, padding: 10, borderRadius: 10, border: `1px solid ${tokens.border}`, minWidth: 0 }}>
+                <Row style={{ justifyContent: "space-between" }}>
+                  <Row style={{ flexWrap: "nowrap", minWidth: 0 }}>
+                    <PlatformBadge platform="linkedin" size={24} />
+                    <strong style={{ fontSize: 13 }}>LinkedIn Page</strong>
+                    {linkedinPagesConnected ? <StatusDot tone="ok" label={`${linkedinPagesConnected} connected`} /> : null}
+                  </Row>
+                  <SmallButton
+                    disabled={linkedinPagesDisabled}
+                    onClick={() => void connect("linkedin", { app: "linkedinPages" })}
+                  >
+                    {busy === "linkedin" ? "Opening…" : "Connect"}
+                  </SmallButton>
+                </Row>
+                <Muted style={!ready || !snapshot.config.linkedinPagesConfigured ? { color: tone("warn").fg } : undefined}>{hint}</Muted>
+              </div>
+            );
+          })()}
         </div>
       </SectionCard>
 

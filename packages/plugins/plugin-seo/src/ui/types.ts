@@ -50,6 +50,12 @@ export type SprintSummary = {
   /** The plan's name for people, e.g. "Local service business". */
   plan: string;
   autopilotMode: string;
+  /** auto: tasks open by the calendar. manual: a person starts each week. */
+  pacing?: "auto" | "manual";
+  /** auto: the plugin handles the client's approval end to end (WordPress sites on pr_only). */
+  clientSignoff?: "auto" | "manual";
+  /** Manual pacing: the plan runs by itself through this week; null = a person starts each week. */
+  releaseThrough?: number | null;
   ownerUserId: string | null;
   rootIssueId: string | null;
   rootIssueIdentifier: string | null;
@@ -158,6 +164,8 @@ export type Task = {
   blockerReason: string | null;
   humanAsk: string | null;
   completedAt: string | null;
+  /** Manual pacing: not started and waiting for a person to start its week. */
+  held?: boolean;
   /** Its latest run stopped at the workspace check: stuck until the project's Codebase is fixed. */
   runsFailing?: boolean;
 };

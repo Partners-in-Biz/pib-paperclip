@@ -24,7 +24,7 @@ On the 1st at 06:00 (South African time) the CRM opens one issue per customer wo
 - Internal only, never in the client's copy: the tasks closed in the client's project, their notional effort (agent compute), the health score.
 
 ## Your steps
-1. Read the issue. For each module it lists as missing, read that module for this client and month, then \`record-client-signal\` (module, period, a few headline numbers with the change on last month, a few plain bullets). Leave a module out when the client does not use it.
+1. Read the issue. For each module it lists as missing, read that module for this client and month, then \`record-client-signal\` (module, period, a few headline numbers with the change on last month, a few plain bullets). If a recorded number is wrong or out of date, \`delete-client-signal\` for that month and module, then record the right one. Leave a module out when the client does not use it.
    - SEO: \`get-sprint\`, \`list-keywords\`, \`keyword-history\`, \`gsc-query\`, \`audit-summary\`, \`list-ga4-summary\`. Record clicks, impressions, positions gained, tasks done. Put the sprint health (0 to 100) in \`health.score\` with no period too: the health score reads it.
    - Social: \`list-posts\`, \`account-analytics\`, \`post-analytics\`, \`performance-review\`: posts published, engagement, followers, the best post.
    - Campaigns: \`list-campaigns\`, \`campaign-stats\`: sends, opens, clicks, replies.

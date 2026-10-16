@@ -81,7 +81,9 @@ iOS apps can only be built and signed on a Mac. The Mac is a Paperclip **environ
 ## Before you build
 - Run \`uname -s\` (must be Darwin) and \`xcodebuild -version\`. Not on the Mac: stop and say the project needs the Mac environment (Project → Settings → Execution environment).
 - \`asc auth status\` shows the App Store Connect API key profiles. One key covers one App Store Connect team; pick the profile for this app's team (\`asc auth switch --name <profile>\` or \`--profile\`). No profile for the team: Needs you (a person creates an API key with App Manager access in App Store Connect → Users and Access → Integrations and runs \`asc auth login\` on the Mac).
-- Over SSH the login keychain is locked. Prefer signing with the API key (below). If the project uses a signing keychain instead, unlock it with the password from \`$PIB_SIGNING_KEYCHAIN_PASSWORD\`: \`security unlock-keychain -p "$PIB_SIGNING_KEYCHAIN_PASSWORD" "$PIB_SIGNING_KEYCHAIN"\` and never print it.
+- Over SSH the login keychain is locked, so \`asc\` cannot read its stored profiles ("credentials not found for profile") and code signing fails with \`errSecInternalComponent\`. Do not wait for a person to unlock it. Load the API key from its file instead: \`. ~/.config/pib/asc.env\` sets \`ASC_KEY_ID\`, \`ASC_ISSUER_ID\`, \`ASC_PRIVATE_KEY_PATH\`, \`ASC_KEY_PATH\` and \`ASC_BYPASS_KEYCHAIN=1\` (identifiers and a file path, no secret; the Mac's \`mac-asc-setup.sh\` writes it once). With it loaded, \`asc\` works over SSH and the \`xcodebuild\` commands below get their key flags. The file is missing: Needs you, one line, "run mac-asc-setup.sh on the Mac" (it asks for the App Store Connect issuer id and takes a minute); do not retry in a loop.
+- The project's signing must be Automatic (\`CODE_SIGN_STYLE = Automatic\` and the team in \`DEVELOPMENT_TEAM\`, as Velox has). A project on manual signing needs the keychain route: only then unlock a dedicated signing keychain with the password from \`$PIB_SIGNING_KEYCHAIN_PASSWORD\`: \`security unlock-keychain -p "$PIB_SIGNING_KEYCHAIN_PASSWORD" "$PIB_SIGNING_KEYCHAIN"\`, and never print it.
+- If the archive still fails with \`errSecInternalComponent\` after the key flags, say so with the exact CodeSign line and which framework failed: the API key may lack the role for cloud signing (it needs Admin or App Manager access in App Store Connect). That is a fact to report, not a reason to ask for the login keychain.
 
 ## Build and upload (TestFlight)
 1. Bump the build number (\`agvtool next-version -all\` or the project's own script) and commit it.
@@ -99,6 +101,16 @@ xcodebuild -exportArchive -archivePath "build/<App>.xcarchive" -exportPath build
 
 ## Submitting for review
 Submitting to App Review is outward-facing: prepare the version, notes and screenshots, then ask a person on the issue and block. Submit only after they approve.
+
+## Clean up when done
+
+This Mac is also the owner's working machine and runs more than you. Disk and CPU are shared, so leave it as you found it. Do this before your final comment, every run, including runs that fail or are blocked:
+
+- **Stop what you started.** Shut down only the simulators you booted (\`xcrun simctl shutdown <udid>\`; never \`shutdown all\` while another run is active) and stop any Android emulator, Metro, dev server, \`xcodebuild\`, Gradle daemon (\`./gradlew --stop\`) or other background process you launched. Check with \`ps\` that nothing of yours is still running.
+- **Delete what you can rebuild.** In your workspace remove \`node_modules\`, \`Pods\`, \`ios/build\`, \`android/build\`, \`android/app/build\`, \`android/.gradle\` and any DerivedData you created (put it under \`~/paperclip-builds/dd-<issue>\` so it is easy to find, never leave it in the default location). Do this only after your commits are pushed and the build evidence is recorded.
+- **Keep what is evidence.** Keep the \`.xcarchive\`/\`.ipa\`/\`.aab\` only if the task needs it for the next step, and say where it is. Otherwise delete it once the upload receipt is in your comment. Logs go in \`~/paperclip-builds/logs/\`, not in the repo.
+- **Never** delete another run's folder, anything outside your workspace and \`~/paperclip-builds\`, simulators you did not boot, or git history. Do not delete your own run folder: the host copies it back when the run ends, and the Mac's janitor (hourly) removes old run copies.
+- Put one line in your final comment: what you removed and the free disk space (\`df -h /\`).
 
 ## Record
 On the issue: version and build number, commit, archive and upload output (last lines), the TestFlight build link, and anything that failed. \`log-activity\` on the client.

@@ -49,7 +49,8 @@ import {
 } from "./service/agent.js";
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
-import { deliverPreviewAnswers, previewRows } from "./service/preview.js";
+import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
+import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -62,11 +63,11 @@ import { runDailyForSprint, runDailyJob, runWeeklyForSprint, runWeeklyJob } from
 import { SEO_MATCH_ROLE, SEO_ROLE } from "./service/hire.js";
 import { detectSignals } from "./service/optimize.js";
 import { findClient, scopeParam } from "./service/scope.js";
-import { integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
+import { advanceReleasedWeeks, integrationView, sprintView, upgradeLegacySprint } from "./service/sprints.js";
 import { displayTitle, sprintOverviews, withRunFailures } from "./service/overview.js";
 import { isRunning } from "./engine/sprint.js";
 import { clientSummaryRoute } from "./service/summary.js";
-import { onIssueUpdated, advanceQueuedWeeks } from "./service/tasks.js";
+import { onIssueUpdated, advanceQueuedWeeks, nudgeIdleAgentTasks, reblockParkedTasks, reclaimPersonHandOffs } from "./service/tasks.js";
 import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
@@ -100,12 +101,28 @@ const plugin = definePlugin({
       await syncSignoff(e).catch((error) => ctx.logger.info("SEO sign-off sync failed", { error: errorMessage(error) }));
       await parkTasksWaitingOnYou(e).catch((error) => ctx.logger.info("SEO park waiting tasks failed", { error: errorMessage(error) }));
       await advanceQueuedWeeks(e).catch((error) => ctx.logger.info("SEO queued week advance failed", { error: errorMessage(error) }));
+      // "Run through week N": the next week starts when nothing of an earlier week is waiting for the agent.
+      await advanceReleasedWeeks(e).catch((error) => ctx.logger.info("SEO run-through week failed", { error: errorMessage(error) }));
       // A page group the host refused to create, or whose close was missed: the next group opens within minutes, not at the next hourly run.
       await db.listSprintCompanies(ctx.db).then(async (companies) => {
         for (const companyId of companies) await openIdleGroups(e, companyId).catch(() => 0);
       }).catch((error) => ctx.logger.info("SEO idle page groups not advanced", { error: errorMessage(error) }));
+      await reclaimPersonHandOffs(e).catch((error) => ctx.logger.info("SEO person hand-offs not taken back", { error: errorMessage(error) }));
+      await reblockParkedTasks(e).catch((error) => ctx.logger.info("SEO parked tasks not re-blocked", { error: errorMessage(error) }));
+      await nudgeIdleAgentTasks(e).catch((error) => ctx.logger.info("SEO idle tasks not woken", { error: errorMessage(error) }));
+      await nudgeStalledReviews(e).catch((error) => ctx.logger.info("SEO stalled reviews not nudged", { error: errorMessage(error) }));
+      await refreshStalePreviews(e).catch((error) => ctx.logger.info("SEO stale previews not refreshed", { error: errorMessage(error) }));
+      await reviveOrphanedChanges(e).catch((error) => ctx.logger.info("SEO orphaned changes not handed back", { error: errorMessage(error) }));
+      await handStuckPreviewsToSenior(e).catch((error) => ctx.logger.info("SEO stuck previews not handed over", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
+      // Sprints on automatic client sign-off: one approval email draft per batch of passed previews.
+      const drafted = await draftApprovalRequests(e).catch((error) => {
+        ctx.logger.info("SEO approval drafts failed", { error: errorMessage(error) });
+        return 0;
+      });
+      if (drafted > 0) ctx.logger.info("SEO approval email drafts requested", { drafted });
+      await repairDraftLinks(e).catch((error) => ctx.logger.info("SEO draft links not repaired", { error: errorMessage(error) }));
       // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
       const moved = await db.listSprintCompanies(ctx.db).then((companies) => guardTaskThreads(e, companies)).catch((error) => {
         ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
@@ -116,6 +133,14 @@ const plugin = definePlugin({
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
+    });
+    // The Mailbox's answer to an approval email draft request: the Gmail link goes on the sprint's Needs you.
+    ctx.events.on(DRAFT_RESULT_EVENT, async (event) => {
+      try {
+        await onDraftResult(e, event);
+      } catch (error) {
+        ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
+      }
     });
     // One subscription for every issue event (a second one, e.g. kit registerDoneChecks, would deliver each event twice).
     ctx.events.on("issue.updated", async (event) => {

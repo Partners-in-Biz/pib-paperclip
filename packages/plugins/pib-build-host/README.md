@@ -20,6 +20,7 @@ On the Mac:
    - **No sleep:** set the Mac to prevent sleep and to wake for network access.
    - **claude CLI:** install it (`npm install -g @anthropic-ai/claude-code`) and run `claude` once in Terminal to log in.
    - **asc:** keep one `asc` profile per App Store Connect team (`asc auth login --name <team>`).
+   - **Signing and `asc` over SSH:** the login keychain is locked in an SSH session, so `asc` profiles and keychain signing fail. Run `bash mac-asc-setup.sh` once (it asks for the issuer id): it writes `~/.config/pib/asc.env` (key id, issuer id and the path of the `.p8`, mode 600) and checks that `asc` works from those alone. The `pib-ios-release` skill loads that file and signs with the API key.
 2. Copy the private key into a Paperclip company secret: `pbcopy < ~/.ssh/paperclip_env_ed25519`,
    then Company settings → Secrets → New. After that, delete the file from the Mac.
 

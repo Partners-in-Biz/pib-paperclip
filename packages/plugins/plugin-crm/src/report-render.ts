@@ -58,6 +58,18 @@ export function periodLabel(period: string): string {
   return m ? `${MONTHS[Number(m[2]) - 1] ?? m[2]} ${m[1]}` : period;
 }
 
+/** Format an ISO date as "31 October 2026" in UTC. */
+export function formatExpiryDate(iso: string | null): string | null {
+  if (!iso) return null;
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  const d = new Date(at);
+  const day = d.getUTCDate();
+  const month = MONTHS[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  return `${day} ${month} ${year}`;
+}
+
 /** The SAST month a period covers, as UTC bounds (South Africa is UTC+2 all year). */
 export function periodBounds(period: string): { from: string; to: string } {
   const m = /^(\d{4})-(\d{2})$/.exec(period);

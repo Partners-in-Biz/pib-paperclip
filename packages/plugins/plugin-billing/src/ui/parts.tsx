@@ -64,13 +64,7 @@ export function money(minor: number | null | undefined, currency = "ZAR"): strin
   return formatMoney(Number(minor ?? 0), currency);
 }
 
-/** "1 234,50" / "1234.5" / "R 99" → minor units. */
-export function toMinor(value: string): number {
-  const cleaned = String(value).replace(/[^\d,.-]/g, "").replace(/,(?=\d{1,2}$)/, ".").replace(/,/g, "");
-  const amount = Number(cleaned);
-  if (!cleaned || !Number.isFinite(amount)) throw new Error("Enter a valid amount");
-  return Math.round(amount * 100);
-}
+export { toMinor, tryMinor } from "./amount.js";
 
 export function minorToInput(minor: number | null | undefined): string {
   return minor == null ? "" : (Number(minor) / 100).toFixed(2);

@@ -26,6 +26,7 @@ import {
   statusLabel,
   taxShort,
   toMinor,
+  tryMinor,
   today,
   uploadFile,
   useBilling,
@@ -508,7 +509,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
 
       <Modal open={dialog === "refund"} title="Record a refund" description="Money you paid back to the customer through the provider (Stripe's own refunds are recorded by themselves). The payment is reversed, the invoice owes it again and the books are updated." onClose={() => setDialog(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
-        <Button type="button" disabled={busy || !toMinor(amount)} onClick={() => void act(() => call("billing.record-refund", { invoiceId: inv.id, provider: (detail.paymentLinks ?? []).find((l) => l.id === refundLink)?.provider, amountMinor: toMinor(amount), reason }), "Refund recorded")}>Record refund</Button>
+        <Button type="button" disabled={busy || !tryMinor(amount)} onClick={() => void act(() => call("billing.record-refund", { invoiceId: inv.id, provider: (detail.paymentLinks ?? []).find((l) => l.id === refundLink)?.provider, amountMinor: toMinor(amount), reason }), "Refund recorded")}>Record refund</Button>
       </>}>
         <Field label={`Amount refunded (${cur})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
         <Field label="Reason"><Input value={reason} onChange={(e) => setReason(e.target.value)} /></Field>

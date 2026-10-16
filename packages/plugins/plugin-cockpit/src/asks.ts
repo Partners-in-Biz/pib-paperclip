@@ -650,14 +650,15 @@ export async function reconcileAsks(env: Env, companyId: string): Promise<{ answ
         continue;
       }
       const comments = await env.ctx.issues.listComments(ask.issueId, companyId);
-      const at = comments.findIndex((c) => c.id === ask.commentId);
-      const since = Date.parse(ask.updatedAt);
-      const reply = comments.find((c, index) => {
-        if (!c.authorUserId || c.deletedAt || typeof c.body !== "string" || !c.body.trim()) return false;
-        if (at >= 0) return index > at;
-        const created = Date.parse(String(c.createdAt ?? ""));
-        return Number.isFinite(created) && created > since;
-      });
+      // The host lists newest first, so compare times, never positions. Only a person's comment after the ask counts.
+      const askComment = comments.find((c) => c.id === ask.commentId);
+      const askedAt = Date.parse(String(askComment?.createdAt ?? ""));
+      const since = Number.isFinite(askedAt) ? askedAt : Date.parse(ask.updatedAt);
+      const reply = comments
+        .filter((c) => c.id !== ask.commentId && c.authorUserId && !c.deletedAt && typeof c.body === "string" && c.body.trim())
+        .map((c) => ({ c, created: Date.parse(String(c.createdAt ?? "")) }))
+        .filter((x) => Number.isFinite(x.created) && x.created > since)
+        .sort((x, y) => x.created - y.created)[0]?.c;
       if (reply && (await answerAsk(env, ask, { id: reply.id, body: reply.body, userId: reply.authorUserId }))) out.answered += 1;
       else out.open += 1;
     } catch (error) {
