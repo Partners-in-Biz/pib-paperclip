@@ -1675,7 +1675,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
       remoteDir,
       localDir: input.localDir,
       exclude: [".git", ".paperclip-runtime", ".paperclip"],
-      preserveLocalEntries: [".git"],
+      preserveLocalEntries: [".git", ".paperclip"],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1687,6 +1687,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     remoteDir,
     localDir: input.localDir,
     exclude: [".paperclip-runtime", ".paperclip"],
+    preserveLocalEntries: [".paperclip"],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
