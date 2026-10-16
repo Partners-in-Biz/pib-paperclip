@@ -88,6 +88,8 @@ export interface StartInput {
   reconnectAccountId?: string;
   /** The page's scope: new accounts belong to it. A reconnect keeps the account's own scope. */
   target?: ResolvedScope;
+  /** The space where the account is created: 'company' (org scope, default) or 'me' (personal scope, owner is the viewer). */
+  space?: "company" | "me";
 }
 
 export async function startOAuth(ctx: PluginContext, companyId: string, userId: string | null, input: StartInput) {
@@ -98,6 +100,11 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
   const redirectUri = config.redirectUri();
   const provider = providerFor(platform);
   if (!provider.authorize) throw new SocialError(`${PLATFORM_LABELS[platform]} cannot be connected with OAuth`);
+
+  const space = input.space ?? "company";
+  if (space === "me") {
+    if (!userId) throw new SocialError("A person must connect a personal account");
+  }
 
   const sessionExtraInput: Record<string, unknown> = {};
   const authorizeInput: Record<string, string> = {};
@@ -114,6 +121,14 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
     // For LinkedIn reconnects, check if the existing account uses the Pages app
     if (platform === "linkedin" && existing.meta && typeof existing.meta === "object" && "app" in existing.meta && existing.meta.app === "linkedinPages") {
       linkedinAppKey = "linkedinPages";
+    }
+    // For personal space reconnects, verify the account is personal and owned by this user
+    if (space === "me" && existing.scope === "personal") {
+      if (existing.owner_user_id !== userId) {
+        throw new SocialError("You can only reconnect your own personal accounts");
+      }
+    } else if (space === "me" && existing.scope === "org") {
+      throw new SocialError("An org account cannot be reconnected as personal");
     }
   }
 
@@ -134,6 +149,11 @@ export async function startOAuth(ctx: PluginContext, companyId: string, userId: 
 
   if (input.defaultSubreddit) sessionExtraInput.defaultSubreddit = input.defaultSubreddit;
   if (linkedinAppKey) sessionExtraInput.linkedinAppKey = linkedinAppKey;
+  // For personal accounts, store scope and owner in session for secure verification at completion
+  if (space === "me") {
+    sessionExtraInput.accountScope = "personal";
+    sessionExtraInput.accountOwnerUserId = userId;
+  }
   Object.assign(sessionExtraInput, sessionScopeExtra(target));
 
   const env: ProviderEnv = { app, redirectUri, linkedinAppKey };
@@ -187,7 +207,7 @@ async function candidateScope(
 async function saveCandidate(
   ctx: PluginContext,
   config: SocialConfig,
-  input: { companyId: string; userId: string | null; candidate: ConnectCandidate; target: ResolvedScope; keepScope?: boolean },
+  input: { companyId: string; userId: string | null; candidate: ConnectCandidate; target: ResolvedScope; keepScope?: boolean; accountScope?: "org" | "personal"; accountOwnerUserId?: string | null },
 ): Promise<{ id: string; created: boolean; platform: SocialPlatform; displayName: string; belongsTo: string }> {
   const keyring = await config.keyring();
   const c = input.candidate;
@@ -206,6 +226,8 @@ async function saveCandidate(
     scopes: c.scopes,
     meta: { ...c.meta, kind: c.meta.kind ?? c.kind },
     key_version: keyring.currentVersion,
+    scope: input.accountScope ?? "org",
+    owner_user_id: input.accountOwnerUserId ?? null,
     ...scopeColumns(target),
     created_by_user_id: input.userId,
   });
@@ -232,13 +254,20 @@ export async function completeOAuth(
   if (session.created_by_user_id && input.userId && session.created_by_user_id !== input.userId) {
     throw new OAuthFlowError("This sign-in was started by another user.", 403);
   }
+  // For personal accounts, verify the completing user is the account owner
+  const extra = sessionExtra(session);
+  if (typeof extra.accountScope === "string" && extra.accountScope === "personal") {
+    const ownerUserId = typeof extra.accountOwnerUserId === "string" ? extra.accountOwnerUserId : null;
+    if (!ownerUserId || ownerUserId !== input.userId) {
+      throw new OAuthFlowError("Only the account owner can complete this sign-in.", 403);
+    }
+  }
   if (input.params.error) {
     await deleteOauthSession(ctx, input.state);
     throw new OAuthFlowError(input.params.error_description || input.params.error_message || input.params.error, 400);
   }
   if (!(await consumeOauthSession(ctx, input.state))) throw new OAuthFlowError("This sign-in was already used. Start the connection again.", 409);
   const platform = session.platform as SocialPlatform;
-  const extra = sessionExtra(session);
   try {
     const config = await loadSocialConfig(ctx, input.companyId);
     const provider = providerFor(platform);
@@ -256,18 +285,21 @@ export async function completeOAuth(
     if (candidates.length === 0) throw new OAuthFlowError(`No ${PLATFORM_LABELS[platform]} accounts were returned.`);
     const target = sessionScope(extra);
 
+    const accountScope = typeof extra.accountScope === "string" ? (extra.accountScope as "org" | "personal") : undefined;
+    const accountOwnerUserId = typeof extra.accountOwnerUserId === "string" ? extra.accountOwnerUserId : undefined;
+
     const reconnectId = typeof extra.reconnectAccountId === "string" ? extra.reconnectAccountId : null;
     if (reconnectId) {
       const existing = await getAccount(ctx, input.companyId, reconnectId);
       const match = existing && candidates.find((c) => c.platform === existing.platform && c.externalId === existing.external_id);
       if (match) {
-        await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: match, target, keepScope: true });
+        await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: match, target, keepScope: true, accountScope, accountOwnerUserId });
         await deleteOauthSession(ctx, input.state);
         return { redirectTo: await socialPath(ctx, input.companyId, { connected: platform }, target.scope), platform, connected: 1, pickerId: null };
       }
     }
     if (candidates.length === 1) {
-      await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: candidates[0]!, target });
+      await saveCandidate(ctx, config, { companyId: input.companyId, userId: input.userId, candidate: candidates[0]!, target, accountScope, accountOwnerUserId });
       await deleteOauthSession(ctx, input.state);
       return { redirectTo: await socialPath(ctx, input.companyId, { connected: candidates[0]!.platform }, target.scope), platform, connected: 1, pickerId: null };
     }
@@ -333,11 +365,14 @@ export async function confirmPicker(
   const chosen = candidates.filter((c) => input.selections.includes(c.key));
   if (chosen.length === 0) throw new SocialError("None of the chosen accounts are in this sign-in");
   // The accounts belong to the scope the connection was started in.
-  const target = sessionScope(sessionExtra(session));
+  const extra = sessionExtra(session);
+  const target = sessionScope(extra);
+  const accountScope = typeof extra.accountScope === "string" ? (extra.accountScope as "org" | "personal") : undefined;
+  const accountOwnerUserId = typeof extra.accountOwnerUserId === "string" ? extra.accountOwnerUserId : undefined;
   // Check every move first so a refused one saves none.
   for (const candidate of chosen) await candidateScope(ctx, companyId, candidate, target, false);
   const saved = [];
-  for (const candidate of chosen) saved.push(await saveCandidate(ctx, config, { companyId, userId, candidate, target }));
+  for (const candidate of chosen) saved.push(await saveCandidate(ctx, config, { companyId, userId, candidate, target, accountScope, accountOwnerUserId }));
   await deleteOauthSession(ctx, session.state);
   return { connected: saved.length, accounts: saved, belongsTo: scopeLabel(target) };
 }

@@ -105,6 +105,8 @@ export async function registerAsset(
     height: optionalNumber(params.height),
     duration_s: optionalNumber(params.durationS),
     alt_text: typeof params.altText === "string" && params.altText.trim() ? params.altText.trim().slice(0, 1500) : null,
+    scope: "org",
+    owner_user_id: null,
     ...scopeColumns(target),
     created_at: null,
     source_url: typeof params.sourceUrl === "string" ? params.sourceUrl : null,

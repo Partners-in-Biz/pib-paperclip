@@ -17,7 +17,7 @@ function item(id: string, body: string, extra: Partial<InboxItemRow> = {}): Inbo
   return {
     id, company_id: "co", account_id: "acc1", platform: "facebook", kind: "comment", author: `Fan ${id}`, body, status: "new", external_id: `ext-${id}`,
     parent_external_id: null, permalink: `https://fb.test/${id}`, destination_id: "d1", post_id: "post1", reply_draft: null, reply_body: null,
-    reply_external_id: null, replied_at: null, received_at: NOW, client_kind: null, client_ref: null, client_name: null, triage: null, triaged_at: null,
+    reply_external_id: null, replied_at: null, received_at: NOW, scope: "org", owner_user_id: null, client_kind: null, client_ref: null, client_name: null, triage: null, triaged_at: null,
     triage_attempts: 0, triage_issue_id: null, created_at: NOW, ...extra,
   };
 }

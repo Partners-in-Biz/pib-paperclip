@@ -236,7 +236,7 @@ describe("OAuth completion through the bridge", () => {
     expect(confirmed.connected).toBe(2);
     expect(inserted).toHaveLength(2);
     expect(inserted.map((p) => p[2])).toEqual(["facebook", "instagram"]);
-    expect(String(inserted[0]![7])).toMatch(/^v1\./);
+    expect(String(inserted[0]![9])).toMatch(/^v1\./);
   });
 
   it("returns to the client workspace and saves the accounts in the session's scope", async () => {
@@ -247,8 +247,8 @@ describe("OAuth completion through the bridge", () => {
     expect(options).toMatchObject({ belongsTo: "Sam Sole", client: { kind: "contact", id: "ct1", name: "Sam Sole" } });
     const confirmed = await confirmPicker(ctx, "co", "user-1", { pickerId: result.pickerId!, selections: ["page:p2"] });
     expect(confirmed).toMatchObject({ connected: 1, belongsTo: "Sam Sole" });
-    // INSERT accounts params: ..., key_version, client_kind, client_ref, client_name, created_by_user_id
-    expect(inserted[0]!.slice(12, 16)).toEqual(["contact", "ct1", "Sam Sole", "user-1"]);
+    // INSERT accounts params: ..., client_kind, client_ref, client_name, created_by_user_id
+    expect(inserted[0]!.slice(14, 18)).toEqual(["contact", "ct1", "Sam Sole", "user-1"]);
   });
 
   it("the first accounts of a scope open one first plan for the Social agent, not one per account", async () => {
@@ -368,7 +368,7 @@ describe("OAuth completion through the bridge", () => {
       expect(userinfoCall).toBeUndefined();
       // Verify the account was saved with meta.app = linkedinPages
       const accountParams = world.inserted[0];
-      const metaStr = String(accountParams![10]);
+      const metaStr = String(accountParams![12]);
       const meta = JSON.parse(metaStr);
       expect(meta.app).toBe("linkedinPages");
     });
@@ -410,7 +410,7 @@ describe("OAuth completion through the bridge", () => {
       expect(userinfoCall).toBeDefined();
       // Verify the account was saved without meta.app = linkedinPages
       const accountParams = world.inserted[0];
-      const metaStr = String(accountParams![10]);
+      const metaStr = String(accountParams![12]);
       const meta = JSON.parse(metaStr);
       expect(meta.app).not.toBe("linkedinPages");
     });
@@ -526,7 +526,7 @@ describe("OAuth completion through the bridge", () => {
       expect(world.inserted).toHaveLength(1);
       // Check that the account was saved with meta.app = linkedinPages
       const accountParams = world.inserted[0];
-      const metaStr = String(accountParams![10]);
+      const metaStr = String(accountParams![12]);
       const meta = JSON.parse(metaStr);
       expect(meta.app).toBe("linkedinPages");
     });
@@ -559,7 +559,7 @@ describe("OAuth completion through the bridge", () => {
       // Platform should be linkedin and meta should have app = linkedinPages
       const accountParams = world.inserted[0];
       expect(accountParams![2]).toBe("linkedin"); // platform
-      const metaStr = String(accountParams![10]);
+      const metaStr = String(accountParams![12]);
       const meta = JSON.parse(metaStr);
       expect(meta.app).toBe("linkedinPages");
     });
