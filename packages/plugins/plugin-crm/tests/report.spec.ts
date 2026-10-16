@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runClientCareJob } from "../src/care-jobs.js";
-import { reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
+import { isFormNotification, reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
 import { atAGlance, currentPeriod, EMPTY_NARRATIVE, escapeHtml, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type ReportData } from "../src/report-render.js";
 import { answerSend, bootCare, careSeed, CO, company, contact, DAY, decide, issuesWith, OWNER, sentMail, tool, toolRaw, type Booted, type Route } from "./helpers/care.js";
 
@@ -121,6 +121,25 @@ describe("the report as documents", () => {
     expect(html).toContain("What we need from you");
     expect(html).not.toMatch(/PAR-12|Effort|tokens/);
     expect(escapeHtml(`a<b>&"'`)).toBe("a&lt;b&gt;&amp;&quot;&#39;");
+  });
+});
+
+describe("the client's own form notifications", () => {
+  it("are recognised, and real mail is not", () => {
+    for (const body of ["New enquiry from Willem Prinsloo Name: Willem Email: w@x.test", "New contact form submission\n\nName: x", "Contact form: Jane", "Website enquiry from Jane", "New lead from your website", "New message from your website"]) expect(isFormNotification(body), body).toBe(true);
+    for (const body of ["Hi", "Re: invoice", "Quick question about the new enquiry page\n\nCan we talk?", "Meeting on Tuesday"]) expect(isFormNotification(body), body).toBe(false);
+  });
+
+  it("are not counted as emails exchanged; with nothing else to say the section is left out", async () => {
+    const monthStart = new Date(periodBounds(PERIOD).from);
+    const mid = new Date(monthStart.getTime() + 3600_000).toISOString();
+    const row = (id: string, body: string) => ({ id, company_id: CO, record_type: "contact", record_id: "ada", kind: "email_received", body, created_at: mid, meta: null, source_key: id, issue_id: null });
+    const store = reportSeed({ activities: [row("f1", "New enquiry from Jo Name: Jo Email: jo@x.test"), row("f2", "New enquiry from Sam Name: Sam Email: sam@x.test")] });
+    const booted = await bootCare({ store, routes: [WORK, COST] });
+    booted.harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: BRAND } as never] });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.sections.map((s: any) => s.title)).not.toContain("Our work together");
+    expect(result.preview).not.toContain("Emails exchanged");
   });
 });
 

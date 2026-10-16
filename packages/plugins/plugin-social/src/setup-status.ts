@@ -158,6 +158,61 @@ export function appItems(config: SocialConfig, uiBase: string | null, connectedN
   return [summary, ...perPlatform];
 }
 
+export function linkedinPagesItem(config: SocialConfig, uiBase: string | null): SetupItem {
+  let status: "done" | "optional" = "optional";
+  let detail: string;
+  let uri: string | null = null;
+  let problem: string | null = null;
+
+  try {
+    uri = config.redirectUri();
+  } catch (error) {
+    problem = errorMessage(error);
+  }
+
+  const linkedinStatus = config.platform("linkedin");
+  // Check if linkedinPages platform is configured (mimicking the platform status check)
+  const pagesConfig = config.raw.platforms && typeof config.raw.platforms === "object"
+    ? (config.raw.platforms as Record<string, unknown>).linkedinPages
+    : null;
+  const pagesObj = pagesConfig && typeof pagesConfig === "object" ? (pagesConfig as Record<string, unknown>) : {};
+  const pagesClientId = typeof pagesObj.clientId === "string" ? pagesObj.clientId.trim() : null;
+  const pagesHasSecret = Boolean(pagesObj.clientSecret);
+
+  if (pagesClientId && pagesHasSecret) {
+    status = "done";
+    detail = `Client ID configured. Products: Community Management API. Scopes: w_organization_social, r_organization_social, rw_organization_admin.`;
+  } else if (pagesClientId || pagesHasSecret) {
+    status = "optional";
+    detail = `Incomplete: ${!pagesClientId ? "client ID" : "client secret"} missing. For LinkedIn company pages: create an app with the Community Management API product, register the redirect URI and fill in the credentials.`;
+  } else {
+    status = "optional";
+    detail = `Optional. To post to LinkedIn company pages, set up a separate app with the Community Management API product (the personal LinkedIn app handles individual profiles). Register the redirect URI shown below in the app.`;
+  }
+
+  const href = settingsHref(uiBase);
+  const console = "https://www.linkedin.com/developers/apps";
+
+  return {
+    key: "linkedin_pages_app",
+    title: "LinkedIn Pages app (optional)",
+    status,
+    required: false,
+    detail,
+    href,
+    hrefLabel: "Open settings",
+    steps: status === "done" ? undefined : [
+      "Create a new app in LinkedIn Developers (separate from the personal LinkedIn app).",
+      "Sign up for access to the Community Management API product.",
+      `Register this redirect URI in your app: ${uri || "Open the Social page once to determine the redirect URI"}`,
+      "In the Social plugin settings, under Platforms → LinkedIn Pages app (Community Management API only), fill in the client ID and pick the client secret (a Paperclip secret).",
+      "Click Save Configuration.",
+      "On Social → Accounts, use \"LinkedIn Page\" to connect company pages.",
+    ],
+    agentNext: status === "done" ? "The agent can now post to company pages and manage their inbox." : null,
+  };
+}
+
 export function redirectItem(config: SocialConfig, uiBase: string | null): SetupItem {
   let uri: string | null = null;
   let problem: string | null = null;
@@ -387,6 +442,7 @@ export async function socialSetupStatus(ctx: PluginContext, companyId: string, n
     agentNext: "The agent reads the playbook before planning and proposes experiments.",
   });
 
+  items.push(linkedinPagesItem(config, uiBase));
   items.push(...apps.slice(1));
 
   return {

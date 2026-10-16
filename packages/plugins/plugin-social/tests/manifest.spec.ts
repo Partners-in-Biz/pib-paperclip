@@ -48,7 +48,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.8.1");
+    expect(manifest.version).toBe("0.9.0");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -59,7 +59,7 @@ describe("manifest", () => {
     expect(schema.properties.encryptionKey.type).toBeUndefined();
     expect(schema.properties.platforms.properties.facebook.properties.clientSecret).toMatchObject({ format: "secret-ref" });
     expect(schema.properties.r2.properties.secretAccessKey.type).toBeUndefined();
-    expect(Object.keys(schema.properties.platforms.properties)).toHaveLength(12);
+    expect(Object.keys(schema.properties.platforms.properties)).toHaveLength(13);
     expect(schema.description).toContain("/_plugins/<plugin installation id>/ui/oauth-callback.html");
   });
 

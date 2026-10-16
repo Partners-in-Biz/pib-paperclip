@@ -27,6 +27,27 @@ export function rememberOAuthStart(state: string, pending: Omit<PendingOAuth, "c
   }
 }
 
+/**
+ * The bridge page keeps the pending sign-in in localStorage, which is per
+ * origin, and the board session cookie is per host too. When Paperclip is
+ * opened on another address than the one in the provider's redirect URI
+ * (for example the sslip.io host instead of the public domain), the provider
+ * sends the person back to an origin that knows nothing about the sign-in and
+ * it fails with "started in another browser". Returns a message to show
+ * instead of starting, or null when the origins match (or cannot be read).
+ */
+export function oauthOriginMismatch(redirectUri: string | null | undefined, currentOrigin: string, label = "this account"): string | null {
+  if (!redirectUri || !currentOrigin) return null;
+  let target: string;
+  try {
+    target = new URL(redirectUri).origin;
+  } catch {
+    return null;
+  }
+  if (target.toLowerCase() === currentOrigin.toLowerCase()) return null;
+  return `Open Paperclip at ${target} to connect ${label}. This page is open at ${currentOrigin}, but the sign-in can only finish at ${target} (the address registered with the provider). Switch to ${target}, sign in there and click Connect again.`;
+}
+
 export function pruneOAuthStarts(): void {
   try {
     const now = Date.now();

@@ -117,6 +117,16 @@ import {
   validatePostRecord,
   type Viewer,
 } from "./service.js";
+import { createPersonalDraftRecord } from "./personal-draft.js";
+import {
+  myAccountsAction,
+  myPostsAction,
+  myCreateDraftAction,
+  myUpdateDraftAction,
+  myDeleteDraftAction,
+  myApproveAction,
+  myDisconnectAccountAction,
+} from "./my-social.js";
 import { handleClientSummary } from "./routes.js";
 import { socialSetupStatus } from "./setup-status.js";
 import { SOCIAL_TOOLS } from "./tools.js";
@@ -184,6 +194,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return refreshAccountRecord(ctx, viewer, requiredString(p, "accountId"));
     case "create-post":
       return createPostRecord(ctx, viewer, p);
+    case "create-personal-draft":
+      return createPersonalDraftRecord(ctx, viewer, p);
     case "update-post":
       return updatePostRecord(ctx, viewer, p);
     case "get-post":
@@ -334,14 +346,22 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.retry-post": (ctx, v, p) => retryPostRecord(ctx, v, requiredString(p, "postId")),
   "social.create-template": (ctx, v, p) => createTemplateRecord(ctx, v, p),
   "social.list-templates": (ctx, v) => listTemplatesRecord(ctx, v),
-  "social.oauth-start": async (ctx, v, p) =>
-    startOAuth(ctx, v.companyId, requireUser(v, "connect an account"), {
+  "social.oauth-start": async (ctx, v, p) => {
+    const space = optionalString(p, "space") ?? "company";
+    if (space !== "company" && space !== "me") throw new SocialError(`space must be 'company' or 'me', not '${space}'`);
+    if (space === "me") requireUser(v, "connect a personal account");
+    const userId = v.userId ?? (space === "company" ? null : undefined);
+    if (userId === undefined) throw new SocialError("Personal account connection requires a signed-in user");
+    return startOAuth(ctx, v.companyId, userId, {
       platform: requiredString(p, "platform"),
+      app: optionalString(p, "app"),
       instanceUrl: optionalString(p, "instanceUrl"),
       defaultSubreddit: optionalString(p, "defaultSubreddit"),
       reconnectAccountId: optionalString(p, "reconnectAccountId"),
       target: await scopeFromParams(ctx, v.companyId, p),
-    }),
+      space: space as "company" | "me",
+    });
+  },
   "social.oauth-pending": (ctx, v, p) => pendingOptions(ctx, v.companyId, requireUser(v, "choose accounts"), requiredString(p, "pickerId")),
   "social.oauth-confirm": (ctx, v, p) => {
     const selections = Array.isArray(p.selections) ? p.selections.filter((s): s is string => typeof s === "string") : [];
@@ -428,6 +448,14 @@ const ACTIONS: Record<string, ActionHandler> = {
     requireUser(v, "sync skills");
     return { results: await bootstrap!.skills.force(v.companyId) };
   },
+  // My Social: personal accounts and posts
+  "my-social.accounts": (ctx, v) => myAccountsAction(ctx, v),
+  "my-social.posts": (ctx, v) => myPostsAction(ctx, v),
+  "my-social.create-draft": (ctx, v, p) => myCreateDraftAction(ctx, v, p),
+  "my-social.update-draft": (ctx, v, p) => myUpdateDraftAction(ctx, v, p),
+  "my-social.delete-draft": (ctx, v, p) => myDeleteDraftAction(ctx, v, p),
+  "my-social.approve": (ctx, v, p) => myApproveAction(ctx, v, p),
+  "my-social.disconnect-account": (ctx, v, p) => myDisconnectAccountAction(ctx, v, p),
   // The page (a board user) read the weekly routine's triggers from the host; the worker cannot.
   "social.routine-report": (ctx, v, p) => {
     requireUser(v, "report the routine's schedule");
