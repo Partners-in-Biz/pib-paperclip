@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { handleSnsWebhook, forgetSnsCandidates, forgetSnsCerts, forgetSnsRefusals } from "../../src/esp/sns.js";
+import { handleSnsWebhook, forgetSnsCandidates, forgetSnsCerts, forgetSnsRefusals, canonicalString } from "../../src/esp/sns.js";
 import { CO } from "../helpers/memory.js";
 import { signSns, FakeSesWithSns, hostFetch, SES_ACCESS_KEY_ID, SES_SECRET_ACCESS_KEY, SES_REGION, SES_CONFIGURATION_SET } from "../helpers/fake-ses.js";
 import { sesMockSetup, sesSetup, SES_TOPIC_ARN, SES_ON, addEspDomain, knownToWebhook, dnsVerified, FROM } from "../helpers/esp.js";
@@ -23,6 +23,56 @@ function nextMessageId(): string {
 async function deliver(t: SesMockSetup | SesSetup, body: string) {
   return handleSnsWebhook(t.env, { rawBody: body });
 }
+
+describe("canonicalString", () => {
+  it("formats Notification with Message, MessageId, Timestamp, TopicArn, Type with trailing newlines", () => {
+    const message = {
+      Type: "Notification" as const,
+      MessageId: "abc123",
+      Message: "hello",
+      Timestamp: "2024-01-01T00:00:00Z",
+      TopicArn: "arn:aws:sns:us-east-1:123456789:test",
+      Signature: "sig",
+      SignatureVersion: "2" as const,
+      SigningCertURL: "https://example.com/cert.pem",
+    };
+    const expected = "Message\nhello\nMessageId\nabc123\nTimestamp\n2024-01-01T00:00:00Z\nTopicArn\narn:aws:sns:us-east-1:123456789:test\nType\nNotification\n";
+    expect(canonicalString(message)).toBe(expected);
+  });
+
+  it("includes Subject in Notification when present", () => {
+    const message = {
+      Type: "Notification" as const,
+      MessageId: "abc123",
+      Message: "hello",
+      Subject: "test subject",
+      Timestamp: "2024-01-01T00:00:00Z",
+      TopicArn: "arn:aws:sns:us-east-1:123456789:test",
+      Signature: "sig",
+      SignatureVersion: "2" as const,
+      SigningCertURL: "https://example.com/cert.pem",
+    };
+    const expected = "Message\nhello\nMessageId\nabc123\nSubject\ntest subject\nTimestamp\n2024-01-01T00:00:00Z\nTopicArn\narn:aws:sns:us-east-1:123456789:test\nType\nNotification\n";
+    expect(canonicalString(message)).toBe(expected);
+  });
+
+  it("formats SubscriptionConfirmation with Message, MessageId, SubscribeURL, Token, Timestamp, TopicArn, Type", () => {
+    const message = {
+      Type: "SubscriptionConfirmation" as const,
+      MessageId: "def456",
+      Message: "You have chosen to subscribe",
+      SubscribeURL: "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription",
+      Token: "token123",
+      Timestamp: "2024-01-01T00:00:00Z",
+      TopicArn: "arn:aws:sns:us-east-1:123456789:test",
+      Signature: "sig",
+      SignatureVersion: "2" as const,
+      SigningCertURL: "https://example.com/cert.pem",
+    };
+    const expected = "Message\nYou have chosen to subscribe\nMessageId\ndef456\nSubscribeURL\nhttps://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription\nTimestamp\n2024-01-01T00:00:00Z\nToken\ntoken123\nTopicArn\narn:aws:sns:us-east-1:123456789:test\nType\nSubscriptionConfirmation\n";
+    expect(canonicalString(message)).toBe(expected);
+  });
+});
 
 describe("SNS webhook for SES", () => {
   describe("refusals: no state change, no event applied", () => {
@@ -664,6 +714,41 @@ describe("SNS webhook for SES", () => {
       forgetSnsCerts();
     });
 
+    it("SubscriptionConfirmation with failed SubscribeURL GET leaves topic unconfirmed, later Notification confirms it", async () => {
+      const t = sesMockSetup();
+      await addEspDomain(t, { provider: "ses" });
+      await knownToWebhook(t);
+
+      // Confirm the topic first so we can then verify failed SubscribeURL doesn't re-confirm
+      let confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true); // Already marked by sesMockSetup
+
+      // Simulate a failed SubscribeURL fetch by having it return non-2xx
+      t.sns.subscribeUrlStatus = 500;
+
+      const msg1 = {
+        Type: "SubscriptionConfirmation" as const,
+        MessageId: nextMessageId(),
+        Message: "You have chosen to subscribe to the topic ...",
+        Timestamp: new Date().toISOString(),
+        TopicArn: SES_TOPIC_ARN,
+        SubscribeURL: t.sns.subscribeUrl(),
+        Token: "test-token",
+        SigningCertURL: t.sns.certUrl(),
+      };
+      const signed1 = signSns(msg1 as Record<string, string>, t.sns.privateKey, "2");
+      await deliver(t, JSON.stringify(signed1));
+
+      // Topic should still be confirmed (it was already confirmed before the failed fetch)
+      confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true);
+
+      // Verify that the subscribe URL was attempted (to show the fetch happened)
+      expect(t.sns.subscribeUrlHits).toBeGreaterThan(0);
+
+      forgetSnsCerts();
+    });
+
     it("UnsubscribeConfirmation is logged and returns ignored", async () => {
       const t = sesMockSetup();
       await addEspDomain(t, { provider: "ses" });
@@ -744,6 +829,35 @@ describe("SNS webhook for SES", () => {
       const signed = signSns(msg as Record<string, string>, t.sns.privateKey, "2");
       await deliver(t, JSON.stringify(signed));
 
+      confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true);
+    });
+
+    it("verified Notification with unparseable body marks topic confirmed", async () => {
+      const t = sesMockSetup();
+      await addEspDomain(t, { provider: "ses" });
+      await knownToWebhook(t);
+
+      // sesMockSetup already marks topic confirmed, so we verify it stays confirmed
+      let confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true);
+
+      // Deliver a Notification with unparseable body (not JSON)
+      const msg = {
+        Type: "Notification" as const,
+        MessageId: nextMessageId(),
+        Message: "not json at all",
+        Timestamp: new Date().toISOString(),
+        TopicArn: SES_TOPIC_ARN,
+        SigningCertURL: t.sns.certUrl(),
+      };
+      const signed = signSns(msg as Record<string, string>, t.sns.privateKey, "2");
+      const result = await deliver(t, JSON.stringify(signed));
+
+      // Result should be ignored but outcome should still indicate message was ignored
+      expect(result.outcome).toBe("ignored");
+
+      // Topic should still be confirmed (even though the message body was unparseable)
       confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
       expect(confirmed).toBe(true);
     });

@@ -167,7 +167,7 @@ async function fetchCertificate(env: Env, topicArn: string, url: string): Promis
   const cached = certs.get(url);
   if (cached && cached.expires > now) return cached.pem;
 
-  // Check budget
+  // Check budget (accepted in the plan: budget is per known topic)
   const budgetKey = topicArn;
   const budget = certBudgets.get(budgetKey);
   const budgetExpires = budget ? budget.at + CERT_BUDGET_WINDOW_MS : 0;
@@ -187,7 +187,7 @@ async function fetchCertificate(env: Env, topicArn: string, url: string): Promis
     if (oldest) certs.delete(oldest[0]);
   }
 
-  // Fetch
+  // Fetch (redirects follow host policy)
   let pem: string;
   try {
     const http = env.esp?.fetch ?? ((u: string, init?: RequestInit) => env.ctx.http.fetch(u, init));
@@ -208,9 +208,10 @@ async function fetchCertificate(env: Env, topicArn: string, url: string): Promis
 
 /**
  * Build the canonical string for signature verification.
+ * AWS SNS format: each field is `Name\nValue\n` including trailing newline.
  */
-function canonicalString(message: SnsMessage): string {
-  const lines: string[] = [];
+export function canonicalString(message: SnsMessage): string {
+  let canonical = "";
   const fields: (keyof SnsMessage)[] =
     message.Type === "Notification"
       ? ["Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"]
@@ -219,11 +220,10 @@ function canonicalString(message: SnsMessage): string {
   for (const field of fields) {
     const value = message[field];
     if (value !== undefined) {
-      lines.push(String(field));
-      lines.push(String(value));
+      canonical += `${field}\n${value}\n`;
     }
   }
-  return lines.join("\n");
+  return canonical;
 }
 
 /**
@@ -378,29 +378,48 @@ export async function handleSnsWebhook(env: Env, input: Pick<PluginWebhookInput,
     throw refuse(env, "bad_signature", "The SNS message signature does not verify");
   }
 
+  // Mark Notification topic confirmed after signature verifies (before parsing the body)
+  if (message.Type === "Notification" && matched && (await isModuleEnabled(env.ctx, matched.companyId, PLUGIN_ID))) {
+    const isConfirmed = await readSesTopicConfirmed(env.ctx, matched.companyId);
+    if (!isConfirmed) {
+      await markSesTopicConfirmed(env.ctx, matched.companyId, message.TopicArn, now);
+    }
+  }
+
   // Step 4: Handle message by type
   if (message.Type === "SubscriptionConfirmation") {
+    // Check if module is enabled (consistent with Notification path)
+    const firstCandidate = candidates[0];
+    if (firstCandidate && !(await isModuleEnabled(env.ctx, firstCandidate.companyId, PLUGIN_ID))) {
+      return { outcome: "ignored", companyId: firstCandidate.companyId };
+    }
+
     // Defensive re-check before fetch (SubscribeURL was validated in step 1)
     if (!isValidSubscribeUrl(message.SubscribeURL!, arnParts.region)) {
       throw refuse(env, "invalid_subscribe_url", "SubscribeURL does not match the expected SNS endpoint");
     }
-    // Fetch the subscribe URL
+    // Fetch the subscribe URL (redirects follow host policy)
+    let subscribeOk = false;
     try {
       const http = env.esp?.fetch ?? ((u: string, init?: RequestInit) => env.ctx.http.fetch(u, init));
       const response = await http(message.SubscribeURL!);
-      if (!response.ok) {
+      if (response.ok) {
+        subscribeOk = true;
+      } else {
         env.ctx.logger.info("SNS SubscribeURL fetch failed", { status: response.status, topicArn: message.TopicArn });
       }
     } catch (error) {
       env.ctx.logger.info("SNS SubscribeURL fetch error", { error: errorMessage(error), topicArn: message.TopicArn });
     }
 
-    // Mark confirmed for all candidates (they all match the ARN)
-    for (const candidate of candidates) {
-      await markSesTopicConfirmed(env.ctx, candidate.companyId, message.TopicArn, now);
+    // Mark confirmed only when the SubscribeURL fetch succeeded (response ok)
+    if (subscribeOk) {
+      for (const candidate of candidates) {
+        await markSesTopicConfirmed(env.ctx, candidate.companyId, message.TopicArn, now);
+      }
     }
 
-    return { outcome: "ignored", companyId: candidates[0]?.companyId ?? "" };
+    return { outcome: "ignored", companyId: firstCandidate?.companyId ?? "" };
   }
 
   if (message.Type === "UnsubscribeConfirmation") {
@@ -426,18 +445,12 @@ export async function handleSnsWebhook(env: Env, input: Pick<PluginWebhookInput,
     return { outcome: "ignored", companyId };
   }
 
-  // Mark confirmed on first verified Notification
-  const isConfirmed = await readSesTopicConfirmed(env.ctx, companyId);
-  if (!isConfirmed) {
-    await markSesTopicConfirmed(env.ctx, companyId, message.TopicArn, now);
-  }
-
   // Apply the event
   const event = parsed.event;
   try {
     return { outcome: await applyEspEvent(env, matched, event, { id: message.MessageId }), companyId };
   } catch (error) {
-    env.ctx.logger.warn("SNS event not applied; SNS will deliver it again", { type: event.provider, error: errorMessage(error) });
+    env.ctx.logger.warn("SNS event not applied; SNS will deliver it again", { eventType: message.Type, error: errorMessage(error) });
     throw error;
   }
 }

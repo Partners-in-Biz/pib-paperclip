@@ -201,6 +201,7 @@ const SNS_CERT = SNS_PUBLIC_KEY_OBJECT.export({ type: "spki", format: "pem" }) a
 export class FakeSesWithSns extends FakeSes {
   privateKey = SNS_PRIVATE_KEY;
   subscribeUrlHits = 0;
+  subscribeUrlStatus = 200;
   certFetches = 0;
 
   certUrl(): string {
@@ -213,7 +214,7 @@ export class FakeSesWithSns extends FakeSes {
 
   async handleSubscribeUrl(): Promise<Response> {
     this.subscribeUrlHits += 1;
-    return new Response("OK");
+    return new Response(this.subscribeUrlStatus === 200 ? "OK" : "Error", { status: this.subscribeUrlStatus });
   }
 
   // Helper to handle SES requests (copied from parent FakeSes)
@@ -281,7 +282,7 @@ export class FakeSesWithSns extends FakeSes {
 
 /**
  * Build the canonical string for SNS signature in the exact order expected by src/esp/sns.ts.
- * Fields are ordered based on message type, matching canonicalString() in sns.ts.
+ * AWS SNS format: each field is `Name\nValue\n` including trailing newline.
  */
 function buildSnsCanonicalString(message: Record<string, string>, messageType: string): string {
   const { Signature, SigningCertURL, ...toSign } = message;
@@ -296,15 +297,14 @@ function buildSnsCanonicalString(message: Record<string, string>, messageType: s
   }
 
   // Build the canonical string: include only fields that exist
-  const lines: string[] = [];
+  let canonical = "";
   for (const field of fieldOrder) {
     if (field in toSign && toSign[field] !== undefined) {
-      lines.push(field);
-      lines.push(toSign[field]!);
+      canonical += `${field}\n${toSign[field]!}\n`;
     }
   }
 
-  return lines.join("\n");
+  return canonical;
 }
 
 /**
