@@ -1044,4 +1044,177 @@ describe("ssh env-lab fixture", () => {
     expect(recentSubjects).toContain("remote update a");
     expect(recentSubjects).toContain("remote update b");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("excludes .paperclip from sync while preserving .paperclip-runtime and other files", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-exclude-test");
+
+    await mkdir(localDir, { recursive: true });
+    await mkdir(path.join(localDir, ".paperclip"), { recursive: true });
+    await mkdir(path.join(localDir, ".paperclip-runtime"), { recursive: true });
+    await mkdir(path.join(localDir, "src"), { recursive: true });
+    await writeFile(path.join(localDir, ".paperclip", "config.json"), '{"excluded":true}\n', "utf8");
+    await writeFile(path.join(localDir, ".paperclip-runtime", "state.json"), '{"runtime":true}\n', "utf8");
+    await writeFile(path.join(localDir, "src", "app.ts"), "export const app = {};", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH exclude .paperclip test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remoteDir = path.posix.join(started.workspaceDir, "exclude-test");
+
+    await syncDirectoryToSsh({
+      spec: {
+        ...config,
+        remoteCwd: started.workspaceDir,
+      },
+      localDir,
+      remoteDir,
+      exclude: [".paperclip", ".paperclip-runtime"],
+    });
+
+    // Verify .paperclip is excluded
+    const paperclipCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(remoteDir, ".paperclip"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(paperclipCheckResult.stdout).toContain("excluded");
+
+    // Verify .paperclip-runtime is excluded
+    const runtimeCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(remoteDir, ".paperclip-runtime"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(runtimeCheckResult.stdout).toContain("excluded");
+
+    // Verify other files are still synced
+    const appResult = await runSshCommand(
+      config,
+      `cat ${JSON.stringify(path.posix.join(remoteDir, "src", "app.ts"))}`,
+    );
+    expect(appResult.stdout).toContain("export const app = {}");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("preserves local .paperclip directory when restoring from SSH in a git-backed workspace", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace-preserve-paperclip-git");
+
+    // Initialize git workspace with a .paperclip directory
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+
+    // Create tracked file and .paperclip directory
+    await writeFile(path.join(localRepo, "workspace.txt"), "workspace content\n", "utf8");
+    await mkdir(path.join(localRepo, ".paperclip"), { recursive: true });
+    await writeFile(path.join(localRepo, ".paperclip", "local-state.json"), '{"local":"preserved"}\n', "utf8");
+
+    await git(localRepo, ["add", "workspace.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH preserve .paperclip git test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    // Prepare workspace for SSH (which excludes .paperclip)
+    await prepareWorkspaceForSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+    });
+
+    // Modify remote workspace
+    await runSshCommand(
+      config,
+      `cd ${JSON.stringify(started.workspaceDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "remote update\\n" > workspace.txt && git add workspace.txt && git commit -m "remote change" >/dev/null`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    // Verify .paperclip was not synced to remote
+    const remoteCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(started.workspaceDir, ".paperclip"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(remoteCheckResult.stdout).toContain("excluded");
+
+    // Restore from SSH
+    await restoreWorkspaceFromSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+    });
+
+    // Verify .paperclip directory and its contents were preserved
+    const paperclipContent = await readFile(path.join(localRepo, ".paperclip", "local-state.json"), "utf8");
+    expect(paperclipContent).toContain("local");
+    expect(paperclipContent).toContain("preserved");
+
+    // Verify remote changes were restored
+    const workspaceContent = await readFile(path.join(localRepo, "workspace.txt"), "utf8");
+    expect(workspaceContent).toContain("remote update");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("preserves local .paperclip directory when restoring from SSH in a non-git workspace", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-workspace-preserve-paperclip-non-git");
+
+    // Create non-git workspace with .paperclip directory
+    await mkdir(localDir, { recursive: true });
+    await mkdir(path.join(localDir, ".paperclip"), { recursive: true });
+    await writeFile(path.join(localDir, ".paperclip", "local-state.json"), '{"local":"preserved-non-git"}\n', "utf8");
+    await writeFile(path.join(localDir, "data.txt"), "original data\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH preserve .paperclip non-git test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    // Prepare workspace for SSH (which excludes .paperclip)
+    await prepareWorkspaceForSshExecution({
+      spec,
+      localDir,
+      remoteDir: started.workspaceDir,
+    });
+
+    // Modify remote workspace
+    await runSshCommand(
+      config,
+      `printf "remote update\\n" > ${JSON.stringify(path.posix.join(started.workspaceDir, "data.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    // Verify .paperclip was not synced to remote
+    const remoteCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(started.workspaceDir, ".paperclip"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(remoteCheckResult.stdout).toContain("excluded");
+
+    // Restore from SSH
+    await restoreWorkspaceFromSshExecution({
+      spec,
+      localDir,
+      remoteDir: started.workspaceDir,
+    });
+
+    // Verify .paperclip directory and its contents were preserved
+    const paperclipContent = await readFile(path.join(localDir, ".paperclip", "local-state.json"), "utf8");
+    expect(paperclipContent).toContain("local");
+    expect(paperclipContent).toContain("preserved-non-git");
+
+    // Verify remote changes were restored
+    const dataContent = await readFile(path.join(localDir, "data.txt"), "utf8");
+    expect(dataContent).toContain("remote update");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });
