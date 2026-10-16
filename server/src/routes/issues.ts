@@ -260,6 +260,8 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  isPruneResolvedBlockersOnAgentReblockEnabled,
+  readIssueRemainingWait,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -13368,6 +13370,32 @@ export function issueRoutes(
           return;
         }
       }
+      // An agent that (re-)blocks on blockers that are all done would wake
+      // itself through `issue.blockers_restored` on every blocked cycle
+      // (PAR-1963). Drop the dead edges instead; the descriptor stays. Same
+      // trigger as the restored-dependency wake below.
+      const prunedResolvedBlockerIds =
+        req.actor.type === "agent" &&
+        isPruneResolvedBlockersOnAgentReblockEnabled() &&
+        (updateFields.status ?? existing.status) === "blocked" &&
+        requestedAssigneeAgentId &&
+        (existing.status !== "blocked" ||
+          Array.isArray(req.body.blockedByIssueIds) ||
+          requestedAssigneeAgentId !== existing.assigneeAgentId)
+          ? await svc.listResolvedBlockerIdsToPrune({
+              companyId: existing.companyId,
+              issueId: existing.id,
+              requestedBlockerIssueIds: Array.isArray(req.body.blockedByIssueIds)
+                ? (req.body.blockedByIssueIds as string[])
+                : null,
+            })
+          : [];
+      if (prunedResolvedBlockerIds.length > 0) {
+        updateFields.blockedByIssueIds = [];
+      }
+      const blockerListWritten =
+        Array.isArray(req.body.blockedByIssueIds) ||
+        prunedResolvedBlockerIds.length > 0;
       if (
         reviewRequest !== undefined &&
         transition.patch.executionState === undefined
@@ -13840,6 +13868,24 @@ export function issueRoutes(
         }
       }
 
+      if (prunedResolvedBlockerIds.length > 0) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.blockers_pruned_resolved",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            removedBlockerIssueIds: prunedResolvedBlockerIds,
+          },
+        });
+      }
+
       let cancelledStatusRunId: string | null = null;
       if (
         runToCancelForCancelledStatus &&
@@ -13920,13 +13966,13 @@ export function issueRoutes(
       let updatedRelations: Awaited<
         ReturnType<typeof svc.getRelationSummaries>
       > | null = null;
-      if (issue && Array.isArray(req.body.blockedByIssueIds)) {
+      if (issue && blockerListWritten) {
         updatedRelations = await svc.getRelationSummaries(issue.id);
         issueResponse = {
           ...issue,
           blockedByIssueIds:
             issue.blockedByIssueIds ??
-            [...new Set(req.body.blockedByIssueIds as string[])].sort(),
+            [...new Set(updateFields.blockedByIssueIds as string[])].sort(),
           blockedBy: updatedRelations.blockedBy,
           blocks: updatedRelations.blocks,
         };
@@ -13999,7 +14045,7 @@ export function issueRoutes(
           assigneeChanged:
             existing.assigneeAgentId !== issue.assigneeAgentId ||
             existing.assigneeUserId !== issue.assigneeUserId,
-          blockersChanged: Array.isArray(req.body.blockedByIssueIds),
+          blockersChanged: blockerListWritten,
           executionPolicyChanged: req.body.executionPolicy !== undefined,
           monitorChanged,
           resumeRequested: resumeRequested === true,
@@ -14571,6 +14617,7 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          remainingWait?: string | null;
           source: string;
           mutation: string;
         }) => {
@@ -14614,6 +14661,9 @@ export function issueRoutes(
               source: input.source,
               resolvedBlockerIssueId: input.resolvedBlockerIssueId,
               blockerIssueIds: input.blockerIssueIds,
+              ...(input.remainingWait
+                ? { remainingWait: input.remainingWait }
+                : {}),
             },
           });
         };
@@ -14827,6 +14877,7 @@ export function issueRoutes(
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              remainingWait: dependent.remainingWait,
               source: "issue.blockers_resolved",
               mutation: "blocker_done",
             });
@@ -14834,6 +14885,7 @@ export function issueRoutes(
         }
 
         const restoredBlockedReadyDependency =
+          prunedResolvedBlockerIds.length === 0 &&
           issue.status === "blocked" &&
           issue.assigneeAgentId &&
           (existing.status !== "blocked" ||
@@ -14858,6 +14910,7 @@ export function issueRoutes(
               resolvedBlockerIssueId,
               blockerIssueIds: readiness.blockerIssueIds,
               blockedTransitionAt: issue.blockedTransitionAt,
+              remainingWait: readIssueRemainingWait(issue.unblockDescriptor),
               source: "issue.blockers_restored",
               mutation: "blocked_dependency_restored",
             });
@@ -18043,6 +18096,7 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          remainingWait?: string | null;
         }) => {
           const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
             dependentIssueId: input.dependentIssueId,
@@ -18084,6 +18138,9 @@ export function issueRoutes(
               source: "issue.blockers_resolved",
               resolvedBlockerIssueId: input.resolvedBlockerIssueId,
               blockerIssueIds: input.blockerIssueIds,
+              ...(input.remainingWait
+                ? { remainingWait: input.remainingWait }
+                : {}),
             },
           });
         };
@@ -18263,6 +18320,7 @@ export function issueRoutes(
               resolvedBlockerIssueId: currentIssue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              remainingWait: dependent.remainingWait,
             });
           }
         }

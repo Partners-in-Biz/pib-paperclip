@@ -5,6 +5,26 @@ import { agentWakeupRequests } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
+/**
+ * Kill switch for pruning done blockers when an agent (re-)blocks an issue.
+ * On by default; `0` restores the old behaviour, where the re-block keeps the
+ * done edges and emits an `issue.blockers_restored` wake every blocked cycle.
+ */
+export function isPruneResolvedBlockersOnAgentReblockEnabled(env: NodeJS.ProcessEnv = process.env) {
+  return env.PAPERCLIP_PRUNE_RESOLVED_BLOCKERS_ON_AGENT_REBLOCK !== "0";
+}
+
+/**
+ * The external wait an issue still names after its blockers resolve (the
+ * `unblockDescriptor` action), for the `issue_blockers_resolved` wake context.
+ */
+export function readIssueRemainingWait(
+  unblockDescriptor: { action?: unknown } | null | undefined,
+): string | null {
+  const action = unblockDescriptor?.action;
+  return typeof action === "string" && action.trim().length > 0 ? action.trim() : null;
+}
+
 // A wake counts as "already delivered or in flight for the current ready state"
 // for these statuses. The level-triggered state key uses this full set so that
 // one wake for a ready state suppresses further wakes for the SAME state. This
