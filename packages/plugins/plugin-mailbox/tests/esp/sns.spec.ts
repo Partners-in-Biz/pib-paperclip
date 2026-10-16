@@ -7,9 +7,29 @@ import { rememberCompany } from "../../src/setup-status.js";
 import { readSesTopicConfirmed } from "../../src/esp/topic-state.js";
 import { setup } from "../helpers/setup.js";
 import { fakeDns } from "../helpers/dns.js";
+import { forgetEspRuntime } from "../../src/esp/runtime.js";
+import { forgetLimiters } from "../../src/esp/limiter.js";
+import { forgetWebhookCandidates } from "../../src/esp/webhook.js";
+import { MockEmailProvider } from "../../src/esp/mock.js";
 
 type SesMockSetup = ReturnType<typeof sesMockSetup>;
 type SesSetup = ReturnType<typeof sesSetup>;
+
+/** Like sesMockSetup but does NOT auto-confirm the topic, for tests that need to start unconfirmed */
+function sesMockSetupUnconfirmed() {
+  forgetEspRuntime();
+  forgetLimiters();
+  forgetWebhookCandidates();
+  forgetSnsCandidates();
+  forgetSnsCerts();
+  const base = setup({ ...SES_ON });
+  // Do NOT call confirmSesTopic here
+  const provider = new MockEmailProvider({ idempotentSends: false, batching: false });
+  const sns = new FakeSesWithSns();
+  base.env.esp = { provider: () => provider, fetch: hostFetch(sns.handle) };
+  base.env.dns = fakeDns(dnsVerified());
+  return { ...base, provider, sns };
+}
 
 let seq = 0;
 function nextMessageId(): string {
@@ -714,14 +734,14 @@ describe("SNS webhook for SES", () => {
       forgetSnsCerts();
     });
 
-    it("SubscriptionConfirmation with failed SubscribeURL GET leaves topic unconfirmed, later Notification confirms it", async () => {
-      const t = sesMockSetup();
+    it("SubscriptionConfirmation with failed SubscribeURL GET (500) leaves topic unconfirmed; valid Notification then confirms it", async () => {
+      const t = sesMockSetupUnconfirmed();
       await addEspDomain(t, { provider: "ses" });
       await knownToWebhook(t);
 
-      // Confirm the topic first so we can then verify failed SubscribeURL doesn't re-confirm
+      // Start from unconfirmed state (sesMockSetupUnconfirmed does not auto-confirm)
       let confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
-      expect(confirmed).toBe(true); // Already marked by sesMockSetup
+      expect(confirmed).toBe(false); // Assert it is unconfirmed at the start
 
       // Simulate a failed SubscribeURL fetch by having it return non-2xx
       t.sns.subscribeUrlStatus = 500;
@@ -739,12 +759,29 @@ describe("SNS webhook for SES", () => {
       const signed1 = signSns(msg1 as Record<string, string>, t.sns.privateKey, "2");
       await deliver(t, JSON.stringify(signed1));
 
-      // Topic should still be confirmed (it was already confirmed before the failed fetch)
+      // Topic should still be unconfirmed after the failed SubscribeURL fetch
       confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
-      expect(confirmed).toBe(true);
+      expect(confirmed).toBe(false);
 
       // Verify that the subscribe URL was attempted (to show the fetch happened)
       expect(t.sns.subscribeUrlHits).toBeGreaterThan(0);
+
+      // Reset the status so a valid Notification can now be delivered
+      t.sns.subscribeUrlStatus = 200;
+      const msg2 = {
+        Type: "Notification" as const,
+        MessageId: nextMessageId(),
+        Message: JSON.stringify({ notificationType: "Send", mail: { timestamp: "2024-01-01T00:00:00Z", tags: { pib_company: [CO] } } }),
+        Timestamp: new Date().toISOString(),
+        TopicArn: SES_TOPIC_ARN,
+        SigningCertURL: t.sns.certUrl(),
+      };
+      const signed2 = signSns(msg2 as Record<string, string>, t.sns.privateKey, "2");
+      await deliver(t, JSON.stringify(signed2));
+
+      // Now the topic should be confirmed (first verified Notification confirms it)
+      confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true);
 
       forgetSnsCerts();
     });
@@ -770,10 +807,14 @@ describe("SNS webhook for SES", () => {
       expect(result.outcome).toBe("ignored");
     });
 
-    it("Notification with identity_feedback is ignored and logged once", async () => {
-      const t = sesMockSetup();
+    it("Notification with notificationType Delivery is ignored and confirms the topic", async () => {
+      const t = sesMockSetupUnconfirmed();
       await addEspDomain(t, { provider: "ses" });
       await knownToWebhook(t);
+
+      // Start from unconfirmed state (sesMockSetupUnconfirmed does not auto-confirm)
+      let confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(false); // Assert it is unconfirmed at the start
 
       const msg = {
         Type: "Notification" as const,
@@ -787,25 +828,9 @@ describe("SNS webhook for SES", () => {
       const result = await deliver(t, JSON.stringify(signed));
 
       expect(result.outcome).toBe("ignored");
-    });
-
-    it("Notification with identity-feedback type returns ignored", async () => {
-      const t = sesMockSetup();
-      await addEspDomain(t, { provider: "ses" });
-      await knownToWebhook(t);
-
-      const msg = {
-        Type: "Notification" as const,
-        MessageId: nextMessageId(),
-        Message: JSON.stringify({ notificationType: "Delivery", mail: { timestamp: "2024-01-01T00:00:00Z", tags: { pib_company: [CO] } } }),
-        Timestamp: new Date().toISOString(),
-        TopicArn: SES_TOPIC_ARN,
-        SigningCertURL: t.sns.certUrl(),
-      };
-      const signed = signSns(msg as Record<string, string>, t.sns.privateKey, "2");
-      const result = await deliver(t, JSON.stringify(signed));
-
-      expect(result.outcome).toBe("ignored");
+      // First verified Notification confirms the topic
+      confirmed = await readSesTopicConfirmed(t.host.ctx, CO);
+      expect(confirmed).toBe(true);
     });
   });
 
