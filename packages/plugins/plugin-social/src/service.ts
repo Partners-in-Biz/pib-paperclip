@@ -111,6 +111,7 @@ import {
 import { retryPost } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { reviewStats } from "./review-outcomes.js";
+import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
@@ -572,6 +573,7 @@ export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: R
   if (viewer.isAgent && post.scope === "personal") {
     throw new SocialError("Agents can only create personal drafts. The queue owner must schedule.");
   }
+  requireCanActOnPost(viewer, post, "schedule");
   assertTransition(post.status, "scheduled");
   const scheduledAt = isoTime(requiredString(params, "scheduledAt"), "scheduledAt");
   const check = await validatePostRecord(ctx, viewer, post.id);

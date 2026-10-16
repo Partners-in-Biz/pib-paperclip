@@ -10,6 +10,7 @@ import {
   myApproveAction,
   myDisconnectAccountAction,
 } from "../src/my-social.js";
+import { schedulePost } from "../src/service.js";
 import { fakeCtx } from "./helpers.js";
 
 const COMPANY_ID = "company-1";
@@ -327,6 +328,97 @@ describe("My Social Actions - Security & Isolation", () => {
       };
 
       await expect(myApproveAction(ctx, userAViewer, params)).rejects.toThrow(/Only draft posts/);
+    });
+  });
+
+  describe("schedulePost ownership check", () => {
+    it("rejects agents from scheduling personal posts", async () => {
+      const ctx = fakeCtx();
+      const agentViewer = { companyId: COMPANY_ID, userId: null, agentId: AGENT_ID, runId: null, isAgent: true };
+
+      // Mock getPost to return a personal post the agent created
+      vi.spyOn(ctx.db, "query").mockResolvedValueOnce([
+        {
+          id: "post-1",
+          company_id: COMPANY_ID,
+          body: "Test",
+          status: "approved",
+          scope: "personal",
+          owner_user_id: USER_A,
+          created_by_agent_id: AGENT_ID,
+          created_at: new Date(),
+          updated_at: new Date(),
+        } as any,
+      ]);
+
+      const params = {
+        postId: "post-1",
+        scheduledAt: new Date(Date.now() + 3600000).toISOString(),
+      };
+
+      await expect(schedulePost(ctx, agentViewer, params)).rejects.toThrow(/Agents can only create personal drafts/);
+    });
+
+    it("prevents non-owners from scheduling another user's personal post through visibility", async () => {
+      const ctx = fakeCtx();
+      const userBViewer = { companyId: COMPANY_ID, userId: USER_B, agentId: null, runId: null, isAgent: false };
+
+      // Mock getPost to return a personal post owned by USER_A
+      vi.spyOn(ctx.db, "query").mockResolvedValueOnce([
+        {
+          id: "post-1",
+          company_id: COMPANY_ID,
+          body: "Test",
+          status: "approved",
+          scope: "personal",
+          owner_user_id: USER_A,
+          created_at: new Date(),
+          updated_at: new Date(),
+        } as any,
+      ]);
+
+      const params = {
+        postId: "post-1",
+        scheduledAt: new Date(Date.now() + 3600000).toISOString(),
+      };
+
+      // User B cannot see USER_A's personal post, so gets visibility error
+      await expect(schedulePost(ctx, userBViewer, params)).rejects.toThrow(/Post is not visible/);
+    });
+
+    it("allows the owner to schedule their own personal post", async () => {
+      const ctx = fakeCtx();
+      const userAViewer = { companyId: COMPANY_ID, userId: USER_A, agentId: null, runId: null, isAgent: false };
+
+      const scheduledAtStr = new Date(Date.now() + 3600000).toISOString();
+      const post = {
+        id: "post-1",
+        company_id: COMPANY_ID,
+        body: "Test",
+        status: "approved",
+        scope: "personal" as const,
+        owner_user_id: USER_A,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      const scheduledPost = { ...post, status: "scheduled", scheduled_at: scheduledAtStr };
+
+      // Mock getPost calls and validation
+      vi.spyOn(ctx.db, "query")
+        .mockResolvedValueOnce([post]) // First requirePost call in schedulePost
+        .mockResolvedValueOnce([post]) // Second requirePost call in validatePostRecord
+        .mockResolvedValueOnce([{ id: "dest-1", account_id: "acc-1" }]) // destinationsForPost for validation
+        .mockResolvedValueOnce([{ id: "post-1" }]) // setPostStatus
+        .mockResolvedValueOnce([scheduledPost]); // getPostDetail
+
+      const params = {
+        postId: "post-1",
+        scheduledAt: scheduledAtStr,
+      };
+
+      // Should not throw
+      const result = await schedulePost(ctx, userAViewer, params);
+      expect(result).toBeDefined();
     });
   });
 

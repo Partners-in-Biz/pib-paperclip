@@ -168,7 +168,7 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 
 ## My Social (personal space, v0.9.0)
 
-User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only.
+User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only. Implementation uses `scope` ('org'|'personal') + `owner_user_id` columns rather than a single owner_type column.
 
 OAuth reuses existing LinkedIn and X apps; the owner is bound in the state. Agents get one tool `create-personal-draft` (drafts only, explicit `targetUserId`; cannot approve, schedule, publish, or read tokens). Only the owner approves and schedules; the publish job is unchanged and publishes only approved/scheduled posts.
 
