@@ -1044,4 +1044,54 @@ describe("ssh env-lab fixture", () => {
     expect(recentSubjects).toContain("remote update a");
     expect(recentSubjects).toContain("remote update b");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("excludes .paperclip from sync while preserving .paperclip-runtime and other files", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-exclude-test");
+
+    await mkdir(localDir, { recursive: true });
+    await mkdir(path.join(localDir, ".paperclip"), { recursive: true });
+    await mkdir(path.join(localDir, ".paperclip-runtime"), { recursive: true });
+    await mkdir(path.join(localDir, "src"), { recursive: true });
+    await writeFile(path.join(localDir, ".paperclip", "config.json"), '{"excluded":true}\n', "utf8");
+    await writeFile(path.join(localDir, ".paperclip-runtime", "state.json"), '{"runtime":true}\n', "utf8");
+    await writeFile(path.join(localDir, "src", "app.ts"), "export const app = {};", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH exclude .paperclip test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remoteDir = path.posix.join(started.workspaceDir, "exclude-test");
+
+    await syncDirectoryToSsh({
+      spec: {
+        ...config,
+        remoteCwd: started.workspaceDir,
+      },
+      localDir,
+      remoteDir,
+      exclude: [".paperclip", ".paperclip-runtime"],
+    });
+
+    // Verify .paperclip is excluded
+    const paperclipCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(remoteDir, ".paperclip"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(paperclipCheckResult.stdout).toContain("excluded");
+
+    // Verify .paperclip-runtime is excluded
+    const runtimeCheckResult = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(path.posix.join(remoteDir, ".paperclip-runtime"))} ]; then echo exists; else echo excluded; fi`,
+    );
+    expect(runtimeCheckResult.stdout).toContain("excluded");
+
+    // Verify other files are still synced
+    const appResult = await runSshCommand(
+      config,
+      `cat ${JSON.stringify(path.posix.join(remoteDir, "src", "app.ts"))}`,
+    );
+    expect(appResult.stdout).toContain("export const app = {}");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });
