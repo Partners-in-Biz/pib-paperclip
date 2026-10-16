@@ -42,6 +42,7 @@ import { GrowthTab } from "./growth.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { RoutineSwitchOn, useWeeklyRoutine } from "./routine.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
+import { MySocialPage as MySocialPageComponent } from "./my-social.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
 const ACTION_KEYS = [
@@ -378,5 +379,76 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
       <span aria-hidden="true" className="relative shrink-0">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
     </a>
+  );
+}
+
+/** Personal social accounts page (own work only). */
+export function MySocialPage({ context }: PluginPageProps) {
+  const fns = useSocialActions();
+  const fnsRef = useRef(fns);
+  fnsRef.current = fns;
+  const toast = usePluginToast();
+
+  const run: RunAction = useCallback(async (key, params, success) => {
+    const fn = fnsRef.current[key];
+    if (!fn) throw new Error(`Unknown action ${key}`);
+    try {
+      const result = await fn(params);
+      if (success) toast({ title: success, tone: "success", ttlMs: 4000 });
+      return result;
+    } catch (error) {
+      const msg = errorText(error);
+      toast({ title: "That did not work", body: msg, tone: "error", ttlMs: 9000 });
+      throw error;
+    }
+  }, [toast]);
+
+  // For the personal page, load company data to get account types
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [error, setError] = useState("");
+  const loadSeq = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    try {
+      const data = (await fnsRef.current["social.load"]!({
+        uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url),
+        client: null,
+      })) as Snapshot;
+      if (seq !== loadSeq.current) return;
+      setSnapshot(data);
+      setError("");
+    } catch (e) {
+      if (seq === loadSeq.current) setError(errorText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!context.companyId) return;
+    refresh().catch(() => undefined);
+  }, [context.companyId, refresh]);
+
+  if (!context.companyId) return <Page title="My Social" description="Pick a company first." accent="social">{null}</Page>;
+
+  const body = error ? (
+    <EmptyState
+      tone="bad"
+      title="Could not load"
+      description={error}
+    />
+  ) : !snapshot ? (
+    <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>
+  ) : (
+    <MySocialPageComponent snapshot={snapshot} run={run} />
+  );
+
+  return (
+    <Page
+      title="My Social"
+      description="Your personal social accounts and drafts. Separate from company accounts."
+      accent="social"
+    >
+      {body}
+    </Page>
   );
 }
