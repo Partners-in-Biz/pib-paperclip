@@ -96,6 +96,7 @@ import {
 import { experimentOptions, growthEnv, planExperimentTag, writeExperimentTag } from "./growth/service.js";
 import { replyToInboxItem } from "./inbox.js";
 import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
+import { requireCanActOnPost } from "./ownership.js";
 import { providerFor } from "./oauth/registry.js";
 import {
   ALL_PLATFORMS,
@@ -569,8 +570,8 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
 
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
-  if (viewer.isAgent && post.scope === "personal") {
-    throw new SocialError("Agents can only create personal drafts. The queue owner must schedule.");
+  if (post.scope === "personal") {
+    requireCanActOnPost(viewer, post, "schedule");
   }
   assertTransition(post.status, "scheduled");
   const scheduledAt = isoTime(requiredString(params, "scheduledAt"), "scheduledAt");

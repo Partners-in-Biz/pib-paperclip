@@ -141,6 +141,7 @@ export async function listPersonalAccounts(ctx: PluginContext, companyId: string
   );
 }
 
+/** Raw, unfiltered account getter. Callers must go through requireAccount or accountVisible / the visibility helpers. */
 export async function getAccountsByIds(ctx: PluginContext, companyId: string, ids: string[]): Promise<AccountRow[]> {
   if (ids.length === 0) return [];
   return ctx.db.query<AccountRow>(
@@ -149,6 +150,7 @@ export async function getAccountsByIds(ctx: PluginContext, companyId: string, id
   );
 }
 
+/** Raw, unfiltered account getter. Callers must go through requireAccount or accountVisible / the visibility helpers. */
 export async function getAccount(ctx: PluginContext, companyId: string, id: string): Promise<AccountRow | null> {
   const rows = await ctx.db.query<AccountRow>(
     `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")} WHERE id = $1 AND company_id = $2 LIMIT 1`,
