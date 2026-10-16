@@ -2,6 +2,7 @@ import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspa
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { externalConversationStateSql, nonIdleSlackIssueCondition } from "./slack-conversation-state.js";
 import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
+import { resolveCacheAdjustedCostUsd } from "./run-list-cost.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
@@ -5228,28 +5229,7 @@ export function resolveLedgerCostStatus(input: {
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
-export function resolveCacheAdjustedCostUsd(input: {
-  costUsd?: number | null;
-  cacheAdjustedCostUsd?: number | null;
-}) {
-  const explicit = input.cacheAdjustedCostUsd;
-  if (
-    typeof explicit === "number" &&
-    Number.isFinite(explicit) &&
-    explicit >= 0
-  ) {
-    return explicit;
-  }
-  const reported = input.costUsd;
-  if (
-    typeof reported === "number" &&
-    Number.isFinite(reported) &&
-    reported >= 0
-  ) {
-    return reported;
-  }
-  return null;
-}
+export { resolveCacheAdjustedCostUsd };
 
 export async function resolveLedgerScopeForRun(
   db: Db,
@@ -9489,6 +9469,7 @@ export function heartbeatService(
   };
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
+    cancelQueuedWorkForAgent,
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, {
@@ -28705,6 +28686,7 @@ export function heartbeatService(
 
   async function cancelPendingWakeupsForBudgetScope(
     scope: BudgetEnforcementScope,
+    reason = "Cancelled due to budget pause",
   ) {
     const now = new Date();
     let wakeupIds: string[] = [];
@@ -28754,7 +28736,7 @@ export function heartbeatService(
       .set({
         status: "cancelled",
         finishedAt: now,
-        error: "Cancelled due to budget pause",
+        error: reason,
         updatedAt: now,
       })
       .where(inArray(agentWakeupRequests.id, wakeupIds));
@@ -29216,6 +29198,36 @@ export function heartbeatService(
       runsCancelled,
       wakeupsCancelled,
     };
+  }
+
+  /**
+   * Spend alarm (PAR-1996): cancel an already paused agent's queued runs and
+   * wake requests, but not a running run. Waiting on the start lock first lets
+   * an in-flight queued -> running claim finish; after that the pause keeps
+   * startNextQueuedRunForAgent from claiming, so a queued run cannot turn into
+   * a running one between the select and the cancel.
+   */
+  async function cancelQueuedWorkForAgent(agentId: string, reason: string) {
+    await withAgentStartLock(agentId, async () => {});
+    const agent = await getAgent(agentId);
+    if (!agent) return { runsCancelled: 0, wakeupsCancelled: 0 };
+    const queuedRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+        ),
+      );
+    for (const run of queuedRuns) {
+      await cancelRunInternal(run.id, reason);
+    }
+    const wakeupsCancelled = await cancelPendingWakeupsForBudgetScope(
+      { companyId: agent.companyId, scopeType: "agent", scopeId: agentId },
+      reason,
+    );
+    return { runsCancelled: queuedRuns.length, wakeupsCancelled };
   }
 
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
@@ -29719,6 +29731,7 @@ export function heartbeatService(
       cancelInvocationsForAgentsInternal(agentIds, reason),
 
     cancelBudgetScopeWork,
+    cancelQueuedWorkForAgent,
 
     getRunIssueSummary: async (runId: string) => {
       const [run] = await db
