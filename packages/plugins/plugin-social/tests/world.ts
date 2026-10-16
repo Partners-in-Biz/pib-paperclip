@@ -5,6 +5,7 @@
  */
 import { vi } from "vitest";
 import type { AccountRow, PostRow } from "../src/db.js";
+import type { PostStatus } from "../src/platforms.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { fakeCtx } from "./helpers.js";
 
@@ -229,3 +230,86 @@ export const REVIEWER_AGENT = { companyId: "co", userId: null, agentId: "rev-1",
 
 export type World = ReturnType<typeof approvalWorld>;
 export const postRow = (w: World) => w.post as unknown as PostRow;
+
+/** World for personal-draft tests: tracks posts and accounts. */
+export function world(accounts: AccountRow[] = []) {
+  const accountsByIdMap = new Map(Array.isArray(accounts) ? accounts.map((a) => [a.id, a]) : []);
+  const posts = new Map<string, PostRow>();
+  const destinations = new Map<string, Array<{ post_id: string; account_id: string }>>();
+
+  const ctx = fakeCtx(
+    {
+      state: { get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+      config: { get: vi.fn(async () => ({ publicBaseUrl: "https://paperclip.partnersinbiz.online" })) },
+      companies: { get: vi.fn(async () => ({ id: "co", name: "Test Co" })) },
+      agents: { get: vi.fn(async () => ({ id: "ag", status: "idle" })), managed: { get: vi.fn(async () => ({ agentId: null })) } },
+      projects: { managed: { get: vi.fn(async () => ({ projectId: "proj" })) }, get: vi.fn(async () => ({ id: "proj" })) },
+      http: { fetch: vi.fn(async () => new Response("ok", { status: 200 })) },
+      issues: { get: vi.fn(async () => ({ id: "iss", status: "todo" })), create: vi.fn(async () => ({ id: "iss-1" })), update: vi.fn(async () => ({ id: "iss" })), createComment: vi.fn(async () => ({ id: "c" })), requestWakeup: vi.fn(async () => ({ queued: true })) },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    },
+    {
+      queryResult: (sql, params) => {
+        if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) {
+          const id = String(params[0]);
+          const acct = accountsByIdMap.get(id);
+          return acct ? [acct] : [];
+        }
+        if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1`)) {
+          return Array.from(accountsByIdMap.values());
+        }
+        if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) {
+          const postId = String(params[0]);
+          const post = posts.get(postId);
+          return post ? [post] : [];
+        }
+        if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) {
+          const postId = String(params[0]);
+          const post = posts.get(postId);
+          return (destinations.get(postId) ?? []).map((d) => ({ ...d, id: `d-${d.post_id}-${d.account_id}`, company_id: "co", scope: post?.scope ?? "org", owner_user_id: post?.owner_user_id ?? null, status: "pending", result: {}, attempts: 0, next_attempt_at: null, external_id: null, external_url: null, last_error: null, published_at: null, issue_id: null, metric_windows: null, created_at: new Date(), updated_at: new Date() }));
+        }
+        return [];
+      },
+      executeResult: (sql, params) => {
+        if (sql.includes(`INSERT INTO ${T("posts")}`)) {
+          const postId = String(params[0]);
+          const post: PostRow = {
+            id: postId,
+            company_id: String(params[1]),
+            body: String(params[2]),
+            overrides: JSON.parse(String(params[3])),
+            media: JSON.parse(String(params[4])),
+            status: String(params[5]) as PostStatus,
+            scheduled_at: params[16] ? new Date(String(params[16])).toISOString() : null,
+            scope: String(params[6]) as "org" | "personal",
+            owner_user_id: params[7] ? String(params[7]) : null,
+            client_kind: params[9] ? String(params[9]) : null,
+            client_ref: params[10] ? String(params[10]) : null,
+            client_name: params[11] ? String(params[11]) : null,
+            first_comment: params[8] ? String(params[8]) : null,
+            source: String(params[12]),
+            source_ref: params[13] ? String(params[13]) : null,
+            failure_issue_id: null,
+            published_at: null,
+            error: null,
+            created_by_agent_id: params[14] ? String(params[14]) : null,
+            created_at: new Date(),
+            updated_at: new Date(),
+          };
+          posts.set(postId, post);
+          return 1;
+        }
+        if (sql.includes(`INSERT INTO ${T("destinations")}`)) {
+          const postId = String(params[2]);
+          const accountId = String(params[3]);
+          if (!destinations.has(postId)) destinations.set(postId, []);
+          destinations.get(postId)!.push({ post_id: postId, account_id: accountId });
+          return 1;
+        }
+        return 1;
+      },
+    },
+  );
+
+  return { ctx, posts };
+}
