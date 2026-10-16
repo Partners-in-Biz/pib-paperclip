@@ -4,6 +4,8 @@ import { type SocialPlatform } from "../platforms.js";
 import { AccountStatus, Banner, Card, fmtDate, Muted, PlatformBadge, platformLabel, Row, SmallButton } from "./parts.js";
 import type { Account, Post, RunAction, Snapshot } from "./types.js";
 import { startConnect } from "./accounts.js";
+import { QueueTab } from "./my-social-queue.js";
+import { CalendarTab } from "./my-social-calendar.js";
 
 type TabId = "accounts" | "queue" | "calendar";
 
@@ -69,8 +71,8 @@ export function MySocialPage({ snapshot, run }: { snapshot: Snapshot; run: RunAc
         onChange={(id) => setTab(id as TabId)}
       />
       {tab === "accounts" ? <AccountsTab accounts={accounts} snapshot={snapshot} run={run} onRefresh={load} /> : null}
-      {tab === "queue" ? <PlaceholderTab /> : null}
-      {tab === "calendar" ? <PlaceholderTab /> : null}
+      {tab === "queue" ? <QueueTab posts={posts} snapshot={snapshot} run={run} onRefresh={load} /> : null}
+      {tab === "calendar" ? <CalendarTab posts={posts} snapshot={snapshot} /> : null}
     </div>
   );
 }
@@ -196,10 +198,6 @@ function AccountsTab({ accounts, snapshot, run, onRefresh }: { accounts: Account
       ) : null}
     </div>
   );
-}
-
-function PlaceholderTab() {
-  return <p style={{ fontSize: 13, color: tokens.muted }}>Loading…</p>;
 }
 
 function Section({ title, count, tone: t, children }: { title: string; count: number; tone?: "bad"; children: ReactNode }) {
