@@ -165,3 +165,11 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 2. After the plugin is up: on the VPS, `bash plugin-social/ops/approval-server/install.sh` as root (creates the role `pib_approval` and its settings file, installs and starts the unit), then the Caddy lines in `ops/approval-server/README.md` and `systemctl reload caddy`. Until then clients cannot be sent links (the tool refuses) and Setup shows the item as optional; everything else works.
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
+
+## My Social (personal space, v0.9.0)
+
+User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only.
+
+OAuth reuses existing LinkedIn and X apps; the owner is bound in the state. Agents get one tool `create-personal-draft` (drafts only, explicit `targetUserId`; cannot approve, schedule, publish, or read tokens). Only the owner approves and schedules; the publish job is unchanged and publishes only approved/scheduled posts.
+
+**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). Optional: drop the added unique indexes and columns with the SQL from the migration rollback comments.
