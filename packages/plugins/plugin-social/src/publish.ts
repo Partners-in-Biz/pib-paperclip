@@ -45,7 +45,7 @@ import {
   type DestinationRow,
   type PostRow,
 } from "./db.js";
-import { needsRefreshBeforePublish, nextDestinationState, rollupPostStatus, SocialError } from "./domain.js";
+import { assertDestination, needsRefreshBeforePublish, nextDestinationState, rollupPostStatus, SocialError } from "./domain.js";
 import { openPublishFailureIssue } from "./issues.js";
 import { graphemeLength } from "./oauth/providers/bluesky.js";
 import { xWeightedLength } from "./oauth/providers/x.js";
@@ -115,6 +115,21 @@ async function publishDestination(
   if (!inScope(account, scopeOfRow(post))) {
     return {
       outcome: { ok: false, retryable: false, error: `${account.display_name} belongs to ${scopeLabel(account)}, not ${scopeLabel(post)}; not published` },
+      account,
+    };
+  }
+  // Personal posts can only be published to personal accounts by their owner.
+  // Org posts cannot use personal accounts.
+  try {
+    assertDestination({
+      postScope: post.scope,
+      accountScope: account.scope,
+      accountOwnerUserId: account.owner_user_id,
+      actorUserId: post.owner_user_id,
+    });
+  } catch (error) {
+    return {
+      outcome: { ok: false, retryable: false, error: error instanceof Error ? error.message : String(error) },
       account,
     };
   }

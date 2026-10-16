@@ -134,6 +134,19 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "create-personal-draft",
+    displayName: "Create personal draft",
+    description:
+      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, and per-platform overrides.",
+    parametersSchema: schema(["targetUserId", "body"], {
+      targetUserId: text("User id whose My Social queue gets the draft"),
+      body: text("Main post text"),
+      mediaAssetIds: ids("Media asset ids (personal accounts of the target user)"),
+      firstComment: text("Posted as the first comment where the platform allows"),
+      overrides: OVERRIDES,
+    }),
+  },
+  {
     name: "update-post",
     displayName: "Update post",
     description:

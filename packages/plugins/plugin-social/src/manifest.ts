@@ -203,6 +203,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ui: {
     slots: [
       { type: "page", id: "social-page", displayName: "Social", exportName: "SocialPage", routePath: "social" },
+      { type: "page", id: "my-social-page", displayName: "My Social", exportName: "MySocialPage", routePath: "mysocial" },
       { type: "sidebar", id: "social-sidebar", displayName: "Social", exportName: "SocialSidebar", order: 41 },
     ],
   },
