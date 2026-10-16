@@ -19,6 +19,7 @@ import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
 import { destinationsForPost, getAccountsByIds, getPost, setPostStatus, table, type PostRow } from "./db.js";
 import { SocialError } from "./domain.js";
+import { requireCanActOnPost } from "./ownership.js";
 import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
 import { currentSignoffs, outcomesForPost, recordOutcome, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
@@ -155,9 +156,10 @@ export async function afterSignoff(ctx: PluginContext, actor: ReviewActor, post:
   return { completed: false, pending: state.missing, message: `Recorded. Waiting for ${waiting}.` };
 }
 
-/** A person clicks Approve. Needs the policy to ask for a team member, and the Reviewer's pass first when it asks for that. */
+/** A person clicks Approve. Needs the policy to ask for a team member, and the Reviewer's pass first when it asks for that. Personal posts can only be approved by the owner. */
 export async function approvePostByPerson(ctx: PluginContext, actor: ReviewActor, post: PostRow): Promise<ApprovalProgress> {
   const companyId = actor.companyId;
+  requireCanActOnPost(actor, post, "approve");
   const before = await signoffState(ctx, companyId, post);
   if (!before.policy.requireOwner) {
     throw new SocialError("In this scope the client approves, not a team member. Send the client their approval link, or record that the client approved (with a note).");
@@ -169,8 +171,9 @@ export async function approvePostByPerson(ctx: PluginContext, actor: ReviewActor
   return afterSignoff(ctx, actor, post, withSignoff(before, "owner"), "A person");
 }
 
-/** A person records that the client approved outside the approval page (an email, a call). A note saying how is required. */
+/** A person records that the client approved outside the approval page (an email, a call). A note saying how is required. Personal posts do not have client approval. */
 export async function recordClientApprovalByPerson(ctx: PluginContext, actor: ReviewActor, post: PostRow, note: string, by?: string | null): Promise<ApprovalProgress> {
+  if (post.scope === "personal") throw new SocialError("Personal posts cannot be submitted for client approval.");
   const companyId = actor.companyId;
   const text = note.trim();
   if (text.length < 10) throw new SocialError("Say how the client approved (who, when and how), at least a few words: it is kept as the approval record.");
