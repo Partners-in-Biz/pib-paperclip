@@ -7,7 +7,7 @@ import { clientContacts, clientInfo, primaryEmail } from "./care-clients.js";
 import { consentSummary } from "./consent.js";
 import type { ClientKey } from "./care-store.js";
 import { clientActionViews, createClientAction, listClientActionsTool, updateClientAction } from "./client-actions.js";
-import { recordClientSignalTool } from "./client-signals.js";
+import { deleteClientSignalTool, recordClientSignalTool } from "./client-signals.js";
 import type { Viewer } from "./domain.js";
 import { clientHealthTool, clientHealthView } from "./health-score.js";
 import { monitorViews, setSiteMonitoringTool } from "./monitor.js";
@@ -23,6 +23,7 @@ type Handler = (ctx: PluginContext, viewer: Viewer, params: Record<string, unkno
 const HANDLERS: Record<string, Handler> = {
   "build-client-report": (ctx, viewer, params) => buildClientReportTool(ctx, viewer, params),
   "record-client-signal": (ctx, viewer, params) => recordClientSignalTool(ctx, viewer, params),
+  "delete-client-signal": (ctx, viewer, params) => deleteClientSignalTool(ctx, viewer, params),
   "set-report-narrative": (ctx, viewer, params) => setReportNarrativeTool(ctx, viewer, params),
   "send-client-report": (ctx, viewer, params) => sendClientReportTool(ctx, viewer, params),
   "skip-client-report": (ctx, viewer, params) => skipClientReportTool(ctx, viewer, params),

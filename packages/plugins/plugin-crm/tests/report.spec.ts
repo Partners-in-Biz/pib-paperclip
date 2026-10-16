@@ -530,6 +530,55 @@ describe("writing and sending the report", () => {
   });
 });
 
+describe("certificate and domain expiry display", () => {
+  it("shows the actual certificate expiry date, not a stale day count", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.preview).toContain("security certificate valid until 31 October 2026");
+    expect(result.preview).not.toMatch(/more days/);
+  });
+
+  it("reports an expired certificate with its expiry date", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-08-15T12:00:00Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
+    expect(result.preview).toContain("security certificate expired on 15 August 2026");
+  });
+});
+
+describe("website section in reports", () => {
+  it("a website signal alone is rendered as a single section", async () => {
+    const booted = await bootReport();
+    await tool(booted.harness, "record-client-signal", { client: "company:acme", module: "website", period: PERIOD, headline: [{ label: "Page load time", value: "1.2s" }], bullets: ["Mobile performance improved."] });
+    const built = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain("Mobile performance improved.");
+    expect(rec.markdown).toContain("## Website");
+    expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
+  });
+
+  it("monitors and a website signal are combined into a single section, not duplicated", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    await tool(booted.harness, "record-client-signal", { client: "company:acme", module: "website", period: PERIOD, headline: [{ label: "Page load time", value: "1.2s" }], bullets: ["Mobile performance improved."] });
+    const built = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain("## Your website");
+    expect(rec.markdown).toContain("Mobile performance improved.");
+    expect(rec.markdown).toContain("acme.co.za: 100% uptime, security certificate valid until 31 October 2026");
+    // Verify the signal bullet appears exactly once in the markdown and HTML
+    expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
+    expect((rec.html.match(/Mobile performance improved/g) || []).length).toBe(1);
+  });
+});
+
 describe("the monthly job", () => {
   const FIRST = new Date("2026-10-01T04:00:00.000Z");
 
