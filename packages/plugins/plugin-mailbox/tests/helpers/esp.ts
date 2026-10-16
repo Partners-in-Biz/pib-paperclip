@@ -9,12 +9,13 @@ import { MockEmailProvider } from "../../src/esp/mock.js";
 import { forgetEspRuntime } from "../../src/esp/runtime.js";
 import { signSvix } from "../../src/esp/svix.js";
 import { forgetWebhookCandidates } from "../../src/esp/webhook.js";
+import { forgetSnsCandidates, forgetSnsCerts } from "../../src/esp/sns.js";
 import type { DnsRecord, EspDomainRow } from "../../src/esp/types.js";
 import { rememberCompany } from "../../src/setup-status.js";
 import type { EspAccountQuota } from "../../src/esp/types.js";
 import { fakeDns } from "./dns.js";
 import { markSesTopicConfirmed } from "../../src/esp/topic-state.js";
-import { FakeSes, hostFetch, SES_ACCESS_KEY_ID, SES_CONFIGURATION_SET, SES_REGION, SES_SECRET_ACCESS_KEY } from "./fake-ses.js";
+import { FakeSes, FakeSesWithSns, hostFetch, SES_ACCESS_KEY_ID, SES_CONFIGURATION_SET, SES_REGION, SES_SECRET_ACCESS_KEY } from "./fake-ses.js";
 import { CO } from "./memory.js";
 import { setup } from "./setup.js";
 
@@ -79,12 +80,15 @@ export function sesMockSetup(config: Record<string, unknown> = {}, options: { id
   forgetEspRuntime();
   forgetLimiters();
   forgetWebhookCandidates();
+  forgetSnsCandidates();
+  forgetSnsCerts();
   const base = setup({ ...SES_ON, ...config });
   void confirmSesTopic(base.host.ctx);
   const provider = new MockEmailProvider({ idempotentSends: false, batching: false, ...options });
-  base.env.esp = { provider: () => provider };
+  const sns = new FakeSesWithSns();
+  base.env.esp = { provider: () => provider, fetch: hostFetch(sns.handle) };
   base.env.dns = fakeDns(dnsVerified());
-  return { ...base, provider };
+  return { ...base, provider, sns };
 }
 
 /** SES with the real adapter over the fake SESv2 endpoint, reached through a stand-in for the host's guarded fetch. */
@@ -92,9 +96,11 @@ export function sesSetup(config: Record<string, unknown> = {}) {
   forgetEspRuntime();
   forgetLimiters();
   forgetWebhookCandidates();
+  forgetSnsCandidates();
+  forgetSnsCerts();
   const base = setup({ ...SES_ON, ...config });
   void confirmSesTopic(base.host.ctx);
-  const ses = new FakeSes();
+  const ses = new FakeSesWithSns();
   base.env.esp = { fetch: hostFetch(ses.handle) };
   base.env.dns = fakeDns(dnsVerified());
   return { ...base, ses };

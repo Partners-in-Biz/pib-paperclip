@@ -39,7 +39,7 @@ describe("manifest", () => {
       expect.objectContaining({ jobKey: "check-domain-health", schedule: "17 5 * * *" }),
     ]);
     // The public one-click unsubscribe address (RFC 8058) and the capability the host needs to serve it.
-    expect(manifest.webhooks).toEqual([expect.objectContaining({ endpointKey: "resend" }), expect.objectContaining({ endpointKey: "unsubscribe" })]);
+    expect(manifest.webhooks).toEqual([expect.objectContaining({ endpointKey: "resend" }), expect.objectContaining({ endpointKey: "ses" }), expect.objectContaining({ endpointKey: "unsubscribe" })]);
     expect(manifest.apiRoutes).toEqual([
       expect.objectContaining({ routeKey: "oauth-complete", method: "POST", path: "/oauth/complete", auth: "board" }),
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),

@@ -68,6 +68,7 @@ import { readEspState } from "./esp/runtime.js";
 import { liftReputationHold } from "./esp/hold.js";
 import { isEspProvider, type EspDomainRow } from "./esp/types.js";
 import { ESP_ENDPOINT, handleEspWebhook } from "./esp/webhook.js";
+import { SES_ENDPOINT, handleSnsWebhook } from "./esp/sns.js";
 import { eraseSubject, onConsentRecorded } from "./erasure.js";
 import { isFreeMailDomain } from "./free-mail.js";
 import { handleUnsubscribeWebhook, probeCompanies, probeUnsubscribeProxy, probeUrl } from "./unsubscribe.js";
@@ -305,6 +306,12 @@ const plugin = definePlugin({
     if (input.endpointKey === ESP_ENDPOINT) {
       const result = await handleEspWebhook(env, input);
       env.ctx.logger.info("Provider webhook handled", { outcome: result.outcome });
+      return;
+    }
+    // Amazon SES delivery events via SNS: signed with AWS signature; a message that does not verify throws, so the host answers with an error and SNS retries.
+    if (input.endpointKey === SES_ENDPOINT) {
+      const result = await handleSnsWebhook(env, input);
+      env.ctx.logger.info("SNS webhook handled", { outcome: result.outcome });
       return;
     }
     const outcome = await handleUnsubscribeWebhook(env, input);

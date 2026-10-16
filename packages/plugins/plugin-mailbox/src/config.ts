@@ -371,7 +371,8 @@ export async function loadMailboxConfig(ctx: PluginContext, companyId: string): 
     raw = {};
   }
   const config = parseMailboxConfig(raw);
-  // Whether the SNS topic is confirmed lives in company state (per ARN): read only where SES is in use.
+  // Whether the SNS topic is confirmed lives in company state: read only where SES is in use.
+  // The saved state must match the current topic ARN (changing the ARN resets the confirmation).
   if (config.esp.provider === "ses" && config.esp.ses.snsTopicArn) config.esp.ses.topicConfirmed = await readSesTopicConfirmed(ctx, companyId, config.esp.ses.snsTopicArn);
   return { companyId, raw, config, secrets: new SecretResolver(ctx, companyId, raw) };
 }

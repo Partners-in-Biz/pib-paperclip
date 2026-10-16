@@ -7,7 +7,7 @@
  * `hostFetch` stands in for the host's guarded `ctx.http.fetch`: like `buildPinnedRequestOptions` in the server it lower-cases the header
  * names, sets `Host` from the URL and adds `Content-Length`, and rewrites nothing else.
  */
-import { createHash } from "node:crypto";
+import { createHash, createSign, generateKeyPairSync } from "node:crypto";
 import { signV4 } from "../../src/esp/sigv4.js";
 import type { HttpFetch } from "../../src/esp/resend.js";
 
@@ -84,11 +84,11 @@ export class FakeSes {
     return this.requests.filter((r) => r.path === "/v2/email/outbound-emails");
   }
 
-  private json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  protected json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
     return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
   }
 
-  private checkSignature(method: string, path: string, search: URLSearchParams, headers: Record<string, string>, rawBody: string): void {
+  protected checkSignature(method: string, path: string, search: URLSearchParams, headers: Record<string, string>, rawBody: string): void {
     const auth = headers.authorization ?? "";
     const match = /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/ses\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(auth);
     if (!match) return void this.signatureProblems.push("malformed Authorization header");
@@ -185,4 +185,139 @@ export function hostFetch(inner: HttpFetch): HttpFetch {
     if (init?.body !== undefined && !headers.has("content-length")) headers.set("content-length", String(Buffer.byteLength(init.body)));
     return inner(url, { ...init, headers: Object.fromEntries(headers.entries()) });
   };
+}
+
+// SNS-related additions for webhook testing
+
+// Generate RSA key pair at module load time
+const { privateKey: SNS_PRIVATE_KEY_OBJECT, publicKey: SNS_PUBLIC_KEY_OBJECT } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+});
+
+// Export keys as PEM strings
+const SNS_PRIVATE_KEY = SNS_PRIVATE_KEY_OBJECT.export({ type: "pkcs8", format: "pem" }) as string;
+const SNS_CERT = SNS_PUBLIC_KEY_OBJECT.export({ type: "spki", format: "pem" }) as string;
+
+export class FakeSesWithSns extends FakeSes {
+  privateKey = SNS_PRIVATE_KEY;
+  subscribeUrlHits = 0;
+  certFetches = 0;
+
+  certUrl(): string {
+    return `https://sns.${SES_REGION}.amazonaws.com/test-cert.pem`;
+  }
+
+  subscribeUrl(): string {
+    return `https://sns.${SES_REGION}.amazonaws.com/test-subscribe`;
+  }
+
+  async handleSubscribeUrl(): Promise<Response> {
+    this.subscribeUrlHits += 1;
+    return new Response("OK");
+  }
+
+  // Helper to handle SES requests (copied from parent FakeSes)
+  protected handleSesRequest = async (url: string, init: RequestInit | undefined): Promise<Response> => {
+    const target = new URL(url);
+    const method = init?.method ?? "GET";
+    const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+    const rawBody = typeof init?.body === "string" ? init.body : "";
+    let body: Record<string, any> | null = null;
+    try {
+      body = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      body = null;
+    }
+    const mime = typeof body?.Content?.Raw?.Data === "string" ? Buffer.from(body.Content.Raw.Data, "base64").toString("utf8") : null;
+    this.requests.push({ method, path: target.pathname, headers, rawBody, body, mime });
+    if (target.protocol !== "https:" || !/^email\.[a-z0-9-]+\.amazonaws\.com$/.test(target.hostname)) return this.json(400, { message: "wrong host" });
+    this.checkSignature(method, target.pathname, target.searchParams, headers, rawBody);
+    const scripted = this.errors[0] && (this.errors[0].on ?? /outbound-emails/).test(target.pathname) ? this.errors.shift() : undefined;
+    if (scripted) {
+      if (scripted.throws) throw new Error(scripted.throws);
+      if (scripted.body !== undefined) return this.json(scripted.status, scripted.body, scripted.headers);
+      return this.json(scripted.status, { message: scripted.message ?? "scripted" }, { ...(scripted.type ? { "x-amzn-ErrorType": `${scripted.type}:http://internal.amazon.com/coral/com.amazonaws.maestro.service.v20201210/` } : {}), ...scripted.headers });
+    }
+    if (method === "POST" && target.pathname === "/v2/email/outbound-emails") {
+      (this as any).seq += 1;
+      return this.json(200, { MessageId: `0101019${String((this as any).seq).padStart(8, "0")}-ses-test-id` });
+    }
+    if (method === "GET" && target.pathname === "/v2/email/account") {
+      const a = this.account;
+      return this.json(200, { SendQuota: { Max24HourSend: a.max24HourSend, MaxSendRate: a.maxSendRate, SentLast24Hours: a.sentLast24Hours }, ProductionAccessEnabled: a.productionAccessEnabled, SendingEnabled: a.sendingEnabled });
+    }
+    const identity = (this as any).handleIdentities(method, target, body);
+    if (identity) return identity;
+    return this.json(404, { message: "not found" }, { "x-amzn-ErrorType": "NotFoundException" });
+  };
+
+  // Override handle to serve the SNS certificate and subscribe URLs, then delegate to parent for SES
+  handle: HttpFetch = async (url, init) => {
+    const target = new URL(url);
+
+    // Serve the certificate for SNS
+    if (
+      target.protocol === "https:" &&
+      /^sns\.[a-z0-9-]+\.amazonaws\.com$/.test(target.hostname) &&
+      target.pathname === "/test-cert.pem"
+    ) {
+      this.certFetches += 1;
+      return new Response(SNS_CERT, { status: 200, headers: { "content-type": "application/x-pem-file" } });
+    }
+
+    // Serve the subscribe endpoint for SNS
+    if (
+      target.protocol === "https:" &&
+      /^sns\.[a-z0-9-]+\.amazonaws\.com$/.test(target.hostname) &&
+      target.pathname === "/test-subscribe"
+    ) {
+      return this.handleSubscribeUrl();
+    }
+
+    // Delegate to the SES handler for all other requests
+    return this.handleSesRequest(url, init);
+  };
+}
+
+/**
+ * Build the canonical string for SNS signature in the exact order expected by src/esp/sns.ts.
+ * Fields are ordered based on message type, matching canonicalString() in sns.ts.
+ */
+function buildSnsCanonicalString(message: Record<string, string>, messageType: string): string {
+  const { Signature, SigningCertURL, ...toSign } = message;
+
+  // Determine field order based on message Type
+  let fieldOrder: string[];
+  if (messageType === "Notification") {
+    fieldOrder = ["Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"];
+  } else {
+    // SubscriptionConfirmation or UnsubscribeConfirmation
+    fieldOrder = ["Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type"];
+  }
+
+  // Build the canonical string: include only fields that exist
+  const lines: string[] = [];
+  for (const field of fieldOrder) {
+    if (field in toSign && toSign[field] !== undefined) {
+      lines.push(field);
+      lines.push(toSign[field]!);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Sign an SNS message with RSA-SHA256 or RSA-SHA1 based on SignatureVersion.
+ */
+export function signSns(message: Record<string, string>, privateKey: string, signatureVersion: "1" | "2"): Record<string, string> {
+  const messageType = message.Type ?? "Notification";
+  const stringToSign = buildSnsCanonicalString(message, messageType);
+
+  const algorithm = signatureVersion === "1" ? "sha1" : "sha256";
+  const sign = createSign(algorithm);
+  sign.update(Buffer.from(stringToSign, "utf8"));
+  const signature = sign.sign(privateKey, "base64");
+
+  return { ...message, Signature: signature, SignatureVersion: signatureVersion };
 }

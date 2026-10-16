@@ -366,3 +366,143 @@ export function toProviderDomain(name: string, region: string, identity: Obj): P
     clickTracking: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// SES event parsing for SNS webhooks (PAR-1857 T3)
+// ---------------------------------------------------------------------------
+
+const arrayOf = (value: unknown): string[] => (Array.isArray(value) ? value.map((v) => text(v)).filter((v): v is string => Boolean(v)) : []);
+
+/** Parses a SES event from SNS. Returns an ignored result or a parsed event. */
+export function parseSesEvent(rawBody: string): { ignored: string } | { event: import("./resend.js").EspEvent } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return { ignored: "not_json" };
+  }
+
+  const body = obj(parsed);
+  const eventType = text(body.eventType);
+  if (!eventType) return { ignored: "no_event_type" };
+
+  const mail = obj(body.mail);
+  const messageId = text(mail.messageId);
+  if (!messageId) return { ignored: "no_message_id" };
+
+  const timestamp = text(mail.timestamp);
+  const source = text(mail.source);
+  const destination = arrayOf(mail.destination);
+  const tags = parseSesTagObject(mail.tags);
+
+  // Map SES eventType to kind and extract recipients
+  let kind: import("./resend.js").ResendEventKind = "other";
+  let about: string[] | null = null;
+  let bounce: { type: string | null; subType: string | null; message: string | null } | null = null;
+  let failedReason: string | null = null;
+
+  switch (eventType) {
+    case "Send":
+      kind = "sent";
+      about = null; // Whole message, not per-recipient
+      break;
+    case "Delivery":
+      kind = "delivered";
+      const delivery = obj(body.delivery);
+      about = arrayOf(delivery.recipients);
+      break;
+    case "DeliveryDelay":
+      kind = "delayed";
+      const delay = obj(body.deliveryDelay);
+      about = (Array.isArray(delay.delayedRecipients) ? delay.delayedRecipients : [])
+        .map((r) => text(obj(r).emailAddress))
+        .filter((r): r is string => Boolean(r));
+      break;
+    case "Bounce":
+      const b = obj(body.bounce);
+      const bounceType = text(b.bounceType);
+      const bounceSubType = text(b.bounceSubType);
+      kind = bounceType === "Permanent" ? "bounced_hard" : "bounced_soft";
+      // Check if it's OnAccountSuppressionList (suppressed)
+      if (bounceSubType === "OnAccountSuppressionList") kind = "suppressed";
+      bounce = { type: bounceType, subType: bounceSubType, message: null };
+      about = (Array.isArray(b.bouncedRecipients) ? b.bouncedRecipients : [])
+        .map((r) => text(obj(r).emailAddress))
+        .filter((r): r is string => Boolean(r));
+      break;
+    case "Complaint":
+      kind = "complained";
+      const complaint = obj(body.complaint);
+      about = (Array.isArray(complaint.complainedRecipients) ? complaint.complainedRecipients : [])
+        .map((r) => text(obj(r).emailAddress))
+        .filter((r): r is string => Boolean(r));
+      break;
+    case "Reject":
+      kind = "failed";
+      const reject = obj(body.reject);
+      failedReason = text(reject.reason);
+      about = null; // Whole message, not per-recipient
+      break;
+    case "Open":
+      kind = "opened";
+      about = null; // For SES, we don't have recipient-specific info for opens
+      break;
+    case "Click":
+      kind = "clicked";
+      about = null; // For SES, we don't have recipient-specific info for clicks
+      break;
+    default:
+      // notificationType indicates identity feedback (Delivery, Bounce, Complaint from the identity API), not configuration-set events.
+      const notificationType = text(body.notificationType);
+      if (notificationType) {
+        // Log it once and ignore it
+        return { ignored: "identity_feedback" };
+      }
+      return { ignored: "unknown_event_type" };
+  }
+
+  return {
+    event: {
+      type: eventType,
+      kind,
+      provider: "ses",
+      emailId: messageId,
+      from: source,
+      to: destination,
+      about,
+      createdAt: timestamp,
+      tags: { ...tags },
+      bounce,
+      failedReason,
+      domainId: null,
+    },
+  };
+}
+
+/** Parse SES mail.tags (array of { Name: string, Value: string } objects or object map) into a map. */
+function parseSesTagObject(tags: unknown): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (Array.isArray(tags)) {
+    // Array format: [{ Name: "pib_company", Value: "co-1" }, ...]
+    for (const tag of tags) {
+      const t = obj(tag);
+      const name = text(t.Name);
+      const value = text(t.Value);
+      if (name && value) result[name] = value;
+    }
+  } else if (typeof tags === "object" && tags !== null) {
+    // Object format: { pib_company: "co-1", ... } or { pib_company: ["co-1"], ... } (for test events and some formats)
+    for (const [key, val] of Object.entries(tags)) {
+      if (Array.isArray(val) && val.length > 0) {
+        // Array format: take the first string element
+        const firstVal = text(val[0]);
+        if (firstVal) result[key] = firstVal;
+      } else {
+        // String format or other
+        const value = text(val);
+        if (value) result[key] = value;
+      }
+    }
+  }
+  return result;
+}

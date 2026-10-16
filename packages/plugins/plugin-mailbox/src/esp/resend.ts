@@ -220,14 +220,18 @@ export type ResendEventKind =
   | "domain"
   | "other";
 
-export interface ResendEvent {
+export interface EspEvent {
   /** The raw `type`, for the log. */
   type: string;
   kind: ResendEventKind;
+  /** The provider that generated this event (e.g. 'resend', 'ses'). */
+  provider: string;
   emailId: string | null;
   from: string | null;
   /** Every recipient the message had. */
   to: string[];
+  /** The specific recipients this event is about (for per-recipient tracking with SES bounces/complaints). Null if not applicable. */
+  about: string[] | null;
   createdAt: string | null;
   /** Our tags (`pib_company`). */
   tags: Record<string, string>;
@@ -236,6 +240,9 @@ export interface ResendEvent {
   /** `domain.*` events: the provider's domain id. */
   domainId: string | null;
 }
+
+/** Backward compatibility alias. */
+export type ResendEvent = EspEvent;
 
 function parseTags(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -307,9 +314,11 @@ export function parseResendEvent(rawBody: string): ResendEvent | null {
   return {
     type,
     kind,
+    provider: "resend",
     emailId: kind === "domain" ? null : text(data.email_id),
     from: text(data.from),
     to: [...new Set(to)],
+    about: null,
     createdAt: text(body.created_at) ?? text(data.created_at),
     tags: parseTags(data.tags),
     bounce: bounce ? { type: text(bounce.type), subType: text(bounce.subType), message: text(bounce.message) } : null,
