@@ -43,7 +43,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only: call \`get-approval-status\` or \`approve-post-by-person\` (a person's action). Migrations 016–017 add nullable columns and indexes for personal scope; rollback simply reverts to the prior plugin version.
+A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (call \`get-approval-status\` to check where a personal post stands; only the post owner can approve). Migrations 016–017 add nullable columns and indexes for personal scope; rollback simply reverts to the prior plugin version.
 
 ## Approvals
 
