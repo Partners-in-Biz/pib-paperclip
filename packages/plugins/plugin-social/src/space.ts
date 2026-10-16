@@ -33,13 +33,3 @@ export function spaceMatches(space: Space, viewer: Viewer, row: ScopedRow): bool
   return false;
 }
 
-/**
- * SQL WHERE clause to filter by space for a row that has scope and owner_user_id columns.
- * table_alias (e.g. 'a' for 'accounts a') is optional; if omitted, bare 'scope' is used.
- */
-export function spaceSql(space: Space, viewer: Viewer, tableAlias?: string): string {
-  const prefix = tableAlias ? `${tableAlias}.` : "";
-  if (space === "company") return `${prefix}scope = 'org'`;
-  if (space === "me") return `${prefix}scope = 'personal' AND ${prefix}owner_user_id = $X`.replace("$X", viewer.userId ? `'${viewer.userId.replace(/'/g, "''")}'` : "NULL");
-  return "FALSE";
-}

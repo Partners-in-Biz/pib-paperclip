@@ -505,7 +505,16 @@ export async function attachDestination(ctx: PluginContext, viewer: Viewer, para
     throw new SocialError("Agents can only attach destinations to personal drafts they created");
   }
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
-  await attachAccounts(ctx, viewer, post, await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]));
+  const accounts = await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]);
+  // When viewer is agent and post is personal, account must be personal and owned by post owner
+  if (viewer.isAgent && post.scope === "personal") {
+    for (const account of accounts) {
+      if (account.scope !== "personal" || account.owner_user_id !== post.owner_user_id) {
+        throw new SocialError("Agents can only attach personal accounts owned by the post's owner");
+      }
+    }
+  }
+  await attachAccounts(ctx, viewer, post, accounts);
   // The accounts are part of what a sign-off and a client link cover: the client saw the post going to other accounts.
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
