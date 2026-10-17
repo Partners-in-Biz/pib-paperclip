@@ -166,10 +166,16 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.9.1
+
+Migration 017 no longer has comment lines. The host validator reads quotes before it strips comments, so an apostrophe in a comment made activation reject the file. The two unique indexes are unchanged.
+
+**Deploy: stop-first.**
+
 ## My Social (personal space, v0.9.0)
 
 User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only. Implementation uses `scope` ('org'|'personal') + `owner_user_id` columns rather than a single owner_type column.
 
 OAuth reuses existing LinkedIn and X apps; the owner is bound in the state. Agents get one tool `create-personal-draft` (drafts only, explicit `targetUserId`; cannot approve, schedule, publish, or read tokens). Only the owner approves and schedules; the publish job is unchanged and publishes only approved/scheduled posts.
 
-**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). Optional: drop the added unique indexes and columns with the SQL from the migration rollback comments.
+**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). 016 still has its rollback comments. 017's indexes are `accounts_org_external` and `accounts_personal_external`.
