@@ -13,8 +13,8 @@
 /** The longest comment the plugin posts on an issue. */
 export const COMMENT_MAX = 1_500;
 
-/** A task thread this big (comment bytes) is rolled into a continuation issue: well under the ~80 KB where wakes started to fail. */
-export const THREAD_ROLL_BYTES = 60_000;
+/** A task thread this big (40_000 comment bytes) is rolled into a continuation issue: well under the ~80 KB where wakes started to fail. */
+export const THREAD_ROLL_BYTES = 40_000;
 
 /** The same notice is not posted twice in a row on one issue within this window. */
 export const COMMENT_DEDUPE_MS = 24 * 3_600_000;
@@ -231,9 +231,12 @@ export function continuationSummary(input: {
     lines.push(`Full notes: \`partnersinbiz.seo:list-previews\` with \`sprintId\` \`${input.sprintId}\` and a \`previewId\`.`);
   }
   lines.push("", `Review or build issues opened for this task before the move still name ${old} as their parent: that is only a label (a plugin cannot change an issue's parent). The plugin follows the task, so their results reach this issue.`);
-  if (input.lastComments.length > 0) {
+  const recentComments = input.lastComments
+    .filter((c) => !c.body.trimStart().startsWith("Query:"))
+    .slice(0, 3);
+  if (recentComments.length > 0) {
     lines.push("", "## The last comments on the old issue (trimmed)");
-    for (const c of input.lastComments.slice(0, 3)) lines.push(`- ${c.author}, ${c.at.slice(0, 16).replace("T", " ")}: ${clip(oneLine(c.body), 600)}`);
+    for (const c of recentComments) lines.push(`- ${c.author}, ${c.at.slice(0, 16).replace("T", " ")}: ${clip(oneLine(c.body), 600)}`);
   }
   return lines.join("\n");
 }
