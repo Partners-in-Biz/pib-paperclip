@@ -142,6 +142,27 @@ export interface CreateAdRequest {
   status?: "PAUSED" | "ACTIVE";
 }
 
+export interface AdSetCap {
+  externalId: string;
+  campaignExternalId: string;
+  lifetimeBudgetMinor: number | null;
+}
+
+export interface AccountCaps {
+  /** Platform-side account cap in minor units (Meta spend_cap, Google approved account budget limit); null = none set. */
+  spendCapMinor: number | null;
+  /** Ad sets (Meta) / ad groups carry no budget on Google, so Google returns []. */
+  adSets: AdSetCap[];
+}
+
+export interface CampaignHealth {
+  campaignExternalId: string;
+  status: CampaignStatus;
+  /** effective status read back from the platform */
+  rawStatus: string;
+  /** count of ads currently DISAPPROVED */
+  disapprovedAds: number;
+}
 export interface ExchangeResult {
   token: TokenBundle;
   /** Who signed in, for the connection's label (never a secret). */
@@ -164,6 +185,8 @@ export interface AdsProvider {
   listCampaigns(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<CampaignInfo[]>;
   insights(env: ProviderEnv, token: TokenBundle, account: AccountRef, range: { since: string; until: string }): Promise<InsightRow[]>;
   listAds(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<AdPolicyRow[]>;
+  accountCaps(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<AccountCaps>;
+  campaignHealth(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalIds: string[]): Promise<CampaignHealth[]>;
   /** Write: creates the campaign PAUSED. */
   createCampaign(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateCampaignRequest): Promise<{ externalId: string; name: string }>;
   /** Write: ACTIVE or PAUSED. */

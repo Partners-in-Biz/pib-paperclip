@@ -15,7 +15,7 @@
 import { AdsError } from "../domain.js";
 import { microsToMinor, minorToMicros } from "../money.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AccountCaps, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_GOOGLE_VERSION = "v25";
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/adwords";
@@ -315,6 +315,57 @@ export const googleProvider: AdsProvider = {
 
   async createAd() {
     throw new ProviderError("Ads are not supported on Google Ads via this plugin yet.");
+  },
+
+  async accountCaps(env, token, account): Promise<AccountCaps> {
+    const rows = await gaql(
+      env,
+      token,
+      account.externalId,
+      "SELECT account_budget.approved_spending_limit_micros FROM account_budget WHERE account_budget.status = 'APPROVED'",
+      account.loginCustomerId,
+      "Google account caps",
+    );
+    const row = rows[0];
+    const limitMicros = row?.accountBudget?.approvedSpendingLimitMicros;
+    const spendCapMinor = limitMicros !== undefined && limitMicros !== "0" ? microsToMinor(limitMicros, account.currency) : null;
+    return { spendCapMinor, adSets: [] };
+  },
+
+  async campaignHealth(env, token, account, campaignExternalIds): Promise<CampaignHealth[]> {
+    if (campaignExternalIds.length === 0) return [];
+    const customer = digits(account.externalId);
+    const idList = campaignExternalIds.map((id) => digits(id)).join(",");
+    const campaignRows = await gaql(
+      env,
+      token,
+      customer,
+      `SELECT campaign.id, campaign.status FROM campaign WHERE campaign.id IN (${idList})`,
+      account.loginCustomerId,
+      "Google campaign health",
+    );
+    const campaignMap = new Map<string, { status: CampaignStatus; rawStatus: string }>();
+    for (const row of campaignRows) {
+      const id = str(row.campaign?.id);
+      if (id) campaignMap.set(id, { status: campaignStatusOf(row.campaign?.status), rawStatus: str(row.campaign?.status) });
+    }
+    const adRows = await gaql(
+      env,
+      token,
+      customer,
+      `SELECT campaign.id FROM ad_group_ad WHERE ad_group_ad.policy_summary.approval_status = 'DISAPPROVED'`,
+      account.loginCustomerId,
+      "Google disapproved ads",
+    );
+    const disapprovedCount = new Map<string, number>();
+    for (const row of adRows) {
+      const campaignId = str(row.campaign?.id);
+      if (campaignId) disapprovedCount.set(campaignId, (disapprovedCount.get(campaignId) ?? 0) + 1);
+    }
+    return campaignExternalIds.map((id) => {
+      const info = campaignMap.get(id) ?? { status: "other" as const, rawStatus: "UNKNOWN" };
+      return { campaignExternalId: id, status: info.status, rawStatus: info.rawStatus, disapprovedAds: disapprovedCount.get(id) ?? 0 };
+    });
   },
 };
 
