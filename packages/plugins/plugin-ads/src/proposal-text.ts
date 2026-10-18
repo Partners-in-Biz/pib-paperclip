@@ -58,6 +58,23 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
     lines.push(`Ad set: ${String(x.adSetExternalId)}`);
     lines.push(`Creative: ${String(x.creativeExternalId)}`);
     lines.push("It is created **paused**; Meta reviews it before it can deliver.");
+  } else if (p.kind === "create_ad_group") {
+    lines.push(`Campaign: **${String(x.campaignName)}** on ${String(x.accountName)} (${String(x.platform)})`);
+    lines.push(`Ad group: **${String(x.name)}**`);
+    lines.push(`Max CPC bid: **${money(x.cpcBidMinor, currency)}**`);
+    lines.push("It is created **paused**. Switching it on is a separate change.");
+  } else if (p.kind === "add_keywords") {
+    const keywords = Array.isArray(x.keywords) ? x.keywords : [];
+    lines.push(`Ad group: ${String(x.adGroupExternalId)}`);
+    lines.push(`Keywords: ${keywords.length} to add`);
+    if (keywords.length > 0) {
+      for (const kw of keywords.slice(0, 5)) {
+        const matchType = String((kw as { matchType?: string }).matchType ?? "");
+        const negative = (kw as { negative?: boolean }).negative ? "(negative) " : "";
+        lines.push(`- ${negative}"${String((kw as { text?: string }).text ?? "")}" (${matchType})`);
+      }
+      if (keywords.length > 5) lines.push(`- ...and ${keywords.length - 5} more`);
+    }
   } else {
     lines.push(`Platform: ${String(x.platform)}`);
   }
@@ -109,6 +126,8 @@ export function reviewerChecks(kind: ProposalKind): string[] {
   if (kind === "creative_check") return [...common.slice(2), ...copy];
   if (kind === "create_ad_creative") return [...common.slice(2), ...copy, "The creative is ready to use in ads but serves nothing until an ad is created to use it."];
   if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved."];
+  if (kind === "create_ad_group") return [...common, "The max CPC bid is sensible for the campaign and client size.", "The ad group is created paused and will need the campaign's approval to switch on."];
+  if (kind === "add_keywords") return [...common, "The keywords match the campaign's topic and intent.", "Negative keywords (marked) are sensible and won't block other good searches."];
   if (kind === "change_budget") return [...common, "The reason is real (performance, a plan), not a guess."];
   return [...common, kind === "resume_campaign" ? "The campaign is safe to switch on: its copy and landing page are still right." : "Pausing is right for this reason: look at the numbers on the issue."];
 }

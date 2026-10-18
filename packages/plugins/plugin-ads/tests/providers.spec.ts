@@ -423,3 +423,68 @@ describe("errors never leak a token and say what happened", () => {
     expect(text).toContain("fine");
   });
 });
+
+describe("Google Ads: ad groups and keywords (Google only)", () => {
+  const gToken = { accessToken: GOOGLE_ACCESS };
+  const ref = { ...accountRef, externalId: "555-666-7777", loginCustomerId: "111-222-3333" };
+
+  it("creates an ad group PAUSED with a CPC bid in micros", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*adGroups:mutate/, { body: { mutateOperationResponses: [{ adGroupResult: { resourceName: "customers/5556667777/adGroups/222" } }] } }]]);
+    const made = await googleProvider.createAdGroup(env(googleApp(), fetchImpl), gToken, ref, "4242", { name: "Brand keywords", cpcBidMinor: 1500 });
+    expect(made).toEqual({ externalId: "222", name: "Brand keywords" });
+    expect(seen[0]!.headers["login-customer-id"]).toBe("1112223333");
+    const ops = JSON.parse(seen[0]!.body!).operations;
+    expect(ops[0].create).toMatchObject({ status: "PAUSED", type: "SEARCH_STANDARD", cpcBidMicros: "15000000" });
+    expect(ops[0].create.campaign).toBe("customers/5556667777/campaigns/4242");
+  });
+
+  it("validates ad group name and CPC bid before sending", async () => {
+    const invalid = scripted([]);
+    await expect(googleProvider.createAdGroup(env(googleApp(), invalid.fetchImpl), gToken, ref, "4242", { name: "", cpcBidMinor: 1500 })).rejects.toThrow(/name.*required/i);
+    await expect(googleProvider.createAdGroup(env(googleApp(), invalid.fetchImpl), gToken, ref, "4242", { name: "OK", cpcBidMinor: 0 })).rejects.toThrow(/positive integer/);
+    expect(invalid.seen).toHaveLength(0);
+  });
+
+  it("adds keywords to an ad group with match type and negative flag", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*adGroupCriteria:mutate/, { body: { results: [{ resourceName: "customers/5556667777/adGroupCriteria/333-444" }, { resourceName: "customers/5556667777/adGroupCriteria/333-445" }] } }]]);
+    const added = await googleProvider.addKeywords(env(googleApp(), fetchImpl), gToken, ref, "222", {
+      keywords: [
+        { text: "luxury shoes", matchType: "phrase" },
+        { text: "broken shoes", matchType: "broad", negative: true },
+      ],
+    });
+    expect(added).toEqual({ added: 2 });
+    const ops = JSON.parse(seen[0]!.body!).operations;
+    expect(ops[0].create).toMatchObject({ status: "ENABLED", negative: false, keyword: { text: "luxury shoes", matchType: "PHRASE" } });
+    expect(ops[1].create).toMatchObject({ negative: true, keyword: { text: "broken shoes", matchType: "BROAD" } });
+  });
+
+  it("validates keyword list and text length", async () => {
+    const invalid = scripted([]);
+    await expect(googleProvider.addKeywords(env(googleApp(), invalid.fetchImpl), gToken, ref, "222", { keywords: [] })).rejects.toThrow(/at least one/i);
+    await expect(googleProvider.addKeywords(env(googleApp(), invalid.fetchImpl), gToken, ref, "222", { keywords: Array(51).fill({ text: "a", matchType: "exact" }) })).rejects.toThrow(/50 keywords/);
+    await expect(googleProvider.addKeywords(env(googleApp(), invalid.fetchImpl), gToken, ref, "222", { keywords: [{ text: "", matchType: "exact" }] })).rejects.toThrow(/1-80 characters/);
+    await expect(googleProvider.addKeywords(env(googleApp(), invalid.fetchImpl), gToken, ref, "222", { keywords: [{ text: "a".repeat(81), matchType: "exact" }] })).rejects.toThrow(/1-80 characters/);
+    expect(invalid.seen).toHaveLength(0);
+  });
+
+  it("surfaces Google API errors with detail messages", async () => {
+    const error = scripted([[/adGroupCriteria:mutate/, { status: 400, body: { error: { code: 400, message: "outer", status: "INVALID_ARGUMENT", details: [{ errors: [{ message: "Keyword text has invalid characters or symbols." }] }] } } }]]);
+    const result = await googleProvider.addKeywords(env(googleApp(), error.fetchImpl), gToken, ref, "222", { keywords: [{ text: "bad@keyword", matchType: "exact" }] }).catch((e) => e);
+    expect(result).toBeInstanceOf(ProviderError);
+    expect((result as ProviderError).message).toContain("Keyword text has invalid characters");
+  });
+});
+
+describe("Meta: ad groups and keywords unsupported", () => {
+  const token = { accessToken: META_TOKEN };
+  const ref = accountRef;
+
+  it("rejects ad group creation", async () => {
+    await expect(metaProvider.createAdGroup(env(metaApp()), token, ref, "c1", { name: "Test", cpcBidMinor: 1000 })).rejects.toThrow(/Google Ads only/);
+  });
+
+  it("rejects keyword addition", async () => {
+    await expect(metaProvider.addKeywords(env(metaApp()), token, ref, "adg1", { keywords: [{ text: "test", matchType: "exact" }] })).rejects.toThrow(/Google Ads only/);
+  });
+});

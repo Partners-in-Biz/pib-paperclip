@@ -384,4 +384,12 @@ export const metaProvider: AdsProvider = {
     if (!created.id) throw new ProviderError("Meta did not return the new ad's id.");
     return { externalId: created.id, name: request.name };
   },
+
+  async createAdGroup() {
+    throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
+  },
+
+  async addKeywords() {
+    throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
+  },
 };
