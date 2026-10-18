@@ -208,6 +208,12 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema([], { client: clientOrAll, status: str("open (default), or one of needs_changes, in_review, approved, executing, executed, cleared, failed, rejected, cancelled, expired.") }),
   },
   {
+    name: "list-variants",
+    displayName: "List ad variants",
+    description: "Ad variants with winner and fatigue flags. Winner is the lowest-CPA ad in the campaign over the analysis window, among ads meeting minimum impressions and conversions. Fatigue is when CTR drops consistently over consecutive days, the total drop exceeds the threshold, and frequency exceeds the threshold on the last day.",
+    parametersSchema: schema([], { client, accountId: str("Optional: the ad account's id from list-ad-accounts to list variants for one account."), campaignExternalId: str("Optional: the campaign's platform id from list-ad-campaigns to list variants for one campaign.") }),
+  },
+  {
     name: "get-ad-proposal",
     displayName: "Get a proposal",
     description: "One proposal in full: the numbers, cap and pacing, checks, who has signed and who is missing, the Reviewer's notes, the ready-made message for the client, the approvalId (once approved) and the next step.",

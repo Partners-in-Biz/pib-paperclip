@@ -62,6 +62,7 @@ import {
   setScopeRules,
   setSignoffs,
   summaryRecord,
+  variantsRecord,
 } from "./records.js";
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
@@ -205,6 +206,8 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
     }
     case "list-ad-proposals":
       return proposalsRecord(rt, p);
+    case "list-variants":
+      return variantsRecord(rt, p);
     case "get-ad-proposal":
       return proposalDetail(rt, requiredString(p, "proposalId"));
     case "record-ad-review": {
