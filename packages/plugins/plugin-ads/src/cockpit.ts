@@ -31,6 +31,7 @@ import { scopePace } from "./pacing.js";
 import { ADS_ROLE_KEY, PLUGIN_ID, PROPOSAL_KIND_LABELS, SPEND_KINDS, platformLabel } from "./platforms.js";
 import { runtimeFor, type AdsRuntime } from "./runtime.js";
 import { todayIn } from "./dates.js";
+import { routeFromImpact } from "./owner-route.js";
 
 /** Scheduled jobs and their interval in minutes (manifest schedules). */
 export const ADS_JOBS: Array<{ key: string; title: string; everyMinutes: number }> = [
@@ -126,7 +127,26 @@ async function healthChecks(rt: AdsRuntime, agentId: string | null): Promise<Hea
 function proposalWaiting(p: ProposalRow, names: Record<string, string>): WaitingItem {
   const label = scopeLabelOf(p.scope_key, names[p.scope_key]);
   const money = SPEND_KINDS.includes(p.kind) || p.origin.startsWith("budget_");
-  const missing = p.status === "in_review" && p.review_state !== "pending" ? "your yes" : p.status === "in_review" ? "the Reviewer, then your yes" : p.status === "approved" ? "to be run (or marked done)" : "changes by the ads agent";
+  const peetRequired = routeFromImpact(p.impact)?.route === "peet_required";
+  let missing = p.status === "in_review" && p.review_state !== "pending" ? "your yes" : p.status === "in_review" ? "the Reviewer, then your yes" : p.status === "approved" ? "to be run (or marked done)" : "changes by the ads agent";
+
+  if (peetRequired && (p.status === "in_review" || p.status === "approved")) {
+    const lifetimeRands = p.impact && typeof p.impact.lifetimeMinor === "number" ? (p.impact.lifetimeMinor / 100).toFixed(2) : "?";
+    const thresholdRands = p.impact && typeof p.impact.thresholdMinor === "number" ? (p.impact.thresholdMinor / 100).toFixed(2) : "?";
+    const why = `Lifetime budget R${lifetimeRands} exceeds the owner threshold R${thresholdRands}. `;
+    missing = `Peet's yes (above the owner threshold, Elon cannot sign it)`;
+    const whyText = why + (p.cap_state === "exceeds" ? "It also goes over the month's cap. " : "") + "Nothing changes in any ad platform until a person approves.";
+    return {
+      key: `ads-proposal:${p.id}`,
+      title: `${PROPOSAL_KIND_LABELS[p.kind]} for ${label}: ${p.title}`.slice(0, 160),
+      why: whyText,
+      href: PROPOSALS,
+      issueId: p.approval_issue_id,
+      kind: "money",
+      since: p.created_at,
+    };
+  }
+
   return {
     key: `ads-proposal:${p.id}`,
     title: `${PROPOSAL_KIND_LABELS[p.kind]} for ${label}: ${p.title}`.slice(0, 160),
