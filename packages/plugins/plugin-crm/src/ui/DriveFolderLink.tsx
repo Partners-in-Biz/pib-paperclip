@@ -1,7 +1,8 @@
 import type { CSSProperties } from "react";
+import { buildDriveFolderLink, type Folder } from "./drive-folder.js";
 
 export interface DriveFolderLinkProps {
-  folder: { name: string; url: string } | null;
+  folder: Folder | null;
   label?: string;
 }
 
@@ -12,15 +13,8 @@ export interface DriveFolderLinkProps {
  * so the link text contains only the folder name.
  */
 export function DriveFolderLink({ folder, label }: DriveFolderLinkProps) {
-  if (!folder) return null;
-
-  // Validate URL is http(s)
-  try {
-    const url = new URL(folder.url);
-    if (!url.protocol.match(/^https?:/)) return null;
-  } catch {
-    return null;
-  }
+  const linkData = buildDriveFolderLink(folder, label);
+  if (!linkData) return null;
 
   const linkStyle: CSSProperties = {
     minWidth: 0,
@@ -28,13 +22,9 @@ export function DriveFolderLink({ folder, label }: DriveFolderLinkProps) {
     flexWrap: "wrap",
   };
 
-  // When a label is provided, render only the folder name as link text
-  // (the label cell displays "Drive folder" as the field label)
-  const linkText = label ? folder.name : `Drive folder: ${folder.name}`;
-
   return (
-    <a href={folder.url} target="_blank" rel="noopener noreferrer" title={folder.name} style={linkStyle}>
-      {linkText}
+    <a href={linkData.href} target="_blank" rel="noopener noreferrer" title={folder!.name} style={linkStyle}>
+      {linkData.text}
     </a>
   );
 }
