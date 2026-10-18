@@ -243,9 +243,15 @@ interface ParsedOutput {
 // Response cleaning
 // ---------------------------------------------------------------------------
 
+/**
+ * Revert switch for the Hermes `Query:` echo strip. Flip to false and redeploy
+ * to keep a leading query line. Not a runtime config.
+ */
+export const STRIP_HERMES_QUERY_ECHO = true;
+
 /** Strip noise lines from a Hermes response (tool output, system messages, etc.) */
-function cleanResponse(raw: string): string {
-  return raw
+export function cleanResponse(raw: string): string {
+  const cleaned = raw
     .split("\n")
     .filter((line) => {
       const t = line.trim();
@@ -266,6 +272,23 @@ function cleanResponse(raw: string): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  if (!STRIP_HERMES_QUERY_ECHO) return cleaned;
+  const nl = cleaned.indexOf("\n");
+  const first = nl === -1 ? cleaned : cleaned.slice(0, nl);
+  if (!first.trimStart().startsWith("Query:")) return cleaned;
+  return (nl === -1 ? "" : cleaned.slice(nl + 1)).replace(/^\n+/, "").trim();
+}
+
+/** True when the first substantive stdout line is a Hermes `Query:` echo. */
+function stdoutStartsWithQueryEcho(stdout: string): boolean {
+  for (const line of stdout.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) continue;
+    if (t.startsWith("session_id:")) continue;
+    return t.startsWith("Query:");
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -439,10 +462,9 @@ export async function execute(
   }
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
+  // -Q is always used (see file header): quiet mode, response + session_id only.
+  // config.quiet used to gate this and defaulted false, which leaked `Query:`.
+  const args: string[] = ["chat", "-q", prompt, "-Q"];
 
   if (model) {
     args.push("-m", model);
@@ -600,10 +622,15 @@ export async function execute(
     executionResult.costUsd = parsed.costUsd;
   }
 
-  // Summary from agent response
+  // Summary from agent response. An echo-only stdout is not a summary.
   if (parsed.response) {
     executionResult.summary = parsed.response.slice(0, 2000);
   }
+
+  const echoOnly =
+    STRIP_HERMES_QUERY_ECHO &&
+    !parsed.response &&
+    stdoutStartsWithQueryEcho(result.stdout || "");
 
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
@@ -611,6 +638,7 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(echoOnly ? { agentPromptEchoWithheld: true } : {}),
   };
 
   // Store session ID for next run

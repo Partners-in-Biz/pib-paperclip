@@ -10,6 +10,8 @@ import {
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
+  shouldWaiveMissingIssueCommentRetry,
+  AGENT_PROMPT_ECHO_WITHHELD,
 } from "../services/heartbeat-run-summary.js";
 
 describe("selectHeartbeatRunFinalAgentMessage", () => {
@@ -1028,5 +1030,63 @@ describe("mergeHeartbeatRunResultJson", () => {
       summary: "adapter result",
       stdout: "raw stdout",
     });
+  });
+});
+
+describe("agent prompt echo is not a comment and does not re-wake", () => {
+  const echo = "Query: You are the SEO Specialist. Rewrite the hunt page.";
+  const real = "Updated the title tag on the hunt page.";
+
+  it("does not return a legacy summary, result, or message that starts with Query:", () => {
+    for (const key of ["summary", "result", "message"] as const) {
+      expect(resolveHeartbeatRunResponse({ resultJson: { [key]: echo } })).toMatchObject({
+        text: null,
+        decision: {
+          chosenSource: "none",
+          commentAction: "none",
+          reasonCodes: [AGENT_PROMPT_ECHO_WITHHELD],
+        },
+      });
+    }
+    expect(resolveHeartbeatRunResponse({ resultJson: { summary: real } })).toMatchObject({
+      text: real,
+      decision: { chosenSource: "adapter_final_response", commentAction: "create" },
+    });
+  });
+
+  it("does not treat a typed final that starts with Query: as an echo", () => {
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: { summary: echo },
+        finalAgentMessage: {
+          text: echo,
+          sourceEventId: "event-final",
+          channel: "final",
+        },
+      }),
+    ).toMatchObject({
+      text: echo,
+      decision: { chosenSource: "final_agent_message", commentAction: "create" },
+    });
+  });
+
+  it("does not call the missing-comment retry for an echo, and still does for a real silent run", () => {
+    const echoDecision = resolveHeartbeatRunResponse({ resultJson: { summary: echo } }).decision;
+    expect(
+      shouldWaiveMissingIssueCommentRetry(echoDecision, false),
+    ).toBe(true);
+
+    const silent = resolveHeartbeatRunResponse({ resultJson: {} }).decision;
+    expect(silent.reasonCodes).toEqual(["no_user_facing_response"]);
+    expect(shouldWaiveMissingIssueCommentRetry(silent, false)).toBe(false);
+
+    const stripped = resolveHeartbeatRunResponse({
+      resultJson: { result: "", agentPromptEchoWithheld: true },
+    }).decision;
+    expect(stripped.reasonCodes).toEqual([AGENT_PROMPT_ECHO_WITHHELD]);
+    expect(shouldWaiveMissingIssueCommentRetry(stripped, false)).toBe(true);
+
+    const posted = resolveHeartbeatRunResponse({ resultJson: { summary: real } }).decision;
+    expect(shouldWaiveMissingIssueCommentRetry(posted, false)).toBe(false);
   });
 });

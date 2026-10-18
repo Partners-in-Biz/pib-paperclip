@@ -117,6 +117,50 @@ export function summarizeHeartbeatRunResultJson(
 const NARRATION_OPENERS =
   /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
 
+/** Hermes stdout that is the wake prompt, not a status comment. Legacy readers only. */
+export const AGENT_PROMPT_ECHO_WITHHELD = "agent_prompt_echo_withheld";
+
+export function isAgentPromptEchoText(value: string): boolean {
+  return value.trimStart().startsWith("Query:");
+}
+
+function readLegacyAdapterComment(resultJson: Record<string, unknown>): {
+  text: string | null;
+  echoWithheld: boolean;
+} {
+  let echoWithheld = false;
+  for (const key of ["summary", "result", "message"] as const) {
+    const text = readCommentText(resultJson[key]);
+    if (!text) continue;
+    if (isAgentPromptEchoText(text)) {
+      echoWithheld = true;
+      continue;
+    }
+    return { text, echoWithheld };
+  }
+  return { text: null, echoWithheld };
+}
+
+/**
+ * Gate in front of enqueueMissingIssueCommentRetry. Echo-only output must not
+ * re-wake the same issue. A succeeded run that simply forgot to comment still queues.
+ */
+export function shouldWaiveMissingIssueCommentRetry(
+  presentationDecision:
+    | { chosenSource?: string; reasonCodes?: readonly string[] }
+    | null
+    | undefined,
+  hasAcceptedSemantic: boolean,
+): boolean {
+  if (presentationDecision?.chosenSource !== "none") return false;
+  const reasons = presentationDecision.reasonCodes ?? [];
+  return (
+    hasAcceptedSemantic ||
+    reasons.includes("legacy_adapter_summary_ambiguous") ||
+    reasons.includes(AGENT_PROMPT_ECHO_WITHHELD)
+  );
+}
+
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
@@ -446,13 +490,10 @@ export function resolveHeartbeatRunResponse(input: {
       } satisfies ResolvedHeartbeatRunResponse;
     }
 
-    const legacyText =
-      readCommentText(resultJson.summary) ??
-      readCommentText(resultJson.result) ??
-      readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    const legacy = readLegacyAdapterComment(resultJson);
+    if (legacy.text && !NARRATION_OPENERS.test(legacy.text.trimStart())) {
       return {
-        text: legacyText,
+        text: legacy.text,
         decision: decision("adapter_final_response", {
           commentAction: "create",
           reasonCodes: ["legacy_adapter_summary_compatibility"],
@@ -543,18 +584,19 @@ export function resolveHeartbeatRunResponse(input: {
   const upstream = resolveCompletedUpstreamResponse();
   if (upstream) return upstream;
 
-  const legacyText =
-    readCommentText(resultJson.summary) ??
-    readCommentText(resultJson.result) ??
-    readCommentText(resultJson.message);
+  const legacy = readLegacyAdapterComment(resultJson);
+  const echoMarker = resultJson.agentPromptEchoWithheld === true;
 
   return {
     text: null,
     decision: decision("none", {
       commentAction: "none",
-      reasonCodes: legacyText
-        ? ["legacy_adapter_summary_ambiguous"]
-        : ["no_user_facing_response"],
+      reasonCodes:
+        !legacy.text && (legacy.echoWithheld || echoMarker)
+          ? [AGENT_PROMPT_ECHO_WITHHELD]
+          : legacy.text
+            ? ["legacy_adapter_summary_ambiguous"]
+            : ["no_user_facing_response"],
     }),
   };
 }
