@@ -1,12 +1,13 @@
 /** Hourly sweep: auto-pause ACTIVE campaigns at/over lifetime or scope monthly cap using fresh insights. */
-import { listAccounts, listCampaigns, findAlert, listScopes, table, getConnection, updateCampaignStatus, getCampaign } from "./db.js";
+import { listAccounts, listCampaigns, findAlert, listScopes, table, getConnection, updateCampaignStatus } from "./db.js";
 import { monthOf, monthStart, todayIn } from "./dates.js";
-import { errorMessage, scopeLabelOf } from "./domain.js";
+import { errorMessage } from "./domain.js";
 import { raiseSweepAlert } from "./evaluate.js";
 import { tokenFor } from "./connections.js";
 import { providerEnv } from "./runtime.js";
 import type { AdsRuntime } from "./runtime.js";
 import type { AlertCandidate } from "./alerts.js";
+import type { ProviderEnv, TokenBundle, AdsProvider } from "./providers/types.js";
 
 export interface SweepResult {
   accounts: number;
@@ -18,7 +19,12 @@ export interface SweepResult {
   errors: number;
 }
 
-type ProviderContext = { env: any; token: any; provider: ReturnType<AdsRuntime["provider"]>; ref: any };
+interface ProviderContext {
+  env: ProviderEnv;
+  token: TokenBundle;
+  provider: AdsProvider;
+  ref: { externalId: string; currency: string; loginCustomerId?: string | null; conversionActions?: string[] };
+}
 
 async function getProviderContext(rt: AdsRuntime, accountId: string, connectionId: string, platform: string): Promise<ProviderContext | null> {
   const conn = await getConnection(rt.ctx, rt.companyId, connectionId);
@@ -47,7 +53,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
   result.accounts = activeAccounts.length;
   if (activeAccounts.length === 0) return result;
 
-  const insightsByAccount: Record<string, { spend: Map<string, number>; rows: Array<{ day: string; spendMinor: number }>; errors: string[] }> = {};
+  const insightsByAccount: Record<string, { spend: Map<string, number>; lifetimeSpend?: Map<string, number>; rows: Array<{ day: string; spendMinor: number }>; errors: string[]; lifetimeError?: boolean }> = {};
   for (const account of activeAccounts) {
     if (!account.connection_id) continue;
     try {
@@ -61,9 +67,23 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
         const cur = spend.get(row.campaignExternalId) ?? 0;
         spend.set(row.campaignExternalId, cur + row.spendMinor);
       }
-      insightsByAccount[account.id] = { spend, rows: insights.map((r) => ({ day: r.day, spendMinor: r.spendMinor })), errors: [] };
+      // For lifetime budgets, fetch all historical spend from campaign creation date or a fixed early date.
+      let lifetimeSpend = new Map<string, number>();
+      let lifetimeError = false;
+      try {
+        const lifetimeInsights = await ctx.provider.insights(ctx.env, ctx.token, ctx.ref, { since: "2000-01-01", until: today });
+        for (const row of lifetimeInsights) {
+          const cur = lifetimeSpend.get(row.campaignExternalId) ?? 0;
+          lifetimeSpend.set(row.campaignExternalId, cur + row.spendMinor);
+        }
+      } catch {
+        lifetimeSpend = undefined as any;
+        lifetimeError = true;
+      }
+      insightsByAccount[account.id] = { spend, lifetimeSpend: lifetimeSpend || undefined, lifetimeError, rows: insights.map((r) => ({ day: r.day, spendMinor: r.spendMinor })), errors: [] };
     } catch (error) {
-      insightsByAccount[account.id] = { spend: new Map(), rows: [], errors: [errorMessage(error)] };
+      const errorMsg = errorMessage(error);
+      insightsByAccount[account.id] = { spend: new Map(), rows: [], errors: [errorMsg] };
       result.errors++;
     }
   }
@@ -80,13 +100,36 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
     result.campaigns += Array.from(campaignsByAccount.values()).reduce((s, c) => s + c.length, 0);
 
     const paused = new Set<string>();
+    // Build provider contexts once per account for reuse
+    const ctxByAccountId = new Map<string, ProviderContext | null>();
+    const insightFailuresAlerted = new Set<string>();
+    for (const [accountId] of campaignsByAccount) {
+      const account = activeAccounts.find((a) => a.id === accountId)!;
+      if (!account.connection_id) continue;
+      ctxByAccountId.set(accountId, await getProviderContext(rt, account.id, account.connection_id, account.platform));
+    }
+
     for (const [accountId, campaigns] of campaignsByAccount) {
       const account = activeAccounts.find((a) => a.id === accountId)!;
       const insight = insightsByAccount[accountId];
       if (!insight) continue;
       for (const camp of campaigns) {
-        if (!paused.has(camp.id) && camp.lifetime_budget_minor !== null && (insight.spend.get(camp.external_id) ?? 0) >= camp.lifetime_budget_minor) {
-          await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `lifetime budget ${camp.lifetime_budget_minor} minor units`, today);
+        if (!paused.has(camp.id) && camp.lifetime_budget_minor !== null) {
+          // Use lifetimeSpend if available; otherwise fall back to ledger.
+          let lifetimeSpendMinor = insight.lifetimeSpend?.get(camp.external_id);
+          if (lifetimeSpendMinor === undefined) {
+            // Fallback to spend_ledger if insights failed or not available.
+            const ledger = await rt.ctx.db.query<{ total: string }>(`SELECT COALESCE(SUM(delta_minor), 0)::text AS total FROM ${table(rt.ctx, "spend_ledger")} WHERE account_id = $1 AND campaign_external_id = $2`, [accountId, camp.external_id]);
+            lifetimeSpendMinor = Number(ledger[0]?.total ?? 0);
+            // If insights failed, raise a warn alert once per account.
+            if ((insight.errors.length > 0 || insight.lifetimeError) && !insightFailuresAlerted.has(accountId)) {
+              await alertFor(rt, scope, "warn", `sweep-insights-failed:${accountId}`, `${account.name}: spend insights unavailable`, `Account "${account.name}" insights failed; pausing decisions use partial data from the ledger.`, { accountId }, accountId, "");
+              insightFailuresAlerted.add(accountId);
+            }
+          }
+          if (lifetimeSpendMinor >= camp.lifetime_budget_minor) {
+            await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `lifetime budget ${camp.lifetime_budget_minor} minor units`, today, ctxByAccountId.get(accountId)!);
+          }
         }
       }
     }
@@ -105,9 +148,11 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
       if (scopeSpend >= scope.monthly_cap_minor) {
         for (const [accountId, campaigns] of campaignsByAccount) {
           const account = activeAccounts.find((a) => a.id === accountId)!;
+          const ctx = ctxByAccountId.get(accountId);
+          if (!ctx) continue;
           for (const camp of campaigns) {
             if (!paused.has(camp.id)) {
-              await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `scope monthly cap ${scope.monthly_cap_minor} minor units`, today);
+              await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `scope monthly cap ${scope.monthly_cap_minor} minor units`, today, ctx);
             }
           }
         }
@@ -116,17 +161,18 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
 
     for (const [accountId, campaigns] of campaignsByAccount) {
       const account = activeAccounts.find((a) => a.id === accountId)!;
-      if (!account.connection_id) continue;
+      const ctx = ctxByAccountId.get(accountId);
+      if (!ctx) continue;
       try {
-        const ctx = await getProviderContext(rt, account.id, account.connection_id, account.platform);
-        if (!ctx) continue;
         const health = await ctx.provider.campaignHealth(ctx.env, ctx.token, ctx.ref, campaigns.map((c) => c.external_id));
         for (const h of health) {
           if (h.disapprovedAds > 0) {
             const camp = campaigns.find((c) => c.external_id === h.campaignExternalId);
             if (camp) {
               const key = `sweep-disapproved:${accountId}:${h.campaignExternalId}`;
-              if (!(await findAlert(rt.ctx, rt.companyId, key))) {
+              const existing = await findAlert(rt.ctx, rt.companyId, key);
+              // Re-alert if the alert was resolved or does not exist.
+              if (!existing || existing.status === "resolved") {
                 await alertFor(rt, scope, "warn", key, `${camp.name}: ${h.disapprovedAds} disapproved ads`, `Campaign "${camp.name}" on account "${account.name}" has ${h.disapprovedAds} ads disapproved by the platform.`, { accountId, campaignExternalId: h.campaignExternalId, disapprovedAds: h.disapprovedAds }, accountId, h.campaignExternalId);
                 result.disapprovedAlerts++;
               }
@@ -142,17 +188,17 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
   return result;
 }
 
-async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof listAccounts>>[number], campaign: { id: string; external_id: string; name: string }, result: SweepResult, scope: Awaited<ReturnType<typeof listScopes>>[number], accountId: string, paused: Set<string>, reason: string, today: string): Promise<void> {
-  if (!account.connection_id || paused.has(campaign.id)) return;
-  const ctx = await getProviderContext(rt, account.id, account.connection_id, account.platform);
-  if (!ctx) return;
+async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof listAccounts>>[number], campaign: { id: string; external_id: string; name: string }, result: SweepResult, scope: Awaited<ReturnType<typeof listScopes>>[number], accountId: string, paused: Set<string>, reason: string, today: string, ctx: ProviderContext): Promise<void> {
+  if (paused.has(campaign.id)) return;
 
   let succeeded = false;
   for (let i = 1; i <= 2; i++) {
     try {
       await ctx.provider.setCampaignStatus(ctx.env, ctx.token, ctx.ref, campaign.external_id, "paused");
-      const h = (await ctx.provider.campaignHealth(ctx.env, ctx.token, ctx.ref, [campaign.external_id]))[0];
-      if (h?.status !== "active") {
+      const health = await ctx.provider.campaignHealth(ctx.env, ctx.token, ctx.ref, [campaign.external_id]);
+      const h = health[0];
+      // Success only when status is explicitly 'paused'; missing row or other status = retry/fail.
+      if (h && h.status === "paused") {
         succeeded = true;
         if (i === 2) result.retried++;
         break;
@@ -163,7 +209,7 @@ async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof
         result.critical++;
         result.errors++;
         paused.add(campaign.id);
-        await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: pause failed (${reason})`, `Campaign "${campaign.name}" paused failed after ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason }, account.id, campaign.external_id);
+        await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: pause failed (${reason})`, `Campaign "${campaign.name}" pause failed after ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason }, account.id, campaign.external_id);
         return;
       }
     }
