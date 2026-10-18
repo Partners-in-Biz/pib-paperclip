@@ -14,7 +14,7 @@
 import { decimalToMinor } from "../money.js";
 import { AdsError } from "../domain.js";
 import { FORM_HEADERS, ProviderError, expiresAtFrom, formBody, int, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_META_VERSION = "v25.0";
 const DAY_MS = 86_400_000;
@@ -309,6 +309,49 @@ export const metaProvider: AdsProvider = {
       "Meta create ad set",
     );
     if (!created.id) throw new ProviderError("Meta did not return the new ad set's id.");
+    return { externalId: created.id, name: request.name };
+  },
+
+  async createAdCreative(env, token, account, request) {
+    const adCreative = {
+      name: request.name,
+      object_story_spec: {
+        page_id: request.pageId,
+        link_data: {
+          message: request.headline,
+          link: request.link,
+          caption: request.body,
+          call_to_action: { type: request.cta },
+          ...(request.imageHash ? { image_hash: request.imageHash } : {}),
+          ...(request.videoId ? { video_id: request.videoId } : {}),
+        },
+      },
+    };
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adcreatives`,
+      { creative: JSON.stringify(adCreative) },
+      "Meta create ad creative",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new creative's id.");
+    return { externalId: created.id, name: request.name };
+  },
+
+  async createAd(env, token, account, request) {
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      {
+        name: request.name,
+        adset_id: request.adSetExternalId,
+        creative: JSON.stringify({ creative_id: request.creativeExternalId }),
+        status: request.status === "ACTIVE" ? "ACTIVE" : "PAUSED",
+      },
+      "Meta create ad",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new ad's id.");
     return { externalId: created.id, name: request.name };
   },
 };

@@ -27,6 +27,10 @@ export const CREATE = (accountId: string, extra: Record<string, unknown> = {}) =
 
 export const CREATE_AD_SET = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad_set", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Q4 audiences", lifetimeBudgetMinor: 10_000, startDate: "2026-10-18", endDate: "2026-10-31", optimizationGoal: "REACH", billingEvent: "IMPRESSIONS", targeting: { countries: ["ZA"], ageMin: 18, ageMax: 65, interests: [{ id: "coffee-int", name: "Coffee" }] }, reason: "New targeting experiment.", ...extra });
 
+export const CREATE_AD_CREATIVE = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad_creative", scopeKey: "own", accountId, name: "Q4 creative", pageId: "1234567890", imageHash: "abc123hash", link: "https://example.com/offer", headline: "Q4 Sale", body: "Get 30% off this October.", cta: "LEARN_MORE", reason: "New creative for Q4.", ...extra });
+
+export const CREATE_AD = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad", scopeKey: "own", accountId, name: "Q4 ad", adSetExternalId: "as1", creativeExternalId: "cr1", reason: "Create ad from approved set and creative.", ...extra });
+
 export async function propose(w: World, input: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null } = { agentId: ADS_AGENT }): Promise<ProposalRow> {
   const result = await createProposal(w.rt(), actor, input);
   return (await getProposal(w.ctx, COMPANY, result.proposalId))!;

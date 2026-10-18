@@ -447,6 +447,8 @@ export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
   }
   if (p.kind === "change_budget") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, newDailyBudgetMinor: x.newDailyBudgetMinor, reason: x.reason };
   if (p.kind === "creative_check") return { kind: p.kind, platform: x.platform, name: x.name, creative: x.creative, specialAdCategories: x.specialAdCategories, notes: x.notes, reason: x.reason };
+  if (p.kind === "create_ad_creative") return { kind: p.kind, accountId: x.accountId, name: x.name, pageId: x.pageId, imageHash: x.imageHash, videoId: x.videoId, link: x.link, headline: x.headline, body: x.body, cta: x.cta, notes: x.notes, reason: x.reason };
+  if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, notes: x.notes, reason: x.reason };
   return { kind: p.kind, targets: ((x.targets as Array<{ accountId: string; campaignExternalId: string }>) ?? []).map((t) => ({ accountId: t.accountId, campaignExternalId: t.campaignExternalId })), reason: x.reason, trigger: x.trigger };
 }
 

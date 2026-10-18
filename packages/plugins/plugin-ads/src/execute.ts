@@ -168,6 +168,27 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           publisherPlatforms: (payload.publisherPlatforms as string[] | null) ?? undefined,
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
+      } else if (p.kind === "create_ad_creative") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAdCreative(t.env, t.token, t.ref, {
+          name: String(payload.name),
+          pageId: String(payload.pageId),
+          imageHash: (payload.imageHash as string | null) ?? undefined,
+          videoId: (payload.videoId as string | null) ?? undefined,
+          link: String(payload.link),
+          headline: String(payload.headline),
+          body: String(payload.body),
+          cta: String(payload.cta),
+        });
+        results.push({ what: `Created creative "${created.name}"`, ok: true, externalId: created.externalId });
+      } else if (p.kind === "create_ad") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAd(t.env, t.token, t.ref, {
+          name: String(payload.name),
+          adSetExternalId: String(payload.adSetExternalId),
+          creativeExternalId: String(payload.creativeExternalId),
+        });
+        results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else {
         const status = p.kind === "pause_campaign" ? "paused" : "active";
         await t.provider.setCampaignStatus(t.env, t.token, t.ref, t.target!.campaignExternalId, status);

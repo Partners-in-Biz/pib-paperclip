@@ -34,7 +34,7 @@ export function platformLabel(platform: StoredPlatform): string {
 }
 
 /** What a person can ask to change. `creative_check` changes nothing: it only clears ad copy. */
-export const PROPOSAL_KINDS = ["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "creative_check"] as const;
+export const PROPOSAL_KINDS = ["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "creative_check"] as const;
 export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
 
 export const PROPOSAL_KIND_LABELS: Record<ProposalKind, string> = {
@@ -43,6 +43,8 @@ export const PROPOSAL_KIND_LABELS: Record<ProposalKind, string> = {
   pause_campaign: "Pause",
   resume_campaign: "Resume",
   create_ad_set: "New ad set",
+  create_ad_creative: "New ad creative",
+  create_ad: "New ad",
   creative_check: "Ad copy check",
 };
 

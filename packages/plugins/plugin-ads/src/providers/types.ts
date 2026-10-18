@@ -112,6 +112,24 @@ export interface CreateAdSetRequest {
   publisherPlatforms?: string[];
 }
 
+export interface CreateAdCreativeRequest {
+  name: string;
+  pageId: string;
+  imageHash?: string;
+  videoId?: string;
+  link: string;
+  headline: string;
+  body: string;
+  cta: string;
+}
+
+export interface CreateAdRequest {
+  name: string;
+  adSetExternalId: string;
+  creativeExternalId: string;
+  status?: "PAUSED" | "ACTIVE";
+}
+
 export interface ExchangeResult {
   token: TokenBundle;
   /** Who signed in, for the connection's label (never a secret). */
@@ -145,4 +163,8 @@ export interface AdsProvider {
   uploadAdVideo(env: ProviderEnv, token: TokenBundle, account: AccountRef, params: { videoUrl: string; title?: string }): Promise<{ videoId: string }>;
   /** Write: creates an ad set PAUSED. */
   createAdSet(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdSetRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates an ad creative. */
+  createAdCreative(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdCreativeRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates an ad PAUSED. */
+  createAd(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdRequest): Promise<{ externalId: string; name: string }>;
 }

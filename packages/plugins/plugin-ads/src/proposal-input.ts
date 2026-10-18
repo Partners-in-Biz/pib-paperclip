@@ -14,6 +14,7 @@ export const GOOGLE_CHANNELS = ["SEARCH"] as const;
 export const META_SPECIAL_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING", "FINANCIAL_PRODUCTS_SERVICES"] as const;
 export const OPTIMIZATION_GOALS = ["LINK_CLICKS", "LANDING_PAGE_VIEWS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS", "APP_INSTALLS"] as const;
 export const BILLING_EVENTS = ["IMPRESSIONS", "LINK_CLICKS"] as const;
+export const CREATIVE_CTAS = ["LEARN_MORE", "SHOP_NOW", "SIGN_UP", "DOWNLOAD", "BOOK_TRAVEL", "CONTACT_US", "GET_OFFER", "SUBSCRIBE", "APPLY_NOW", "ORDER_NOW", "GET_QUOTE", "WATCH_MORE"] as const;
 
 export interface CampaignTarget {
   accountId: string;
@@ -256,6 +257,89 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
       title: `New ad set "${name}"`,
       summary: `Create "${name}" on "${campaign.name}" with a lifetime budget of ${lifetimeBudgetMinor} minor units from ${startDate} to ${endDate}. It is created paused; switching it on is a separate approved change.`,
       addition: { dailyMinor: Math.ceil(lifetimeBudgetMinor / days), fromDay: startDate > addDays(today, 1) ? startDate : null, toDay: endDate },
+      creative: null,
+      specialAdCategories: [],
+    };
+  }
+
+  if (kind === "create_ad_creative") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "meta") throw new AdsError("Ad creatives are only supported on Meta (Facebook and Instagram).");
+    const name = requiredString(input, "name", 120);
+    if (name.length < 3) throw new AdsError("name is too short");
+    const pageId = requiredString(input, "pageId", 40);
+    if (!/^\d+$/.test(pageId)) throw new AdsError("pageId must be digits only");
+    const imageHash = optionalString(input, "imageHash", 100);
+    const videoId = optionalString(input, "videoId", 100);
+    if ((imageHash && videoId) || (!imageHash && !videoId)) throw new AdsError("Supply exactly one of imageHash or videoId, not both or neither.");
+    const link = requiredString(input, "link", 2000);
+    if (!link.startsWith("https://")) throw new AdsError("link must start with https://");
+    const headline = requiredString(input, "headline", 40);
+    if (headline.length < 1) throw new AdsError("headline is required (1-40 characters)");
+    const body = requiredString(input, "body", 2000);
+    if (body.length < 1) throw new AdsError("body is required (1-2000 characters)");
+    const cta = requiredString(input, "cta", 20);
+    if (!(CREATIVE_CTAS as readonly string[]).includes(cta)) throw new AdsError(`cta must be one of ${CREATIVE_CTAS.join(", ")}`);
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        name,
+        pageId,
+        imageHash: imageHash ?? null,
+        videoId: videoId ?? null,
+        link,
+        headline,
+        body,
+        cta,
+        notes: optionalString(input, "notes", 2000) ?? null,
+        reason,
+        creates: "ad creative (serves nothing until an ad uses it)",
+      },
+      title: `New ad creative "${name}"`,
+      summary: `Create ad creative "${name}" on ${account.name} with headline "${headline}" and CTA "${cta}". It serves nothing until an ad is created to use it.`,
+      addition: null,
+      creative: { headline, primaryText: body, description: null, callToAction: cta, landingUrl: link },
+      specialAdCategories: [],
+    };
+  }
+
+  if (kind === "create_ad") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "meta") throw new AdsError("Ads are only supported on Meta (Facebook and Instagram).");
+    const name = requiredString(input, "name", 120);
+    if (name.length < 3) throw new AdsError("name is too short");
+    const adSetExternalId = requiredString(input, "adSetExternalId", 100);
+    if (adSetExternalId.length === 0) throw new AdsError("adSetExternalId must be a non-empty string");
+    const creativeExternalId = requiredString(input, "creativeExternalId", 100);
+    if (creativeExternalId.length === 0) throw new AdsError("creativeExternalId must be a non-empty string");
+    if (input.status !== undefined && input.status !== "PAUSED") throw new AdsError("Ads must be created PAUSED; once created, you can change the status in a separate proposal.");
+    if (input.dailyBudgetMinor !== undefined) throw new AdsError("Budget is set on the ad set, not on individual ads.");
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        name,
+        adSetExternalId,
+        creativeExternalId,
+        status: "PAUSED",
+        creates: "ad, paused (Meta reviews it before it can deliver)",
+        notes: optionalString(input, "notes", 2000) ?? null,
+        reason,
+      },
+      title: `New ad "${name}"`,
+      summary: `Create ad "${name}" on ${account.name} with the specified ad set and creative. It is created paused; Meta reviews it before it can deliver.`,
+      addition: null,
       creative: null,
       specialAdCategories: [],
     };
