@@ -59,6 +59,11 @@ export function isoWeek(day: string): string {
   return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+/** Earliest date for insights API calls (36 months back from today UTC), to avoid Meta's 37-month limit. */
+export function lifetimeWindowStart(today: string): string {
+  return addDays(today, -1095);
+}
+
 /** ISO text from a driver value (a Date, or Postgres text); null when unreadable. */
 export function isoTime(value: unknown): string | null {
   if (value == null) return null;

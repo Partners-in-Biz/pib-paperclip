@@ -1,4 +1,5 @@
 /** Hourly sweeper: pauses campaigns at lifetime/scope monthly caps, retries, raises alerts. */
+import { randomUUID } from "crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getCampaign, listAlerts, table, findAlert, setAlertState } from "../src/db.js";
 import { sweepCaps } from "../src/sweeper.js";
@@ -147,4 +148,34 @@ describe.skipIf(!available)("sweepCaps", () => {
     await setAlertState(w.ctx, COMPANY, alert!.id, "resolved", null);
     expect((await sweepCaps(w.rt())).disapprovedAlerts).toBe(1);
   });
+
+  it("(m) lifetime spend is the larger of the 36-month fresh window and the full ledger, within the platform window limit", async () => {
+    const { accountId } = await seedCampaigns([{ id: "c1", status: "active", spend: 10_000, lifetime: 35_000 }], [{ id: "c1", spend: 30_000, day: "2026-10-15" }]);
+    w.mock.maxInsightsWindowDays = 1100; // Meta refuses a start date more than ~37 months back
+    await w.ctx.db.execute(`DELETE FROM ${w.ctx.db.namespace}.spend_ledger WHERE account_id = $1`, [accountId]);
+    const acct = (await w.ctx.db.query(`SELECT scope_key, currency FROM ${w.ctx.db.namespace}.ad_accounts WHERE id = $1`, [accountId]))[0] as any;
+    // Old spend only the ledger knows about (40k): alone it breaches the 35k cap, the fresh window (30k) does not.
+    await w.ctx.db.execute(`INSERT INTO ${w.ctx.db.namespace}.spend_ledger (id, company_id, account_id, scope_key, campaign_external_id, day, seq, delta_minor, total_minor, currency, kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, [randomUUID(), COMPANY, accountId, acct.scope_key, "c1", "2020-01-15", 1, 40_000, 40_000, acct.currency, "first"]);
+    const result = await sweepCaps(w.rt());
+    expect(result.paused).toBe(1);
+    expect((await getCampaign(w.ctx, COMPANY, accountId, "c1"))?.status).toBe("paused");
+    // The lifetime call stayed inside the window limit: no insights-failed warning.
+    expect((await listAlerts(w.ctx, COMPANY, { scopeKey: "own" })).filter((a) => a.dedupe_key.includes("sweep-insights-failed"))).toHaveLength(0);
+  });
+
+  it("(n) insights failure with no lifetime budgets: warn alert raised", async () => {
+    const { accountId } = await seedCampaigns([{ id: "c1", status: "active", spend: 10_000, scope: true }], [{ id: "c1", spend: 10_000, day: "2026-10-15" }]);
+    w.mock.failNext.insights = new AdsError("net");
+    const result = await sweepCaps(w.rt());
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    const alerts = await listAlerts(w.ctx, COMPANY, { scopeKey: "own" });
+    const failedAlerts = alerts.filter((a) => a.dedupe_key.includes("sweep-insights-failed"));
+    expect(failedAlerts.length).toBe(1);
+    expect(failedAlerts[0]?.severity).toBe("warn");
+  });
+
+  // (o) Skipped: unreachable account is impractical to test. Both the insights fetch and context building call getProviderContext,
+  // so they either both succeed or both fail. If the connection becomes unreachable after insights are fetched, the code would need
+  // to be structured differently (e.g., cache insights and defer context checks). The null guard is present in the code (line 138-142
+  // in sweeper.ts), so manual code review confirms the protection.
 });

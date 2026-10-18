@@ -1,6 +1,6 @@
 /** Hourly sweep: auto-pause ACTIVE campaigns at/over lifetime or scope monthly cap using fresh insights. */
 import { listAccounts, listCampaigns, findAlert, listScopes, table, getConnection, updateCampaignStatus } from "./db.js";
-import { monthOf, monthStart, todayIn } from "./dates.js";
+import { monthOf, monthStart, todayIn, lifetimeWindowStart } from "./dates.js";
 import { errorMessage } from "./domain.js";
 import { raiseSweepAlert } from "./evaluate.js";
 import { tokenFor } from "./connections.js";
@@ -53,7 +53,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
   result.accounts = activeAccounts.length;
   if (activeAccounts.length === 0) return result;
 
-  const insightsByAccount: Record<string, { spend: Map<string, number>; lifetimeSpend?: Map<string, number>; rows: Array<{ day: string; spendMinor: number }>; errors: string[]; lifetimeError?: boolean }> = {};
+  const insightsByAccount: Record<string, { spend: Map<string, number>; lifetimeSpend: Map<string, number> | undefined; rows: Array<{ day: string; spendMinor: number }>; errors: string[]; lifetimeError: boolean }> = {};
   for (const account of activeAccounts) {
     if (!account.connection_id) continue;
     try {
@@ -67,23 +67,24 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
         const cur = spend.get(row.campaignExternalId) ?? 0;
         spend.set(row.campaignExternalId, cur + row.spendMinor);
       }
-      // For lifetime budgets, fetch all historical spend from campaign creation date or a fixed early date.
-      let lifetimeSpend = new Map<string, number>();
+      // For lifetime budgets, fetch all historical spend within the 36-month window.
+      let lifetimeSpend: Map<string, number> | undefined;
       let lifetimeError = false;
       try {
-        const lifetimeInsights = await ctx.provider.insights(ctx.env, ctx.token, ctx.ref, { since: "2000-01-01", until: today });
+        const windowStart = lifetimeWindowStart(today);
+        const lifetimeInsights = await ctx.provider.insights(ctx.env, ctx.token, ctx.ref, { since: windowStart, until: today });
+        lifetimeSpend = new Map<string, number>();
         for (const row of lifetimeInsights) {
           const cur = lifetimeSpend.get(row.campaignExternalId) ?? 0;
           lifetimeSpend.set(row.campaignExternalId, cur + row.spendMinor);
         }
       } catch {
-        lifetimeSpend = undefined as any;
         lifetimeError = true;
       }
-      insightsByAccount[account.id] = { spend, lifetimeSpend: lifetimeSpend || undefined, lifetimeError, rows: insights.map((r) => ({ day: r.day, spendMinor: r.spendMinor })), errors: [] };
+      insightsByAccount[account.id] = { spend, lifetimeSpend, lifetimeError, rows: insights.map((r) => ({ day: r.day, spendMinor: r.spendMinor })), errors: [] };
     } catch (error) {
       const errorMsg = errorMessage(error);
-      insightsByAccount[account.id] = { spend: new Map(), rows: [], errors: [errorMsg] };
+      insightsByAccount[account.id] = { spend: new Map(), lifetimeSpend: undefined, lifetimeError: true, rows: [], errors: [errorMsg] };
       result.errors++;
     }
   }
@@ -109,26 +110,37 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
       ctxByAccountId.set(accountId, await getProviderContext(rt, account.id, account.connection_id, account.platform));
     }
 
+    // Raise sweep-insights-failed alerts once per account at the top level
+    for (const [accountId] of campaignsByAccount) {
+      const account = activeAccounts.find((a) => a.id === accountId)!;
+      const insight = insightsByAccount[accountId];
+      if ((insight?.errors.length ?? 0) > 0 || insight?.lifetimeError) {
+        if (!insightFailuresAlerted.has(accountId)) {
+          await alertFor(rt, scope, "warn", `sweep-insights-failed:${accountId}`, `${account.name}: spend insights unavailable`, `Account "${account.name}" insights failed; pausing decisions use partial data from the ledger.`, { accountId }, accountId, "");
+          insightFailuresAlerted.add(accountId);
+        }
+      }
+    }
+
     for (const [accountId, campaigns] of campaignsByAccount) {
       const account = activeAccounts.find((a) => a.id === accountId)!;
       const insight = insightsByAccount[accountId];
       if (!insight) continue;
       for (const camp of campaigns) {
         if (!paused.has(camp.id) && camp.lifetime_budget_minor !== null) {
-          // Use lifetimeSpend if available; otherwise fall back to ledger.
-          let lifetimeSpendMinor = insight.lifetimeSpend?.get(camp.external_id);
-          if (lifetimeSpendMinor === undefined) {
-            // Fallback to spend_ledger if insights failed or not available.
-            const ledger = await rt.ctx.db.query<{ total: string }>(`SELECT COALESCE(SUM(delta_minor), 0)::text AS total FROM ${table(rt.ctx, "spend_ledger")} WHERE account_id = $1 AND campaign_external_id = $2`, [accountId, camp.external_id]);
-            lifetimeSpendMinor = Number(ledger[0]?.total ?? 0);
-            // If insights failed, raise a warn alert once per account.
-            if ((insight.errors.length > 0 || insight.lifetimeError) && !insightFailuresAlerted.has(accountId)) {
-              await alertFor(rt, scope, "warn", `sweep-insights-failed:${accountId}`, `${account.name}: spend insights unavailable`, `Account "${account.name}" insights failed; pausing decisions use partial data from the ledger.`, { accountId }, accountId, "");
-              insightFailuresAlerted.add(accountId);
-            }
-          }
+          // Lifetime spend is the max of fresh window and full ledger (both are lower bounds, so the larger is safe).
+          let lifetimeSpendMinor = insight.lifetimeSpend?.get(camp.external_id) ?? 0;
+          // Always check ledger for earlier spend.
+          const ledger = await rt.ctx.db.query<{ total: string }>(`SELECT COALESCE(SUM(delta_minor), 0)::text AS total FROM ${table(rt.ctx, "spend_ledger")} WHERE account_id = $1 AND campaign_external_id = $2`, [accountId, camp.external_id]);
+          const ledgerTotal = Number(ledger[0]?.total ?? 0);
+          lifetimeSpendMinor = Math.max(lifetimeSpendMinor, ledgerTotal);
           if (lifetimeSpendMinor >= camp.lifetime_budget_minor) {
-            await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `lifetime budget ${camp.lifetime_budget_minor} minor units`, today, ctxByAccountId.get(accountId)!);
+            const ctx = ctxByAccountId.get(accountId);
+            if (!ctx) {
+              await alertFor(rt, scope, "warn", `cannot-reach-account:${accountId}`, `${account.name}: account unreachable`, `Cannot establish connection to account "${account.name}"; skipping pausing.`, { accountId }, accountId, "");
+              continue;
+            }
+            await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `lifetime budget ${camp.lifetime_budget_minor} minor units`, today, ctx);
           }
         }
       }
