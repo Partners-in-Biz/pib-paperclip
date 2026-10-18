@@ -24,6 +24,7 @@ import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
 import { syncAccount } from "./sync.js";
+import { isOwnerDelegateApproval, ownerRouteOf } from "./owner-route.js";
 
 export interface ExecuteActor {
   userId?: string | null;
@@ -61,10 +62,24 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   // 2. the approval, the other sign-offs, the review
   const approval = await getApproval(rt.ctx, rt.companyId, input.approvalId);
   if (!approval || approval.proposal_id !== p.id) return refuse(rt, actor, p, "bad_approval", "That approval id is not an approval of this proposal.");
-  if (approval.role !== "owner" || approval.decision !== "approved" || !approval.decided_by.startsWith("user:")) return refuse(rt, actor, p, "bad_approval", "That approval is not a person's yes (the owner's approval id is needed).");
+  if (approval.role !== "owner" || approval.decision !== "approved" || !(approval.decided_by.startsWith("user:") || isOwnerDelegateApproval(approval))) {
+    return refuse(rt, actor, p, "bad_approval", "That approval is not the owner's yes (a person, or the owner's delegate within the threshold).");
+  }
   if (approval.consumed_at) return refuse(rt, actor, p, "approval_used", "That approval was already used. An approval runs one change, once; ask for a new one.");
   if (!approval.expires_at || Date.parse(approval.expires_at) <= rt.now().getTime()) return refuse(rt, actor, p, "approval_expired", "That approval is older than 72 hours. Ask the owner to approve again.");
   if (approval.content_hash !== p.content_hash) return refuse(rt, actor, p, "approval_stale", "The proposal changed after it was approved. The approval no longer covers these numbers.");
+
+  // Check if Elon's approval is still valid (threshold may have been lowered)
+  if (isOwnerDelegateApproval(approval)) {
+    const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
+    if (!scope) return refuse(rt, actor, p, "no_scope", "That scope is gone.");
+    const route = ownerRouteOf(scope, p);
+    if (route.route === "peet_required") {
+      await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
+      return refuse(rt, actor, p, "peet_required", "This proposal is above the owner threshold, so Elon's approval no longer covers it. Peet needs to approve it on the Ads page.");
+    }
+  }
+
   const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now());
   if (!state.complete) return refuse(rt, actor, p, "signoff_missing", `Still needed before this can run: ${state.missing.join(", ")} sign-off.`);
   if (!reviewStands(p)) return refuse(rt, actor, p, "review_missing", "The Reviewer's check does not stand for these numbers.");

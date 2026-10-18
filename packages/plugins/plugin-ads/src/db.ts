@@ -26,6 +26,7 @@ export interface ScopeRow {
   monthly_cap_minor: number | null;
   alert_pct: number;
   target_cpa_minor: number | null;
+  owner_threshold_minor: number | null;
   allow_writes: boolean;
   allow_writes_by: string | null;
   allow_writes_at: string | null;
@@ -46,6 +47,7 @@ function scopeRow(r: Record<string, unknown>): ScopeRow {
     monthly_cap_minor: r.monthly_cap_minor === null || r.monthly_cap_minor === undefined ? null : toInt(r.monthly_cap_minor),
     alert_pct: toInt(r.alert_pct) || 90,
     target_cpa_minor: r.target_cpa_minor === null || r.target_cpa_minor === undefined ? null : toInt(r.target_cpa_minor),
+    owner_threshold_minor: r.owner_threshold_minor === null || r.owner_threshold_minor === undefined ? null : toInt(r.owner_threshold_minor),
     allow_writes: r.allow_writes === true,
     allow_writes_by: (r.allow_writes_by as string | null) ?? null,
     allow_writes_at: isoTime(r.allow_writes_at),
@@ -86,6 +88,7 @@ export interface ScopePatch {
   monthlyCapMinor?: number | null;
   alertPct?: number;
   targetCpaMinor?: number | null;
+  ownerThresholdMinor?: number | null;
   allowWrites?: boolean;
   allowWritesBy?: string | null;
   signoffs?: "owner" | "owner_client";
@@ -104,6 +107,7 @@ export async function updateScope(ctx: PluginContext, companyId: string, scopeKe
   if (patch.monthlyCapMinor !== undefined) add("monthly_cap_minor", patch.monthlyCapMinor, "::bigint");
   if (patch.alertPct !== undefined) add("alert_pct", patch.alertPct, "::integer");
   if (patch.targetCpaMinor !== undefined) add("target_cpa_minor", patch.targetCpaMinor, "::bigint");
+  if (patch.ownerThresholdMinor !== undefined) add("owner_threshold_minor", patch.ownerThresholdMinor, "::bigint");
   if (patch.signoffs !== undefined) add("signoffs", patch.signoffs);
   if (patch.bannedWords !== undefined) {
     add("banned_words", json(patch.bannedWords), "::jsonb");

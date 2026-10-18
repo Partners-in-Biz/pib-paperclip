@@ -1,8 +1,9 @@
 /**
- * Who has said yes to exactly these numbers (pure). An approval counts only when a person gave it, it is for the proposal's current
- * content hash, it has not expired and it has not been used. Changing a proposal changes its hash, so every earlier yes stops counting.
+ * Who has said yes to exactly these numbers (pure). An approval counts when a person gave it or when Elon (owner delegate) approves within threshold,
+ * it is for the proposal's current content hash, it has not expired and it has not been used. Changing a proposal changes its hash, so every earlier yes stops counting.
  */
 import type { ApprovalRow, ProposalRow } from "./db.js";
+import { isOwnerDelegateApproval } from "./owner-route.js";
 
 export const APPROVAL_TTL_MS = 72 * 3_600_000;
 export const PROPOSAL_TTL_MS = 7 * 86_400_000;
@@ -21,7 +22,7 @@ export interface SignoffState {
 
 export function signoffState(proposal: Pick<ProposalRow, "content_hash" | "requires_signoffs">, approvals: ApprovalRow[], now: Date): SignoffState {
   const required = proposal.requires_signoffs.length ? proposal.requires_signoffs : (["owner"] as Role[]);
-  const forThis = approvals.filter((a) => a.content_hash === proposal.content_hash && a.decided_by.startsWith("user:"));
+  const forThis = approvals.filter((a) => a.content_hash === proposal.content_hash && (a.decided_by.startsWith("user:") || isOwnerDelegateApproval(a)));
   const rejected = forThis.find((a) => a.decision === "rejected") ?? null;
   const valid: Partial<Record<Role, ApprovalRow>> = {};
   for (const a of forThis) {

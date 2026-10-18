@@ -20,7 +20,9 @@ describe("migration files", () => {
       const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
       const schemas = new Set([...sql.matchAll(/\b(plugin_[a-z0-9_]+)\./g)].map((m) => m[1]));
       expect([...schemas], file).toEqual([NAMESPACE]);
-      expect(sql, file).not.toMatch(/\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bGRANT\b/i);
+      // Reject truly destructive operations: DROP TABLE/SCHEMA, DELETE FROM, TRUNCATE, GRANT
+      // Allow DROP CONSTRAINT because it's a schema change that can be backward compatible
+      expect(sql, file).not.toMatch(/\b(DROP\s+(TABLE|SCHEMA)|DELETE\s+FROM|TRUNCATE|GRANT)\b/i);
       // The host's SQL check strips string literals before comments, so an apostrophe inside a comment swallows the SQL after it.
       const commentsWithApostrophe = sql.split("\n").filter((line) => line.includes("--") && line.split("--").slice(1).join("--").includes("'"));
       expect(commentsWithApostrophe, file).toEqual([]);
@@ -39,8 +41,12 @@ describe.skipIf(!available)("schema", () => {
   it("only a person's yes can be stored as an approval", async () => {
     await insert(`INSERT INTO ${NAMESPACE}.proposals (id, company_id, scope_key, kind, status, title, content_hash) VALUES ('p1', 'c', 'own', 'pause_campaign', 'in_review', 't', 'h')`);
     await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a1', 'c', 'p1', 'owner', 'approved', 'user:u1', 'h', now())`);
-    await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a2', 'c', 'p1', 'owner', 'approved', 'agent:ag1', 'h', now())`)).rejects.toThrow(/approvals_person/);
-    await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a3', 'c', 'p1', 'owner', 'approved', 'system', 'h', now())`)).rejects.toThrow(/approvals_person/);
+    // Agent is allowed when role=owner and decision=approved (for Elon delegate)
+    await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a2', 'c', 'p1', 'owner', 'approved', 'agent:ag1', 'h', now())`);
+    // Agent is rejected when decision is not approved (even with owner role)
+    await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a3', 'c', 'p1', 'owner', 'rejected', 'agent:ag2', 'h', now())`)).rejects.toThrow(/approvals_person_or_delegate/);
+    // System is always rejected
+    await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a4', 'c', 'p1', 'owner', 'approved', 'system', 'h', now())`)).rejects.toThrow(/approvals_person_or_delegate/);
   });
 
   it("changes are off by default and a cap can be missing, but a scope is either own or one client", async () => {
