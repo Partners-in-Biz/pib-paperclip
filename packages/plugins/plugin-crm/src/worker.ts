@@ -199,6 +199,7 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
+import { driveFolderResolve, driveFolderEnsure } from "./drive/tools.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -755,6 +756,10 @@ async function dispatch(
       return ensureCanaryClient(ctx, viewer, body);
     case "cleanup-canary":
       return cleanupCanary(ctx, viewer, body);
+    case "drive_folder_resolve":
+      return driveFolderResolve(ctx, viewer, body);
+    case "drive_folder_ensure":
+      return driveFolderEnsure(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);

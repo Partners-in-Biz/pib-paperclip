@@ -65,6 +65,13 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     } as unknown as JsonSchema,
+    driveBrokerUrl: {
+      type: "string",
+      title: "Drive broker URL",
+      description: "The address of the partnersinbiz-web Drive broker API (default: https://partnersinbiz.online).",
+      default: "https://partnersinbiz.online",
+    },
+    driveBrokerToken: secretField("Drive broker token", "Bearer token for the partnersinbiz-web Drive broker (admin role).") as unknown as JsonSchema,
   },
 };
 
