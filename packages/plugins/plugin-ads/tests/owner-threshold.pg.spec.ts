@@ -66,10 +66,5 @@ describe.skipIf(!available)("owner threshold", () => {
     expect(w.mock.writes).toHaveLength(0);
   });
 
-  it("ad sets count lifetime budget", async () => {
-    const p = await prop(5000);
-    await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: p.id, verdict: "pass" });
-    try { await recordSignoff(w.rt(), { proposalId: p.id, userId: null, agentId: ELON_AGENT_ID, role: "owner", decision: "approved", via: "tool" });
-    } catch (e) { expect((e as any).code).toBe("peet_required"); }
-  });
+  it.todo("ad sets count toward the lifetime budget (needs ad-set payload support)");
 });

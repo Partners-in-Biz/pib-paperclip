@@ -330,13 +330,11 @@ export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promis
   }
 
   // Check Elon's authority (owner route)
-  let peetRequired = false;
-  if (byAgent && input.agentId === ELON_AGENT_ID && input.role === "owner" && input.decision === "approved") {
+  if (byAgent) {
     const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
     if (!scope) throw new AdsError("That scope is gone.");
     const route = ownerRouteOf(scope, p);
     if (route.route === "peet_required") {
-      peetRequired = true;
       await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
       await audit(rt.ctx, rt.companyId, {
         actor: `agent:${input.agentId}`,
@@ -474,13 +472,12 @@ export async function reviseProposal(rt: AdsRuntime, actor: ProposalActor, propo
   // The Reviewer's "changes" is about these numbers. Only different numbers (a new look by the Reviewer) or the Reviewer's own pass clears it: a
   // revision that changes nothing leaves the proposal where the Reviewer put it.
   const reviewerHolds = unchanged && p.review_state === "changes";
-  const ownerRoute = ownerRouteOf(scope, { kind: n.kind, payload: n.payload, impact: impact.snapshot });
   await updateProposal(rt.ctx, rt.companyId, p.id, {
     status: blockers > 0 || reviewerHolds ? "needs_changes" : "in_review",
     title: clip(n.title, 200),
     summary: n.summary,
     payload: n.payload,
-    impact: { ...impact.snapshot, ownerRoute },
+    impact: impact.snapshot,
     contentHash,
     precheck,
     capState: impact.capState,
