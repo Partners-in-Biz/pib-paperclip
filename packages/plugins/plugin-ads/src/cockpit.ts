@@ -21,7 +21,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { agentSummary } from "./agent.js";
 import { addDays } from "./dates.js";
-import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, summaryRows, type ProposalRow } from "./db.js";
+import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, listVariants, summaryRows, type ProposalRow } from "./db.js";
 import { errorMessage, scopeLabelOf } from "./domain.js";
 import { derive, sumRows } from "./metrics.js";
 import { formatMoney } from "./money.js";
@@ -92,6 +92,34 @@ async function kpis(rt: AdsRuntime): Promise<CockpitKpi[]> {
   const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
   const pending = await listAds(ctx, companyId, { policyStatus: "PENDING_REVIEW" });
   out.push({ key: "ads_policy", label: "Ad policy reviews", value: String(disapproved.length), hint: disapproved.length === 0 ? "All ads approved" : `${pending.length} pending review`, raw: disapproved.length, tone: disapproved.length > 0 ? "bad" : pending.length > 0 ? "warn" : "ok", href: ACCOUNTS, group: "marketing" });
+  try {
+    const variants = await listVariants(ctx, companyId, { limit: 500 });
+    if (variants.length > 0) {
+      const today = todayIn(rt.config.timezone, rt.now());
+      const windowStart = addDays(today, -rt.config.variants.windowDays + 1);
+      const campaignMap = new Map<string, typeof variants>();
+      for (const v of variants) {
+        const key = `${v.account_id}:${v.campaign_external_id}`;
+        if (!campaignMap.has(key)) campaignMap.set(key, []);
+        campaignMap.get(key)!.push(v);
+      }
+
+      let winners = 0, fatigued = 0;
+      for (const [campaignKey, campaignVariants] of campaignMap) {
+        const [accId, campaignId] = campaignKey.split(":") as [string, string];
+        const { listAdDailyForCampaign } = await import("./db.js");
+        const adDaily = await listAdDailyForCampaign(ctx, companyId, accId, campaignId, windowStart);
+        const evaluated = (await import("./variants.js")).evaluateVariants(campaignVariants, adDaily, rt.config.variants, today);
+        winners += evaluated.filter((v) => v.winner).length;
+        fatigued += evaluated.filter((v) => v.fatigue).length;
+      }
+      out.push({ key: "ads_variants", label: "Ad variants", value: String(variants.length), hint: `${winners} winner${winners === 1 ? "" : "s"}${fatigued > 0 ? `, ${fatigued} fatigued` : ""}`, raw: variants.length, tone: "neutral", href: ADS, group: "marketing" });
+    } else {
+      out.push({ key: "ads_variants", label: "Ad variants", value: "0", hint: "None yet", raw: 0, tone: "neutral", href: ADS, group: "marketing" });
+    }
+  } catch (error) {
+    ctx.logger.info("Ads variants KPI failed", { error: errorMessage(error) });
+  }
   return out;
 }
 

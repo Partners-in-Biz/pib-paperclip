@@ -430,7 +430,7 @@ describe.skipIf(!available)("jobs, setup checklist and the Cockpit", () => {
     await w.harness.runJob("sync-insights");
     const snap = await cockpitSnapshot(w.ctx, COMPANY, w.rt());
     expect(snap.plugin).toBe("partnersinbiz.ads");
-    expect(snap.kpis.map((k) => k.key)).toEqual(["ads_spend", "ads_cpa", "ads_changes", "ads_alerts", "ads_policy"]);
+    expect(snap.kpis.map((k) => k.key)).toEqual(["ads_spend", "ads_cpa", "ads_changes", "ads_alerts", "ads_policy", "ads_variants"]);
     expect(snap.kpis.find((k) => k.key === "ads_spend")).toMatchObject({ tone: "warn" });
     expect(snap.waiting).toHaveLength(1);
     expect(snap.waiting[0]).toMatchObject({ kind: "money", why: expect.stringContaining("Nothing changes in any ad platform until a person approves") });
@@ -443,6 +443,45 @@ describe.skipIf(!available)("jobs, setup checklist and the Cockpit", () => {
     await syncedAccount(noCap, { cap: null });
     expect((await cockpitSnapshot(noCap.ctx, COMPANY, noCap.rt())).health.find((h) => h.key === "cap:own")).toMatchObject({ status: "warn", detail: expect.stringContaining("No monthly budget cap") });
     expect(await getProposal(w.ctx, COMPANY, "x")).toBeNull();
+  });
+
+  it("list-variants returns winner and fatigue flags based on ad_daily rows", async () => {
+    const acct = await syncedAccount(w);
+    const { recordAdDaily, createVariant } = await import("../src/db.js");
+    // Insert variant
+    const variantId = await createVariant(w.ctx, COMPANY, {
+      accountId: acct.accountId,
+      campaignExternalId: "c1",
+      adExternalId: "ad-winner",
+      label: "variant-1",
+      axisValues: { color: "blue" },
+      creativeRef: null,
+    });
+    // Insert ad_daily rows that make this ad a winner
+    const today = "2026-10-15";
+    for (let i = 0; i < 14; i++) {
+      const day = String(new Date(new Date(today).getTime() - i * 86400000).toISOString().split("T")[0]);
+      await recordAdDaily(w.ctx, COMPANY, {
+        accountId: acct.accountId,
+        campaignExternalId: "c1",
+        adExternalId: "ad-winner",
+        day,
+        spendMinor: 10000,
+        impressions: 2000,
+        clicks: 40,
+        conversions: 15,
+        frequency: 1.5,
+        currency: "ZAR",
+      });
+    }
+    const result = (await tool(w, "list-variants")).data as any;
+    expect(result.variants).toHaveLength(1);
+    expect(result.variants[0]).toMatchObject({
+      id: variantId,
+      label: "variant-1",
+      winner: true,
+      fatigue: false,
+    });
   });
 
   it("a connection that needs signing in is a red health check with the way out", async () => {

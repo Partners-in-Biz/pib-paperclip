@@ -27,6 +27,10 @@ Every account, number, cap and proposal belongs to one scope: PiB's own ads (lea
 
 \`list-ad-accounts\` shows what is registered. A person signs in to Meta or Google (a one-time grant); you cannot. \`list-ad-connections\` lists the sign-ins, and with \`connectionId\` the ad accounts each can see. Put one under its scope with \`register-ad-account\` (read-only, one scope per account, one currency per scope). A platform that is not set up, a connection that needs signing in again, or a missing account: ask once with \`${ASK_OWNER_TOOL}\`, with the Ads page link (Ads, Accounts) and the steps; the plugin opens the sign-in issue itself when a connection breaks.
 
+## Variants
+
+\`list-variants\` shows ad variants with winner and fatigue flags. A winner is the lowest-CPA ad in a campaign over the analysis window (default 14 days), among ads that meet minimum impressions and conversions thresholds. Fatigue is when CTR drops consistently over consecutive days, the total drop exceeds the threshold, and frequency exceeds the threshold on the last day. Use these to spot high-performing variants and ads losing effectiveness.
+
 ## Alerts (an alert issue is yours)
 
 Look at the numbers, then: fine or expected, \`acknowledge-ad-alert\` with a one-line note; it needs a change, \`propose-ad-change\`; a platform or account problem (ads rejected, payment failed), ask the owner once. Closing the issue without acknowledging it reopens it. Set the cost per result to aim for with \`set-ad-scope-rules\` (\`targetCpaMinor\`), or the alerts have nothing to compare with.
