@@ -448,31 +448,33 @@ export async function accountsRecord(rt: AdsRuntime, params: Record<string, unkn
 }
 
 export async function variantsRecord(rt: AdsRuntime, params: Record<string, unknown>) {
-  const scope = scopeFromParams(params);
+  const scopeKey = scopeFromParams(params);
   const accountId = optionalChoice(params, "accountId", []) as string | undefined;
   const campaignExternalId = optionalChoice(params, "campaignExternalId", []) as string | undefined;
 
-  const variants = await listVariants(rt.ctx, rt.companyId, { accountId, campaignExternalId, limit: 500 });
+  const variants = await listVariants(rt.ctx, rt.companyId, { accountId, campaignExternalId, ...(scopeKey ? { scopeKey } : {}), limit: 500 });
 
   // Load ad_daily for winner/fatigue computation
   const today = todayIn(rt.config.timezone, rt.now());
   const windowStart = addDays(today, -rt.config.variants.windowDays + 1);
 
-  // Group variants by campaign and load ad_daily for each
-  const campaignMap = new Map<string, typeof variants>();
+  // Group variants by campaign using nested Maps: accountId -> campaignId -> variants[]
+  const campaignMap = new Map<string, Map<string, typeof variants>>();
   for (const v of variants) {
-    const key = `${v.account_id}:${v.campaign_external_id}`;
-    if (!campaignMap.has(key)) campaignMap.set(key, []);
-    campaignMap.get(key)!.push(v);
+    if (!campaignMap.has(v.account_id)) campaignMap.set(v.account_id, new Map());
+    const campaignsByAcct = campaignMap.get(v.account_id)!;
+    if (!campaignsByAcct.has(v.campaign_external_id)) campaignsByAcct.set(v.campaign_external_id, []);
+    campaignsByAcct.get(v.campaign_external_id)!.push(v);
   }
 
   const adDailyByVariant = new Map<string, Array<{ account_id: string; campaign_external_id: string; ad_external_id: string; day: string; spend_minor: number; impressions: number; clicks: number; conversions: number; frequency: number }>>();
 
-  for (const [campaignKey, campaignVariants] of campaignMap) {
-    const [accId, campaignId] = campaignKey.split(":") as [string, string];
-    const adDaily = await listAdDailyForCampaign(rt.ctx, rt.companyId, accId, campaignId, windowStart);
-    for (const v of campaignVariants) {
-      adDailyByVariant.set(v.id, adDaily);
+  for (const [accId, campaignsByAcct] of campaignMap) {
+    for (const [campaignId, campaignVariants] of campaignsByAcct) {
+      const adDaily = await listAdDailyForCampaign(rt.ctx, rt.companyId, accId, campaignId, windowStart);
+      for (const v of campaignVariants) {
+        adDailyByVariant.set(v.id, adDaily);
+      }
     }
   }
 

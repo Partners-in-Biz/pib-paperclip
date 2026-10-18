@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterAll, beforeAll, beforeEach } from "vitest";
 import { computeWinner, computeFatigue, DEFAULT_VARIANT_CONFIG, type AdDailyRow } from "../src/variants.js";
+import { createVariant, listVariants } from "../src/db.js";
+import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
+import { COMPANY, type World } from "./helpers/world.js";
+import { world } from "./helpers/world.js";
+import { syncedAccount } from "./helpers/scenario.js";
 
 const config = DEFAULT_VARIANT_CONFIG;
 const today = "2026-10-18";
@@ -123,5 +128,60 @@ describe("variants: fatigue computation", () => {
     ];
     const isFatigued = computeFatigue(rows, config, today);
     expect(isFatigued).toBe(false);
+  });
+});
+
+const available = await embeddedAvailable();
+let pg: Pg;
+beforeAll(async () => {
+  if (available) pg = await startPg();
+}, 120_000);
+afterAll(async () => {
+  if (available) await pg.stop();
+});
+
+describe.skipIf(!available)("variants: scope filtering", () => {
+  let w: World;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+  });
+
+  it("filters variants by scope with default, client scope, and all scopes", async () => {
+    // Create two scopes: own and company:acme
+    await w.harness.emit("plugin.partnersinbiz.crm.company.upserted", { id: "acme", name: "Acme Ltd", domain: null, lifecycle: null, updatedAt: "2026-10-01T00:00:00Z" }, { companyId: COMPANY });
+    const ownAccount = await syncedAccount(w, { scope: "own", externalId: "own-ext" });
+    const acmeAccount = await syncedAccount(w, { scope: "company:acme", externalId: "acme-ext", signoffs: "owner_client" });
+
+    // Create variants in each scope
+    const ownVariantId = await createVariant(w.ctx, COMPANY, {
+      accountId: ownAccount.accountId,
+      campaignExternalId: "c1",
+      adExternalId: "ad-own-1",
+      label: "Own variant",
+      axisValues: { key: "own" },
+      creativeRef: null,
+    });
+
+    const acmeVariantId = await createVariant(w.ctx, COMPANY, {
+      accountId: acmeAccount.accountId,
+      campaignExternalId: "c1",
+      adExternalId: "ad-acme-1",
+      label: "Acme variant",
+      axisValues: { key: "acme" },
+      creativeRef: null,
+    });
+
+    // Test default (no scopeKey filter): should return both variants
+    const defaultVariants = await listVariants(w.ctx, COMPANY, { limit: 500 });
+    expect(defaultVariants.map((v) => v.id).sort()).toEqual([ownVariantId, acmeVariantId].sort());
+
+    // Test with scopeKey 'own': should return only own variant
+    const ownVariants = await listVariants(w.ctx, COMPANY, { scopeKey: "own", limit: 500 });
+    expect(ownVariants.map((v) => v.id)).toEqual([ownVariantId]);
+
+    // Test with scopeKey 'company:acme': should return only acme variant
+    const acmeVariants = await listVariants(w.ctx, COMPANY, { scopeKey: "company:acme", limit: 500 });
+    expect(acmeVariants.map((v) => v.id)).toEqual([acmeVariantId]);
   });
 });

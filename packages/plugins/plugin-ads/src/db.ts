@@ -1249,19 +1249,25 @@ export async function createVariant(
   return id;
 }
 
-export async function listVariants(ctx: PluginContext, companyId: string, options: { accountId?: string; campaignExternalId?: string; limit?: number } = {}): Promise<Array<{ id: string; account_id: string; campaign_external_id: string; ad_external_id: string; label: string; axis_values: Record<string, unknown>; creative_ref: string | null }>> {
+export async function listVariants(ctx: PluginContext, companyId: string, options: { accountId?: string; campaignExternalId?: string; scopeKey?: ScopeKey; limit?: number } = {}): Promise<Array<{ id: string; account_id: string; campaign_external_id: string; ad_external_id: string; label: string; axis_values: Record<string, unknown>; creative_ref: string | null }>> {
   const params: unknown[] = [companyId];
-  let where = "company_id = $1";
+  let where = "v.company_id = $1";
+  let fromClause = `${table(ctx, "variants")} v`;
+  if (options.scopeKey) {
+    fromClause += ` JOIN ${table(ctx, "ad_accounts")} a ON a.id = v.account_id`;
+    params.push(options.scopeKey);
+    where += ` AND a.scope_key = $${params.length}`;
+  }
   if (options.accountId) {
     params.push(options.accountId);
-    where += ` AND account_id = $${params.length}`;
+    where += ` AND v.account_id = $${params.length}`;
   }
   if (options.campaignExternalId) {
     params.push(options.campaignExternalId);
-    where += ` AND campaign_external_id = $${params.length}`;
+    where += ` AND v.campaign_external_id = $${params.length}`;
   }
   params.push(Math.min(options.limit ?? 500, 1000));
-  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, account_id, campaign_external_id, ad_external_id, label, axis_values, creative_ref FROM ${table(ctx, "variants")} WHERE ${where} ORDER BY campaign_external_id, ad_external_id LIMIT $${params.length}`, params);
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT v.id, v.account_id, v.campaign_external_id, v.ad_external_id, v.label, v.axis_values, v.creative_ref FROM ${fromClause} WHERE ${where} ORDER BY v.campaign_external_id, v.ad_external_id LIMIT $${params.length}`, params);
   return rows.map((r) => ({
     id: String(r.id),
     account_id: String(r.account_id),
