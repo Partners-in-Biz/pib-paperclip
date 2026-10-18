@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { dayOf, isoTime } from "./dates.js";
 import { toInt, toNum } from "./money.js";
-import { OWN_SCOPE, type AlertKind, type ProposalKind, type ProposalStatus, type ScopeKey, type StoredPlatform } from "./platforms.js";
+import { OWN_SCOPE, type AdPolicyStatus, type AlertKind, type ProposalKind, type ProposalStatus, type ScopeKey, type StoredPlatform } from "./platforms.js";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new Error("Unsafe identifier");
@@ -436,6 +436,71 @@ export async function listCampaigns(ctx: PluginContext, companyId: string, optio
     params,
   );
   return rows.map((r) => ({ ...campaignRow(r), scope_key: String(r.scope_key), platform: String(r.platform), currency: String(r.currency), account_name: String(r.account_name) }));
+}
+
+export interface AdRow {
+  id: string;
+  company_id: string;
+  account_id: string;
+  external_id: string;
+  name: string;
+  ad_set_external_id: string | null;
+  creative_external_id: string | null;
+  raw_status: string | null;
+  policy_status: AdPolicyStatus;
+  policy_feedback: string | null;
+  policy_changed_at: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+function adRow(r: Record<string, unknown>): AdRow {
+  return {
+    id: String(r.id),
+    company_id: String(r.company_id),
+    account_id: String(r.account_id),
+    external_id: String(r.external_id),
+    name: String(r.name),
+    ad_set_external_id: (r.ad_set_external_id as string | null) ?? null,
+    creative_external_id: (r.creative_external_id as string | null) ?? null,
+    raw_status: (r.raw_status as string | null) ?? null,
+    policy_status: r.policy_status as AdPolicyStatus,
+    policy_feedback: (r.policy_feedback as string | null) ?? null,
+    policy_changed_at: isoTime(r.policy_changed_at),
+    first_seen_at: isoTime(r.first_seen_at),
+    last_seen_at: isoTime(r.last_seen_at),
+  };
+}
+
+export async function upsertAd(
+  ctx: PluginContext,
+  companyId: string,
+  accountId: string,
+  a: { externalId: string; name: string; adSetExternalId: string | null; creativeExternalId: string | null; rawStatus: string; policyStatus: AdPolicyStatus; feedback: string | null },
+): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "ads")} (id, company_id, account_id, external_id, name, ad_set_external_id, creative_external_id, raw_status, policy_status, policy_feedback)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (account_id, external_id) DO UPDATE SET name = EXCLUDED.name, ad_set_external_id = EXCLUDED.ad_set_external_id, creative_external_id = EXCLUDED.creative_external_id,
+       raw_status = EXCLUDED.raw_status, policy_feedback = EXCLUDED.policy_feedback, last_seen_at = now(),
+       policy_status = EXCLUDED.policy_status, policy_changed_at = CASE WHEN EXCLUDED.policy_status IS DISTINCT FROM ads.policy_status THEN now() ELSE ads.policy_changed_at END`,
+    [randomUUID(), companyId, accountId, a.externalId, a.name, a.adSetExternalId, a.creativeExternalId, a.rawStatus, a.policyStatus, a.feedback],
+  );
+}
+
+export async function listAds(ctx: PluginContext, companyId: string, filter?: { accountId?: string; policyStatus?: AdPolicyStatus }): Promise<AdRow[]> {
+  const params: unknown[] = [companyId];
+  let where = "company_id = $1";
+  if (filter?.accountId) {
+    params.push(filter.accountId);
+    where += ` AND account_id = $${params.length}`;
+  }
+  if (filter?.policyStatus) {
+    params.push(filter.policyStatus);
+    where += ` AND policy_status = $${params.length}`;
+  }
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "ads")} WHERE ${where} ORDER BY policy_changed_at DESC, name`, params);
+  return rows.map(adRow);
 }
 
 export interface DailyInput {

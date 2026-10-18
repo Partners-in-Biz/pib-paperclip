@@ -14,7 +14,7 @@
 import { decimalToMinor } from "../money.js";
 import { AdsError } from "../domain.js";
 import { FORM_HEADERS, ProviderError, expiresAtFrom, formBody, int, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_META_VERSION = "v25.0";
 const DAY_MS = 86_400_000;
@@ -215,6 +215,36 @@ export const metaProvider: AdsProvider = {
         clicks: int(r.clicks),
         conversions,
         valueMinor,
+      });
+    }
+    return out;
+  },
+
+  async listAds(env, token, account) {
+    const ads = await pages<Record<string, unknown>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      {
+        fields: "id,name,adset_id,creative,status,ad_review_feedback{ad_review_status,feedback}",
+        limit: 500,
+      },
+      "Meta list ads",
+    );
+    const out: AdPolicyRow[] = [];
+    for (const ad of ads) {
+      const creative = ad.creative as Record<string, unknown> | undefined;
+      const review = ad.ad_review_feedback as Record<string, unknown> | undefined;
+      const policyStatus = review ? (str(review.ad_review_status).toUpperCase() as AdPolicyStatus) : "ACTIVE";
+      const feedback = review && review.feedback ? (Array.isArray(review.feedback) ? (review.feedback as Array<{ message?: string }>)[0]?.message : str(review.feedback)) ?? null : null;
+      out.push({
+        externalId: str(ad.id),
+        name: str(ad.name),
+        adSetExternalId: str(ad.adset_id) || null,
+        creativeExternalId: creative ? str(creative.id) : null,
+        rawStatus: str(ad.status),
+        policyStatus,
+        feedback,
       });
     }
     return out;

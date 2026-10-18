@@ -11,7 +11,9 @@
  * - Tokens never leave the worker and never appear in an error message.
  * - Money is integer minor units of the account's currency.
  */
-import type { AdPlatform, StoredPlatform } from "../platforms.js";
+import type { AdPlatform, AdPolicyStatus, StoredPlatform } from "../platforms.js";
+
+export type { AdPolicyStatus };
 
 export interface ProviderApp {
   platform: AdPlatform;
@@ -75,6 +77,16 @@ export interface InsightRow {
   clicks: number;
   conversions: number;
   valueMinor: number;
+}
+
+export interface AdPolicyRow {
+  externalId: string;
+  name: string;
+  adSetExternalId: string | null;
+  creativeExternalId: string | null;
+  rawStatus: string;
+  policyStatus: AdPolicyStatus;
+  feedback: string | null;
 }
 
 /** What a provider needs to know about the account it works on. */
@@ -151,6 +163,7 @@ export interface AdsProvider {
   listAccounts(env: ProviderEnv, token: TokenBundle): Promise<ProviderAdAccount[]>;
   listCampaigns(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<CampaignInfo[]>;
   insights(env: ProviderEnv, token: TokenBundle, account: AccountRef, range: { since: string; until: string }): Promise<InsightRow[]>;
+  listAds(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<AdPolicyRow[]>;
   /** Write: creates the campaign PAUSED. */
   createCampaign(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateCampaignRequest): Promise<{ externalId: string; name: string }>;
   /** Write: ACTIVE or PAUSED. */

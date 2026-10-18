@@ -372,6 +372,22 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
     expect((error as ProviderError).message).not.toContain(token.accessToken);
     expect((error as ProviderError).message).toContain("Bad targeting");
   });
+
+  it("listAds returns ads with policy status mapping", async () => {
+    const { fetchImpl } = scripted([
+      [/GET .*\/act_123456\/ads/, { body: { data: [{ id: "ad1", name: "Ad 1", adset_id: "adset1", creative: { id: "cr1" }, status: "PAUSED", ad_review_feedback: { ad_review_status: "DISAPPROVED", feedback: [{ message: "Feedback 1" }] } }, { id: "ad2", name: "Ad 2", adset_id: null, creative: null, status: "ACTIVE" }] } }],
+    ]);
+    const ads = await metaProvider.listAds(env(metaApp(), fetchImpl), token, accountRef);
+    expect(ads).toHaveLength(2);
+    expect(ads[0]).toMatchObject({ externalId: "ad1", name: "Ad 1", policyStatus: "DISAPPROVED", feedback: "Feedback 1" });
+    expect(ads[1]).toMatchObject({ externalId: "ad2", policyStatus: "ACTIVE", feedback: null });
+  });
+
+  it("listAds maps PENDING_REVIEW status", async () => {
+    const { fetchImpl } = scripted([[/GET .*\/act_123456\/ads/, { body: { data: [{ id: "ad1", name: "Ad 1", adset_id: null, creative: null, status: "ACTIVE", ad_review_feedback: { ad_review_status: "PENDING_REVIEW" } }] } }]]);
+    const ads = await metaProvider.listAds(env(metaApp(), fetchImpl), token, accountRef);
+    expect(ads[0]).toMatchObject({ policyStatus: "PENDING_REVIEW" });
+  });
 });
 
 describe("errors never leak a token and say what happened", () => {
