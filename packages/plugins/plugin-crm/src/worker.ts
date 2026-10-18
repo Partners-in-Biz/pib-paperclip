@@ -528,12 +528,13 @@ const plugin = definePlugin({
 
     // Data handler for Drive folder registry lookup (read-only, never calls ensure)
     ctx.data.register("drive-folder", async (params) => {
-      const companyId = params.companyId as string;
-      if (!companyId) return { folder: null };
+      const hostCompanyId = params.companyId as string | undefined;
+      const crmCompanyId = params.crmCompanyId as string | undefined;
+      if (!hostCompanyId || !crmCompanyId) return { folder: null };
       try {
-        const broker = await createBrokerForCompany(ctx, companyId);
+        const broker = await createBrokerForCompany(ctx, hostCompanyId);
         if (!broker) return { folder: null };
-        const folder = await broker.resolve("crm_company", companyId);
+        const folder = await broker.resolve("crm_company", crmCompanyId);
         if (!folder) return { folder: null };
         const name = folder.path.split("/").pop() || folder.path;
         return { folder: { name, url: folder.folder_url } };

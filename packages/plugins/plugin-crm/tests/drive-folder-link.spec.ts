@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DriveFolderLink } from "../src/ui/DriveFolderLink";
+import { DriveFolderLink } from "../src/ui/DriveFolderLink.js";
 
 /**
  * Unit tests for DriveFolderLink component.
@@ -17,7 +17,7 @@ describe("DriveFolderLink", () => {
     });
     expect(result).not.toBeNull();
     expect(result).toBeDefined();
-    expect(result.type).toBe("a");
+    expect(result!.type).toBe("a");
   });
 
   it("renders anchor with correct href attribute", () => {
@@ -36,13 +36,24 @@ describe("DriveFolderLink", () => {
     expect(result?.props.rel).toBe("noopener noreferrer");
   });
 
-  it("includes folder name in rendered text content", () => {
+  it("includes folder name in rendered text content without label", () => {
     const folderName = "Acme Brief";
     const result = DriveFolderLink({
       folder: { name: folderName, url: "https://example.com/folder" },
     });
-    // Check that the folder name is present in the children
+    // Check that the folder name is present in the children with "Drive folder: " prefix
+    expect(result?.props.children).toContain("Drive folder:");
     expect(result?.props.children).toContain(folderName);
+  });
+
+  it("renders only folder name when label is provided", () => {
+    const folderName = "Acme Brief";
+    const result = DriveFolderLink({
+      folder: { name: folderName, url: "https://example.com/folder" },
+      label: "Drive folder",
+    });
+    // Check that only the folder name is rendered, without the "Drive folder: " prefix
+    expect(result?.props.children).toBe(folderName);
   });
 
   it("returns null for non-https URL (javascript protocol)", () => {
