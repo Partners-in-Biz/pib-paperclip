@@ -25,6 +25,7 @@ import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
 import { syncAccount } from "./sync.js";
 import { isOwnerDelegateApproval, ownerRouteOf } from "./owner-route.js";
+import { assertPlatformCapsFor } from "./platformCaps.js";
 
 export interface ExecuteActor {
   userId?: string | null;
@@ -105,6 +106,14 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
     if (impact.state === "exceeds" && !approval.over_cap_ack) {
       return refuse(rt, actor, p, "over_cap", `This would take the month to about ${impact.projectedAfterMinor} (minor units) against a cap of ${impact.capMinor}, and the approver did not accept that. Propose a smaller change, or ask the owner to approve it over the cap.`);
     }
+  }
+
+  // 5b. the platform caps
+  try {
+    await assertPlatformCapsFor(rt, p.kind, p.payload);
+  } catch (error) {
+    if (error instanceof AdsError) return refuse(rt, actor, p, error.code, error.message);
+    throw error;
   }
 
   // 6. the numbers still match
