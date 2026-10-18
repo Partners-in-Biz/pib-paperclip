@@ -45,6 +45,19 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
     for (const t of targets.slice(0, 25)) {
       lines.push(`${p.kind === "pause_campaign" ? "Pause" : "Resume"} **${t.campaignName}** on ${t.accountName} (${t.platform}), daily budget ${money(t.dailyBudgetMinor, currency)}${typeof t.spendMonthMinor === "number" ? `, spent this month ${money(t.spendMonthMinor, currency)}` : ""}`);
     }
+  } else if (p.kind === "create_ad_creative") {
+    lines.push(`Creative: **${String(x.name)}** on ${String(x.accountName)} (${String(x.platform)})`);
+    lines.push(`Page: ${String(x.pageId)}`);
+    lines.push(`Media: ${String(x.imageHash) ? `image ${String(x.imageHash)}` : `video ${String(x.videoId)}`}`);
+    lines.push(`Headline: "${String(x.headline)}"`);
+    lines.push(`Body: "${String(x.body)}"`);
+    lines.push(`CTA: ${String(x.cta)}`);
+    lines.push(`Link: ${String(x.link)}`);
+  } else if (p.kind === "create_ad") {
+    lines.push(`Ad: **${String(x.name)}** on ${String(x.accountName)} (${String(x.platform)})`);
+    lines.push(`Ad set: ${String(x.adSetExternalId)}`);
+    lines.push(`Creative: ${String(x.creativeExternalId)}`);
+    lines.push("It is created **paused**; Meta reviews it before it can deliver.");
   } else {
     lines.push(`Platform: ${String(x.platform)}`);
   }
@@ -94,6 +107,8 @@ export function reviewerChecks(kind: ProposalKind): string[] {
   ];
   if (kind === "create_campaign") return [...common, ...copy, "It is created paused and has a sensible daily budget for the client's size."];
   if (kind === "creative_check") return [...common.slice(2), ...copy];
+  if (kind === "create_ad_creative") return [...common.slice(2), ...copy, "The creative is ready to use in ads but serves nothing until an ad is created to use it."];
+  if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved."];
   if (kind === "change_budget") return [...common, "The reason is real (performance, a plan), not a guess."];
   return [...common, kind === "resume_campaign" ? "The campaign is safe to switch on: its copy and landing page are still right." : "Pausing is right for this reason: look at the numbers on the issue."];
 }

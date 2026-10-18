@@ -304,6 +304,14 @@ export const googleProvider: AdsProvider = {
   async createAdSet() {
     throw new ProviderError("Ad sets are not supported on Google Ads via this plugin yet.");
   },
+
+  async createAdCreative() {
+    throw new ProviderError("Ad creatives are not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAd() {
+    throw new ProviderError("Ads are not supported on Google Ads via this plugin yet.");
+  },
 };
 
 export type { AccountRef };

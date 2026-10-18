@@ -7,10 +7,10 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, CreateAdCreativeRequest, CreateAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
-  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset";
+  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad";
   accountExternalId: string;
   campaignExternalId?: string;
   status?: "active" | "paused";
@@ -19,9 +19,16 @@ export interface MockWrite {
   name?: string;
   objective?: string;
   filename?: string;
-  imageHash?: string;
+  imageHash?: string | null;
   videoUrl?: string;
-  videoId?: string;
+  videoId?: string | null;
+  pageId?: string;
+  link?: string;
+  headline?: string;
+  body?: string;
+  cta?: string;
+  adSetExternalId?: string;
+  creativeExternalId?: string;
 }
 
 /** A stable pseudo-random number in 0..1 from text, so the demo numbers are the same on every read. */
@@ -160,6 +167,18 @@ export class MockAdsProvider implements AdsProvider {
   async createAdSet(_env: unknown, _token: TokenBundle, account: AccountRef, request: any) {
     const externalId = `mock-adset-${(this.seq += 1)}`;
     this.writes.push({ op: "create_adset", accountExternalId: account.externalId, campaignExternalId: request.campaignExternalId, name: request.name, lifetimeBudgetMinor: request.lifetimeBudgetMinor, status: "paused" });
+    return { externalId, name: request.name };
+  }
+
+  async createAdCreative(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdCreativeRequest) {
+    const externalId = `mock-creative-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_ad_creative", accountExternalId: account.externalId, name: request.name, pageId: request.pageId, imageHash: request.imageHash ?? null, videoId: request.videoId ?? null, link: request.link, headline: request.headline, body: request.body, cta: request.cta });
+    return { externalId, name: request.name };
+  }
+
+  async createAd(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdRequest) {
+    const externalId = `mock-ad-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
     return { externalId, name: request.name };
   }
 }
