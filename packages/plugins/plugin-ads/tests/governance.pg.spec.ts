@@ -10,7 +10,7 @@ import { cancelProposal, createProposal, markDoneManually, recordClientRequest, 
 import { proposalDetail } from "../src/records.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 import { ADS_AGENT, AM_AGENT, COMPANY, NOW, OPERATOR, OWNER, REVIEWER, world, type World } from "./helpers/world.js";
-import { approvalsOf, closeIssueAs, CREATE, person, propose, syncedAccount } from "./helpers/scenario.js";
+import { approvalsOf, closeIssueAs, CREATE, CREATE_AD_SET, person, propose, syncedAccount } from "./helpers/scenario.js";
 
 const available = await embeddedAvailable();
 let pg: Pg;
@@ -78,6 +78,12 @@ describe.skipIf(!available)("proposing a change", () => {
     await bad({ kind: "creative_check", creative: {} }, /creative is required/);
     await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "create_campaign", scopeKey: "company:nobody", accountId, name: "Abc", dailyBudgetMinor: 100 })).rejects.toThrow(/no ad account registered yet/);
     await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "create_campaign", scopeKey: "everyone" })).rejects.toThrow(/scopeKey must be/);
+    const meta = await syncedAccount(w, { externalId: "ext-meta", platform: "meta", connectionPlatform: "mock" });
+    const adSet = { kind: "create_ad_set", accountId: meta.accountId, campaignExternalId: "c1", name: "Ads", lifetimeBudgetMinor: 10_000, startDate: "2026-10-18", endDate: "2026-10-31", optimizationGoal: "REACH", billingEvent: "IMPRESSIONS", targeting: { countries: ["ZA"] } };
+    await bad({ ...adSet, accountId }, /Ad sets are only supported on Meta/);
+    await bad({ ...adSet, lifetimeBudgetMinor: undefined }, /lifetimeBudgetMinor is required/);
+    await bad({ ...adSet, dailyBudgetMinor: 100 }, /Daily budgets are not allowed for ad sets/);
+    await bad({ ...adSet, endDate: undefined }, /endDate is required/);
     expect(await listProposals(w.ctx, COMPANY)).toEqual([]);
   });
 

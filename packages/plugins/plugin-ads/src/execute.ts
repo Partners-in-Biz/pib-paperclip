@@ -44,6 +44,10 @@ export function additionFromPayload(p: Pick<ProposalRow, "kind" | "payload">): S
   if (p.kind === "create_campaign") return { dailyMinor: Number(x.dailyBudgetMinor) || 0, fromDay: (x.startDate as string | null) ?? null, toDay: (x.endDate as string | null) ?? null };
   if (p.kind === "change_budget") return x.campaignStatus === "active" ? { dailyMinor: Math.max(0, Number(x.newDailyBudgetMinor) - Number(x.currentDailyBudgetMinor)) } : null;
   if (p.kind === "resume_campaign") return { dailyMinor: ((x.targets as CampaignTarget[]) ?? []).reduce((sum, t) => sum + (t.dailyBudgetMinor ?? 0), 0) };
+  if (p.kind === "create_ad_set") {
+    const days = Number(x.plannedDays) || 1;
+    return { dailyMinor: Math.ceil(Number(x.lifetimeBudgetMinor) / days), fromDay: (x.startDate as string | null) ?? null, toDay: (x.endDate as string | null) ?? null };
+  }
   return null;
 }
 
@@ -150,6 +154,20 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
       } else if (p.kind === "change_budget") {
         await t.provider.setCampaignBudget(t.env, t.token, t.ref, String(p.payload.campaignExternalId), Number(p.payload.newDailyBudgetMinor));
         results.push({ what: `Set the daily budget of "${String(p.payload.campaignName)}" to ${Number(p.payload.newDailyBudgetMinor)} minor units`, ok: true, externalId: String(p.payload.campaignExternalId) });
+      } else if (p.kind === "create_ad_set") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAdSet(t.env, t.token, t.ref, {
+          campaignExternalId: String(payload.campaignExternalId),
+          name: String(payload.name),
+          lifetimeBudgetMinor: Number(payload.lifetimeBudgetMinor),
+          startDate: String(payload.startDate),
+          endDate: String(payload.endDate),
+          optimizationGoal: String(payload.optimizationGoal),
+          billingEvent: String(payload.billingEvent),
+          targeting: payload.targeting as any,
+          publisherPlatforms: (payload.publisherPlatforms as string[] | null) ?? undefined,
+        });
+        results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else {
         const status = p.kind === "pause_campaign" ? "paused" : "active";
         await t.provider.setCampaignStatus(t.env, t.token, t.ref, t.target!.campaignExternalId, status);

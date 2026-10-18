@@ -11,7 +11,7 @@ import { recordReview, recordSignoff, sweepProposals } from "../src/proposals.js
 import { runtimeFromRaw } from "../src/runtime.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 import { ADS_AGENT, COMPANY, NOW, OWNER, REVIEWER, UI_BASE, settings, world, type World } from "./helpers/world.js";
-import { approvalsOf, CREATE, propose, syncedAccount } from "./helpers/scenario.js";
+import { approvalsOf, CREATE, CREATE_AD_SET, propose, syncedAccount } from "./helpers/scenario.js";
 
 const available = await embeddedAvailable();
 let pg: Pg;
@@ -290,5 +290,49 @@ describe.skipIf(!available)("every way a change is refused, and the approval is 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actor: `agent:${ADS_AGENT}`, detail: { code: "writes_off" } });
     expect(JSON.stringify(rows)).not.toMatch(/token|secret|password/i);
+  });
+});
+
+describe.skipIf(!available)("running an approved ad set", () => {
+  let w: World;
+  let accountId: string;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w, { platform: "meta", connectionPlatform: "mock" }));
+  });
+
+  it("is refused without an approval, and with only the owner's yes when the client must also sign off", async () => {
+    const p = await propose(w, CREATE_AD_SET(accountId));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: p.id, approvalId: "whatever" }))).toMatchObject({ code: "not_approved" });
+    await pg.reset();
+    const c = await world(pg);
+    await c.harness.emit("plugin.partnersinbiz.crm.company.upserted", { id: "acme", name: "Acme Ltd", domain: null, lifecycle: null, updatedAt: "2026-10-01T00:00:00Z" }, { companyId: COMPANY });
+    const acct = await syncedAccount(c, { scope: "company:acme", externalId: "ext-acme", signoffs: "owner_client", platform: "meta", connectionPlatform: "mock" });
+    const q = await propose(c, CREATE_AD_SET(acct.accountId, { scopeKey: "company:acme" }));
+    await recordReview(c.rt(), { agentId: REVIEWER }, { proposalId: q.id, verdict: "pass" });
+    const { approvalId } = await recordSignoff(c.rt(), { proposalId: q.id, userId: OWNER, role: "owner", decision: "approved", via: "page" });
+    expect(await refusal(executeProposal(c.rt(), agent, { proposalId: q.id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(c.mock.writes).toEqual([]);
+  });
+
+  it("creates the ad set PAUSED with the approved lifetime budget, once, and the approval is used up", async () => {
+    const { id, approvalId } = await approved(w, CREATE_AD_SET(accountId));
+    expect(await executeProposal(w.rt(), agent, { proposalId: id, approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, externalId: expect.any(String) }] });
+    expect(w.mock.writes).toEqual([{ op: "create_adset", accountExternalId: "ext-1", campaignExternalId: "c1", name: "Q4 audiences", lifetimeBudgetMinor: 10_000, status: "paused" }]);
+    expect((await approvalsOf(w, id))[0]!.consumed_at).toEqual(expect.any(String));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(1);
+  });
+
+  it("is refused when the numbers changed after the yes, and the lifetime budget counts against the cap", async () => {
+    const changed = await approved(w, CREATE_AD_SET(accountId));
+    await pg.client.query(`UPDATE ${w.ctx.db.namespace}.proposals SET content_hash = 'changed' WHERE id = $1`, [changed.id]);
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: changed.id, approvalId: changed.approvalId }))).toMatchObject({ code: "approval_stale" });
+    // The lifetime budget counts against the month's cap: a yes without "over the cap" ticked is refused, and nothing runs.
+    const big = await propose(w, CREATE_AD_SET(accountId, { name: "Big", lifetimeBudgetMinor: 400_000 }));
+    await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: big.id, verdict: "pass" });
+    await expect(recordSignoff(w.rt(), { proposalId: big.id, userId: OWNER, role: "owner", decision: "approved", via: "page" })).rejects.toThrow(/over the month's cap/);
+    expect(w.mock.writes).toEqual([]);
   });
 });

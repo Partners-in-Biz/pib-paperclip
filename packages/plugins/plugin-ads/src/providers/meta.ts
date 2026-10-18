@@ -14,7 +14,7 @@
 import { decimalToMinor } from "../money.js";
 import { AdsError } from "../domain.js";
 import { FORM_HEADERS, ProviderError, expiresAtFrom, formBody, int, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_META_VERSION = "v25.0";
 const DAY_MS = 86_400_000;
@@ -255,5 +255,60 @@ export const metaProvider: AdsProvider = {
     }
     const res = await post<{ success?: boolean }>(env, token, `/${campaignExternalId}`, { daily_budget: dailyBudgetMinor }, "Meta campaign budget");
     if (res.success === false) throw new ProviderError("Meta did not accept the budget change.");
+  },
+
+  async uploadAdImage(env, token, account, { filename, imageBase64 }) {
+    const images = await post<{ images?: Record<string, { hash?: string }> }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adimages`,
+      { bytes: imageBase64 },
+      "Meta upload ad image",
+    );
+    const hash = images.images?.[filename]?.hash;
+    if (!hash) throw new ProviderError("Meta did not return the image hash.");
+    return { imageHash: hash };
+  },
+
+  async uploadAdVideo(env, token, account, { videoUrl, title }) {
+    const uploaded = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/advideos`,
+      { file_url: videoUrl, ...(title ? { title } : {}) },
+      "Meta upload ad video",
+    );
+    if (!uploaded.id) throw new ProviderError("Meta did not return the video id.");
+    return { videoId: uploaded.id };
+  },
+
+  async createAdSet(env, token, account, request) {
+    const targeting = {
+      geo_locations: { countries: request.targeting.countries },
+      age_min: request.targeting.ageMin,
+      age_max: request.targeting.ageMax,
+      ...(request.targeting.interests?.length ? { interests: request.targeting.interests } : {}),
+      ...(request.publisherPlatforms?.length ? { publisher_platforms: request.publisherPlatforms } : {}),
+    };
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adsets`,
+      {
+        name: request.name,
+        campaign_id: request.campaignExternalId,
+        lifetime_budget: request.lifetimeBudgetMinor,
+        start_time: `${request.startDate}T00:00:00`,
+        end_time: `${request.endDate}T23:59:59`,
+        billing_event: request.billingEvent,
+        optimization_goal: request.optimizationGoal,
+        bid_strategy: "LOWEST_COST_WITHOUT_CAP",
+        status: "PAUSED",
+        targeting: JSON.stringify(targeting),
+      },
+      "Meta create ad set",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new ad set's id.");
+    return { externalId: created.id, name: request.name };
   },
 };
