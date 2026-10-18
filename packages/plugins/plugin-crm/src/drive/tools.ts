@@ -88,7 +88,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree };
 }
 
-async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
+export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
   const cfg = await readConfig(ctx, companyId);
   if (!cfg.driveBrokerToken) return null;
   const resolver = new SecretResolver(ctx, companyId, cfg);
