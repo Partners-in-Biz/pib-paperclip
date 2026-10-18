@@ -92,6 +92,12 @@ export async function assertPlatformCapsFor(rt: AdsRuntime, kind: ProposalKind, 
     const account = await getAccount(rt.ctx, rt.companyId, String(accountId));
     if (!account) return;
     await assertPlatformCaps(rt, account, String(payload.campaignExternalId));
+  } else if (kind === "create_ad_set") {
+    const accountId = payload.accountId;
+    if (!accountId) return;
+    const account = await getAccount(rt.ctx, rt.companyId, String(accountId));
+    if (!account) return;
+    await assertPlatformCaps(rt, account, String(payload.campaignExternalId));
   } else if (kind === "resume_campaign") {
     const targets = (payload.targets as CampaignTarget[]) ?? [];
     for (const t of targets) {

@@ -9,7 +9,7 @@ import { executeProposal } from "../src/execute.js";
 import { createProposal, recordReview, recordSignoff } from "../src/proposals.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 import { ADS_AGENT, COMPANY, OWNER, REVIEWER, world, type World } from "./helpers/world.js";
-import { CREATE, PAUSE, propose, syncedAccount } from "./helpers/scenario.js";
+import { CREATE, CREATE_AD_SET, PAUSE, propose, syncedAccount } from "./helpers/scenario.js";
 
 const available = await embeddedAvailable();
 let pg: Pg;
@@ -83,5 +83,13 @@ describe.skipIf(!available)("platform-side cap guards", () => {
     const p = await propose(w, PAUSE("own", accountId, "c1"));
     // No error; pause does not require platform caps
     expect(p.id).toBeTruthy();
+  });
+
+  it("(f) create_ad_set with no platform cap -> no_platform_cap", async () => {
+    // create_ad_set requires Meta platform; use mock connection to test with mock provider
+    const { accountId: metaAccountId } = await syncedAccount(w, { platform: "meta", connectionPlatform: "mock", externalId: "ext-meta" });
+    w.mock.accountCapsData["ext-meta"] = { spendCapMinor: null, adSets: [] };
+    const err = await refusal(createProposal(w.rt(), agent, CREATE_AD_SET(metaAccountId)));
+    expect(err.code).toBe("no_platform_cap");
   });
 });
