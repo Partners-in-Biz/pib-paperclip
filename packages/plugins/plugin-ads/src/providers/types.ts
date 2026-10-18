@@ -95,6 +95,23 @@ export interface CreateCampaignRequest {
   specialAdCategories?: string[];
 }
 
+export interface CreateAdSetRequest {
+  campaignExternalId: string;
+  name: string;
+  lifetimeBudgetMinor: number;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  optimizationGoal: string;
+  billingEvent: string;
+  targeting: {
+    countries: string[];
+    ageMin: number;
+    ageMax: number;
+    interests?: Array<{ id: string; name: string }>;
+  };
+  publisherPlatforms?: string[];
+}
+
 export interface ExchangeResult {
   token: TokenBundle;
   /** Who signed in, for the connection's label (never a secret). */
@@ -122,4 +139,10 @@ export interface AdsProvider {
   setCampaignStatus(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, status: "active" | "paused"): Promise<void>;
   /** Write: the campaign's daily budget. Refuses a budget shared with other campaigns, or set on ad sets. */
   setCampaignBudget(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, dailyBudgetMinor: number): Promise<void>;
+  /** Write: upload an image for ads. Returns the image hash. */
+  uploadAdImage(env: ProviderEnv, token: TokenBundle, account: AccountRef, params: { filename: string; imageBase64: string }): Promise<{ imageHash: string }>;
+  /** Write: upload a video for ads. Returns the video id. */
+  uploadAdVideo(env: ProviderEnv, token: TokenBundle, account: AccountRef, params: { videoUrl: string; title?: string }): Promise<{ videoId: string }>;
+  /** Write: creates an ad set PAUSED. */
+  createAdSet(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdSetRequest): Promise<{ externalId: string; name: string }>;
 }

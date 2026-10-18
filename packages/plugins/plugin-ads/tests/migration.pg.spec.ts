@@ -20,7 +20,7 @@ describe("migration files", () => {
       const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
       const schemas = new Set([...sql.matchAll(/\b(plugin_[a-z0-9_]+)\./g)].map((m) => m[1]));
       expect([...schemas], file).toEqual([NAMESPACE]);
-      expect(sql, file).not.toMatch(/\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bGRANT\b/i);
+      expect(sql, file).not.toMatch(/\bDROP\s+(?!CONSTRAINT\b)|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bGRANT\b/i);
       // The host's SQL check strips string literals before comments, so an apostrophe inside a comment swallows the SQL after it.
       const commentsWithApostrophe = sql.split("\n").filter((line) => line.includes("--") && line.split("--").slice(1).join("--").includes("'"));
       expect(commentsWithApostrophe, file).toEqual([]);

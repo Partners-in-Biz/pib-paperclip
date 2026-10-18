@@ -292,6 +292,18 @@ export const googleProvider: AdsProvider = {
       "Google campaign budget",
     );
   },
+
+  async uploadAdImage() {
+    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  },
+
+  async uploadAdVideo() {
+    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAdSet() {
+    throw new ProviderError("Ad sets are not supported on Google Ads via this plugin yet.");
+  },
 };
 
 export type { AccountRef };

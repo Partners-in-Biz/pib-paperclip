@@ -12,6 +12,8 @@ import type { AdsRuntime } from "./runtime.js";
 export const META_OBJECTIVES = ["OUTCOME_LEADS", "OUTCOME_TRAFFIC", "OUTCOME_SALES", "OUTCOME_AWARENESS", "OUTCOME_ENGAGEMENT", "OUTCOME_APP_PROMOTION"] as const;
 export const GOOGLE_CHANNELS = ["SEARCH"] as const;
 export const META_SPECIAL_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING", "FINANCIAL_PRODUCTS_SERVICES"] as const;
+export const OPTIMIZATION_GOALS = ["LINK_CLICKS", "LANDING_PAGE_VIEWS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS", "APP_INSTALLS"] as const;
+export const BILLING_EVENTS = ["IMPRESSIONS", "LINK_CLICKS"] as const;
 
 export interface CampaignTarget {
   accountId: string;
@@ -189,6 +191,71 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
       title: `${resume ? "Resume" : "Pause"} ${useful.length === 1 ? names : `${useful.length} campaigns`}`,
       summary: `${resume ? "Switch on" : "Pause"} ${names}.`,
       addition: resume ? { dailyMinor: useful.reduce((sum, t) => sum + (t.dailyBudgetMinor ?? 0), 0) } : null,
+      creative: null,
+      specialAdCategories: [],
+    };
+  }
+
+  if (kind === "create_ad_set") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "meta") throw new AdsError("Ad sets are only supported on Meta (Facebook and Instagram).");
+    const name = requiredString(input, "name", 120);
+    if (name.length < 3) throw new AdsError("name is too short");
+    const campaignExternalId = requiredString(input, "campaignExternalId");
+    const campaign = await getCampaign(rt.ctx, rt.companyId, account.id, campaignExternalId);
+    if (!campaign) throw new AdsError(`Campaign ${campaignExternalId} is not known for ${account.name}. Sync the account first.`);
+    const lifetimeBudgetMinor = minorField(input, "lifetimeBudgetMinor", { required: true })!;
+    if (lifetimeBudgetMinor <= 0) throw new AdsError("lifetimeBudgetMinor must be more than zero");
+    if (input.dailyBudgetMinor !== undefined || input.daily_budget !== undefined) throw new AdsError("Daily budgets are not allowed for ad sets; use lifetimeBudgetMinor for a total budget.");
+    const startDate = requiredString(input, "startDate", 10);
+    const endDate = requiredString(input, "endDate", 10);
+    if (!isDay(startDate)) throw new AdsError("startDate must be YYYY-MM-DD");
+    if (!isDay(endDate)) throw new AdsError("endDate must be YYYY-MM-DD");
+    if (endDate < startDate) throw new AdsError("endDate is before startDate");
+    const optimizationGoal = requiredString(input, "optimizationGoal", 40);
+    if (!(OPTIMIZATION_GOALS as readonly string[]).includes(optimizationGoal)) throw new AdsError(`optimizationGoal must be one of ${OPTIMIZATION_GOALS.join(", ")}`);
+    const billingEvent = requiredString(input, "billingEvent", 20);
+    if (!(BILLING_EVENTS as readonly string[]).includes(billingEvent)) throw new AdsError(`billingEvent must be one of ${BILLING_EVENTS.join(", ")}`);
+    const targeting = objectParams(input.targeting ?? {});
+    const countries = stringList(targeting.countries, 300, 2);
+    if (countries.length === 0) throw new AdsError("targeting.countries is required: at least one 2-letter ISO code");
+    const ageMin = minorField(targeting, "ageMin", { required: false }) ?? 18;
+    const ageMax = minorField(targeting, "ageMax", { required: false }) ?? 65;
+    if (ageMin < 13 || ageMin > 65) throw new AdsError("targeting.ageMin must be 13-65");
+    if (ageMax < 18 || ageMax > 65) throw new AdsError("targeting.ageMax must be 18-65");
+    if (ageMax < ageMin) throw new AdsError("targeting.ageMax is less than ageMin");
+    const interests = Array.isArray(targeting.interests) ? targeting.interests.filter((i) => typeof i === "object" && i !== null && typeof (i as any).id === "string") : [];
+    const publisherPlatforms = stringList(input.publisherPlatforms, 10, 40);
+    const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1;
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        campaignExternalId,
+        campaignName: campaign.name,
+        name,
+        lifetimeBudgetMinor,
+        startDate,
+        endDate,
+        plannedDays: days,
+        totalCommitmentMinor: lifetimeBudgetMinor,
+        optimizationGoal,
+        billingEvent,
+        targeting: { countries, ageMin, ageMax, interests },
+        publisherPlatforms: publisherPlatforms.length ? publisherPlatforms : null,
+        notes: optionalString(input, "notes", 2000) ?? null,
+        reason,
+        status: "PAUSED",
+        creates: "ad set, paused",
+      },
+      title: `New ad set "${name}"`,
+      summary: `Create "${name}" on "${campaign.name}" with a lifetime budget of ${lifetimeBudgetMinor} minor units from ${startDate} to ${endDate}. It is created paused; switching it on is a separate approved change.`,
+      addition: { dailyMinor: Math.ceil(lifetimeBudgetMinor / days), fromDay: startDate > addDays(today, 1) ? startDate : null, toDay: endDate },
       creative: null,
       specialAdCategories: [],
     };

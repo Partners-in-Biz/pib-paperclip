@@ -10,13 +10,18 @@ import type { StoredPlatform } from "../platforms.js";
 import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
-  op: "create" | "status" | "budget";
+  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset";
   accountExternalId: string;
   campaignExternalId?: string;
   status?: "active" | "paused";
   dailyBudgetMinor?: number;
+  lifetimeBudgetMinor?: number;
   name?: string;
   objective?: string;
+  filename?: string;
+  imageHash?: string;
+  videoUrl?: string;
+  videoId?: string;
 }
 
 /** A stable pseudo-random number in 0..1 from text, so the demo numbers are the same on every read. */
@@ -138,5 +143,23 @@ export class MockAdsProvider implements AdsProvider {
     this.writes.push({ op: "budget", accountExternalId: account.externalId, campaignExternalId, dailyBudgetMinor });
     const campaign = this.campaigns[account.externalId]?.find((c) => c.externalId === campaignExternalId);
     if (campaign) campaign.dailyBudgetMinor = dailyBudgetMinor;
+  }
+
+  async uploadAdImage(_env: unknown, _token: TokenBundle, account: AccountRef, { filename }: { filename: string; imageBase64: string }) {
+    const hash = `img-${(this.seq += 1)}`;
+    this.writes.push({ op: "upload_image", accountExternalId: account.externalId, filename, imageHash: hash });
+    return { imageHash: hash };
+  }
+
+  async uploadAdVideo(_env: unknown, _token: TokenBundle, account: AccountRef, { videoUrl }: { videoUrl: string; title?: string }) {
+    const videoId = `vid-${(this.seq += 1)}`;
+    this.writes.push({ op: "upload_video", accountExternalId: account.externalId, videoUrl, videoId });
+    return { videoId };
+  }
+
+  async createAdSet(_env: unknown, _token: TokenBundle, account: AccountRef, request: any) {
+    const externalId = `mock-adset-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_adset", accountExternalId: account.externalId, campaignExternalId: request.campaignExternalId, name: request.name, lifetimeBudgetMinor: request.lifetimeBudgetMinor, status: "paused" });
+    return { externalId, name: request.name };
   }
 }
