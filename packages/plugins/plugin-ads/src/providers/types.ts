@@ -142,6 +142,22 @@ export interface CreateAdRequest {
   status?: "PAUSED" | "ACTIVE";
 }
 
+export interface CreateAdGroupRequest {
+  name: string;
+  cpcBidMinor: number;
+}
+
+export type KeywordMatchType = "exact" | "phrase" | "broad";
+
+export interface KeywordInput {
+  text: string;
+  matchType: KeywordMatchType;
+  negative?: boolean;
+}
+
+export interface AddKeywordsRequest {
+  keywords: KeywordInput[];
+}
 export interface ExchangeResult {
   token: TokenBundle;
   /** Who signed in, for the connection's label (never a secret). */
@@ -180,4 +196,8 @@ export interface AdsProvider {
   createAdCreative(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdCreativeRequest): Promise<{ externalId: string; name: string }>;
   /** Write: creates an ad PAUSED. */
   createAd(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates an ad group PAUSED under a campaign, with a max CPC bid (minor units). */
+  createAdGroup(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, request: CreateAdGroupRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: adds keywords (positive, or negative when negative:true) to an ad group. */
+  addKeywords(env: ProviderEnv, token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest): Promise<{ added: number }>;
 }

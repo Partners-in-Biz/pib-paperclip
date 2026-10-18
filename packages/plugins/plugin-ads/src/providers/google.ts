@@ -15,7 +15,7 @@
 import { AdsError } from "../domain.js";
 import { microsToMinor, minorToMicros } from "../money.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AddKeywordsRequest, AdsProvider, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_GOOGLE_VERSION = "v25";
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/adwords";
@@ -315,6 +315,63 @@ export const googleProvider: AdsProvider = {
 
   async createAd() {
     throw new ProviderError("Ads are not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAdGroup(env, token, account, campaignExternalId, request) {
+    if (!request.name?.trim()) throw new AdsError("Ad group name is required.");
+    if (!Number.isInteger(request.cpcBidMinor) || request.cpcBidMinor <= 0) throw new AdsError("CPC bid must be a positive integer.");
+    const customer = digits(account.externalId);
+    const res = await call<{ mutateOperationResponses?: Array<{ adGroupResult?: { resourceName?: string } }> }>(
+      env,
+      token,
+      `customers/${customer}/adGroups:mutate`,
+      {
+        loginCustomerId: account.loginCustomerId,
+        body: {
+          operations: [
+            {
+              create: {
+                name: request.name,
+                campaign: `customers/${customer}/campaigns/${digits(campaignExternalId)}`,
+                status: "PAUSED",
+                type: "SEARCH_STANDARD",
+                cpcBidMicros: String(minorToMicros(request.cpcBidMinor, account.currency)),
+              },
+            },
+          ],
+        },
+      },
+      "Google create ad group",
+    );
+    const resourceName = res.mutateOperationResponses?.map((r) => r.adGroupResult?.resourceName).find(Boolean);
+    if (!resourceName) throw new ProviderError("Google did not return the new ad group.");
+    return { externalId: resourceName.split("/").pop() ?? resourceName, name: request.name };
+  },
+
+  async addKeywords(env, token, account, adGroupExternalId, request) {
+    if (!request.keywords?.length) throw new AdsError("Provide at least one keyword.");
+    if (request.keywords.length > 50) throw new AdsError("Cannot add more than 50 keywords per call.");
+    const customer = digits(account.externalId);
+    const ops = request.keywords.map((kw) => {
+      const text = kw.text.trim();
+      if (!text || text.length > 80) throw new AdsError("Keyword text must be 1-80 characters.");
+      return {
+        create: {
+          adGroup: `customers/${customer}/adGroups/${digits(adGroupExternalId)}`,
+          status: "ENABLED",
+          negative: kw.negative ?? false,
+          keyword: { text, matchType: kw.matchType.toUpperCase() },
+        },
+      };
+    });
+    const res = await call<{ results?: Array<Record<string, unknown>> }>(
+      env,
+      token,
+      `customers/${customer}/adGroupCriteria:mutate`,
+      { loginCustomerId: account.loginCustomerId, body: { operations: ops } },
+      "Google add keywords",
+    );
+    return { added: res.results?.length ?? 0 };
   },
 };
 

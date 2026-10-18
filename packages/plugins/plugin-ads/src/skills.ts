@@ -37,7 +37,7 @@ Look at the numbers, then: fine or expected, \`acknowledge-ad-alert\` with a one
 
 ## Changing ads: proposals only
 
-\`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (Meta only, made **paused**), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
+\`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (Meta only, made **paused**), \`create_ad_group\` (Google only, made paused), \`add_keywords\` (Google only), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
 
 1. **Copy first.** For a client, read \`partnersinbiz.crm:get-client-profile\` (voice, banned words) and put the banned words in the scope with \`set-ad-scope-rules\`. \`check-ad-creative\` catches banned words, lengths, claims platform policy rejects, https landing pages, special ad categories. A blocker stops the proposal from going to review: fix it and \`revise-ad-proposal\`. The check never replaces the Reviewer.
 2. **Review.** The proposal opens an issue: the Reviewer first (\`record-ad-review\`: pass, or changes with one line per problem; only the Reviewer's own call counts, so you cannot record or overwrite a verdict on your own proposal), then a person. On changes you get it back: \`get-ad-proposal\` (reviewNotes), then \`revise-ad-proposal\` with what the Reviewer asked to change; a revision that changes nothing leaves the request standing. Changed numbers cancel every earlier yes.
@@ -105,6 +105,8 @@ export const PLATFORMS_REFERENCE = `# What the platforms report, and what versio
 - **create_campaign**: Meta creates a campaign with an objective, a daily campaign budget and \`PAUSED\` status (special ad categories declared); Google creates a search campaign and its budget in one request, paused. Audiences, ad sets, creatives and ads are built in the platform in version 0.1. A created campaign is never switched on by the same change.
 - **change_budget**: the campaign's daily budget. Refused (with the reason) for a lifetime budget, a budget set on ad sets (Meta) and a budget shared by several campaigns (Google).
 - **pause_campaign / resume_campaign**: status only.
+- **create_ad_group** (Google only): creates an ad group in a campaign with a max CPC bid, paused. Keywords are added separately.
+- **add_keywords** (Google only): adds keywords to an ad group, each with a match type (exact, phrase, broad) and optional negative flag.
 
 ## Setup facts (the owner does these once)
 

@@ -27,8 +27,8 @@ const creative: JsonSchema = {
 };
 
 const proposalFields: Record<string, JsonSchema> = {
-  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, and create_ad."),
-  name: str("create_campaign: the new campaign's name. create_ad_set: the new ad set's name. create_ad_creative: the creative's name. create_ad: the ad's name. creative_check: a label for the copy."),
+  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, create_ad, create_ad_group and add_keywords."),
+  name: str("create_campaign: the new campaign's name. create_ad_set: the new ad set's name. create_ad_creative: the creative's name. create_ad: the ad's name. create_ad_group: the new ad group's name. creative_check: a label for the copy."),
   objective: str("create_campaign: Meta OUTCOME_LEADS, OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT or OUTCOME_APP_PROMOTION; Google SEARCH (the only Google type version 0.1 creates). Default OUTCOME_LEADS / SEARCH."),
   dailyBudgetMinor: int("create_campaign: the daily budget in minor units of the account's currency (15000 means 150.00)."),
   lifetimeBudgetMinor: int("create_ad_set: the total budget in minor units for the lifetime of the ad set."),
@@ -67,6 +67,22 @@ const proposalFields: Record<string, JsonSchema> = {
   creativeExternalId: str("create_ad: the creative's id (from an executed create_ad_creative proposal)."),
   creative,
   notes: str("Anything the approver should know."),
+  cpcBidMinor: int("create_ad_group: the max CPC bid in minor units of the account's currency."),
+  adGroupExternalId: str("add_keywords: the ad group's id from the ad platform."),
+  keywords: {
+    type: "array",
+    description: "add_keywords: keywords to add (1..50). Each { text, matchType, negative? }.",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["text", "matchType"],
+      properties: {
+        text: str("Keyword text (1..80 chars)."),
+        matchType: oneOf(["exact", "phrase", "broad"], "exact, phrase or broad match."),
+        negative: { type: "boolean", description: "true for negative keywords." },
+      },
+    },
+  },
   targets: {
     type: "array",
     description: "pause_campaign / resume_campaign: the campaigns, each { accountId, campaignExternalId } from list-ad-campaigns (up to 25).",
@@ -192,8 +208,8 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     name: "propose-ad-change",
     displayName: "Propose an ad change",
     description:
-      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, create_ad_set (Meta only, made PAUSED), create_ad_creative (Meta only), create_ad (Meta only, made PAUSED), creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
-    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "creative_check"], "What to change."), client, ...proposalFields }),
+      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, create_ad_set (Meta only, made PAUSED), create_ad_creative (Meta only), create_ad (Meta only, made PAUSED), create_ad_group (Google only, made PAUSED), add_keywords (Google only), creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
+    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "create_ad_group", "add_keywords", "creative_check"], "What to change."), client, ...proposalFields }),
   },
   {
     name: "revise-ad-proposal",

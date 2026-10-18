@@ -345,6 +345,77 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     };
   }
 
+  if (kind === "create_ad_group") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "google") throw new AdsError("Ad groups can only be created on Google (version 0.2 supports Google only).");
+    const externalId = requiredString(input, "campaignExternalId");
+    const campaign = await getCampaign(rt.ctx, rt.companyId, account.id, externalId);
+    if (!campaign) throw new AdsError(`Campaign ${externalId} is not known for ${account.name}. Sync the account first, then list-ad-campaigns for the ids.`);
+    const name = String(input.name ?? "").trim();
+    if (name.length < 1) throw new AdsError("name is too short");
+    if (name.length > 120) throw new AdsError("name is too long (120 characters at most)");
+    const cpcBidMinor = minorField(input, "cpcBidMinor", { required: true })!;
+    if (cpcBidMinor <= 0) throw new AdsError("cpcBidMinor must be more than zero");
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        campaignExternalId: externalId,
+        campaignName: campaign.name,
+        name,
+        cpcBidMinor,
+        reason,
+      },
+      title: `New ad group "${name}" in "${campaign.name}"`,
+      summary: `Create ad group "${name}" in "${campaign.name}" on ${account.name} with ${cpcBidMinor} minor units max CPC bid. It is created paused.`,
+      addition: null,
+      creative: null,
+      specialAdCategories: [],
+    };
+  }
+
+  if (kind === "add_keywords") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "google") throw new AdsError("Keywords can only be added on Google (version 0.2 supports Google only).");
+    const adGroupExternalId = requiredString(input, "adGroupExternalId");
+    const keywords = (Array.isArray(input.keywords) ? input.keywords : []) as Array<unknown>;
+    if (keywords.length === 0 || keywords.length > 50) throw new AdsError("keywords must have 1 to 50 items");
+    const normalized: Array<{ text: string; matchType: string; negative?: boolean }> = [];
+    for (const kw of keywords) {
+      const k = objectParams(kw);
+      const text = String(k.text ?? "").trim();
+      if (text.length < 1) throw new AdsError("keyword text must not be empty");
+      if (text.length > 80) throw new AdsError("keyword text is too long (80 characters at most)");
+      const matchType = requiredString(k, "matchType", 10);
+      if (!["exact", "phrase", "broad"].includes(matchType)) throw new AdsError(`matchType must be exact, phrase or broad, not ${matchType}`);
+      const negative = k.negative === true ? true : undefined;
+      normalized.push({ text, matchType, ...( negative ? { negative } : {}) });
+    }
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        adGroupExternalId,
+        keywords: normalized,
+        reason,
+      },
+      title: `Add ${keywords.length} keyword${keywords.length === 1 ? "" : "s"}`,
+      summary: `Add ${keywords.length} keyword${keywords.length === 1 ? "" : "s"} to ad group ${adGroupExternalId} on ${account.name}.`,
+      addition: null,
+      creative: null,
+      specialAdCategories: [],
+    };
+  }
   // creative_check
   const platform = optionalString(input, "platform", 10) ?? "meta";
   if (platform !== "meta" && platform !== "google") throw new AdsError("platform must be meta or google");
