@@ -7,16 +7,28 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountRef, AdPolicyRow, AdsProvider, CampaignInfo, CreateCampaignRequest, CreateAdCreativeRequest, CreateAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
-  op: "create" | "status" | "budget";
+  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad";
   accountExternalId: string;
   campaignExternalId?: string;
   status?: "active" | "paused";
   dailyBudgetMinor?: number;
+  lifetimeBudgetMinor?: number;
   name?: string;
   objective?: string;
+  filename?: string;
+  imageHash?: string | null;
+  videoUrl?: string;
+  videoId?: string | null;
+  pageId?: string;
+  link?: string;
+  headline?: string;
+  body?: string;
+  cta?: string;
+  adSetExternalId?: string;
+  creativeExternalId?: string;
 }
 
 /** A stable pseudo-random number in 0..1 from text, so the demo numbers are the same on every read. */
@@ -43,10 +55,11 @@ export class MockAdsProvider implements AdsProvider {
   campaigns: Record<string, CampaignInfo[]> = {};
   /** Fixed rows per account (tests). An account without any gets generated demo numbers. */
   insightRows: Record<string, InsightRow[]> = {};
+  ads: AdPolicyRow[] = [];
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "create" | "status" | "budget" | "refresh", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
@@ -115,6 +128,12 @@ export class MockAdsProvider implements AdsProvider {
     return out;
   }
 
+  async listAds(_env: unknown, _token: TokenBundle, account: AccountRef) {
+    this.reads.push(`listAds:${account.externalId}`);
+    this.maybeFail("listAds");
+    return this.ads;
+  }
+
   async createCampaign(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateCampaignRequest) {
     this.maybeFail("create");
     const externalId = `mock-cmp-${(this.seq += 1)}`;
@@ -138,5 +157,35 @@ export class MockAdsProvider implements AdsProvider {
     this.writes.push({ op: "budget", accountExternalId: account.externalId, campaignExternalId, dailyBudgetMinor });
     const campaign = this.campaigns[account.externalId]?.find((c) => c.externalId === campaignExternalId);
     if (campaign) campaign.dailyBudgetMinor = dailyBudgetMinor;
+  }
+
+  async uploadAdImage(_env: unknown, _token: TokenBundle, account: AccountRef, { filename }: { filename: string; imageBase64: string }) {
+    const hash = `img-${(this.seq += 1)}`;
+    this.writes.push({ op: "upload_image", accountExternalId: account.externalId, filename, imageHash: hash });
+    return { imageHash: hash };
+  }
+
+  async uploadAdVideo(_env: unknown, _token: TokenBundle, account: AccountRef, { videoUrl }: { videoUrl: string; title?: string }) {
+    const videoId = `vid-${(this.seq += 1)}`;
+    this.writes.push({ op: "upload_video", accountExternalId: account.externalId, videoUrl, videoId });
+    return { videoId };
+  }
+
+  async createAdSet(_env: unknown, _token: TokenBundle, account: AccountRef, request: any) {
+    const externalId = `mock-adset-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_adset", accountExternalId: account.externalId, campaignExternalId: request.campaignExternalId, name: request.name, lifetimeBudgetMinor: request.lifetimeBudgetMinor, status: "paused" });
+    return { externalId, name: request.name };
+  }
+
+  async createAdCreative(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdCreativeRequest) {
+    const externalId = `mock-creative-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_ad_creative", accountExternalId: account.externalId, name: request.name, pageId: request.pageId, imageHash: request.imageHash ?? null, videoId: request.videoId ?? null, link: request.link, headline: request.headline, body: request.body, cta: request.cta });
+    return { externalId, name: request.name };
+  }
+
+  async createAd(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdRequest) {
+    const externalId = `mock-ad-${(this.seq += 1)}`;
+    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
+    return { externalId, name: request.name };
   }
 }

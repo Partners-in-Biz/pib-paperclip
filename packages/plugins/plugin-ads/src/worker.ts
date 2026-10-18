@@ -33,8 +33,8 @@ import { discoverAccounts, registerAccount, removeAccount } from "./accounts.js"
 import { agentSummary, hireOptions, onAdsAgentLinked, resumeHint, resyncAgent, tryLinkAdsHire } from "./agent.js";
 import { checkCreative } from "./creative.js";
 import { cockpitSnapshot, publishCockpitSnapshots } from "./cockpit.js";
-import { refreshAllConnections } from "./connections.js";
-import { deleteExpiredOauthSessions, getConnection, getScope, updateConnection, audit } from "./db.js";
+import { refreshAllConnections, tokenFor } from "./connections.js";
+import { deleteExpiredOauthSessions, getConnection, getScope, updateConnection, audit, getAccount } from "./db.js";
 import { AdsError, errorMessage, objectParams, optionalString, requiredString } from "./domain.js";
 import { ADS_DONE_CHECKS } from "./done-checks.js";
 import { acknowledgeAlert, evaluateCompany, resolveStaleAlerts } from "./evaluate.js";
@@ -63,7 +63,7 @@ import {
   setSignoffs,
   summaryRecord,
 } from "./records.js";
-import { runtimeFor, type AdsRuntime } from "./runtime.js";
+import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
 import { syncCompany } from "./sync.js";
 import { SKILLS } from "./skills.js";
@@ -171,6 +171,31 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
         { bannedWords: [...(scope?.banned_words ?? []), ...extra] },
       );
       return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: "A machine check only. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile." };
+    }
+    case "upload-ad-media": {
+      const accountId = requiredString(p, "accountId");
+      const account = await getAccount(rt.ctx, rt.companyId, accountId);
+      if (!account || account.status !== "active") throw new AdsError("That ad account was not found or is not active.");
+      if (account.platform !== "meta") throw new AdsError("Media upload is only supported on Meta (Facebook and Instagram).");
+      const mediaType = requiredString(p, "mediaType");
+      if (mediaType !== "image" && mediaType !== "video") throw new AdsError("mediaType must be image or video");
+      const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
+      if (!conn || (conn.status !== "connected" && conn.status !== "expiring")) throw new AdsError("The connection for this ad account needs signing in again.");
+      if (!conn.can_write) throw new AdsError("This connection is read-only, so nothing can be uploaded to the ad account.");
+      const token = await tokenFor(rt, conn);
+      const provider = rt.provider(account.platform);
+      const env = await providerEnv(rt, account.platform);
+      const accountRef = { externalId: account.external_id, currency: account.currency, loginCustomerId: null };
+      if (mediaType === "image") {
+        const imageBase64 = requiredString(p, "imageBase64");
+        const decoded = Buffer.from(imageBase64, "base64");
+        if (decoded.length > 10_485_760) throw new AdsError("Image file too large (max 10 MB)");
+        return await provider.uploadAdImage(env, token, accountRef, { filename: requiredString(p, "filename"), imageBase64 });
+      } else {
+        const videoUrl = requiredString(p, "videoUrl");
+        if (!videoUrl.startsWith("https://")) throw new AdsError("Video URL must be https");
+        return await provider.uploadAdVideo(env, token, accountRef, { videoUrl, title: optionalString(p, "title") });
+      }
     }
     case "propose-ad-change":
       return createProposal(rt, actor, { ...p, scopeKey: oneScope(p) });

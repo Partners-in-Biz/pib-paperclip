@@ -220,6 +220,10 @@ export const googleProvider: AdsProvider = {
     return out;
   },
 
+  async listAds() {
+    return [];
+  },
+
   async createCampaign(env, token, account, req) {
     const customer = digits(account.externalId);
     const temp = `customers/${customer}/campaignBudgets/-1`;
@@ -291,6 +295,26 @@ export const googleProvider: AdsProvider = {
       { loginCustomerId: account.loginCustomerId, body: { operations: [{ updateMask: "amount_micros", update: { resourceName, amountMicros: String(minorToMicros(dailyBudgetMinor, account.currency)) } }] } },
       "Google campaign budget",
     );
+  },
+
+  async uploadAdImage() {
+    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  },
+
+  async uploadAdVideo() {
+    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAdSet() {
+    throw new ProviderError("Ad sets are not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAdCreative() {
+    throw new ProviderError("Ad creatives are not supported on Google Ads via this plugin yet.");
+  },
+
+  async createAd() {
+    throw new ProviderError("Ads are not supported on Google Ads via this plugin yet.");
   },
 };
 

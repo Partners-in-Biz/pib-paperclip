@@ -21,7 +21,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { agentSummary } from "./agent.js";
 import { addDays } from "./dates.js";
-import { clientNames, listAccounts, listAlerts, listAudit, listConnections, listProposals, listScopes, summaryRows, type ProposalRow } from "./db.js";
+import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, summaryRows, type ProposalRow } from "./db.js";
 import { errorMessage, scopeLabelOf } from "./domain.js";
 import { derive, sumRows } from "./metrics.js";
 import { formatMoney } from "./money.js";
@@ -89,6 +89,9 @@ async function kpis(rt: AdsRuntime): Promise<CockpitKpi[]> {
   out.push({ key: "ads_changes", label: "Ad changes waiting", value: String(open.length), hint: open.length === 0 ? "None open" : `${waiting} waiting for a person or the Reviewer`, raw: open.length, tone: waiting > 0 ? "warn" : "neutral", href: PROPOSALS, group: "marketing" });
   const alerts = await listAlerts(ctx, companyId, { status: "open", limit: 200 });
   out.push({ key: "ads_alerts", label: "Ad alerts", value: String(alerts.length), hint: alerts.length === 0 ? "Nothing unusual" : `${alerts.filter((a) => a.severity === "bad").length} serious`, raw: alerts.length, tone: alerts.some((a) => a.severity === "bad") ? "bad" : alerts.length ? "warn" : "ok", href: `${ADS}?tab=alerts`, group: "marketing" });
+  const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
+  const pending = await listAds(ctx, companyId, { policyStatus: "PENDING_REVIEW" });
+  out.push({ key: "ads_policy", label: "Ad policy reviews", value: String(disapproved.length), hint: disapproved.length === 0 ? "All ads approved" : `${pending.length} pending review`, raw: disapproved.length, tone: disapproved.length > 0 ? "bad" : pending.length > 0 ? "warn" : "ok", href: ACCOUNTS, group: "marketing" });
   return out;
 }
 
@@ -158,7 +161,21 @@ function proposalWaiting(p: ProposalRow, names: Record<string, string>): Waiting
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const names = await clientNames(ctx, companyId);
   const proposals = await listProposals(ctx, companyId, { open: true, limit: 50 });
-  return proposals.map((p) => proposalWaiting(p, names));
+  const items = proposals.map((p) => proposalWaiting(p, names));
+  const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
+  for (const ad of disapproved.slice(0, 10)) {
+    const feedback = ad.policy_feedback ? ad.policy_feedback.slice(0, 200) : "No feedback provided by Meta";
+    items.push({
+      key: `ads-disapproved:${ad.id}`,
+      title: `Disapproved ad: ${ad.name}`.slice(0, 160),
+      why: `Meta declined this ad. Feedback: ${feedback}`,
+      href: ACCOUNTS,
+      issueId: null,
+      kind: "review",
+      since: ad.policy_changed_at,
+    });
+  }
+  return items;
 }
 
 async function activityItems(ctx: PluginContext, companyId: string): Promise<ActivityItem[]> {

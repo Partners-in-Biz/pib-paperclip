@@ -11,7 +11,9 @@
  * - Tokens never leave the worker and never appear in an error message.
  * - Money is integer minor units of the account's currency.
  */
-import type { AdPlatform, StoredPlatform } from "../platforms.js";
+import type { AdPlatform, AdPolicyStatus, StoredPlatform } from "../platforms.js";
+
+export type { AdPolicyStatus };
 
 export interface ProviderApp {
   platform: AdPlatform;
@@ -77,6 +79,16 @@ export interface InsightRow {
   valueMinor: number;
 }
 
+export interface AdPolicyRow {
+  externalId: string;
+  name: string;
+  adSetExternalId: string | null;
+  creativeExternalId: string | null;
+  rawStatus: string;
+  policyStatus: AdPolicyStatus;
+  feedback: string | null;
+}
+
 /** What a provider needs to know about the account it works on. */
 export interface AccountRef {
   externalId: string;
@@ -93,6 +105,41 @@ export interface CreateCampaignRequest {
   dailyBudgetMinor: number;
   /** Meta only. */
   specialAdCategories?: string[];
+}
+
+export interface CreateAdSetRequest {
+  campaignExternalId: string;
+  name: string;
+  lifetimeBudgetMinor: number;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  optimizationGoal: string;
+  billingEvent: string;
+  targeting: {
+    countries: string[];
+    ageMin: number;
+    ageMax: number;
+    interests?: Array<{ id: string; name: string }>;
+  };
+  publisherPlatforms?: string[];
+}
+
+export interface CreateAdCreativeRequest {
+  name: string;
+  pageId: string;
+  imageHash?: string;
+  videoId?: string;
+  link: string;
+  headline: string;
+  body: string;
+  cta: string;
+}
+
+export interface CreateAdRequest {
+  name: string;
+  adSetExternalId: string;
+  creativeExternalId: string;
+  status?: "PAUSED" | "ACTIVE";
 }
 
 export interface ExchangeResult {
@@ -116,10 +163,21 @@ export interface AdsProvider {
   listAccounts(env: ProviderEnv, token: TokenBundle): Promise<ProviderAdAccount[]>;
   listCampaigns(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<CampaignInfo[]>;
   insights(env: ProviderEnv, token: TokenBundle, account: AccountRef, range: { since: string; until: string }): Promise<InsightRow[]>;
+  listAds(env: ProviderEnv, token: TokenBundle, account: AccountRef): Promise<AdPolicyRow[]>;
   /** Write: creates the campaign PAUSED. */
   createCampaign(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateCampaignRequest): Promise<{ externalId: string; name: string }>;
   /** Write: ACTIVE or PAUSED. */
   setCampaignStatus(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, status: "active" | "paused"): Promise<void>;
   /** Write: the campaign's daily budget. Refuses a budget shared with other campaigns, or set on ad sets. */
   setCampaignBudget(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, dailyBudgetMinor: number): Promise<void>;
+  /** Write: upload an image for ads. Returns the image hash. */
+  uploadAdImage(env: ProviderEnv, token: TokenBundle, account: AccountRef, params: { filename: string; imageBase64: string }): Promise<{ imageHash: string }>;
+  /** Write: upload a video for ads. Returns the video id. */
+  uploadAdVideo(env: ProviderEnv, token: TokenBundle, account: AccountRef, params: { videoUrl: string; title?: string }): Promise<{ videoId: string }>;
+  /** Write: creates an ad set PAUSED. */
+  createAdSet(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdSetRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates an ad creative. */
+  createAdCreative(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdCreativeRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates an ad PAUSED. */
+  createAd(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdRequest): Promise<{ externalId: string; name: string }>;
 }

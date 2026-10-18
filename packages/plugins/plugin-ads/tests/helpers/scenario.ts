@@ -5,13 +5,14 @@ import { syncAccount } from "../../src/sync.js";
 import type { ProposalRow } from "../../src/db.js";
 import { ADS_AGENT, COMPANY, OWNER, type World } from "./world.js";
 
-export const campaign = (id: string, status: "active" | "paused" = "active", daily: number | null = 10_000) => ({ externalId: id, name: `Campaign ${id}`, status, rawStatus: status.toUpperCase(), objective: "OUTCOME_LEADS", channel: "mock", dailyBudgetMinor: daily, lifetimeBudgetMinor: null });
+export const campaign = (id: string, status: "active" | "paused" = "active", daily: number | null = 10_000, channel: string = "mock") => ({ externalId: id, name: `Campaign ${id}`, status, rawStatus: status.toUpperCase(), objective: "OUTCOME_LEADS", channel, dailyBudgetMinor: daily, lifetimeBudgetMinor: null });
 
 /** An account with two campaigns, a week of spend, synced once. `spend` is per day for c1. */
-export async function syncedAccount(w: World, options: { scope?: string; externalId?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; canWrite?: boolean; spend?: number; currency?: string; platform?: "mock" | "meta" | "google" } = {}) {
+export async function syncedAccount(w: World, options: { scope?: string; externalId?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; canWrite?: boolean; spend?: number; currency?: string; platform?: "mock" | "meta" | "google"; connectionPlatform?: "mock" | "meta" | "google" } = {}) {
   const ext = options.externalId ?? "ext-1";
-  const made = await w.account({ scope: options.scope ?? "own", externalId: ext, cap: options.cap === undefined ? 500_000 : options.cap, allowWrites: options.allowWrites ?? true, ...(options.signoffs ? { signoffs: options.signoffs } : {}), ...(options.canWrite !== undefined ? { canWrite: options.canWrite } : {}), ...(options.currency ? { currency: options.currency } : {}), ...(options.platform ? { platform: options.platform } : {}) });
-  w.mock.campaigns[ext] = [campaign("c1"), campaign("c2", "paused", 5000), campaign("c3")];
+  const platform = options.platform ?? "mock";
+  const made = await w.account({ scope: options.scope ?? "own", externalId: ext, cap: options.cap === undefined ? 500_000 : options.cap, allowWrites: options.allowWrites ?? true, ...(options.signoffs ? { signoffs: options.signoffs } : {}), ...(options.canWrite !== undefined ? { canWrite: options.canWrite } : {}), ...(options.currency ? { currency: options.currency } : {}), ...(platform ? { platform } : {}), ...(options.connectionPlatform ? { connectionPlatform: options.connectionPlatform } : {}) });
+  w.mock.campaigns[ext] = [campaign("c1", "active", 10_000, platform), campaign("c2", "paused", 5000, platform), campaign("c3", "active", 10_000, platform)];
   const spend = options.spend ?? 8000;
   const days = ["2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14"];
   w.mock.insightRows[ext] = [
@@ -23,6 +24,12 @@ export async function syncedAccount(w: World, options: { scope?: string; externa
 }
 
 export const CREATE = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_campaign", scopeKey: "own", accountId, name: "Spring leads", objective: "OUTCOME_LEADS", dailyBudgetMinor: 5000, reason: "The last campaign returned 3x.", ...extra });
+
+export const CREATE_AD_SET = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad_set", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Q4 audiences", lifetimeBudgetMinor: 10_000, startDate: "2026-10-18", endDate: "2026-10-31", optimizationGoal: "REACH", billingEvent: "IMPRESSIONS", targeting: { countries: ["ZA"], ageMin: 18, ageMax: 65, interests: [{ id: "coffee-int", name: "Coffee" }] }, reason: "New targeting experiment.", ...extra });
+
+export const CREATE_AD_CREATIVE = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad_creative", scopeKey: "own", accountId, name: "Q4 creative", pageId: "1234567890", imageHash: "abc123hash", link: "https://example.com/offer", headline: "Q4 Sale", body: "Get 30% off this October.", cta: "LEARN_MORE", reason: "New creative for Q4.", ...extra });
+
+export const CREATE_AD = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad", scopeKey: "own", accountId, name: "Q4 ad", adSetExternalId: "as1", creativeExternalId: "cr1", reason: "Create ad from approved set and creative.", ...extra });
 
 export async function propose(w: World, input: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null } = { agentId: ADS_AGENT }): Promise<ProposalRow> {
   const result = await createProposal(w.rt(), actor, input);

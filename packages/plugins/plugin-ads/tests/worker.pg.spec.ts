@@ -430,7 +430,7 @@ describe.skipIf(!available)("jobs, setup checklist and the Cockpit", () => {
     await w.harness.runJob("sync-insights");
     const snap = await cockpitSnapshot(w.ctx, COMPANY, w.rt());
     expect(snap.plugin).toBe("partnersinbiz.ads");
-    expect(snap.kpis.map((k) => k.key)).toEqual(["ads_spend", "ads_cpa", "ads_changes", "ads_alerts"]);
+    expect(snap.kpis.map((k) => k.key)).toEqual(["ads_spend", "ads_cpa", "ads_changes", "ads_alerts", "ads_policy"]);
     expect(snap.kpis.find((k) => k.key === "ads_spend")).toMatchObject({ tone: "warn" });
     expect(snap.waiting).toHaveLength(1);
     expect(snap.waiting[0]).toMatchObject({ kind: "money", why: expect.stringContaining("Nothing changes in any ad platform until a person approves") });
