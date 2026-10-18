@@ -37,6 +37,7 @@ import { routeFromImpact } from "./owner-route.js";
 export const ADS_JOBS: Array<{ key: string; title: string; everyMinutes: number }> = [
   { key: "sync-insights", title: "Read ad numbers", everyMinutes: 180 },
   { key: "refresh-connections", title: "Keep sign-ins alive", everyMinutes: 60 },
+  { key: "sweep-caps", title: "Pause ads at their cap", everyMinutes: 60 },
   { key: "setup-status", title: "Report setup status", everyMinutes: 60 },
 ];
 
