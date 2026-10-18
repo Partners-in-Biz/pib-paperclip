@@ -1,6 +1,6 @@
 -- Owner delegate (Elon) threshold for scope-level approval routing.
 -- Rollback note: old code keeps working on this schema. It only inserts user: rows so the relaxed approvals_person_or_delegate constraint is fine.
--- Elon-only: approvesAds will add agentId field support, recordSignoff validates only Elon can call it with agentId.
+-- Agent-signed approvals (decided_by = agent:...) are restricted to owner role with approved decision, used for Elon delegated sign-off within threshold.
 
 ALTER TABLE plugin_ads_caac8387d2.scopes ADD COLUMN owner_threshold_minor bigint;
 
