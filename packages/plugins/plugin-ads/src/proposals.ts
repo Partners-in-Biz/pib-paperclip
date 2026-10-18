@@ -35,6 +35,7 @@ import { normalizeProposal, type Normalized } from "./proposal-input.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
 import type { AdsRuntime } from "./runtime.js";
 import { APPROVAL_TTL_MS, PROPOSAL_TTL_MS, reviewStands, signoffState, type Role } from "./signoffs.js";
+import { ELON_AGENT_ID, ownerRouteOf } from "./owner-route.js";
 
 export interface ProposalActor {
   userId?: string | null;
@@ -49,24 +50,31 @@ export function signoffsFor(scope: Pick<ScopeRow, "signoffs">, kind: ProposalKin
   return scope.signoffs === "owner_client" ? ["owner", "client"] : ["owner"];
 }
 
-async function computeImpact(rt: AdsRuntime, scope: ScopeRow, kind: ProposalKind, addition: Normalized["addition"]) {
+/** Add ownerRoute to impact snapshot. */
+function withOwnerRoute(scope: ScopeRow, kind: ProposalKind, payload: Record<string, unknown>, snapshot: Record<string, unknown>): Record<string, unknown> {
+  const route = ownerRouteOf(scope, { kind, payload, impact: snapshot });
+  return { ...snapshot, ownerRoute: route };
+}
+
+async function computeImpact(rt: AdsRuntime, scope: ScopeRow, kind: ProposalKind, addition: Normalized["addition"], payload: Record<string, unknown>) {
   const sp = await scopePace(rt, scope);
   const impact = capImpact(sp.pace, sp.today, addition ?? {}, sp.spentTodayMinor);
   const state = SPEND_KINDS.includes(kind) ? impact.state : sp.pace.capMinor === null ? ("no_cap" as const) : ("within" as const);
+  const snapshot = {
+    month: sp.month,
+    currency: sp.currency,
+    capMinor: impact.capMinor,
+    spentMinor: sp.pace.spentMinor,
+    committedDailyMinor: sp.committedDailyMinor,
+    projectedBeforeMinor: impact.projectedBeforeMinor,
+    projectedAfterMinor: impact.projectedAfterMinor,
+    addedThisMonthMinor: impact.addedThisMonthMinor,
+    headroomAfterMinor: impact.headroomAfterMinor,
+    state,
+  };
   return {
     capState: state,
-    snapshot: {
-      month: sp.month,
-      currency: sp.currency,
-      capMinor: impact.capMinor,
-      spentMinor: sp.pace.spentMinor,
-      committedDailyMinor: sp.committedDailyMinor,
-      projectedBeforeMinor: impact.projectedBeforeMinor,
-      projectedAfterMinor: impact.projectedAfterMinor,
-      addedThisMonthMinor: impact.addedThisMonthMinor,
-      headroomAfterMinor: impact.headroomAfterMinor,
-      state,
-    },
+    snapshot: withOwnerRoute(scope, kind, payload, snapshot),
   };
 }
 
@@ -126,7 +134,7 @@ export async function createProposal(rt: AdsRuntime, actor: ProposalActor, input
   if (!scope) throw new AdsError(`${scopeLabelOf(scopeKey)} has no ad account registered yet, so there is nothing to change. Register one (register-ad-account) first.`);
   const n = await normalizeProposal(rt, scope, input);
   const id = randomUUID();
-  const impact = await computeImpact(rt, scope, n.kind, n.addition);
+  const impact = await computeImpact(rt, scope, n.kind, n.addition, n.payload);
   const precheck = precheckOf(scope, n);
   const blockers = (precheck as { blockers?: number }).blockers ?? 0;
   const origin = typeof input.origin === "string" && ["agent", "budget_90", "budget_100", "alert", "human"].includes(input.origin) ? input.origin : actor.userId ? "human" : "agent";
@@ -274,47 +282,88 @@ async function openRunIssue(rt: AdsRuntime, p: ProposalRow, scope: ScopeRow): Pr
 export interface SignoffInput {
   proposalId: string;
   userId: string | null;
+  agentId?: string | null;
   role: Role;
   decision: "approved" | "rejected";
   note?: string | null;
   evidenceRef?: string | null;
   overCapAck?: boolean;
-  via: "issue" | "page";
+  via: "issue" | "page" | "tool";
 }
 
-/** A person's yes or no. Only a person can give one: an agent has no way to call this. */
+/** A person's or Elon's (owner delegate) yes or no. */
 export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promise<{ proposal: ProposalRow; approvalId: string }> {
-  if (!input.userId) throw new AdsError("Only a signed-in person can approve or refuse a change.");
+  const byAgent = !input.userId && !!input.agentId;
+  if (!input.userId && !byAgent) throw new AdsError("Only a signed-in person can approve or refuse a change.");
+
   const p = await getProposal(rt.ctx, rt.companyId, input.proposalId);
   if (!p) throw new AdsError("That proposal was not found.");
   if (p.status === "needs_changes") throw new AdsError("This proposal needs changes first (see the Reviewer's notes or the checks). Ask the ads agent to revise it.");
   if (!OPEN_PROPOSAL_STATUSES.includes(p.status)) throw new AdsError(`This proposal is ${p.status}; it can no longer be approved or refused.`);
   if (!p.requires_signoffs.includes(input.role)) throw new AdsError(`This proposal does not need a ${input.role} sign-off.`);
   if (rt.now() > new Date(p.expires_at ?? 0)) throw new AdsError("This proposal expired. Ask for it again.");
+
+  // Agent checks: only Elon, only owner role, only approvals
+  if (byAgent) {
+    if (input.agentId !== ELON_AGENT_ID) throw new AdsError("Only a signed-in person can approve or refuse a change.", "not_a_person");
+    if (input.role !== "owner" || input.decision !== "approved") throw new AdsError("The owner's delegate can only approve, as owner.", "not_a_person");
+  }
+
   const note_ = input.note?.trim() || null;
   if (input.role === "client" && input.decision === "approved" && (!note_ || note_.length < 8)) {
     throw new AdsError("Say what the client wrote and when (at least a short sentence): the client's yes is recorded as evidence, not as a click.");
   }
-  if (input.decision === "approved" && input.role === "owner" && p.cap_state === "exceeds" && !input.overCapAck) {
-    throw new AdsError("This goes over the month's cap. Approve it on the Ads page with \"over the cap\" ticked, or refuse it.", "over_cap");
+
+  // Cap checks: agent approvals ignore over_cap_ack (force false)
+  if (input.decision === "approved" && input.role === "owner" && p.cap_state === "exceeds") {
+    if (byAgent) {
+      throw new AdsError("This goes over the month's cap; a person must approve it.", "over_cap");
+    }
+    if (!input.overCapAck) {
+      throw new AdsError("This goes over the month's cap. Approve it on the Ads page with \"over the cap\" ticked, or refuse it.", "over_cap");
+    }
   }
+
   if (input.decision === "approved" && p.review_state === "changes") throw new AdsError("The Reviewer asked for changes. Ask the ads agent to revise it first.");
-  if (input.decision === "approved" && input.role === "owner" && p.review_state === "pending") {
+  if (input.decision === "approved" && input.role === "owner" && p.review_state === "pending" && !byAgent) {
     await updateProposal(rt.ctx, rt.companyId, p.id, { reviewState: "waived", reviewBy: `user:${input.userId}`, reviewNotes: "Approved by a person before the Reviewer's check finished." });
   }
+
+  // Check Elon's authority (owner route)
+  let peetRequired = false;
+  if (byAgent && input.agentId === ELON_AGENT_ID && input.role === "owner" && input.decision === "approved") {
+    const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
+    if (!scope) throw new AdsError("That scope is gone.");
+    const route = ownerRouteOf(scope, p);
+    if (route.route === "peet_required") {
+      peetRequired = true;
+      await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
+      await audit(rt.ctx, rt.companyId, {
+        actor: `agent:${input.agentId}`,
+        action: "proposal.peet_required",
+        scopeKey: p.scope_key,
+        subject: p.id,
+        detail: { lifetimeMinor: route.lifetimeMinor, thresholdMinor: route.thresholdMinor },
+      });
+      throw new AdsError("This proposal's lifetime budget is above the owner threshold, so it needs Peet's sign-off. It is marked peet_required and shown in the cockpit.", "peet_required");
+    }
+  }
+
+  const decidedBy = byAgent ? `agent:${input.agentId}` : `user:${input.userId}`;
   const approvalId = await insertApproval(rt.ctx, {
     companyId: rt.companyId,
     proposalId: p.id,
     role: input.role,
     decision: input.decision,
-    decidedBy: `user:${input.userId}`,
+    decidedBy,
     contentHash: p.content_hash,
-    overCapAck: input.overCapAck === true,
+    overCapAck: input.overCapAck === true && !byAgent,
     note: note_,
     evidenceRef: input.evidenceRef?.trim() || null,
     expiresAt: new Date(rt.now().getTime() + APPROVAL_TTL_MS).toISOString(),
   });
-  await audit(rt.ctx, rt.companyId, { actor: `user:${input.userId}`, action: `proposal.${input.decision === "approved" ? "approved" : "rejected"}`, scopeKey: p.scope_key, subject: p.id, detail: { role: input.role, via: input.via, overCapAck: input.overCapAck === true, approvalId } });
+  const actor = byAgent ? `agent:${input.agentId}` : `user:${input.userId}`;
+  await audit(rt.ctx, rt.companyId, { actor, action: `proposal.${input.decision === "approved" ? "approved" : "rejected"}`, scopeKey: p.scope_key, subject: p.id, detail: { role: input.role, via: input.via, overCapAck: input.overCapAck === true && !byAgent, approvalId } });
   return { proposal: await refreshProposal(rt, p.id), approvalId };
 }
 
@@ -417,7 +466,7 @@ export async function reviseProposal(rt: AdsRuntime, actor: ProposalActor, propo
   }
   merged.kind = p.kind;
   const n = await normalizeProposal(rt, scope, merged);
-  const impact = await computeImpact(rt, scope, n.kind, n.addition);
+  const impact = await computeImpact(rt, scope, n.kind, n.addition, n.payload);
   const precheck = precheckOf(scope, n);
   const blockers = (precheck as { blockers?: number }).blockers ?? 0;
   const contentHash = hashOf(n.kind, scope.scope_key, n.accountId, n.payload);
@@ -425,12 +474,13 @@ export async function reviseProposal(rt: AdsRuntime, actor: ProposalActor, propo
   // The Reviewer's "changes" is about these numbers. Only different numbers (a new look by the Reviewer) or the Reviewer's own pass clears it: a
   // revision that changes nothing leaves the proposal where the Reviewer put it.
   const reviewerHolds = unchanged && p.review_state === "changes";
+  const ownerRoute = ownerRouteOf(scope, { kind: n.kind, payload: n.payload, impact: impact.snapshot });
   await updateProposal(rt.ctx, rt.companyId, p.id, {
     status: blockers > 0 || reviewerHolds ? "needs_changes" : "in_review",
     title: clip(n.title, 200),
     summary: n.summary,
     payload: n.payload,
-    impact: impact.snapshot,
+    impact: { ...impact.snapshot, ownerRoute },
     contentHash,
     precheck,
     capState: impact.capState,
