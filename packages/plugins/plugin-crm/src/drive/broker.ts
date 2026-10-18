@@ -53,7 +53,9 @@ export function createBroker(fetchFn: FetchLike, cfg: { baseUrl: string; token: 
       const res = await fetchFn(url, { method: "GET", headers: { Authorization: `Bearer ${cfg.token}` } });
       if (res.status === 404) return null;
       if (!res.ok) throw parseError(res.status, await res.text());
-      return (JSON.parse(await res.text()) as { folder: RegistryFolder }).folder;
+      const body = JSON.parse(await res.text()) as { data?: { folder: RegistryFolder }; folder?: RegistryFolder };
+      const folder = body.data?.folder || body.folder;
+      return folder || null;
     } catch (err) {
       if (err instanceof BrokerError) throw err;
       throw new BrokerError(`Network error during resolve: ${err instanceof Error ? err.message : String(err)}`, 500, true);
@@ -62,14 +64,18 @@ export function createBroker(fetchFn: FetchLike, cfg: { baseUrl: string; token: 
 
   async function ensure(body: EnsureBody): Promise<EnsureResult> {
     const url = `${baseUrl}/api/v1/workspace-folders/registry/ensure`;
+    const postBody = { ...body };
+    if (!body.created_by_run) delete postBody.created_by_run;
     try {
       const res = await fetchFn(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(postBody),
       });
       if (!res.ok) throw parseError(res.status, await res.text());
-      return JSON.parse(await res.text()) as EnsureResult;
+      const responseBody = JSON.parse(await res.text()) as { data?: EnsureResult; folder?: RegistryFolder; created?: boolean; tree?: Array<{ path: string; folderId: string; created: boolean }> };
+      const result = responseBody.data || (responseBody as EnsureResult);
+      return { folder: result.folder as RegistryFolder, created: result.created === true, tree: result.tree || [] };
     } catch (err) {
       if (err instanceof BrokerError) throw err;
       throw new BrokerError(`Network error during ensure: ${err instanceof Error ? err.message : String(err)}`, 500, true);

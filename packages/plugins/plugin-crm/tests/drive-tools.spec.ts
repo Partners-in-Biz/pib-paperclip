@@ -16,7 +16,7 @@ function createMockBroker(st: BrokerState) {
     if (!init.headers.Authorization?.startsWith("Bearer ")) return { status: 401, ok: false, text: async () => "{}" };
     if (init.method === "GET" && url.includes("/registry/resolve")) {
       const params = new URL(url, "http://base").searchParams, key = `${params.get("entity_type")}:${params.get("entity_id")}`, found = st.registry.get(key);
-      return found ? { status: 200, ok: true, text: async () => JSON.stringify({ folder: found }) } : { status: 404, ok: false, text: async () => "{}" };
+      return found ? { status: 200, ok: true, text: async () => JSON.stringify({ success: true, data: { folder: found } }) } : { status: 404, ok: false, text: async () => JSON.stringify({ success: false, error: "Not found" }) };
     }
     if (init.method === "POST" && url.includes("/registry/ensure")) {
       const body = JSON.parse(init.body || "{}"), { entity_type, entity_id, name, parent_entity_id } = body;
@@ -24,7 +24,7 @@ function createMockBroker(st: BrokerState) {
       const key = `${entity_type}:${entity_id}`;
       let isNew = !st.registry.has(key);
       if (isNew) {
-        if (parent_entity_id && !st.registry.has(`crm_company:${parent_entity_id}`)) return { status: 409, ok: false, text: async () => "{}" };
+        if (parent_entity_id && !st.registry.has(`crm_company:${parent_entity_id}`)) return { status: 409, ok: false, text: async () => JSON.stringify({ success: false, error: "Parent not found" }) };
         let path = entity_type === "crm_company" ? `02 Partners in Biz/Clients/${name}` : parent_entity_id ? `${st.registry.get(`crm_company:${parent_entity_id}`)?.path}/${name}/Deliverables` : `02 Partners in Biz/Products/${name}/Deliverables`;
         const pathExists = st.driveFolders.has(path);
         let fid = pathExists ? st.driveFolders.get(path)!.folder_id : `f_${st.driveFolders.size + 1}`;
@@ -32,12 +32,12 @@ function createMockBroker(st: BrokerState) {
           st.driveFolders.set(path, { id: fid, path, folder_id: fid, folder_url: `https://drive.google.com/drive/folders/${fid}` });
           st.driveCreates.push(path);
         }
-        if (st.failRegistryWriteOnce) { st.failRegistryWriteOnce = false; return { status: 502, ok: false, text: async () => JSON.stringify({ error: `registry_write_failed (folderId: ${fid}) (path: ${path})` }) }; }
-        if (st.forceStatus) return { status: st.forceStatus, ok: false, text: async () => "{}" };
+        if (st.failRegistryWriteOnce) { st.failRegistryWriteOnce = false; return { status: 502, ok: false, text: async () => JSON.stringify({ success: false, error: `registry_write_failed (folderId: ${fid}) (path: ${path})` }) }; }
+        if (st.forceStatus) return { status: st.forceStatus, ok: false, text: async () => JSON.stringify({ success: false, error: "Error" }) };
         st.registry.set(key, { id: `r_${st.registry.size + 1}`, entity_type, entity_id, path, folder_id: fid, folder_url: `https://drive.google.com/drive/folders/${fid}` });
       }
       const reg = st.registry.get(key)!;
-      return { status: 200, ok: true, text: async () => JSON.stringify({ folder: reg, created: isNew, tree: [] }) };
+      return { status: 200, ok: true, text: async () => JSON.stringify({ success: true, data: { folder: reg, created: isNew, tree: [] } }) };
     }
     return { status: 404, ok: false, text: async () => "{}" };
   };
@@ -52,9 +52,10 @@ async function setup(config: Record<string, any> = {}, store?: Record<string, an
 }
 
 function linked(baseSeed: Record<string, any>, coId: string, name: string) {
+  const contactId = `contact-${coId}`;
   baseSeed.companies!.push(company(coId, name));
-  baseSeed.contacts!.push(contact("primary", "Primary Contact"));
-  baseSeed.contact_companies!.push({ id: "cc", company_id: CO, contact_id: "primary", account_id: coId, role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
+  baseSeed.contacts!.push(contact(contactId, "Primary Contact"));
+  baseSeed.contact_companies!.push({ id: `cc-${coId}`, company_id: CO, contact_id: contactId, account_id: coId, role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
   baseSeed.client_projects!.push({ id: `cp-${coId}`, company_id: CO, project_id: "p1", client_kind: "company", client_ref: coId, created_at: "2026-01-01T00:00:00Z" });
 }
 
@@ -194,5 +195,61 @@ describe("Drive folder tools", () => {
     harness.seed({ projects: [{ id: "p3", companyId: CO, name: "Site" } as never] });
     const r3 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p3" });
     expect(r3.data?.status).toBe("created");
+  });
+
+  it("(m) resolve unwraps {success:true,data:{folder:{...}}} envelope", async () => {
+    const st = seed();
+    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
+    await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+    const r = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p1" });
+    expect(r.data?.status).toBe("found");
+    expect(r.data?.folder_id).toBeDefined();
+  });
+
+  it("(n) company name collision: two crm_company siblings with same key → needs_human_look", async () => {
+    const st = seed();
+    // Create two companies with names that normalize to the same folder key
+    st.companies!.push(company("co-n1", "Acme Ltd"));
+    st.companies!.push(company("co-n2", "acme  ltd"));
+    st.contacts!.push(contact("con-n1", "Primary Contact"));
+    st.contacts!.push(contact("con-n2", "Primary Contact"));
+    st.contact_companies!.push({ id: "cc-n1", company_id: CO, contact_id: "con-n1", account_id: "co-n1", role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
+    st.contact_companies!.push({ id: "cc-n2", company_id: CO, contact_id: "con-n2", account_id: "co-n2", role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
+    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "crm_company", entity_id: "co-n1" });
+    expect(r1.error || r1.data?.status).toBeDefined();
+    const postsAfterFirst = state.posts.length;
+    const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "crm_company", entity_id: "co-n2" });
+    expect(r.data?.status).toBe("needs_human_look");
+  });
+
+  it("(o) created_by_run is sent in ensure body when runId is given", async () => {
+    const st = seed();
+    linked(st, "co-o", "Acme Ltd");
+    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
+    await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+    expect(state.posts.some((p) => p.body.created_by_run === "run-1")).toBe(true);
+  });
+
+  it("(p) network error on first resolve in ensure → CrmError not BrokerError", async () => {
+    const st = seed();
+    const { harness } = await setup({ driveBrokerToken: "token" }, st);
+    harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
+    harness.ctx.http.fetch = async () => {
+      throw new Error("Network timeout");
+    };
+    const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+    expect(r.error).toBeDefined();
+    expect(r.error).toContain("Drive broker");
+  });
+
+  it("(q) long CamelCase name rejected as drive_id", async () => {
+    const { harness } = await setup({ driveBrokerToken: "token" });
+    harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ProjectManagementDashboardV2" } as never] });
+    const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+    expect(r.data?.status).toBe("invalid_name");
+    expect(r.data?.problem).toBe("drive_id");
   });
 });

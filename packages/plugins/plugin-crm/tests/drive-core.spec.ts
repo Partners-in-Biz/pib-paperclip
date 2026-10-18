@@ -31,7 +31,7 @@ describe("broker", () => {
     const fetch: FetchLike = async () => ({
       status: 502,
       ok: false,
-      text: async () => '{"error":"failed (folderId: f123) (path: /Parent/Child)"}',
+      text: async () => '{"success":false,"error":"failed (folderId: f123) (path: /Parent/Child)"}',
     });
     const broker = createBroker(fetch, { baseUrl: "http://localhost:3000", token: "test" });
     try {
@@ -47,7 +47,7 @@ describe("broker", () => {
 
   it("403 and 503 are not retryable", async () => {
     for (const status of [403, 503]) {
-      const fetch: FetchLike = async () => ({ status, ok: false, text: async () => '{"error":"test"}' });
+      const fetch: FetchLike = async () => ({ status, ok: false, text: async () => '{"success":false,"error":"test"}' });
       const broker = createBroker(fetch, { baseUrl: "http://localhost:3000", token: "test" });
       try {
         await broker.resolve("project", "p1");
@@ -58,13 +58,39 @@ describe("broker", () => {
   });
 
   it("token never appears in error messages", async () => {
-    const fetch: FetchLike = async () => ({ status: 500, ok: false, text: async () => '{"error":"fail"}' });
+    const fetch: FetchLike = async () => ({ status: 500, ok: false, text: async () => '{"success":false,"error":"fail"}' });
     const broker = createBroker(fetch, { baseUrl: "http://localhost:3000", token: "super-secret-12345" });
     try {
       await broker.resolve("project", "p1");
     } catch (err) {
       expect((err as BrokerError).message).not.toContain("super-secret");
     }
+  });
+
+  it("resolve unwraps {success:true,data:{folder:{...}}} and returns folder", async () => {
+    const fetch: FetchLike = async () => ({
+      status: 200,
+      ok: true,
+      text: async () => '{"success":true,"data":{"folder":{"id":"r1","entity_type":"project","entity_id":"p1","path":"/test","folder_id":"f1","folder_url":"https://drive.google.com/drive/folders/f1"}}}',
+    });
+    const broker = createBroker(fetch, { baseUrl: "http://localhost:3000", token: "test" });
+    const folder = await broker.resolve("project", "p1");
+    expect(folder).toBeDefined();
+    expect(folder?.id).toBe("r1");
+    expect(folder?.path).toBe("/test");
+  });
+
+  it("ensure unwraps {success:true,data:{folder,created,tree}} and returns data.folder", async () => {
+    const fetch: FetchLike = async () => ({
+      status: 200,
+      ok: true,
+      text: async () => '{"success":true,"data":{"folder":{"id":"r1","entity_type":"project","entity_id":"p1","path":"/test","folder_id":"f1","folder_url":"https://drive.google.com/drive/folders/f1"},"created":true,"tree":[]}}',
+    });
+    const broker = createBroker(fetch, { baseUrl: "http://localhost:3000", token: "test" });
+    const result = await broker.ensure({ entity_type: "project", entity_id: "p1", name: "Test" });
+    expect(result.folder).toBeDefined();
+    expect(result.folder.id).toBe("r1");
+    expect(result.created).toBe(true);
   });
 });
 

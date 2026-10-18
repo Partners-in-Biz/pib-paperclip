@@ -43,16 +43,19 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
     if (problem) return { kind: "invalid_name", entityType: step.entity_type, entityId: step.entity_id, name: step.name, problem };
   }
 
-  const primaryStep = facts.entityType === "crm_company" ? steps[0] : steps[steps.length - 1];
-  const primaryKey = folderKey(primaryStep.name);
-  const conflicts = siblings.filter((s) => !(s.entityType === primaryStep.entity_type && s.entityId === primaryStep.entity_id) && folderKey(s.name) === primaryKey);
+  // Check all steps for collisions with appropriate siblings
+  for (const step of steps) {
+    const stepKey = folderKey(step.name);
+    const relevantSiblings = siblings.filter((s) => s.entityType === step.entity_type && !(s.entityId === step.entity_id));
+    const conflicts = relevantSiblings.filter((s) => folderKey(s.name) === stepKey);
 
-  if (conflicts.length > 0) {
-    return {
-      kind: "needs_human_look",
-      reason: `Folder name collision: "${primaryStep.name}" would have the same key as ${conflicts.map((c) => `${c.entityType} ${c.entityId}`).join(", ")}`,
-      conflictsWith: conflicts,
-    };
+    if (conflicts.length > 0) {
+      return {
+        kind: "needs_human_look",
+        reason: `Folder name collision: "${step.name}" (${step.entity_type}) would have the same key as ${conflicts.map((c) => `${c.entityType} ${c.entityId}`).join(", ")}`,
+        conflictsWith: conflicts,
+      };
+    }
   }
 
   return { kind: "ensure", steps: steps.map((s) => ({ ...s, created_by_run: runId })) };

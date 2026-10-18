@@ -2126,7 +2126,7 @@ async function viewerFor(
     const member = members.find((item) => item.principalType === "user" && item.principalId === userId && item.status === "active");
     role = member?.membershipRole ?? null;
   }
-  return { companyId: input.companyId, userId, agentId: input.agentId, role };
+  return { companyId: input.companyId, userId, agentId: input.agentId, role, runId: input.runId ?? null };
 }
 
 async function actionViewer(ctx: PluginContext, context: PluginPerformActionContext): Promise<Viewer> {

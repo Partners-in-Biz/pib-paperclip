@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { createBroker, type DriveEntityType, BrokerError } from "./broker.js";
-import { planFolders, type DriveFacts, type Sibling } from "./convention.js";
+import { planFolders, companyFolderName, type DriveFacts, type Sibling } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 
@@ -52,12 +52,18 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   const broker = await createBrokerForCompany(ctx, viewer.companyId);
   if (!broker) throw new CrmError("Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)");
 
-  const existing = await broker.resolve(type, id);
+  let existing: any;
+  try {
+    existing = await broker.resolve(type, id);
+  } catch (e) {
+    if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
+    throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (existing) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
 
   const facts = await loadDriveFacts(ctx, viewer, type, id);
   const siblings = await loadDriveSiblings(ctx, viewer, type, id);
-  const plan = planFolders(facts, siblings);
+  const plan = planFolders(facts, siblings, viewer.runId ?? undefined);
 
   if (plan.kind === "invalid_name") return { status: "invalid_name", problem: plan.problem, name: plan.name, hint: "rename the project/company to a plain human-readable name (no ID, issue key or slash) and retry" };
   if (plan.kind === "needs_human_look") return { status: "needs_human_look", reason: plan.reason, conflictsWith: plan.conflictsWith };
@@ -121,12 +127,27 @@ async function loadDriveSiblings(ctx: PluginContext, viewer: Viewer, type: Drive
   const siblings: Sibling[] = [];
   if (type === "crm_company") {
     const companies = await listAccounts(ctx, viewer.companyId);
-    for (const c of companies) if (c.id !== id) siblings.push({ entityType: "crm_company", entityId: c.id, name: c.name });
+    for (const c of companies) {
+      if (c.id !== id) {
+        const contact = await getPrimaryContact(ctx, viewer.companyId, c.id);
+        const folderName = companyFolderName(c.name, contact?.name);
+        siblings.push({ entityType: "crm_company", entityId: c.id, name: folderName });
+      }
+    }
   } else {
     const companyLink = await getCompanyLink(ctx, viewer.companyId, id);
     if (companyLink) {
       const projects = await getProjectsByCompany(ctx, viewer.companyId, companyLink);
       for (const p of projects) if (p.id !== id) siblings.push({ entityType: "project", entityId: p.id, name: p.name });
+      // Also add company siblings for collision detection
+      const companies = await listAccounts(ctx, viewer.companyId);
+      for (const c of companies) {
+        if (c.id !== companyLink) {
+          const contact = await getPrimaryContact(ctx, viewer.companyId, c.id);
+          const folderName = companyFolderName(c.name, contact?.name);
+          siblings.push({ entityType: "crm_company", entityId: c.id, name: folderName });
+        }
+      }
     } else {
       const allProjects = await ctx.projects.list({ companyId: viewer.companyId, limit: 500 });
       const withCompany = new Set<string>();
