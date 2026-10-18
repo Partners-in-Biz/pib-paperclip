@@ -7,7 +7,7 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, CreateAdCreativeRequest, CreateAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountRef, AdPolicyRow, AdsProvider, CampaignInfo, CreateCampaignRequest, CreateAdCreativeRequest, CreateAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
   op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad";
@@ -55,10 +55,11 @@ export class MockAdsProvider implements AdsProvider {
   campaigns: Record<string, CampaignInfo[]> = {};
   /** Fixed rows per account (tests). An account without any gets generated demo numbers. */
   insightRows: Record<string, InsightRow[]> = {};
+  ads: AdPolicyRow[] = [];
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "create" | "status" | "budget" | "refresh", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
@@ -125,6 +126,12 @@ export class MockAdsProvider implements AdsProvider {
       for (let t = Date.parse(`${range.since}T00:00:00Z`); t <= Date.parse(`${range.until}T00:00:00Z`); t += 86_400_000) out.push(demoDay(account.externalId, campaign, new Date(t).toISOString().slice(0, 10)));
     }
     return out;
+  }
+
+  async listAds(_env: unknown, _token: TokenBundle, account: AccountRef) {
+    this.reads.push(`listAds:${account.externalId}`);
+    this.maybeFail("listAds");
+    return this.ads;
   }
 
   async createCampaign(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateCampaignRequest) {

@@ -109,5 +109,8 @@ export const ADS_ORIGINS = {
   reconnect: "ads-reconnect:",
 } as const;
 
+export const AD_POLICY_STATUSES = ["PENDING_REVIEW", "DISAPPROVED", "ACTIVE", "OTHER"] as const;
+export type AdPolicyStatus = (typeof AD_POLICY_STATUSES)[number];
+
 export type ScopeKey = string;
 export const OWN_SCOPE: ScopeKey = "own";

@@ -220,6 +220,10 @@ export const googleProvider: AdsProvider = {
     return out;
   },
 
+  async listAds() {
+    return [];
+  },
+
   async createCampaign(env, token, account, req) {
     const customer = digits(account.externalId);
     const temp = `customers/${customer}/campaignBudgets/-1`;
