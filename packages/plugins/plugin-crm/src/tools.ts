@@ -6,6 +6,7 @@ import { CARE_TOOLS } from "./care-tools.js";
 import { ESIGN_TOOLS } from "./esign-tools.js";
 import { GROWTH_TOOLS } from "./growth-tools.js";
 import { SERVICE_KEYS, SERVICES } from "./services.js";
+import { DRIVE_TOOLS } from "./drive/tools.js";
 
 /**
  * The CRM's agent tools. Every parameter has a description, and an enum where
@@ -853,4 +854,5 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   ...CARE_TOOLS,
   ...ESIGN_TOOLS,
   ...GROWTH_TOOLS,
+  ...DRIVE_TOOLS,
 ];
