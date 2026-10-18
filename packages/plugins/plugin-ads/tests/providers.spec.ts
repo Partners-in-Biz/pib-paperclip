@@ -310,6 +310,53 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
   });
 });
 
+describe("Meta: account caps and campaign health", () => {
+  it("reads spend cap and ad sets (excluding archived/deleted)", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\?fields=spend_cap/, { body: { spend_cap: "500000", currency: "ZAR" } }],
+      [/\/act_123456\/adsets\?/, { body: { data: [
+        { id: "as1", campaign_id: "c1", lifetime_budget: "100000", effective_status: "ACTIVE" },
+        { id: "as2", campaign_id: "c1", lifetime_budget: "0", effective_status: "PAUSED" },
+        { id: "as3", campaign_id: "c2", lifetime_budget: "50000", effective_status: "ARCHIVED" },
+      ] } }],
+    ]);
+    const caps = await metaProvider.accountCaps(env(metaApp(), fetchImpl), token, accountRef);
+    expect(caps).toEqual({ spendCapMinor: 500_000, adSets: [
+      { externalId: "as1", campaignExternalId: "c1", lifetimeBudgetMinor: 100_000 },
+      { externalId: "as2", campaignExternalId: "c1", lifetimeBudgetMinor: null },
+    ] });
+  });
+
+  it("returns null spend cap when none is set", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\?/, { body: { currency: "USD" } }],
+      [/\/adsets\?/, { body: { data: [] } }],
+    ]);
+    const caps = await metaProvider.accountCaps(env(metaApp(), fetchImpl), token, accountRef);
+    expect(caps.spendCapMinor).toBeNull();
+  });
+
+  it("reads campaign health from campaigns and disapproved ads", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\/campaigns\?/, { body: { data: [
+        { id: "c1", effective_status: "ACTIVE" },
+        { id: "c2", effective_status: "PAUSED" },
+      ] } }],
+      [/\/act_123456\/ads\?/, { body: { data: [
+        { campaign_id: "c1", effective_status: "DISAPPROVED" },
+        { campaign_id: "c1", effective_status: "DISAPPROVED" },
+        { campaign_id: "c2", effective_status: "DISAPPROVED" },
+      ] } }],
+    ]);
+    const health = await metaProvider.campaignHealth(env(metaApp(), fetchImpl), token, accountRef, ["c1", "c2", "c3"]);
+    expect(health).toEqual([
+      { campaignExternalId: "c1", status: "active", rawStatus: "ACTIVE", disapprovedAds: 2 },
+      { campaignExternalId: "c2", status: "paused", rawStatus: "PAUSED", disapprovedAds: 1 },
+      { campaignExternalId: "c3", status: "other", rawStatus: "UNKNOWN", disapprovedAds: 0 },
+    ]);
+  });
+});
+
 describe("errors never leak a token and say what happened", () => {
   it("reads Meta, Google and OAuth error shapes", () => {
     expect(platformMessage(JSON.stringify({ error: { message: "Invalid OAuth access token.", type: "OAuthException", code: 190 } }))).toMatchObject({ message: "Invalid OAuth access token.", tokenInvalid: true });

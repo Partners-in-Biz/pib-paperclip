@@ -24,6 +24,10 @@ export async function syncedAccount(w: World, options: { scope?: string; externa
 
 export const CREATE = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_campaign", scopeKey: "own", accountId, name: "Spring leads", objective: "OUTCOME_LEADS", dailyBudgetMinor: 5000, reason: "The last campaign returned 3x.", ...extra });
 
+export const CHANGE_BUDGET = (accountId: string, campaignExternalId: string, newDailyBudgetMinor: number, extra: Record<string, unknown> = {}) => ({ kind: "change_budget", scopeKey: "own", accountId, campaignExternalId, newDailyBudgetMinor, reason: "Adjusting spend", ...extra });
+
+export const PAUSE = (scopeKey: string, accountId: string, campaignExternalId: string, extra: Record<string, unknown> = {}) => ({ kind: "pause_campaign", scopeKey, targets: [{ accountId, campaignExternalId }], reason: "Pausing", ...extra });
+
 export async function propose(w: World, input: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null } = { agentId: ADS_AGENT }): Promise<ProposalRow> {
   const result = await createProposal(w.rt(), actor, input);
   return (await getProposal(w.ctx, COMPANY, result.proposalId))!;

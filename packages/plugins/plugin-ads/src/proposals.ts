@@ -32,6 +32,7 @@ import { accountManagerAssignee, adsAssignee, closeIssue, closeRunIssue, note, o
 import { scopePace } from "./pacing.js";
 import { ADS_ORIGINS, OPEN_PROPOSAL_STATUSES, PROPOSAL_KIND_LABELS, SPEND_KINDS, type ProposalKind } from "./platforms.js";
 import { normalizeProposal, type Normalized } from "./proposal-input.js";
+import { assertPlatformCapsFor } from "./platformCaps.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
 import type { AdsRuntime } from "./runtime.js";
 import { APPROVAL_TTL_MS, PROPOSAL_TTL_MS, reviewStands, signoffState, type Role } from "./signoffs.js";
@@ -127,6 +128,7 @@ export async function createProposal(rt: AdsRuntime, actor: ProposalActor, input
   const n = await normalizeProposal(rt, scope, input);
   const id = randomUUID();
   const impact = await computeImpact(rt, scope, n.kind, n.addition);
+  await assertPlatformCapsFor(rt, n.kind, { ...n.payload, accountId: n.accountId });
   const precheck = precheckOf(scope, n);
   const blockers = (precheck as { blockers?: number }).blockers ?? 0;
   const origin = typeof input.origin === "string" && ["agent", "budget_90", "budget_100", "alert", "human"].includes(input.origin) ? input.origin : actor.userId ? "human" : "agent";

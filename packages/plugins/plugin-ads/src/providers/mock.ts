@@ -7,7 +7,7 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountCaps, AccountRef, AdsProvider, CampaignHealth, CampaignInfo, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
   op: "create" | "status" | "budget";
@@ -43,10 +43,12 @@ export class MockAdsProvider implements AdsProvider {
   campaigns: Record<string, CampaignInfo[]> = {};
   /** Fixed rows per account (tests). An account without any gets generated demo numbers. */
   insightRows: Record<string, InsightRow[]> = {};
+  accountCapsData: Record<string, AccountCaps> = {};
+  disapproved: Record<string, Record<string, number>> = {};
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "create" | "status" | "budget" | "refresh", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "create" | "status" | "budget" | "refresh" | "caps" | "health", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
@@ -138,5 +140,24 @@ export class MockAdsProvider implements AdsProvider {
     this.writes.push({ op: "budget", accountExternalId: account.externalId, campaignExternalId, dailyBudgetMinor });
     const campaign = this.campaigns[account.externalId]?.find((c) => c.externalId === campaignExternalId);
     if (campaign) campaign.dailyBudgetMinor = dailyBudgetMinor;
+  }
+
+  async accountCaps(_env: unknown, _token: TokenBundle, account: AccountRef): Promise<AccountCaps> {
+    this.maybeFail("caps");
+    return this.accountCapsData[account.externalId] ?? { spendCapMinor: 1_000_000_00, adSets: [] };
+  }
+
+  async campaignHealth(_env: unknown, _token: TokenBundle, account: AccountRef, campaignExternalIds: string[]): Promise<CampaignHealth[]> {
+    this.maybeFail("health");
+    const accountDisapproved = this.disapproved[account.externalId] ?? {};
+    return campaignExternalIds.map((campaignId) => {
+      const campaign = this.campaigns[account.externalId]?.find((c) => c.externalId === campaignId);
+      return {
+        campaignExternalId: campaignId,
+        status: campaign?.status ?? "other",
+        rawStatus: campaign?.rawStatus ?? "UNKNOWN",
+        disapprovedAds: accountDisapproved[campaignId] ?? 0,
+      };
+    });
   }
 }
