@@ -28,6 +28,7 @@ import {
   Plug,
   Radio,
   Tabs,
+  type TabItem,
   TrendingUp,
   errorText,
   tokens,
@@ -36,13 +37,12 @@ import {
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
-import { platformLabel, Row } from "./parts.js";
+import { chipStyle, platformLabel, Row, SmallButton } from "./parts.js";
 import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { GrowthTab } from "./growth.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { RoutineSwitchOn, useWeeklyRoutine } from "./routine.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
-import { MySocialPage as MySocialPageComponent } from "./my-social.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
 const ACTION_KEYS = [
@@ -92,13 +92,6 @@ const ACTION_KEYS = [
   "social.growth-decide-change",
   "social.growth-retire-question",
   "social.routine-report",
-  "my-social.accounts",
-  "my-social.posts",
-  "my-social.create-draft",
-  "my-social.update-draft",
-  "my-social.delete-draft",
-  "my-social.approve",
-  "my-social.disconnect-account",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
@@ -114,9 +107,11 @@ function useSocialActions(): Record<string, PluginActionFn> {
   return fns;
 }
 
-function tabFrom(search: string): TabId {
+function tabFrom(search: string, me = false): TabId {
   const value = new URLSearchParams(search).get("tab");
-  return value && (TAB_IDS as string[]).includes(value) ? (value as TabId) : "overview";
+  const tab = value && (TAB_IDS as string[]).includes(value) ? (value as TabId) : "overview";
+  // My Social has no company overview or Growth Lab: it opens on the posts.
+  return me && (tab === "overview" || tab === "growth") ? "posts" : tab;
 }
 
 /** The page frame for a client workspace: the shared workspace bar replaces the page title. */
@@ -130,7 +125,29 @@ function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: 
   );
 }
 
-export function SocialPage({ context }: PluginPageProps) {
+/** Whose socials the page shows: the company's own, or the signed-in user's. Clients open from the CRM. */
+function SpaceSwitch({ me, linkProps }: { me: boolean; linkProps: ReturnType<typeof useHostNavigation>["linkProps"] }) {
+  return (
+    <Row>
+      <a {...linkProps("/social")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={!me} style={chipStyle(!me)}>Partners in Biz</SmallButton></a>
+      <a {...linkProps("/mysocial")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={me} style={chipStyle(me)}>My Social</SmallButton></a>
+    </Row>
+  );
+}
+
+/** PiB's own social work and its clients' workspaces. */
+export function SocialPage(props: PluginPageProps) {
+  return <SocialWorkspace {...props} space="company" />;
+}
+
+/** The signed-in user's own socials: the same workspace, filled from their personal rows only. */
+export function MySocialPage(props: PluginPageProps) {
+  return <SocialWorkspace {...props} space="me" />;
+}
+
+function SocialWorkspace({ context, space }: PluginPageProps & { space: "company" | "me" }) {
+  const me = space === "me";
+  const basePath = me ? "/mysocial" : "/social";
   const fns = useSocialActions();
   const fnsRef = useRef(fns);
   fnsRef.current = fns;
@@ -139,13 +156,14 @@ export function SocialPage({ context }: PluginPageProps) {
   const navigation = useHostNavigation();
   // ?client=company:<id> or contact:<id> is a client's workspace; none is PiB's own work.
   const scopeKey = useMemo(() => {
+    if (me) return null;
     const scope = clientScopeFromSearch(location.search);
     return scope ? formatClientParam(scope) : null;
-  }, [location.search]);
+  }, [location.search, me]);
   const scope: ClientScope = useMemo(() => parseClientParam(scopeKey), [scopeKey]);
-  const tab = tabFrom(location.search);
+  const tab = tabFrom(location.search, me);
   // Setup's "Switch it on" link for the weekly routine (own page only).
-  const wantsRoutineOn = !scopeKey && new URLSearchParams(location.search).get("routine") === "on";
+  const wantsRoutineOn = !scopeKey && !me && new URLSearchParams(location.search).get("routine") === "on";
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [setupKey, setSetupKey] = useState(0);
   const [loadError, setLoadError] = useState("");
@@ -159,19 +177,20 @@ export function SocialPage({ context }: PluginPageProps) {
   const off = enabled === false;
 
   /** A path on this page that keeps the current scope. */
-  const pagePath = useCallback((query: string) => withClientParam(`/social${query ? `?${query}` : ""}`, scope), [scope]);
+  const pagePath = useCallback((query: string) => withClientParam(`${basePath}${query ? `?${query}` : ""}`, scope), [scope, basePath]);
 
   const refresh = useCallback(async () => {
     const seq = ++loadSeq.current;
     const data = (await fnsRef.current["social.load"]!({
       uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url),
       client: scopeKey,
+      space,
     })) as Snapshot;
     // Ignore a slow answer for a scope the page has already left.
     if (seq !== loadSeq.current) return;
     setSnapshot(data);
     setLoadError("");
-  }, [scopeKey]);
+  }, [scopeKey, space]);
 
   const notify = useCallback((title: string, tone: "success" | "error" | "info", body?: string) => {
     const id = toast({ title, body, tone, ttlMs: tone === "error" ? 9000 : 4000 });
@@ -198,7 +217,7 @@ export function SocialPage({ context }: PluginPageProps) {
     setLoadError("");
     setComposer(null);
     setDetailId(null);
-  }, [scopeKey]);
+  }, [scopeKey, space]);
 
   useEffect(() => {
     if (!context.companyId || off) return;
@@ -218,14 +237,14 @@ export function SocialPage({ context }: PluginPageProps) {
   const setTab = (id: TabId) => navigation.navigate(pagePath(id === "overview" ? "" : `tab=${id}`), { replace: true });
 
   // Own page: "finish setting up" (the same checklist Setup shows) and the weekly routine's real state.
-  const setup = usePluginSetupStatus(PLUGIN_ID, !scopeKey && !off ? context.companyId : null, setupKey);
-  const routineRef = !scopeKey ? snapshot?.routine ?? null : null;
+  const setup = usePluginSetupStatus(PLUGIN_ID, !scopeKey && !me && !off ? context.companyId : null, setupKey);
+  const routineRef = !scopeKey && !me ? snapshot?.routine ?? null : null;
   const weekly = useWeeklyRoutine({
     routine: routineRef,
     report: (params) => fnsRef.current["social.routine-report"]!(params),
     onReported: () => setSetupKey((k) => k + 1),
   });
-  const closeRoutinePrompt = () => navigation.navigate("/social", { replace: true });
+  const closeRoutinePrompt = () => navigation.navigate(basePath, { replace: true });
 
   const posts = snapshot?.posts ?? [];
   const detail = detailId ? posts.find((p) => p.id === detailId) ?? null : null;
@@ -235,7 +254,7 @@ export function SocialPage({ context }: PluginPageProps) {
   const inReview = posts.filter((p) => p.status === "review").length;
   const tabLink = (id: string) => navigation.linkProps(pagePath(id === "overview" ? "" : `tab=${id}`));
 
-  if (!context.companyId) return <Page title="Social" description="Pick a company first." accent="social">{null}</Page>;
+  if (!context.companyId) return <Page title={me ? "My Social" : "Social"} description="Pick a company first." accent="social">{null}</Page>;
 
   const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
@@ -250,8 +269,8 @@ export function SocialPage({ context }: PluginPageProps) {
   ) : !snapshot ? <p style={{ margin: 0, fontSize: 13 }}>Loading…</p> : (
     <>
       {/* The overview shows the setup checklist (it covers the settings); other tabs keep the short banners. */}
-      {tab === "overview" && !scope ? <GetStarted status={setup} linkFor={(href) => ({ ...navigation.linkProps(href) })} moduleName="Social" /> : null}
-      {tab !== "accounts" && (tab !== "overview" || scope || !setup) ? <SetupBanners snapshot={snapshot} /> : null}
+      {tab === "overview" && !scope && !me ? <GetStarted status={setup} linkFor={(href) => ({ ...navigation.linkProps(href) })} moduleName="Social" /> : null}
+      {tab !== "accounts" && (tab !== "overview" || scope || me || !setup) ? <SetupBanners snapshot={snapshot} /> : null}
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -263,7 +282,7 @@ export function SocialPage({ context }: PluginPageProps) {
           { id: "media", label: "Media", icon: Package, count: snapshot.media.length || null },
           { id: "feeds", label: "Feeds", icon: Radio, count: snapshot.feeds.length || null, countTone: snapshot.feeds.some((f) => f.lastError) ? "bad" : undefined },
           { id: "templates", label: "Templates", icon: FileText, count: snapshot.templates.length || null },
-        ]}
+        ].filter((t) => !me || (t.id !== "overview" && t.id !== "growth")) as TabItem[]}
         active={tab}
         onChange={(id) => setTab(id as TabId)}
       />
@@ -340,11 +359,13 @@ export function SocialPage({ context }: PluginPageProps) {
 
   return (
     <Page
-      title="Social"
-      description="Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."
+      title={me ? "My Social" : "Social"}
+      description={me
+        ? "Your own social accounts, posts and inbox. Only you can see them: they are separate from Partners in Biz and from every client."
+        : "Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."}
       message={message}
       accent="social"
-      actions={off ? undefined : <Row>{newPost}</Row>}
+      actions={off ? undefined : <Row><SpaceSwitch me={me} linkProps={navigation.linkProps} />{newPost}</Row>}
     >
       {body}
     </Page>
@@ -390,72 +411,3 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
 }
 
 /** Personal social accounts page (own work only). */
-export function MySocialPage({ context }: PluginPageProps) {
-  const fns = useSocialActions();
-  const fnsRef = useRef(fns);
-  fnsRef.current = fns;
-  const toast = usePluginToast();
-
-  const run: RunAction = useCallback(async (key, params, success) => {
-    const fn = fnsRef.current[key];
-    if (!fn) throw new Error(`Unknown action ${key}`);
-    try {
-      const result = await fn(params);
-      if (success) toast({ title: success, tone: "success", ttlMs: 4000 });
-      return result;
-    } catch (error) {
-      const msg = errorText(error);
-      toast({ title: "That did not work", body: msg, tone: "error", ttlMs: 9000 });
-      throw error;
-    }
-  }, [toast]);
-
-  // For the personal page, load company data to get account types
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState("");
-  const loadSeq = useRef(0);
-
-  const refresh = useCallback(async () => {
-    const seq = ++loadSeq.current;
-    try {
-      const data = (await fnsRef.current["social.load"]!({
-        uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url),
-        client: null,
-      })) as Snapshot;
-      if (seq !== loadSeq.current) return;
-      setSnapshot(data);
-      setError("");
-    } catch (e) {
-      if (seq === loadSeq.current) setError(errorText(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!context.companyId) return;
-    refresh().catch(() => undefined);
-  }, [context.companyId, refresh]);
-
-  if (!context.companyId) return <Page title="My Social" description="Pick a company first." accent="social">{null}</Page>;
-
-  const body = error ? (
-    <EmptyState
-      tone="bad"
-      title="Could not load"
-      description={error}
-    />
-  ) : !snapshot ? (
-    <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>
-  ) : (
-    <MySocialPageComponent snapshot={snapshot} run={run} companyId={context.companyId} />
-  );
-
-  return (
-    <Page
-      title="My Social"
-      description="Your personal social accounts and drafts. Separate from company accounts."
-      accent="social"
-    >
-      {body}
-    </Page>
-  );
-}

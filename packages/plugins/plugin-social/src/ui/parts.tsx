@@ -105,8 +105,8 @@ export function Code({ children }: { children: ReactNode }) {
 }
 
 /** Params that put a new record in the page's scope. */
-export function scopeParams(snapshot: Pick<Snapshot, "scope">): { client: string | null } {
-  return { client: snapshot.scope };
+export function scopeParams(snapshot: Pick<Snapshot, "scope" | "space">): { client: string | null; space?: "me" } {
+  return snapshot.space === "me" ? { client: null, space: "me" } : { client: snapshot.scope };
 }
 
 /** "own work" or the client's name. */

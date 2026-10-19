@@ -164,6 +164,8 @@ export interface PlatformInfo {
 }
 
 export interface Snapshot {
+  /** Whose socials this is: the company's (and its clients') or the signed-in user's own. */
+  space: "company" | "me";
   /** The page's scope as sent to the worker ("company:<id>" / "contact:<id>"), null for own work. */
   scope: string | null;
   /** The client this page works for, null for own work. */

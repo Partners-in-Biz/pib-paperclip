@@ -217,15 +217,17 @@ export function Composer({ snapshot, post, run, onClose }: {
     <Modal
       open
       title={post ? "Edit post" : "New post"}
-      description="Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."
+      description={snapshot.space === "me" ? "Write once, then adjust per platform. Only you can approve, schedule or publish your posts." : "Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."}
       onClose={onClose}
       footer={(
         <>
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="button" variant="secondary" disabled={saving || !body.trim()} onClick={() => void save(false)}>Save draft</Button>
-          <Button type="button" disabled={saving || !body.trim() || accountIds.size === 0} onClick={() => void save(true)}>
-            {saving ? "Saving…" : "Save & send for review"}
-          </Button>
+          {snapshot.space === "me" ? null : (
+            <Button type="button" disabled={saving || !body.trim() || accountIds.size === 0} onClick={() => void save(true)}>
+              {saving ? "Saving…" : "Save & send for review"}
+            </Button>
+          )}
         </>
       )}
     >

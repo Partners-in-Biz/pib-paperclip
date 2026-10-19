@@ -381,13 +381,13 @@ export async function connectBlueskyAccount(
   ctx: PluginContext,
   companyId: string,
   userId: string | null,
-  input: { identifier: string; appPassword: string; pdsUrl?: string | null; target?: ResolvedScope; reconnectAccountId?: string | null },
+  input: { identifier: string; appPassword: string; pdsUrl?: string | null; target?: ResolvedScope; reconnectAccountId?: string | null; personal?: boolean },
 ) {
   const config = await loadSocialConfig(ctx, companyId);
   await config.keyring();
   const candidate = await connectBluesky({ identifier: input.identifier, appPassword: input.appPassword, pdsUrl: input.pdsUrl, defaultPds: config.blueskyDefaultPds });
   const reconnect = input.reconnectAccountId ? await getAccount(ctx, companyId, input.reconnectAccountId) : null;
   const keepScope = Boolean(reconnect && reconnect.platform === candidate.platform && reconnect.external_id === candidate.externalId);
-  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, target: input.target ?? OWN, keepScope });
+  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, target: input.target ?? OWN, keepScope, ...(input.personal ? { accountScope: "personal" as const, accountOwnerUserId: userId } : {}) });
   return { ...saved, handle: candidate.handle };
 }
