@@ -482,6 +482,66 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
   try {
     if (input.routeKey === "cockpit") return { status: 200, body: await ownSnapshot(env, input.companyId) };
     if (input.routeKey === "setup-status") return { status: 200, body: await ownSetupStatus(env, input.companyId) };
+    if (input.routeKey === "repairs-create") {
+      const body = input.body && typeof input.body === "object" && !Array.isArray(input.body) ? (input.body as Record<string, unknown>) : {};
+      const { recordRepair } = await import("./repairs.js");
+
+      // Validate required string fields
+      const required = ["companyId", "kind", "targetKind", "targetId", "action", "outcome", "actor"];
+      for (const field of required) {
+        if (typeof body[field] !== "string" || !String(body[field]).trim()) {
+          return { status: 400, body: { error: `${field} is required and must be a non-empty string` } };
+        }
+      }
+
+      // Check for unknown fields
+      const allowed = new Set([...required, "detail"]);
+      for (const field of Object.keys(body)) {
+        if (!allowed.has(field)) {
+          return { status: 400, body: { error: `Unknown field: ${field}` } };
+        }
+      }
+
+      // Check companyId match
+      if (String(body.companyId).trim() !== input.companyId) {
+        return { status: 400, body: { error: "Body companyId does not match resolved companyId" } };
+      }
+
+      const row = await recordRepair(env.ctx, input.companyId, {
+        kind: String(body.kind).trim(),
+        targetKind: String(body.targetKind).trim(),
+        targetId: String(body.targetId).trim(),
+        action: String(body.action).trim(),
+        outcome: String(body.outcome).trim(),
+        detail: typeof body.detail === "string" ? body.detail : undefined,
+        actor: String(body.actor).trim(),
+      });
+      return { status: 201, body: row };
+    }
+    if (input.routeKey === "repairs-list") {
+      const query = input.query && typeof input.query === "object" ? (input.query as Record<string, unknown>) : {};
+      const companyId = typeof query.companyId === "string" ? query.companyId : input.companyId;
+
+      if (!companyId) {
+        return { status: 400, body: { error: "companyId is required" } };
+      }
+
+      let since: string | undefined;
+      if (typeof query.since === "string" && query.since.trim()) {
+        if (!Number.isFinite(Date.parse(query.since))) {
+          return { status: 400, body: { error: "since must be a valid ISO date" } };
+        }
+        since = new Date(query.since).toISOString();
+      }
+
+      const { listRepairs } = await import("./repairs.js");
+      const rows = await listRepairs(env.ctx, companyId, {
+        kind: typeof query.kind === "string" ? query.kind : undefined,
+        since,
+        limit: typeof query.limit === "number" ? query.limit : undefined,
+      });
+      return { status: 200, body: { rows } };
+    }
     return { status: 404, body: { error: "Not found" } };
   } catch (error) {
     env.ctx.logger.info("Cockpit route failed", { routeKey: input.routeKey, error: message(error) });

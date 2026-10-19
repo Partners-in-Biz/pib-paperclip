@@ -5,6 +5,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listRepairs, recordRepair, REPAIR_DETAIL_MAX, type RepairRow } from "../src/repairs.js";
+import { repairLines } from "../src/brief.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
@@ -414,6 +415,112 @@ d("repairs (Postgres)", () => {
       // Verify other store functions still work (goals table is still queryable)
       const goalsResult = await w.client.query(`SELECT EXISTS (SELECT 1 FROM ${NAMESPACE}.goals LIMIT 1)`);
       expect(goalsResult.rows[0]).toBeDefined();
+    });
+  });
+
+  describe("repairLines formatting", () => {
+    it("returns empty array for no rows", () => {
+      const lines = repairLines([]);
+      expect(lines).toEqual([]);
+    });
+
+    it("formats 3 repairs from the last 7 days", () => {
+      const now = new Date();
+      const rows: RepairRow[] = [
+        {
+          id: "rep1",
+          companyId: A,
+          kind: "agent",
+          targetKind: "agent",
+          targetId: "a1",
+          action: "add-skill",
+          outcome: "success",
+          detail: "",
+          actor: "user",
+          createdAt: new Date(now.getTime() - 2 * 86_400_000).toISOString(),
+        },
+        {
+          id: "rep2",
+          companyId: A,
+          kind: "grant",
+          targetKind: "grant",
+          targetId: "g1",
+          action: "grant",
+          outcome: "success",
+          detail: "",
+          actor: "user",
+          createdAt: new Date(now.getTime() - 5 * 86_400_000).toISOString(),
+        },
+        {
+          id: "rep3",
+          companyId: A,
+          kind: "check",
+          targetKind: "credential",
+          targetId: "c1",
+          action: "verify",
+          outcome: "expired",
+          detail: "",
+          actor: "user",
+          createdAt: new Date(now.getTime() - 6 * 86_400_000).toISOString(),
+        },
+      ];
+      const lines = repairLines(rows);
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toMatch(/agent agent:a1 add-skill -> success/);
+      expect(lines[1]).toMatch(/grant grant:g1 grant -> success/);
+      expect(lines[2]).toMatch(/check credential:c1 verify -> expired/);
+    });
+
+    it("caps output at 10 lines and shows '…and N more' for 30 rows", () => {
+      const now = new Date();
+      const rows: RepairRow[] = Array.from({ length: 30 }, (_, i) => ({
+        id: `rep${i}`,
+        companyId: A,
+        kind: "test",
+        targetKind: "test",
+        targetId: `t${i}`,
+        action: "test",
+        outcome: "success",
+        detail: "",
+        actor: "user",
+        createdAt: new Date(now.getTime() - (29 - i) * 3_600_000).toISOString(),
+      }));
+      const lines = repairLines(rows, 10);
+      expect(lines).toHaveLength(10);
+      expect(lines[9]).toMatch(/…and 21 more/);
+    });
+
+    it("excludes repairs older than 7 days", () => {
+      const now = new Date();
+      const rows: RepairRow[] = [
+        {
+          id: "rep1",
+          companyId: A,
+          kind: "agent",
+          targetKind: "agent",
+          targetId: "a1",
+          action: "fix",
+          outcome: "success",
+          detail: "",
+          actor: "user",
+          createdAt: new Date(now.getTime() - 6 * 86_400_000).toISOString(),
+        },
+        {
+          id: "rep2",
+          companyId: A,
+          kind: "agent",
+          targetKind: "agent",
+          targetId: "a2",
+          action: "fix",
+          outcome: "success",
+          detail: "",
+          actor: "user",
+          createdAt: new Date(now.getTime() - 8 * 86_400_000).toISOString(),
+        },
+      ];
+      const lines = repairLines(rows);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/agent:a1/);
     });
   });
 });
