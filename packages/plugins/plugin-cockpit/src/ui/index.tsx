@@ -7,7 +7,7 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, PageFrame, PageHeader, PageMessage, Tabs, Workflow, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, Tabs, Workflow, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -20,6 +20,7 @@ import { runAlert, runStats } from "./series.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { ProfilePanel } from "./profile.js";
+import { PushSpikePanel } from "./PushSpikePanel.js";
 
 export { ClientsNav, FinanceNav, MarketingNav } from "./nav.js";
 
@@ -59,7 +60,7 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "flows", "profile", "memory"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory", "push"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 /** `?tab=flows`, `?tab=profile` and `?tab=memory` open those tabs; anything else is the overview. */
@@ -164,11 +165,14 @@ export function CockpitPage({ context }: PluginPageProps) {
           { id: "flows", label: "Flows", icon: Workflow, count: view?.flows.stuck.length || null, countTone: "warn" },
           { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
+          { id: "push", label: "Push", icon: Megaphone },
         ]}
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
       />
-      {memoryTab ? (
+      {tab === "push" ? (
+        <PushSpikePanel key={companyId} />
+      ) : memoryTab ? (
         <MemoryPanel key={companyId} agents={data.raw?.agents ?? []} linkFor={linkFor} settingsHref={settingsHref} refreshKey={memoryTick} />
       ) : profileTab ? (
         <ProfilePanel
