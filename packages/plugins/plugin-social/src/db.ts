@@ -164,12 +164,24 @@ export async function findAccountByExternal(
   companyId: string,
   platform: string,
   externalId: string,
+  /** The space the account is being saved in. The same login can be a company account AND a personal one: they are separate rows. */
+  space?: { scope: "org" | "personal"; ownerUserId: string | null },
 ): Promise<AccountRow | null> {
+  const params: unknown[] = [companyId, platform, externalId];
+  let spaceFilter = "";
+  if (space) {
+    params.push(space.scope);
+    spaceFilter = ` AND scope = $${params.length}`;
+    if (space.scope === "personal") {
+      params.push(space.ownerUserId);
+      spaceFilter += ` AND owner_user_id = $${params.length}`;
+    }
+  }
   const rows = await ctx.db.query<AccountRow>(
     `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND platform = $2 AND external_id = $3
+      WHERE company_id = $1 AND platform = $2 AND external_id = $3${spaceFilter}
       ORDER BY created_at LIMIT 1`,
-    [companyId, platform, externalId],
+    params,
   );
   return rows[0] ?? null;
 }
@@ -219,7 +231,7 @@ export interface AccountWrite {
  * (flow.saveCandidate keeps it on reconnect and checks moves).
  */
 export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Promise<{ id: string; created: boolean }> {
-  const existing = await findAccountByExternal(ctx, input.company_id, input.platform, input.external_id);
+  const existing = await findAccountByExternal(ctx, input.company_id, input.platform, input.external_id, { scope: input.scope, ownerUserId: input.owner_user_id });
   if (existing) {
     await ctx.db.execute(
       `UPDATE ${table(ctx, "accounts")}

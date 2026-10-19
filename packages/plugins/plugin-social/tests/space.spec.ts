@@ -33,3 +33,18 @@ describe("social.load in My Social", () => {
     expect(readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8")).toContain("space: p.space");
   });
 });
+
+describe("one login, two spaces", () => {
+  it("a personal connect never finds (and so never overwrites) the company's account", async () => {
+    const { fakeCtx } = await import("./helpers.js");
+    const db = await import("../src/db.js");
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const ctx = fakeCtx({}, { queryResult: (sql: string, params?: unknown[]) => { calls.push({ sql, params: params ?? [] }); return []; } });
+    await db.findAccountByExternal(ctx, "co", "linkedin", "ext1", { scope: "personal", ownerUserId: "u1" });
+    await db.findAccountByExternal(ctx, "co", "linkedin", "ext1", { scope: "org", ownerUserId: null });
+    expect(calls[0]!.sql).toContain("scope = $4");
+    expect(calls[0]!.sql).toContain("owner_user_id = $5");
+    expect(calls[0]!.params).toEqual(["co", "linkedin", "ext1", "personal", "u1"]);
+    expect(calls[1]!.params).toEqual(["co", "linkedin", "ext1", "org"]);
+  });
+});
