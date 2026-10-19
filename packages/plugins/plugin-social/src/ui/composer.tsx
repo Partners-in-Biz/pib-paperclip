@@ -25,7 +25,7 @@ const FIELD_LABEL: Record<keyof PlatformOverride, string> = {
 };
 
 /** Upload a file straight to R2 with a presigned PUT, then register it in `client`'s scope (null = own work). */
-export async function uploadToR2(run: RunAction, file: File, client: string | null, altText?: string): Promise<MediaAsset> {
+export async function uploadToR2(run: RunAction, file: File, scope: { client: string | null; space?: "me" }, altText?: string): Promise<MediaAsset> {
   if (!SOCIAL_MEDIA_MIME.includes(file.type)) throw new Error(`${file.name}: use JPEG, PNG, GIF, WebP, MP4 or MOV`);
   const presign = (await run("social.media-presign", { fileName: file.name, mime: file.type, bytes: file.size })) as {
     uploadUrl: string;
@@ -46,7 +46,7 @@ export async function uploadToR2(run: RunAction, file: File, client: string | nu
     height: dims?.height,
     durationS: dims?.durationS,
     altText: altText || undefined,
-    client,
+    ...scope,
   })) as MediaAsset;
 }
 
@@ -160,7 +160,7 @@ export function Composer({ snapshot, post, run, onClose }: {
     for (const file of Array.from(files)) {
       setUploading(file.name);
       try {
-        const asset = await uploadToR2(run, file, snapshot.scope);
+        const asset = await uploadToR2(run, file, scopeParams(snapshot));
         setExtraAssets((prev) => [asset, ...prev]);
         setMediaIds((prev) => [...prev, asset.id]);
       } catch (e) {

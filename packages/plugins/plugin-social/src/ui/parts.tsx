@@ -110,7 +110,8 @@ export function scopeParams(snapshot: Pick<Snapshot, "scope" | "space">): { clie
 }
 
 /** "own work" or the client's name. */
-export function scopeName(snapshot: Pick<Snapshot, "client">): string {
+export function scopeName(snapshot: Pick<Snapshot, "client"> & { space?: Snapshot["space"] }): string {
+  if (snapshot.space === "me") return "you (My Social)";
   return snapshot.client?.name ?? "own work";
 }
 
