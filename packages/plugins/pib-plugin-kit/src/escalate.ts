@@ -179,12 +179,19 @@ export async function escalate(
     }
 
     // Create the unblock issue
-    const comments =
-      stuckIssue.assigneeAgentId && stuckIssue.assigneeAgentId.length > 0
-        ? [
-            // Would fetch comments from the issue in a real implementation
-          ]
-        : [];
+    let comments: string[] = [];
+    if (stuckIssue.assigneeAgentId && stuckIssue.assigneeAgentId.length > 0) {
+      try {
+        const allComments = await ctx.issues.listComments(stuckIssue.id, opts.companyId);
+        // Filter to comments by the assignee agent
+        const assigneeComments = allComments
+          .filter((c) => c.authorAgentId === stuckIssue.assigneeAgentId)
+          .map((c) => c.body);
+        comments = assigneeComments;
+      } catch {
+        // If we can't fetch comments (missing capability), proceed with empty list
+      }
+    }
 
     const unblockInput = buildUnblockIssue({
       issue: { id: stuckIssue.id, identifier: stuckIssue.identifier ?? "", title: stuckIssue.title },

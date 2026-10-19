@@ -41,6 +41,8 @@ export interface FakeOptions {
   grantsThrow?: boolean;
   /** Issue ids that have blockers (`ctx.issues.relations.get`), or `"throws"` for a plugin without `issue.relations.read`. */
   blockers?: Record<string, string[]> | "throws";
+  /** Seed comments for issues: { issueId: [{ body: string, authorAgentId?: string }, ...], ... } */
+  issueComments?: Record<string, Array<{ body: string; authorAgentId?: string }>>;
   now?: () => number;
 }
 
@@ -54,13 +56,14 @@ export function fakeCtx(options: FakeOptions = {}) {
   const emitted: Array<{ name: string; companyId: string; payload: Record<string, unknown> }> = [];
   const issues: FakeIssue[] = [];
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
-  const comments: Array<{ issueId: string; body: string }> = [];
+  const comments: Array<{ issueId: string; body: string; authorAgentId?: string }> = [];
   const wakeups: string[] = [];
   const jobs = new Map<string, () => Promise<void>>();
   const resets: Array<{ key: string; companyId: string }> = [];
   const denied = new Set(options.deniedCompanies ?? []);
   const grantStore: Record<string, Array<{ permissionKey: string; scope: Record<string, unknown> | null }>> = { ...(options.grants ?? {}) };
   const grantWrites: Array<{ principalId: string; grants: Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>; grantedByUserId?: string | null }> = [];
+  const seedComments = options.issueComments ?? {};
   let counter = 0;
 
   const guard = (companyId: string | undefined, method: string) => {
@@ -102,7 +105,7 @@ export function fakeCtx(options: FakeOptions = {}) {
       },
     },
     agents: {
-      get: async (id: string) => options.agents?.find((a) => a.id === id) ?? null,
+      get: async (id: string, _companyId?: string) => options.agents?.find((a) => a.id === id) ?? null,
       list: async () => options.agents ?? [],
     },
     authorization: {
@@ -152,13 +155,29 @@ export function fakeCtx(options: FakeOptions = {}) {
       },
       list: async (input: { companyId: string; status?: string; originKindPrefix?: string; originKind?: string; originId?: string }) =>
         issues.filter((i) => i.companyId === input.companyId && (!input.status || i.status === input.status) && (!input.originKindPrefix || (i.originKind ?? "").startsWith(input.originKindPrefix)) && (!input.originKind || i.originKind === input.originKind) && (!input.originId || i.originId === input.originId)),
-      update: async (id: string, patch: Record<string, unknown>) => {
+      update: async (id: string, patch: Record<string, unknown>, companyId?: string) => {
+        guard(companyId, "issues.update");
         updates.push({ id, patch });
-        const issue = issues.find((i) => i.id === id);
+        const issue = issues.find((i) => i.id === id && (!companyId || i.companyId === companyId));
         if (issue) Object.assign(issue, patch);
         return issue;
       },
       createComment: async (issueId: string, body: string) => void comments.push({ issueId, body }),
+      listComments: async (issueId: string, _companyId: string) => {
+        const seeded = seedComments[issueId] ?? [];
+        const created = comments.filter((c) => c.issueId === issueId).map((c) => ({ body: c.body, authorAgentId: c.authorAgentId }));
+        const allComments = [...seeded, ...created];
+        return allComments.map((c, i) => ({
+          id: `comment-${i}`,
+          issueId,
+          body: c.body,
+          authorAgentId: c.authorAgentId ?? null,
+          authorUserId: null,
+          authorType: c.authorAgentId ? "agent" : "system",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })) as unknown as Array<{ id: string; issueId: string; body: string; authorAgentId?: string | null }>;
+      },
       requestWakeup: async (id: string) => void wakeups.push(id),
       relations: {
         get: async (id: string, companyId: string) => {

@@ -249,6 +249,39 @@ describe("escalate", () => {
       expect(desc).not.toMatch(/sk_test_def456uvwlong1234567890/);
       expect(desc).toContain("[redacted]");
     });
+
+    it("redacts secrets in comments", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: null, status: "ok" },
+        ],
+      });
+
+      const stuckIssue = await fake.ctx.issues.create({
+        companyId: "co-1",
+        title: "Stuck",
+        assigneeAgentId: "agent1",
+        status: "todo",
+      });
+
+      // Add comments with authorAgentId for filtering
+      fake.comments.push({ issueId: stuckIssue.id, body: "Issue started with token=abc123SECRETVALUE1234567890", authorAgentId: "agent1" });
+      fake.comments.push({ issueId: stuckIssue.id, body: "Still blocked, using Bearer abcdefghijklmnop1234", authorAgentId: "agent1" });
+
+      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", {
+        companyId: "co-1",
+        now,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ created: true }));
+      const created = fake.issues.find((i) => i.id !== stuckIssue.id);
+      const desc = (created as any).description;
+      expect(desc).not.toMatch(/abc123SECRETVALUE1234567890/);
+      expect(desc).not.toMatch(/abcdefghijklmnop1234/);
+      expect(desc).toContain("[redacted]");
+    });
   });
 
   describe("(g) disabled flag returns skipped:disabled, no writes", () => {
@@ -294,7 +327,7 @@ describe("escalate", () => {
   });
 
   describe("cycle in reportsTo does not hang", () => {
-    it("cycle guard prevents infinite loop", async () => {
+    it("cycle guard prevents infinite loop and escalates correctly", async () => {
       const fake = fakeCtx({
         companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
         agents: [
@@ -303,6 +336,25 @@ describe("escalate", () => {
           { id: "agent3", reportsTo: "agent1", status: "ok" }, // cycle: agent3 -> agent1 -> agent2 -> agent3
         ],
       });
+
+      // Set owner in roles
+      await fake.ctx.state.set(
+        {
+          scopeKind: "company" as const,
+          scopeId: "co-1",
+          namespace: "pib-cockpit",
+          stateKey: "roles",
+        },
+        {
+          companyId: "co-1",
+          operatorAgentId: null,
+          reviewerAgentId: null,
+          ownerUserId: "owner-user",
+          reviewOutward: false,
+          updatedAt: new Date().toISOString(),
+          receivedAt: new Date().toISOString(),
+        },
+      );
 
       const stuckIssue = await fake.ctx.issues.create({
         companyId: "co-1",
@@ -317,10 +369,12 @@ describe("escalate", () => {
         now,
       });
 
-      // Should eventually escalate to owner (no other option in cycle)
-      // Or skip if all levels are below-start or cap etc. But at minimum should not hang.
-      expect(result).toBeDefined();
-      expect((result as any).skipped !== undefined || (result as any).created !== undefined).toBe(true);
+      // Should escalate and create an issue (will be assigned to agent2 at level 1, since agent1->agent2->agent3->agent1 has cycle after depth 3)
+      expect(result).toEqual(expect.objectContaining({ created: true }));
+      const created = fake.issues.find((i) => i.id !== stuckIssue.id);
+      expect(created).toBeDefined();
+      // Should be assigned to one of the agents in the cycle (likely agent2 as level 1)
+      expect((created as any).assigneeAgentId).toBe("agent2");
     });
   });
 
