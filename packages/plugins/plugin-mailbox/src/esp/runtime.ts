@@ -75,6 +75,11 @@ export function effectiveEspRate(setting: number, quota: Pick<EspAccountQuota, "
   return Math.max(1, quota ? Math.min(setting, Math.floor(quota.maxSendRate)) : setting);
 }
 
+/** The account limits last read (from the cache), for the cockpit to show quota without resolving secrets. */
+export function knownEspQuota(companyId: string): EspAccountQuota | null {
+  return knownQuota.get(companyId) ?? null;
+}
+
 /** The account limits, from the cache or the provider; concurrent callers share one read. Never throws: a failed read is null. */
 async function readQuota(companyId: string, fingerprint: string, provider: EmailProvider, nowMs: number): Promise<EspAccountQuota | null> {
   if (!provider.getAccountQuota) return null;

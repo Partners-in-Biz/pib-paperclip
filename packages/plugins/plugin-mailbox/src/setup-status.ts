@@ -16,7 +16,7 @@ import {
   type SetupItem,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
-import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, r2Configured } from "./config.js";
+import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, r2Configured, SNS_CONFIRMATION_WAITING } from "./config.js";
 import type { GmailStore } from "./db.js";
 import { dnsInstructions, requiredRecords } from "./esp/domains.js";
 import { readEspState } from "./esp/runtime.js";
@@ -474,14 +474,16 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
     agentNext: "An agent registers a client's sending domain with add-sending-domain and gets the exact DNS records to hand over.",
   });
 
-  const webhookDone = readiness.domains && esp.hasWebhookSecret;
+  const webhookDone = isSES ? readiness.sending : readiness.domains && esp.hasWebhookSecret;
   items.push({
     key: "esp_webhook",
     title: "Email provider: the webhook for bounces and complaints (optional, owner)",
     status: webhookDone ? "done" : readiness.domains ? "missing" : "optional",
     required: false,
     detail: webhookDone
-      ? `${isSES ? "SES" : "Resend"}'s delivery events are verified with the saved signing secret: hard bounces and complaints go on the do-not-email list, soft bounces back off, and each domain's bounce and complaint rate is watched.`
+      ? isSES
+        ? "SES's delivery events are received through the SNS topic: hard bounces and complaints go on the do-not-email list, soft bounces back off, and each domain's bounce and complaint rate is watched."
+        : `Resend's delivery events are verified with the saved signing secret: hard bounces and complaints go on the do-not-email list, soft bounces back off, and each domain's bounce and complaint rate is watched.`
       : readiness.domains
         ? "Until this is set, nothing is sent through the provider (a bounce or complaint would be missed). It takes two minutes."
         : "Comes after the account and credentials.",
@@ -490,11 +492,11 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
     steps: webhookDone
       ? undefined
       : (isSES ? [
-        "In the AWS SES console, open the configuration set for this company, select Delivery event publishing, and find the SNS topic the Mailbox publishes to.",
-        "In the SNS topic console, subscribe an endpoint with Protocol HTTPS to that topic. The endpoint URL is shown below. Click Create subscription.",
-        "Open the SNS console, subscriptions tab, find the pending subscription (it will appear shortly), and in its details, copy the SubscribeURL from the message the SNS sent to the Mailbox (the Mailbox shows the URL).",
-        `The SNS endpoint URL is ${webhookUrl ?? "<your Paperclip public address>/api/plugins/partnersinbiz.mailbox/webhooks/ses (save the Public base URL in the Mailbox settings first)"}.`,
-        "Once the subscription is confirmed the SNS publishes bounces and complaints to the Mailbox.",
+        `In the AWS SES console, open the configuration set for this company, select Delivery event publishing, and find the SNS topic ARN (${loaded.config.esp.ses.snsTopicArn ?? "e.g. arn:aws:sns:eu-north-1:123456789012:mailbox"}).`,
+        "In the SNS console, subscriptions tab, create a subscription with Protocol HTTPS to that topic.",
+        `The endpoint URL is ${webhookUrl ?? "<your Paperclip public address>/api/plugins/partnersinbiz.mailbox/webhooks/ses (save the Public base URL in the Mailbox settings first)"}.`,
+        "The subscription will show status Pending. In the SNS console, find that subscription and click Request confirmation to verify the endpoint.",
+        "Once confirmed, the SNS topic publishes bounces and complaints to the Mailbox.",
       ] : [
         `At https://resend.com/webhooks click Add Webhook and set the Endpoint URL to ${webhookUrl ?? "<your Paperclip public address>/api/plugins/partnersinbiz.mailbox/webhooks/resend (save the Public base URL in the Mailbox settings first)"}.`,
         "Tick these events: email.delivered, email.bounced, email.complained, email.delivery_delayed, email.failed, email.opened, email.clicked, email.suppressed, domain.updated. Click Add.",
@@ -519,7 +521,7 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
         : "Optional. An agent registers a client's domain (a subdomain such as updates.client.co.za is best); the DNS records then go to whoever controls the domain.",
     href: "/mailbox?tab=mailboxes",
     hrefLabel: "Open sending domains",
-    steps: first && instructions ? [`For ${first.domain}: ${instructions.whoAddsIt}`, ...instructions.steps, "The Mailbox asks Resend to verify every hour, so nothing more is needed once the records are in; Check now on the Mailboxes tab does it at once."] : undefined,
+    steps: first && instructions ? [`For ${first.domain}: ${instructions.whoAddsIt}`, ...instructions.steps, `The Mailbox asks ${isSES ? "SES" : "Resend"} to verify every hour, so nothing more is needed once the records are in; Check now on the Mailboxes tab does it at once.`] : undefined,
     blockedBy: readiness.sending ? undefined : ["esp_account", "esp_webhook"],
     agentNext: "Once the provider has verified the domain its send-only account becomes ready, the daily domain check watches it, and Campaigns and the other plugins can send as the client.",
   });

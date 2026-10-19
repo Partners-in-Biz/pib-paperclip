@@ -231,6 +231,9 @@ export function parseEspConfig(raw: Record<string, unknown>): EspConfig {
   };
 }
 
+export const SES_SANDBOX_LIMIT = "SES is in the sandbox: 200 a day, 1 a second, verified recipients only; ask AWS for production access";
+export const SNS_CONFIRMATION_WAITING = "waiting for the SNS subscription: in the SNS console, use Request confirmation";
+
 export interface EspReadiness {
   /** Domains may be registered and checked (switched on, API key saved). */
   domains: boolean;
@@ -266,7 +269,7 @@ export function espReadiness(config: EspConfig): EspReadiness {
       blockers.push(`The SNS topic is in ${snsTopicRegion(config.ses.snsTopicArn)} but the SES region is ${config.ses.region}: they must be the same region.`);
       sending = false;
     } else if (domains && config.ses.configurationSet && !config.ses.topicConfirmed) {
-      blockers.push("waiting for the SNS subscription: in the SNS console, use Request confirmation");
+      blockers.push(SNS_CONFIRMATION_WAITING);
       sending = false;
     }
     return { domains, sending, blockers };
