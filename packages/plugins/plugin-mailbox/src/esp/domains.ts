@@ -67,11 +67,14 @@ export interface DnsInstructions {
   steps: string[];
   whoAddsIt: string;
   afterwards: string;
+  /** The provider (Resend or SES); defaults to Resend for backwards compatibility. */
+  provider?: "resend" | "ses";
 }
 
 /** The records somebody adds, in order, with the words to hand them over. DNS is edited by a person, never by an agent. */
-export function dnsInstructions(row: Pick<EspDomainRow, "domain" | "records" | "status">, options: { report?: Pick<DomainReport, "dmarc"> | null; reportsMailbox?: string | null } = {}): DnsInstructions {
+export function dnsInstructions(row: Pick<EspDomainRow, "domain" | "records" | "status"> & { provider?: "resend" | "ses" }, options: { report?: Pick<DomainReport, "dmarc"> | null; reportsMailbox?: string | null } = {}): DnsInstructions {
   const zone = organizationalDomain(row.domain);
+  const provider = row.provider ?? "resend";
   const records: DnsInstruction[] = requiredRecords(row.records).map((record) => ({
     type: record.type,
     host: record.fqdn,
@@ -94,18 +97,55 @@ export function dnsInstructions(row: Pick<EspDomainRow, "domain" | "records" | "
       status: "not_started",
     }
     : null;
+
+  // Provider-specific formatting of steps
   const lines = [...records, ...(dmarc ? [dmarc] : [])].map((record, index) => `${index + 1}. ${record.type} record at ${record.host}${record.hostInZone !== record.host ? ` (in the ${zone} zone: ${record.hostInZone})` : ""}${record.priority != null ? `, priority ${record.priority}` : ""}: ${record.value}`);
+
+  const steps: string[] = records.length === 0
+    ? ["The provider has not listed any records yet; check the domain again in a minute."]
+    : provider === "ses"
+    ? sesSteps(lines, zone, row.domain)
+    : resendSteps(lines, zone);
+
+  const afterwards = provider === "ses"
+    ? "Once the records are in, the daily domain check reads the identity status from the SES console (Identities tab) and watches it. When the identity is verified for sending and DKIM is successful, the send-only account becomes ready and mail can go out as the client."
+    : "Once the records are in, the provider verifies the domain by itself (the Mailbox asks it to look again every hour, and check-sender-domain does so now). The send-only account then becomes ready, the daily domain check watches the domain, and mail can go out as the client.";
+
   return {
     domain: row.domain,
     zone,
     records,
     dmarc,
-    steps: records.length === 0
-      ? ["The provider has not listed any records yet; check the domain again in a minute."]
-      : [`At the DNS host for ${zone}, add ${lines.length === 1 ? "this record" : `these ${lines.length} records`}, exactly as written (a record that already exists is edited, never duplicated):`, ...lines, "Save. DNS changes can take a few hours to show."],
+    steps,
     whoAddsIt: `Whoever controls the DNS of ${zone}: the owner, or the client or their web host. An agent cannot edit DNS, so hand them these steps in one partnersinbiz.cockpit:ask-owner and wait.`,
-    afterwards: "Once the records are in, the provider verifies the domain by itself (the Mailbox asks it to look again every hour, and check-sender-domain does so now). The send-only account then becomes ready, the daily domain check watches the domain, and mail can go out as the client.",
+    afterwards,
+    provider,
   };
+}
+
+/** Resend DNS steps (original formatting). */
+function resendSteps(lines: string[], zone: string): string[] {
+  return [`At the DNS host for ${zone}, add ${lines.length === 1 ? "this record" : `these ${lines.length} records`}, exactly as written (a record that already exists is edited, never duplicated):`, ...lines, "Save. DNS changes can take a few hours to show."];
+}
+
+/** Amazon SES DNS steps: separate DKIM CNAMEs from MAIL FROM records (which are only added when set). */
+function sesSteps(allLines: string[], zone: string, domain: string): string[] {
+  // Separate DKIM CNAMEs from MAIL FROM MX/TXT
+  const dkimLines = allLines.filter((line) => line.includes("CNAME"));
+  const mailFromLines = allLines.filter((line) => line.includes("MX") || line.includes("TXT"));
+
+  const steps: string[] = [];
+  if (dkimLines.length > 0) {
+    steps.push(`For ${domain}: at the DNS host for ${zone}, add the ${dkimLines.length} DKIM CNAME records (exactly as written; if a record already exists, edit it, never duplicate):`, ...dkimLines);
+  }
+  if (mailFromLines.length > 0) {
+    steps.push(`When a custom MAIL FROM is set, also add these records to the DNS host for ${zone} (edit existing records, never duplicate):`, ...mailFromLines);
+  }
+  if (dkimLines.length > 0) {
+    steps.push("Save. DNS changes can take a few hours to show.");
+  }
+
+  return steps.length === 0 ? ["The provider has not listed any records yet; check the domain again in a minute."] : steps;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +194,7 @@ export async function sendingDomainView(env: Pick<Env, "store" | "now">, config:
     reputation: days.length > 0 ? reputationOf(days, row.domain, now, clearanceOf(row)) : null,
     tracking: { open: row.open_tracking ?? null, click: row.click_tracking ?? null },
     holdLifted: row.reputation_cleared_at ? { at: row.reputation_cleared_at, by: row.reputation_cleared_by ?? null, day: row.reputation_cleared_day ?? null } : null,
-    dns: row.status === "verified" ? null : dnsInstructions(row, { report }),
+    dns: row.status === "verified" ? null : dnsInstructions({ ...row, provider: row.provider as "resend" | "ses" }, { report }),
   };
 }
 

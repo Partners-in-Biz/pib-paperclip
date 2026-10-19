@@ -877,7 +877,7 @@ async function checkSenderDomain(companyId: string, params: Record<string, unkno
 /** The onboarding of a domain at the email provider: the records the provider has not verified yet, and what is already right. */
 function espOnboarding(row: EspDomainRow, report: DomainReport, reportsMailbox: string | null) {
   const pending = row.status === "verified" ? [] : row.records.filter((record) => record.status !== "verified");
-  const instructions = dnsInstructions({ ...row, records: pending }, { report, reportsMailbox });
+  const instructions = dnsInstructions({ ...row, records: pending, provider: row.provider as "resend" | "ses" }, { report, reportsMailbox });
   const alreadyDone = row.records.filter((record) => record.status === "verified" && record.record.toUpperCase() !== "TRACKING").map((record) => `${record.record} ${record.type} at ${record.fqdn}`);
   const nothing = pending.length === 0 && !instructions.dmarc;
   return {
