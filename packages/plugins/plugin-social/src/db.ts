@@ -164,12 +164,24 @@ export async function findAccountByExternal(
   companyId: string,
   platform: string,
   externalId: string,
+  /** The space the account is being saved in. The same login can be a company account AND a personal one: they are separate rows. */
+  space?: { scope: "org" | "personal"; ownerUserId: string | null },
 ): Promise<AccountRow | null> {
+  const params: unknown[] = [companyId, platform, externalId];
+  let spaceFilter = "";
+  if (space) {
+    params.push(space.scope);
+    spaceFilter = ` AND scope = $${params.length}`;
+    if (space.scope === "personal") {
+      params.push(space.ownerUserId);
+      spaceFilter += ` AND owner_user_id = $${params.length}`;
+    }
+  }
   const rows = await ctx.db.query<AccountRow>(
     `SELECT ${ACCOUNT_COLS} FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND platform = $2 AND external_id = $3
+      WHERE company_id = $1 AND platform = $2 AND external_id = $3${spaceFilter}
       ORDER BY created_at LIMIT 1`,
-    [companyId, platform, externalId],
+    params,
   );
   return rows[0] ?? null;
 }
@@ -219,7 +231,7 @@ export interface AccountWrite {
  * (flow.saveCandidate keeps it on reconnect and checks moves).
  */
 export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Promise<{ id: string; created: boolean }> {
-  const existing = await findAccountByExternal(ctx, input.company_id, input.platform, input.external_id);
+  const existing = await findAccountByExternal(ctx, input.company_id, input.platform, input.external_id, { scope: input.scope, ownerUserId: input.owner_user_id });
   if (existing) {
     await ctx.db.execute(
       `UPDATE ${table(ctx, "accounts")}
@@ -842,8 +854,6 @@ export interface DestinationRow {
   company_id: string;
   post_id: string;
   account_id: string;
-  scope: "org" | "personal";
-  owner_user_id: string | null;
   status: DestinationStatus;
   result: unknown;
   attempts: number;
@@ -859,7 +869,7 @@ export interface DestinationRow {
 }
 
 const DEST_COLS = [
-  "id", "company_id", "post_id", "account_id", "scope", "owner_user_id", "status", "result", "attempts", "next_attempt_at", "external_id", "external_url",
+  "id", "company_id", "post_id", "account_id", "status", "result", "attempts", "next_attempt_at", "external_id", "external_url",
   "last_error", "published_at", "issue_id", "metric_windows", "created_at", "updated_at",
 ].join(", ");
 
@@ -889,6 +899,18 @@ export async function destinationsForScope(ctx: PluginContext, companyId: string
       WHERE d.company_id = $1 AND ${w.sql}
       ORDER BY d.created_at`,
     params,
+  );
+}
+
+/** Destinations of the personal posts a user owns. */
+export async function destinationsForPersonal(ctx: PluginContext, companyId: string, viewerUserId: string): Promise<DestinationRow[]> {
+  return ctx.db.query<DestinationRow>(
+    `SELECT ${DEST_COLS.split(", ").map((c) => `d.${c}`).join(", ")}
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
+      WHERE d.company_id = $1 AND p.scope = 'personal' AND p.owner_user_id = $2
+      ORDER BY d.created_at`,
+    [companyId, viewerUserId],
   );
 }
 
@@ -1273,9 +1295,11 @@ export interface RssFeedRow {
   client_ref: string | null;
   client_name: string | null;
   created_by_user_id: string | null;
+  scope: "org" | "personal";
+  owner_user_id: string | null;
 }
 
-const FEED_COLS = "id, company_id, url, title, account_id, account_ids, is_active, last_checked_at, last_error, last_item_at, client_kind, client_ref, client_name, created_by_user_id";
+const FEED_COLS = "id, company_id, url, title, account_id, account_ids, is_active, last_checked_at, last_error, last_item_at, client_kind, client_ref, client_name, created_by_user_id, scope, owner_user_id";
 
 export async function insertRssFeed(ctx: PluginContext, feed: {
   id: string;
@@ -1287,13 +1311,15 @@ export async function insertRssFeed(ctx: PluginContext, feed: {
   client_ref: string | null;
   client_name: string | null;
   created_by_user_id: string | null;
+  scope?: "org" | "personal";
+  owner_user_id?: string | null;
 }): Promise<void> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "rss_feeds")} (id, company_id, url, account_id, account_ids, is_active, client_kind, client_ref, client_name, created_by_user_id)
-     VALUES ($1, $2, $3, $4, ${textArrayParam(5)}, true, $6, $7, $8, $9)`,
+    `INSERT INTO ${table(ctx, "rss_feeds")} (id, company_id, url, account_id, account_ids, is_active, client_kind, client_ref, client_name, created_by_user_id, scope, owner_user_id)
+     VALUES ($1, $2, $3, $4, ${textArrayParam(5)}, true, $6, $7, $8, $9, $10, $11)`,
     [
       feed.id, feed.company_id, feed.url, feed.account_id, JSON.stringify(feed.account_ids), feed.client_kind, feed.client_ref, feed.client_name,
-      feed.created_by_user_id,
+      feed.created_by_user_id, feed.scope ?? "org", feed.owner_user_id ?? null,
     ],
   );
 }
@@ -1302,7 +1328,17 @@ export async function listRssFeeds(ctx: PluginContext, companyId: string, scope?
   const params: unknown[] = [companyId];
   const where = scopeClause(scope, params);
   return ctx.db.query<RssFeedRow>(
-    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1${where} ORDER BY created_at DESC`,
+    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1${where}${orgOnlyClause()} ORDER BY created_at DESC`,
+    params,
+  );
+}
+
+/** RSS feeds a user owns in their personal space. */
+export async function listPersonalRssFeeds(ctx: PluginContext, companyId: string, viewerUserId: string): Promise<RssFeedRow[]> {
+  const params: unknown[] = [companyId];
+  const personalFilter = personalScopeClause(viewerUserId, params);
+  return ctx.db.query<RssFeedRow>(
+    `SELECT ${FEED_COLS} FROM ${table(ctx, "rss_feeds")} WHERE company_id = $1${personalFilter} ORDER BY created_at DESC`,
     params,
   );
 }

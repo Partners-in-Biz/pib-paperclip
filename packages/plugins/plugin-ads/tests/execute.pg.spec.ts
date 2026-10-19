@@ -11,7 +11,7 @@ import { recordReview, recordSignoff, sweepProposals } from "../src/proposals.js
 import { runtimeFromRaw } from "../src/runtime.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 import { ADS_AGENT, COMPANY, NOW, OWNER, REVIEWER, UI_BASE, settings, world, type World } from "./helpers/world.js";
-import { approvalsOf, CREATE, propose, syncedAccount } from "./helpers/scenario.js";
+import { approvalsOf, CREATE, CREATE_AD_SET, CREATE_AD_CREATIVE, CREATE_AD, propose, syncedAccount } from "./helpers/scenario.js";
 
 const available = await embeddedAvailable();
 let pg: Pg;
@@ -290,5 +290,106 @@ describe.skipIf(!available)("every way a change is refused, and the approval is 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actor: `agent:${ADS_AGENT}`, detail: { code: "writes_off" } });
     expect(JSON.stringify(rows)).not.toMatch(/token|secret|password/i);
+  });
+});
+
+describe.skipIf(!available)("running an approved ad set", () => {
+  let w: World;
+  let accountId: string;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w, { platform: "meta", connectionPlatform: "mock" }));
+  });
+
+  it("is refused without an approval, and with only the owner's yes when the client must also sign off", async () => {
+    const p = await propose(w, CREATE_AD_SET(accountId));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: p.id, approvalId: "whatever" }))).toMatchObject({ code: "not_approved" });
+    await pg.reset();
+    const c = await world(pg);
+    await c.harness.emit("plugin.partnersinbiz.crm.company.upserted", { id: "acme", name: "Acme Ltd", domain: null, lifecycle: null, updatedAt: "2026-10-01T00:00:00Z" }, { companyId: COMPANY });
+    const acct = await syncedAccount(c, { scope: "company:acme", externalId: "ext-acme", signoffs: "owner_client", platform: "meta", connectionPlatform: "mock" });
+    const q = await propose(c, CREATE_AD_SET(acct.accountId, { scopeKey: "company:acme" }));
+    await recordReview(c.rt(), { agentId: REVIEWER }, { proposalId: q.id, verdict: "pass" });
+    const { approvalId } = await recordSignoff(c.rt(), { proposalId: q.id, userId: OWNER, role: "owner", decision: "approved", via: "page" });
+    expect(await refusal(executeProposal(c.rt(), agent, { proposalId: q.id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(c.mock.writes).toEqual([]);
+  });
+
+  it("creates the ad set PAUSED with the approved lifetime budget, once, and the approval is used up", async () => {
+    const { id, approvalId } = await approved(w, CREATE_AD_SET(accountId));
+    expect(await executeProposal(w.rt(), agent, { proposalId: id, approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, externalId: expect.any(String) }] });
+    expect(w.mock.writes).toEqual([{ op: "create_adset", accountExternalId: "ext-1", campaignExternalId: "c1", name: "Q4 audiences", lifetimeBudgetMinor: 10_000, status: "paused" }]);
+    expect((await approvalsOf(w, id))[0]!.consumed_at).toEqual(expect.any(String));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(1);
+  });
+
+  it("is refused when the numbers changed after the yes, and the lifetime budget counts against the cap", async () => {
+    const changed = await approved(w, CREATE_AD_SET(accountId));
+    await pg.client.query(`UPDATE ${w.ctx.db.namespace}.proposals SET content_hash = 'changed' WHERE id = $1`, [changed.id]);
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: changed.id, approvalId: changed.approvalId }))).toMatchObject({ code: "approval_stale" });
+    // The lifetime budget counts against the month's cap: a yes without "over the cap" ticked is refused, and nothing runs.
+    const big = await propose(w, CREATE_AD_SET(accountId, { name: "Big", lifetimeBudgetMinor: 400_000 }));
+    await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: big.id, verdict: "pass" });
+    await expect(recordSignoff(w.rt(), { proposalId: big.id, userId: OWNER, role: "owner", decision: "approved", via: "page" })).rejects.toThrow(/over the month's cap/);
+    expect(w.mock.writes).toEqual([]);
+  });
+});
+
+describe.skipIf(!available)("running ad creatives and ads", () => {
+  let w: World;
+  let accountId: string;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w, { platform: "meta", connectionPlatform: "mock" }));
+  });
+
+  it("creates the ad creative and uses the approval once", async () => {
+    const { id, approvalId } = await approved(w, CREATE_AD_CREATIVE(accountId));
+    const result = await executeProposal(w.rt(), agent, { proposalId: id, approvalId });
+    expect(result).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("Created creative") }] });
+    expect(w.mock.writes).toEqual([{ op: "create_ad_creative", accountExternalId: "ext-1", name: "Q4 creative", pageId: "1234567890", imageHash: "abc123hash", videoId: null, link: "https://example.com/offer", headline: "Q4 Sale", body: "Get 30% off this October.", cta: "LEARN_MORE" }]);
+    expect((await approvalsOf(w, id))[0]!.consumed_at).toEqual(expect.any(String));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(1);
+  });
+
+  it("creates the ad from an ad set and creative", async () => {
+    const { id, approvalId } = await approved(w, CREATE_AD(accountId));
+    const result = await executeProposal(w.rt(), agent, { proposalId: id, approvalId });
+    expect(result).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("Created \"Q4 ad\" (paused)") }] });
+    expect(w.mock.writes).toEqual([{ op: "create_ad", accountExternalId: "ext-1", name: "Q4 ad", adSetExternalId: "as1", creativeExternalId: "cr1", status: "paused" }]);
+    expect((await approvalsOf(w, id))[0]!.consumed_at).toEqual(expect.any(String));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(1);
+  });
+
+  it("rejects an ad creative proposal on a Google account", async () => {
+    const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ad creatives are only supported on Meta") });
+  });
+
+  it("rejects an ad proposal on a Google account", async () => {
+    const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
+    expect(await refusal(propose(w, CREATE_AD(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ads are only supported on Meta") });
+  });
+
+  it("validates creative input: exactly one of image or video, non-https link, headline and body lengths", async () => {
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(accountId, { imageHash: "hash", videoId: "vid123" })))).toMatchObject({ message: expect.stringContaining("exactly one") });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(accountId, { imageHash: null, videoId: null })))).toMatchObject({ message: expect.stringContaining("exactly one") });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(accountId, { link: "http://insecure.com" })))).toMatchObject({ message: expect.stringContaining("https") });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(accountId, { headline: "" })))).toMatchObject({ message: expect.stringContaining("headline") });
+  });
+
+  it("validates ad input: non-empty ad set and creative ids, rejects status other than PAUSED", async () => {
+    expect(await refusal(propose(w, CREATE_AD(accountId, { adSetExternalId: "" })))).toMatchObject({ message: expect.stringContaining("adSetExternalId") });
+    expect(await refusal(propose(w, CREATE_AD(accountId, { creativeExternalId: "" })))).toMatchObject({ message: expect.stringContaining("creativeExternalId") });
+    expect(await refusal(propose(w, CREATE_AD(accountId, { status: "ACTIVE" })))).toMatchObject({ message: expect.stringContaining("PAUSED") });
+  });
+
+  it("rejects budget fields on create_ad", async () => {
+    expect(await refusal(propose(w, CREATE_AD(accountId, { dailyBudgetMinor: 5000 })))).toMatchObject({ message: expect.stringMatching(/budget/i) });
   });
 });

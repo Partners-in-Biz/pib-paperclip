@@ -62,6 +62,7 @@ import {
   scorePostsJob,
   updateProgramRecord,
 } from "./growth/service.js";
+import { spaceOf } from "./space.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
@@ -314,8 +315,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     await rememberPluginUiBase(ctx, p.uiBase);
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
     // The own page shows the agent card, so it also links a hire whose agent has appeared.
-    if (!p.client && !v.isAgent) await tryLinkSocialHire(ctx, v.companyId);
-    return loadSnapshot(ctx, v, { client: p.client ?? null });
+    if (!p.client && !v.isAgent && spaceOf(p) === "company") await tryLinkSocialHire(ctx, v.companyId);
+    return loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),
@@ -375,16 +376,17 @@ const ACTIONS: Record<string, ActionHandler> = {
       identifier: requiredString(p, "identifier"),
       appPassword: requiredString(p, "appPassword"),
       pdsUrl: optionalString(p, "pdsUrl") ?? null,
-      target: await scopeFromParams(ctx, v.companyId, p),
+      target: await scopeFromParams(ctx, v.companyId, spaceOf(p) === "me" ? { ...p, client: null } : p),
       reconnectAccountId: optionalString(p, "reconnectAccountId") ?? null,
+      personal: spaceOf(p) === "me",
     }),
   "social.disconnect-account": (ctx, v, p) => disconnectAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.update-account": (ctx, v, p) => updateAccountRecord(ctx, v, p),
   "social.refresh-account": (ctx, v, p) => refreshAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.media-presign": (ctx, v, p) =>
     presignUpload(ctx, v.companyId, { fileName: requiredString(p, "fileName"), mime: requiredString(p, "mime"), bytes: Number(p.bytes) }),
-  "social.create-media-asset": (ctx, v, p) => registerAsset(ctx, v.companyId, p),
-  "social.import-media": (ctx, v, p) => importFromUrl(ctx, v.companyId, p),
+  "social.create-media-asset": (ctx, v, p) => registerAsset(ctx, v.companyId, p, undefined, personalOwner(v, p)),
+  "social.import-media": (ctx, v, p) => importFromUrl(ctx, v.companyId, p, personalOwner(v, p)),
   "social.create-rss-feed": (ctx, v, p) => createRssFeedRecord(ctx, v, p),
   "social.set-rss-active": (ctx, v, p) => setRssActiveRecord(ctx, v, requiredString(p, "feedId"), p.active === true),
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
@@ -566,6 +568,11 @@ export async function publishSetupStatuses(ctx: PluginContext): Promise<{ publis
     }
   }
   return result;
+}
+
+/** The user who owns media added from My Social (`space: "me"`); null for the company's own library. */
+function personalOwner(v: Viewer, p: Record<string, unknown>): string | null {
+  return spaceOf(p) === "me" ? requireUser(v, "add personal media") : null;
 }
 
 const plugin = definePlugin({

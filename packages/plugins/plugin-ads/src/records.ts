@@ -22,6 +22,8 @@ import {
   listLedger,
   listProposals,
   listScopes,
+  listVariants,
+  listAdDailyForCampaign,
   setBudgetOverride,
   summaryRows,
   updateScope,
@@ -41,6 +43,7 @@ import { impactLines, impactOf, numberLines, clientMessage } from "./proposal-te
 import type { AdsRuntime } from "./runtime.js";
 import { signoffState } from "./signoffs.js";
 import { agentSummary } from "./agent.js";
+import { evaluateVariants } from "./variants.js";
 
 export interface RecordActor {
   userId?: string | null;
@@ -442,5 +445,57 @@ export async function accountsRecord(rt: AdsRuntime, params: Record<string, unkn
   const accounts = await describeAccounts(rt.ctx, rt.companyId, scopeKey);
   const budgets = await budgetStatusRecord(rt, scopeKey ? { scopeKey } : {});
   return { accounts, scopes: budgets.scopes.map((b) => ({ scopeKey: b.scopeKey, label: b.label, currency: b.currency, cap: b.cap, spent: b.spent, pctUsed: b.pctUsed, state: b.state, allowWrites: b.allowWrites, signoffs: b.signoffs })) };
+}
+
+export async function variantsRecord(rt: AdsRuntime, params: Record<string, unknown>) {
+  const scopeKey = scopeFromParams(params);
+  const accountId = optionalChoice(params, "accountId", []) as string | undefined;
+  const campaignExternalId = optionalChoice(params, "campaignExternalId", []) as string | undefined;
+
+  const variants = await listVariants(rt.ctx, rt.companyId, { accountId, campaignExternalId, ...(scopeKey ? { scopeKey } : {}), limit: 500 });
+
+  // Load ad_daily for winner/fatigue computation
+  const today = todayIn(rt.config.timezone, rt.now());
+  const windowStart = addDays(today, -rt.config.variants.windowDays + 1);
+
+  // Group variants by campaign using nested Maps: accountId -> campaignId -> variants[]
+  const campaignMap = new Map<string, Map<string, typeof variants>>();
+  for (const v of variants) {
+    if (!campaignMap.has(v.account_id)) campaignMap.set(v.account_id, new Map());
+    const campaignsByAcct = campaignMap.get(v.account_id)!;
+    if (!campaignsByAcct.has(v.campaign_external_id)) campaignsByAcct.set(v.campaign_external_id, []);
+    campaignsByAcct.get(v.campaign_external_id)!.push(v);
+  }
+
+  const adDailyByVariant = new Map<string, Array<{ account_id: string; campaign_external_id: string; ad_external_id: string; day: string; spend_minor: number; impressions: number; clicks: number; conversions: number; frequency: number }>>();
+
+  for (const [accId, campaignsByAcct] of campaignMap) {
+    for (const [campaignId, campaignVariants] of campaignsByAcct) {
+      const adDaily = await listAdDailyForCampaign(rt.ctx, rt.companyId, accId, campaignId, windowStart);
+      for (const v of campaignVariants) {
+        adDailyByVariant.set(v.id, adDaily);
+      }
+    }
+  }
+
+  // Compute winner/fatigue for each variant
+  const result = variants.map((v) => {
+    const adDaily = adDailyByVariant.get(v.id) ?? [];
+    const evaluated = evaluateVariants([v], adDaily, rt.config.variants, today);
+    const ev = evaluated[0];
+    return {
+      id: v.id,
+      account_id: v.account_id,
+      campaign_external_id: v.campaign_external_id,
+      ad_external_id: v.ad_external_id,
+      label: v.label,
+      axis_values: v.axis_values,
+      creative_ref: v.creative_ref,
+      winner: ev ? ev.winner : false,
+      fatigue: ev ? ev.fatigue : false,
+    };
+  });
+
+  return { variants: result };
 }
 

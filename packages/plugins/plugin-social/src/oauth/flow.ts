@@ -196,8 +196,9 @@ async function candidateScope(
   candidate: ConnectCandidate,
   target: ResolvedScope,
   keepScope: boolean,
+  space: { scope: "org" | "personal"; ownerUserId: string | null } = { scope: "org", ownerUserId: null },
 ): Promise<{ existing: AccountRow | null; target: ResolvedScope }> {
-  const existing = await findAccountByExternal(ctx, companyId, candidate.platform, candidate.externalId);
+  const existing = await findAccountByExternal(ctx, companyId, candidate.platform, candidate.externalId, space);
   if (!existing) return { existing: null, target };
   if (keepScope) return { existing, target: rowScope(existing) };
   if (!sameClient(scopeOfRow(existing), target.scope)) await assertAccountMovable(ctx, companyId, existing, target);
@@ -211,7 +212,7 @@ async function saveCandidate(
 ): Promise<{ id: string; created: boolean; platform: SocialPlatform; displayName: string; belongsTo: string }> {
   const keyring = await config.keyring();
   const c = input.candidate;
-  const { existing, target } = await candidateScope(ctx, input.companyId, c, input.target, input.keepScope ?? false);
+  const { existing, target } = await candidateScope(ctx, input.companyId, c, input.target, input.keepScope ?? false, { scope: input.accountScope ?? "org", ownerUserId: input.accountScope === "personal" ? input.accountOwnerUserId ?? null : null });
   // Moving also carries the inbox and drops the account from the old scope's feeds.
   if (existing) await moveAccountScope(ctx, input.companyId, existing, target);
   const saved = await upsertAccount(ctx, {
@@ -328,7 +329,12 @@ export async function pendingOptions(ctx: PluginContext, companyId: string, user
   const target = sessionScope(sessionExtra(session));
   const options = [];
   for (const c of candidates) {
-    const existing = await findAccountByExternal(ctx, companyId, c.platform, c.externalId);
+    const pickerExtra = sessionExtra(session);
+    const personal = pickerExtra.accountScope === "personal";
+    const existing = await findAccountByExternal(ctx, companyId, c.platform, c.externalId, {
+      scope: personal ? "personal" : "org",
+      ownerUserId: personal && typeof pickerExtra.accountOwnerUserId === "string" ? pickerExtra.accountOwnerUserId : null,
+    });
     const elsewhere = existing && !sameClient(scopeOfRow(existing), target.scope) ? scopeLabel(existing) : null;
     options.push({
       key: c.key,
@@ -370,7 +376,7 @@ export async function confirmPicker(
   const accountScope = typeof extra.accountScope === "string" ? (extra.accountScope as "org" | "personal") : undefined;
   const accountOwnerUserId = typeof extra.accountOwnerUserId === "string" ? extra.accountOwnerUserId : undefined;
   // Check every move first so a refused one saves none.
-  for (const candidate of chosen) await candidateScope(ctx, companyId, candidate, target, false);
+  for (const candidate of chosen) await candidateScope(ctx, companyId, candidate, target, false, { scope: accountScope ?? "org", ownerUserId: accountScope === "personal" ? accountOwnerUserId ?? null : null });
   const saved = [];
   for (const candidate of chosen) saved.push(await saveCandidate(ctx, config, { companyId, userId, candidate, target, accountScope, accountOwnerUserId }));
   await deleteOauthSession(ctx, session.state);
@@ -381,13 +387,13 @@ export async function connectBlueskyAccount(
   ctx: PluginContext,
   companyId: string,
   userId: string | null,
-  input: { identifier: string; appPassword: string; pdsUrl?: string | null; target?: ResolvedScope; reconnectAccountId?: string | null },
+  input: { identifier: string; appPassword: string; pdsUrl?: string | null; target?: ResolvedScope; reconnectAccountId?: string | null; personal?: boolean },
 ) {
   const config = await loadSocialConfig(ctx, companyId);
   await config.keyring();
   const candidate = await connectBluesky({ identifier: input.identifier, appPassword: input.appPassword, pdsUrl: input.pdsUrl, defaultPds: config.blueskyDefaultPds });
   const reconnect = input.reconnectAccountId ? await getAccount(ctx, companyId, input.reconnectAccountId) : null;
   const keepScope = Boolean(reconnect && reconnect.platform === candidate.platform && reconnect.external_id === candidate.externalId);
-  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, target: input.target ?? OWN, keepScope });
+  const saved = await saveCandidate(ctx, config, { companyId, userId, candidate, target: input.target ?? OWN, keepScope, ...(input.personal ? { accountScope: "personal" as const, accountOwnerUserId: userId } : {}) });
   return { ...saved, handle: candidate.handle };
 }

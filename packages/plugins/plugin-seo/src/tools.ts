@@ -11,6 +11,7 @@ import { AI_ENGINES } from "./engine/geo.js";
 import { PLAYBOOK_SECTIONS } from "./engine/playbook.js";
 import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-change.js";
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
+import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -196,12 +197,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "compact-task-thread",
     displayName: "Move a long task thread to a fresh issue",
     description:
-      "A task issue whose thread has grown past about 60 KB cannot be handed to an agent (the run fails with spawn E2BIG). This moves the task to a continuation issue (same project, parent, assignee and checkout, the task's description plus a summary of where it stands), points the task and its previews at it, closes the old issue with a pointer and wakes the agent there. The plugin does this by itself every few minutes; call it to do it now. It only reports unless dryRun is false.",
+      `A task issue whose thread has grown past ${THREAD_ROLL_BYTES} comment bytes cannot be handed to an agent (the run fails with spawn E2BIG). This moves the task to a continuation issue (same project, parent, assignee and checkout, the task's description plus a summary of where it stands), points the task and its previews at it, closes the old issue with a pointer and wakes the agent there. The plugin does this by itself every few minutes; call it to do it now. It only reports unless dryRun is false.`,
     parametersSchema: schema([], {
       issueId: text("Move just this task issue: its id or identifier such as PAR-528. Omit to check every open task issue of the company"),
       taskId: text("Move just this task (from list-tasks)"),
       dryRun: flag("Default true: only report which issues would move. Pass false to move them"),
-      minBytes: int("Thread size in bytes that counts as too long (default 60000, at least 10000); lower it to move a smaller thread"),
+      minBytes: int(`Thread size in bytes that counts as too long (default ${THREAD_ROLL_BYTES}, at least 10000); lower it to move a smaller thread`),
     }),
   },
   {

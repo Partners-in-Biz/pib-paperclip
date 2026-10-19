@@ -367,7 +367,7 @@ export function MediaTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
             for (const file of files) {
               setUploading(file.name);
               try {
-                await uploadToR2(run, file, snapshot.scope);
+                await uploadToR2(run, file, scopeParams(snapshot));
               } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));
               }
@@ -476,7 +476,7 @@ export function TemplatesTab({ snapshot, run }: { snapshot: Snapshot; run: RunAc
       <Modal open={open} title="New template" onClose={() => setOpen(false)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button type="button" disabled={!name || !body} onClick={() => run("social.create-template", { name, body, platform: platform || undefined }, "Template saved").then(() => {
+          <Button type="button" disabled={!name || !body} onClick={() => run("social.create-template", { name, body, platform: platform || undefined, ...(snapshot.space === "me" ? { space: "me" } : {}) }, "Template saved").then(() => {
             setOpen(false);
             setName("");
             setBody("");

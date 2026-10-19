@@ -47,7 +47,7 @@ export interface World {
   /** Every comment the plugin posted on an issue (the plugin has no right to read comments, so the test records what it writes). */
   comments: (issueId: string) => string[];
   /** A connected mock connection, an ad account under `scope` and the scope row. */
-  account: (options?: { scope?: string; currency?: string; externalId?: string; name?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; platform?: "mock" | "meta" | "google"; canWrite?: boolean }) => Promise<{ accountId: string; connectionId: string; scopeKey: string }>;
+  account: (options?: { scope?: string; currency?: string; externalId?: string; name?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; platform?: "mock" | "meta" | "google"; connectionPlatform?: "mock" | "meta" | "google"; canWrite?: boolean }) => Promise<{ accountId: string; connectionId: string; scopeKey: string }>;
 }
 
 export async function world(pg: Pg, options: { config?: Record<string, unknown>; roles?: { reviewer?: boolean; operator?: boolean; reviewOutward?: boolean; owner?: boolean } } = {}): Promise<World> {
@@ -125,7 +125,7 @@ export async function world(pg: Pg, options: { config?: Record<string, unknown>;
     const platform = o.platform ?? "mock";
     await ensureScope(harness.ctx, COMPANY, scopeKey, currency);
     await updateScope(harness.ctx, COMPANY, scopeKey, { ...(o.cap !== undefined ? { monthlyCapMinor: o.cap } : { monthlyCapMinor: 500_000 }), ...(o.allowWrites ? { allowWrites: true, allowWritesBy: `user:${OWNER}` } : {}), ...(o.signoffs ? { signoffs: o.signoffs } : {}) });
-    const connectionId = await insertConnection(harness.ctx, { companyId: COMPANY, platform, label: `${platform} test`, mode: "token", tokenEnc: null, keyVersion: null, expiresAt: null, scopes: ["x"], canWrite: o.canWrite ?? true, externalUserId: "u1", createdBy: OWNER });
+    const connectionId = await insertConnection(harness.ctx, { companyId: COMPANY, platform: o.connectionPlatform ?? platform, label: `${platform} test`, mode: "token", tokenEnc: null, keyVersion: null, expiresAt: null, scopes: ["x"], canWrite: o.canWrite ?? true, externalUserId: "u1", createdBy: OWNER });
     const accountId = await insertAccount(harness.ctx, { companyId: COMPANY, platform, externalId: o.externalId ?? `acct-${scopeKey}`, name: o.name ?? "Test account", currency, timezone: "UTC", scopeKey, connectionId, loginCustomerId: null, createdBy: "test" });
     return { accountId, connectionId, scopeKey };
   };

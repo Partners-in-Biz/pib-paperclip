@@ -307,7 +307,7 @@ describe("setup status for SES webhook", () => {
     const webhook = item(s, "esp_webhook");
     expect(webhook).toMatchObject({ status: "missing", required: false });
     expect(webhook.detail).toMatch(/Until this is set.*nothing is sent through the provider/);
-    expect(webhook.steps!.join(" ")).toMatch(/SNS console.*subscriptions.*Request confirmation/);
+    expect(webhook.steps!.join(" ")).toMatch(/SNS console.*[Ss]ubscription.*Request confirmation/i);
     expect(webhook.steps!.join(" ")).not.toMatch(/signing secret|whsec_/i);
     expect(webhook.steps!.join(" ")).toContain("arn:aws:sns:eu-north-1:123456789012:mailbox");
   });

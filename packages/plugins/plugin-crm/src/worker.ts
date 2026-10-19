@@ -199,6 +199,7 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
+import { driveFolderResolve, driveFolderEnsure, createBrokerForCompany } from "./drive/tools.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -524,6 +525,24 @@ const plugin = definePlugin({
     await syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
+
+    // Data handler for Drive folder registry lookup (read-only, never calls ensure)
+    ctx.data.register("drive-folder", async (params) => {
+      const hostCompanyId = params.companyId as string | undefined;
+      const crmCompanyId = params.crmCompanyId as string | undefined;
+      if (!hostCompanyId || !crmCompanyId) return { folder: null };
+      try {
+        const broker = await createBrokerForCompany(ctx, hostCompanyId);
+        if (!broker) return { folder: null };
+        const folder = await broker.resolve("crm_company", crmCompanyId);
+        if (!folder) return { folder: null };
+        const name = folder.path.split("/").pop() || folder.path;
+        return { folder: { name, url: folder.folder_url } };
+      } catch {
+        return { folder: null };
+      }
+    });
+
     ctx.logger.info("CRM plugin ready");
   },
 
@@ -755,6 +774,10 @@ async function dispatch(
       return ensureCanaryClient(ctx, viewer, body);
     case "cleanup-canary":
       return cleanupCanary(ctx, viewer, body);
+    case "drive_folder_resolve":
+      return driveFolderResolve(ctx, viewer, body);
+    case "drive_folder_ensure":
+      return driveFolderEnsure(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);
@@ -2121,7 +2144,7 @@ async function viewerFor(
     const member = members.find((item) => item.principalType === "user" && item.principalId === userId && item.status === "active");
     role = member?.membershipRole ?? null;
   }
-  return { companyId: input.companyId, userId, agentId: input.agentId, role };
+  return { companyId: input.companyId, userId, agentId: input.agentId, role, runId: input.runId ?? null };
 }
 
 async function actionViewer(ctx: PluginContext, context: PluginPerformActionContext): Promise<Viewer> {

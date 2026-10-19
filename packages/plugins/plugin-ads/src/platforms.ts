@@ -4,7 +4,7 @@
  */
 
 export const PLUGIN_ID = "partnersinbiz.ads";
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.3.0";
 /** Managed project that holds PiB's own ads work (a client's work goes in the client's own project). */
 export const ADS_PROJECT_KEY = "ads";
 export const ADS_ROLE_KEY = "ads-manager";
@@ -34,7 +34,7 @@ export function platformLabel(platform: StoredPlatform): string {
 }
 
 /** What a person can ask to change. `creative_check` changes nothing: it only clears ad copy. */
-export const PROPOSAL_KINDS = ["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "creative_check"] as const;
+export const PROPOSAL_KINDS = ["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "creative_check"] as const;
 export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
 
 export const PROPOSAL_KIND_LABELS: Record<ProposalKind, string> = {
@@ -42,11 +42,14 @@ export const PROPOSAL_KIND_LABELS: Record<ProposalKind, string> = {
   change_budget: "Budget change",
   pause_campaign: "Pause",
   resume_campaign: "Resume",
+  create_ad_set: "New ad set",
+  create_ad_creative: "New ad creative",
+  create_ad: "New ad",
   creative_check: "Ad copy check",
 };
 
 /** Kinds that put money at risk (they can raise spend), so a budget cap check and an approval apply. */
-export const SPEND_KINDS: ProposalKind[] = ["create_campaign", "change_budget", "resume_campaign"];
+export const SPEND_KINDS: ProposalKind[] = ["create_campaign", "change_budget", "resume_campaign", "create_ad_set"];
 
 export const PROPOSAL_STATUSES = [
   "needs_changes",
@@ -105,6 +108,9 @@ export const ADS_ORIGINS = {
   /** A connection that needs a person to sign in again: `ads-reconnect:<connectionId>`. */
   reconnect: "ads-reconnect:",
 } as const;
+
+export const AD_POLICY_STATUSES = ["PENDING_REVIEW", "DISAPPROVED", "ACTIVE", "OTHER"] as const;
+export type AdPolicyStatus = (typeof AD_POLICY_STATUSES)[number];
 
 export type ScopeKey = string;
 export const OWN_SCOPE: ScopeKey = "own";

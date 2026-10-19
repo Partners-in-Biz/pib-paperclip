@@ -166,10 +166,20 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
-## My Social (personal space, v0.9.0)
+## 0.9.1
 
-User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only. Implementation uses `scope` ('org'|'personal') + `owner_user_id` columns rather than a single owner_type column.
+Migration 017 no longer has comment lines. The host validator reads quotes before it strips comments, so an apostrophe in a comment made activation reject the file. The two unique indexes are unchanged.
 
-OAuth reuses existing LinkedIn and X apps; the owner is bound in the state. Agents get one tool `create-personal-draft` (drafts only, explicit `targetUserId`; cannot approve, schedule, publish, or read tokens). Only the owner approves and schedules; the publish job is unchanged and publishes only approved/scheduled posts.
+**Deploy: stop-first.**
 
-**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). Optional: drop the added unique indexes and columns with the SQL from the migration rollback comments.
+## Spaces: Partners in Biz, My Social, clients (v0.9.4)
+
+One workspace, three kinds of space. Every tab (Posts, Calendar, Accounts, Inbox, Media, Feeds, Templates) works the same in each:
+
+- **Partners in Biz** (`/social`): the company's own socials, scope `org`.
+- **My Social** (`/mysocial`): the signed-in user's own socials, scope `personal` with `owner_user_id`. Separate from the company and from every client: org queries exclude personal rows, personal queries return only the owner's. Same page code as Social with `space: "me"` (no overview, no Growth Lab, no review stage: the owner approves, schedules and publishes; agents can only add drafts through `create-personal-draft`). Every platform can be connected; the connection uses the same apps as the company.
+- **Clients** (`/social?client=company:<id>`): a CRM company or contact, opened from the CRM; scope `org` with `client_ref`.
+
+Actions take `space: "me"` next to (or instead of) `client`; `spaceOf()` in `src/space.ts` is the one place that reads it. Personal rows exist in accounts, posts, destinations (through their post), inbox items (copied from the account at sync), media, feeds, templates. Nobody else, including agents and other team members, can read, change or publish them.
+
+**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). 016 still has its rollback comments. 017's indexes are `accounts_org_external` and `accounts_personal_external`.

@@ -63,6 +63,13 @@ import {
   listPosts,
   listRssFeeds,
   listTemplates,
+  listPersonalAccounts,
+  listPersonalPosts,
+  listPersonalTemplates,
+  listPersonalMediaAssets,
+  listPersonalRssFeeds,
+  listPersonalInboxItems,
+  destinationsForPersonal,
   metricsForCompany,
   metricsForPost,
   postMedia,
@@ -108,6 +115,7 @@ import {
   type PostStatus,
   type SocialPlatform,
 } from "./platforms.js";
+import { spaceOf } from "./space.js";
 import { retryPost } from "./publish.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { reviewStats } from "./review-outcomes.js";
@@ -116,7 +124,7 @@ import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
-import { scopeStats } from "./stats.js";
+import { emptyStats, scopeStats } from "./stats.js";
 
 export interface Viewer {
   companyId: string;
@@ -191,6 +199,7 @@ export function postParams(params: Record<string, unknown>): Record<string, unkn
 }
 
 function postVisibility(params: Record<string, unknown>): AccountScope {
+  if (spaceOf(params) === "me") return "personal";
   const value = optionalString(params, "visibility") ?? "org";
   if (value !== "org" && value !== "personal") throw new SocialError("visibility must be org or personal");
   return value;
@@ -538,6 +547,15 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only edit drafts in a personal queue that they created");
   }
+  // My Social has no review stage: the owner approves their own draft directly (nobody else can).
+  if (post.scope === "personal" && !viewer.isAgent && to === "approved") {
+    requireCanActOnPost(viewer, post, "approve");
+    if (post.status !== "draft" && post.status !== "review") throw new SocialError(`A ${post.status.replace("_", " ")} post cannot be approved`);
+    if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], "approved"))) {
+      throw new SocialError("The post changed while you were editing it. Reload and try again.");
+    }
+    return getPostDetail(ctx, viewer, post.id);
+  }
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
@@ -718,7 +736,8 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
   const account = await requireAccount(ctx, viewer, requiredString(params, "accountId"));
   // "Belongs to": moving an account is refused while other-scope posts still target it.
   const requested = scopeInput(params);
-  const target = requested === undefined || sameClient(requested, scopeOfRow(account)) ? null : await resolveScope(ctx, viewer.companyId, requested);
+  if (account.scope === "personal" && requested !== undefined && requested !== null) throw new SocialError("A personal account stays in My Social; it cannot be moved to a client");
+  const target = requested === undefined || requested === null && account.scope === "personal" || sameClient(requested, scopeOfRow(account)) ? null : await resolveScope(ctx, viewer.companyId, requested);
   const meta: Record<string, unknown> = {};
   if (params.defaultSubreddit !== undefined) {
     if (account.platform !== "reddit") throw new SocialError("Only Reddit accounts have a default subreddit");
@@ -838,7 +857,8 @@ export async function createTemplateRecord(ctx: PluginContext, viewer: Viewer, p
     body: requiredString(params, "body"),
     platform: optionalString(params, "platform"),
   });
-  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform, scope: "org", owner_user_id: null });
+  const owner = spaceOf(params) === "me" ? requireUser(viewer, "save a personal template") : null;
+  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform, scope: owner ? "personal" : "org", owner_user_id: owner });
   return template;
 }
 
@@ -868,11 +888,14 @@ function feedOut(feed: Awaited<ReturnType<typeof listRssFeeds>>[number]) {
 export async function createRssFeedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const draft = createRssFeed({ companyId: viewer.companyId, url: requiredString(params, "url") });
   const accountIds = Array.from(new Set([...(stringList(params, "accountIds") ?? []), ...(optionalString(params, "accountId") ? [optionalString(params, "accountId")!] : [])]));
-  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  const owner = spaceOf(params) === "me" ? requireUser(viewer, "add a personal feed") : null;
+  const target = await scopeFromParams(ctx, viewer.companyId, owner ? { ...params, client: null } : params);
   const columns = scopeColumns(target);
   for (const id of accountIds) {
     const account = await requireAccount(ctx, viewer, id);
-    if (account.scope !== "org") throw new SocialError("RSS drafts can only target organisation accounts");
+    if (owner ? account.scope !== "personal" : account.scope !== "org") {
+      throw new SocialError(owner ? "A personal feed can only draft to your own accounts" : "RSS drafts can only target organisation accounts");
+    }
     assertAccountScope(columns, account);
   }
   await insertRssFeed(ctx, {
@@ -883,6 +906,8 @@ export async function createRssFeedRecord(ctx: PluginContext, viewer: Viewer, pa
     account_ids: accountIds,
     ...columns,
     created_by_user_id: viewer.userId,
+    scope: owner ? "personal" : "org",
+    owner_user_id: owner,
   });
   return {
     id: draft.id,
@@ -901,6 +926,7 @@ export async function listRssFeedsRecord(ctx: PluginContext, viewer: Viewer, par
 
 export async function setRssActiveRecord(ctx: PluginContext, viewer: Viewer, feedId: string, active: boolean) {
   const feed = await getRssFeed(ctx, viewer.companyId, feedId);
+  if (feed && feed.scope === "personal" && feed.owner_user_id !== viewer.userId) throw new SocialError("RSS feed was not found");
   if (!feed || !(await setRssFeedActive(ctx, viewer.companyId, feed.id, active))) throw new SocialError("RSS feed was not found");
   return { feedId, isActive: active };
 }
@@ -961,14 +987,20 @@ export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, para
   return { ...item, ...scopeOut(scopeColumns(target)) };
 }
 
+function inboxVisible(viewer: Viewer, item: { scope: "org" | "personal"; owner_user_id: string | null }): boolean {
+  return item.scope === "org" || item.owner_user_id === viewer.userId;
+}
+
 export async function markInboxReadRecord(ctx: PluginContext, viewer: Viewer, itemId: string) {
+  const existing = await getInboxItem(ctx, viewer.companyId, itemId);
+  if (existing && !inboxVisible(viewer, existing)) throw new SocialError("Inbox item was not found");
   if (!(await setInboxItemStatus(ctx, viewer.companyId, itemId, "read"))) throw new SocialError("Inbox item was not found");
   return { itemId, status: "read" };
 }
 
 export async function replyInboxRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const item = await getInboxItem(ctx, viewer.companyId, requiredString(params, "itemId"));
-  if (!item) throw new SocialError("Inbox item was not found");
+  if (!item || !inboxVisible(viewer, item)) throw new SocialError("Inbox item was not found");
   const result = await replyToInboxItem(ctx, {
     companyId: viewer.companyId,
     item,
@@ -1065,31 +1097,34 @@ export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
  * ("company:<id>" / "contact:<id>"); without it the page is own work.
  */
 export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
-  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  // `space: "me"` is the signed-in user's own socials: the same page and tabs, filled from their personal rows only.
+  const space = spaceOf(params);
+  const me = space === "me" ? requireUser(viewer, "open My Social") : null;
+  const target = await scopeFromParams(ctx, viewer.companyId, me ? { ...params, client: null } : params);
   const scope: ClientScope = target.scope;
   const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats, policy] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),
-    listAccounts(ctx, viewer.companyId, scope),
-    listPosts(ctx, viewer.companyId, { limit: 300, scope }),
-    destinationsForScope(ctx, viewer.companyId, scope),
-    listTemplates(ctx, viewer.companyId),
-    listMediaAssets(ctx, viewer.companyId, scope),
-    listRssFeeds(ctx, viewer.companyId, scope),
-    listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
+    me ? listPersonalAccounts(ctx, viewer.companyId, me) : listAccounts(ctx, viewer.companyId, scope),
+    me ? listPersonalPosts(ctx, viewer.companyId, me, { limit: 300 }) : listPosts(ctx, viewer.companyId, { limit: 300, scope }),
+    me ? destinationsForPersonal(ctx, viewer.companyId, me) : destinationsForScope(ctx, viewer.companyId, scope),
+    me ? listPersonalTemplates(ctx, viewer.companyId, me) : listTemplates(ctx, viewer.companyId),
+    me ? listPersonalMediaAssets(ctx, viewer.companyId, me) : listMediaAssets(ctx, viewer.companyId, scope),
+    me ? listPersonalRssFeeds(ctx, viewer.companyId, me) : listRssFeeds(ctx, viewer.companyId, scope),
+    me ? listPersonalInboxItems(ctx, viewer.companyId, me, 100) : listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
     // Hire status (open task, candidates) is only shown on the own page.
     agentSummary(ctx, viewer.companyId, { hire: !scope }),
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
     // Growth Lab experiments a post in this scope can be tagged with.
-    experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
+    me ? Promise.resolve([]) : experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
     // Chart series (published per day, destination statuses, weekly lift).
-    scopeStats(ctx, viewer.companyId, scope),
+    me ? Promise.resolve(emptyStats()) : scopeStats(ctx, viewer.companyId, scope),
     // Who approves posts in this scope (the page shows it and a person can change it).
     getPolicy(ctx, viewer.companyId, scope),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
   // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
-  const routine = scope ? null : await weeklyRoutine(ctx, viewer.companyId);
+  const routine = scope || me ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
   try {
     redirectUri = config.redirectUri();
@@ -1105,6 +1140,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     linkedinPagesConfigured = false;
   }
   return {
+    space,
     scope: scope ? formatClientParam(scope) : null,
     client: target.client ? clientOut(target.client) : null,
     config: {
@@ -1136,6 +1172,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     approvalPolicy: policyOut(policy),
     agent,
     pendingPickers: pickers
+      .filter((p) => (jsonObject(p.extra).accountScope === "personal") === Boolean(me))
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))
       .map((p) => ({ pickerId: p.picker_id, platform: p.platform })),
     routine,

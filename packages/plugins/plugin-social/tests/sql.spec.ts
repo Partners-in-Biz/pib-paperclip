@@ -51,6 +51,20 @@ describe("migrations", () => {
   });
 });
 
+describe("destination queries", () => {
+  it("select only columns the destinations table has (scope lives on the post, not the destination)", async () => {
+    const seen: string[] = [];
+    const ctx = fakeCtx({}, { queryResult: (sql) => { seen.push(sql); return []; } });
+    await db.destinationsForPost(ctx, "p1");
+    await db.destinationsForCompany(ctx, "co");
+    await db.destinationsForScope(ctx, "co", null);
+    await db.destinationsForScope(ctx, "co", { kind: "company", id: "c1" });
+    expect(seen).toHaveLength(4);
+    for (const sql of seen) expect(sql).not.toMatch(/\bd?\.?(scope|owner_user_id)\b\s*,/);
+    for (const sql of seen) expect(sql.split("FROM")[0]).not.toMatch(/\b(scope|owner_user_id)\b/);
+  });
+});
+
 describe("runtime SQL passes the host guard", () => {
   it("every data-access function issues guard-compliant statements", async () => {
     const accountRow = { id: "a1", company_id: "co", platform: "facebook", meta: {}, external_id: "p1" };
@@ -68,6 +82,14 @@ describe("runtime SQL passes the host guard", () => {
       () => db.unpublishedDestinationsOutside(ctx, "co", "a1", null),
       () => db.unpublishedDestinationsOutside(ctx, "co", "a1", { kind: "company", id: "c1" }),
       () => db.destinationsForScope(ctx, "co", null),
+      () => db.destinationsForPersonal(ctx, "co", "u1"),
+      () => db.listPersonalRssFeeds(ctx, "co", "u1"),
+      () => db.listPersonalInboxItems(ctx, "co", "u1", 50),
+      () => db.listPersonalAccounts(ctx, "co", "u1"),
+      () => db.listPersonalPosts(ctx, "co", "u1", { limit: 10 }),
+      () => db.listPersonalMediaAssets(ctx, "co", "u1"),
+      () => db.listPersonalTemplates(ctx, "co", "u1"),
+      () => db.listRssFeeds(ctx, "co", null),
       () => db.destinationsForScope(ctx, "co", { kind: "contact", id: "ct1" }),
       () => db.scopeSummary(ctx, "co", null),
       () => db.scopeSummary(ctx, "co", { kind: "company", id: "c1" }),

@@ -452,7 +452,7 @@ export async function runDailyJob(env: Env, opts: { force?: boolean } = {}): Pro
   for (const companyId of companies) {
     await healChunks(env, companyId).catch((error: unknown) => env.ctx.logger.info("SEO page group heal failed", { companyId, error: errorMessage(error) }));
   }
-  // Task threads that passed ~60 KB move to a fresh issue before a wake on them fails (also run every 5 minutes with the previews).
+  // Task threads that passed 40_000 comment bytes move to a fresh issue before a wake on them fails (also run every 5 minutes with the previews).
   const threads = await guardTaskThreads(env, companies).catch((error: unknown) => {
     env.ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
     return { checked: 0, rolled: 0 };

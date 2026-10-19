@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { dayOf, isoTime } from "./dates.js";
 import { toInt, toNum } from "./money.js";
-import { OWN_SCOPE, type AlertKind, type ProposalKind, type ProposalStatus, type ScopeKey, type StoredPlatform } from "./platforms.js";
+import { OWN_SCOPE, type AdPolicyStatus, type AlertKind, type ProposalKind, type ProposalStatus, type ScopeKey, type StoredPlatform } from "./platforms.js";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new Error("Unsafe identifier");
@@ -26,6 +26,7 @@ export interface ScopeRow {
   monthly_cap_minor: number | null;
   alert_pct: number;
   target_cpa_minor: number | null;
+  owner_threshold_minor: number | null;
   allow_writes: boolean;
   allow_writes_by: string | null;
   allow_writes_at: string | null;
@@ -46,6 +47,7 @@ function scopeRow(r: Record<string, unknown>): ScopeRow {
     monthly_cap_minor: r.monthly_cap_minor === null || r.monthly_cap_minor === undefined ? null : toInt(r.monthly_cap_minor),
     alert_pct: toInt(r.alert_pct) || 90,
     target_cpa_minor: r.target_cpa_minor === null || r.target_cpa_minor === undefined ? null : toInt(r.target_cpa_minor),
+    owner_threshold_minor: r.owner_threshold_minor === null || r.owner_threshold_minor === undefined ? null : toInt(r.owner_threshold_minor),
     allow_writes: r.allow_writes === true,
     allow_writes_by: (r.allow_writes_by as string | null) ?? null,
     allow_writes_at: isoTime(r.allow_writes_at),
@@ -86,6 +88,7 @@ export interface ScopePatch {
   monthlyCapMinor?: number | null;
   alertPct?: number;
   targetCpaMinor?: number | null;
+  ownerThresholdMinor?: number | null;
   allowWrites?: boolean;
   allowWritesBy?: string | null;
   signoffs?: "owner" | "owner_client";
@@ -104,6 +107,7 @@ export async function updateScope(ctx: PluginContext, companyId: string, scopeKe
   if (patch.monthlyCapMinor !== undefined) add("monthly_cap_minor", patch.monthlyCapMinor, "::bigint");
   if (patch.alertPct !== undefined) add("alert_pct", patch.alertPct, "::integer");
   if (patch.targetCpaMinor !== undefined) add("target_cpa_minor", patch.targetCpaMinor, "::bigint");
+  if (patch.ownerThresholdMinor !== undefined) add("owner_threshold_minor", patch.ownerThresholdMinor, "::bigint");
   if (patch.signoffs !== undefined) add("signoffs", patch.signoffs);
   if (patch.bannedWords !== undefined) {
     add("banned_words", json(patch.bannedWords), "::jsonb");
@@ -432,6 +436,71 @@ export async function listCampaigns(ctx: PluginContext, companyId: string, optio
     params,
   );
   return rows.map((r) => ({ ...campaignRow(r), scope_key: String(r.scope_key), platform: String(r.platform), currency: String(r.currency), account_name: String(r.account_name) }));
+}
+
+export interface AdRow {
+  id: string;
+  company_id: string;
+  account_id: string;
+  external_id: string;
+  name: string;
+  ad_set_external_id: string | null;
+  creative_external_id: string | null;
+  raw_status: string | null;
+  policy_status: AdPolicyStatus;
+  policy_feedback: string | null;
+  policy_changed_at: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+function adRow(r: Record<string, unknown>): AdRow {
+  return {
+    id: String(r.id),
+    company_id: String(r.company_id),
+    account_id: String(r.account_id),
+    external_id: String(r.external_id),
+    name: String(r.name),
+    ad_set_external_id: (r.ad_set_external_id as string | null) ?? null,
+    creative_external_id: (r.creative_external_id as string | null) ?? null,
+    raw_status: (r.raw_status as string | null) ?? null,
+    policy_status: r.policy_status as AdPolicyStatus,
+    policy_feedback: (r.policy_feedback as string | null) ?? null,
+    policy_changed_at: isoTime(r.policy_changed_at),
+    first_seen_at: isoTime(r.first_seen_at),
+    last_seen_at: isoTime(r.last_seen_at),
+  };
+}
+
+export async function upsertAd(
+  ctx: PluginContext,
+  companyId: string,
+  accountId: string,
+  a: { externalId: string; name: string; adSetExternalId: string | null; creativeExternalId: string | null; rawStatus: string; policyStatus: AdPolicyStatus; feedback: string | null },
+): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "ads")} (id, company_id, account_id, external_id, name, ad_set_external_id, creative_external_id, raw_status, policy_status, policy_feedback)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (account_id, external_id) DO UPDATE SET name = EXCLUDED.name, ad_set_external_id = EXCLUDED.ad_set_external_id, creative_external_id = EXCLUDED.creative_external_id,
+       raw_status = EXCLUDED.raw_status, policy_feedback = EXCLUDED.policy_feedback, last_seen_at = now(),
+       policy_status = EXCLUDED.policy_status, policy_changed_at = CASE WHEN EXCLUDED.policy_status IS DISTINCT FROM ads.policy_status THEN now() ELSE ads.policy_changed_at END`,
+    [randomUUID(), companyId, accountId, a.externalId, a.name, a.adSetExternalId, a.creativeExternalId, a.rawStatus, a.policyStatus, a.feedback],
+  );
+}
+
+export async function listAds(ctx: PluginContext, companyId: string, filter?: { accountId?: string; policyStatus?: AdPolicyStatus }): Promise<AdRow[]> {
+  const params: unknown[] = [companyId];
+  let where = "company_id = $1";
+  if (filter?.accountId) {
+    params.push(filter.accountId);
+    where += ` AND account_id = $${params.length}`;
+  }
+  if (filter?.policyStatus) {
+    params.push(filter.policyStatus);
+    where += ` AND policy_status = $${params.length}`;
+  }
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "ads")} WHERE ${where} ORDER BY policy_changed_at DESC, name`, params);
+  return rows.map(adRow);
 }
 
 export interface DailyInput {
@@ -1099,4 +1168,113 @@ export async function clientName(ctx: PluginContext, companyId: string, scopeKey
     [companyId, id],
   );
   return rows[0]?.name ?? null;
+}
+
+// ── variants and ad daily ───────────────────────────────────────────────────
+
+export interface AdDailyInput {
+  accountId: string;
+  campaignExternalId: string;
+  adExternalId: string;
+  day: string;
+  spendMinor: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  frequency: number;
+  currency: string;
+}
+
+export async function recordAdDaily(ctx: PluginContext, companyId: string, row: AdDailyInput): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "ad_daily")} (company_id, account_id, campaign_external_id, ad_external_id, day, spend_minor, impressions, clicks, conversions, frequency, currency, synced_at)
+     VALUES ($1, $2, $3, $4, $5::date, $6::bigint, $7::bigint, $8::bigint, $9::numeric, $10::numeric, $11, now())
+     ON CONFLICT (account_id, ad_external_id, day) DO UPDATE SET spend_minor = EXCLUDED.spend_minor, impressions = EXCLUDED.impressions, clicks = EXCLUDED.clicks,
+       conversions = EXCLUDED.conversions, frequency = EXCLUDED.frequency, currency = EXCLUDED.currency, synced_at = now()`,
+    [companyId, row.accountId, row.campaignExternalId, row.adExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.frequency, row.currency],
+  );
+}
+
+export async function listAdDaily(ctx: PluginContext, companyId: string, accountId: string, campaignExternalId: string, since: string): Promise<AdDailyInput[]> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT account_id, campaign_external_id, ad_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, frequency, currency FROM ${table(ctx, "ad_daily")}
+     WHERE company_id = $1 AND account_id = $2 AND campaign_external_id = $3 AND day >= $4::date ORDER BY day`,
+    [companyId, accountId, campaignExternalId, since],
+  );
+  return rows.map((r) => ({
+    accountId: String(r.account_id),
+    campaignExternalId: String(r.campaign_external_id),
+    adExternalId: String(r.ad_external_id),
+    day: dayOf(r.day) ?? "",
+    spendMinor: toInt(r.spend_minor),
+    impressions: toInt(r.impressions),
+    clicks: toInt(r.clicks),
+    conversions: toNum(r.conversions),
+    frequency: toNum(r.frequency),
+    currency: String(r.currency),
+  }));
+}
+
+/** Load ad_daily rows for a campaign over a window for winner/fatigue computation. */
+export async function listAdDailyForCampaign(ctx: PluginContext, companyId: string, accountId: string, campaignExternalId: string, since: string): Promise<Array<{ account_id: string; campaign_external_id: string; ad_external_id: string; day: string; spend_minor: number; impressions: number; clicks: number; conversions: number; frequency: number }>> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT account_id, campaign_external_id, ad_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, frequency FROM ${table(ctx, "ad_daily")}
+     WHERE company_id = $1 AND account_id = $2 AND campaign_external_id = $3 AND day >= $4::date ORDER BY day`,
+    [companyId, accountId, campaignExternalId, since],
+  );
+  return rows.map((r) => ({
+    account_id: String(r.account_id),
+    campaign_external_id: String(r.campaign_external_id),
+    ad_external_id: String(r.ad_external_id),
+    day: dayOf(r.day) ?? "",
+    spend_minor: toInt(r.spend_minor),
+    impressions: toInt(r.impressions),
+    clicks: toInt(r.clicks),
+    conversions: toNum(r.conversions),
+    frequency: toNum(r.frequency),
+  }));
+}
+
+export async function createVariant(
+  ctx: PluginContext,
+  companyId: string,
+  v: { accountId: string; campaignExternalId: string; adExternalId: string; label: string; axisValues: Record<string, unknown>; creativeRef: string | null },
+): Promise<string> {
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "variants")} (id, company_id, account_id, campaign_external_id, ad_external_id, label, axis_values, creative_ref)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+    [id, companyId, v.accountId, v.campaignExternalId, v.adExternalId, v.label, json(v.axisValues), v.creativeRef],
+  );
+  return id;
+}
+
+export async function listVariants(ctx: PluginContext, companyId: string, options: { accountId?: string; campaignExternalId?: string; scopeKey?: ScopeKey; limit?: number } = {}): Promise<Array<{ id: string; account_id: string; campaign_external_id: string; ad_external_id: string; label: string; axis_values: Record<string, unknown>; creative_ref: string | null }>> {
+  const params: unknown[] = [companyId];
+  let where = "v.company_id = $1";
+  let fromClause = `${table(ctx, "variants")} v`;
+  if (options.scopeKey) {
+    fromClause += ` JOIN ${table(ctx, "ad_accounts")} a ON a.id = v.account_id`;
+    params.push(options.scopeKey);
+    where += ` AND a.scope_key = $${params.length}`;
+  }
+  if (options.accountId) {
+    params.push(options.accountId);
+    where += ` AND v.account_id = $${params.length}`;
+  }
+  if (options.campaignExternalId) {
+    params.push(options.campaignExternalId);
+    where += ` AND v.campaign_external_id = $${params.length}`;
+  }
+  params.push(Math.min(options.limit ?? 500, 1000));
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT v.id, v.account_id, v.campaign_external_id, v.ad_external_id, v.label, v.axis_values, v.creative_ref FROM ${fromClause} WHERE ${where} ORDER BY v.campaign_external_id, v.ad_external_id LIMIT $${params.length}`, params);
+  return rows.map((r) => ({
+    id: String(r.id),
+    account_id: String(r.account_id),
+    campaign_external_id: String(r.campaign_external_id),
+    ad_external_id: String(r.ad_external_id),
+    label: String(r.label),
+    axis_values: jsonObject(r.axis_values),
+    creative_ref: (r.creative_ref as string | null) ?? null,
+  }));
 }

@@ -317,6 +317,7 @@ import {
   resolveManagedProjectWorkspaceDir,
 } from "../home-paths.js";
 import {
+  AGENT_PROMPT_ECHO_WITHHELD,
   buildHeartbeatRunIssueComment,
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   findHeartbeatRunCompletionComment,
@@ -329,6 +330,7 @@ import {
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
+  shouldWaiveMissingIssueCommentRetry,
   type RunPresentationDecision,
 } from "./heartbeat-run-summary.js";
 import {
@@ -14203,17 +14205,27 @@ export function heartbeatService(
     // resolver owns that decision; do not wake the agent again merely to force
     // an artificial comment into the issue thread.
     if (
-      presentationDecision?.chosenSource === "none" &&
-      (hasAcceptedSemanticResult(parseObject(run.resultJson)) ||
-        presentationDecision.reasonCodes.includes(
-          "legacy_adapter_summary_ambiguous",
-        ))
+      shouldWaiveMissingIssueCommentRetry(
+        presentationDecision,
+        hasAcceptedSemanticResult(parseObject(run.resultJson)),
+      )
     ) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "not_applicable",
         issueCommentSatisfiedByCommentId: null,
         issueCommentRetryQueuedAt: null,
       });
+      if (
+        presentationDecision?.reasonCodes.includes(AGENT_PROMPT_ECHO_WITHHELD)
+      ) {
+        await appendRunEvent(run, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: AGENT_PROMPT_ECHO_WITHHELD,
+          payload: { reason: AGENT_PROMPT_ECHO_WITHHELD },
+        });
+      }
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 

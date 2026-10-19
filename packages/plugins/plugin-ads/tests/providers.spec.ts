@@ -308,6 +308,133 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
     await googleProvider.setCampaignBudget(env(googleApp(), own.fetchImpl), gToken, ref, "4242", 20_000);
     expect(JSON.parse(own.seen[1]!.body!).operations[0]).toEqual({ updateMask: "amount_micros", update: { resourceName: "customers/5556667777/campaignBudgets/9", amountMicros: "200000000" } });
   });
+
+  it("uploads an image and returns the hash; never sends the image data in a URL", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*\/act_123456\/adimages/, { body: { images: { "test.jpg": { hash: "hash-img-abc123" } } } }]]);
+    const result = await metaProvider.uploadAdImage(env(metaApp(), fetchImpl), token, accountRef, { filename: "test.jpg", imageBase64: "base64data" });
+    expect(result).toEqual({ imageHash: "hash-img-abc123" });
+    const body = new URLSearchParams(seen[0]!.body);
+    expect(body.get("bytes")).toBe("base64data");
+    expect(seen[0]!.url).not.toContain("base64data");
+    expect(seen[0]!.headers.Authorization).toBe(`Bearer ${token.accessToken}`);
+  });
+
+  it("uploads a video and returns the id", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*\/act_123456\/advideos/, { body: { id: "vid-123" } }]]);
+    const result = await metaProvider.uploadAdVideo(env(metaApp(), fetchImpl), token, accountRef, { videoUrl: "https://example.test/video.mp4", title: "My video" });
+    expect(result).toEqual({ videoId: "vid-123" });
+    const body = new URLSearchParams(seen[0]!.body);
+    expect(body.get("file_url")).toBe("https://example.test/video.mp4");
+    expect(body.get("title")).toBe("My video");
+  });
+
+  it("creates an ad set PAUSED with targeting JSON and lifetime budget", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*\/act_123456\/adsets/, { body: { id: "adset-999" } }]]);
+    const created = await metaProvider.createAdSet(env(metaApp(), fetchImpl), token, accountRef, {
+      campaignExternalId: "cmp-1",
+      name: "US targeting",
+      lifetimeBudgetMinor: 100_000,
+      startDate: "2026-10-20",
+      endDate: "2026-10-27",
+      optimizationGoal: "LINK_CLICKS",
+      billingEvent: "IMPRESSIONS",
+      targeting: { countries: ["US", "CA"], ageMin: 18, ageMax: 65, interests: [{ id: "i1", name: "coffee" }] },
+      publisherPlatforms: ["facebook", "instagram"],
+    });
+    expect(created).toEqual({ externalId: "adset-999", name: "US targeting" });
+    const body = new URLSearchParams(seen[0]!.body);
+    expect(body.get("name")).toBe("US targeting");
+    expect(body.get("campaign_id")).toBe("cmp-1");
+    expect(body.get("lifetime_budget")).toBe("100000");
+    expect(body.get("start_time")).toBe("2026-10-20T00:00:00");
+    expect(body.get("end_time")).toBe("2026-10-27T23:59:59");
+    expect(body.get("status")).toBe("PAUSED");
+    expect(body.get("optimization_goal")).toBe("LINK_CLICKS");
+    expect(body.get("billing_event")).toBe("IMPRESSIONS");
+    expect(body.get("bid_strategy")).toBe("LOWEST_COST_WITHOUT_CAP");
+    const targeting = JSON.parse(body.get("targeting")!);
+    expect(targeting).toMatchObject({ geo_locations: { countries: ["US", "CA"] }, age_min: 18, age_max: 65, interests: [{ id: "i1", name: "coffee" }], publisher_platforms: ["facebook", "instagram"] });
+    expect(seen[0]!.headers.Authorization).toBe(`Bearer ${token.accessToken}`);
+    expect(seen[0]!.body).not.toContain(token.accessToken);
+  });
+
+  it("image upload without a hash in the response throws, not leaking the token", async () => {
+    const { fetchImpl } = scripted([[/POST .*\/act_123456\/adimages/, { body: { images: { "test.jpg": {} } } }]]);
+    const error = await metaProvider.uploadAdImage(env(metaApp(), fetchImpl), token, accountRef, { filename: "test.jpg", imageBase64: "data" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).message).not.toContain(token.accessToken);
+  });
+
+  it("createAdSet errors from Graph API are ProviderError without leaking the token", async () => {
+    const { fetchImpl } = scripted([[/POST .*\/act_123456\/adsets/, { status: 400, body: { error: { message: "Bad targeting", type: "OAuthException", code: 100, error_subcode: 123, fbtrace_id: "abc" } } }]]);
+    const error = await metaProvider.createAdSet(env(metaApp(), fetchImpl), token, accountRef, { campaignExternalId: "c1", name: "x", lifetimeBudgetMinor: 1000, startDate: "2026-11-01", endDate: "2026-11-30", optimizationGoal: "LINK_CLICKS", billingEvent: "IMPRESSIONS", targeting: { countries: ["US"], ageMin: 18, ageMax: 65 } }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).message).not.toContain(token.accessToken);
+    expect((error as ProviderError).message).toContain("Bad targeting");
+  });
+
+  it("listAds returns ads with policy status mapping", async () => {
+    const { fetchImpl } = scripted([
+      [/GET .*\/act_123456\/ads/, { body: { data: [{ id: "ad1", name: "Ad 1", adset_id: "adset1", creative: { id: "cr1" }, status: "PAUSED", ad_review_feedback: { ad_review_status: "DISAPPROVED", feedback: [{ message: "Feedback 1" }] } }, { id: "ad2", name: "Ad 2", adset_id: null, creative: null, status: "ACTIVE" }] } }],
+    ]);
+    const ads = await metaProvider.listAds(env(metaApp(), fetchImpl), token, accountRef);
+    expect(ads).toHaveLength(2);
+    expect(ads[0]).toMatchObject({ externalId: "ad1", name: "Ad 1", policyStatus: "DISAPPROVED", feedback: "Feedback 1" });
+    expect(ads[1]).toMatchObject({ externalId: "ad2", policyStatus: "ACTIVE", feedback: null });
+  });
+
+  it("listAds maps PENDING_REVIEW status", async () => {
+    const { fetchImpl } = scripted([[/GET .*\/act_123456\/ads/, { body: { data: [{ id: "ad1", name: "Ad 1", adset_id: null, creative: null, status: "ACTIVE", ad_review_feedback: { ad_review_status: "PENDING_REVIEW" } }] } }]]);
+    const ads = await metaProvider.listAds(env(metaApp(), fetchImpl), token, accountRef);
+    expect(ads[0]).toMatchObject({ policyStatus: "PENDING_REVIEW" });
+  });
+});
+
+describe("Meta: account caps and campaign health", () => {
+  it("reads spend cap and ad sets (excluding archived/deleted)", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\?fields=spend_cap/, { body: { spend_cap: "500000", currency: "ZAR" } }],
+      [/\/act_123456\/adsets\?/, { body: { data: [
+        { id: "as1", campaign_id: "c1", lifetime_budget: "100000", effective_status: "ACTIVE" },
+        { id: "as2", campaign_id: "c1", lifetime_budget: "0", effective_status: "PAUSED" },
+        { id: "as3", campaign_id: "c2", lifetime_budget: "50000", effective_status: "ARCHIVED" },
+      ] } }],
+    ]);
+    const caps = await metaProvider.accountCaps(env(metaApp(), fetchImpl), token, accountRef);
+    expect(caps).toEqual({ spendCapMinor: 500_000, adSets: [
+      { externalId: "as1", campaignExternalId: "c1", lifetimeBudgetMinor: 100_000 },
+      { externalId: "as2", campaignExternalId: "c1", lifetimeBudgetMinor: null },
+    ] });
+  });
+
+  it("returns null spend cap when none is set", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\?/, { body: { currency: "USD" } }],
+      [/\/adsets\?/, { body: { data: [] } }],
+    ]);
+    const caps = await metaProvider.accountCaps(env(metaApp(), fetchImpl), token, accountRef);
+    expect(caps.spendCapMinor).toBeNull();
+  });
+
+  it("reads campaign health from campaigns and disapproved ads", async () => {
+    const { fetchImpl } = scripted([
+      [/\/act_123456\/campaigns\?/, { body: { data: [
+        { id: "c1", effective_status: "ACTIVE" },
+        { id: "c2", effective_status: "PAUSED" },
+      ] } }],
+      [/\/act_123456\/ads\?/, { body: { data: [
+        { campaign_id: "c1", effective_status: "DISAPPROVED" },
+        { campaign_id: "c1", effective_status: "DISAPPROVED" },
+        { campaign_id: "c2", effective_status: "DISAPPROVED" },
+      ] } }],
+    ]);
+    const health = await metaProvider.campaignHealth(env(metaApp(), fetchImpl), token, accountRef, ["c1", "c2", "c3"]);
+    expect(health).toEqual([
+      { campaignExternalId: "c1", status: "active", rawStatus: "ACTIVE", disapprovedAds: 2 },
+      { campaignExternalId: "c2", status: "paused", rawStatus: "PAUSED", disapprovedAds: 1 },
+      { campaignExternalId: "c3", status: "other", rawStatus: "UNKNOWN", disapprovedAds: 0 },
+    ]);
+  });
 });
 
 describe("errors never leak a token and say what happened", () => {

@@ -30,7 +30,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
   }), [posts, filter, q]);
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <ApprovalPolicyCard snapshot={snapshot} run={run} />
+      {snapshot.space === "me" ? null : <ApprovalPolicyCard snapshot={snapshot} run={run} />}
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
@@ -110,7 +110,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     <Sheet open title="Post" onClose={onClose}>
       <Row style={{ justifyContent: "space-between" }}>
         <PostStatus status={post.status} />
-        <Muted>{post.clientName ?? "Own work"}</Muted>
+        <Muted>{snapshot.space === "me" ? "My Social" : post.clientName ?? "Own work"}</Muted>
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
       <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
@@ -120,7 +120,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
       {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
       {waiting ? <Banner tone="info" title="Your approval is recorded">{waiting}</Banner> : null}
-      <PostApproval post={post} snapshot={snapshot} run={run} />
+      {snapshot.space === "me" ? null : <PostApproval post={post} snapshot={snapshot} run={run} />}
       {proposed ? (
         <Muted>Proposed time: <strong>{fmtDate(proposed, tz)}</strong>. {post.status === "review" ? "Approving schedules it for then." : "Once approved it is scheduled for then."}</Muted>
       ) : null}
@@ -167,7 +167,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
 
       <Row>
         {post.status === "draft" || post.status === "review" ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
-        {post.status === "draft" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
+        {post.status === "draft" && snapshot.space !== "me" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
+        {post.status === "draft" && snapshot.space === "me" ? <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={post.destinations.length === 0} onClick={() => void approve()}>Approve</Button> : null}
         {post.status === "review" && isUser && teamApproves ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void approve()}>{proposed ? "Approve & schedule" : "Approve"}</Button> : null}
         {post.status === "review" || post.status === "approved" ? <SmallButton onClick={() => act("social.back-to-draft", "Moved back to draft")}>Back to draft</SmallButton> : null}
         {post.status === "scheduled" ? <SmallButton onClick={() => act("social.unschedule", "Unscheduled")}>Unschedule</SmallButton> : null}

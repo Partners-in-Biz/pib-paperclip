@@ -76,6 +76,8 @@ export async function registerAsset(
   companyId: string,
   params: Record<string, unknown>,
   config?: SocialConfig,
+  /** Set for My Social: the asset is personal and only this user sees it. */
+  ownerUserId: string | null = null,
 ): Promise<ReturnType<typeof assetOut>> {
   const url = typeof params.url === "string" ? params.url.trim() : "";
   const name = (typeof params.name === "string" && params.name.trim()) || url.split("/").pop() || "Media";
@@ -105,9 +107,9 @@ export async function registerAsset(
     height: optionalNumber(params.height),
     duration_s: optionalNumber(params.durationS),
     alt_text: typeof params.altText === "string" && params.altText.trim() ? params.altText.trim().slice(0, 1500) : null,
-    scope: "org",
-    owner_user_id: null,
-    ...scopeColumns(target),
+    scope: ownerUserId ? "personal" : "org",
+    owner_user_id: ownerUserId,
+    ...scopeColumns(ownerUserId ? { scope: null, client: null } : target),
     created_at: null,
     source_url: typeof params.sourceUrl === "string" ? params.sourceUrl : null,
   };
@@ -116,7 +118,7 @@ export async function registerAsset(
 }
 
 /** Download a public https file and store it on R2 (agent tool). */
-export async function importFromUrl(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+export async function importFromUrl(ctx: PluginContext, companyId: string, params: Record<string, unknown>, ownerUserId: string | null = null) {
   const sourceUrl = typeof params.url === "string" ? params.url.trim() : "";
   if (!sourceUrl) throw new SocialError("url is required");
   // Refuse an unknown client before downloading anything.
@@ -139,7 +141,7 @@ export async function importFromUrl(ctx: PluginContext, companyId: string, param
     r2Key: key,
     kind: mediaKindFromMime(mime),
     sourceUrl,
-  }, config);
+  }, config, ownerUserId);
 }
 
 /**
