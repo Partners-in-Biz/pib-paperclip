@@ -76,7 +76,11 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toEqual([{ ...COCKPIT_ROUTE }, { ...SETUP_STATUS_ROUTE }]);
+    expect(manifest.apiRoutes).toHaveLength(4);
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-list")).toMatchObject({ method: "GET", path: "/repairs", auth: "board", companyResolution: { from: "query", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
       [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"],
@@ -501,5 +505,59 @@ describe("own routes", () => {
     expect(load.team.operator.agent.id).toBe("op");
     expect(load.installed).toEqual({ [PIB_PLUGINS.crm]: { id: "c", status: "ready" } });
     expect(HIRE_ROLES.operator).toBe(OPERATOR_ROLE);
+  });
+
+  it("repairs POST route validates fields and company scoping", async () => {
+    const { env } = setup();
+    const validInput = { companyId: A, kind: "agent", targetKind: "agent", targetId: "a1", action: "add-skill", outcome: "success", actor: "user" };
+
+    // Valid POST
+    const valid = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: validInput });
+    expect(valid.status).toBe(201);
+    expect((valid.body as any).id).toMatch(/^rep[a-f0-9]{12}$/);
+
+    // Missing required field
+    const missing = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: { ...validInput, kind: "" } });
+    expect(missing.status).toBe(400);
+    expect((missing.body as any).error).toMatch(/kind/);
+
+    // Unknown field
+    const unknown = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: { ...validInput, extra: "field" } });
+    expect(unknown.status).toBe(400);
+    expect((unknown.body as any).error).toMatch(/Unknown field/);
+
+    // companyId mismatch: input.companyId is B but body.companyId is A
+    const mismatch = await handleApiRoute(env, { ...apiInput("repairs-create", B), method: "POST", body: validInput });
+    expect(mismatch.status).toBe(400);
+    expect((mismatch.body as any).error).toMatch(/companyId/);
+  });
+
+  it("repairs GET route lists with filtering and company isolation", async () => {
+    const { ctx, env } = setup();
+    const { recordRepair } = await import("../src/repairs.js");
+
+    // Create repairs for two companies
+    await recordRepair(ctx, A, { kind: "agent", targetKind: "agent", targetId: "a1", action: "fix", outcome: "success", actor: "user" });
+    await recordRepair(ctx, A, { kind: "grant", targetKind: "grant", targetId: "g1", action: "grant", outcome: "success", actor: "user" });
+    await recordRepair(ctx, B, { kind: "agent", targetKind: "agent", targetId: "a2", action: "fix", outcome: "success", actor: "user" });
+
+    const listA = await handleApiRoute(env, apiInput("repairs-list", A));
+    expect(listA.status).toBe(200);
+    expect((listA.body as any).rows).toHaveLength(2);
+    expect((listA.body as any).rows.every((r: any) => r.companyId === A)).toBe(true);
+
+    const listB = await handleApiRoute(env, apiInput("repairs-list", B));
+    expect((listB.body as any).rows).toHaveLength(1);
+    expect((listB.body as any).rows[0].companyId).toBe(B);
+
+    // Test kind filter
+    const filtered = await handleApiRoute(env, { ...apiInput("repairs-list", A), query: { companyId: A, kind: "agent" } });
+    expect((filtered.body as any).rows).toHaveLength(1);
+    expect((filtered.body as any).rows[0].kind).toBe("agent");
+
+    // Test invalid since date
+    const badSince = await handleApiRoute(env, { ...apiInput("repairs-list", A), query: { companyId: A, since: "not-a-date" } });
+    expect(badSince.status).toBe(400);
+    expect((badSince.body as any).error).toMatch(/since/);
   });
 });

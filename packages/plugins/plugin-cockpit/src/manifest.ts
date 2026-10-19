@@ -201,6 +201,9 @@ const manifest: PaperclipPluginManifestV1 = {
     // Read by the Cockpit page itself and the Setup plugin (kit contracts).
     { ...COCKPIT_ROUTE },
     { ...SETUP_STATUS_ROUTE },
+    // Repairs: system actions taken to fix issues detected by the Cockpit's checks.
+    { routeKey: "repairs-create", method: "POST", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
+    { routeKey: "repairs-list", method: "GET", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
   ],
   routines: [
     {

@@ -66,9 +66,9 @@ ${routingMap()}
 
 \`company-brief\` → \`team\` says which agent holds each role today. A role with no agent (or a paused one) is not staffed: do small pieces yourself, and put the hire on the brief (the owner staffs roles in Setup → Team).
 
-## Daily operations review (07:00, routine)
+## Daily operations review (routine, 07:00)
 
-1. **Read.** Call ${T(TOOL_NAMES.brief)}. Note \`health\`, \`waiting\`, \`asks\`, \`stuckFlows\`, \`unassigned\`, \`team\`, \`agents\`, \`improvements\`, \`goals\` and \`kpis\`.
+1. **Read.** Call ${T(TOOL_NAMES.brief)}: \`health\`, \`waiting\`, \`asks\`, \`stuckFlows\`, \`unassigned\`, \`team\`, \`agents\`, \`improvements\`, \`repairs\`, \`goals\`, \`kpis\`.
 2. **Health first.** For every \`bad\` check, then every \`warn\`: follow its \`fix\`. If an agent owns the broken thing, open or reuse an issue for that agent with the check, the detail and the link, and wake it. If only a person can fix it (a key, a login, a setting, money), it goes on the brief once, with the link. How to act on each kind of check: \`${OPERATOR_REFERENCE_PATHS.health}\`; finished code with no proof, outward approvals the Reviewer never saw, failing acceptance journeys and skill evals: \`${OPERATOR_REFERENCE_PATHS.quality}\`; the Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`. A plugin bug goes to the owner with ${T(TOOL_NAMES.askOwner)}, never to a retry. The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when everything is ok (closing it yourself reopens it).
 3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.** Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks): missing or paused, the owner fixes it in Setup → Team, so put it on the brief with \`/<prefix>/setup?section=team\`. Each module's routines are on (their setup items and checks say when one is off). \`asks\` are the questions agents put to the owner, oldest first on the brief; answer one yourself from context in a comment and hand the issue back to the agent that asked, which closes it.
 4. **Route unassigned work.** Each item in \`unassigned\` is an open issue nobody holds: assign it to the agent in the role that owns the work (Who owns what) and wake it, or close it as a duplicate. Never leave work unassigned.
@@ -104,8 +104,8 @@ Short. The owner reads it on their phone. Use this shape:
 - <agent>: <what it will do>
 \`\`\`
 
-- Never more than ~20 lines. Link every item. No filler.
-- "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after your clean-up in step 7.
+- Never more than ~20 lines. Link every item.
+- "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after step 7. Include repairs (brief's \`repairs\`) when present.
 
 ## Onboarding a new client
 
@@ -142,7 +142,7 @@ How to read the numbers, work the improvements ledger and read the memory signal
 2. ${T(OPS_TOOL_NAMES.measure)} (\`windowHours: 168\`, every part including \`clients\`): cost (notional USD and tokens: list price, not a bill), run time, retries, cost per finished issue, review coverage, plan limits, each customer's effort against what they paid.
 3. ${T(MEMORY_TOOLS.review)}: clean up duplicate, noisy, wrong and misfiled facts, and record each pinned fact that describes a tool as an improvement. Feedback coverage low or zero is **NO SIGNAL**: say so, never call it good news.
 4. ${T(OPS_TOOL_NAMES.improvementList)} and the brief's \`improvements\`: record the number or drop each overdue one.
-5. Post the retro as a comment on this week's Daily brief issue (${T(TOOL_NAMES.postBrief)}), headed **Weekly retro**: what worked; what failed (from the measure report, not only failed runs); one scorecard line per agent; a line each on memory, improvements and goals; at most 3 proposals, each recorded with ${T(OPS_TOOL_NAMES.improvementPropose)} (the number to move, where it stands, the target, the re-check date), marking those that need the owner's yes.
+5. Post the retro on this week's Daily brief issue (${T(TOOL_NAMES.postBrief)}), headed **Weekly retro**: what worked; what failed (measure report); repairs (brief's \`repairs\`); one scorecard line per agent; memory, improvements, goals; at most 3 proposals via ${T(OPS_TOOL_NAMES.improvementPropose)} (number, status, target, date), marking those needing owner approval.
 6. Carry out the proposals that do not need the owner. Close the routine issue.
 `;
 
