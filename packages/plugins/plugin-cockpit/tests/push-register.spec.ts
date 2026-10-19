@@ -2,13 +2,14 @@
  * Tests for pure push registration helpers.
  * Node environment (no browser APIs needed directly).
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   PUSH_SW_URL,
   registerPushServiceWorker,
   urlBase64ToUint8Array,
   subscriptionToPayload,
   describePushEnvironment,
+  waitForActivated,
 } from "../src/ui/push-register.js";
 
 describe("push-register", () => {
@@ -82,11 +83,76 @@ describe("push-register", () => {
     expect(() => subscriptionToPayload(sub, "label")).toThrow(/Missing push subscription keys/);
   });
 
-  it("describePushEnvironment returns frame type and feature lines", () => {
-    const env = { self: {}, top: {}, hasPushManager: true, hasServiceWorker: true, hasNotification: true, permission: "granted" };
+  it("describePushEnvironment returns 'host page' when self === top", () => {
+    const sharedObj = {};
+    const env = { self: sharedObj, top: sharedObj, hasPushManager: true, hasServiceWorker: true, hasNotification: true, permission: "granted" };
     const result = describePushEnvironment(env);
     expect(result.frame).toBe("host page");
     expect(result.lines.join("\n")).toMatch(/ServiceWorker.*available/);
     expect(result.lines.join("\n")).toMatch(/PushManager.*available/);
+  });
+
+  it("describePushEnvironment returns 'iframe' when self !== top", () => {
+    const env = { self: {}, top: {}, hasPushManager: true, hasServiceWorker: true, hasNotification: true };
+    const result = describePushEnvironment(env);
+    expect(result.frame).toBe("iframe");
+  });
+
+  it("waitForActivated resolves immediately if registration.active exists", async () => {
+    const reg = { active: { state: "activated" } };
+    const result = await waitForActivated(reg as any);
+    expect(result).toBe(reg);
+  });
+
+  it("waitForActivated waits for installing worker to activate via statechange", async () => {
+    const listeners: Record<string, Function[]> = {};
+    const worker = {
+      state: "installing",
+      addEventListener: vi.fn((event: string, listener: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(listener);
+      }),
+    };
+    const reg = { installing: worker };
+
+    const promise = waitForActivated(reg as any, 5000);
+    // Simulate state change to activated
+    setTimeout(() => {
+      worker.state = "activated";
+      listeners["statechange"]?.forEach((fn) => fn());
+    }, 10);
+
+    const result = await promise;
+    expect(result).toBe(reg);
+  });
+
+  it("waitForActivated rejects if worker becomes redundant", async () => {
+    const listeners: Record<string, Function[]> = {};
+    const worker = {
+      state: "installing",
+      addEventListener: vi.fn((event: string, listener: Function) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(listener);
+      }),
+    };
+    const reg = { installing: worker };
+
+    const promise = waitForActivated(reg as any, 5000);
+    // Simulate state change to redundant
+    setTimeout(() => {
+      worker.state = "redundant";
+      listeners["statechange"]?.forEach((fn) => fn());
+    }, 10);
+
+    await expect(promise).rejects.toThrow(/redundant/);
+  });
+
+  it("waitForActivated rejects on timeout", async () => {
+    const worker = {
+      state: "installing",
+      addEventListener: vi.fn(),
+    };
+    const reg = { installing: worker };
+    await expect(waitForActivated(reg as any, 10)).rejects.toThrow(/timeout/);
   });
 });

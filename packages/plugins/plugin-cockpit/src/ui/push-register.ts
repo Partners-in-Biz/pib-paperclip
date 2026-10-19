@@ -11,6 +11,14 @@
  */
 export const PUSH_SW_URL = "/_plugins/partnersinbiz.cockpit/ui/push-sw.js";
 
+export type ServiceWorkerLike = {
+  active?: { state: string } | null;
+  installing?: { state: string; addEventListener(event: string, listener: () => void): void } | null;
+  waiting?: { state: string; addEventListener(event: string, listener: () => void): void } | null;
+  pushManager?: { subscribe(opts: unknown): Promise<unknown> };
+  update?(): Promise<unknown>;
+};
+
 /**
  * Register a push service worker with auto-update on load.
  *
@@ -24,15 +32,61 @@ export const PUSH_SW_URL = "/_plugins/partnersinbiz.cockpit/ui/push-sw.js";
  * @returns Promise resolving to the registration
  */
 export async function registerPushServiceWorker(
-  sw: { register(url: string, opts?: { updateViaCache?: "none" | "all" | "imports"; scope?: string }): Promise<{ update?(): Promise<unknown> }> },
+  sw: {
+    register(
+      url: string,
+      opts?: { updateViaCache?: "none" | "all" | "imports"; scope?: string }
+    ): Promise<ServiceWorkerLike>;
+  },
   scriptUrl = PUSH_SW_URL,
-) {
+): Promise<ServiceWorkerLike> {
   const registration = await sw.register(scriptUrl, { updateViaCache: "none" });
   // Attempt to update in the background; swallow errors so registration is still returned.
   if (registration.update) {
     registration.update().catch(() => {});
   }
   return registration;
+}
+
+/**
+ * Wait for a service worker registration to reach activated state.
+ *
+ * - If registration.active exists, resolves immediately
+ * - Otherwise listens on installing/waiting worker for statechange until state === "activated"
+ * - Rejects if worker becomes "redundant" or if timeout is exceeded
+ *
+ * @param registration - ServiceWorkerRegistration from navigator.serviceWorker.register
+ * @param timeoutMs - Timeout in milliseconds (default 10000)
+ * @returns Promise resolving to the registration once active
+ */
+export async function waitForActivated(
+  registration: ServiceWorkerLike,
+  timeoutMs = 10000,
+): Promise<ServiceWorkerLike> {
+  if (registration.active) {
+    return registration;
+  }
+
+  const worker = registration.installing ?? registration.waiting;
+  if (!worker) {
+    throw new Error("No installing or waiting worker found");
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("waitForActivated timeout"));
+    }, timeoutMs);
+
+    worker.addEventListener("statechange", () => {
+      if (worker.state === "activated") {
+        clearTimeout(timeout);
+        resolve(registration);
+      } else if (worker.state === "redundant") {
+        clearTimeout(timeout);
+        reject(new Error("Service worker became redundant"));
+      }
+    });
+  });
 }
 
 /**
@@ -108,7 +162,7 @@ export function describePushEnvironment(env: {
   standalone?: boolean;
 }): { frame: "host page" | "iframe"; lines: string[] } {
   const lines: string[] = [];
-  const frame = env.self !== env.top ? "iframe" : "host page";
+  const frame = env.self === env.top ? "host page" : "iframe";
 
   if (!env.hasServiceWorker) {
     lines.push("ServiceWorker API not available");

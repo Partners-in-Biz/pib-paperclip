@@ -10,6 +10,7 @@ import {
   registerPushServiceWorker,
   subscriptionToPayload,
   urlBase64ToUint8Array,
+  waitForActivated,
 } from "./push-register.js";
 
 export function PushSpikePanel() {
@@ -24,10 +25,7 @@ export function PushSpikePanel() {
   // Compute environment once on mount
   const envDescription = useMemo(() => {
     if (typeof window === "undefined") return null;
-    const hasPushManager =
-      typeof navigator !== "undefined" &&
-      typeof navigator.serviceWorker !== "undefined" &&
-      typeof navigator.permissions !== "undefined";
+    const hasPushManager = typeof window.PushManager !== "undefined";
     const hasServiceWorker =
       typeof navigator !== "undefined" &&
       typeof navigator.serviceWorker !== "undefined";
@@ -36,8 +34,8 @@ export function PushSpikePanel() {
       typeof Notification !== "undefined" ? Notification.permission : undefined;
 
     return describePushEnvironment({
-      self: typeof window !== "undefined" ? window.self : undefined,
-      top: typeof window !== "undefined" ? window.top : undefined,
+      self: window.self,
+      top: window.top,
       hasPushManager,
       hasServiceWorker,
       hasNotification,
@@ -71,8 +69,8 @@ export function PushSpikePanel() {
         return;
       }
 
-      await registerPushServiceWorker(navigator.serviceWorker);
-      await navigator.serviceWorker.ready;
+      const registration = await registerPushServiceWorker(navigator.serviceWorker);
+      await waitForActivated(registration);
 
       if (typeof Notification === "undefined") {
         setError("Notification API not available");
@@ -87,16 +85,15 @@ export function PushSpikePanel() {
         return;
       }
 
-      const registration = await navigator.serviceWorker.ready;
-      if (!registration.pushManager) {
+      if (!("pushManager" in registration)) {
         setError("PushManager not available");
         setBusy(false);
         return;
       }
 
-      const subscription = await registration.pushManager.subscribe({
+      const subscription = await (registration as any).pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey) as any,
+        applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
       });
 
       const payload = subscriptionToPayload(subscription, navigator.userAgent.slice(0, 60));
