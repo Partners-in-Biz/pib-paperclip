@@ -206,7 +206,7 @@ export async function startPg(): Promise<PgHarness> {
       return full;
     },
     async reset() {
-      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile", "attestations", "client_revenue", "closeout_reviews", "improvements", "goals", "goal_values", "business_reviews", "credentials", "roles", "health_issues", "brief_issues", "snapshots", "acceptance_runs", "acceptance_requests", "plugin_versions", "eval_results"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
+      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile", "attestations", "client_revenue", "closeout_reviews", "improvements", "goals", "goal_values", "business_reviews", "credentials", "roles", "health_issues", "brief_issues", "snapshots", "acceptance_runs", "acceptance_requests", "plugin_versions", "eval_results", "repairs"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
       await client.query("DELETE FROM public.heartbeat_runs");
       await client.query("DELETE FROM public.issue_relations");
       await client.query("DELETE FROM public.issues");
