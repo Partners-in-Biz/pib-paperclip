@@ -78,17 +78,12 @@ export function isAllowedPushEndpoint(url: string): boolean {
     for (const family of ALLOWED_PUSH_HOSTS) {
       if (family.startsWith(".")) {
         // Wildcard family (e.g., .push.apple.com matches *.push.apple.com)
-        // Require at least one non-empty label before the suffix
         const suffix = family; // Includes the leading dot
         if (hostname.endsWith(suffix)) {
           // Extract the part before the suffix
           const prefix = hostname.slice(0, hostname.length - suffix.length);
-          // Require at least one non-empty label (no bare apex like push.apple.com)
-          if (prefix && prefix !== "" && !prefix.includes(".")) {
-            // Single label before suffix (e.g., "api" in "api.push.apple.com")
-            return true;
-          } else if (prefix.includes(".")) {
-            // Multiple labels (e.g., "sub.domain" in "sub.domain.push.apple.com")
+          // Require prefix non-empty and no empty labels (no consecutive dots, no leading/trailing dots)
+          if (prefix && prefix.split(".").every((label) => label !== "")) {
             return true;
           }
         }

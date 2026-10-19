@@ -54,6 +54,15 @@ describe("Push endpoint host allowlist (S1)", () => {
       expect(isAllowedPushEndpoint("https://.notify.windows.com/path")).toBe(false);
     });
 
+    it("rejects consecutive dots (empty labels) in wildcard families", () => {
+      // Double dots with no prefix should be rejected
+      expect(isAllowedPushEndpoint("https://..push.apple.com/x")).toBe(false);
+      expect(isAllowedPushEndpoint("https://..notify.windows.com/x")).toBe(false);
+      // Double dots with a prefix should be rejected
+      expect(isAllowedPushEndpoint("https://a..push.apple.com/x")).toBe(false);
+      expect(isAllowedPushEndpoint("https://a..notify.windows.com/x")).toBe(false);
+    });
+
     it("rejects subdomains of exact-match families", () => {
       // fcm.googleapis.com should only match exactly, not subdomains
       expect(isAllowedPushEndpoint("https://x.fcm.googleapis.com/path")).toBe(false);
