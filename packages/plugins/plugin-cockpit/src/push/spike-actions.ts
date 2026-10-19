@@ -1,9 +1,3 @@
-/**
- * Pure handlers for push spike subscribe and send actions.
- * All subscriptions stored per-instance: { [userId]: Subscription[] }
- * Mutations protected by module-level promise-chain mutex.
- */
-
 import type { ScopeKey } from "@paperclipai/plugin-sdk";
 import type { PushTransportError } from "./transport.js";
 import { encryptPayload } from "./encrypt.js";
@@ -76,10 +70,22 @@ async function withSubsLock<T>(op: () => Promise<T>): Promise<T> {
   return result!;
 }
 
-async function ensureKeyExists(
-  deps: SpikeActionDeps,
-  anySubsExist: boolean
-): Promise<{ publicKey: string; privateKey: string }> {
+function decodeBase64Url(str: string): Buffer {
+  try {
+    const padded = str + "=".repeat((4 - (str.length % 4)) % 4);
+    return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  } catch {
+    throw { code: "bad_subscription", message: "Invalid base64 encoding" } as CockpitError;
+  }
+}
+
+function throwError(code: string, message: string): never {
+  const err: CockpitError = new Error(message);
+  err.code = code;
+  throw err;
+}
+
+async function ensureKeyExists(deps: SpikeActionDeps, anySubsExist: boolean): Promise<{ publicKey: string; privateKey: string }> {
   try {
     return await getOrCreateVapidKey(deps.keyStore, { hasSubscriptions: () => anySubsExist });
   } catch (e) {
@@ -97,16 +103,11 @@ export async function subscribe(
   params: SubscribeParams,
   actor: { type: string; userId?: string }
 ): Promise<{ ok: boolean; publicKey?: string; subscriptions?: number; error?: string }> {
-  if (actor.type !== "user" || !actor.userId) {
-    const err: CockpitError = new Error("Only users can subscribe to push notifications");
-    err.code = "not_user";
-    throw err;
-  }
+  if (actor.type !== "user" || !actor.userId) throwError("not_user", "Only users can subscribe to push notifications");
 
   const userId = actor.userId;
   const now = deps.now?.() ?? new Date();
 
-  // Case 1: No endpoint - return the public key
   if (!params.endpoint) {
     const allSubs = (await deps.stateReader(SUBS_STATE_KEY)) as AllSubscriptions | null;
     const anySubsExist = allSubs && Object.values(allSubs).some((arr) => arr.length > 0);
@@ -114,47 +115,18 @@ export async function subscribe(
     return { ok: true, publicKey: key.publicKey };
   }
 
-  // Case 2: Full subscription - validate and store
   const endpoint = params.endpoint.trim();
   const p256dh = params.p256dh?.trim() ?? "";
   const auth = params.auth?.trim() ?? "";
   const label = (params.label?.trim() ?? "").slice(0, 60);
 
-  if (!isAllowedPushEndpoint(endpoint)) {
-    const err: CockpitError = new Error("Endpoint not allowed");
-    err.code = "endpoint_not_allowed";
-    throw err;
-  }
+  if (!isAllowedPushEndpoint(endpoint)) throwError("endpoint_not_allowed", "Endpoint not allowed");
 
-  let p256dhBuf: Buffer;
-  try {
-    const padded = p256dh + "=".repeat((4 - (p256dh.length % 4)) % 4);
-    p256dhBuf = Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  } catch {
-    const err: CockpitError = new Error("Invalid p256dh encoding");
-    err.code = "bad_subscription";
-    throw err;
-  }
-  if (p256dhBuf.length !== 65 || p256dhBuf[0] !== 0x04) {
-    const err: CockpitError = new Error("p256dh must be 65 bytes starting with 0x04");
-    err.code = "bad_subscription";
-    throw err;
-  }
+  const p256dhBuf = decodeBase64Url(p256dh);
+  if (p256dhBuf.length !== 65 || p256dhBuf[0] !== 0x04) throwError("bad_subscription", "p256dh must be 65 bytes starting with 0x04");
 
-  let authBuf: Buffer;
-  try {
-    const padded = auth + "=".repeat((4 - (auth.length % 4)) % 4);
-    authBuf = Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  } catch {
-    const err: CockpitError = new Error("Invalid auth encoding");
-    err.code = "bad_subscription";
-    throw err;
-  }
-  if (authBuf.length !== 16) {
-    const err: CockpitError = new Error("auth must be exactly 16 bytes");
-    err.code = "bad_subscription";
-    throw err;
-  }
+  const authBuf = decodeBase64Url(auth);
+  if (authBuf.length !== 16) throwError("bad_subscription", "auth must be exactly 16 bytes");
 
   let allSubs = (await deps.stateReader(SUBS_STATE_KEY)) as AllSubscriptions | null;
   const anySubsExist = allSubs && Object.values(allSubs).some((arr) => arr.length > 0);
@@ -194,30 +166,17 @@ export async function send(
   params: SendParams,
   actor: { type: string; userId?: string }
 ): Promise<{ devices: Array<{ label: string; ok: boolean; status?: number; error?: string }> }> {
-  if (actor.type !== "user" || !actor.userId) {
-    const err: CockpitError = new Error("Only users can send push notifications");
-    err.code = "not_user";
-    throw err;
-  }
+  if (actor.type !== "user" || !actor.userId) throwError("not_user", "Only users can send push notifications");
 
   const userId = actor.userId;
   let url = params.url?.trim() ?? "/";
-
-  if (url.startsWith("//") || url.startsWith("http://") || url.startsWith("https://")) {
-    url = "/";
-  }
-  if (!url.startsWith("/")) {
-    url = "/" + url;
-  }
+  if (url.startsWith("//") || url.startsWith("http://") || url.startsWith("https://")) url = "/";
+  if (!url.startsWith("/")) url = "/" + url;
 
   let allSubs = (await deps.stateReader(SUBS_STATE_KEY)) as AllSubscriptions | null;
   const subs = allSubs?.[userId] ?? [];
 
-  if (subs.length === 0) {
-    const err: CockpitError = new Error("No subscriptions found");
-    err.code = "no_subscription";
-    throw err;
-  }
+  if (subs.length === 0) throwError("no_subscription", "No subscriptions found");
 
   const anySubsExist = allSubs && Object.values(allSubs).some((arr) => arr.length > 0);
   const key = await ensureKeyExists(deps, !!anySubsExist);
@@ -227,7 +186,6 @@ export async function send(
   const updates: Array<{ endpoint: string; needsResubscribe?: boolean; delete?: boolean }> = [];
 
   for (const sub of subs) {
-    const label = sub.label;
     try {
       const payload = JSON.stringify({ title: "Push test", url });
       const body = encryptPayload(payload, sub.p256dh, sub.auth);
@@ -240,7 +198,7 @@ export async function send(
         ttlSeconds: 60,
       });
 
-      const headers: Record<string, string> = {
+      const headers = {
         Authorization: `vapid t=${jwt}, k=${key.publicKey}`,
         TTL: "60",
         Urgency: "normal",
@@ -249,23 +207,19 @@ export async function send(
       const response = await deps.postPush(sub.endpoint, headers, body);
 
       if (response.status >= 200 && response.status < 300) {
-        devices.push({ label, ok: true, status: response.status });
+        devices.push({ label: sub.label, ok: true, status: response.status });
       } else if (response.status === 401 || response.status === 403) {
         updates.push({ endpoint: sub.endpoint, needsResubscribe: true });
-        devices.push({ label, ok: false, status: response.status, error: "key_mismatch" });
+        devices.push({ label: sub.label, ok: false, status: response.status, error: "key_mismatch" });
       } else if (response.status === 404 || response.status === 410) {
         updates.push({ endpoint: sub.endpoint, delete: true });
-        devices.push({ label, ok: false, status: response.status, error: response.status === 410 ? "gone" : "not_found" });
+        devices.push({ label: sub.label, ok: false, status: response.status, error: response.status === 410 ? "gone" : "not_found" });
       } else {
-        devices.push({ label, ok: false, status: response.status, error: `http_${response.status}` });
+        devices.push({ label: sub.label, ok: false, status: response.status, error: `http_${response.status}` });
       }
     } catch (e) {
       const transportErr = e as PushTransportError;
-      if (transportErr.code) {
-        devices.push({ label, ok: false, error: transportErr.code });
-      } else {
-        devices.push({ label, ok: false, error: "unknown" });
-      }
+      devices.push({ label: sub.label, ok: false, error: transportErr.code ?? "unknown" });
     }
   }
 
@@ -278,11 +232,8 @@ export async function send(
       for (const update of updates) {
         const idx = userSubs.findIndex((s) => s.endpoint === update.endpoint);
         if (idx >= 0) {
-          if (update.delete) {
-            userSubs.splice(idx, 1);
-          } else if (update.needsResubscribe) {
-            userSubs[idx].needsResubscribe = true;
-          }
+          if (update.delete) userSubs.splice(idx, 1);
+          else if (update.needsResubscribe) userSubs[idx].needsResubscribe = true;
         }
       }
       allSubs[userId] = userSubs;

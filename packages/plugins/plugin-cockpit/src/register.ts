@@ -406,6 +406,23 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { activated: done.map((g) => ({ id: g.id, title: g.title })) };
   });
 
+  // Shared push spike action wrapper: maps errors to CockpitError
+  function createSpikeDeps(): SpikeActionDeps {
+    return {
+      keyStore: createPushKeyStore(ctx.state),
+      stateReader: (key) => ctx.state.get(key),
+      stateWriter: (key, value) => ctx.state.set(key, value),
+      postPush,
+    };
+  }
+
+  function mapSpikeError(error: unknown): never {
+    if (error instanceof PushKeyError) throw new CockpitError(error.message);
+    const err = error as { code?: string; message?: string };
+    if (err.code) throw new CockpitError(err.message ?? err.code);
+    throw error;
+  }
+
   // Push spike: distribute the VAPID public key for push subscription setup
   ctx.actions.register("cockpit.pushSpike.publicKey", async (_params, context) => {
     requireUser(context);
@@ -415,58 +432,29 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       });
       return { publicKey: publicKey.publicKey };
     } catch (error) {
-      if (error instanceof PushKeyError) {
-        throw new CockpitError(error.message);
-      }
-      throw error;
+      mapSpikeError(error);
     }
   });
 
   // Push spike: subscribe endpoint to push notifications
   ctx.actions.register("cockpit.pushSpike.subscribe", async (params, context) => {
     requireUser(context);
-    const deps: SpikeActionDeps = {
-      keyStore: createPushKeyStore(ctx.state),
-      stateReader: (key) => ctx.state.get(key),
-      stateWriter: (key, value) => ctx.state.set(key, value),
-      postPush,
-    };
     const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
     try {
-      return await subscribe(deps, params as Parameters<typeof subscribe>[1], actor);
+      return await subscribe(createSpikeDeps(), params as Parameters<typeof subscribe>[1], actor);
     } catch (error) {
-      if (error instanceof PushKeyError) {
-        throw new CockpitError(error.message);
-      }
-      const err = error as { code?: string; message?: string };
-      if (err.code) {
-        throw new CockpitError(err.message ?? err.code);
-      }
-      throw error;
+      mapSpikeError(error);
     }
   });
 
   // Push spike: send test push to user's subscriptions
   ctx.actions.register("cockpit.pushSpike.send", async (params, context) => {
     requireUser(context);
-    const deps: SpikeActionDeps = {
-      keyStore: createPushKeyStore(ctx.state),
-      stateReader: (key) => ctx.state.get(key),
-      stateWriter: (key, value) => ctx.state.set(key, value),
-      postPush,
-    };
     const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
     try {
-      return await send(deps, params as Parameters<typeof send>[1], actor);
+      return await send(createSpikeDeps(), params as Parameters<typeof send>[1], actor);
     } catch (error) {
-      if (error instanceof PushKeyError) {
-        throw new CockpitError(error.message);
-      }
-      const err = error as { code?: string; message?: string };
-      if (err.code) {
-        throw new CockpitError(err.message ?? err.code);
-      }
-      throw error;
+      mapSpikeError(error);
     }
   });
 
