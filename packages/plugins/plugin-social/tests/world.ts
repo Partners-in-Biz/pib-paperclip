@@ -107,6 +107,9 @@ export function approvalWorld(opts: WorldOptions = {}) {
           wakeups.push(id);
           return { queued: true };
         }),
+        relations: {
+          get: vi.fn(async () => ({ blockedBy: [] })),
+        },
       },
       logger: { info: (message: string) => void logs.push(message), warn: () => undefined, error: () => undefined, debug: () => undefined },
     },
@@ -245,7 +248,7 @@ export function world(accounts: AccountRow[] = []) {
       agents: { get: vi.fn(async () => ({ id: "ag", status: "idle" })), managed: { get: vi.fn(async () => ({ agentId: null })) } },
       projects: { managed: { get: vi.fn(async () => ({ projectId: "proj" })) }, get: vi.fn(async () => ({ id: "proj" })) },
       http: { fetch: vi.fn(async () => new Response("ok", { status: 200 })) },
-      issues: { get: vi.fn(async () => ({ id: "iss", status: "todo" })), create: vi.fn(async () => ({ id: "iss-1" })), update: vi.fn(async () => ({ id: "iss" })), createComment: vi.fn(async () => ({ id: "c" })), requestWakeup: vi.fn(async () => ({ queued: true })) },
+      issues: { get: vi.fn(async () => ({ id: "iss", status: "todo" })), create: vi.fn(async () => ({ id: "iss-1" })), update: vi.fn(async () => ({ id: "iss" })), createComment: vi.fn(async () => ({ id: "c" })), requestWakeup: vi.fn(async () => ({ queued: true })), relations: { get: vi.fn(async () => ({ blockedBy: [] })) } },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     },
     {
