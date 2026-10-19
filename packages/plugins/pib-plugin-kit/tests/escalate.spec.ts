@@ -285,25 +285,17 @@ describe("escalate", () => {
   });
 
   describe("(g) disabled flag returns skipped:disabled, no writes", () => {
-    it("returns skipped when escalation.enabled is false", async () => {
+    it("returns skipped when escalation.enabled is false, no issues created or updated", async () => {
       const fake = fakeCtx({
         companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
         agents: [
           { id: "agent1", reportsTo: "agent2", status: "ok" },
           { id: "agent2", reportsTo: null, status: "ok" },
         ],
-      });
-
-      // Set config to disable escalation
-      await fake.ctx.state.set(
-        {
-          scopeKind: "company",
-          scopeId: "co-1",
-          namespace: "default",
-          stateKey: "config",
+        config: {
+          "co-1": { escalation: { enabled: false } },
         },
-        { escalation: { enabled: false } },
-      );
+      });
 
       const stuckIssue = await fake.ctx.issues.create({
         companyId: "co-1",
@@ -314,6 +306,7 @@ describe("escalate", () => {
 
       const issueCountBefore = fake.issues.length;
       const updateCountBefore = fake.updates.length;
+      const stateKeysWritten = Array.from(fake.state.entries()).map(([k]) => k);
 
       const result = await escalate(fake.ctx, stuckIssue.id, "blocked", {
         companyId: "co-1",
@@ -323,6 +316,40 @@ describe("escalate", () => {
       expect(result).toEqual({ skipped: "disabled" });
       expect(fake.issues.length).toBe(issueCountBefore); // no new issue
       expect(fake.updates.length).toBe(updateCountBefore); // no update to stuck issue
+      // No escalation state written
+      const newStateKeys = Array.from(fake.state.entries()).map(([k]) => k).filter((k) => !stateKeysWritten.includes(k));
+      expect(newStateKeys).toHaveLength(0);
+    });
+
+    it("fails open (escalation proceeds) when config read throws", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: null, status: "ok" },
+        ],
+      });
+
+      const stuckIssue = await fake.ctx.issues.create({
+        companyId: "co-1",
+        title: "Stuck",
+        assigneeAgentId: "agent1",
+        status: "todo",
+      });
+
+      // Mock config.get to throw
+      const originalConfigGet = fake.ctx.config.get;
+      (fake.ctx.config.get as any) = async () => {
+        throw new Error("Config service unavailable");
+      };
+
+      // Even though config.get throws, escalate should proceed (fail open)
+      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", {
+        companyId: "co-1",
+        now,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ created: true }));
     });
   });
 
@@ -419,6 +446,73 @@ describe("escalate", () => {
       });
 
       expect(result).toEqual({ skipped: "no-owner" });
+    });
+  });
+
+  describe("(h) orphan unblock: state recorded immediately, issues.update fails don't orphan", () => {
+    it("records state after createWorkIssue, so retry on same issue returns same Unblock id", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: null, status: "ok" },
+        ],
+      });
+
+      const stuckIssue = await fake.ctx.issues.create({
+        companyId: "co-1",
+        title: "Stuck",
+        assigneeAgentId: "agent1",
+        status: "todo",
+      });
+
+      // Intercept issues.update to fail on first call
+      let updateCallCount = 0;
+      const originalUpdate = fake.ctx.issues.update.bind(fake.ctx.issues) as (id: string, patch: Record<string, unknown>, companyId?: string) => Promise<any>;
+      (fake.ctx.issues.update as any) = async (id: string, patch: Record<string, unknown>, companyId?: string) => {
+        updateCallCount += 1;
+        if (updateCallCount === 1 && id === stuckIssue.id) {
+          throw new Error("Update failed");
+        }
+        return originalUpdate(id, patch, companyId);
+      };
+
+      // First escalate: should create unblock issue and record state, but fail on update
+      let level1 = 0;
+      try {
+        await escalate(fake.ctx, stuckIssue.id, "blocked", {
+          companyId: "co-1",
+          now,
+        });
+      } catch {
+        // Expected to throw on issues.update
+      }
+
+      // The unblock issue should have been created
+      const unblockIssues = fake.issues.filter((i) => i.originKind === "plugin:pib-escalation");
+      expect(unblockIssues).toHaveLength(1);
+      const unblockId = unblockIssues[0].id;
+
+      // State should have been recorded (the dedupe record)
+      const escalationState = await fake.ctx.state.get({
+        scopeKind: "company",
+        scopeId: "co-1",
+        namespace: "pib-escalations",
+        stateKey: `escalations:${stuckIssue.id}`,
+      });
+      expect(escalationState).toBeDefined();
+      expect((escalationState as any[])[0].issueId).toBe(unblockId);
+      level1 = (escalationState as any[])[0].level;
+
+      // Second escalate: should return the same Unblock id (dedupe) and not create a new one
+      const result2 = await escalate(fake.ctx, stuckIssue.id, "blocked", {
+        companyId: "co-1",
+        now,
+      });
+
+      expect(result2).toEqual({ id: unblockId, level: level1, created: false });
+      // Still only one unblock issue
+      expect(fake.issues.filter((i) => i.originKind === "plugin:pib-escalation")).toHaveLength(1);
     });
   });
 });

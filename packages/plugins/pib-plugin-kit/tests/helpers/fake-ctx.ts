@@ -29,6 +29,8 @@ export interface FakeOptions {
   agents?: Array<Record<string, unknown>>;
   grants?: Record<string, Array<{ permissionKey: string; scope: Record<string, unknown> | null }>>;
   projects?: Record<string, { archivedAt?: string | null }>;
+  /** Per-company config, as returned by ctx.config.get(). */
+  config?: Record<string, Record<string, unknown>>;
   /** Company ids whose company-scoped host calls are refused ("company context is required"), like a company with no saved plugin config. */
   deniedCompanies?: string[];
   /** User ids the host refuses as an assignee ("Assignee user not found"). */
@@ -73,6 +75,13 @@ export function fakeCtx(options: FakeOptions = {}) {
   const ctx = {
     manifest: { id: options.manifestId ?? "partnersinbiz.test" },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    config: {
+      get: async (companyId?: string) => {
+        if (!companyId) throw new Error("companyId is required");
+        if (denied.has(companyId)) throw new Error(`Plugin "x" is not allowed to perform "config.get": company context is required`);
+        return (options.config?.[companyId] ?? {}) as Record<string, unknown>;
+      },
+    },
     state: {
       get: async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => {
         if (options.stateReadThrows) throw new Error("state store failed");

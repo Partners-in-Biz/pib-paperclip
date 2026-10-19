@@ -6,7 +6,7 @@
  * manager. If there is no manager chain, escalate to the company owner.
  */
 
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, Agent } from "@paperclipai/plugin-sdk";
 import {
   ESCALATION_DAILY_CAP,
   buildUnblockIssue,
@@ -18,6 +18,7 @@ import {
 } from "./escalate-model.js";
 import { createWorkIssue } from "./issues.js";
 import { ownerUserFor } from "./cockpit.js";
+import { readConfig } from "./config.js";
 import { redactSecrets } from "./redact.js";
 
 export type EscalateOptions = {
@@ -41,7 +42,6 @@ export type EscalateResult =
         | "dedupe"
         | "cooldown"
         | "cap"
-        | "below-start"
         | "no-target"
         | "no-owner"
         | "no-issue";
@@ -76,15 +76,18 @@ export async function escalate(
   const now = opts.now ?? new Date();
 
   // Check if escalation is enabled
-  const configKey = { scopeKind: "company" as const, scopeId: opts.companyId, namespace: "default", stateKey: "config" };
+  let escalationEnabled = true;
   try {
-    const config = await ctx.state.get(configKey);
-    const escalationEnabled = config && typeof config === "object" ? (config as any).escalation?.enabled : true;
-    if (escalationEnabled === false) {
-      return { skipped: "disabled" };
+    const config = await readConfig<{ escalation?: { enabled?: boolean } }>(ctx, opts.companyId);
+    if (config.escalation?.enabled === false) {
+      escalationEnabled = false;
     }
   } catch {
-    // If we can't read config, assume enabled (safe default)
+    // If we can't read config, fail open (treat as enabled)
+  }
+
+  if (!escalationEnabled) {
+    return { skipped: "disabled" };
   }
 
   // Read the stuck issue
@@ -105,9 +108,9 @@ export async function escalate(
     visited.add(current);
     const agent = await ctx.agents.get(current, opts.companyId);
     if (!agent) break;
-    if ((agent as any).reportsTo) {
-      chain.push((agent as any).reportsTo);
-      current = (agent as any).reportsTo;
+    if (agent.reportsTo) {
+      chain.push(agent.reportsTo);
+      current = agent.reportsTo;
     } else {
       break;
     }
@@ -116,11 +119,17 @@ export async function escalate(
 
   // Compute health per agent
   const healthByAgent: Record<string, AgentHealthInput | undefined> = {};
+  const agentCache = new Map<string, Agent | null>();
+
   for (const agentId of chain) {
-    const agent = await ctx.agents.get(agentId, opts.companyId);
+    let agent = agentCache.get(agentId);
+    if (agent === undefined) {
+      agent = await ctx.agents.get(agentId, opts.companyId);
+      agentCache.set(agentId, agent);
+    }
     if (agent) {
       healthByAgent[agentId] = {
-        agentStatus: (agent as any).status ?? null,
+        agentStatus: agent.status ?? null,
         hireOpen: false,
       };
     }
@@ -235,21 +244,8 @@ export async function escalate(
       });
     }
 
-    // Update the stuck issue to mark it blocked
-    const relations = await ctx.issues.relations.get(stuckIssue.id, opts.companyId);
-    const blockedByIds = new Set(relations.blockedBy?.map((b) => b.id) ?? []);
-    blockedByIds.add(unblockIssue.id);
-
-    await ctx.issues.update(
-      stuckIssue.id,
-      {
-        status: "blocked",
-        blockedByIssueIds: Array.from(blockedByIds),
-      },
-      opts.companyId,
-    );
-
-    // Record in state
+    // Record in state immediately after creating the unblock issue (before relations.get / issues.update)
+    // This guards against orphaned unblock issues if issues.update fails
     const escalationRecord = {
       originId: unblockInput.originId,
       createdAt: now.toISOString(),
@@ -264,6 +260,20 @@ export async function escalate(
 
     // Increment today's count
     await ctx.state.set(countKey, todayCount + 1);
+
+    // Update the stuck issue to mark it blocked
+    const relations = await ctx.issues.relations.get(stuckIssue.id, opts.companyId);
+    const blockedByIds = new Set(relations.blockedBy?.map((b) => b.id) ?? []);
+    blockedByIds.add(unblockIssue.id);
+
+    await ctx.issues.update(
+      stuckIssue.id,
+      {
+        status: "blocked",
+        blockedByIssueIds: Array.from(blockedByIds),
+      },
+      opts.companyId,
+    );
 
     return { id: unblockIssue.id, level: level.level, created: true };
   }
