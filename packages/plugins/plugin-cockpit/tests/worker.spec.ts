@@ -144,14 +144,12 @@ describe("manifest and migration", () => {
     // Set up roles for both companies so listRoles returns them
     await saveTeam(envMixed, A, {}, "user-1");
     await saveTeam(envMixed, B, {}, "user-2");
-    // Guard: ensure ctx.agents is never accessed
-    const agentsSpy = vi.spyOn(envMixed.ctx.agents, "list");
-    const result = await governorTick(envMixed);
+    // Guard: any access to ctx.agents (list, pause, resume, invoke, ...) throws.
+    const guarded = { ...envMixed, ctx: new Proxy(envMixed.ctx, { get: (target, key) => { if (key === "agents") throw new Error("governor stub touched ctx.agents"); return Reflect.get(target, key); } }) };
+    const result = await governorTick(guarded);
     expect(result.skipped).toBe("not-implemented");
     expect(result.tried).toBe(2); // Tries all companies
     expect(result.skipped_disabled).toBe(1); // One company has governor disabled
-    expect(agentsSpy).not.toHaveBeenCalled(); // Stub does not call agents
-    agentsSpy.mockRestore();
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
