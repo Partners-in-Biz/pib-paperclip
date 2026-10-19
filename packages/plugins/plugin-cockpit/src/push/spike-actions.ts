@@ -71,12 +71,8 @@ async function withSubsLock<T>(op: () => Promise<T>): Promise<T> {
 }
 
 function decodeBase64Url(str: string): Buffer {
-  try {
-    const padded = str + "=".repeat((4 - (str.length % 4)) % 4);
-    return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-  } catch {
-    throw { code: "bad_subscription", message: "Invalid base64 encoding" } as CockpitError;
-  }
+  const padded = str + "=".repeat((4 - (str.length % 4)) % 4);
+  return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
 function throwError(code: string, message: string): never {
@@ -86,16 +82,7 @@ function throwError(code: string, message: string): never {
 }
 
 async function ensureKeyExists(deps: SpikeActionDeps, anySubsExist: boolean): Promise<{ publicKey: string; privateKey: string }> {
-  try {
-    return await getOrCreateVapidKey(deps.keyStore, { hasSubscriptions: () => anySubsExist });
-  } catch (e) {
-    if ((e as PushKeyError).code === "key_lost") {
-      const err: CockpitError = new Error((e as Error).message);
-      err.code = "key_lost";
-      throw err;
-    }
-    throw e;
-  }
+  return getOrCreateVapidKey(deps.keyStore, { hasSubscriptions: () => anySubsExist });
 }
 
 export async function subscribe(
