@@ -8,10 +8,12 @@
  * is missing and the agent is woken to finish it. People can always close an
  * issue themselves; their close is never checked.
  *
- * To stop a loop, the third failed close hands the issue to the Operator (or
- * the owner when there is no Operator) with the facts.
+ * To stop a loop, the third failed close escalates the issue to the next
+ * manager in the chain, or to the owner (creating an Unblock issue).
+ * If escalation is disabled, it falls back to routing to the Operator.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { escalate } from "./escalate.js";
 import { routeWork } from "./cockpit.js";
 import { wakeIssue } from "./issues.js";
 
@@ -98,6 +100,37 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
   const list = missing.map((line) => `- ${line}`).join("\n");
 
   if (attempts >= DONE_CHECK_MAX_REOPENS) {
+    // Escalate to the next manager in the chain, or to the owner
+    const result = await escalate(ctx, issue.id, "done_check_early_close", { companyId });
+
+    if ("id" in result && result.created) {
+      // Escalation succeeded: issue is now blocked with an Unblock issue created
+      const unblockId = result.id;
+      const handTo = `an Unblock issue (${unblockId})`;
+      await ctx.issues.createComment(
+        issue.id,
+        `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nEscalating to ${handTo} for further investigation.`,
+        companyId,
+      );
+      return "escalated";
+    }
+
+    if ("skipped" in result && result.skipped === "disabled") {
+      // Escalation is disabled: fall back to old behavior (route to operator)
+      const route = await routeWork(ctx, companyId, ["operator"]);
+      const handTo = route.via === "operator" ? "the Operator" : route.via === "owner" ? "the owner" : "nobody (no Operator or owner is set)";
+      await ctx.issues.update(issue.id, { status: "todo", assigneeAgentId: route.assigneeAgentId, assigneeUserId: route.assigneeUserId }, companyId);
+      await ctx.issues.createComment(
+        issue.id,
+        `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
+        companyId,
+      );
+      if (route.assigneeAgentId) await wakeIssue(ctx, issue.id, companyId, "Done check: closed early again");
+      return "escalated";
+    }
+
+    // Other skip reasons (dedupe, cooldown, cap, no-target, no-owner, no-issue):
+    // Fall back to old operator routing behavior as a safety net
     const route = await routeWork(ctx, companyId, ["operator"]);
     const handTo = route.via === "operator" ? "the Operator" : route.via === "owner" ? "the owner" : "nobody (no Operator or owner is set)";
     await ctx.issues.update(issue.id, { status: "todo", assigneeAgentId: route.assigneeAgentId, assigneeUserId: route.assigneeUserId }, companyId);
