@@ -289,7 +289,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
                 companyId,
               );
             } catch (error) {
-              env.ctx.logger.info("Failed to update blocker edges", {
+              env.ctx.logger.warn("Failed to update blocker edges", {
                 companyId,
                 issueId: issue.stuck.id,
                 error: message(error),
