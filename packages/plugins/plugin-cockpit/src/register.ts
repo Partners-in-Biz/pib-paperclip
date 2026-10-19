@@ -62,6 +62,8 @@ import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
 import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
+import { subscribe, send, type SpikeActionDeps } from "./push/spike-actions.js";
+import { postPush } from "./push/transport.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -415,6 +417,54 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       if (error instanceof PushKeyError) {
         throw new CockpitError(error.message);
+      }
+      throw error;
+    }
+  });
+
+  // Push spike: subscribe endpoint to push notifications
+  ctx.actions.register("cockpit.pushSpike.subscribe", async (params, context) => {
+    requireUser(context);
+    const deps: SpikeActionDeps = {
+      keyStore: createPushKeyStore(ctx.state),
+      stateReader: (key) => ctx.state.get(key),
+      stateWriter: (key, value) => ctx.state.set(key, value),
+      postPush,
+    };
+    const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
+    try {
+      return await subscribe(deps, params as Parameters<typeof subscribe>[1], actor);
+    } catch (error) {
+      if (error instanceof PushKeyError) {
+        throw new CockpitError(error.message);
+      }
+      const err = error as { code?: string; message?: string };
+      if (err.code) {
+        throw new CockpitError(err.message ?? err.code);
+      }
+      throw error;
+    }
+  });
+
+  // Push spike: send test push to user's subscriptions
+  ctx.actions.register("cockpit.pushSpike.send", async (params, context) => {
+    requireUser(context);
+    const deps: SpikeActionDeps = {
+      keyStore: createPushKeyStore(ctx.state),
+      stateReader: (key) => ctx.state.get(key),
+      stateWriter: (key, value) => ctx.state.set(key, value),
+      postPush,
+    };
+    const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
+    try {
+      return await send(deps, params as Parameters<typeof send>[1], actor);
+    } catch (error) {
+      if (error instanceof PushKeyError) {
+        throw new CockpitError(error.message);
+      }
+      const err = error as { code?: string; message?: string };
+      if (err.code) {
+        throw new CockpitError(err.message ?? err.code);
       }
       throw error;
     }
