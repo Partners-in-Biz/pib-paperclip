@@ -46,6 +46,7 @@ import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js"
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
+import { governCompany, type GovernorConfig } from "./governor.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
 import { parseSnapshot, teamSignature } from "./merge.js";
@@ -145,19 +146,22 @@ function idList(value: unknown): string[] | null {
   return ids.length ? ids : null;
 }
 
-/**
- * Governor stub: for each company, reads its governor config and logs status.
- * Does not call ctx.agents; full pause/resume implementation lands in PAR-3883 children.
- */
-export async function governorTick(env: Env): Promise<{ skipped: string; tried?: number; skipped_disabled?: number }> {
-  const results = { skipped: "not-implemented", tried: 0, skipped_disabled: 0 };
+/** Iterates all companies: reads config, calls governCompany for trigger + pause path. */
+export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; already_paused: number; paused: number; errors: number; failed: number }> {
+  const results = { tried: 0, disabled: 0, idle: 0, already_paused: 0, paused: 0, errors: 0, failed: 0 };
   for (const row of await listRoles(env.ctx)) {
     results.tried += 1;
-    const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
-    const governorConfig = config?.governor as { enabled?: boolean } | undefined;
-    const enabled = governorConfig?.enabled !== false;
-    if (!enabled) {
-      results.skipped_disabled += 1;
+    try {
+      const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
+      const governorConfig = config?.governor as GovernorConfig | undefined;
+      const result = await governCompany(env, row.companyId, governorConfig);
+      // `paused` counts agents paused this tick; an already-paused company adds none.
+      if (result.outcome === "paused") results.paused += result.paused;
+      else results[result.outcome] += 1;
+      results.errors += result.errors;
+    } catch (e) {
+      results.failed += 1;
+      env.ctx.logger.warn("Governor tick failed for company", { companyId: row.companyId, error: message(e) });
     }
   }
   return results;
