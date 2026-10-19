@@ -209,6 +209,12 @@ describe("the kit loop on Social's rules", () => {
           }),
           createComment: vi.fn(async (_id: string, body: string) => void comments.push(body)),
           requestWakeup: vi.fn(async (id: string) => void wakes.push(id)),
+          relations: {
+            get: vi.fn(async () => ({ blockedBy: [] })),
+          },
+        },
+        agents: {
+          get: vi.fn(async () => null),
         },
         state: {
           get: vi.fn(async (k: { namespace?: string; stateKey: string }) => state.get(`${k.namespace}:${k.stateKey}`) ?? null),

@@ -71,8 +71,6 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
       set: async (k: Record<string, unknown>, value: unknown) => { state.set(skey(k), value); },
     },
     agents: { get: async () => null, list: async () => [] },
-    config: { get: async () => FULL },
-    companies: { list: async () => [{ id: C }] },
     issues: {
       create: async (input: Record<string, unknown>) => { const id = `issue-${++seq}`; issues.set(id, { id, comments: [], ...input }); return issues.get(id); },
       get: async (id: string) => issues.get(id) ?? null,
@@ -84,7 +82,12 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
       },
       listComments: async (id: string) => issues.get(id)?.comments ?? [],
       requestWakeup: async () => ({}),
+      relations: {
+        get: async () => ({ blockedBy: [] }),
+      },
     },
+    config: { get: async () => ({ ...FULL, escalation: { enabled: false } }) },
+    companies: { list: async () => [{ id: C }] },
     secrets: { resolve: async () => undefined },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
   } as never;

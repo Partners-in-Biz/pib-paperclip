@@ -15,6 +15,7 @@ import type { HealthCheck } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { FAILED_RUN } from "./merge.js";
 import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
+import type { StuckInput, UnblockInput } from "./ladder-model.js";
 import {
   blockedCheck,
   blockedOwnerCheck,
@@ -34,6 +35,22 @@ import {
 } from "./watch-model.js";
 
 type Raw = Record<string, unknown>;
+
+export interface MarkerIssueRow {
+  id: string;
+  identifier: string | null;
+  title: string;
+  stuckIssueId: string;
+  level: number;
+  status: string;
+  originId: string;
+  createdAt: string;
+}
+
+export interface LadderIssue {
+  stuck: StuckInput;
+  unblocks: UnblockInput[];
+}
 
 /** `'a', 'b'` for a fixed list of status words (constants only: never user text). */
 const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(", ");
@@ -194,6 +211,143 @@ async function watchAgents(env: Env, companyId: string): Promise<Map<string, Wat
     env.ctx.logger.info("Cockpit watch agent list failed", { companyId, error: message(error) });
     return new Map();
   }
+}
+
+/** Marker issues: parse 'escalate:<issueId>:L<level>' origin format. */
+function parseEscalationOrigin(originId: string): { issueId: string; level: number } | null {
+  const match = originId.match(/^escalate:([^:]+):L(\d+)$/);
+  if (!match) return null;
+  const level = Number(match[2]);
+  if (!Number.isInteger(level) || level < 1 || level > 4) return null;
+  return { issueId: match[1], level };
+}
+
+/**
+ * Escalation marker issues: every issue whose origin_id matches 'escalate:<issueId>:L<level>'.
+ * Parses level and stuck issue id in TypeScript; rejects malformed entries.
+ * Includes hidden_at IS NULL filter and orders by created_at.
+ */
+export async function readMarkerIssues(ctx: PluginContext, companyId: string): Promise<MarkerIssueRow[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT i.id, i.identifier, i.title, i.origin_id, i.status, coalesce(i.created_at, now()) AS created_at
+       FROM public.issues i
+      WHERE i.company_id = $1 AND i.hidden_at IS NULL AND i.origin_id LIKE 'escalate:%'
+      ORDER BY coalesce(i.created_at, now())`,
+    [companyId],
+  );
+  return rows
+    .map((r) => {
+      const originId = text(r.origin_id);
+      if (!originId) return null;
+      const parsed = parseEscalationOrigin(originId);
+      if (!parsed) return null;
+      return {
+        id: String(r.id),
+        identifier: text(r.identifier),
+        title: String(r.title ?? ""),
+        stuckIssueId: parsed.issueId,
+        level: parsed.level,
+        status: String(r.status),
+        originId,
+        createdAt: iso(r.created_at) ?? new Date().toISOString(),
+      };
+    })
+    .filter((r): r is MarkerIssueRow => !!r);
+}
+
+/**
+ * Ladder issues: stuck issues with their open Unblock marker children.
+ * A stuck issue is either (a) blocked with no path per readBlocked, or
+ * (b) has an open marker issue as a child (even if readBlocked skips it).
+ * Marker issues themselves are never stuck issues; they appear as unblocks.
+ * For each stuck issue, loads blocker counts and status.
+ */
+export async function readLadderIssues(ctx: PluginContext, companyId: string, now: Date): Promise<LadderIssue[]> {
+  const [blocked, storms, markerRows] = await Promise.all([
+    readBlocked(ctx, companyId, now),
+    readStorms(ctx, companyId, now),
+    readMarkerIssues(ctx, companyId),
+  ]);
+
+  const stormIssueIds = new Set(storms.map((s) => s.issueId));
+  const markerIssueIds = new Set(markerRows.map((m) => m.id));
+
+  // Candidate stuck issues: blocked issues + stuck issues that have open marker children
+  const candidateIds = new Set<string>();
+  for (const b of blocked.items) candidateIds.add(b.id);
+  for (const m of markerRows) {
+    if (!markerIssueIds.has(m.stuckIssueId)) {
+      candidateIds.add(m.stuckIssueId);
+    }
+  }
+
+  // Map candidates to their marker children and compute blocker counts
+  const markersByStuckId = new Map<string, MarkerIssueRow[]>();
+  for (const m of markerRows) {
+    const kids = markersByStuckId.get(m.stuckIssueId) ?? [];
+    kids.push(m);
+    markersByStuckId.set(m.stuckIssueId, kids);
+  }
+
+  const blockedByIssueId = new Map<string, BlockedIssue>();
+  for (const b of blocked.items) blockedByIssueId.set(b.id, b);
+
+  // Load marker descriptions for parsing blockedNoPath
+  const markerDescByStuckId = new Map<string, string[]>();
+  for (const m of markerRows) {
+    const kids = markerDescByStuckId.get(m.stuckIssueId) ?? [];
+    kids.push(m.originId);
+    markerDescByStuckId.set(m.stuckIssueId, kids);
+  }
+
+  // Load each candidate: status, blockedSince, identifier, blocker counts
+  const idArray = Array.from(candidateIds);
+  let rows: Raw[] = [];
+  if (idArray.length > 0) {
+    // Build the query with one parameter per candidate ID
+    const idParams = idArray.map((_, i) => `$${i + 2}`).join(", ");
+    rows = await ctx.db.query<Raw>(
+      `SELECT i.id, i.identifier, i.status, coalesce(i.blocked_transition_at, i.updated_at) AS blocked_since,
+              (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+                WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status NOT IN ('done', 'cancelled'))::text AS open_blockers,
+              (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+                WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status IN ('done', 'cancelled'))::text AS closed_blockers
+         FROM public.issues i
+        WHERE i.company_id = $1 AND i.id IN (${idParams})`,
+      [companyId, ...idArray],
+    );
+  }
+
+  const ladder: LadderIssue[] = [];
+  for (const r of rows) {
+    const id = String(r.id);
+    const markers = markersByStuckId.get(id) ?? [];
+    const blockedItem = blockedByIssueId.get(id);
+
+    const stuck: StuckInput = {
+      id,
+      identifier: text(r.identifier) || id,
+      status: String(r.status),
+      blockedSince: iso(r.blocked_since) ?? now.toISOString(),
+      openBlockers: num(r.open_blockers),
+      closedBlockers: num(r.closed_blockers),
+    };
+
+    const unblocks: UnblockInput[] = markers.map((m) => ({
+      id: m.id,
+      identifier: m.identifier || m.id,
+      title: m.title,
+      description: "",
+      status: m.status,
+      createdAt: m.createdAt,
+      blockedNoPath: !!blockedItem,
+      inStorm: stormIssueIds.has(m.id),
+    }));
+
+    ladder.push({ stuck, unblocks });
+  }
+
+  return ladder;
 }
 
 /** Assignees that count as "idle": paused, errored and unapproved agents have their own health entries. */
