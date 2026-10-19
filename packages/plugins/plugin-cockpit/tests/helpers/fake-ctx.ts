@@ -79,6 +79,8 @@ export function fakeCtx(options: {
   secrets?: Record<string, string>;
   /** `ctx.goals`: present when true (the capability granted). */
   goals?: boolean;
+  /** Agent ids whose pause should fail. */
+  pauseFails?: string[];
   /**
    * What `ctx.skills.managed.get` resolves, by skill key: the company's copy as the host stores it (see
    * helpers/host-skills.ts: `installedLikeHost` gives the host-shaped, unedited copy). The resolution carries the
@@ -141,6 +143,7 @@ export function fakeCtx(options: {
   const state = new Map<string, unknown>();
   const configs = options.savedConfigs ?? {};
   const agents = [...(options.agents ?? [])];
+  const paused: string[] = [];
   const routines = new Map<string, FakeRoutine>();
   const grants = new Map<string, Array<{ permissionKey: string; scope: unknown }>>();
   const skillCalls: string[] = [];
@@ -181,6 +184,14 @@ export function fakeCtx(options: {
       get: async (id: string, companyId: string) => {
         const agent = agents.find((a) => a.id === id && a.companyId === companyId);
         return agent ? { createdAt: "2026-01-01T00:00:00.000Z", ...agent } : null;
+      },
+      pause: async (agentId: string, companyId: string) => {
+        if ((options.pauseFails ?? []).includes(agentId)) throw new Error("pause refused");
+        const agent = agents.find((a) => a.id === agentId && a.companyId === companyId);
+        if (!agent) throw new Error("agent not found");
+        paused.push(agentId);
+        agent.status = "paused";
+        return { createdAt: "2026-01-01T00:00:00.000Z", ...agent };
       },
     },
     approvals: { list: async ({ companyId }: { companyId: string }) => (options.approvals ?? []).filter((a) => a.companyId === companyId) },
@@ -324,7 +335,7 @@ export function fakeCtx(options: {
     return id;
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, routines, grants, skillCalls, documents, hostGoals, fire, userComment };
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, paused, routines, grants, skillCalls, documents, hostGoals, fire, userComment };
 }
 
 export function fixedClock(iso: string) {

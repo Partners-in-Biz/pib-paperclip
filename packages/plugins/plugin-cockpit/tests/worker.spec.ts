@@ -139,17 +139,17 @@ describe("manifest and migration", () => {
     expect(normal(third).slice(0, 4)).toEqual(kit);
   });
 
-  it("governor tick iterates companies and reads config, skipping disabled ones, never calling agents", async () => {
+  it("governor tick iterates companies and reads config, skipping disabled ones, never calling agents when idle", async () => {
     const { env: envMixed } = setup({ savedConfigs: { [A]: { governor: { enabled: false } }, [B]: { governor: { enabled: true } } } });
     // Set up roles for both companies so listRoles returns them
     await saveTeam(envMixed, A, {}, "user-1");
     await saveTeam(envMixed, B, {}, "user-2");
-    // Guard: any access to ctx.agents (list, pause, resume, invoke, ...) throws.
-    const guarded = { ...envMixed, ctx: new Proxy(envMixed.ctx, { get: (target, key) => { if (key === "agents") throw new Error("governor stub touched ctx.agents"); return Reflect.get(target, key); } }) };
+    // Disabled company never touches ctx.agents (Proxy guard); enabled company B is idle (no failures), so never touches agents either.
+    const guarded = { ...envMixed, ctx: new Proxy(envMixed.ctx, { get: (target, key) => { if (key === "agents") throw new Error("governor touched ctx.agents when it shouldn't"); return Reflect.get(target, key); } }) };
     const result = await governorTick(guarded);
-    expect(result.skipped).toBe("not-implemented");
-    expect(result.tried).toBe(2); // Tries all companies
-    expect(result.skipped_disabled).toBe(1); // One company has governor disabled
+    expect(result.tried).toBe(2);
+    expect(result.disabled).toBe(1);
+    expect(result.idle).toBe(1);
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
