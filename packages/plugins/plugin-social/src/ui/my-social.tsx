@@ -12,7 +12,7 @@ type TabId = "accounts" | "queue" | "calendar";
  * Personal social page: personal accounts, draft queue, and calendar.
  * Only personal accounts and posts are shown (via my-social.* data).
  */
-export function MySocialPage({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
+export function MySocialPage({ snapshot, run, companyId }: { snapshot: Snapshot; run: RunAction; companyId: string }) {
   const [tab, setTab] = useState<TabId>("accounts");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -69,24 +69,23 @@ export function MySocialPage({ snapshot, run }: { snapshot: Snapshot; run: RunAc
         active={tab}
         onChange={(id) => setTab(id as TabId)}
       />
-      {tab === "accounts" ? <AccountsTab accounts={accounts} snapshot={snapshot} run={run} onRefresh={load} /> : null}
-      {tab === "queue" ? <QueueTab posts={posts} snapshot={snapshot} run={run} onRefresh={load} /> : null}
+      {tab === "accounts" ? <AccountsTab accounts={accounts} snapshot={snapshot} run={run} companyId={companyId} onRefresh={load} /> : null}
+      {tab === "queue" ? <QueueTab posts={posts} accounts={accounts} snapshot={snapshot} run={run} onRefresh={load} /> : null}
       {tab === "calendar" ? <CalendarTab posts={posts} snapshot={snapshot} /> : null}
     </div>
   );
 }
 
 /** List personal accounts with connect/disconnect. */
-function AccountsTab({ accounts, snapshot, run, onRefresh }: { accounts: Account[]; snapshot: Snapshot; run: RunAction; onRefresh: () => Promise<void> }) {
+function AccountsTab({ accounts, snapshot, run, companyId, onRefresh }: { accounts: Account[]; snapshot: Snapshot; run: RunAction; companyId: string; onRefresh: () => Promise<void> }) {
   const [connecting, setConnecting] = useState<SocialPlatform | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   const handleConnect = async (platform: SocialPlatform) => {
     try {
       setConnecting(platform);
-      // For personal accounts, use the company ID context if available
-      // The backend will know this is a personal account request via the action
-      await startConnect(run, "", platform);
+      // space "me" makes the account personal and owned by the signed-in user
+      await startConnect(run, companyId, platform, { space: "me" });
     } catch (e) {
       // Error is already shown by startConnect
     } finally {
@@ -200,7 +199,7 @@ function AccountsTab({ accounts, snapshot, run, onRefresh }: { accounts: Account
 }
 
 /** Queue: Drafts, Scheduled, Posted (Failed). */
-function QueueTab({ posts, snapshot, run, onRefresh }: { posts: Post[]; snapshot: Snapshot; run: RunAction; onRefresh: () => Promise<void> }) {
+function QueueTab({ posts, accounts, snapshot, run, onRefresh }: { posts: Post[]; accounts: Account[]; snapshot: Snapshot; run: RunAction; onRefresh: () => Promise<void> }) {
   const [composing, setComposing] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
 
@@ -209,9 +208,7 @@ function QueueTab({ posts, snapshot, run, onRefresh }: { posts: Post[]; snapshot
   const published = posts.filter((p) => p.status === "published");
   const failed = posts.filter((p) => p.status === "failed");
 
-  const personalAccounts = Array.isArray(snapshot.accounts)
-    ? snapshot.accounts.filter((a) => a.client === null)
-    : [];
+  const personalAccounts = accounts;
 
   return (
     <div style={{ display: "grid", gap: 12 }}>

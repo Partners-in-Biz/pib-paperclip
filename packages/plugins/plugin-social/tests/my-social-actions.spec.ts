@@ -489,3 +489,20 @@ describe("My Social Actions - Security & Isolation", () => {
     });
   });
 });
+
+describe("My Social page wiring", () => {
+  it("the UI action list covers every my-social action the page calls", async () => {
+    const { readFileSync } = await import("node:fs");
+    const ui = readFileSync(new URL("../src/ui/index.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../src/ui/my-social.tsx", import.meta.url), "utf8");
+    const used = new Set([...page.matchAll(/"(my-social\.[a-z-]+)"/g)].map((m) => m[1]));
+    expect(used.size).toBeGreaterThan(0);
+    for (const key of used) expect(ui, key).toContain(`"${key}",`);
+  });
+
+  it("connecting from My Social asks for a personal account", async () => {
+    const { readFileSync } = await import("node:fs");
+    const page = readFileSync(new URL("../src/ui/my-social.tsx", import.meta.url), "utf8");
+    expect(page).toContain('{ space: "me" }');
+  });
+});

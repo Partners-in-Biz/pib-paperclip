@@ -92,6 +92,13 @@ const ACTION_KEYS = [
   "social.growth-decide-change",
   "social.growth-retire-question",
   "social.routine-report",
+  "my-social.accounts",
+  "my-social.posts",
+  "my-social.create-draft",
+  "my-social.update-draft",
+  "my-social.delete-draft",
+  "my-social.approve",
+  "my-social.disconnect-account",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
@@ -439,7 +446,7 @@ export function MySocialPage({ context }: PluginPageProps) {
   ) : !snapshot ? (
     <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>
   ) : (
-    <MySocialPageComponent snapshot={snapshot} run={run} />
+    <MySocialPageComponent snapshot={snapshot} run={run} companyId={context.companyId} />
   );
 
   return (
