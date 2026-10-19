@@ -842,8 +842,6 @@ export interface DestinationRow {
   company_id: string;
   post_id: string;
   account_id: string;
-  scope: "org" | "personal";
-  owner_user_id: string | null;
   status: DestinationStatus;
   result: unknown;
   attempts: number;
@@ -859,7 +857,7 @@ export interface DestinationRow {
 }
 
 const DEST_COLS = [
-  "id", "company_id", "post_id", "account_id", "scope", "owner_user_id", "status", "result", "attempts", "next_attempt_at", "external_id", "external_url",
+  "id", "company_id", "post_id", "account_id", "status", "result", "attempts", "next_attempt_at", "external_id", "external_url",
   "last_error", "published_at", "issue_id", "metric_windows", "created_at", "updated_at",
 ].join(", ");
 
