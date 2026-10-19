@@ -459,7 +459,7 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
       ? undefined
       : [
         ...(esp.hasCredentials ? [] : (isSES ? [
-          "In AWS IAM, create a user with permissions ses:SendEmail and ses:GetAccount and the identity calls (ses:GetEmailIdentity, etc.).",
+          "In AWS IAM, create a user with permissions ses:SendEmail and ses:GetAccount and the identity calls (ses:GetEmailIdentity, etc.) to verify domains in the AWS SES console Identities section.",
           "Create an access key for the user and copy the access key id and secret access key.",
           "In Paperclip, create secrets for both (Settings, Secrets), then open the Mailbox settings, find Email provider, choose ses as the provider, and pick those secrets under AWS access key id and AWS secret access key.",
         ] : [
@@ -492,8 +492,8 @@ async function emailProviderItems(ctx: PluginContext, companyId: string, loaded:
     steps: webhookDone
       ? undefined
       : (isSES ? [
-        `In the AWS SES console, open the configuration set for this company, select Delivery event publishing, and find the SNS topic ARN (${loaded.config.esp.ses.snsTopicArn ?? "e.g. arn:aws:sns:eu-north-1:123456789012:mailbox"}).`,
-        "In the SNS console, subscriptions tab, create a subscription with Protocol HTTPS to that topic.",
+        `In the AWS SES console, open Configuration Sets (this is where you set up delivery notifications), open the configuration set for this company, select Delivery event publishing, and find the SNS topic ARN (${loaded.config.esp.ses.snsTopicArn ?? "e.g. arn:aws:sns:eu-north-1:123456789012:mailbox"}).`,
+        "In the SNS console, Subscriptions tab, create a subscription with Protocol HTTPS to that topic.",
         `The endpoint URL is ${webhookUrl ?? "<your Paperclip public address>/api/plugins/partnersinbiz.mailbox/webhooks/ses (save the Public base URL in the Mailbox settings first)"}.`,
         "The subscription will show status Pending. In the SNS console, find that subscription and click Request confirmation to verify the endpoint.",
         "Once confirmed, the SNS topic publishes bounces and complaints to the Mailbox.",
