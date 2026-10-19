@@ -18,6 +18,7 @@ import { agentHealth, parseSnapshot, staleChecks, type AgentLite, type CockpitSn
 import { ownSnapshot } from "./own.js";
 import { plainDetail } from "./plain.js";
 import { operatorAgentId } from "./roles.js";
+import { ladderTick } from "./ladder.js";
 
 const CLOSED = new Set(["done", "cancelled"]);
 
@@ -338,6 +339,14 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         if (repaired.repaired.length) counts.approvalsRouted = (counts.approvalsRouted ?? 0) + repaired.repaired.length;
       } catch (error) {
         env.ctx.logger.info("Approval repair failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        const ladderCounts = await ladderTick(env, row.companyId);
+        for (const [name, value] of Object.entries(ladderCounts)) {
+          if (value > 0) counts[`ladder_${name}`] = (counts[`ladder_${name}`] ?? 0) + value;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Ladder tick failed", { companyId: row.companyId, error: message(error) });
       }
       try {
         // The hourly issue is built from fresh checks, not the page's ten-minute copy.
