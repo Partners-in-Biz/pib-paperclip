@@ -26,6 +26,7 @@ export * from "./flows.js";
 export * from "./done-checks.js";
 export * from "./approvals.js";
 export * from "./known-companies.js";
+export * from "./escalate-model.js";
 export * from "./company.js";
 export * from "./run-profile.js";
 export * from "./role-drift.js";
