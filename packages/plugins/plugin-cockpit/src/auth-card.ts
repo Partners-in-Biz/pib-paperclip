@@ -39,7 +39,7 @@ export async function ensureAuthCard(env: Env, companyId: string, agentIds: stri
       question: `The Claude login on the Paperclip server has expired. ${agentPhrase} cannot run until it is renewed.`,
       why: "When the server's Paperclip account loses its login session, every agent that runs through it fails with 'claude_auth_required'. Agents cannot recover until the login is renewed.",
       options: ["I will re-login now"],
-      links: [],
+      links: [{ label: "Server", href: "/settings/team" }],
       steps: [
         "On the Paperclip server: `su - paperclip` (or `sudo -u paperclip bash`)",
         "Run: `claude /login` or `claude login`",
