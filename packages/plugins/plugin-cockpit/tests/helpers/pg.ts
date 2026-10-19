@@ -108,7 +108,7 @@ export async function startPg(): Promise<PgHarness> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // Stand-in for the host's core table the Cockpit may read.
   await client.query(
-    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
+    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
   );
   // The core issue columns the operations watch reads (watch.ts), and the blocker relations.
   await client.query(

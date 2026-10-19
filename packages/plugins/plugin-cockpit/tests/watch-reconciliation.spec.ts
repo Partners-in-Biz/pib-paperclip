@@ -44,4 +44,40 @@ describe("execution reconciliation (pure)", () => {
     const d = executionReconciliationDecisions([run("r1", "i1", 10)], new Set(), new Set(["i1"]), new Set());
     expect(d).toEqual([]);
   });
+
+  it("multi-issue mix orders by run time desc and respects cap", () => {
+    const runs = [
+      run("r1", "i1", 30), // oldest, will be dropped due to cap
+      run("r2", "i2", 25),
+      run("r3", "i3", 20),
+      run("r4", "i4", 15),
+      run("r5", "i5", 10),
+      run("r6", "i6", 5), // newest
+    ];
+    const d = executionReconciliationDecisions(runs, new Set(), new Set(), new Set());
+    expect(d).toHaveLength(5);
+    // Ordered by recency (newest first), capped at WATCH.perRule of 5
+    expect(d.map((x) => x.issueId)).toEqual(["i6", "i5", "i4", "i3", "i2"]);
+    expect(d.map((x) => x.action)).toEqual(["wake", "wake", "wake", "wake", "wake"]);
+  });
+
+  it("null identifier and title are preserved", () => {
+    const nullRun: ReconciliationRun = {
+      issueId: "i1",
+      identifier: null,
+      title: null,
+      runId: "r1",
+      runTime: new Date(Date.now() - 10 * 60_000).toISOString(),
+      error: "Something broke",
+      assigneeAgentId: "agent-1",
+    };
+    const d = executionReconciliationDecisions([nullRun], new Set(), new Set(), new Set());
+    expect(d).toHaveLength(1);
+    expect(d[0]).toMatchObject({
+      issueId: "i1",
+      assigneeAgentId: "agent-1",
+      action: "wake",
+      runId: "r1",
+    });
+  });
 });

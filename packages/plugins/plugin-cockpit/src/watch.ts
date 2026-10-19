@@ -211,21 +211,23 @@ export async function readStalled(ctx: PluginContext, companyId: string, now: Da
  * Runs with error_code = 'execution_reconciliation_required' on open issues with
  * an agent assignee, newer than the issue's latest succeeded run. Allows detection
  * of second occurrence (older woken + newer run), clears on later success.
+ * Includes runs with null started_at (host cancels stale queued runs with finished_at=now).
  */
 export async function readReconciliationRuns(ctx: PluginContext, companyId: string, now: Date): Promise<ReconciliationRun[]> {
   const rows = await ctx.db.query<Raw>(
-    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id, h.started_at
+    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id,
+            coalesce(h.started_at, h.finished_at, h.created_at) AS run_time
        FROM public.heartbeat_runs h
        JOIN public.issues i ON i.company_id = h.company_id AND i.id::text = h.context_snapshot ->> 'issueId'
       WHERE h.company_id = $1 AND h.error_code = 'execution_reconciliation_required'
-        AND h.started_at IS NOT NULL
         AND i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL AND i.assignee_agent_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM public.heartbeat_runs h2
           WHERE h2.company_id = h.company_id
             AND h2.context_snapshot ->> 'issueId' = h.context_snapshot ->> 'issueId'
-            AND h2.status = 'succeeded' AND h2.started_at > h.started_at)
-      ORDER BY h.started_at DESC`,
+            AND h2.status = 'succeeded' AND coalesce(h2.started_at, h2.created_at) > coalesce(h.started_at, h.finished_at, h.created_at))
+      ORDER BY coalesce(h.started_at, h.finished_at, h.created_at) DESC
+      LIMIT 500`,
     [companyId],
   );
 
@@ -234,7 +236,7 @@ export async function readReconciliationRuns(ctx: PluginContext, companyId: stri
     identifier: text(r.identifier),
     title: text(r.title),
     runId: String(r.run_id),
-    runTime: iso(r.started_at) ?? now.toISOString(),
+    runTime: iso(r.run_time) ?? now.toISOString(),
     error: text(r.error),
     assigneeAgentId: text(r.assignee_agent_id),
   }));

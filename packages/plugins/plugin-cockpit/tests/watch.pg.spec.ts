@@ -9,7 +9,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { listRuns } from "../src/brief.js";
 import type { Env } from "../src/env.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { readBlocked, readBlockedOwned, readRateRows, readStalled, readStorms, readStreakRuns, watchChecks } from "../src/watch.js";
+import { readBlocked, readBlockedOwned, readRateRows, readReconciliationRuns, readStalled, readStorms, readStreakRuns, watchChecks } from "../src/watch.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
@@ -307,6 +307,128 @@ d("operations watch (Postgres)", () => {
       await issue(id(15), "B-6", "in_progress", { agent: AGENT.dev, updatedMinutesAgo: 30 * HOUR, company: OTHER_COMPANY });
       await issue(id(16), "B-7", "in_progress", { agent: AGENT.dev, updatedMinutesAgo: 30 * HOUR, hidden: true });
       expect(await readStalled(h.ctx, COMPANY, h.clock.now)).toEqual({ total: 0, items: [] });
+    });
+  });
+
+  describe("reconciliation runs", () => {
+    const id = (n: number) => `eeeeeeee-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const runId = (n: number) => `ffffffff-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+    it("finds runs with error_code='execution_reconciliation_required' on open issues with assignees, including runs with null started_at", async () => {
+      const issueId = id(1);
+      await issue(issueId, "PAR-123", "in_progress", { agent: AGENT.dev });
+      // Run with started_at set
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at, created_at, error_code, error, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
+        [
+          runId(1),
+          COMPANY,
+          AGENT.dev,
+          "queued",
+          ago(10),
+          null,
+          ago(10),
+          "execution_reconciliation_required",
+          "Reconciliation needed",
+          JSON.stringify({ issueId }),
+        ],
+      );
+      // Run with null started_at but finished_at set (host cancelled stale queued run)
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at, created_at, error_code, error, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
+        [
+          runId(2),
+          COMPANY,
+          AGENT.dev,
+          "queued",
+          null,
+          ago(5),
+          ago(5),
+          "execution_reconciliation_required",
+          "Stale queue cancel",
+          JSON.stringify({ issueId }),
+        ],
+      );
+      const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
+      expect(rows).toHaveLength(2);
+      // Both runs should be returned, newer first (runId(2) at finished_at, runId(1) at started_at)
+      expect(rows[0]!.runId).toBe(runId(2));
+      expect(rows[0]!.identifier).toBe("PAR-123");
+      expect(rows[1]!.runId).toBe(runId(1));
+    });
+
+    it("ignores cancelled runs on closed issues or without assignees", async () => {
+      const openId = id(2);
+      const closedId = id(3);
+      const unassignedId = id(4);
+      await issue(openId, "PAR-200", "in_progress", { agent: AGENT.dev });
+      await issue(closedId, "PAR-201", "done");
+      await issue(unassignedId, "PAR-202", "in_progress");
+
+      // Reconciliation runs on each
+      let runIdx = 3;
+      for (const [issueId, type] of [[openId, "open"], [closedId, "closed"], [unassignedId, "unassigned"]] as const) {
+        await h.client.query(
+          `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, error, context_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+          [
+            runId(runIdx++),
+            COMPANY,
+            AGENT.dev,
+            "queued",
+            ago(10),
+            "execution_reconciliation_required",
+            "Reconciliation needed",
+            JSON.stringify({ issueId }),
+          ],
+        );
+      }
+      const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.identifier).toBe("PAR-200");
+    });
+
+    it("clears a run when a later succeeded run on the same issue exists", async () => {
+      const issueId = id(5);
+      await issue(issueId, "PAR-250", "in_progress", { agent: AGENT.dev });
+      // Older reconciliation run
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, error, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [runId(6), COMPANY, AGENT.dev, "queued", ago(20), "execution_reconciliation_required", "Reconciliation", JSON.stringify({ issueId })],
+      );
+      // Later succeeded run clears the older reconciliation
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+        [runId(7), COMPANY, AGENT.dev, "succeeded", ago(10), null, JSON.stringify({ issueId })],
+      );
+      const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
+      expect(rows).toHaveLength(0);
+    });
+
+    it("does not clear a reconciliation run on a different issue by a later succeeded run", async () => {
+      const issue1 = id(6);
+      const issue2 = id(7);
+      await issue(issue1, "PAR-300", "in_progress", { agent: AGENT.dev });
+      await issue(issue2, "PAR-301", "in_progress", { agent: AGENT.dev });
+      // Reconciliation run on issue1
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, error, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [runId(8), COMPANY, AGENT.dev, "queued", ago(20), "execution_reconciliation_required", "Reconciliation", JSON.stringify({ issueId: issue1 })],
+      );
+      // Later succeeded run on different issue should not clear it
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+        [runId(9), COMPANY, AGENT.dev, "succeeded", ago(10), null, JSON.stringify({ issueId: issue2 })],
+      );
+      const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.identifier).toBe("PAR-300");
     });
   });
 
