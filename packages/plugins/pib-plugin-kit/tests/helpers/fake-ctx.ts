@@ -146,6 +146,10 @@ export function fakeCtx(options: FakeOptions = {}) {
         issues.push(issue);
         return issue;
       },
+      get: async (id: string, companyId: string) => {
+        const issue = issues.find((i) => i.id === id && i.companyId === companyId);
+        return issue ?? null;
+      },
       list: async (input: { companyId: string; status?: string; originKindPrefix?: string; originKind?: string; originId?: string }) =>
         issues.filter((i) => i.companyId === input.companyId && (!input.status || i.status === input.status) && (!input.originKindPrefix || (i.originKind ?? "").startsWith(input.originKindPrefix)) && (!input.originKind || i.originKind === input.originKind) && (!input.originId || i.originId === input.originId)),
       update: async (id: string, patch: Record<string, unknown>) => {
@@ -157,7 +161,7 @@ export function fakeCtx(options: FakeOptions = {}) {
       createComment: async (issueId: string, body: string) => void comments.push({ issueId, body }),
       requestWakeup: async (id: string) => void wakeups.push(id),
       relations: {
-        get: async (id: string) => {
+        get: async (id: string, companyId: string) => {
           if (options.blockers === "throws") throw new Error("issue.relations.read is not granted");
           return { blockedBy: (options.blockers?.[id] ?? []).map((b) => ({ id: b })), blocks: [] };
         },
