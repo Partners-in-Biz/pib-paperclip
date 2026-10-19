@@ -201,15 +201,42 @@ export function runRateChecks(rows: RateRow[], agents: Map<string, WatchAgent>):
 // Run streak
 // ---------------------------------------------------------------------------
 
-/** The same error code on three or more of an agent's latest finished runs in a row (a success or another code ends the streak). */
-export function runStreakChecks(runs: StreakRun[], agents: Map<string, WatchAgent>): HealthCheck[] {
+/** Organizes runs by agent (newest first), returning their error streaks. Pure helper for both runStreakChecks and authStreakAgents. */
+export function streaksByAgent(runs: StreakRun[]): Map<string, { newestFirst: StreakRun[]; code: string | null; status: string | null }> {
   const byAgent = new Map<string, StreakRun[]>();
   for (const run of runs) byAgent.set(run.agentId, [...(byAgent.get(run.agentId) ?? []), run]);
-  const out: Array<{ check: HealthCheck; length: number }> = [];
+  const out = new Map<string, { newestFirst: StreakRun[]; code: string | null; status: string | null }>();
   for (const [agentId, list] of byAgent) {
     const newestFirst = [...list].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-    const code = newestFirst[0]?.errorCode;
-    if (!code || !isFailed(newestFirst[0]!.status)) continue;
+    out.set(agentId, { newestFirst, code: newestFirst[0]?.errorCode ?? null, status: newestFirst[0]?.status ?? null });
+  }
+  return out;
+}
+
+/** Agents whose latest WATCH.streakMin runs failed with claude_auth_required. */
+export function authStreakAgents(runs: StreakRun[]): Map<string, { code: string; startedAt: string }> {
+  const streaks = streaksByAgent(runs);
+  const out = new Map<string, { code: string; startedAt: string }>();
+  for (const [agentId, { newestFirst, code, status }] of streaks) {
+    if (code !== "claude_auth_required" || !isFailed(status ?? "")) continue;
+    const streak: StreakRun[] = [];
+    for (const run of newestFirst) {
+      if (!isFailed(run.status) || run.errorCode !== "claude_auth_required") break;
+      streak.push(run);
+    }
+    if (streak.length >= WATCH.streakMin) {
+      out.set(agentId, { code, startedAt: earliest(streak.map((r) => r.startedAt)) ?? newestFirst[0]!.startedAt });
+    }
+  }
+  return out;
+}
+
+/** The same error code on three or more of an agent's latest finished runs in a row (a success or another code ends the streak). */
+export function runStreakChecks(runs: StreakRun[], agents: Map<string, WatchAgent>): HealthCheck[] {
+  const streaks = streaksByAgent(runs);
+  const out: Array<{ check: HealthCheck; length: number }> = [];
+  for (const [agentId, { newestFirst, code, status }] of streaks) {
+    if (!code || !isFailed(status ?? "")) continue;
     const streak: StreakRun[] = [];
     for (const run of newestFirst) {
       if (!isFailed(run.status) || run.errorCode !== code) break;

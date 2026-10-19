@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, repairUnroutedApprovals, syncAllCompanies, wakeIssue, type SkillSyncer as KitSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { reannounceEffects, reconcileAsks } from "./asks.js";
+import { ensureAuthCard } from "./auth-card.js";
 import { forgetChecks } from "./checks.js";
 import { ensureCockpitAsks } from "./effects.js";
 import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
@@ -19,6 +20,8 @@ import { ownSnapshot } from "./own.js";
 import { plainDetail } from "./plain.js";
 import { operatorAgentId } from "./roles.js";
 import { ladderTick } from "./ladder.js";
+import { authStreakAgents, type StreakRun } from "./watch-model.js";
+import { readStreakRuns } from "./watch.js";
 
 const CLOSED = new Set(["done", "cancelled"]);
 
@@ -355,6 +358,17 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
       } catch (error) {
         key = "failed";
         env.ctx.logger.info("System health issue failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // Auth card: when agents fail with claude_auth_required in a row, ask the owner to re-login.
+        const runs = await readStreakRuns(env.ctx, row.companyId, env.now());
+        const authAgents = authStreakAgents(runs);
+        if (authAgents.size > 0) {
+          const result = await ensureAuthCard(env, row.companyId, [...authAgents.keys()]);
+          if (result.action === "opened") counts.authCardOpened = (counts.authCardOpened ?? 0) + 1;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Auth card failed", { companyId: row.companyId, error: message(error) });
       }
     }
     counts[key] = (counts[key] ?? 0) + 1;
