@@ -61,6 +61,7 @@ import { onCommentCreated, upkeep } from "./memory/service.js";
 import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
+import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -401,6 +402,22 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     await resolveOpenCockpitAsks(env, companyId, ACTIVATE_GOALS_EFFECT, "The goals were confirmed in Setup.");
     forgetChecks(env, companyId);
     return { activated: done.map((g) => ({ id: g.id, title: g.title })) };
+  });
+
+  // Push spike: distribute the VAPID public key for push subscription setup
+  ctx.actions.register("cockpit.pushSpike.publicKey", async (_params, context) => {
+    requireUser(context);
+    try {
+      const publicKey = await getOrCreateVapidKey(createPushKeyStore(ctx.state), {
+        hasSubscriptions: () => hasSpikeSubscriptions(ctx.state),
+      });
+      return { publicKey: publicKey.publicKey };
+    } catch (error) {
+      if (error instanceof PushKeyError) {
+        throw new CockpitError(error.message);
+      }
+      throw error;
+    }
   });
 
   ctx.jobs.register(JOBS.reemitRoles, async () => {
