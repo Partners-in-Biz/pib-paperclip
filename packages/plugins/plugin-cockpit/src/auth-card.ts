@@ -39,12 +39,12 @@ export async function ensureAuthCard(env: Env, companyId: string, agentIds: stri
       question: `The Claude login on the Paperclip server has expired. ${agentPhrase} cannot run until it is renewed.`,
       why: "When the server's Paperclip account loses its login session, every agent that runs through it fails with 'claude_auth_required'. Agents cannot recover until the login is renewed.",
       options: ["I will re-login now"],
-      links: [{ label: "Server", href: "/settings/team" }],
+      links: [{ label: "Company settings", href: "/company/settings" }],
       steps: [
         "On the Paperclip server: `su - paperclip` (or `sudo -u paperclip bash`)",
-        "Run: `claude /login` or `claude login`",
+        "Run: `claude /login`",
         "Authenticate with your Anthropic account",
-        "Reply here when done, or the agents will resume on their next run",
+        "Press the button once done; it only records that you have seen this.",
       ],
       effect,
     },
@@ -57,7 +57,7 @@ export async function ensureAuthCard(env: Env, companyId: string, agentIds: stri
 async function checkLastAuthCard(env: Env, companyId: string): Promise<Date | null> {
   try {
     const rows = await env.ctx.db.query<Record<string, unknown>>(
-      `SELECT asked_at FROM ${getAsksTable()} WHERE company_id = $1 AND source = 'cockpit' AND effect ->> 'key' = $2 AND status IN ('open', 'answered') ORDER BY asked_at DESC LIMIT 1`,
+      `SELECT asked_at FROM ${getAsksTable()} WHERE company_id = $1 AND source = 'cockpit' AND effect ->> 'key' = $2 ORDER BY asked_at DESC LIMIT 1`,
       [companyId, "cockpit.auth-card-noted"],
     );
     if (rows[0]) {

@@ -32,7 +32,7 @@ d("Claude auth required card (Postgres)", () => {
 
   const openAuthAsks = async () => {
     const result = await h.client.query(
-      `SELECT * FROM ${NAMESPACE}.asks WHERE company_id = $1 AND source = 'cockpit' AND effect ->> 'key' = 'cockpit.auth-card-noted' AND status IN ('open', 'answered')`,
+      `SELECT * FROM ${NAMESPACE}.asks WHERE company_id = $1 AND source = 'cockpit' AND effect ->> 'key' = 'cockpit.auth-card-noted'`,
       [COMPANY],
     );
     return result.rows as Record<string, any>[];
@@ -189,6 +189,66 @@ d("Claude auth required card (Postgres)", () => {
       const asks = await openAuthAsks();
       expect(asks).toHaveLength(1);
       expect(asks[0]!.question).toContain("2 agents");
+    });
+
+    it("counts resolved auth card in dedupe (does not open new within 24h)", async () => {
+      // First tick: open the card
+      await run(AGENT_ID, "failed", "claude_auth_required", 5);
+      await run(AGENT_ID, "failed", "claude_auth_required", 6);
+      await run(AGENT_ID, "failed", "claude_auth_required", 7);
+
+      const streakRuns = await readStreakRuns(h.ctx, COMPANY, h.clock.now);
+      const authAgents = authStreakAgents(streakRuns);
+      const first = await ensureAuthCard(h.env, COMPANY, [...authAgents.keys()]);
+      expect(first.action).toBe("opened");
+      expect(await askCount()).toBe(1);
+
+      // Resolve the card
+      const asks = await openAuthAsks();
+      const askId = (asks[0] as any).id;
+      await h.client.query(`UPDATE ${NAMESPACE}.asks SET status = 'resolved' WHERE id = $1`, [askId]);
+
+      // Second tick (5 hours later): create new failures and check dedupe
+      h.clock.now = new Date(h.clock.now.getTime() + 5 * 3_600_000);
+      await run(AGENT_ID, "failed", "claude_auth_required", 5);
+      await run(AGENT_ID, "failed", "claude_auth_required", 6);
+      await run(AGENT_ID, "failed", "claude_auth_required", 7);
+
+      const streakRuns2 = await readStreakRuns(h.ctx, COMPANY, h.clock.now);
+      const authAgents2 = authStreakAgents(streakRuns2);
+      const second = await ensureAuthCard(h.env, COMPANY, [...authAgents2.keys()]);
+      expect(second.action).toBe("exists"); // Should not open another because resolved card is still in cooldown
+      expect(await askCount()).toBe(1); // Still only one
+    });
+
+    it("counts cancelled auth card in dedupe (does not open new within 24h)", async () => {
+      // First tick: open the card
+      await run(AGENT_ID, "failed", "claude_auth_required", 5);
+      await run(AGENT_ID, "failed", "claude_auth_required", 6);
+      await run(AGENT_ID, "failed", "claude_auth_required", 7);
+
+      const streakRuns = await readStreakRuns(h.ctx, COMPANY, h.clock.now);
+      const authAgents = authStreakAgents(streakRuns);
+      const first = await ensureAuthCard(h.env, COMPANY, [...authAgents.keys()]);
+      expect(first.action).toBe("opened");
+      expect(await askCount()).toBe(1);
+
+      // Cancel the card
+      const asks = await openAuthAsks();
+      const askId = (asks[0] as any).id;
+      await h.client.query(`UPDATE ${NAMESPACE}.asks SET status = 'cancelled' WHERE id = $1`, [askId]);
+
+      // Second tick (12 hours later): create new failures and check dedupe
+      h.clock.now = new Date(h.clock.now.getTime() + 12 * 3_600_000);
+      await run(AGENT_ID, "failed", "claude_auth_required", 5);
+      await run(AGENT_ID, "failed", "claude_auth_required", 6);
+      await run(AGENT_ID, "failed", "claude_auth_required", 7);
+
+      const streakRuns2 = await readStreakRuns(h.ctx, COMPANY, h.clock.now);
+      const authAgents2 = authStreakAgents(streakRuns2);
+      const second = await ensureAuthCard(h.env, COMPANY, [...authAgents2.keys()]);
+      expect(second.action).toBe("exists"); // Should not open another because cancelled card is still in cooldown
+      expect(await askCount()).toBe(1); // Still only one
     });
   });
 });
