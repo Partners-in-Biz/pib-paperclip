@@ -43,7 +43,7 @@ import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
-import { getHealthIssue, getRoles, listSnapshots, upsertSnapshot } from "./db.js";
+import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
@@ -143,6 +143,24 @@ function idList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const ids = value.filter((v): v is string => typeof v === "string" && /^goal[a-f0-9]{12}$/.test(v));
   return ids.length ? ids : null;
+}
+
+/**
+ * Governor stub: for each company, reads its governor config and processes accordingly.
+ * When disabled, returns early. When enabled, returns `not-implemented` pending the full implementation.
+ */
+export async function governorTick(env: Env): Promise<{ skipped: string; tried?: number; skipped_disabled?: number }> {
+  const results = { skipped: "not-implemented", tried: 0, skipped_disabled: 0 };
+  for (const row of await listRoles(env.ctx)) {
+    results.tried += 1;
+    const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
+    const governorConfig = config?.governor as { enabled?: boolean } | undefined;
+    const enabled = governorConfig?.enabled !== false;
+    if (!enabled) {
+      results.skipped_disabled += 1;
+    }
+  }
+  return results;
 }
 
 /** Registers everything; exported for tests. */
@@ -409,6 +427,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.businessReview, async () => {
     ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
+  });
+  ctx.jobs.register(JOBS.governor, async () => {
+    ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
   });
 
   registerMemoryActions(env);
