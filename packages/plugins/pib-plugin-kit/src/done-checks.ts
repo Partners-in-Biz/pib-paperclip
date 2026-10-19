@@ -119,24 +119,49 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
       // Escalation succeeded (created or dedupe): issue is now blocked with an Unblock issue
       const unblockId = escalateResult.id;
 
-      // If dedupe, ensure issue is blocked (escalate only updates on creation)
+      // If dedupe, check if issue is already blocked (has blockers); if so, return without posting another comment
       if (!escalateResult.created) {
         const currentIssue = await ctx.issues.get(issue.id, companyId);
+        // Check if issue already has blockers (from previous escalation)
+        const hasBlockers =
+          (currentIssue && typeof currentIssue === "object" && "blockedByIssueIds" in currentIssue)
+            ? (currentIssue as { blockedByIssueIds?: string[] }).blockedByIssueIds?.length ?? 0 > 0
+            : false;
+
+        if (hasBlockers) {
+          // Already escalated with blockers, no need for a comment
+          return "escalated";
+        }
+
+        // Ensure issue is blocked (escalate only updates on creation)
         if (currentIssue && currentIssue.status !== "blocked") {
           await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
         }
-        // Post message for dedupe
+        // Post message for dedupe (if not already blocked)
         await ctx.issues.createComment(
           issue.id,
           `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nAlready escalated; waiting for resolution.`,
           companyId,
         );
       } else {
-        // Post message for new escalation
-        const handTo = `an Unblock issue (${unblockId})`;
+        // Post message for new escalation, with the assignee name
+        const unblockIssue = await ctx.issues.get(unblockId, companyId);
+        let assigneeName = "an Unblock issue";
+        if (unblockIssue) {
+          if (unblockIssue.assigneeAgentId) {
+            const assigneeAgent = await ctx.agents.get(unblockIssue.assigneeAgentId, companyId);
+            if (assigneeAgent && typeof assigneeAgent.name === "string") {
+              assigneeName = `${assigneeAgent.name} (in Unblock issue ${unblockId})`;
+            } else {
+              assigneeName = `the manager (in Unblock issue ${unblockId})`;
+            }
+          } else if (unblockIssue.assigneeUserId) {
+            assigneeName = `the owner (in Unblock issue ${unblockId})`;
+          }
+        }
         await ctx.issues.createComment(
           issue.id,
-          `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nEscalating to ${handTo} for further investigation.`,
+          `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nEscalating to ${assigneeName} for further investigation.`,
           companyId,
         );
       }
