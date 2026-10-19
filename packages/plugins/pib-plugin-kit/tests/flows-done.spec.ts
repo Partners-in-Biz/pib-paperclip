@@ -187,26 +187,21 @@ describe("done checks", () => {
     // Verify the main issue is now blocked
     expect(testIssue.status).toBe("blocked");
 
-    // Fourth early close: issue is already blocked (has blockers), so no comment should be posted
-    // Reset the issue to "done" status for the check (simulating someone manually closing it again)
+    // Fourth early close: issue must be status "done" to trigger done-check
+    // After escalation on attempt 3, status is "blocked", so done-check is skipped
+    // We need to manually reset to "done" to simulate another manual close
     testIssue.status = "done";
     const commentCountBefore4 = fake.comments.length;
-
-    // Debug: check if the issue has blockedByIssueIds
-    const currentTestIssue = fake.issues.find((i) => i.id === testIssue.id);
-    // console.log("Fourth call issue:", { status: currentTestIssue?.status, blockedByIssueIds: (currentTestIssue as any)?.blockedByIssueIds });
 
     expect(await runDoneCheck(fake.ctx, [rule(false)], event)).toBe("escalated");
     const unblockIssuesAfter4 = fake.issues.filter((i) => (i as any).originId?.startsWith("escalate:"));
     expect(unblockIssuesAfter4).toHaveLength(1); // Still only one Unblock
 
-    // Verify issue remains in its original assignment, not reassigned to operator
-    // (status stays as "done" because we returned early without updating it)
-    expect(testIssue.assigneeAgentId).toBe("am"); // Original agent, not reassigned to operator
+    // Verify issue remains in its original assignment
+    expect(testIssue.assigneeAgentId).toBe("am"); // Original agent
 
-    // Verify no duplicate comment on fourth call (issue was already blocked)
-    // Should have 3 comments: initial reopens on attempts 1&2, then escalation on attempt 3
-    // Fourth call posts nothing because issue was already blocked and unblock issues don't trigger comment
-    expect(fake.comments.length).toBe(commentCountBefore4); // No new comment on dedupe when already blocked
+    // When dedupe happens and status is not "blocked", we set it to blocked and post comment
+    // Fourth call should post exactly one more comment (different from the third)
+    expect(fake.comments.length).toBe(commentCountBefore4 + 1);
   });
 });

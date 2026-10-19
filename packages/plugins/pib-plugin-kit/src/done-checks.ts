@@ -119,25 +119,17 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
       // Escalation succeeded (created or dedupe): issue is now blocked with an Unblock issue
       const unblockId = escalateResult.id;
 
-      // If dedupe, check if issue is already blocked (has blockers); if so, return without posting another comment
+      // If dedupe, check if issue is already blocked; if so, return without posting another comment
       if (!escalateResult.created) {
         const currentIssue = await ctx.issues.get(issue.id, companyId);
-        // Check if issue already has blockers (from previous escalation)
-        const hasBlockers =
-          (currentIssue && typeof currentIssue === "object" && "blockedByIssueIds" in currentIssue)
-            ? (currentIssue as { blockedByIssueIds?: string[] }).blockedByIssueIds?.length ?? 0 > 0
-            : false;
-
-        if (hasBlockers) {
-          // Already escalated with blockers, no need for a comment
+        // If issue is already blocked from previous escalation, no need for a comment
+        if (currentIssue && currentIssue.status === "blocked") {
           return "escalated";
         }
 
         // Ensure issue is blocked (escalate only updates on creation)
-        if (currentIssue && currentIssue.status !== "blocked") {
-          await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
-        }
-        // Post message for dedupe (if not already blocked)
+        await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
+        // Post message for dedupe (issue was not yet blocked)
         await ctx.issues.createComment(
           issue.id,
           `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nAlready escalated; waiting for resolution.`,
@@ -177,9 +169,15 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
     if ("skipped" in escalateResult && escalateResult.skipped === "cap") {
       // Daily cap reached: keep issue blocked, don't create duplicate operator assignment
       const currentIssue = await ctx.issues.get(issue.id, companyId);
-      if (currentIssue && currentIssue.status !== "blocked") {
+      // If issue is already blocked, no need for a comment
+      if (currentIssue && currentIssue.status === "blocked") {
+        return "escalated";
+      }
+      // Ensure issue is blocked
+      if (currentIssue) {
         await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
       }
+      // Post message (issue was not yet blocked)
       await ctx.issues.createComment(
         issue.id,
         `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nAlready escalated; waiting for resolution.`,
