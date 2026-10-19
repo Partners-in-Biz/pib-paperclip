@@ -209,25 +209,27 @@ export async function readStalled(ctx: PluginContext, companyId: string, now: Da
 
 /**
  * Runs with error_code = 'execution_reconciliation_required' on open issues with
- * an agent assignee. Newest run per issue, ordered by recency.
+ * an agent assignee, newer than the issue's latest succeeded run. Allows detection
+ * of second occurrence (older woken + newer run), clears on later success.
  */
 export async function readReconciliationRuns(ctx: PluginContext, companyId: string, now: Date): Promise<ReconciliationRun[]> {
   const rows = await ctx.db.query<Raw>(
-    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id, h.started_at,
-            row_number() OVER (PARTITION BY i.id ORDER BY h.started_at DESC) AS rn
+    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id, h.started_at
        FROM public.heartbeat_runs h
        JOIN public.issues i ON i.company_id = h.company_id AND i.id::text = h.context_snapshot ->> 'issueId'
       WHERE h.company_id = $1 AND h.error_code = 'execution_reconciliation_required'
         AND h.started_at IS NOT NULL
         AND i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL AND i.assignee_agent_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.heartbeat_runs h2
+          WHERE h2.company_id = h.company_id
+            AND h2.context_snapshot ->> 'issueId' = h.context_snapshot ->> 'issueId'
+            AND h2.status = 'succeeded' AND h2.started_at > h.started_at)
       ORDER BY h.started_at DESC`,
     [companyId],
   );
 
-  // Keep only the newest run per issue (rn = 1)
-  const filtered = rows.filter((r) => num(r.rn) === 1);
-
-  return filtered.map((r) => ({
+  return rows.map((r) => ({
     issueId: String(r.id),
     identifier: text(r.identifier),
     title: text(r.title),
@@ -239,8 +241,7 @@ export async function readReconciliationRuns(ctx: PluginContext, companyId: stri
 }
 
 /**
- * List wake repairs (kind='reconciliation', action='wake'). Returns a set of run IDs
- * that have been woken. Only rows since the most recent success are relevant.
+ * Run IDs that were woken (repairs action='wake').
  */
 export async function readWokenRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
   try {
@@ -250,7 +251,28 @@ export async function readWokenRunIds(ctx: PluginContext, companyId: string): Pr
         ORDER BY created_at DESC LIMIT 500`,
       [companyId],
     );
-    // Extract run ID from detail like "run:<runId>"
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const detail = text(row.detail);
+      if (detail && detail.startsWith("run:")) ids.add(detail.slice(4));
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Run IDs that were escalated (repairs action='escalate').
+ */
+export async function readEscalatedRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await ctx.db.query<Raw>(
+      `SELECT detail FROM ${NAMESPACE}.repairs
+        WHERE company_id = $1 AND kind = 'reconciliation' AND action = 'escalate'
+        ORDER BY created_at DESC LIMIT 500`,
+      [companyId],
+    );
     const ids = new Set<string>();
     for (const row of rows) {
       const detail = text(row.detail);
@@ -515,10 +537,10 @@ export async function watchChecks(env: Env, companyId: string): Promise<HealthCh
   await rule("reconciliation", "execution reconciliation required", async () => {
     const runs = await readReconciliationRuns(env.ctx, companyId, now);
     const wakenRunIds = await readWokenRunIds(env.ctx, companyId);
+    const escalatedRunIds = await readEscalatedRunIds(env.ctx, companyId);
     const markerIssueIds = new Set((await readMarkerIssues(env.ctx, companyId)).map((m) => m.stuckIssueId));
-    const decisions = executionReconciliationDecisions(runs, wakenRunIds, markerIssueIds);
+    const decisions = executionReconciliationDecisions(runs, wakenRunIds, markerIssueIds, escalatedRunIds);
     const checks = executionReconciliationChecks(decisions, runs, agents);
-    // Apply actions (wake/escalate) for each issue
     await applyReconciliation(env, companyId, decisions);
     return checks;
   });

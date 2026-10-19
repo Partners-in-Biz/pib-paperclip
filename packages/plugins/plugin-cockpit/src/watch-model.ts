@@ -348,12 +348,13 @@ export interface ReconciliationIssue {
 /**
  * Detect issues with execution reconciliation required. Returns decisions (one per
  * affected issue, up to `perRule`), worst first (by error recency). Pure function:
- * inputs are reconciliation runs, woken run ids (tracked in repairs), and markers.
+ * inputs are reconciliation runs, woken/escalated run ids (tracked in repairs), and markers.
  */
 export function executionReconciliationDecisions(
   reconciliationRuns: ReconciliationRun[],
   wakenRunIds: Set<string>,
   escalationMarkerIssueIds: Set<string>,
+  escalatedRunIds: Set<string>,
 ): ReconciliationIssue[] {
   if (reconciliationRuns.length === 0) return [];
 
@@ -369,6 +370,9 @@ export function executionReconciliationDecisions(
   for (const [issueId, runs] of byIssue) {
     const sorted = [...runs].sort((a, b) => Date.parse(b.runTime) - Date.parse(a.runTime));
     const newest = sorted[0]!;
+
+    // Skip if any run in this issue was already escalated
+    if (sorted.some((r) => escalatedRunIds.has(r.runId))) continue;
 
     // Find the newest woken run (could be any of them)
     const wakenRunInIssue = sorted.find((r) => wakenRunIds.has(r.runId));
