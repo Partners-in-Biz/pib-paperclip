@@ -20,6 +20,8 @@ export const JOBS = {
   businessReview: "business-review",
   /** Nightly: one acceptance request for the Acceptance agent (the canary journeys), for companies that staffed one. */
   acceptanceNightly: "acceptance-nightly",
+  /** Every 15 minutes: pauses agents when quota failures breach thresholds, resumes when safe. */
+  governor: "governor",
 } as const;
 
 export const ROUTINES = {

@@ -4,7 +4,8 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { COCKPIT_EVENTS, COCKPIT_PLUGIN, COCKPIT_ROUTE, COMPANY_OS_HIRE_SKILL, crmProjectionMigration, hireTaskDraft, PIB_PLUGINS, SETUP_STATUS_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief, postDailyBrief, runTool, weekKey } from "../src/brief.js";
 import { JOBS, ROUTINES } from "../src/constants.js";
-import { createEnv, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { createEnv, governorTick, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { DEFAULT_PAUSE_ORDER } from "../src/governor-model.js";
 import { healthAlerts, healthIssueContent, refreshHealthIssue } from "../src/health.js";
 import { HIRE_ROLES, OPERATOR_ROLE, OPERATOR_SKILL_KEY, REVIEWER_ROLE, REVIEWER_SKILL_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
@@ -63,7 +64,7 @@ describe("manifest and migration", () => {
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
-      "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "approvals.read", "routines.managed", "skills.managed",
+      "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "agents.pause", "agents.resume", "agents.invoke", "approvals.read", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
       "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
       // 0.5.0: goals mirrored to the host, and the members for the single-admin check
@@ -83,7 +84,7 @@ describe("manifest and migration", () => {
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-list")).toMatchObject({ method: "GET", path: "/repairs", auth: "board", companyResolution: { from: "query", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
-      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"],
+      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"],
     ]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],
@@ -104,6 +105,13 @@ describe("manifest and migration", () => {
     }
     expect((manifest.tools!.find((t) => t.name === "ask-owner")!.parametersSchema as { properties: Record<string, { enum?: string[] }> }).properties.kind!.enum).toEqual(["decision", "grant", "money", "legal", "info"]);
     expect((manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.jev).toBeTruthy();
+    type GovernorSchema = { properties?: Record<string, { default?: unknown }> };
+    const governor = (manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.governor as GovernorSchema | undefined;
+    expect(governor).toBeTruthy();
+    expect(governor?.properties?.enabled?.default).toBe(true);
+    expect(governor?.properties?.triggerFailures?.default).toBe(3);
+    expect(governor?.properties?.triggerAgents?.default).toBe(2);
+    expect(governor?.properties?.pauseOrder?.default).toEqual([...DEFAULT_PAUSE_ORDER]);
     expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer", "pib-company-os", "pib-acceptance"]);
   });
 
@@ -129,6 +137,19 @@ describe("manifest and migration", () => {
     const kit = normal(crmProjectionMigration(NAMESPACE));
     expect(kit).toHaveLength(4);
     expect(normal(third).slice(0, 4)).toEqual(kit);
+  });
+
+  it("governor tick iterates companies and reads config, skipping disabled ones, never calling agents", async () => {
+    const { env: envMixed } = setup({ savedConfigs: { [A]: { governor: { enabled: false } }, [B]: { governor: { enabled: true } } } });
+    // Set up roles for both companies so listRoles returns them
+    await saveTeam(envMixed, A, {}, "user-1");
+    await saveTeam(envMixed, B, {}, "user-2");
+    // Guard: any access to ctx.agents (list, pause, resume, invoke, ...) throws.
+    const guarded = { ...envMixed, ctx: new Proxy(envMixed.ctx, { get: (target, key) => { if (key === "agents") throw new Error("governor stub touched ctx.agents"); return Reflect.get(target, key); } }) };
+    const result = await governorTick(guarded);
+    expect(result.skipped).toBe("not-implemented");
+    expect(result.tried).toBe(2); // Tries all companies
+    expect(result.skipped_disabled).toBe(1); // One company has governor disabled
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
