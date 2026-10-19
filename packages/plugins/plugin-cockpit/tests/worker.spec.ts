@@ -4,7 +4,8 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { COCKPIT_EVENTS, COCKPIT_PLUGIN, COCKPIT_ROUTE, COMPANY_OS_HIRE_SKILL, crmProjectionMigration, hireTaskDraft, PIB_PLUGINS, SETUP_STATUS_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief, postDailyBrief, runTool, weekKey } from "../src/brief.js";
 import { JOBS, ROUTINES } from "../src/constants.js";
-import { createEnv, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { createEnv, governorTick, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { DEFAULT_PAUSE_ORDER } from "../src/governor-model.js";
 import { healthAlerts, healthIssueContent, refreshHealthIssue } from "../src/health.js";
 import { HIRE_ROLES, OPERATOR_ROLE, OPERATOR_SKILL_KEY, REVIEWER_ROLE, REVIEWER_SKILL_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
@@ -15,7 +16,6 @@ import { SKILLS } from "../src/skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "../src/tools.js";
 import { fakeCtx, fixedClock, type FakeAgent } from "./helpers/fake-ctx.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
-import { governorTick } from "../src/register.js";
 
 // The extra checks (checks.ts) have their own specs; here the Cockpit's other behaviour is tested on a quiet baseline.
 vi.mock("../src/checks.js", async (original) => ({ ...(await original<typeof import("../src/checks.js")>()), extraChecks: async () => ({ health: [], kpis: [], quality: [], waiting: [] }) }));
@@ -105,11 +105,13 @@ describe("manifest and migration", () => {
     }
     expect((manifest.tools!.find((t) => t.name === "ask-owner")!.parametersSchema as { properties: Record<string, { enum?: string[] }> }).properties.kind!.enum).toEqual(["decision", "grant", "money", "legal", "info"]);
     expect((manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.jev).toBeTruthy();
-    const governorConfig = (manifest.instanceConfigSchema as { properties: Record<string, { properties?: Record<string, { default?: unknown }> }> }).properties.governor;
-    expect(governorConfig).toBeTruthy();
-    expect((governorConfig as { properties?: Record<string, { default?: unknown }> }).properties?.enabled?.default).toBe(true);
-    expect((governorConfig as { properties?: Record<string, { default?: unknown }> }).properties?.triggerFailures?.default).toBe(3);
-    expect((governorConfig as { properties?: Record<string, { default?: unknown }> }).properties?.triggerAgents?.default).toBe(2);
+    type GovernorSchema = { properties?: Record<string, { default?: unknown }> };
+    const governor = (manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.governor as GovernorSchema | undefined;
+    expect(governor).toBeTruthy();
+    expect(governor?.properties?.enabled?.default).toBe(true);
+    expect(governor?.properties?.triggerFailures?.default).toBe(3);
+    expect(governor?.properties?.triggerAgents?.default).toBe(2);
+    expect(governor?.properties?.pauseOrder?.default).toEqual([...DEFAULT_PAUSE_ORDER]);
     expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer", "pib-company-os", "pib-acceptance"]);
   });
 
@@ -137,15 +139,19 @@ describe("manifest and migration", () => {
     expect(normal(third).slice(0, 4)).toEqual(kit);
   });
 
-  it("governor tick iterates companies and reads config, skipping disabled ones", async () => {
+  it("governor tick iterates companies and reads config, skipping disabled ones, never calling agents", async () => {
     const { env: envMixed } = setup({ savedConfigs: { [A]: { governor: { enabled: false } }, [B]: { governor: { enabled: true } } } });
     // Set up roles for both companies so listRoles returns them
     await saveTeam(envMixed, A, {}, "user-1");
     await saveTeam(envMixed, B, {}, "user-2");
+    // Guard: ensure ctx.agents is never accessed
+    const agentsSpy = vi.spyOn(envMixed.ctx.agents, "list");
     const result = await governorTick(envMixed);
     expect(result.skipped).toBe("not-implemented");
     expect(result.tried).toBe(2); // Tries all companies
     expect(result.skipped_disabled).toBe(1); // One company has governor disabled
+    expect(agentsSpy).not.toHaveBeenCalled(); // Stub does not call agents
+    agentsSpy.mockRestore();
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {

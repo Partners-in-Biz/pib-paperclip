@@ -4,6 +4,7 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
 
@@ -111,21 +112,21 @@ const instanceConfigSchema: JsonSchema = {
           items: { type: "string" },
           title: "Pause order (optional)",
           description: "Agent names in the order they should be paused. Names not matching any agent are skipped. Defaults to the built-in order that preserves canary integrity.",
-          default: ["Dogfood Tester", "Product Designer", "SEO Specialist", "Outbound & Social", "Wiki Maintainer", "Afrikaans Editor", "Developer", "Kai", "Ren", "Iris", "Mira", "Nadia", "Theo", "Senior Developer", "Code Reviewer", "Planner", "Plan Critic", "Release Engineer", "Loyalty Plus Engineer"],
+          default: [...DEFAULT_PAUSE_ORDER],
         },
         triggerFailures: {
           type: "integer",
           title: "Failure threshold",
           description: "Number of total failures needed to trigger a pause (default 3).",
           minimum: 1,
-          default: 3,
+          default: DEFAULT_TRIGGER_FAILURES,
         },
         triggerAgents: {
           type: "integer",
           title: "Agent count threshold",
           description: "Number of distinct agents that must exceed the failure threshold to trigger a pause (default 2).",
           minimum: 1,
-          default: 2,
+          default: DEFAULT_TRIGGER_AGENTS,
         },
       },
     },

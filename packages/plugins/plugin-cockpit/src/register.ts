@@ -146,8 +146,8 @@ function idList(value: unknown): string[] | null {
 }
 
 /**
- * Governor stub: for each company, reads its governor config and processes accordingly.
- * When disabled, returns early. When enabled, returns `not-implemented` pending the full implementation.
+ * Governor stub: for each company, reads its governor config and logs status.
+ * Does not call ctx.agents; full pause/resume implementation lands in PAR-3883 children.
  */
 export async function governorTick(env: Env): Promise<{ skipped: string; tried?: number; skipped_disabled?: number }> {
   const results = { skipped: "not-implemented", tried: 0, skipped_disabled: 0 };
