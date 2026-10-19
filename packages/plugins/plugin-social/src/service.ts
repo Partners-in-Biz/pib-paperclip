@@ -124,7 +124,7 @@ import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
-import { scopeStats } from "./stats.js";
+import { emptyStats, scopeStats } from "./stats.js";
 
 export interface Viewer {
   companyId: string;
@@ -1117,7 +1117,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     // Growth Lab experiments a post in this scope can be tagged with.
     me ? Promise.resolve([]) : experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
     // Chart series (published per day, destination statuses, weekly lift).
-    scopeStats(ctx, viewer.companyId, scope),
+    me ? Promise.resolve(emptyStats()) : scopeStats(ctx, viewer.companyId, scope),
     // Who approves posts in this scope (the page shows it and a person can change it).
     getPolicy(ctx, viewer.companyId, scope),
   ]);

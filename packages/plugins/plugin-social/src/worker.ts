@@ -316,7 +316,7 @@ const ACTIONS: Record<string, ActionHandler> = {
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
     // The own page shows the agent card, so it also links a hire whose agent has appeared.
     if (!p.client && !v.isAgent && spaceOf(p) === "company") await tryLinkSocialHire(ctx, v.companyId);
-    return loadSnapshot(ctx, v, { client: p.client ?? null });
+    return loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),

@@ -30,7 +30,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
   }), [posts, filter, q]);
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <ApprovalPolicyCard snapshot={snapshot} run={run} />
+      {snapshot.space === "me" ? null : <ApprovalPolicyCard snapshot={snapshot} run={run} />}
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
