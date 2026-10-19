@@ -4,6 +4,7 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
 
@@ -95,6 +96,40 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "An AI service (Jev, from TypeSafe) picks which remembered facts each task needs, so agents get a short, relevant brief. Only the task's title and description and the candidate facts are sent. Without a key, briefs use keyword and recency matching (same size limit). Pick the same Paperclip secret you use in the other PiB plugins.",
     },
+    governor: {
+      type: "object",
+      title: "Agent governor (optional)",
+      description: "Pauses agents when quota failures exceed configured thresholds, and resumes them once the canary confirms recovery.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable agent governor",
+          description: "When enabled, the governor monitors quota failures and pauses agents to preserve service stability.",
+          default: true,
+        },
+        pauseOrder: {
+          type: "array",
+          items: { type: "string" },
+          title: "Pause order (optional)",
+          description: "Agent names in the order they should be paused. Names not matching any agent are skipped. Defaults to the built-in order that preserves canary integrity.",
+          default: [...DEFAULT_PAUSE_ORDER],
+        },
+        triggerFailures: {
+          type: "integer",
+          title: "Failure threshold",
+          description: "Number of total failures needed to trigger a pause (default 3).",
+          minimum: 1,
+          default: DEFAULT_TRIGGER_FAILURES,
+        },
+        triggerAgents: {
+          type: "integer",
+          title: "Agent count threshold",
+          description: "Number of distinct agents that must exceed the failure threshold to trigger a pause (default 2).",
+          minimum: 1,
+          default: DEFAULT_TRIGGER_AGENTS,
+        },
+      },
+    },
   },
 };
 
@@ -118,6 +153,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.read",
     "approvals.read",
     "agents.read",
+    "agents.pause",
+    "agents.resume",
+    "agents.invoke",
     "routines.managed",
     "skills.managed",
     "authorization.grants.read",
@@ -195,6 +233,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Weekly business review",
       description: "Mondays before the Weekly retro: records each active goal's number and opens one business review issue for the Operator comparing the week's actuals to the targets.",
       schedule: "30 4 * * 1",
+    },
+    {
+      jobKey: JOBS.governor,
+      displayName: "Agent governor",
+      description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
+      schedule: "*/15 * * * *",
     },
   ],
   apiRoutes: [
