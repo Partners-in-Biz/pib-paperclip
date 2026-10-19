@@ -99,47 +99,79 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
   const missing = result.missing?.length ? result.missing : ["The work this issue asks for is not finished yet."];
   const list = missing.map((line) => `- ${line}`).join("\n");
 
-  if (attempts >= DONE_CHECK_MAX_REOPENS) {
-    // Escalate to the next manager in the chain, or to the owner
-    const result = await escalate(ctx, issue.id, "done_check_early_close", { companyId });
-
-    if ("id" in result && result.created) {
-      // Escalation succeeded: issue is now blocked with an Unblock issue created
-      const unblockId = result.id;
-      const handTo = `an Unblock issue (${unblockId})`;
-      await ctx.issues.createComment(
-        issue.id,
-        `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nEscalating to ${handTo} for further investigation.`,
-        companyId,
-      );
-      return "escalated";
-    }
-
-    if ("skipped" in result && result.skipped === "disabled") {
-      // Escalation is disabled: fall back to old behavior (route to operator)
-      const route = await routeWork(ctx, companyId, ["operator"]);
-      const handTo = route.via === "operator" ? "the Operator" : route.via === "owner" ? "the owner" : "nobody (no Operator or owner is set)";
-      await ctx.issues.update(issue.id, { status: "todo", assigneeAgentId: route.assigneeAgentId, assigneeUserId: route.assigneeUserId }, companyId);
-      await ctx.issues.createComment(
-        issue.id,
-        `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
-        companyId,
-      );
-      if (route.assigneeAgentId) await wakeIssue(ctx, issue.id, companyId, "Done check: closed early again");
-      return "escalated";
-    }
-
-    // Other skip reasons (dedupe, cooldown, cap, no-target, no-owner, no-issue):
-    // Fall back to old operator routing behavior as a safety net
+  async function routeToOperator(ruleLabel: string) {
     const route = await routeWork(ctx, companyId, ["operator"]);
     const handTo = route.via === "operator" ? "the Operator" : route.via === "owner" ? "the owner" : "nobody (no Operator or owner is set)";
     await ctx.issues.update(issue.id, { status: "todo", assigneeAgentId: route.assigneeAgentId, assigneeUserId: route.assigneeUserId }, companyId);
     await ctx.issues.createComment(
       issue.id,
-      `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
+      `**Still not done** (${ruleLabel}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
       companyId,
     );
     if (route.assigneeAgentId) await wakeIssue(ctx, issue.id, companyId, "Done check: closed early again");
+  }
+
+  if (attempts >= DONE_CHECK_MAX_REOPENS) {
+    // Escalate to the next manager in the chain, or to the owner
+    const escalateResult = await escalate(ctx, issue.id, "done_check_early_close", { companyId });
+
+    if ("id" in escalateResult) {
+      // Escalation succeeded (created or dedupe): issue is now blocked with an Unblock issue
+      const unblockId = escalateResult.id;
+
+      // If dedupe, ensure issue is blocked (escalate only updates on creation)
+      if (!escalateResult.created) {
+        const currentIssue = await ctx.issues.get(issue.id, companyId);
+        if (currentIssue && currentIssue.status !== "blocked") {
+          await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
+        }
+        // Post message for dedupe
+        await ctx.issues.createComment(
+          issue.id,
+          `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nAlready escalated; waiting for resolution.`,
+          companyId,
+        );
+      } else {
+        // Post message for new escalation
+        const handTo = `an Unblock issue (${unblockId})`;
+        await ctx.issues.createComment(
+          issue.id,
+          `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nEscalating to ${handTo} for further investigation.`,
+          companyId,
+        );
+      }
+      return "escalated";
+    }
+
+    if ("skipped" in escalateResult && escalateResult.skipped === "disabled") {
+      // Escalation is disabled: fall back to old behavior (route to operator)
+      await routeToOperator(rule.label);
+      return "escalated";
+    }
+
+    if ("skipped" in escalateResult && escalateResult.skipped === "cap") {
+      // Daily cap reached: keep issue blocked, don't create duplicate operator assignment
+      const currentIssue = await ctx.issues.get(issue.id, companyId);
+      if (currentIssue && currentIssue.status !== "blocked") {
+        await ctx.issues.update(issue.id, { status: "blocked" }, companyId);
+      }
+      await ctx.issues.createComment(
+        issue.id,
+        `**Still not done** (${rule.label}), after ${attempts} tries:\n${list}\n\nAlready escalated; waiting for resolution.`,
+        companyId,
+      );
+      return "escalated";
+    }
+
+    if ("skipped" in escalateResult && (escalateResult.skipped === "no-target" || escalateResult.skipped === "no-owner" || escalateResult.skipped === "no-issue")) {
+      // No escalation target available: fall back to operator routing
+      await routeToOperator(rule.label);
+      return "escalated";
+    }
+
+    // Unexpected skip reason (should not happen with current code)
+    // Fall back to operator routing as a safety net
+    await routeToOperator(rule.label);
     return "escalated";
   }
 

@@ -315,6 +315,9 @@ export function fakeCtx(options: {
           return body === undefined ? null : { id: `doc-${issueId}-${key}`, key, body, title: key, format: "markdown" };
         },
       },
+      relations: {
+        get: async () => ({ blockedBy: [] }),
+      },
       requestWakeup: async (issueId: string, _companyId: string, options?: { reason?: string }) => {
         wakeups.push(issueId);
         wakeReasons.push({ issueId, reason: options?.reason });

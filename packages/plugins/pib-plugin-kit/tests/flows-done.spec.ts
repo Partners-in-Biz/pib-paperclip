@@ -159,7 +159,7 @@ describe("done checks", () => {
     expect(lastCommentObj.body).toContain("Handing");
   });
 
-  it("creates only one Unblock issue on multiple early closes", async () => {
+  it("creates only one Unblock issue on multiple early closes, keeps issue blocked", async () => {
     const now = new Date("2026-10-19T12:00:00Z");
     const fake = fakeCtx({
       manifestId: "partnersinbiz.billing",
@@ -184,12 +184,24 @@ describe("done checks", () => {
     const unblockIssuesAfter3 = fake.issues.filter((i) => (i as any).originId?.startsWith("escalate:"));
     expect(unblockIssuesAfter3).toHaveLength(1);
 
-    // Fourth early close should not create another Unblock (dedupe)
-    // Reset the issue to "done" status
+    // Verify the main issue is now blocked
+    expect(testIssue.status).toBe("blocked");
+
+    // Fourth early close should not create another Unblock (dedupe) and should keep issue blocked
+    // Reset the issue to "done" status for the check
     testIssue.status = "done";
 
     expect(await runDoneCheck(fake.ctx, [rule(false)], event)).toBe("escalated");
     const unblockIssuesAfter4 = fake.issues.filter((i) => (i as any).originId?.startsWith("escalate:"));
-    expect(unblockIssuesAfter4).toHaveLength(1);
+    expect(unblockIssuesAfter4).toHaveLength(1); // Still only one Unblock
+
+    // Verify issue is still blocked, not assigned to operator
+    expect(testIssue.status).toBe("blocked");
+    expect(testIssue.assigneeAgentId).toBe("am"); // Original agent, not reassigned to operator
+
+    // Verify no duplicate comments (should have 3: initial reopens on attempts 1&2, then escalation on attempt 3, then dedupe on attempt 4)
+    // That's 4 comments total: one for each attempt
+    expect(fake.comments.length).toBe(4);
+    expect(fake.comments[3].body).toContain("Already escalated");
   });
 });
