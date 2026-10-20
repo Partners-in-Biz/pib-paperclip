@@ -34,6 +34,7 @@ import {
   type SitePlatform,
   type SiteSeoPlugin,
 } from "@partnersinbiz/pib-plugin-kit/client-sites";
+import { groupProjectsByKind, missingKindHints } from "../project-groups.js";
 
 export interface SiteView {
   id: string;
@@ -58,6 +59,7 @@ export interface ProjectView {
   status: string | null;
   repoUrl: string | null;
   archived: boolean;
+  kind: string | null;
   link: string | null;
   suggested?: boolean;
 }
@@ -429,6 +431,8 @@ export function ProjectsCard({
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
   const suggested = options.filter((option) => option.suggested);
+  const groups = groupProjectsByKind(projects);
+  const hints = missingKindHints(projects);
 
   return (
     <SectionCard
@@ -445,20 +449,30 @@ export function ProjectsCard({
           No projects linked yet.{suggested.length > 0 ? ` ${suggested.map((s) => s.name).join(", ")} look${suggested.length === 1 ? "s" : ""} like this client's.` : ""}
         </p>
       ) : (
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
-          {projects.map((project) => (
-            <li key={project.projectId} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, border: `1px solid ${tokens.border}`, minWidth: 0 }}>
-              {project.link ? (
-                <a {...projectLinkProps(project.link)} style={{ color: tokens.primary, fontWeight: 600, fontSize: 13.5 }}>{project.name}</a>
-              ) : (
-                <span style={{ fontSize: 13.5, color: tokens.muted }}>{project.name}</span>
-              )}
-              {project.status ? <Pill size="sm">{project.status.replace(/_/g, " ")}</Pill> : null}
-              {project.repoUrl ? <span style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>{project.repoUrl.replace(/^https?:\/\/(www\.)?/, "")}</span> : null}
-              <Button type="button" variant="secondary" style={{ ...smallButton, marginLeft: "auto" }} onClick={() => void onUnlink(project.projectId)}>Unlink</Button>
-            </li>
-          ))}
-        </ul>
+        <>
+          {hints.length > 0 && <p style={muted}>{hints[0]}</p>}
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 12 }}>
+            {groups.map((group) => (
+              <li key={group.kind ?? "null"} style={{ display: "grid", gap: 8 }}>
+                <h3 style={{ margin: "8px 0 0 0", fontSize: 13.5, fontWeight: 500, color: tokens.muted, minWidth: 0, overflowWrap: "anywhere" }}>{group.label}</h3>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
+                  {group.projects.map((project) => (
+                    <li key={project.projectId} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, border: `1px solid ${tokens.border}`, minWidth: 0 }}>
+                      {project.link ? (
+                        <a {...projectLinkProps(project.link)} style={{ color: tokens.primary, fontWeight: 600, fontSize: 13.5, minWidth: 0, overflowWrap: "anywhere" }}>{project.name}</a>
+                      ) : (
+                        <span style={{ fontSize: 13.5, color: tokens.muted, minWidth: 0, overflowWrap: "anywhere" }}>{project.name}</span>
+                      )}
+                      {project.status ? <Pill size="sm">{project.status.replace(/_/g, " ")}</Pill> : null}
+                      {project.repoUrl ? <span style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>{project.repoUrl.replace(/^https?:\/\/(www\.)?/, "")}</span> : null}
+                      <Button type="button" variant="secondary" style={{ ...smallButton, marginLeft: "auto" }} onClick={() => void onUnlink(project.projectId)}>Unlink</Button>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       <Modal open={picking} title="Link a project to this client" onClose={() => {
         if (!busy) setPicking(false);

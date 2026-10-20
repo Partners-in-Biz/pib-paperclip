@@ -69,6 +69,7 @@ import {
   type SignDocument,
 } from "./esign-store.js";
 import { DEFAULT_VALID_DAYS, ESIGN_REMIND_AFTER_DAYS, MAX_CONTENT_CHARS, MAX_ESIGN_REMINDERS, MAX_VALID_DAYS, MIN_CONTENT_CHARS, renderTemplate, TEMPLATE_KEYS, TEMPLATE_NOTICE, TEMPLATE_VERSION, TEMPLATES, templateSource } from "./esign-templates.js";
+import { openSignedCopyFilingIssue } from "./filing.js";
 import { moveDealTo, sendHandoff } from "./handoffs.js";
 import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
 import { openIssueOnce } from "./mail.js";
@@ -710,6 +711,10 @@ export async function applySignedEffects(ctx: PluginContext, input: SignDocument
   await step("issue document", async () => {
     if (!doc.issueId || !doc.signedCopyMd) return;
     await writeIssueDocument(ctx, doc, doc.issueId, SIGNED_COPY_DOC_KEY, `${doc.title} (signed copy)`, doc.signedCopyMd);
+  });
+  await step("drive filing", async () => {
+    const clientName = info?.name ?? doc.recipientName ?? "the client";
+    await openSignedCopyFilingIssue(ctx, doc, clientName);
   });
   await step("timeline", async () => {
     await insertActivityOnce(ctx, {
