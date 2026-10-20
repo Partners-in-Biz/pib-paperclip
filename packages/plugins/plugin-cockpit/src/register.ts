@@ -61,9 +61,7 @@ import { onCommentCreated, upkeep } from "./memory/service.js";
 import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
-import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
-import { subscribe, type SpikeActionDeps } from "./push/spike-actions.js";
-import { postPush } from "./push/transport.js";
+import { devices, mute, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
@@ -407,44 +405,63 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { activated: done.map((g) => ({ id: g.id, title: g.title })) };
   });
 
-  // Shared push spike action wrapper: maps errors to CockpitError
-  function createSpikeDeps(): SpikeActionDeps {
-    return {
-      keyStore: createPushKeyStore(ctx.state),
-      stateReader: (key) => ctx.state.get(key),
-      stateWriter: (key, value) => ctx.state.set(key, value),
-      postPush,
-    };
-  }
-
-  function mapSpikeError(error: unknown): never {
-    if (error instanceof PushKeyError) throw new CockpitError(error.message);
-    const err = error as { code?: string; message?: string };
-    if (err.code) throw new CockpitError(err.message ?? err.code);
-    throw error;
-  }
-
-  // Push spike: distribute the VAPID public key for push subscription setup
-  ctx.actions.register("cockpit.pushSpike.publicKey", async (_params, context) => {
-    requireUser(context);
+  // Push page actions
+  ctx.actions.register("cockpit.push.subscribe", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    if (!userId) throw new CockpitError("Invalid user");
     try {
-      const publicKey = await getOrCreateVapidKey(createPushKeyStore(ctx.state), {
-        hasSubscriptions: () => hasSpikeSubscriptions(ctx.state),
-      });
-      return { publicKey: publicKey.publicKey };
+      return await subscribe(ctx, companyId, userId, params as Parameters<typeof subscribe>[3]);
     } catch (error) {
-      mapSpikeError(error);
+      const err = error as { code?: string; message?: string };
+      if (err.code) throw new CockpitError(err.message ?? err.code);
+      throw error;
     }
   });
 
-  // Push spike: subscribe endpoint to push notifications
-  ctx.actions.register("cockpit.pushSpike.subscribe", async (params, context) => {
-    requireUser(context);
-    const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
+  ctx.actions.register("cockpit.push.devices", async (_params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    if (!userId) throw new CockpitError("Invalid user");
+    return { devices: await devices(ctx, companyId, userId) };
+  });
+
+  ctx.actions.register("cockpit.push.mute", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    if (!userId) throw new CockpitError("Invalid user");
     try {
-      return await subscribe(createSpikeDeps(), params as Parameters<typeof subscribe>[1], actor);
+      return await mute(ctx, companyId, userId, params as unknown as Parameters<typeof mute>[3]);
     } catch (error) {
-      mapSpikeError(error);
+      const err = error as { code?: string; message?: string };
+      if (err.code) throw new CockpitError(err.message ?? err.code);
+      throw error;
+    }
+  });
+
+  ctx.actions.register("cockpit.push.unsubscribe", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    if (!userId) throw new CockpitError("Invalid user");
+    try {
+      return await unsubscribe(ctx, companyId, userId, params as unknown as Parameters<typeof unsubscribe>[3]);
+    } catch (error) {
+      const err = error as { code?: string; message?: string };
+      if (err.code) throw new CockpitError(err.message ?? err.code);
+      throw error;
+    }
+  });
+
+  ctx.actions.register("cockpit.push.test", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const userId = requireUser(context);
+    if (!userId) throw new CockpitError("Invalid user");
+    try {
+      return await test(ctx, companyId, userId, params as unknown as Parameters<typeof test>[3]);
+    } catch (error) {
+      const err = error as { code?: string; message?: string };
+      if (err.code) throw new CockpitError(err.message ?? err.code);
+      throw error;
     }
   });
 
