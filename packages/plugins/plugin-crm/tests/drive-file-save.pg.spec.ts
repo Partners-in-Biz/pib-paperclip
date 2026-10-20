@@ -404,9 +404,11 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(brokerState.requests).toHaveLength(1); // Only one upload
   });
 
-  it("unknown subfolder 'Nope' -> invalid_subfolder, no upload", async () => {
+  it("unknown subfolder 'Nope' -> invalid_subfolder early (no driveFolderEnsure, no upload)", async () => {
     const { viewer, brokerState, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
+    const toolsModule = await import("../src/drive/tools.js");
+    const ensureSpy = vi.spyOn(toolsModule, "driveFolderEnsure");
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 bad-sub v1.txt", mimeType: "text/plain",
       contentBase64: Buffer.from("content").toString("base64"), subfolder: "Nope",
@@ -414,6 +416,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(result.status).toBe("invalid_subfolder");
     expect(result.hint).toContain("must be one of");
     expect(brokerState.requests).toHaveLength(0);
+    expect(ensureSpy).not.toHaveBeenCalled();
   });
 
   it("no subfolder -> saves to project root with subfolder=null", async () => {

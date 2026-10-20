@@ -71,6 +71,16 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_name", hint: 'Name must be YYYY-MM-DD <what> v<n>.<ext> or ISSUE-step-ts.<ext>' };
   }
 
+  // Validate subfolder early, before any file/broker work
+  if (subfolder) {
+    if (typeof subfolder !== "string" || subfolder.trim() === "") {
+      return { status: "invalid_subfolder", hint: `subfolder must be a non-empty string` };
+    }
+    if (!(DRIVE_SUBFOLDERS as readonly string[]).includes(subfolder)) {
+      return { status: "invalid_subfolder", hint: `subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}` };
+    }
+  }
+
   const dateMatch = name.match(/^(\d{4})-(\d{2})-(\d{2})\s/);
   if (dateMatch) {
     const [, yStr, mStr, dStr] = dateMatch;
@@ -143,17 +153,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
   }
 
-  // Validate subfolder if provided
   let resolvedSubfolderId: string | null = null;
-  if (subfolder) {
-    if (typeof subfolder !== "string" || subfolder.trim() === "") {
-      return { status: "invalid_subfolder", hint: `subfolder must be a non-empty string, got "${subfolder}"` };
-    }
-    if (!DRIVE_SUBFOLDERS.includes(subfolder as any)) {
-      return { status: "invalid_subfolder", hint: `subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}` };
-    }
-  }
-
   const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
@@ -174,7 +174,15 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   // Resolve subfolder to folderId from tree
   if (subfolder) {
     const tree = folderAny.tree ?? [];
-    const subfolderEntry = tree.find((entry: any) => entry.path && entry.path.endsWith(`/${subfolder}`));
+    const projectFolderPath = folderAny.path;
+    const subfolderEntry = tree.find((entry: any) => {
+      if (!entry.path) return false;
+      // Match exact last segment and verify parent path
+      const segments = entry.path.split("/");
+      const lastSegment = segments[segments.length - 1];
+      const parentPath = segments.slice(0, -1).join("/");
+      return lastSegment === subfolder && parentPath === projectFolderPath;
+    });
     if (!subfolderEntry) {
       return { status: "invalid_subfolder", hint: `Project does not have subfolder "${subfolder}" in its Drive folder structure` };
     }
