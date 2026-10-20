@@ -21,7 +21,8 @@ const h = (o = {}) => {
       confirm: [], redact: [], destructive: { selectors: ['[data-action=delete]'], text: ['delete'] }
     }}},
     clock: o.clock || (() => new Date('2026-01-01T10:00:00Z')),
-    evidenceDir: o.evidenceDir || '/tmp/evidence'
+    evidenceDir: o.evidenceDir || '/tmp/evidence',
+    checkFill: o.checkFill !== undefined ? o.checkFill : () => ({ ok: true })
   });
   return { dispatch };
 };

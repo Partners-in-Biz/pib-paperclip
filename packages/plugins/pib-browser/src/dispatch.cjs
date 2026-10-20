@@ -4,12 +4,15 @@ const { EXIT } = require('./exit-codes.cjs');
 const { authenticate, ISSUE_RE } = require('./auth.cjs');
 const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
 const { redactText, parseRegion } = require('./redact.cjs');
+const { checkFill: defaultCheckFill } = require('./fill-rules.cjs');
 
 const COMMANDS = Object.freeze(['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
 
 function createDispatcher(deps = {}) {
   const sessions = new Map();
   const shotCounters = new Map();
+  const { verifyApproval, handoff } = deps;
+  const noopHandoff = { isActive: () => false };
 
   const makeGuard = (origins) => (url, kind) => {
     try {
@@ -153,7 +156,7 @@ function createDispatcher(deps = {}) {
         }
 
         if (cmd === 'click') {
-          const { selector, text } = args;
+          const { selector, text, approval } = args;
           if (!selector) {
             return { exit: EXIT.USAGE, ok: false, reason: 'selector_required' };
           }
@@ -167,7 +170,37 @@ function createDispatcher(deps = {}) {
             click: { selector, text },
             approved: false
           });
-          if (!authResult.ok) {
+
+          if (authResult.exit === EXIT.NEEDS_APPROVAL && approval && verifyApproval) {
+            let approvalResult;
+            try {
+              approvalResult = await verifyApproval({
+                approval,
+                identity: identityStr,
+                action: [selector, text].filter(Boolean),
+                companyId: auth.companyId
+              }, { token });
+            } catch (e) {
+              approvalResult = { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_check_failed' };
+            }
+            if (!approvalResult.ok) {
+              sessions.delete(sessionKey);
+              return { exit: approvalResult.exit || EXIT.NEEDS_APPROVAL, ok: false, reason: approvalResult.reason };
+            }
+            const authResult2 = authorise({
+              policy,
+              sites,
+              agentId,
+              identity: identityStr,
+              url: site.loggedIn.url,
+              click: { selector, text },
+              approved: true
+            });
+            if (!authResult2.ok) {
+              sessions.delete(sessionKey);
+              return { exit: authResult2.exit, ok: false, reason: authResult2.reason };
+            }
+          } else if (!authResult.ok) {
             sessions.delete(sessionKey);
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
@@ -181,6 +214,33 @@ function createDispatcher(deps = {}) {
           const { selector, value } = args;
           if (!selector || !value) {
             return { exit: EXIT.USAGE, ok: false, reason: 'selector_and_value_required' };
+          }
+
+          let field, pageUrl;
+          try {
+            field = await ctx.describe(selector);
+          } catch (e) {
+            field = undefined;
+          }
+          try {
+            pageUrl = ctx.url();
+          } catch (e) {
+            pageUrl = undefined;
+          }
+
+          const checkFillFn = deps.checkFill || defaultCheckFill;
+          try {
+            const fillCheck = checkFillFn({
+              field,
+              pageUrl,
+              site,
+              handoffActive: (handoff || noopHandoff).isActive(identityStr)
+            });
+            if (!fillCheck || fillCheck.ok !== true) {
+              return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: fillCheck?.reason || 'fill_check_failed' };
+            }
+          } catch (e) {
+            return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: 'fill_check_failed' };
           }
 
           await ctx.fill(selector, value);
