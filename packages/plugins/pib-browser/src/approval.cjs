@@ -19,7 +19,7 @@ function createApprovalStore({ stateDir, fs = require('node:fs'), path = require
         fs.closeSync(fd);
         return true;
       } catch (e) {
-        return e.code === 'EEXIST' ? false : false;
+        return false;
       }
     }
   };
@@ -79,19 +79,45 @@ async function verifyApproval(
 
     const doneEntries = activity.filter(e => {
       if (e.action !== 'issue.updated') return false;
-      if (!e.details) return false;
-      return e.details.status === 'done' || e.details.changes?.status?.to === 'done';
+      if (!e.details || !e.details.changes?.status) return false;
+      // Only count real transitions: from !== 'done' and to === 'done'
+      return e.details.changes.status.from !== 'done' && e.details.changes.status.to === 'done';
     });
     if (doneEntries.length === 0) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_not_closed_by_human' };
 
-    const latestDone = doneEntries.reduce((latest, current) => {
-      const ct = new Date(current.createdAt).getTime();
-      const lt = new Date(latest.createdAt).getTime();
-      return ct > lt ? current : latest;
-    });
-    if (latestDone.actorType !== 'user') return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_not_closed_by_human' };
+    // Find latest done entry by max createdAt (fail closed if unreadable list)
+    let latestDone = null;
+    if (Array.isArray(activity)) {
+      for (const entry of activity) {
+        if (doneEntries.some(d => d.id === entry.id)) {
+          const ct = new Date(entry.createdAt).getTime();
+          if (!latestDone) {
+            latestDone = entry;
+          } else {
+            const lt = new Date(latestDone.createdAt).getTime();
+            if (ct > lt) latestDone = entry;
+          }
+        }
+      }
+    }
+    if (!latestDone || latestDone.actorType !== 'user') return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_not_closed_by_human' };
 
-    let markerText = issue.description || '';
+    // Check if description has been modified by agent after human close
+    const latestDoneTime = new Date(latestDone.createdAt).getTime();
+    const hasAgentUpdateAfterClose = activity.some(e => {
+      if (e.action !== 'issue.updated') return false;
+      if (e.id === latestDone.id) return false;
+      if (e.actorType === 'user') return false;
+      const entryTime = new Date(e.createdAt).getTime();
+      return entryTime >= latestDoneTime;
+    });
+
+    let markerText = '';
+    // Only use description if no agent has updated the issue after the human close
+    if (!hasAgentUpdateAfterClose) {
+      markerText = issue.description || '';
+    }
+
     let commentsRes;
     try {
       commentsRes = await fetch(`${apiBase}/api/issues/${approval}/comments`, {
