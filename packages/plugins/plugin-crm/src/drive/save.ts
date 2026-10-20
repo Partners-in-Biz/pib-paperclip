@@ -8,6 +8,7 @@ import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError } from "./broker.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
 import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
+import { DRIVE_SUBFOLDERS } from "./convention.js";
 
 const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo", "social", "campaigns", "ads", "ops"] as const;
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
@@ -46,15 +47,17 @@ export interface SaveDriveFileInput {
   publicUrl?: string;
   path?: string;
   sha256?: string;
+  subfolder?: string | null;
   requestId?: string;
 }
 
 export interface SaveDriveFileResult {
-  status: "saved" | "drive_not_bound" | "invalid_name" | "invalid_input" | "invalid_kind" | "too_large" | "sha_mismatch" | "broker_error" | "project_not_found" | "path_not_allowed" | "fetch_failed";
+  status: "saved" | "drive_not_bound" | "invalid_name" | "invalid_input" | "invalid_kind" | "too_large" | "sha_mismatch" | "broker_error" | "project_not_found" | "path_not_allowed" | "fetch_failed" | "invalid_subfolder";
   driveFileId?: string;
   url?: string;
   name?: string;
   sha256?: string;
+  subfolder?: string | null;
   duplicate?: boolean;
   code?: string;
   retryable?: boolean;
@@ -62,7 +65,7 @@ export interface SaveDriveFileResult {
 }
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[] }): Promise<SaveDriveFileResult> {
-  const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
+  const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256, subfolder } = input;
 
   if (!NAME_PATTERN.test(name)) {
     return { status: "invalid_name", hint: 'Name must be YYYY-MM-DD <what> v<n>.<ext> or ISSUE-step-ts.<ext>' };
@@ -140,6 +143,17 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
   }
 
+  // Validate subfolder if provided
+  let resolvedSubfolderId: string | null = null;
+  if (subfolder) {
+    if (typeof subfolder !== "string" || subfolder.trim() === "") {
+      return { status: "invalid_subfolder", hint: `subfolder must be a non-empty string, got "${subfolder}"` };
+    }
+    if (!DRIVE_SUBFOLDERS.includes(subfolder as any)) {
+      return { status: "invalid_subfolder", hint: `subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}` };
+    }
+  }
+
   const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
@@ -157,14 +171,25 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_input", hint: "No folder_id from ensure result" };
   }
 
-  const existing = await findDriveFile(ctx, companyId, { folderId, name, sha256: computedSha256 });
+  // Resolve subfolder to folderId from tree
+  if (subfolder) {
+    const tree = folderAny.tree ?? [];
+    const subfolderEntry = tree.find((entry: any) => entry.path && entry.path.endsWith(`/${subfolder}`));
+    if (!subfolderEntry) {
+      return { status: "invalid_subfolder", hint: `Project does not have subfolder "${subfolder}" in its Drive folder structure` };
+    }
+    resolvedSubfolderId = subfolderEntry.folderId;
+  }
+
+  const uploadFolderId = resolvedSubfolderId ?? folderId;
+  const existing = await findDriveFile(ctx, companyId, { folderId: uploadFolderId, name, sha256: computedSha256 });
   if (existing) {
-    return { status: "saved", driveFileId: existing.id, url: stripSignedUrl(existing.webUrl), name: existing.name, sha256: existing.sha256, duplicate: true };
+    return { status: "saved", driveFileId: existing.id, url: stripSignedUrl(existing.webUrl), name: existing.name, sha256: existing.sha256, subfolder: existing.subfolder, duplicate: true };
   }
 
   let uploadResult;
   try {
-    uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: folderId });
+    uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
   } catch (e) {
     if (e instanceof BrokerError) {
       return { status: "broker_error", code: e.code, retryable: e.retryable, hint: e.message };
@@ -174,10 +199,10 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
 
   try {
     const { file: inserted } = await upsertDriveFile(ctx, {
-      companyId, projectId, kind: fileKind, folderId, name, sha256: computedSha256,
-      driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null,
+      companyId, projectId, kind: fileKind, folderId: uploadFolderId, name, sha256: computedSha256,
+      driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null, subfolder: subfolder ?? null,
     });
-    return { status: "saved", driveFileId: inserted.id, url: stripSignedUrl(inserted.webUrl), name: inserted.name, sha256: inserted.sha256, duplicate: false };
+    return { status: "saved", driveFileId: inserted.id, url: stripSignedUrl(inserted.webUrl), name: inserted.name, sha256: inserted.sha256, subfolder: inserted.subfolder, duplicate: false };
   } catch (e) {
     return { status: "broker_error", code: "db_error", retryable: false, hint: "Failed to store file metadata" };
   }
