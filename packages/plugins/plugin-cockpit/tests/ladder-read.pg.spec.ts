@@ -259,5 +259,42 @@ d("ladder reads (Postgres)", () => {
       expect(ladder).toHaveLength(1);
       expect(ladder[0]!.stuck).toMatchObject({ openBlockers: 0, closedBlockers: 2, id: stuck });
     });
+
+    it("passes marker description through to unblock (for parseMarker classification)", async () => {
+      const stuck = uuid();
+      const marker = uuid();
+      const description = `Some reason\n\n<!-- pib:escalation {"issue":"${stuck}","level":1,"deadline":"2026-09-26T12:00:00.000Z"} -->`;
+      await issue(stuck, "PAR-212", "blocked", { blockedMinutesAgo: 2 * 1440 });
+      await issue(marker, "PAR-212-L1", "in_progress", { originId: `escalate:${stuck}:L1` });
+
+      // Update with description manually
+      await h.client.query(`UPDATE public.issues SET description = $1 WHERE id = $2`, [description, marker]);
+
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      expect(ladder).toHaveLength(1);
+      expect(ladder[0]!.unblocks[0]).toMatchObject({ id: marker });
+      // Verify description is present (not empty string)
+      expect(ladder[0]!.unblocks[0]!.description).toContain("pib:escalation");
+    });
+
+    it("readBlocked limit parameter works: readLadderIssues calls readBlocked with LADDER_CANDIDATES", async () => {
+      const stuck1 = uuid();
+      const stuck2 = uuid();
+      const stuck3 = uuid();
+      const stuck4 = uuid();
+      const stuck5 = uuid();
+      const stuck6 = uuid();
+      const stuck7 = uuid();
+      const stuck8 = uuid();
+      // Create 8 blocked issues to test that more than 5 can be candidates
+      for (let i = 1; i <= 8; i++) {
+        await issue(uuid(), `PAR-213-${i}`, "blocked", { blockedMinutesAgo: 2 * 1440 });
+      }
+
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      // Should return more than 5 candidates (up to 25)
+      expect(ladder.length).toBeGreaterThan(5);
+      expect(ladder.length).toBeLessThanOrEqual(8); // We only created 8
+    });
   });
 });

@@ -42,6 +42,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 1,
           status: "todo",
           originId: "escalate:stuck-1:L1",
+          description: null,
           createdAt: NOW.toISOString(),
         },
         {
@@ -52,6 +53,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 2,
           status: "todo",
           originId: "escalate:stuck-2:L2",
+          description: null,
           createdAt: NOW.toISOString(),
         },
       ];
@@ -75,6 +77,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 1,
           status: "todo",
           originId: "escalate:stuck-1:L1",
+          description: null,
           createdAt: NOW.toISOString(),
         },
       ];
@@ -112,6 +115,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 1,
           status: "todo",
           originId: "escalate:stuck-1:L1",
+          description: null,
           createdAt: NOW.toISOString(),
         },
       ];
@@ -136,6 +140,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 1,
           status: "todo",
           originId: "escalate:stuck-1:L1",
+          description: null,
           createdAt: NOW.toISOString(),
         },
       ];
@@ -168,6 +173,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 1,
           status: "done",
           originId: "escalate:stuck-1:L1",
+          description: null,
           createdAt: NOW.toISOString(),
         },
         {
@@ -178,6 +184,7 @@ d("ladder reconciliation (Postgres)", () => {
           level: 2,
           status: "todo",
           originId: "escalate:stuck-1:L2",
+          description: null,
           createdAt: NOW.toISOString(),
         },
       ];
