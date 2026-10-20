@@ -206,7 +206,7 @@ describe("setup.new-company", () => {
   it("reads the state of a company that was never touched", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asUser(A));
-    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 1, templates: 11 }, hires: [] });
+    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 11 }, hires: [] });
     expect(state.steps).toHaveLength(10);
     expect(state.starterPack).toMatchObject({ approved: false, needsOwnerOk: true, version: 1 });
     expect(state.starterPack.facts.length).toBe(loadStarterPack().facts.length);
@@ -240,7 +240,7 @@ describe("template hire tasks", () => {
     const { call, issues, wakes, store } = setup();
     const first = await call("setup.start-template-hire", { key: "developer", assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444", ownerName: "Jo" }, asUser(A));
     expect(first).toMatchObject({ existed: false, woke: true, identifier: expect.stringMatching(/^ACM-/) });
-    expect(first.hire).toMatchObject({ companyId: A, templateKey: "developer", status: "open", packVersion: 1, assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444" });
+    expect(first.hire).toMatchObject({ companyId: A, templateKey: "developer", status: "open", packVersion: 2, assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444" });
     const issue = issues.get(first.hire.issueId)!;
     expect(issue).toMatchObject({ companyId: A, title: "Hire: Developer (team template)", originKind: `plugin:${PLUGIN_ID}`, originId: "template-hire:developer", assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444", status: "todo" });
     expect(issue.description).toContain("POST /api/companies/{companyId}/agent-hires");
