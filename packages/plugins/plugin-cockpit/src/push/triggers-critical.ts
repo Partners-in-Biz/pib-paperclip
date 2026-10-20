@@ -15,6 +15,15 @@ import { notifyOwner } from "./notify.js";
 import { readCriticalLevel, upsertCriticalLevel } from "./store.js";
 
 /**
+ * Look up the assignable owner for a company.
+ * Returns null if no owner is set or assignable.
+ */
+async function resolveOwner(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const roles = await getRoles(ctx, companyId);
+  return assignableUser(roles?.ownerUserId ?? null);
+}
+
+/**
  * Thin wrapper over notifyOwner with class "critical".
  * Can be called by other jobs (e.g., W1) to notify about critical issues.
  */
@@ -30,8 +39,7 @@ export async function notifyCritical(
   deps?: NotifyOwnerDeps,
 ): Promise<void> {
   // Look up owner to notify
-  const roles = await getRoles(ctx, opts.companyId);
-  const ownerUserId = assignableUser(roles?.ownerUserId ?? null);
+  const ownerUserId = await resolveOwner(ctx, opts.companyId);
   if (!ownerUserId) return; // No owner, cannot notify
 
   await notifyOwner(
@@ -58,7 +66,7 @@ export async function notifyCritical(
  * 2. 4+ agents are in "error" status
  * 3. Agents are in "claude_auth_required" streak
  *
- * Wrapped in try/catch so a push failure never breaks the health alerts job.
+ * Wrapped in try/catch so a push failure is logged and never breaks the health alerts job.
  */
 export async function checkCriticalTriggers(
   ctx: PluginContext,
@@ -75,8 +83,7 @@ export async function checkCriticalTriggers(
     let notified = 0;
 
     // Get the owner for notifications
-    const roles = await getRoles(ctx, companyId);
-    const ownerUserId = assignableUser(roles?.ownerUserId ?? null);
+    const ownerUserId = await resolveOwner(ctx, companyId);
     if (!ownerUserId) return 0; // No owner, cannot notify
 
     // Helper: generate public URL
@@ -103,7 +110,7 @@ export async function checkCriticalTriggers(
         url: cockpitUrl,
       }, deps);
       notified += 1;
-      // Remember the level (store numeric level as string)
+      // Deliberate: send notification, then upsert (duplicate over silence if upsert fails)
       await upsertCriticalLevel(ctx, levelKey, String(currentLevel));
     } else if (currentLevel < 2 && previousLevel >= 0) {
       // Clear memory when condition clears (drops back below critical)
@@ -128,7 +135,7 @@ export async function checkCriticalTriggers(
         url: cockpitUrl,
       }, deps);
       notified += 1;
-      // Remember the error count
+      // Deliberate: send notification, then upsert (duplicate over silence if upsert fails)
       await upsertCriticalLevel(ctx, agentErrorKey, String(errorCount));
     } else if (errorCount < 4 && previousErrorCount >= 0) {
       // Clear memory when error count drops below 4
@@ -141,7 +148,8 @@ export async function checkCriticalTriggers(
     const previousAuthCount = rememberedAuthCount !== null ? parseInt(rememberedAuthCount, 10) : -1;
     const currentAuthCount = input.authAgentIds.size;
 
-    // Fire if auth agents present and (new or count increased)
+    // Fire if auth agents present and (new or count increased).
+    // Note: count comparison only, so one agent clearing while another starts keeps count unchanged (v1 limit).
     if (currentAuthCount > 0 && (previousAuthCount < 0 || currentAuthCount > previousAuthCount)) {
       const agentList = Array.from(input.authAgentIds)
         .slice(0, 3)
@@ -156,7 +164,7 @@ export async function checkCriticalTriggers(
         url: cockpitUrl,
       }, deps);
       notified += 1;
-      // Remember the auth count
+      // Deliberate: send notification, then upsert (duplicate over silence if upsert fails)
       await upsertCriticalLevel(ctx, authKey, String(currentAuthCount));
     } else if (currentAuthCount === 0 && previousAuthCount > 0) {
       // Clear memory when all auth agents clear
@@ -165,8 +173,8 @@ export async function checkCriticalTriggers(
 
     return notified;
   } catch (error) {
-    // Catch and log but don't rethrow, so push failure doesn't break healthAlerts
-    // The caller (healthAlerts) must handle logging
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.warn("critical triggers failed", { companyId, error: message });
     return 0;
   }
 }

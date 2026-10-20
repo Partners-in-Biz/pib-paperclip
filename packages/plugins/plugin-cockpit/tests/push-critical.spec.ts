@@ -4,11 +4,11 @@
  * 4+ agents in error -> push, quiet hours respects critical class, and memory reset.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { checkCriticalTriggers } from "../src/push/triggers-critical.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { checkCriticalTriggers, notifyCritical } from "../src/push/triggers-critical.js";
 import { appendPushLog, listRecentPushLog, upsertSubscription, type PushLogEntry } from "../src/push/store.js";
 import { saveRoles, type RolesRow } from "../src/db.js";
-import { COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
+import { COMPANY, OTHER_COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
 import type { Env } from "../src/env.js";
 
 const available = await embeddedAvailable();
@@ -221,5 +221,87 @@ d("Critical trigger (Postgres)", () => {
     expect(result.count).toBe(3); // One for each condition
     const sentLogs = result.logs.filter((l) => l.status === "sent");
     expect(sentLogs).toHaveLength(3);
+  });
+
+  it("notifyCritical sends with class critical", async () => {
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+      if (subs.length > 0) {
+        await appendPushLog(ctx, {
+          companyId,
+          class: payload.class,
+          issueRef: payload.tag || null,
+          title: payload.title || null,
+          status: "sent",
+          createdAt: env.now(),
+        });
+      }
+    };
+
+    await notifyCritical(
+      pg.ctx,
+      {
+        companyId: A,
+        title: "Test critical",
+        body: "Test body",
+        issueRef: "critical:test-notify",
+        url: "https://example.com/test",
+      },
+      { deliver: mockDeliver, now: env.now },
+    );
+
+    expect(deliverCalls).toHaveLength(1);
+    expect(deliverCalls[0]!.payload.class).toBe("critical");
+  });
+
+  it("notifyCritical returns quietly when there is no owner", async () => {
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+    };
+
+    // No roles row for OTHER_COMPANY, so no owner
+    await expect(
+      notifyCritical(
+        pg.ctx,
+        {
+          companyId: OTHER_COMPANY,
+          title: "Test critical",
+          body: "Test body",
+          issueRef: "critical:test-notify",
+          url: "https://example.com/test",
+        },
+        { deliver: mockDeliver, now: env.now },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(deliverCalls).toHaveLength(0);
+  });
+
+  it("failing critical trigger logs warning", async () => {
+    const spy = vi.spyOn(pg.ctx.logger, "warn");
+    const mockDeliver = async () => {
+      throw new Error("boom");
+    };
+
+    const result = await checkCriticalTriggers(
+      pg.ctx,
+      A,
+      {
+        agents: [],
+        authAgentIds: new Set(),
+        healthLevel: "bad",
+        publicBaseUrl: "https://example.com",
+      },
+      { deliver: mockDeliver, now: env.now },
+    );
+
+    expect(result).toBe(0);
+    expect(spy).toHaveBeenCalledWith(
+      "critical triggers failed",
+      expect.objectContaining({ companyId: A, error: "boom" }),
+    );
+    spy.mockRestore();
   });
 });
