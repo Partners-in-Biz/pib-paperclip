@@ -121,4 +121,66 @@ describe("drive save", () => {
     const result = await promise;
     expect(result.status).toBe("saved");
   });
+
+  it("(8) subfolder+client: emits subfolder and clientKind+clientRef when provided", async () => {
+    const promise = driveSave(fake.ctx, {
+      companyId: "co-1",
+      kind: "deliverable",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      bytes: Buffer.from("test"),
+      subfolder: "03 Deliverables",
+      client: { kind: "company", ref: "acme-123" },
+    });
+    await tick();
+    const emitted = fake.emitted[0]!.payload;
+    expect(emitted.subfolder).toBe("03 Deliverables");
+    expect(emitted.clientKind).toBe("company");
+    expect(emitted.clientRef).toBe("acme-123");
+    const requestId = emitted.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-456", url: "https://drive.example.com/file-456" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+
+  it("(9) no subfolder/client: payload omits them when not provided", async () => {
+    const promise = driveSave(fake.ctx, {
+      companyId: "co-1",
+      kind: "attachment",
+      name: "plain.txt",
+      mimeType: "text/plain",
+      bytes: Buffer.from("test"),
+    });
+    await tick();
+    const emitted = fake.emitted[0]!.payload;
+    expect(emitted.subfolder).toBeUndefined();
+    expect(emitted.clientKind).toBeUndefined();
+    expect(emitted.clientRef).toBeUndefined();
+    const requestId = emitted.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-999", url: "https://drive.example.com/file-999" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+
+  it("(10) invalid subfolder/client: empty subfolder or empty client fields return invalid_input", async () => {
+    const cases = [
+      { subfolder: "", reason: "invalid_input" as const },
+      { subfolder: "   ", reason: "invalid_input" as const },
+      { client: { kind: "", ref: "ref1" }, reason: "invalid_input" as const },
+      { client: { kind: "company", ref: "" }, reason: "invalid_input" as const },
+      { client: { kind: "   ", ref: "ref1" }, reason: "invalid_input" as const },
+      { client: { kind: "company", ref: "   " }, reason: "invalid_input" as const },
+    ] as const;
+
+    for (const tc of cases) {
+      fake.emitted = [];
+      const opts: any = { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") };
+      if ("subfolder" in tc) opts.subfolder = tc.subfolder;
+      if ("client" in tc) opts.client = tc.client;
+      const result = await driveSave(fake.ctx, opts);
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") expect(result.reason).toBe(tc.reason);
+      expect(fake.emitted).toHaveLength(0);
+    }
+  });
 });
