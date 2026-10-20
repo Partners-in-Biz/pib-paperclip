@@ -66,14 +66,14 @@ describe('Push service worker build', () => {
       waitUntil: (p: Promise<any>) => Promise.resolve(p),
     };
     await handlers.push!(pushEvent);
-    expect(calls[0].title).toBe('Cockpit');
+    expect(calls[0].title).toBe('Partners in Biz');
     expect((calls[0].options as any).body).toBe('Plain text');
   });
 
   it('notificationclick navigates existing window and focuses it', async () => {
     const source = readFileSync(join(packageRoot, 'src', 'ui-static', 'push-sw.js'), 'utf-8');
     const handlers: Record<string, Function | null> = { notificationclick: null };
-    const fakeClients = { matchAll: () => Promise.resolve([]) };
+    const fakeClients = { matchAll: () => Promise.resolve([]), openWindow: () => Promise.resolve(null) };
     const fakeSelf = {
       addEventListener: (type: string, handler: Function) => { if (type === 'notificationclick') handlers.notificationclick = handler; },
       location: { origin: 'https://app.example.test' },
@@ -83,7 +83,7 @@ describe('Push service worker build', () => {
     new Script(source, { filename: 'push-sw.js' }).runInContext(context);
 
     let focusedWindow: any = null;
-    const window = { navigate: (url: string) => Promise.resolve(window), focus: () => { focusedWindow = window; } };
+    const window = { url: 'https://app.example.test/page', navigate: (url: string) => Promise.resolve(window), focus: () => { focusedWindow = window; } };
     (fakeClients.matchAll as any) = () => Promise.resolve([window]);
 
     let waitUntilPromise: Promise<any> | null = null;

@@ -2,7 +2,7 @@
 // RFC 8291 payload decryption is handled by the browser before this handler receives it.
 
 self.addEventListener('push', (e) => {
-  let title = 'Cockpit';
+  let title = 'Partners in Biz';
   let body = 'Notification received';
   let url = undefined;
   let tag = undefined;
@@ -26,6 +26,20 @@ self.addEventListener('push', (e) => {
     }
   }
 
+  // Validate URL: resolve relative to origin, accept only if same-origin.
+  let validatedUrl = undefined;
+  if (url) {
+    try {
+      const resolved = new URL(url, self.location.origin).href;
+      const resolved_origin = new URL(resolved).origin;
+      if (resolved_origin === self.location.origin) {
+        validatedUrl = resolved;
+      }
+    } catch (_) {
+      // Invalid URL; discard.
+    }
+  }
+
   // Truncate to safe lengths.
   title = title.slice(0, 120);
   body = body.slice(0, 300);
@@ -33,8 +47,8 @@ self.addEventListener('push', (e) => {
   e.waitUntil(
     self.registration.showNotification(title, {
       body,
-      data: { url },
-      tag,
+      data: { url: validatedUrl },
+      tag: tag || undefined,
     })
   );
 });
@@ -46,21 +60,33 @@ self.addEventListener('notificationclick', (e) => {
   if (e.notification.data && typeof e.notification.data.url === 'string') {
     try {
       const resolved = new URL(e.notification.data.url, self.location.origin).href;
-      const origin = new URL(resolved).origin;
-      if (origin === self.location.origin) {
+      const resolved_origin = new URL(resolved).origin;
+      if (resolved_origin === self.location.origin) {
         url = resolved;
       }
     } catch (_) {
-      // Invalid URL; use origin.
+      // Invalid URL; use app root.
     }
   }
 
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      const w = list[0];
-      if (w) {
-        const navigatePromise = w.navigate ? w.navigate(url) : Promise.resolve(w);
-        return navigatePromise.then((c) => (c || w).focus());
+      // Find a client on the same origin.
+      let client = undefined;
+      for (let i = 0; i < list.length; i++) {
+        try {
+          const clientOrigin = new URL(list[i].url).origin;
+          if (clientOrigin === self.location.origin) {
+            client = list[i];
+            break;
+          }
+        } catch (_) {
+          // Invalid URL; skip.
+        }
+      }
+      if (client) {
+        const navigatePromise = client.navigate ? client.navigate(url) : Promise.resolve(client);
+        return navigatePromise.then((c) => (c || client).focus());
       }
       return self.clients.openWindow(url);
     })
