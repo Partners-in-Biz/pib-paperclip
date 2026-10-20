@@ -77,6 +77,26 @@ describe.skipIf(!available)("paid invoice filing issue (postgres)", () => {
     expect(filingIssues()).toHaveLength(1);
   });
 
+  it("attaches the invoice on a replay when the first document write failed", async () => {
+    const invoice = await sent();
+    const real = h.ctx.issues.documents.upsert;
+    let calls = 0;
+    h.ctx.issues.documents.upsert = (async (input: Parameters<typeof real>[0]) => {
+      if (calls++ === 0) throw new Error("document write failed");
+      return real(input);
+    }) as typeof real;
+    try {
+      await pay(invoice.id);
+      expect(filingIssues()).toHaveLength(1);
+      expect(h.documents.size).toBe(0);
+      await openInvoiceFilingIssue(h.ctx, (await getInvoice(h.ctx, invoice.id))!, new Date());
+    } finally {
+      h.ctx.issues.documents.upsert = real;
+    }
+    expect(filingIssues()).toHaveLength(1);
+    expect(h.documents.get(`${filingIssues()[0]!.id}:invoice`)!.body).toContain(invoice.number);
+  });
+
   it("opens nothing for a draft, a sent invoice or a part payment", async () => {
     const draftInvoice = await draft();
     const sentInvoice = await sent();

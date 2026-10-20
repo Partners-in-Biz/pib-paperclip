@@ -12,6 +12,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { AS_AT_CUTOFF_SQL, INVOICE_COLUMNS, table, type CreditNoteRow, type InvoiceRow } from "./db.js";
 import { balanceOutstanding, deriveInvoiceStatus, OPEN_STATUSES, type BalanceState, type InvoiceStatusValue } from "./domain.js";
 import { withdrawPaidDecisions } from "./closeouts.js";
+import { iso } from "./dates.js";
 import { openInvoiceFilingIssue } from "./filing.js";
 import { emitInvoicePaid } from "./handoff.js";
 import { retireInvoiceLinks, retireLinksForOtherAmount } from "./pay/links.js";
@@ -71,13 +72,6 @@ export function balanceSelect(ctx: PluginContext): string {
             COALESCE((SELECT sum(a.amount_minor) FROM ${table(ctx, "credit_applications")} a WHERE a.invoice_id = i.id AND a.source_kind = 'write_off'), 0) AS written_off_minor,
             (SELECT count(*) FROM ${table(ctx, "pops")} o WHERE o.invoice_id = i.id AND o.status = 'pending') AS pending_pops
        FROM ${table(ctx, "invoices")} i`;
-}
-
-export function iso(value: unknown): string | null {
-  if (value == null || value === "") return null;
-  if (value instanceof Date) return value.toISOString();
-  const parsed = new Date(String(value));
-  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
 }
 
 /**
@@ -338,3 +332,5 @@ export async function customerCredit(ctx: PluginContext, companyId: string, cust
     }))
     .filter((row) => row.availableMinor > 0);
 }
+
+export { iso };

@@ -5,7 +5,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createWorkIssue, formatMoneyMinor, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
-import { iso } from "./balances.js";
+import { iso } from "./dates.js";
 import { isCanaryRef } from "./canary.js";
 import type { InvoiceRow } from "./db.js";
 import { invoiceHtmlFrom, invoiceView } from "./invoices.js";
@@ -24,7 +24,6 @@ export async function openInvoiceFilingIssue(ctx: PluginContext, invoice: Invoic
   const originId = `${WORK_ORIGINS.driveFileInvoice}${invoice.id}`;
   const originKind = `plugin:${PIB_PLUGINS.billing}` as const;
   const existing = await ctx.issues.list({ companyId: invoice.company_id, originKind, originId, limit: 1 }).catch(() => []);
-  if (existing[0]) return existing[0].id;
 
   const { settings } = await loadBilling(ctx, invoice.company_id);
   const view = await invoiceView(ctx, invoice, settings);
@@ -34,7 +33,8 @@ export async function openInvoiceFilingIssue(ctx: PluginContext, invoice: Invoic
   const fileName = `${(iso(paidAt) ?? new Date().toISOString()).slice(0, 10)} ${client} invoice ${label} v01.html`;
   const total = formatMoneyMinor(view.totalMinor, invoice.currency);
 
-  const issue = await createWorkIssue(ctx, {
+  // On a replay the issue exists; the upsert below re-attaches the document if an earlier attempt failed after creating it.
+  const issue = existing[0] ?? await createWorkIssue(ctx, {
     companyId: invoice.company_id,
     title: `File paid invoice ${invoice.number} (${client})`.slice(0, 200),
     description: [
