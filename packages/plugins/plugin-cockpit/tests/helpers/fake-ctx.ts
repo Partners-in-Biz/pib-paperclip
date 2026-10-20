@@ -81,6 +81,8 @@ export function fakeCtx(options: {
   goals?: boolean;
   /** Agent ids whose pause should fail. */
   pauseFails?: string[];
+  /** Agent ids whose resume should fail. */
+  resumeFails?: string[];
   /**
    * What `ctx.skills.managed.get` resolves, by skill key: the company's copy as the host stores it (see
    * helpers/host-skills.ts: `installedLikeHost` gives the host-shaped, unedited copy). The resolution carries the
