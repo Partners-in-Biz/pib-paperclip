@@ -66,6 +66,8 @@ export const CRM_ORIGINS = {
   esignStale: "crm:esign-stale:",
   /** `crm:drive-file:esign:<document id>`: file a signed copy to Drive (Account Manager). */
   driveFileEsign: "crm:drive-file:esign:",
+  /** `crm:drive-file:report:<report id>`: file a sent monthly report to Drive (Account Manager). */
+  driveFileReport: "crm:drive-file:report:",
 } as const;
 
 export const originFor = {
@@ -92,6 +94,7 @@ export const originFor = {
   esign: (documentId: string) => `${CRM_ORIGINS.esign}${documentId}`,
   esignStale: (documentId: string) => `${CRM_ORIGINS.esignStale}${documentId}`,
   driveFileEsign: (documentId: string) => `${CRM_ORIGINS.driveFileEsign}${documentId}`,
+  driveFileReport: (reportId: string) => `${CRM_ORIGINS.driveFileReport}${reportId}`,
   siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
   siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
   siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
