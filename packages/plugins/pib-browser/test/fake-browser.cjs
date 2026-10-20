@@ -39,10 +39,19 @@ function createFakeBrowser(graph = {}) {
     const describe = async (sel) => graph[currentUrl]?.fields?.[sel] || { type: 'text', autocomplete: '' };
     const url = () => currentUrl;
     let closeCount = 0;
+    const shot = async (p, opts = {}) => {
+      if (!currentUrl) throw new Error('No page loaded');
+      // Record redaction and capture in order
+      if (opts.redactSelectors && opts.redactSelectors.length > 0) {
+        performed.push({ cmd: 'redact', selectors: opts.redactSelectors });
+      }
+      performed.push({ cmd: 'capture', path: p, region: opts.region });
+      return p;
+    };
     const ctx = {
       goto, click,
       fill: async () => { if (!currentUrl) throw new Error('No page loaded'); },
-      text, shot: async (p) => { if (!currentUrl) throw new Error('No page loaded'); return p; }, hasText,
+      text, shot, hasText,
       describe, url,
       violations: () => violations, performed: () => performed,
       close: async () => { currentUrl = null; closeCount++; },

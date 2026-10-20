@@ -60,24 +60,12 @@ test('loadConfig - rejects invalid socket mode 0o9', () => {
   });
 });
 
-test('loadConfig - throws without evidenceDir', () => {
-  assert.throws(() => loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock' }), (err) => {
-    return err.message.includes('PIB_BROWSER_EVIDENCE_DIR') && err.message.includes('required');
-  });
-});
-
-test('loadConfig - throws with relative evidenceDir', () => {
-  assert.throws(() => loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_EVIDENCE_DIR: 'relative/path' }), (err) => {
-    return err.message.includes('PIB_BROWSER_EVIDENCE_DIR') && err.message.includes('absolute');
-  });
-});
-
 test('loadConfig - accepts valid socket modes', () => {
-  const config1 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '600', PIB_BROWSER_EVIDENCE_DIR: '/tmp' });
+  const config1 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '600' });
   assert.equal(config1.socketMode, 0o600);
-  const config2 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '0600', PIB_BROWSER_EVIDENCE_DIR: '/tmp' });
+  const config2 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '0600' });
   assert.equal(config2.socketMode, 0o600);
-  const config3 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '0o660', PIB_BROWSER_EVIDENCE_DIR: '/tmp' });
+  const config3 = loadConfig({ PIB_BROWSER_SOCKET: '/tmp/sock', PIB_BROWSER_SOCKET_MODE: '0o660' });
   assert.equal(config3.socketMode, 0o660);
 });
 

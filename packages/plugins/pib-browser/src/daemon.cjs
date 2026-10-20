@@ -24,17 +24,8 @@ function loadConfig(env) {
   }
   const apiBase = (env.PIB_BROWSER_API || env.PAPERCLIP_API_URL || 'http://localhost:3100')
     .replace(/\/+$/, '');
-  const evidenceDir = env.PIB_BROWSER_EVIDENCE_DIR;
-  // Validate evidenceDir: must be provided and must be absolute
-  if (!evidenceDir) {
-    throw new Error('PIB_BROWSER_EVIDENCE_DIR is required');
-  }
-  if (!path.isAbsolute(evidenceDir)) {
-    throw new Error('PIB_BROWSER_EVIDENCE_DIR must be an absolute path');
-  }
   return {
     socketPath, socketMode,
-    evidenceDir,
     apiBase,
     policyPath: env.PIB_BROWSER_POLICY || '',
     sitesPath: env.PIB_BROWSER_SITES || '',
@@ -201,7 +192,6 @@ async function main() {
     policy: policyResult.policy,
     sites,
     clock: () => new Date(),
-    evidenceDir: config.evidenceDir,
     verifyApproval: verifyApprovalFn,
     handoff,
     checkFill
