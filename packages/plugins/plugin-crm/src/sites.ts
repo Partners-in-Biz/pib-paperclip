@@ -54,13 +54,13 @@ import { deleteSiteMonitorOf } from "./monitor.js";
 import { parseClientRef, requireClient } from "./lookup.js";
 import { companyPrefix, pagePath, refOf, type ClientKind } from "./refs.js";
 import { emitClientProjects } from "./client-projects-emit.js";
+import { CLIENT_PROJECT_KINDS, type ClientProjectKind } from "./project-groups.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const CLIENT_PROJECT_KINDS = ["seo", "website", "app", "social", "ads", "campaigns", "book", "platform", "ops"] as const;
-export type ClientProjectKind = (typeof CLIENT_PROJECT_KINDS)[number];
+export { CLIENT_PROJECT_KINDS, type ClientProjectKind };
 
 // ---------------------------------------------------------------------------
 // Records
