@@ -354,7 +354,7 @@ describe("GET /templates for the ops scripts", () => {
       expect(role.profiles.hermes_local === null).toBe(!kit.hermes);
       if (kit.hermes) expect(role.profiles.hermes_local.adapterConfig).toMatchObject({ model: kit.hermes.model, provider: kit.hermes.provider, timeoutSec: kit.timeoutSec });
     }
-    expect(result.templates.map((template: any) => template.key)).toEqual(loadPack().templates.map((template) => template.key));
+    expect(result.templates.map((template: any) => template.key)).toEqual(loadPack().templates.filter((t) => (t.scope ?? "generic") !== "pib").map((template) => template.key));
     const planner = result.templates.find((template: any) => template.key === "planner");
     expect(planner.instructions).toContain("Acme Ltd");
     expect(planner.adapterConfig).toMatchObject({ model: "claude-fable-5-1" });

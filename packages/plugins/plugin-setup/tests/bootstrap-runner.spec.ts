@@ -139,8 +139,8 @@ describe("a fresh company with a CEO", () => {
     expect(f.roleHires.map((hire) => hire.role).sort()).toEqual(["account-manager", "bookkeeper", "operator", "seo-specialist", "social"]);
     for (const hire of f.roleHires) expect(hire).toMatchObject({ assigneeAgentId: "ceo", assigneeUserId: null });
 
-    // The dev chain: every default template that is not already staffed (the CEO is) and holds no kit role.
-    expect(f.templateHires.map((hire) => hire.key)).toEqual(["delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
+    // The dev chain: every default template that is not already staffed (the CEO is) and holds no kit role. Client company: no pib templates.
+    expect(f.templateHires.map((hire) => hire.key)).toEqual(["planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
     for (const hire of f.templateHires) expect(hire.assignee).toEqual({ assigneeAgentId: "ceo", assigneeUserId: null });
     expect(statusOf(f, "templates").items!.find((item) => item.key === "ceo")).toMatchObject({ status: "done", detail: "PiB already is the CEO." });
 
@@ -279,8 +279,8 @@ describe("a list that cannot be read is not an empty list", () => {
     expect(roles.items!.every((item) => item.status === "failed" && item.detail === AGENT_LIST_UNREADABLE)).toBe(true);
     const templates = statusOf(f, "templates");
     expect(templates.status).toBe("failed");
-    // Every template, the CEO included: "no agent found" and "could not look" are different.
-    expect(templates.items!.map((item) => item.key)).toEqual(expect.arrayContaining(["ceo", "delivery-lead", "planner"]));
+    // Every template, the CEO included: "no agent found" and "could not look" are different. Client company: no pib templates.
+    expect(templates.items!.map((item) => item.key)).toEqual(expect.arrayContaining(["ceo", "planner"]));
     expect(templates.items!.every((item) => item.status === "failed" && item.detail === AGENT_LIST_UNREADABLE)).toBe(true);
     expect(statusOf(f, "owner-list")).toMatchObject({ status: "failed" });
     expect(statusOf(f, "owner-list").detail).toMatch(/agent list could not be read/);
@@ -439,7 +439,10 @@ describe("copying another company's settings", () => {
 
 describe("the team template pack", () => {
   it("selects the defaults, or the keys asked for, limited to modules that are on", () => {
-    expect(selectedTemplates({}, allModulesOn()).map((template) => template.key)).toEqual(["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
+    // Client company (ownerCompany: false): no pib templates
+    expect(selectedTemplates({}, allModulesOn(), false).map((template) => template.key)).toEqual(["ceo", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
+    // Owner company (ownerCompany: true): includes pib templates
+    expect(selectedTemplates({}, allModulesOn(), true).map((template) => template.key)).toEqual(["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
     expect(selectedTemplates({ templates: ["developer", "growth-marketing-lead", "nope"] }, allModulesOn()).map((template) => template.key)).toEqual(["developer", "growth-marketing-lead"]);
     expect(selectedTemplates({ templates: ["growth-marketing-lead", "wiki-maintainer"] }, { ...allModulesOn(), social: false, memory: false })).toEqual([]);
     expect(MODULE_KEYS).toContain("memory");

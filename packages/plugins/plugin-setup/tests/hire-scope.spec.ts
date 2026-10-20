@@ -26,10 +26,13 @@ afterAll(() => {
 });
 
 describe("hire scope: a pib template is offered to the PiB company only", () => {
-  it("ships no pib template today, so the client hire list is the whole shipped pack (no hire output changes)", async () => {
-    expect(SHIPPED.filter((t) => t.scope === "pib")).toEqual([]);
-    const keys = await keysFor(clientCtx().ctx, B);
-    expect(keys).toEqual(SHIPPED.map((t) => t.key));
+  it("a client company's hire list is the shipped pack minus its pib templates (delivery-lead today)", async () => {
+    const shippedNonPib = SHIPPED.filter((t) => t.scope !== "pib").map((t) => t.key);
+    const clientKeys = await keysFor(clientCtx().ctx, B);
+    expect(clientKeys).toEqual(shippedNonPib);
+    expect(clientKeys).not.toContain("delivery-lead");
+    const ownerKeys = await keysFor(ownerCtx().ctx, A);
+    expect(ownerKeys).toContain("delivery-lead");
   });
 
   it("templatesForOps leaves a pib template out of a client company and lists it for the owner company", async () => {
