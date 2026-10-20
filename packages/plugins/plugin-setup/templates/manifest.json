@@ -13,7 +13,13 @@
   },
   "sharedBlocks": [
     "execution-contract",
-    "dev-conventions"
+    "dev-conventions",
+    "pib-autonomy",
+    "scheduled-runs",
+    "evidence",
+    "stuck-rule",
+    "anti-loop",
+    "pib-mistakes"
   ],
   "templates": [
     {
@@ -75,6 +81,7 @@
       "group": "dev-team",
       "capabilities": "Turns incoming requests into Paperclip tasks, routes them to the right dev-team agent, chases stalled work and merges passed PRs into development; makes no technical decisions.",
       "reportsTo": "ceo",
+      "escalatesTo": "ceo",
       "adapterPreference": [
         "claude_local"
       ],
@@ -102,7 +109,11 @@
       "requires": {
         "modules": []
       },
-      "notes": []
+      "notes": [],
+      "skeleton": true,
+      "scope": "pib",
+      "evalFile": "delivery-lead.json",
+      "distilled": true
     },
     {
       "key": "planner",
