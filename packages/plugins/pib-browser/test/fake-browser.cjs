@@ -9,7 +9,7 @@ function createFakeBrowser(graph = {}) {
     const checkGuard = (u, k) => {
       const p = parseUrl(u);
       if (!guard || guard(u, k)) return true;
-      violations.push({ url: p?.host || 'unknown', kind: k });
+      violations.push({ url: p?.href || u || 'unknown', kind: k });
       return false;
     };
     const goto = async (u) => {

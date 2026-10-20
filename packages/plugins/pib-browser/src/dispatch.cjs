@@ -1,5 +1,7 @@
 'use strict';
+const path = require('path');
 const { EXIT } = require('./exit-codes.cjs');
+const { authenticate, ISSUE_RE } = require('./auth.cjs');
 const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
 const { redactText, parseRegion } = require('./redact.cjs');
 
@@ -23,7 +25,11 @@ function createDispatcher(deps = {}) {
     if (v.length > 0) {
       try { await ctx.close(); } catch (e) {}
       sessions.delete(key);
-      return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: `origin_wall: ${v[0].url}` };
+      let host = 'unparseable';
+      try {
+        host = new URL(v[0].url).host;
+      } catch (e) {}
+      return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: `origin_wall: ${host}` };
     }
     return null;
   };
@@ -40,7 +46,7 @@ function createDispatcher(deps = {}) {
       }
 
       // Authenticate
-      const auth = await authenticate({ token, issue }, { fetch: global.fetch, apiBase: process.env.API_BASE });
+      const auth = await authenticate({ token, issue }, { fetch: global.fetch });
       if (!auth.ok) {
         return { exit: auth.exit, ok: false, reason: auth.reason };
       }
@@ -79,14 +85,29 @@ function createDispatcher(deps = {}) {
           return { exit: EXIT.NO_BROWSER, ok: false, reason: 'no_browser' };
         }
 
+        // Close existing context if one exists for same agentId|identity key
+        const existingSession = sessions.get(sessionKey);
+        if (existingSession) {
+          try {
+            await existingSession.ctx.close();
+          } catch (e) {}
+          sessions.delete(sessionKey);
+        }
+
         try {
           const origins = originsFor({ policy, sites, identity: identityStr });
-          const ctx = browser.newContext({
-            origins,
-            guard: makeGuard(origins)
-          });
+          let ctx;
+          try {
+            ctx = browser.newContext({
+              origins,
+              guard: makeGuard(origins)
+            });
 
-          await ctx.goto(site.loggedIn.url);
+            await ctx.goto(site.loggedIn.url);
+          } catch (e) {
+            try { await ctx?.close(); } catch (closeErr) {}
+            throw e;
+          }
 
           const violation = await afterOp(ctx, sessionKey);
           if (violation) return violation;
@@ -197,8 +218,12 @@ function createDispatcher(deps = {}) {
           }
 
           const identifier = auth.issue.identifier;
-          if (!identifier) {
+          if (!identifier || !ISSUE_RE.test(identifier)) {
             return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
+          }
+
+          if (!evidenceDir || !path.isAbsolute(evidenceDir)) {
+            return { exit: EXIT.USAGE, ok: false, reason: 'evidence_dir_invalid' };
           }
 
           const issueDir = `${evidenceDir}/${identifier}`;

@@ -179,3 +179,76 @@ test('text redaction applied', async () => {
   assert(!r.data.text.includes('secret123'));
   assert(r.data.text.includes('[redacted]'));
 });
+
+test('shot empty evidenceDir -> 2', async () => {
+  const { dispatch } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser: createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } }),
+    policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } },
+    sites: { sites: { meta: { label: 'Meta', origins: ['https://business.facebook.com'], loggedIn: { url: 'https://business.facebook.com/latest/home', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: [], text: [] } } } },
+    clock: () => new Date('2026-01-01T10:00:00Z'),
+    evidenceDir: ''
+  });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const r = await dispatch({ cmd: 'shot', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: {} });
+  assert.equal(r.exit, EXIT.USAGE);
+  assert.equal(r.reason, 'evidence_dir_invalid');
+});
+
+test('shot null evidenceDir -> 2', async () => {
+  const { dispatch } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser: createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } }),
+    policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } },
+    sites: { sites: { meta: { label: 'Meta', origins: ['https://business.facebook.com'], loggedIn: { url: 'https://business.facebook.com/latest/home', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: [], text: [] } } } },
+    clock: () => new Date('2026-01-01T10:00:00Z'),
+    evidenceDir: null
+  });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const r = await dispatch({ cmd: 'shot', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: {} });
+  assert.equal(r.exit, EXIT.USAGE);
+  assert.equal(r.reason, 'evidence_dir_invalid');
+});
+
+test('shot relative evidenceDir -> 2', async () => {
+  const { dispatch } = h({ evidenceDir: 'relative/path' });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const r = await dispatch({ cmd: 'shot', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: {} });
+  assert.equal(r.exit, EXIT.USAGE);
+  assert.equal(r.reason, 'evidence_dir_invalid');
+});
+
+test('open closes existing session for same agentId|identity', async () => {
+  const browser = createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } });
+  const { dispatch: d2, sessions } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser,
+    policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } },
+    sites: { sites: { meta: { label: 'Meta', origins: ['https://business.facebook.com'], loggedIn: { url: 'https://business.facebook.com/latest/home', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: [], text: [] } }}},
+    clock: () => new Date('2026-01-01T10:00:00Z'),
+    evidenceDir: '/tmp/evidence'
+  });
+  await d2({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const firstCtx = browser.lastContext();
+  assert(firstCtx);
+  await d2({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const secondCtx = browser.lastContext();
+  assert(secondCtx);
+  assert.notEqual(firstCtx, secondCtx);
+  assert.equal(sessions.has('a1|client:ca:meta'), true);
+});
+
+test('afterOp builds reason from host only', async () => {
+  const browser = createFakeBrowser({
+    'https://business.facebook.com/latest/home': { text: 'Home Dashboard', links: { 'a.go': 'https://user:pw@evil.example.com:8443/a/b?token=abc#x' } }
+  });
+  const { dispatch } = h({ browser, policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } } });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const r = await dispatch({ cmd: 'click', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: 'a.go' } });
+  assert.equal(r.exit, EXIT.REFUSED_BY_POLICY);
+  assert.match(r.reason, /evil\.example\.com:8443/);
+  assert(!r.reason.includes('user'));
+  assert(!r.reason.includes('pw'));
+  assert(!r.reason.includes('/a/b'));
+  assert(!r.reason.includes('token'));
+});
