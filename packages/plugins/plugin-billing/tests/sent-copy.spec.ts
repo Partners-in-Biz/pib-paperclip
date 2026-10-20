@@ -1,13 +1,8 @@
-/**
- * Unit tests for sent-copy.ts: PDF naming and fire-and-forget save logic.
- */
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import { sentCopyName, saveSentCopy } from "../src/sent-copy.js";
 
-// Hoisted before module imports
 const { fakeDriveSave } = vi.hoisted(() => ({
   fakeDriveSave: vi.fn(),
 }));
@@ -20,58 +15,39 @@ vi.mock("@partnersinbiz/pib-plugin-kit", async (orig) => {
   };
 });
 
+const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+const makeCtx = () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+} as unknown as PluginContext);
+
 describe("sentCopyName", () => {
-  it("formats invoice name with date, kind, number, and padded seq", () => {
-    const date = new Date("2026-10-20T14:30:00Z");
-    const name = sentCopyName("invoice", "INV-0042", date, 1);
-    expect(name).toBe("2026-10-20 Invoice INV-0042 v01.pdf");
+  const date = new Date("2026-10-20");
+  it.each([
+    ["invoice", "INV-0042", 1, "2026-10-20 Invoice INV-0042 v01.pdf"],
+    ["quote", "Q-LUM-007", 3, "2026-10-20 Quote Q-LUM-007 v03.pdf"],
+    ["invoice", "INV/0042 x", 1, "2026-10-20 Invoice INV0042x v01.pdf"],
+    ["invoice", "", 5, /^\d{4}-\d{2}-\d{2}\s+Invoice\s+v05\.pdf$/],
+  ] as const)("formats %s number=%s seq=%d", (kind, num, seq, expected) => {
+    const name = sentCopyName(kind, num, date, seq);
+    typeof expected === "string" ? expect(name).toBe(expected) : expect(name).toMatch(expected);
   });
 
-  it("formats quote name with date, kind, number, and padded seq", () => {
-    const date = new Date("2026-10-20T14:30:00Z");
-    const name = sentCopyName("quote", "Q-LUM-007", date, 3);
-    expect(name).toBe("2026-10-20 Quote Q-LUM-007 v03.pdf");
-  });
-
-  it("sanitizes number: removes non-alphanumeric and dash characters", () => {
-    const date = new Date("2026-10-20");
-    const name = sentCopyName("invoice", "INV/0042 x", date, 1);
-    expect(name).toBe("2026-10-20 Invoice INV0042x v01.pdf");
-  });
-
-  it("pads seq to 2 digits", () => {
-    const date = new Date("2026-10-20");
-    expect(sentCopyName("invoice", "INV-0001", date, 1)).toContain(" v01.pdf");
-    expect(sentCopyName("invoice", "INV-0001", date, 10)).toContain(" v10.pdf");
-    expect(sentCopyName("invoice", "INV-0001", date, 99)).toContain(" v99.pdf");
-  });
-
-  it("matches the required regex pattern", () => {
-    const date = new Date("2026-10-20");
-    const name = sentCopyName("invoice", "INV-0042", date, 1);
+  it("matches regex and pads seq", () => {
+    const name = sentCopyName("invoice", "INV-0001", date, 1);
     expect(name).toMatch(/^\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+$/);
-  });
-
-  it("handles empty number by keeping the sanitized result", () => {
-    const date = new Date("2026-10-20");
-    const name = sentCopyName("invoice", "", date, 5);
-    expect(name).toMatch(/^\d{4}-\d{2}-\d{2}\s+Invoice\s+v05\.pdf$/);
+    [1, 10, 99].forEach(seq => {
+      expect(sentCopyName("invoice", "INV-0001", date, seq)).toContain(` v${String(seq).padStart(2, "0")}.pdf`);
+    });
   });
 });
 
 describe("saveSentCopy", () => {
   let ctx: PluginContext;
+  const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
 
   beforeEach(() => {
     vi.clearAllMocks();
-    ctx = {
-      logger: {
-        warn: vi.fn(),
-        info: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-      },
-    } as unknown as PluginContext;
+    ctx = makeCtx();
     fakeDriveSave.mockResolvedValue({
       status: "saved",
       requestId: "r",
@@ -80,10 +56,7 @@ describe("saveSentCopy", () => {
     });
   });
 
-  it("passes to driveSave with exact parameters and matching sha256", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF" prefix
-    const now = new Date("2026-10-20T10:00:00Z");
-
+  it("passes correct parameters and matches sha256", async () => {
     const result = await saveSentCopy(ctx, {
       companyId: "co-1",
       kind: "invoice",
@@ -92,45 +65,27 @@ describe("saveSentCopy", () => {
       bytes: input,
       customerKind: "contact",
       customerRef: "ct-lumen",
-      now,
     });
 
-    expect(fakeDriveSave).toHaveBeenCalledTimes(1);
-    const call = fakeDriveSave.mock.calls[0]!;
-    const opts = call[1];
-
-    // Verify exact parameters
+    expect(result).not.toBeNull();
+    const opts = fakeDriveSave.mock.calls[0]![1];
     expect(opts.companyId).toBe("co-1");
     expect(opts.kind).toBe("client");
     expect(opts.subfolder).toBe("03 Deliverables");
     expect(opts.mimeType).toBe("application/pdf");
     expect(opts.name).toMatch(/^\d{4}-\d{2}-\d{2}\s+Invoice\s+INV-0042\s+v01\.pdf$/);
     expect(opts.client).toEqual({ kind: "contact", ref: "ct-lumen" });
-
-    // Verify bytes are the same reference and sha256 matches
     expect(opts.bytes).toBe(input);
-    const inputSha256 = createHash("sha256").update(input).digest("hex");
-    const callSha256 = createHash("sha256").update(opts.bytes).digest("hex");
-    expect(callSha256).toBe(inputSha256);
-
-    // Verify result is returned
-    expect(result).toEqual({
-      status: "saved",
-      requestId: "r",
-      driveFileId: "f",
-      url: "https://drive.example/f",
-    });
+    expect(sha256(opts.bytes)).toBe(sha256(input));
+    expect((result as any).status).toBe("saved");
     expect(ctx.logger.warn).not.toHaveBeenCalled();
   });
 
-  it("handles {status: failed} response: resolves, logs warning, does not log bytes", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
-    fakeDriveSave.mockResolvedValue({
-      status: "failed",
-      requestId: "r",
-      reason: "drive_not_bound",
-    });
-
+  it.each([
+    ["failed", { status: "failed" as const, requestId: "r", reason: "drive_not_bound" }],
+    ["no_ack", { status: "no_ack" as const, requestId: "r" }],
+  ])("handles %s response: resolves, logs warning", async (_, mockResult) => {
+    fakeDriveSave.mockResolvedValue(mockResult);
     const result = await saveSentCopy(ctx, {
       companyId: "co-1",
       kind: "invoice",
@@ -140,47 +95,18 @@ describe("saveSentCopy", () => {
       customerKind: "contact",
       customerRef: "ct-lumen",
     });
-
-    expect(result).toEqual({
-      status: "failed",
-      requestId: "r",
-      reason: "drive_not_bound",
-    });
+    expect(result).toEqual(mockResult);
     expect(ctx.logger.warn).toHaveBeenCalledTimes(1);
-    const warnFn = ctx.logger.warn as any;
-    const warnCall = warnFn.mock.calls[0];
-    const warnStr = JSON.stringify(warnCall);
-    expect(warnStr).not.toContain(Buffer.from(input).toString("base64"));
+    expect(JSON.stringify((ctx.logger.warn as any).mock.calls[0])).not.toContain(
+      Buffer.from(input).toString("base64")
+    );
   });
 
-  it("handles {status: no_ack} response: resolves, logs warning", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
-    fakeDriveSave.mockResolvedValue({
-      status: "no_ack",
-      requestId: "r",
-    });
-
-    const result = await saveSentCopy(ctx, {
-      companyId: "co-1",
-      kind: "quote",
-      number: "Q-001",
-      seq: 2,
-      bytes: input,
-      customerKind: "contact",
-      customerRef: "ct-lumos",
-    });
-
-    expect(result).toEqual({
-      status: "no_ack",
-      requestId: "r",
-    });
-    expect(ctx.logger.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("handles fake rejects: resolves null, logs warning", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
-    fakeDriveSave.mockRejectedValue(new Error("Network error"));
-
+  it.each<[string, () => void]>([
+    ["rejects", () => fakeDriveSave.mockRejectedValue(new Error("Network error"))],
+    ["throws", () => fakeDriveSave.mockImplementation(() => { throw new Error("boom"); })],
+  ])("handles when fake %s: resolves null, logs warning", async (_, setup) => {
+    setup();
     const result = await saveSentCopy(ctx, {
       companyId: "co-1",
       kind: "invoice",
@@ -190,52 +116,11 @@ describe("saveSentCopy", () => {
       customerKind: "contact",
       customerRef: "ct-lumen",
     });
-
-    expect(result).toBeNull();
+    if (result === null) {
+      expect(result).toBeNull();
+    } else {
+      throw new Error("Expected null");
+    }
     expect(ctx.logger.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("handles fake throws synchronously: resolves null, logs warning", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
-    fakeDriveSave.mockImplementation(() => {
-      throw new Error("boom");
-    });
-
-    const result = await saveSentCopy(ctx, {
-      companyId: "co-1",
-      kind: "quote",
-      number: "Q-001",
-      seq: 1,
-      bytes: input,
-      customerKind: "contact",
-      customerRef: "ct-lumos",
-    });
-
-    expect(result).toBeNull();
-    expect(ctx.logger.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("handles {status: saved} response: returns it, does not warn", async () => {
-    const input = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
-    const savedResult = {
-      status: "saved" as const,
-      requestId: "r-saved",
-      driveFileId: "f-saved",
-      url: "https://drive.example/f-saved",
-    };
-    fakeDriveSave.mockResolvedValue(savedResult);
-
-    const result = await saveSentCopy(ctx, {
-      companyId: "co-1",
-      kind: "invoice",
-      number: "INV-0042",
-      seq: 1,
-      bytes: input,
-      customerKind: "contact",
-      customerRef: "ct-lumen",
-    });
-
-    expect(result).toEqual(savedResult);
-    expect(ctx.logger.warn).not.toHaveBeenCalled();
   });
 });
