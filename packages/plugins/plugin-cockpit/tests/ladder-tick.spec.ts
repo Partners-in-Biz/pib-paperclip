@@ -278,6 +278,7 @@ describe("ladder state transitions", () => {
       level: 1,
       status: "done",
       originId: "escalate:stuck-1:L1",
+      description: null,
       createdAt: NOW,
     };
     mockReadMarkerIssues.mockResolvedValue([marker]);
@@ -479,5 +480,92 @@ describe("edge cases and error handling", () => {
     const counts = await ladderTick(s.env, A);
     // Two open levels at different stages should trigger cancel_lower
     expect(counts.created + counts.advanced + counts.cancelled).toBeGreaterThan(0);
+  });
+
+  it("escalate returns skip reasons other than cooldown/cap -> each skip_reason is recorded once per day", async () => {
+    const s = setup();
+    const now = new Date(NOW);
+    mockReadLadderIssues.mockResolvedValue([
+      {
+        stuck: {
+          id: "stuck-no-target",
+          identifier: "PAR-100",
+          status: "blocked",
+          blockedSince: new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+          openBlockers: 0,
+          closedBlockers: 0,
+        } as StuckInput,
+        unblocks: [],
+      } as LadderIssue,
+      {
+        stuck: {
+          id: "stuck-no-owner",
+          identifier: "PAR-101",
+          status: "blocked",
+          blockedSince: new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+          openBlockers: 0,
+          closedBlockers: 0,
+        } as StuckInput,
+        unblocks: [],
+      } as LadderIssue,
+    ]);
+    mockEscalate.mockImplementation((ctx, issueId) => {
+      if (issueId === "stuck-no-target") return Promise.resolve({ skipped: "no-target" });
+      return Promise.resolve({ skipped: "no-owner" });
+    });
+
+    const counts1 = await ladderTick(s.env, A);
+    expect(counts1.skipped).toBe(2);
+
+    // Check repairs were recorded
+    const repairs = await listRepairs(s.env.ctx, A, { kind: "escalation" });
+    expect(repairs.filter((r) => r.outcome === "skipped_no-target")).toHaveLength(1);
+    expect(repairs.filter((r) => r.outcome === "skipped_no-owner")).toHaveLength(1);
+
+    // Second tick same day should not duplicate
+    s.clock.set(new Date(new Date(NOW).getTime() + 56 * 60 * 1000).toISOString());
+    const counts2 = await ladderTick(s.env, A);
+    expect(counts2.skipped).toBe(2);
+
+    const repairs2 = await listRepairs(s.env.ctx, A, { kind: "escalation" });
+    expect(repairs2.filter((r) => r.outcome === "skipped_no-target")).toHaveLength(1);
+    expect(repairs2.filter((r) => r.outcome === "skipped_no-owner")).toHaveLength(1);
+  });
+
+  it("advance path: escalate returns skipped reason -> recorded", async () => {
+    const s = setup();
+    const now = new Date(NOW);
+    const deadline = new Date(now.getTime() - 1000).toISOString();
+    mockReadLadderIssues.mockResolvedValue([
+      {
+        stuck: {
+          id: "stuck-1",
+          identifier: "PAR-100",
+          status: "blocked",
+          blockedSince: new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+          openBlockers: 0,
+          closedBlockers: 0,
+        } as StuckInput,
+        unblocks: [
+          {
+            id: "unblock-l1",
+            identifier: "PAR-1001",
+            title: "Unblock L1",
+            status: "in_progress",
+            description: `<!-- pib:escalation {"issue":"stuck-1","level":1,"deadline":"${deadline}"} -->`,
+            createdAt: NOW,
+            blockedNoPath: false,
+            inStorm: false,
+          } as UnblockInput,
+        ],
+      } as LadderIssue,
+    ]);
+    mockEscalate.mockResolvedValue({ skipped: "cap" });
+
+    const counts = await ladderTick(s.env, A);
+    expect(counts.skipped).toBe(1);
+
+    const repairs = await listRepairs(s.env.ctx, A, { kind: "escalation" });
+    expect(repairs.filter((r) => r.outcome === "skipped_cap")).toHaveLength(1);
   });
 });

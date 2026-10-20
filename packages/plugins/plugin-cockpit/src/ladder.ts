@@ -20,6 +20,9 @@ export interface LadderTickCounts {
   reconciled: number;
 }
 
+type SkipReason = "disabled" | "dedupe" | "cooldown" | "cap" | "no-target" | "no-owner" | "no-issue";
+type NoneReason = "not_stuck_yet" | "level_open" | "owner_level" | "ladder_end" | "nothing_to_do";
+
 /**
  * Ensures every marker issue has a corresponding repairs row. Idempotent:
  * existing rows (by targetKind='issue' + targetId + action match) are skipped.
@@ -94,6 +97,29 @@ function ladderStateKey(companyId: string) {
   };
 }
 
+/** Record a skip reason (called by create and advance paths; storm path only tallies in the log line). */
+async function recordSkip(
+  ctx: PluginContext,
+  companyId: string,
+  stuckIssueId: string,
+  skipReason: SkipReason,
+  existingList: Awaited<ReturnType<typeof listRepairs>>,
+  now: Date,
+): Promise<void> {
+  const today = now.toISOString().split("T")[0];
+  const action = `skip_${skipReason}`;
+  if (!(await hasRepair(ctx, companyId, existingList, { targetId: stuckIssueId, action, since: today }))) {
+    await recordRepair(ctx, companyId, {
+      kind: "escalation",
+      targetKind: "issue",
+      targetId: stuckIssueId,
+      action,
+      outcome: `skipped_${skipReason}`,
+      actor: "cockpit-ladder",
+    });
+  }
+}
+
 /** Determine the highest open Unblock level from the list. */
 function highestOpenLevel(unblocks: UnblockInput[]): Level | null {
   const openStatuses = new Set(["todo", "in_progress", "in_review"]);
@@ -123,6 +149,9 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
     stormed: 0,
     reconciled: 0,
   };
+
+  const skipReasons = new Map<SkipReason, number>();
+  const noneReasons = new Map<NoneReason, number>();
 
   const now = env.now();
 
@@ -155,13 +184,15 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
   // Step (c): Process each ladder issue
   const markerIds = new Set(markers.map((m) => m.id));
   const ladderIssues = await readLadderIssues(env.ctx, companyId, now);
+  const blockedTotal = ladderIssues.length;
 
   for (const issue of ladderIssues) {
     try {
       const action = nextAction(issue.stuck, issue.unblocks, now);
 
       if (action.type === "none") {
-        // No action needed
+        // Track the reason for skipping
+        noneReasons.set(action.reason, (noneReasons.get(action.reason) ?? 0) + 1);
       } else if (action.type === "resolved") {
         // Only if stuck has marker children
         const hasMarkers = issue.unblocks.some((u) => markerIds.has(u.id));
@@ -203,23 +234,10 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
           }
           counts.created += 1;
         } else if ("skipped" in result) {
-          const skipReason = result.skipped;
-          if (skipReason === "cooldown" || skipReason === "cap") {
-            const today = now.toISOString().split("T")[0];
-            if (!(await hasRepair(env.ctx, companyId, existingRepairs, { targetId: issue.stuck.id, action: `skip_${skipReason}`, since: today }))) {
-              await recordRepair(env.ctx, companyId, {
-                kind: "escalation",
-                targetKind: "issue",
-                targetId: issue.stuck.id,
-                action: `skip_${skipReason}`,
-                outcome: `skipped_${skipReason}`,
-                actor: "cockpit-ladder",
-              });
-            }
-            counts.skipped += 1;
-          } else {
-            counts.skipped += 1;
-          }
+          const skipReason = result.skipped as SkipReason;
+          skipReasons.set(skipReason, (skipReasons.get(skipReason) ?? 0) + 1);
+          await recordSkip(env.ctx, companyId, issue.stuck.id, skipReason, existingRepairs, now);
+          counts.skipped += 1;
         }
       } else if (action.type === "advance") {
         const startLevel = action.level === 4 ? "owner" : action.level;
@@ -296,19 +314,11 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
               });
             }
           }
-        } else if ("skipped" in result && (result.skipped === "cooldown" || result.skipped === "cap")) {
+        } else if ("skipped" in result) {
           // Record the skip for advance attempts
-          const today = now.toISOString().split("T")[0];
-          if (!(await hasRepair(env.ctx, companyId, existingRepairs, { targetId: issue.stuck.id, action: `skip_${result.skipped}`, since: today }))) {
-            await recordRepair(env.ctx, companyId, {
-              kind: "escalation",
-              targetKind: "issue",
-              targetId: issue.stuck.id,
-              action: `skip_${result.skipped}`,
-              outcome: `skipped_${result.skipped}`,
-              actor: "cockpit-ladder",
-            });
-          }
+          const skipReason = result.skipped as SkipReason;
+          skipReasons.set(skipReason, (skipReasons.get(skipReason) ?? 0) + 1);
+          await recordSkip(env.ctx, companyId, issue.stuck.id, skipReason, existingRepairs, now);
           counts.skipped += 1;
         }
       } else if (action.type === "cancel_lower") {
@@ -336,7 +346,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         }
       }
     } catch (error) {
-      env.ctx.logger.info("Ladder tick failed for issue", {
+      env.ctx.logger.warn("Ladder tick failed for issue", {
         companyId,
         issueId: issue.stuck.id,
         error: message(error),
@@ -361,15 +371,29 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
 
       if ("id" in result && result.created) {
         counts.stormed += 1;
+      } else if ("skipped" in result) {
+        const skipReason = result.skipped as SkipReason;
+        skipReasons.set(skipReason, (skipReasons.get(skipReason) ?? 0) + 1);
       }
     } catch (error) {
-      env.ctx.logger.info("Storm escalation failed", {
+      env.ctx.logger.warn("Storm escalation failed", {
         companyId,
         issueId: storm.issueId,
         error: message(error),
       });
     }
   }
+
+  // Log tick summary
+  const skipReasonsLog = Array.from(skipReasons.entries()).reduce((acc, [reason, count]) => ({ ...acc, [reason]: count }), {} as Record<string, number>);
+  const noneReasonsLog = Array.from(noneReasons.entries()).reduce((acc, [reason, count]) => ({ ...acc, [reason]: count }), {} as Record<string, number>);
+  env.ctx.logger.info("Ladder tick", {
+    companyId,
+    candidates: blockedTotal,
+    ...counts,
+    skipReasons: skipReasonsLog,
+    noneReasons: noneReasonsLog,
+  });
 
   return counts;
 }

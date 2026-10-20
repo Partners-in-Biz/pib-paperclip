@@ -37,6 +37,9 @@ export const WATCH = {
   named: 5,
 } as const;
 
+/** Ladder escalation: maximum candidates to process per tick (bounded; real creation still bounded by ESCALATION_DAILY_CAP). */
+export const LADDER_CANDIDATES = 25;
+
 /** Run statuses that carry a verdict: the run ran to a result. Cancelled, interrupted, queued and running runs are not counted. */
 export const FINISHED_RUN = ["succeeded", ...FAILED_RUN] as const;
 

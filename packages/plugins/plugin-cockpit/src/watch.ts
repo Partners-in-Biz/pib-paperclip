@@ -29,6 +29,7 @@ import {
   executionReconciliationDecisions,
   executionReconciliationChecks,
   WATCH,
+  LADDER_CANDIDATES,
   type BlockedIssue,
   type RateRow,
   type ReconciliationRun,
@@ -49,6 +50,7 @@ export interface MarkerIssueRow {
   level: number;
   status: string;
   originId: string;
+  description: string | null;
   createdAt: string;
 }
 
@@ -139,9 +141,10 @@ export async function readStorms(ctx: PluginContext, companyId: string, now: Dat
 /**
  * Issues blocked for more than a day with nothing to wake them: no unblock
  * descriptor, no open blocker issue, no open question to the owner, and not
- * held by a person. The oldest `named` come back with the full count.
+ * held by a person. The oldest `limit` come back with the full count.
  */
-export async function readBlocked(ctx: PluginContext, companyId: string, now: Date): Promise<{ total: number; items: BlockedIssue[] }> {
+export async function readBlocked(ctx: PluginContext, companyId: string, now: Date, limit?: number): Promise<{ total: number; items: BlockedIssue[] }> {
+  const queryLimit = Math.trunc(limit ?? WATCH.named);
   const rows = await ctx.db.query<Raw>(
     `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total,
             (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
@@ -154,7 +157,7 @@ export async function readBlocked(ctx: PluginContext, companyId: string, now: Da
                          WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status NOT IN ('done', 'cancelled'))
         AND NOT EXISTS (SELECT 1 FROM ${NAMESPACE}.asks a WHERE a.company_id = i.company_id::text AND a.issue_id = i.id::text AND a.status = 'open')
       ORDER BY coalesce(i.blocked_transition_at, i.updated_at), i.id
-      LIMIT ${WATCH.named}`,
+      LIMIT ${queryLimit}`,
     [companyId, ago(now, WATCH.blockedHours)],
   );
   return {
@@ -363,7 +366,7 @@ function parseEscalationOrigin(originId: string): { issueId: string; level: numb
  */
 export async function readMarkerIssues(ctx: PluginContext, companyId: string): Promise<MarkerIssueRow[]> {
   const rows = await ctx.db.query<Raw>(
-    `SELECT i.id, i.identifier, i.title, i.origin_id, i.status, coalesce(i.created_at, now()) AS created_at
+    `SELECT i.id, i.identifier, i.title, i.description, i.origin_id, i.status, coalesce(i.created_at, now()) AS created_at
        FROM public.issues i
       WHERE i.company_id = $1 AND i.hidden_at IS NULL AND i.origin_id LIKE 'escalate:%'
       ORDER BY coalesce(i.created_at, now())`,
@@ -383,6 +386,7 @@ export async function readMarkerIssues(ctx: PluginContext, companyId: string): P
         level: parsed.level,
         status: String(r.status),
         originId,
+        description: text(r.description),
         createdAt: iso(r.created_at) ?? new Date().toISOString(),
       };
     })
@@ -398,7 +402,7 @@ export async function readMarkerIssues(ctx: PluginContext, companyId: string): P
  */
 export async function readLadderIssues(ctx: PluginContext, companyId: string, now: Date): Promise<LadderIssue[]> {
   const [blocked, storms, markerRows] = await Promise.all([
-    readBlocked(ctx, companyId, now),
+    readBlocked(ctx, companyId, now, LADDER_CANDIDATES),
     readStorms(ctx, companyId, now),
     readMarkerIssues(ctx, companyId),
   ]);
@@ -471,7 +475,7 @@ export async function readLadderIssues(ctx: PluginContext, companyId: string, no
       id: m.id,
       identifier: m.identifier || m.id,
       title: m.title,
-      description: "",
+      description: m.description ?? "",
       status: m.status,
       createdAt: m.createdAt,
       blockedNoPath: !!blockedItem,
