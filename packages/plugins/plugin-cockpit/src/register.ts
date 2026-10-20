@@ -64,6 +64,7 @@ import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
+import { handleOwnerPush } from "./push/owner-push-route.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -698,6 +699,9 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
 
       // agent_already_paused, governor_active, not_paused -> 409
       return { status: 409, body: result };
+    }
+    if (input.routeKey === "owner-push") {
+      return await handleOwnerPush(env, input);
     }
     return { status: 404, body: { error: "Not found" } };
   } catch (error) {
