@@ -20,6 +20,7 @@ import { ownSnapshot } from "./own.js";
 import { plainDetail } from "./plain.js";
 import { operatorAgentId } from "./roles.js";
 import { ladderTick } from "./ladder.js";
+import { routineFailureTick } from "./routine-failures.js";
 import { authStreakAgents, type StreakRun } from "./watch-model.js";
 import { readStreakRuns } from "./watch.js";
 
@@ -350,6 +351,14 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         }
       } catch (error) {
         env.ctx.logger.info("Ladder tick failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        const routineCounts = await routineFailureTick(env, row.companyId);
+        for (const [name, value] of Object.entries(routineCounts)) {
+          if (value > 0) counts[name] = (counts[name] ?? 0) + value;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Routine failure tick failed", { companyId: row.companyId, error: message(error) });
       }
       try {
         // The hourly issue is built from fresh checks, not the page's ten-minute copy.

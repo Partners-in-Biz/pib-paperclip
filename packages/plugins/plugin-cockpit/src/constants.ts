@@ -59,6 +59,7 @@ export const ORIGIN = {
   setup: `plugin:${COCKPIT_PLUGIN}:setup`,
   /** Acceptance requests (the run's trigger issue) and the failures a run opens for the owning role. */
   acceptance: `plugin:${COCKPIT_PLUGIN}:acceptance`,
+  routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
 } as const;
 
 /**
@@ -77,6 +78,8 @@ export const ORIGIN_ID = {
   ask: "cockpit:ask:",
   /** `cockpit:acceptance:<request key>` (a request) and `cockpit:acceptance:fail:<run id>:<step id>` (a failed step). */
   acceptance: "cockpit:acceptance:",
+  /** `cockpit:routine-failure:<routineKey>:<since>` for routine failures that need wake or escalation. */
+  routineFailure: "cockpit:routine-failure:",
 } as const;
 
 /** The same kinds before 0.4.0 (no plugin part), still checked for issues opened then. */
