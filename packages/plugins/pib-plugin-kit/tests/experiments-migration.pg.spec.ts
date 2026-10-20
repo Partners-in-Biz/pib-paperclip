@@ -23,16 +23,8 @@ describe.skipIf(!available)("Growth Lab migrations", () => {
 
   describe("experimentsMigrationV1", () => {
     it("matches the text inside plugin-social 012 for CREATE TABLE blocks", () => {
-      // Read the social migration file using a path relative to this file
-      const socialMigrationPath = new URL("../../../plugin-social/migrations/012_social.sql", import.meta.url).pathname;
-      let socialMigration: string;
-      try {
-        socialMigration = readFileSync(socialMigrationPath, "utf8");
-      } catch {
-        // If exact path fails, try alternative
-        const alternativePath = "/home/paperclip/.paperclip/instances/default/projects/b2b8f471-edba-4d05-abce-f15e99a94d9a/409825bd-8a27-4db8-a417-82289113bafb/pib-paperclip/packages/plugins/plugin-social/migrations/012_social.sql";
-        socialMigration = readFileSync(alternativePath, "utf8");
-      }
+      const socialMigrationPath = new URL("../../plugin-social/migrations/012_social.sql", import.meta.url).pathname;
+      const socialMigration = readFileSync(socialMigrationPath, "utf8");
       const v1Output = experimentsMigrationV1(TEST_NAMESPACE);
 
       // Check each CREATE TABLE block from V1 is contained in the social migration
