@@ -72,6 +72,18 @@ const instanceConfigSchema: JsonSchema = {
       default: "https://partnersinbiz.online",
     },
     driveBrokerToken: secretField("Drive broker token", "Bearer token for the partnersinbiz-web Drive broker (admin role). The token must be bound to the correct organization because the broker infers the organization ID from the token's user when none is explicitly sent.") as unknown as JsonSchema,
+    drive: {
+      type: "object",
+      title: "Drive settings",
+      properties: {
+        sharedDriveId: {
+          type: "string",
+          title: "Shared Drive ID",
+          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. This is separate from the broker token and must be set for planning to work.",
+          default: "",
+        },
+      },
+    } as unknown as JsonSchema,
   },
 };
 

@@ -2,10 +2,11 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { createBroker, type DriveEntityType, BrokerError } from "./broker.js";
+import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
 import { planFolders, companyFolderName, type DriveFacts, type Sibling } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
+import { getProjectDriveKind } from "./store.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
@@ -32,13 +33,16 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
-  const broker = await createBrokerForCompany(ctx, viewer.companyId);
-  if (!broker) return { status: "not_configured", error: "Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)" };
-
   try {
+    const broker = await createBrokerForCompany(ctx, viewer.companyId);
+    if (!broker) return { status: "not_configured", error: "Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)" };
+
     const folder = await broker.resolve(type, id);
     return folder ? { status: "found", path: folder.path, url: folder.folder_url, folder_id: folder.folder_id } : { status: "not_found", hint: "call drive_folder_ensure" };
   } catch (e) {
+    if (e instanceof DriveNotBoundError) {
+      return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
+    }
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -49,7 +53,15 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
-  const broker = await createBrokerForCompany(ctx, viewer.companyId);
+  let broker;
+  try {
+    broker = await createBrokerForCompany(ctx, viewer.companyId);
+  } catch (e) {
+    if (e instanceof DriveNotBoundError) {
+      return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
+    }
+    throw e;
+  }
   if (!broker) throw new CrmError("Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)");
 
   let existing: any;
@@ -91,11 +103,21 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
   const cfg = await readConfig(ctx, companyId);
   if (!cfg.driveBrokerToken) return null;
+
+  // Read the Shared Drive binding from company settings
+  const driveConfig = (cfg.drive as { sharedDriveId?: string }) || {};
+  const sharedDriveId = (driveConfig.sharedDriveId || "").trim();
+
+  // Check binding FIRST before reading token
+  if (!sharedDriveId) {
+    throw new DriveNotBoundError();
+  }
+
   const resolver = new SecretResolver(ctx, companyId, cfg);
   const token = await resolver.get("driveBrokerToken");
   if (!token) return null;
   const baseUrl = (cfg.driveBrokerUrl as string) || "https://partnersinbiz.online";
-  return createBroker(ctx.http.fetch, { baseUrl, token });
+  return createBroker(ctx.http.fetch, { baseUrl, token, sharedDriveId });
 }
 
 async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<DriveFacts> {
@@ -109,6 +131,15 @@ async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEnt
   const project = await ctx.projects.get(id, viewer.companyId);
   if (!project) throw new CrmError("project not found");
   let companyId: string | undefined, companyName: string | undefined, contactName: string | undefined;
+  let branch: "client" | "product" | "book" | "marketing" | "company" = "client";
+  let scopeRef: string | null = null;
+
+  // Read the project's drive_kind
+  const driveKind = await getProjectDriveKind(ctx, viewer.companyId, id);
+  if (driveKind) {
+    branch = (driveKind.kind as any) ?? "client";
+    scopeRef = driveKind.scopeRef ?? null;
+  }
 
   const companyLink = await getCompanyLink(ctx, viewer.companyId, id);
   if (companyLink) {
@@ -120,7 +151,7 @@ async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEnt
       if (contact) contactName = contact.name;
     }
   }
-  return { entityType: "project", entityId: id, name: project.name, companyEntityId: companyId, companyName, contactName };
+  return { entityType: "project", entityId: id, name: project.name, companyEntityId: companyId, companyName, contactName, branch, scopeRef };
 }
 
 async function loadDriveSiblings(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<Sibling[]> {

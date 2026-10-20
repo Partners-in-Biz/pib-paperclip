@@ -1,4 +1,4 @@
-export type DriveEntityType = "project" | "crm_company";
+export type DriveEntityType = "project" | "crm_company" | "root" | "campaign";
 
 export interface RegistryFolder {
   id: string;
@@ -15,6 +15,8 @@ export interface EnsureBody {
   entity_id: string;
   name: string;
   parent_entity_id?: string;
+  parent_entity_type?: DriveEntityType;
+  subfolders?: string[];
   created_by_run?: string;
 }
 
@@ -37,6 +39,14 @@ export class BrokerError extends Error {
   }
 }
 
+export class DriveNotBoundError extends Error {
+  readonly code = "drive_not_bound" as const;
+  constructor(message?: string) {
+    super(message || "Drive not bound");
+    this.name = "DriveNotBoundError";
+  }
+}
+
 export interface Broker {
   resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null>;
   ensure(body: EnsureBody): Promise<EnsureResult>;
@@ -44,11 +54,16 @@ export interface Broker {
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; ok: boolean; text(): Promise<string> }>;
 
-export function createBroker(fetchFn: FetchLike, cfg: { baseUrl: string; token: string }): Broker {
+export function createBroker(fetchFn: FetchLike, cfg: { baseUrl: string; token: string; sharedDriveId: string }): Broker {
+  if (!cfg.sharedDriveId || cfg.sharedDriveId.trim() === "") {
+    throw new DriveNotBoundError();
+  }
+
   const baseUrl = cfg.baseUrl.replace(/\/$/, "");
+  const params = new URLSearchParams([["shared_drive_id", cfg.sharedDriveId]]);
 
   async function resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null> {
-    const url = `${baseUrl}/api/v1/workspace-folders/registry/resolve?${new URLSearchParams([["entity_type", type], ["entity_id", id]])}`;
+    const url = `${baseUrl}/api/v1/workspace-folders/registry/resolve?${new URLSearchParams([["entity_type", type], ["entity_id", id], ["shared_drive_id", cfg.sharedDriveId]])}`;
     try {
       const res = await fetchFn(url, { method: "GET", headers: { Authorization: `Bearer ${cfg.token}` } });
       if (res.status === 404) return null;
@@ -64,8 +79,8 @@ export function createBroker(fetchFn: FetchLike, cfg: { baseUrl: string; token: 
 
   async function ensure(body: EnsureBody): Promise<EnsureResult> {
     const url = `${baseUrl}/api/v1/workspace-folders/registry/ensure`;
-    const postBody = { ...body };
-    if (!body.created_by_run) delete postBody.created_by_run;
+    const postBody = { ...body, shared_drive_id: cfg.sharedDriveId };
+    if (!body.created_by_run) delete (postBody as any).created_by_run;
     try {
       const res = await fetchFn(url, {
         method: "POST",
