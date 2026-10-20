@@ -64,6 +64,7 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
 import { subscribe, type SpikeActionDeps } from "./push/spike-actions.js";
 import { postPush } from "./push/transport.js";
+import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -515,6 +516,20 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+    try {
+      await onIssueNeedsYou(env, event);
+    } catch (error) {
+      ctx.logger.info("Push: needs-you trigger failed", { issueId: event.entityId, error: message(error) });
+    }
+  });
+
+  // "Needs you" push trigger fires when an issue is assigned to the owner.
+  ctx.events.on("issue.created", async (event) => {
+    try {
+      await onIssueNeedsYou(env, event);
+    } catch (error) {
+      ctx.logger.info("Push: needs-you trigger failed", { issueId: event.entityId, error: message(error) });
     }
   });
 
