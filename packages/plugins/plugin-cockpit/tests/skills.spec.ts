@@ -197,8 +197,11 @@ describe("the Operator knows how to act on each watch problem", () => {
 });
 
 describe("owner-checks reference", () => {
-  it("exists, mentions WAITING-ON-OWNER status, and names only real tools", () => {
+  it("exists, mentions WAITING-ON-OWNER status, blockedByIssueIds, Delivery Lead and Planner, and names only real tools", () => {
     expect(OWNER_CHECKS_REFERENCE).toContain("WAITING-ON-OWNER");
+    expect(OWNER_CHECKS_REFERENCE).toContain("blockedByIssueIds");
+    expect(OWNER_CHECKS_REFERENCE).toContain("Delivery Lead");
+    expect(OWNER_CHECKS_REFERENCE).toContain("Planner");
     // The reference should mention the ask-owner tool by name.
     expect(OWNER_CHECKS_REFERENCE).toContain(`\`${PLUGIN_KEY}:ask-owner\``);
     // All tool references in the owner-checks file must be real.

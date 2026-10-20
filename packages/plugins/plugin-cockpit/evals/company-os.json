@@ -82,7 +82,7 @@
       "id": "owner-check-no-blocker-edge",
       "title": "An owner-only check is a sibling issue, never a blocker",
       "source": "The manual's owner-checks rule: a decision only the owner can make sits on its own issue in the owner's queue; an agent never adds a blocker edge to it.",
-      "situation": "You are the Delivery Lead working PAR-200 (build the integration). The work is blocked until the owner taps approve in Stripe, which is PAR-201 (owner-assigned). The owner-check will sit in the owner's daily queue. You will not add it as a blocker, because the Operator reads and acts on owner items every day. Some steps of PAR-200 do not need the approval, so you can move forward.",
+      "situation": "You are the Delivery Lead working PAR-200 (build the integration). One step needs the owner to tap approve in Stripe; that is PAR-201, a sibling issue assigned to the owner (the Planner lists it as a sibling, never a dependency). Other steps of PAR-200 do not need the approval, so you can move forward.",
       "task": "Handle the owner check without blocking PAR-200.",
       "expect": {
         "toolCalls": [{ "tool": "partnersinbiz.cockpit:ask-owner", "args": { "issueId": { "matches": "PAR-201" } }, "optional": true }],

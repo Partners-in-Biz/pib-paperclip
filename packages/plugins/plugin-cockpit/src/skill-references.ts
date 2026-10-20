@@ -230,30 +230,21 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 // Owner checks
 // ---------------------------------------------------------------------------
 
-export const OWNER_CHECKS_REFERENCE = `# Owner checks: decisions only the owner can make
+export const OWNER_CHECKS_REFERENCE = `# Owner checks: they never block work
 
-An owner-only check is something only the company owner can decide or do (tapping an approval, signing off, entering a key, granting consent, making a one-time call). Every owner-only check sits as its own issue in the owner's queue (\`WAITING-ON-OWNER\`), where the Operator reads it daily.
+An owner-only check is something only the company owner can do: a tap, a switch flip, an approval, a key, a consent. It is its own issue, assigned to the owner. It blocks nothing and shows as \`WAITING-ON-OWNER\`; the Operator reads that list every day.
 
-## How to handle owner checks
+## The rule
 
-When you find that a step needs an owner-only decision or approval:
+- An owner-only check is raised once, as a sibling issue assigned to the owner (use \`${T(TOOL_NAMES.askOwner)}\` when it is a question or grant tied to one of your issues).
+- You never add a blocker edge (\`blockedByIssueIds\`) whose blocker is assigned to the owner or has no assignee. An issue nobody owns is never a blocker either.
+- Your own issue keeps moving: finish everything that does not depend on the check, then hand over or close with a note that names the sibling owner issue.
+- If your issue truly cannot continue, set it \`blocked\` with an \`unblockDescriptor\` naming the owner and the exact action. Do not point blockedByIssueIds at the owner's issue.
+- The Delivery Lead raises owner asks once for the program; the Planner lists them as siblings in the plan, never as dependencies.
 
-1. **Never add a blocker edge to the owner's issue.** If PAR-200 (build, assigned to you) waits on PAR-201 (owner-assigned: tap approve in Stripe), do not set PAR-200's \`blockedByIssueIds: [PAR-201]\`. The owner-check stays in its own queue, read every day; blocking issues prevent this.
-2. **Keep work moving.** Finish what does not depend on the owner check. If some steps do depend on it, open a sibling issue that you hold and depends on the owner check through an \`unblockDescriptor\` or a question to the owner.
-3. **Use ask-owner only when a specific step is gated.** If you are finishing PAR-200 and one step needs the owner to "confirm the refund", use \`${T(TOOL_NAMES.askOwner)}\` on PAR-200 with \`kind: "grant"\` or \`"decision"\` (never assign to the owner; they are asked, not assigned). The owner answers on that issue, and work resumes. Owner-only items that are pure approvals or sign-offs belong on their own issue, not as a question on the work issue.
+## Example
 
-## Do and don't
-
-**Do:**
-- Own work stays in the owner's queue (\`WAITING-ON-OWNER\`), where it is read daily by the Operator.
-- Hand-off work that depends on the owner check to the role that owns it, with an \`unblockDescriptor\` naming the owner check.
-- Use \`ask-owner\` to ask a question tied to a specific issue you are working on.
-- Close an owner-check issue when the owner has decided or acted.
-
-**Don't:**
-- Never block a work issue on an owner issue (\`blockedByIssueIds\`).
-- Never assign an issue to the owner yourself; they are asked, not assigned.
-- Never list owner-check approvals as blockers on work that continues anyway. They are read daily; your task can move on.
+PAR-200 (build) needs the owner to tap approve in Stripe. Do: open PAR-201 "Tap approve in Stripe" assigned to the owner, finish the rest of PAR-200, mention PAR-201 in the closing comment. Don't: set PAR-200 blockedByIssueIds to [PAR-201].
 `;
 
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
