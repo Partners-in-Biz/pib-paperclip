@@ -5,9 +5,12 @@
   "description": "PIB browser policy and authorization engine",
   "main": "src/policy.cjs",
   "scripts": {
+    "typecheck": "node scripts/check.cjs syntax",
     "test": "node --test test/*.test.cjs",
-    "typecheck": "exit 0",
-    "build": "exit 0"
+    "build": "node scripts/check.cjs load"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1"
   },
   "keywords": [
     "browser",
