@@ -73,7 +73,7 @@ describe("template-tools", () => {
       const pack = loadPack();
       const handler = getHandler(ctx, "template-list");
       const result = await handler({}, { companyId: "test" });
-      expect(result.data.templates).toHaveLength(11);
+      expect(result.data.templates).toHaveLength(12);
       for (const template of result.data.templates) {
         expect(template).toHaveProperty("key");
         expect(template).toHaveProperty("file");
