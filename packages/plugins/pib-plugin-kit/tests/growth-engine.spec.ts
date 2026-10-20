@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordVerdict, starterPlaybook } from "@partnersinbiz/pib-plugin-kit";
+import { recordVerdict, starterPlaybook } from "../src/index.js";
 import {
   applyPlaybookChange,
   BASELINE_MIN,
@@ -30,8 +30,8 @@ const DAY = 24 * 3600_000;
 const NOW = new Date("2026-09-26T10:00:00Z");
 const at = (daysBefore: number) => new Date(NOW.getTime() - daysBefore * DAY).toISOString();
 
-function metric(id: string, postId: string, daysBefore: number, likes: number, extra: Partial<MetricInput> = {}): MetricInput {
-  return { destinationId: id, postId, accountId: "acc1", platform: "facebook", publishedAt: at(daysBefore), likes, comments: 0, shares: 0, saves: 0, clicks: 0, reach: 100, ...extra };
+function metric(id: string, subjectId: string, daysBefore: number, likes: number, extra: Partial<MetricInput> = {}): MetricInput {
+  return { destinationId: id, subjectId, accountId: "acc1", platform: "facebook", publishedAt: at(daysBefore), likes, comments: 0, shares: 0, saves: 0, clicks: 0, reach: 100, ...extra };
 }
 
 describe("score-posts baseline and lift", () => {
@@ -176,10 +176,10 @@ describe("experiments", () => {
   it("is ready when every tagged post has its score and each arm has enough, or after 21 days", () => {
     const exp = { minPerArm: 2, startedAt: at(10) };
     const items = [
-      { postId: "a", arm: "control", published: true, value: 0.1 },
-      { postId: "b", arm: "control", published: true, value: 0 },
-      { postId: "c", arm: "variant", published: true, value: 0.5 },
-      { postId: "d", arm: "variant", published: false, value: null },
+      { subjectId: "a", arm: "control", published: true, value: 0.1 },
+      { subjectId: "b", arm: "control", published: true, value: 0 },
+      { subjectId: "c", arm: "variant", published: true, value: 0.5 },
+      { subjectId: "d", arm: "variant", published: false, value: null },
     ];
     expect(readiness(exp, items, NOW).ready).toBe(false);
     expect(readiness(exp, [...items.slice(0, 3), { ...items[3]!, published: true, value: 0.6 }], NOW).ready).toBe(true);
@@ -189,20 +189,20 @@ describe("experiments", () => {
   it("measures on lifts and drafts a playbook rule for a win or a loss", () => {
     const e = { minPerArm: 3, hypothesisType: "hook:question", arms: arms as Array<{ key: "control" | "variant"; description: string }> };
     const win = measureArms(e, [
-      ...[0, 0.05, -0.05].map((v, i) => ({ postId: `c${i}`, arm: "control", published: true, value: v })),
-      ...[0.4, 0.5, 0.6].map((v, i) => ({ postId: `v${i}`, arm: "variant", published: true, value: v })),
+      ...[0, 0.05, -0.05].map((v, i) => ({ subjectId: `c${i}`, arm: "control", published: true, value: v })),
+      ...[0.4, 0.5, 0.6].map((v, i) => ({ subjectId: `v${i}`, arm: "variant", published: true, value: v })),
     ], "done");
     expect(win.verdict).toBe("win");
     const rule = playbookChangeFor(e, win, "2026-09-26")!;
     expect(rule).toMatchObject({ op: "add", section: "rules" });
     expect(rule.body).toContain("Question hook");
     const loss = measureArms(e, [
-      ...[0.4, 0.5, 0.6].map((v, i) => ({ postId: `c${i}`, arm: "control", published: true, value: v })),
-      ...[0.0, 0.05, -0.1].map((v, i) => ({ postId: `v${i}`, arm: "variant", published: true, value: v })),
+      ...[0.4, 0.5, 0.6].map((v, i) => ({ subjectId: `c${i}`, arm: "control", published: true, value: v })),
+      ...[0.0, 0.05, -0.1].map((v, i) => ({ subjectId: `v${i}`, arm: "variant", published: true, value: v })),
     ], "done");
     expect(loss.verdict).toBe("loss");
     expect(playbookChangeFor(e, loss, "2026-09-26")).toMatchObject({ section: "avoid" });
-    const thin = measureArms(e, [{ postId: "c", arm: "control", published: true, value: 0.1 }], "cutoff");
+    const thin = measureArms(e, [{ subjectId: "c", arm: "control", published: true, value: 0.1 }], "cutoff");
     expect(thin.verdict).toBe("inconclusive");
     expect(playbookChangeFor(e, thin, "2026-09-26")).toBeNull();
   });
@@ -252,16 +252,16 @@ describe("playbook edits", () => {
 describe("review", () => {
   it("rolls destinations up per post and splits top from bottom", () => {
     const rows = Array.from({ length: 8 }, (_, i) => ({
-      postId: `p${i}`, body: `Post ${i}`, platform: "facebook", accountId: "a", publishedAt: at(i + 1), engagementRate: 0.1, lift: i / 10 - 0.3, experimentId: null, experimentArm: null,
+      subjectId: `p${i}`, body: `Post ${i}`, platform: "facebook", accountId: "a", publishedAt: at(i + 1), engagementRate: 0.1, lift: i / 10 - 0.3, experimentId: null, experimentArm: null,
     }));
     rows.push({ ...rows[0]!, platform: "instagram", lift: 0.4 }); // p0 → median(-0.3, 0.4) = 0.05
     const posts = reviewPosts(rows, new Map([["p7", { hook: "question" }]]));
-    expect(posts[0]).toMatchObject({ postId: "p7", features: { hook: "question" } });
-    expect(posts.find((p) => p.postId === "p0")).toMatchObject({ platforms: ["facebook", "instagram"], destinations: 2 });
+    expect(posts[0]).toMatchObject({ subjectId: "p7", features: { hook: "question" } });
+    expect(posts.find((p) => p.subjectId === "p0")).toMatchObject({ platforms: ["facebook", "instagram"], destinations: 2 });
     const { top, bottom } = topAndBottom(posts, 5);
     expect(top).toHaveLength(5);
-    expect(top.map((p) => p.postId)).toEqual(["p7", "p6", "p5", "p4", "p0"]);
-    expect(bottom.map((p) => p.postId)).toEqual(["p1", "p2", "p3"]);
+    expect(top.map((p) => p.subjectId)).toEqual(["p7", "p6", "p5", "p4", "p0"]);
+    expect(bottom.map((p) => p.subjectId)).toEqual(["p1", "p2", "p3"]);
   });
 
   it("labels ISO weeks in the company timezone", () => {
