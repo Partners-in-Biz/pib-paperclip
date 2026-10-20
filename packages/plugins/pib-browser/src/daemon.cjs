@@ -12,13 +12,25 @@ function loadConfig(env) {
   let socketMode = 0o660;
   if (env.PIB_BROWSER_SOCKET_MODE) {
     const m = env.PIB_BROWSER_SOCKET_MODE;
+    // Validate socket mode: accept only octal strings matching /^(0o)?[0-7]{3,4}$/
+    if (!/^(0o)?[0-7]{3,4}$/.test(m)) {
+      throw new Error('PIB_BROWSER_SOCKET_MODE must be a valid octal string (e.g., 600, 0600, 0o660)');
+    }
     socketMode = parseInt((m.startsWith('0o') || m.startsWith('0O') ? m.slice(2) : m), 8);
   }
   const apiBase = (env.PIB_BROWSER_API || env.PAPERCLIP_API_URL || 'http://localhost:3100')
     .replace(/\/+$/, '');
+  const evidenceDir = env.PIB_BROWSER_EVIDENCE_DIR;
+  // Validate evidenceDir: must be provided and must be absolute
+  if (!evidenceDir) {
+    throw new Error('PIB_BROWSER_EVIDENCE_DIR is required');
+  }
+  if (!path.isAbsolute(evidenceDir)) {
+    throw new Error('PIB_BROWSER_EVIDENCE_DIR must be an absolute path');
+  }
   return {
     socketPath, socketMode,
-    evidenceDir: env.PIB_BROWSER_EVIDENCE_DIR || '',
+    evidenceDir,
     apiBase,
     policyPath: env.PIB_BROWSER_POLICY || '',
     sitesPath: env.PIB_BROWSER_SITES || ''
@@ -29,10 +41,18 @@ function createServer(deps) {
   return net.createServer((socket) => {
     let buffer = '';
     let closed = false;
+    let requestQueue = Promise.resolve();
     socket.on('data', async (chunk) => {
       if (closed) return;
       buffer += chunk.toString('utf8');
       while (true) {
+        // Size cap before delimiter: if buffer is too large and has no newline, reject and close
+        if (buffer.length > MAX_LINE_SIZE && !buffer.includes('\n')) {
+          socket.write(JSON.stringify({ exit: 2, ok: false, reason: 'bad_request' }) + '\n');
+          buffer = '';
+          socket.destroy();
+          return;
+        }
         const idx = buffer.indexOf('\n');
         if (idx === -1) break;
         const line = buffer.slice(0, idx);
@@ -46,17 +66,24 @@ function createServer(deps) {
           socket.write(JSON.stringify({ exit: 2, ok: false, reason: 'bad_request' }) + '\n');
           continue;
         }
-        const start = Date.now();
-        const cmd = req.cmd || req.command || 'unknown';
-        try {
-          const result = await dispatch(req);
-          socket.write(JSON.stringify(result) + '\n');
-          logger({ cmd, exit: result.exit, ms: Date.now() - start });
-        } catch (e) {
-          const result = { exit: EXIT.USAGE, ok: false, reason: 'dispatch_error' };
-          socket.write(JSON.stringify(result) + '\n');
-          logger({ cmd, exit: result.exit, ms: Date.now() - start });
-        }
+        // Chain request handling per connection with promise queue
+        requestQueue = requestQueue.then(() => {
+          const start = Date.now();
+          const cmd = req.cmd || req.command || 'unknown';
+          return Promise.resolve().then(async () => {
+            try {
+              const result = await dispatch(req);
+              socket.write(JSON.stringify(result) + '\n');
+              logger({ cmd, exit: result.exit, ms: Date.now() - start });
+            } catch (e) {
+              const result = { exit: EXIT.USAGE, ok: false, reason: 'dispatch_error' };
+              socket.write(JSON.stringify(result) + '\n');
+              logger({ cmd, exit: result.exit, ms: Date.now() - start });
+            }
+          });
+        }).catch(() => {
+          // Catch errors so a throw never breaks the chain
+        });
       }
     });
     socket.on('end', () => { closed = true; });
@@ -67,25 +94,58 @@ function createServer(deps) {
 function listen(server, socketPath, socketMode) {
   return new Promise((resolve, reject) => {
     const tryListen = () => {
-      server.listen(socketPath, () => {
-        try { fs.chmodSync(socketPath, socketMode); } catch (e) {}
-        resolve();
-      });
-      server.on('error', (err) => {
-        if (err.code !== 'EADDRINUSE') return reject(err);
-        const testClient = net.createConnection(socketPath);
-        let connected = false;
-        testClient.on('connect', () => {
-          connected = true;
-          testClient.end();
-          reject(err);
-        });
-        testClient.on('error', () => {
-          if (!connected) {
-            try { fs.unlinkSync(socketPath); } catch (e) {}
-            tryListen();
+      const prevUmask = process.umask(~socketMode & 0o777);
+      try {
+        server.listen(socketPath, () => {
+          try {
+            fs.chmodSync(socketPath, socketMode);
+          } catch (err) {
+            process.umask(prevUmask);
+            server.close(() => {
+              try { fs.unlinkSync(socketPath); } catch (e) {}
+            });
+            return reject(err);
           }
+          process.umask(prevUmask);
+          resolve();
         });
+      } finally {
+        process.umask(prevUmask);
+      }
+      server.once('error', (err) => {
+        if (err.code !== 'EADDRINUSE') return reject(err);
+        // Check if the socket path is a stale socket or something else
+        let isStaleSocket = false;
+        try {
+          const stat = fs.lstatSync(socketPath);
+          if (!stat.isSocket()) {
+            // Path exists but is not a socket, reject and do not unlink
+            return reject(err);
+          }
+          isStaleSocket = true;
+        } catch (e) {
+          // Path doesn't exist, try listening again
+          isStaleSocket = false;
+        }
+        if (isStaleSocket) {
+          // Try to connect to verify it's really stale
+          const testClient = net.createConnection(socketPath);
+          let connected = false;
+          testClient.on('connect', () => {
+            connected = true;
+            testClient.end();
+            reject(err);
+          });
+          testClient.on('error', () => {
+            if (!connected) {
+              try { fs.unlinkSync(socketPath); } catch (e) {}
+              tryListen();
+            }
+          });
+        } else {
+          // Socket path doesn't exist, try listening again
+          tryListen();
+        }
       });
     };
     tryListen();
@@ -114,7 +174,7 @@ async function main() {
   const { authenticate: authFn } = require('./auth.cjs');
   const { createDispatcher } = require('./dispatch.cjs');
   const { dispatch } = createDispatcher({
-    authenticate: (req) => authFn(req, { fetch: globalThis.fetch, apiBase: config.apiBase }),
+    authenticate: (req) => authFn(req, { fetch: globalThis.fetch }),
     browser: null,
     policy: policyResult.policy,
     sites,
@@ -122,7 +182,7 @@ async function main() {
     evidenceDir: config.evidenceDir
   });
 
-  const server = createServer({ dispatch, socketMode: config.socketMode, logger: () => {} });
+  const server = createServer({ dispatch, logger: () => {} });
 
   try {
     await listen(server, config.socketPath, config.socketMode);
