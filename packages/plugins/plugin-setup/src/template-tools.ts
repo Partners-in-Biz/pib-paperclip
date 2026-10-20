@@ -87,12 +87,11 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
   }
 
   // Get template vars: use varsFor if companyId given, otherwise defaults.
-  // varsFor looks up the company and catches errors; check if company was not found.
+  // varsFor returns an explicit found flag to check if the company exists.
   let vars: TemplateVars;
   if (companyId) {
     const varsResult = await varsFor(ctx, { companyId, key: null });
-    // If the returned company has the default "the company" name, it was not found
-    if (varsResult.company.name === "the company") {
+    if (!varsResult.found) {
       return { error: `company "${companyId}" not found` };
     }
     vars = varsResult.vars;

@@ -339,9 +339,12 @@ interface DraftInput {
 
 export async function varsFor(ctx: PluginContext, input: DraftInput) {
   const company = await companyInfo(ctx, input.companyId);
+  // Explicit check: company found iff it was retrieved successfully (not just the default fallback)
+  const found = !(company.name === "the company" && company.prefix === null && company.requireApproval === null);
   const ceo = input.ceo && typeof input.ceo === "object" ? (input.ceo as Record<string, unknown>) : null;
   return {
     company,
+    found,
     vars: templateVars({
       company: company.name === "the company" ? null : company.name,
       prefix: company.prefix,
