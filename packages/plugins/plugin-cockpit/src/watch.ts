@@ -12,6 +12,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { HealthCheck } from "@partnersinbiz/pib-plugin-kit/cockpit";
+import { escalate, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { FAILED_RUN } from "./merge.js";
 import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
@@ -25,14 +26,18 @@ import {
   runStreakChecks,
   stalledCheck,
   unreadableCheck,
+  executionReconciliationDecisions,
+  executionReconciliationChecks,
   WATCH,
   type BlockedIssue,
   type RateRow,
+  type ReconciliationRun,
   type StalledIssue,
   type StormRow,
   type StreakRun,
   type WatchAgent,
 } from "./watch-model.js";
+import { recordRepair } from "./repairs.js";
 
 type Raw = Record<string, unknown>;
 
@@ -200,6 +205,135 @@ export async function readStalled(ctx: PluginContext, companyId: string, now: Da
     total: rows.length ? num(rows[0]!.total) : 0,
     items: rows.map((r) => ({ id: String(r.id), identifier: text(r.identifier), title: String(r.title ?? ""), assigneeAgentId: String(r.assignee_agent_id), updatedAt: iso(r.updated_at) ?? now.toISOString(), lastRunAt: iso(r.last_run_at) })),
   };
+}
+
+/**
+ * Runs with error_code = 'execution_reconciliation_required' on open issues with
+ * an agent assignee, newer than the issue's latest succeeded run. Allows detection
+ * of second occurrence (older woken + newer run), clears on later success.
+ * Includes runs with null started_at (host cancels stale queued runs with finished_at=now).
+ */
+export async function readReconciliationRuns(ctx: PluginContext, companyId: string, now: Date): Promise<ReconciliationRun[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id,
+            coalesce(h.started_at, h.finished_at, h.created_at) AS run_time
+       FROM public.heartbeat_runs h
+       JOIN public.issues i ON i.company_id = h.company_id AND i.id::text = h.context_snapshot ->> 'issueId'
+      WHERE h.company_id = $1 AND h.error_code = 'execution_reconciliation_required'
+        AND i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL AND i.assignee_agent_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.heartbeat_runs h2
+          WHERE h2.company_id = h.company_id
+            AND h2.context_snapshot ->> 'issueId' = h.context_snapshot ->> 'issueId'
+            AND h2.status = 'succeeded' AND coalesce(h2.started_at, h2.created_at) > coalesce(h.started_at, h.finished_at, h.created_at))
+      ORDER BY coalesce(h.started_at, h.finished_at, h.created_at) DESC
+      LIMIT 500`,
+    [companyId],
+  );
+
+  return rows.map((r) => ({
+    issueId: String(r.id),
+    identifier: text(r.identifier),
+    title: text(r.title),
+    runId: String(r.run_id),
+    runTime: iso(r.run_time) ?? now.toISOString(),
+    error: text(r.error),
+    assigneeAgentId: text(r.assignee_agent_id),
+  }));
+}
+
+/**
+ * Run IDs that were woken (repairs action='wake').
+ */
+export async function readWokenRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await ctx.db.query<Raw>(
+      `SELECT detail FROM ${NAMESPACE}.repairs
+        WHERE company_id = $1 AND kind = 'reconciliation' AND action = 'wake'
+        ORDER BY created_at DESC LIMIT 500`,
+      [companyId],
+    );
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const detail = text(row.detail);
+      if (detail && detail.startsWith("run:")) ids.add(detail.slice(4));
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Run IDs that were escalated (repairs action='escalate').
+ */
+export async function readEscalatedRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await ctx.db.query<Raw>(
+      `SELECT detail FROM ${NAMESPACE}.repairs
+        WHERE company_id = $1 AND kind = 'reconciliation' AND action = 'escalate'
+        ORDER BY created_at DESC LIMIT 500`,
+      [companyId],
+    );
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const detail = text(row.detail);
+      if (detail && detail.startsWith("run:")) ids.add(detail.slice(4));
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Apply reconciliation actions: wake the assignee once, or escalate on second occurrence.
+ * Wraps each issue in its own try/catch to isolate failures.
+ */
+export async function applyReconciliation(
+  env: Env,
+  companyId: string,
+  decisions: Array<{ issueId: string; assigneeAgentId: string | null; action: "wake" | "escalate" | "none"; runId: string; error: string | null }>,
+): Promise<void> {
+  for (const d of decisions) {
+    if (d.action === "none" || !d.assigneeAgentId) continue;
+    try {
+      if (d.action === "wake") {
+        const reason = d.error ? `Execution reconciliation needed: ${d.error.slice(0, 120)}` : "Execution reconciliation needed";
+        const woken = await wakeIssue(env.ctx, d.issueId, companyId, reason);
+        if (woken) {
+          await recordRepair(env.ctx, companyId, {
+            kind: "reconciliation",
+            targetKind: "issue",
+            targetId: d.issueId,
+            action: "wake",
+            outcome: "woken",
+            detail: `run:${d.runId}`,
+            actor: "cockpit-watch",
+          });
+        }
+      } else if (d.action === "escalate") {
+        const reason = d.error ? `Execution reconciliation again: ${d.error.slice(0, 100)}` : "Execution reconciliation required again";
+        const result = await escalate(env.ctx, d.issueId, reason, {
+          companyId,
+          now: env.now(),
+        });
+        if ("id" in result && !("skipped" in result)) {
+          await recordRepair(env.ctx, companyId, {
+            kind: "reconciliation",
+            targetKind: "issue",
+            targetId: d.issueId,
+            action: "escalate",
+            outcome: "escalated",
+            detail: `run:${d.runId}`,
+            actor: "cockpit-watch",
+          });
+        }
+      }
+    } catch (error) {
+      env.ctx.logger.info("Reconciliation action failed", { companyId, issueId: d.issueId, action: d.action, error: message(error) });
+    }
+  }
 }
 
 /** Agents by id: name, status and link key. A failed lookup gives an empty map (names fall back to "An agent"). */
@@ -401,6 +535,16 @@ export async function watchChecks(env: Env, companyId: string): Promise<HealthCh
     const idle = items.filter((i) => IDLE_STATUSES.has(agents.get(i.assigneeAgentId)?.status ?? ""));
     const check = stalledCheck(idle, total - (items.length - idle.length), agents, now);
     return check ? [check] : [];
+  });
+  await rule("reconciliation", "execution reconciliation required", async () => {
+    const runs = await readReconciliationRuns(env.ctx, companyId, now);
+    const wakenRunIds = await readWokenRunIds(env.ctx, companyId);
+    const escalatedRunIds = await readEscalatedRunIds(env.ctx, companyId);
+    const markerIssueIds = new Set((await readMarkerIssues(env.ctx, companyId)).map((m) => m.stuckIssueId));
+    const decisions = executionReconciliationDecisions(runs, wakenRunIds, markerIssueIds, escalatedRunIds);
+    const checks = executionReconciliationChecks(decisions, runs, agents);
+    await applyReconciliation(env, companyId, decisions);
+    return checks;
   });
   return checks;
 }
