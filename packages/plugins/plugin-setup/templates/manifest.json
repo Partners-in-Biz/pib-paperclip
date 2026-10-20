@@ -1,6 +1,6 @@
 {
   "pack": "pib-standard-team",
-  "version": 1,
+  "version": 2,
   "updated": "2026-10-03",
   "description": "The agents a PiB company has that are not kit team roles: the CEO, the dev team (Delivery Lead, Planner, Plan Critic, Senior Developer, Developer, Code Reviewer, Mac Builder), the Growth Marketing Lead (who also holds the Social role), the Summarizer and the Wiki Maintainer. Taken from the live Partners in Biz agents on 2026-10-03 and cleaned up. The kit TEAM_ROLES (Operator, Reviewer, Account Manager, SEO, Social, Bookkeeper, Payroll Clerk and the sales roles) are NOT in this pack: they are staffed in Setup -> Team.",
   "variables": {

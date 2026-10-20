@@ -16,6 +16,7 @@
 import { RUN_PROFILES, type RunProfile } from "@partnersinbiz/pib-plugin-kit/run-profile";
 import { TEAM_ROLES, teamSkillKey, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
 import { PACK_AGENT_FILES, PACK_MANIFEST_JSON, PACK_SHARED_BLOCKS } from "./pack/data.generated.js";
+import { parseSubagents, type SubagentPolicy } from "./subagents.js";
 
 /** The icon names the host accepts for an agent (`AGENT_ICON_NAMES` in the host's shared constants; update on an upstream merge). */
 export const AGENT_ICONS: readonly string[] = [
@@ -49,6 +50,8 @@ export interface AgentTemplate {
   capabilities: string;
   /** Another template's key, or null for the head of the org chart. */
   reportsTo: string | null;
+  /** Who this template escalates to when critical (defaults to reportsTo). */
+  escalatesTo?: string;
   adapterPreference: string[];
   runProfile: RunProfile;
   desiredSkills: string[];
@@ -63,11 +66,23 @@ export interface AgentTemplate {
   requires: { modules: string[]; environment?: string };
   notes: string[];
   kitRole?: TeamRoleKey;
+  /** Policy for spawning subagents (pack v2). */
+  subagents?: SubagentPolicy;
+  /** Evaluation file name for distilled templates (pack v2): non-empty, <=80 chars, /^[a-z0-9][a-z0-9._-]*\.json$/ */
+  evalFile?: string;
+  /** Whether this is a skeleton template (pack v2). */
+  skeleton?: boolean;
+  /** The scope of the template: "pib" or "generic" (pack v2). */
+  scope?: "pib" | "generic";
+  /** Whether this is a distilled template in pack v2 form (pack v2). */
+  distilled?: boolean;
+  /** Whether this template is host-owned and exempt from evalFile and skeleton rules (pack v2). */
+  hostOwned?: boolean;
 }
 
 export interface TemplatePack {
   pack: string;
-  version: number;
+  version: 1 | 2;
   updated: string;
   description: string;
   variables: Record<string, string>;
@@ -85,6 +100,8 @@ const SKILL_RE = /^(plugin\/[a-z0-9-]+\/[a-z0-9-]+|paperclipai\/[a-z0-9-]+(\/[a-
 const GROUPS: readonly string[] = ["core", "dev-team", "marketing", "support"];
 const PROVISIONING: readonly string[] = ["hire", "host", "plugin"];
 const EFFORTS: readonly string[] = ["low", "medium", "high"];
+const EVAL_FILE_RE = /^[a-z0-9][a-z0-9._-]*\.json$/;
+const SCOPES: readonly string[] = ["pib", "generic"];
 /** One rendered AGENTS.md stays under this (the host prints it into a hire task and a payload). */
 export const MAX_INSTRUCTION_CHARS = 14_000;
 
@@ -136,7 +153,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
   const root = rec(raw);
   if (!root) return { pack: null, problems: ["the manifest is not an object"] };
   const version = Number(root.version);
-  if (!Number.isInteger(version) || version < 1) problems.push("version must be a whole number from 1");
+  if (!Number.isInteger(version) || (version !== 1 && version !== 2)) problems.push("version must be 1 or 2");
   const variables = Object.fromEntries(Object.entries(rec(root.variables) ?? {}).map(([name, text]) => [name, str(text)]));
   const sharedBlocks = strs(root.sharedBlocks);
   for (const block of sharedBlocks) if (!(block in blocks)) problems.push(`shared block ${block} has no file (templates/agents/_${block}.md)`);
@@ -183,6 +200,20 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
     }
     const match = rec(t.match) ?? {};
     const requires = rec(t.requires) ?? {};
+    // Pack v2 fields
+    const escalatesTo = t.escalatesTo === undefined ? undefined : str(t.escalatesTo);
+    const subagents = t.subagents === undefined ? undefined : (() => { try { return parseSubagents(t.subagents, key); } catch (e) { problems.push(e instanceof Error ? e.message : String(e)); return undefined; } })();
+    const evalFile = t.evalFile === undefined ? undefined : str(t.evalFile);
+    if (evalFile !== undefined) {
+      if (evalFile.length === 0 || evalFile.length > 80) problems.push(`${key}: evalFile must be non-empty and <=80 chars`);
+      else if (!EVAL_FILE_RE.test(evalFile)) problems.push(`${key}: evalFile must match /^[a-z0-9][a-z0-9._-]*\\.json$/`);
+    }
+    const skeleton = t.skeleton === true;
+    const scope = t.scope === undefined ? "generic" : str(t.scope);
+    if (scope !== "generic" && !SCOPES.includes(scope)) problems.push(`${key}: scope must be one of ${SCOPES.join(", ")}`);
+    const distilled = t.distilled === true;
+    const hostOwned = t.hostOwned === true;
+    if (distilled && !hostOwned && !evalFile) problems.push(`${key}: distilled templates must have evalFile (unless hostOwned)`);
     if (profile) {
       templates.push({
         key,
@@ -193,6 +224,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
         group: str(t.group) as TemplateGroup,
         capabilities: str(t.capabilities),
         reportsTo: t.reportsTo === null || t.reportsTo === undefined ? null : str(t.reportsTo),
+        ...(escalatesTo ? { escalatesTo } : {}),
         adapterPreference,
         runProfile: profile,
         desiredSkills,
@@ -203,6 +235,12 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
         requires: { modules: strs(requires.modules), ...(str(requires.environment) ? { environment: str(requires.environment) } : {}) },
         notes: strs(t.notes),
         ...(kitRole ? { kitRole: kitRole as TeamRoleKey } : {}),
+        ...(subagents ? { subagents } : {}),
+        ...(evalFile ? { evalFile } : {}),
+        ...(skeleton ? { skeleton: true } : {}),
+        ...(scope !== "generic" ? { scope: scope as "pib" | "generic" } : {}),
+        ...(distilled ? { distilled: true } : {}),
+        ...(hostOwned ? { hostOwned: true } : {}),
       });
     }
   }
@@ -221,12 +259,32 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
       next = byKey.get(next)!.reportsTo;
     }
   }
+  // escalatesTo validation: must reference existing template, no cycles
+  for (const template of templates) {
+    if (template.escalatesTo) {
+      if (!byKey.has(template.escalatesTo)) {
+        problems.push(`${template.key}: escalatesTo ${template.escalatesTo} is not a template of the pack`);
+      } else {
+        // Check for cycles in escalatesTo graph
+        const seen = new Set<string>([template.key]);
+        let next: string | undefined = template.escalatesTo;
+        while (next && byKey.has(next)) {
+          if (seen.has(next)) {
+            problems.push(`${template.key}: the escalatesTo chain loops through ${next}`);
+            break;
+          }
+          seen.add(next);
+          next = byKey.get(next)!.escalatesTo;
+        }
+      }
+    }
+  }
   if (!byKey.has("ceo")) problems.push("the pack has no ceo template (everything else reports to it)");
   if (problems.length > 0) return { pack: null, problems };
   return {
     pack: {
       pack: str(root.pack),
-      version,
+      version: version as 1 | 2,
       updated: str(root.updated),
       description: str(root.description),
       variables,

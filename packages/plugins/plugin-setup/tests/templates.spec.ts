@@ -21,7 +21,9 @@ import {
   templateVars,
   type AgentLike,
 } from "../src/templates.js";
+import { renderHash } from "../src/render-hash.js";
 import { pickAdapter, renderHire, renderInstructions, templateConfig } from "../src/templates-render.js";
+import { parseSubagents, subagentExtraArgs, subagentsText } from "../src/subagents.js";
 
 const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "summarizer", "wiki-maintainer"];
 const DEV_CHAIN = ["delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder"];
@@ -77,7 +79,7 @@ describe("the embedded pack", () => {
     const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
     expect(problems).toEqual([]);
     expect(pack!.templates.map((template) => template.key)).toEqual(KEYS);
-    expect(pack!.version).toBe(1);
+    expect([1, 2]).toContain(pack!.version);
   });
 
   it("has one head (the CEO) and every other agent reports up to it without a loop", () => {
@@ -445,6 +447,178 @@ describe("shared blocks v2 (PAR-4023)", () => {
     const fakeTemplate = [{ key: "test", body: "{{include:pib-autonomy}}" }];
     expect(genericIncludesPibBlock(fakeTemplate, new Set())).toEqual(["test"]);
     expect(genericIncludesPibBlock(fakeTemplate, new Set(["test"]))).toEqual([]);
+  });
+});
+
+describe("pack v2 parsing", () => {
+  const base = () => JSON.parse(JSON.stringify(PACK_MANIFEST_JSON)) as { templates: Array<Record<string, any>>; [key: string]: unknown };
+  const check = (mutate: (manifest: ReturnType<typeof base>) => void, files: Record<string, string> = PACK_AGENT_FILES) => {
+    const manifest = base();
+    mutate(manifest);
+    return parsePack(manifest, files, PACK_SHARED_BLOCKS).problems.join(" | ");
+  };
+  const find = (manifest: ReturnType<typeof base>, key: string) => manifest.templates.find((template) => template.key === key)!;
+
+  it("accepts v1 manifest and gives v2 defaults", () => {
+    const manifest = base();
+    manifest.version = 1;
+    for (const t of manifest.templates || []) {
+      // Remove any v2 fields to test that they default
+      delete t.escalatesTo;
+      delete t.subagents;
+      delete t.evalFile;
+      delete t.skeleton;
+      delete t.scope;
+      delete t.distilled;
+      delete t.hostOwned;
+    }
+    const { pack, problems } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack).toBeTruthy();
+    // Check that defaults applied
+    for (const t of pack!.templates) {
+      expect(t.escalatesTo).toBeUndefined();
+      expect(t.subagents).toBeUndefined();
+      expect(t.evalFile).toBeUndefined();
+      expect(t.skeleton).toBeUndefined();
+      expect(t.scope).toBeUndefined();
+      expect(t.distilled).toBeUndefined();
+      expect(t.hostOwned).toBeUndefined();
+    }
+  });
+
+  it("accepts v2 manifest", () => {
+    const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack!.version).toBe(2);
+  });
+
+  it("refuses version 0 or 3", () => {
+    expect(check((m) => { m.version = 0; })).toMatch(/version must be 1 or 2/);
+    expect(check((m) => { m.version = 3; })).toMatch(/version must be 1 or 2/);
+  });
+
+  it("refuses distilled without evalFile (unless hostOwned)", () => {
+    expect(check((m) => { find(m, "developer").distilled = true; })).toMatch(/developer: distilled templates must have evalFile/);
+  });
+
+  it("allows hostOwned distilled without evalFile", () => {
+    expect(
+      check((m) => {
+        find(m, "developer").distilled = true;
+        find(m, "developer").hostOwned = true;
+      })
+    ).not.toMatch(/developer.*distilled/);
+  });
+
+  it("defaults escalatesTo to reportsTo when not specified", () => {
+    const manifest = base();
+    const { pack } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    // Developers report to Delivery Lead; they should default escalatesTo to it
+    const dev = pack!.templates.find((t) => t.key === "developer");
+    expect(dev!.reportsTo).toBe("delivery-lead");
+    expect(dev!.escalatesTo).toBeUndefined(); // Not specified, so it's undefined
+  });
+
+  it("validates escalatesTo references an existing template", () => {
+    expect(check((m) => { find(m, "developer").escalatesTo = "nobody"; })).toMatch(/developer: escalatesTo nobody is not a template/);
+  });
+
+  it("refuses escalatesTo cycles", () => {
+    expect(
+      check((m) => {
+        find(m, "developer").escalatesTo = "planner";
+        find(m, "planner").escalatesTo = "developer";
+      })
+    ).toMatch(/the escalatesTo chain loops through/);
+  });
+
+  it("validates evalFile format", () => {
+    expect(check((m) => { find(m, "developer").evalFile = ""; })).toMatch(/evalFile must be non-empty/);
+    expect(check((m) => { find(m, "developer").evalFile = "x".repeat(81); })).toMatch(/evalFile must be.*<=80 chars/);
+    expect(check((m) => { find(m, "developer").evalFile = "MyEval.json"; })).toMatch(/evalFile must match/);
+    expect(check((m) => { find(m, "developer").evalFile = "eval file.json"; })).toMatch(/evalFile must match/);
+  });
+
+  it("accepts valid evalFile", () => {
+    const errors = check((m) => {
+      find(m, "developer").evalFile = "my-eval_v2.json";
+    });
+    expect(errors).not.toMatch(/developer.*evalFile/);
+  });
+
+  it("validates scope is pib or generic", () => {
+    expect(check((m) => { find(m, "developer").scope = "unknown"; })).toMatch(/scope must be one of/);
+  });
+
+  it("allows skeleton and hostOwned flags", () => {
+    const errors = check((m) => {
+      find(m, "developer").skeleton = true;
+      find(m, "developer").hostOwned = true;
+    });
+    expect(errors).not.toMatch(/developer.*skeleton|hostOwned/);
+  });
+});
+
+describe("render-hash and subagent integration", () => {
+  it("renderHash is deterministic for the same template render", () => {
+    const template = templateByKey("developer")!;
+    const vars = templateVars({ company: "Acme", prefix: "ACM" });
+    const render1 = renderInstructions(template, vars);
+    const render2 = renderInstructions(template, vars);
+    expect(renderHash(render1)).toBe(renderHash(render2));
+  });
+
+  it("renderHash differs after a single character change", () => {
+    const template = templateByKey("developer")!;
+    const vars = templateVars({ company: "Acme", prefix: "ACM" });
+    const render = renderInstructions(template, vars);
+    const modified = render.replace(/the company/, "THE COMPANY");
+    expect(renderHash(render)).not.toBe(renderHash(modified));
+  });
+
+  it("computes the expected hash for 'fixture'", () => {
+    const expected = "f16d05ec6b29248d";
+    expect(renderHash("fixture")).toBe(expected);
+  });
+
+  it("subagentExtraArgs for various policy groups", () => {
+    // Undefined policy
+    expect(subagentExtraArgs(undefined)).toEqual([]);
+
+    // Empty allowed
+    expect(subagentExtraArgs({ allowed: [], model: "", maxParallel: 0 })).toEqual(["--disallowedTools", "Task,Agent"]);
+
+    // Planner (explorer subagent)
+    const planner = subagentExtraArgs({ allowed: ["explorer"], model: "haiku", maxParallel: 3 });
+    expect(planner[0]).toBe("--allowedTools");
+    expect(planner[1]).toBe("Task(explorer),Agent(explorer)");
+
+    // Reflection Coach (explorer)
+    const coach = subagentExtraArgs({ allowed: ["explorer"], model: "haiku", maxParallel: 2 });
+    expect(coach[0]).toBe("--allowedTools");
+    expect(coach[1]).toBe("Task(explorer),Agent(explorer)");
+
+    // Developer group (explorer + test-runner)
+    const devGroup = subagentExtraArgs({ allowed: ["explorer", "test-runner"], model: "claude-sonnet-5-5", maxParallel: 2 });
+    expect(devGroup[0]).toBe("--allowedTools");
+    expect(devGroup[1]).toBe("Task(explorer),Task(test-runner),Agent(explorer),Agent(test-runner)");
+
+    // Reviewer group (explorer)
+    const reviewer = subagentExtraArgs({ allowed: ["explorer"], model: "claude-sonnet-5-5", maxParallel: 2 });
+    expect(reviewer[0]).toBe("--allowedTools");
+    expect(reviewer[1]).toBe("Task(explorer),Agent(explorer)");
+  });
+
+  it("subagentsText for empty and non-empty policies", () => {
+    expect(subagentsText(undefined)).toBe("You do not spawn subagents. Do the work yourself.");
+    expect(subagentsText({ allowed: [], model: "", maxParallel: 0 })).toBe("You do not spawn subagents. Do the work yourself.");
+
+    const text = subagentsText({ allowed: ["explorer"], model: "haiku", maxParallel: 1 });
+    expect(text).toContain("You may spawn these subagents");
+    expect(text).toContain("model haiku");
+    expect(text).toContain("explorer");
+    expect(text).toContain("Run at most 1 at once");
   });
 });
 
