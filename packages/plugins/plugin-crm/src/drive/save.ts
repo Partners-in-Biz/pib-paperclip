@@ -3,6 +3,7 @@ import { realpath as realpathAsync } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { relative } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { normalizeUrl } from "@partnersinbiz/pib-plugin-kit";
 import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError } from "./broker.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
@@ -12,6 +13,27 @@ const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo",
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
+export async function fetchPublicBytes(ctx: PluginContext, url: string, maxRedirects = 5): Promise<Uint8Array> {
+  let current = normalizeUrl(url);
+  for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    const res = await ctx.http.fetch(current, { method: "GET", headers: { "User-Agent": "PiB-SEO-Bot/1.0 (+https://partnersinbiz.online)" }, redirect: "manual" });
+    const headers: Record<string, string> = {};
+    res.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
+    if (res.status >= 300 && res.status < 400 && headers.location) {
+      current = new URL(headers.location, current).toString();
+      current = normalizeUrl(current);
+      continue;
+    }
+    if (!res.ok) throw new Error("fetch_failed");
+    const contentLength = headers["content-length"];
+    if (contentLength && parseInt(contentLength, 10) > MAX_FILE_BYTES) throw new Error("too_large");
+    const buffer = await res.arrayBuffer();
+    if (buffer.byteLength > MAX_FILE_BYTES) throw new Error("too_large");
+    return new Uint8Array(buffer);
+  }
+  throw new Error("fetch_failed");
+}
+
 export interface SaveDriveFileInput {
   companyId: string;
   projectId: string;
@@ -19,6 +41,7 @@ export interface SaveDriveFileInput {
   name: string;
   mimeType: string;
   contentBase64?: string;
+  publicUrl?: string;
   path?: string;
   sha256?: string;
   requestId?: string;
@@ -37,7 +60,7 @@ export interface SaveDriveFileResult {
 }
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[] }): Promise<SaveDriveFileResult> {
-  const { companyId, projectId, fileKind, name, mimeType, contentBase64, path: filePath, sha256: inputSha256 } = input;
+  const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
     return { status: "invalid_name", hint: 'Name must be YYYY-MM-DD <what> v<n>.<ext> or ISSUE-step-ts.<ext>' };
@@ -57,15 +80,17 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_kind", hint: `fileKind must be one of: ${VALID_KINDS.join(", ")}` };
   }
 
-  const sourceCount = [contentBase64, filePath].filter(Boolean).length;
+  const sourceCount = [contentBase64, publicUrl, filePath].filter(Boolean).length;
   if (sourceCount !== 1) {
-    return { status: "invalid_input", hint: "Provide exactly one of contentBase64 or path" };
+    return { status: "invalid_input", hint: "Provide exactly one of contentBase64, publicUrl, or path" };
   }
 
   let bytes: Uint8Array;
   try {
     if (contentBase64) {
       bytes = new Uint8Array(Buffer.from(contentBase64, "base64"));
+    } else if (publicUrl) {
+      bytes = await fetchPublicBytes(ctx, publicUrl);
     } else {
       const fileBytes = await loadFileFromPath(filePath!, opts?.allowedRoots);
       if (fileBytes === null) {
@@ -84,6 +109,9 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
       e.message.includes("Not a regular file")
     )) {
       return { status: "path_not_allowed", hint: "Path not allowed: source must be a file inside the permitted drive root" };
+    }
+    if (e instanceof Error && e.message === "fetch_failed") {
+      return { status: "fetch_failed", hint: "Failed to fetch file from public URL" };
     }
     return { status: "invalid_input", hint: "Failed to load file from path" };
   }
