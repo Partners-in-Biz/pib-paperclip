@@ -97,7 +97,7 @@ function ladderStateKey(companyId: string) {
   };
 }
 
-/** Record a skip reason (called by create, advance, and storm paths). */
+/** Record a skip reason (called by create and advance paths; storm path only tallies in the log line). */
 async function recordSkip(
   ctx: PluginContext,
   companyId: string,
