@@ -13,6 +13,10 @@ export const DRIVE_EVENTS = {
   failed: "drive.file.failed",
 } as const;
 
+export const DRIVE_SUBFOLDERS = ["01 Briefs", "02 Assets", "03 Deliverables", "04 Reports", "05 Evidence", "99 Archive"] as const;
+
+export type DriveSubfolder = (typeof DRIVE_SUBFOLDERS)[number];
+
 export type DriveSaveResult =
   | { status: "saved"; requestId: string; driveFileId: string; url: string }
   | { status: "failed"; requestId: string; reason: string; hint?: string }
@@ -24,6 +28,7 @@ export type DriveSaveOptions = {
   kind: string;
   name: string;
   mimeType: string;
+  subfolder?: DriveSubfolder;
   timeoutMs?: number;
 } & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
 
@@ -95,6 +100,10 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
 
     // Build payload
     let payload: Record<string, unknown> = { requestId, kind, name, mimeType };
+
+    if (opts.subfolder) {
+      payload.subfolder = opts.subfolder;
+    }
 
     if (hasBytesOption) {
       const bytes = opts.bytes as Uint8Array | Buffer;
