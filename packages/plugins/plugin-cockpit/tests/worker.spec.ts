@@ -66,7 +66,7 @@ describe("manifest and migration", () => {
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
       "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "agents.pause", "agents.resume", "agents.invoke", "approvals.read", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
-      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
+      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read", "issue.attachments.read",
       // 0.5.0: goals mirrored to the host, and the members for the single-admin check
       "goals.read", "goals.create", "goals.update", "access.members.read",
       // 0.5.1: the harness task's output document, read by the Cockpit itself when it grades a golden scenario
@@ -77,12 +77,13 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(5);
+    expect(manifest.apiRoutes).toHaveLength(6);
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-list")).toMatchObject({ method: "GET", path: "/repairs", auth: "board", companyResolution: { from: "query", key: "companyId" } });
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "governor-rehearse")).toMatchObject({ method: "POST", path: "/governor-rehearse", auth: "board", companyResolution: { from: "body", key: "companyId" } });
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "owner-push")).toMatchObject({ method: "POST", path: "/owner-push", auth: "board", companyResolution: { from: "body", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
       [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"],
@@ -95,7 +96,7 @@ describe("manifest and migration", () => {
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
       "repairs-list", "governor-state", "watchdog-findings",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
-      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record",
+      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",
     ]);
     // Every tool parameter says what it is; fixed values are enums.
@@ -442,7 +443,7 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "acceptance-run", "skill-eval", "propose-skill-change"]);
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "acceptance-run", "skill-eval", "propose-skill-change"]);
     for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
