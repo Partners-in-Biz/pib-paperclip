@@ -62,7 +62,7 @@ import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
 import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
-import { subscribe, send, type SpikeActionDeps } from "./push/spike-actions.js";
+import { subscribe, type SpikeActionDeps } from "./push/spike-actions.js";
 import { postPush } from "./push/transport.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
@@ -442,17 +442,6 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
     try {
       return await subscribe(createSpikeDeps(), params as Parameters<typeof subscribe>[1], actor);
-    } catch (error) {
-      mapSpikeError(error);
-    }
-  });
-
-  // Push spike: send test push to user's subscriptions
-  ctx.actions.register("cockpit.pushSpike.send", async (params, context) => {
-    requireUser(context);
-    const actor = { type: context.actor.type, userId: context.actor.userId ?? undefined };
-    try {
-      return await send(createSpikeDeps(), params as Parameters<typeof send>[1], actor);
     } catch (error) {
       mapSpikeError(error);
     }

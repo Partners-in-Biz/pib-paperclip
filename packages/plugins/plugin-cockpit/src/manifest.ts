@@ -130,6 +130,18 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     },
+    pushEnabled: {
+      type: "boolean",
+      title: "Push notifications enabled",
+      description: "Enable push notifications to subscribed devices. When disabled, push requests return immediately without network calls.",
+      default: false,
+    },
+    vapidSubject: {
+      type: "string",
+      title: "VAPID subject (optional)",
+      description: "The mailto or https URI for VAPID JWT signing. Defaults to mailto:cockpit@partnersinbiz.online.",
+      default: "mailto:cockpit@partnersinbiz.online",
+    },
   },
 };
 
