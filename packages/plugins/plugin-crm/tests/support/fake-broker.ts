@@ -3,7 +3,7 @@ import type { UploadFetchLike } from "../../src/drive/broker.js";
 
 export interface FakeBrokerState {
   files: Map<string, { fileId: string; name: string; mimeType: string; size: number; sha256: string; sharedDriveId: string; parentFolderId?: string }>;
-  requests: Array<{ sha256: string }>;
+  requests: Array<{ sha256: string; sharedDriveId: string; parentFolderId?: string }>;
 }
 
 export function createFakeBroker(opts?: { failWith?: number; token?: string }) {
@@ -87,7 +87,7 @@ export function createFakeBroker(opts?: { failWith?: number; token?: string }) {
     const sha256 = createHash("sha256").update(fileData).digest("hex");
 
     // Track request
-    state.requests.push({ sha256 });
+    state.requests.push({ sha256, sharedDriveId, parentFolderId });
 
     // Check for deduplication: sharedDriveId + parentFolderId + name + sha256
     const dedupKey = `${sharedDriveId}:${parentFolderId || ""}:${fileName}:${sha256}`;
