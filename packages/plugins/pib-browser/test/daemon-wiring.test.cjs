@@ -240,7 +240,7 @@ test('buildVerifyApproval with valid approval => ok:true once, then approval_alr
 
     const responses = {
       'http://test/api/issues/PAR-5678': { ok: true, data: { id: 'i1', status: 'done', companyId: 'ca', completedAt: new Date(now - 1000).toISOString(), description: 'approval for myid:myaction' } },
-      'http://test/api/issues/PAR-5678/activity': { ok: true, data: [{ action: 'issue.updated', createdAt: new Date(now - 1000).toISOString(), actorType: 'user', details: { status: 'done' } }] },
+      'http://test/api/issues/PAR-5678/activity': { ok: true, data: [{ id: 'a1', action: 'issue.updated', createdAt: new Date(now - 1000).toISOString(), actorType: 'user', details: { changes: { status: { from: 'open', to: 'done' } } } }] },
       'http://test/api/issues/PAR-5678/comments': { ok: true, data: [] }
     };
 
