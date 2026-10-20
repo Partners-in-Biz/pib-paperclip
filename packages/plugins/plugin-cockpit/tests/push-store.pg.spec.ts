@@ -206,6 +206,12 @@ d("Push store (Postgres)", () => {
     expect(second.publicKey).toBe(pubKey1);
     expect(second.privateKey).toBe(privKey1);
     expect(second.created).toBe(false);
+
+    // Third call with the SAME key as the first should report created: false
+    const third = await createKeyIfAbsent(pg.ctx, { publicKey: pubKey1, privateKey: privKey1 });
+    expect(third.publicKey).toBe(pubKey1);
+    expect(third.privateKey).toBe(privKey1);
+    expect(third.created).toBe(false);
   });
 
   it("importSpikeKey: with spike key put in ctx.state imports it, second import does not overwrite, returns imported:false when no spike key", async () => {

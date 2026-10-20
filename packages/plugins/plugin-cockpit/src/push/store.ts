@@ -168,7 +168,7 @@ export interface VapidKey {
 
 export async function createKeyIfAbsent(ctx: PluginContext, opts: { publicKey: string; privateKey: string }): Promise<VapidKey> {
   // Try to insert; first writer wins
-  await ctx.db.execute(`INSERT INTO ${T.keys} (id, public_key, private_key) VALUES ('vapid', $1, $2) ON CONFLICT DO NOTHING`, [opts.publicKey, opts.privateKey]);
+  const res = await ctx.db.execute(`INSERT INTO ${T.keys} (id, public_key, private_key) VALUES ('vapid', $1, $2) ON CONFLICT DO NOTHING`, [opts.publicKey, opts.privateKey]);
 
   // Read the stored key
   const rows = await ctx.db.query<Raw>(`SELECT public_key, private_key FROM ${T.keys} WHERE id = 'vapid'`, []);
@@ -178,7 +178,7 @@ export async function createKeyIfAbsent(ctx: PluginContext, opts: { publicKey: s
   }
 
   const storedKey = rows[0];
-  const created = String(storedKey.public_key) === opts.publicKey && String(storedKey.private_key) === opts.privateKey;
+  const created = (res.rowCount ?? 0) === 1;
 
   return {
     publicKey: String(storedKey.public_key),
