@@ -85,7 +85,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     )) {
       return { status: "path_not_allowed", hint: "Path not allowed: source must be a file inside the permitted drive root" };
     }
-    return { status: "invalid_input", hint: `Failed to load file: ${e instanceof Error ? e.message : String(e)}` };
+    return { status: "invalid_input", hint: "Failed to load file from path" };
   }
 
   if (bytes.byteLength > MAX_FILE_BYTES) {
@@ -139,7 +139,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     if (e instanceof BrokerError) {
       return { status: "broker_error", code: e.code, retryable: e.retryable, hint: e.message };
     }
-    return { status: "broker_error", code: "unknown", retryable: false, hint: e instanceof Error ? e.message : String(e) };
+    return { status: "broker_error", code: "unknown", retryable: false, hint: "File upload failed" };
   }
 
   try {
@@ -149,7 +149,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     });
     return { status: "saved", driveFileId: inserted.id, url: stripSignedUrl(inserted.webUrl), name: inserted.name, sha256: inserted.sha256, duplicate: false };
   } catch (e) {
-    return { status: "broker_error", code: "db_error", retryable: false, hint: e instanceof Error ? e.message : String(e) };
+    return { status: "broker_error", code: "db_error", retryable: false, hint: "Failed to store file metadata" };
   }
 }
 

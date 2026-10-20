@@ -243,4 +243,21 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("project_not_found");
   });
+
+  it("path load error sanitizes message/path in hint", async () => {
+    const { viewer, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const dirPath = tempDir;
+    const result = await saveDriveFile(ctx, viewer, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", path: dirPath,
+    }, { allowedRoots: [tempDir] });
+    // Directory instead of file should trigger path_not_allowed or invalid_input
+    expect(["path_not_allowed", "invalid_input"]).toContain(result.status);
+    // Verify hint contains no directory path or system error text
+    expect(result.hint).not.toContain(tempDir);
+    expect(result.hint).not.toContain("EISDIR");
+    // Verify the full serialized result contains no sensitive data
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(tempDir);
+  });
 });
