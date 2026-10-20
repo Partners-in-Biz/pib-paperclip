@@ -111,3 +111,4 @@ export function requirePublicBaseUrl(value: unknown): string {
   }
   return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
 }
+export * from "./claims.js";
