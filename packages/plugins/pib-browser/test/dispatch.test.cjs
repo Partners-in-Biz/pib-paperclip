@@ -253,3 +253,41 @@ test('afterOp builds reason from host only', async () => {
   assert(!r.reason.includes('/a/b'));
   assert(!r.reason.includes('token'));
 });
+
+test('click refusal closes context after approval failure', async () => {
+  const browser = createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } });
+  const { dispatch } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser,
+    policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } },
+    sites: { sites: { meta: { label: 'Meta', origins: ['https://business.facebook.com'], loggedIn: { url: 'https://business.facebook.com/latest/home', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: ['[data-action=delete]'], text: ['delete'] } } } },
+    clock: () => new Date('2026-01-01T10:00:00Z'),
+    evidenceDir: '/tmp/evidence',
+    verifyApproval: async () => ({ exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_marker_missing' })
+  });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const ctx = browser.lastContext();
+  assert.equal(ctx._closeCount(), 0);
+  const r = await dispatch({ cmd: 'click', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: '[data-action=delete]', text: 'delete', approval: 'PAR-123' } });
+  assert.equal(r.exit, EXIT.NEEDS_APPROVAL);
+  assert.equal(ctx._closeCount(), 1, 'Context should be closed on approval failure');
+});
+
+test('fill refusal closes context on fill check failure', async () => {
+  const browser = createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } });
+  const { dispatch } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser,
+    policy: { version: 1, agents: { 'a1': { identities: ['client:ca:meta'] } }, identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } } },
+    sites: { sites: { meta: { label: 'Meta', origins: ['https://business.facebook.com'], loggedIn: { url: 'https://business.facebook.com/latest/home', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: [], text: [] } } } },
+    clock: () => new Date('2026-01-01T10:00:00Z'),
+    evidenceDir: '/tmp/evidence',
+    checkFill: () => ({ ok: false, reason: 'fill_not_allowed' })
+  });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const ctx = browser.lastContext();
+  assert.equal(ctx._closeCount(), 0);
+  const r = await dispatch({ cmd: 'fill', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: 'input#email', value: 'test@example.com' } });
+  assert.equal(r.exit, EXIT.REFUSED_BY_POLICY);
+  assert.equal(ctx._closeCount(), 1, 'Context should be closed on fill check failure');
+});

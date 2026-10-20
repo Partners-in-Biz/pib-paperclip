@@ -23,11 +23,15 @@ function createDispatcher(deps = {}) {
     }
   };
 
+  const dropSession = async (ctx, key) => {
+    try { await ctx.close(); } catch (e) {}
+    sessions.delete(key);
+  };
+
   const afterOp = async (ctx, key) => {
     const v = ctx.violations();
     if (v.length > 0) {
-      try { await ctx.close(); } catch (e) {}
-      sessions.delete(key);
+      await dropSession(ctx, key);
       let host = 'unparseable';
       try {
         host = new URL(v[0].url).host;
@@ -146,7 +150,7 @@ function createDispatcher(deps = {}) {
             url
           });
           if (!authResult.ok) {
-            sessions.delete(sessionKey);
+            await dropSession(ctx, sessionKey);
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
 
@@ -184,7 +188,7 @@ function createDispatcher(deps = {}) {
               approvalResult = { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_check_failed' };
             }
             if (!approvalResult.ok) {
-              sessions.delete(sessionKey);
+              await dropSession(ctx, sessionKey);
               return { exit: approvalResult.exit || EXIT.NEEDS_APPROVAL, ok: false, reason: approvalResult.reason };
             }
             const authResult2 = authorise({
@@ -197,11 +201,11 @@ function createDispatcher(deps = {}) {
               approved: true
             });
             if (!authResult2.ok) {
-              sessions.delete(sessionKey);
+              await dropSession(ctx, sessionKey);
               return { exit: authResult2.exit, ok: false, reason: authResult2.reason };
             }
           } else if (!authResult.ok) {
-            sessions.delete(sessionKey);
+            await dropSession(ctx, sessionKey);
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
 
@@ -237,9 +241,11 @@ function createDispatcher(deps = {}) {
               handoffActive: (handoff || noopHandoff).isActive(identityStr)
             });
             if (!fillCheck || fillCheck.ok !== true) {
+              await dropSession(ctx, sessionKey);
               return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: fillCheck?.reason || 'fill_check_failed' };
             }
           } catch (e) {
+            await dropSession(ctx, sessionKey);
             return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: 'fill_check_failed' };
           }
 
