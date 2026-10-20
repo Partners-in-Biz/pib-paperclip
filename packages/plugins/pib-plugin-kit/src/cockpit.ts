@@ -475,8 +475,8 @@ export async function teamAgentId(ctx: PluginContext, companyId: string, role: T
 export interface WorkRoute {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
-  /** Who it went to: a role, the owner (a person), or nobody. */
-  via: TeamRoleKey | "owner" | "none";
+  /** Who it went to: a role, the owner (a person), product-owner (an agent), or nobody. */
+  via: TeamRoleKey | "owner" | "product-owner" | "none";
 }
 
 /**
@@ -497,6 +497,27 @@ export async function routeWork(ctx: PluginContext, companyId: string, roles: Te
 /** Work for one role: that role, then the roles covering it (kit `teamRoleChain`), then the Operator, then the owner. */
 export async function routeRole(ctx: PluginContext, companyId: string, role: TeamRoleKey): Promise<WorkRoute> {
   return routeWork(ctx, companyId, teamRoleChain(role));
+}
+
+/**
+ * Route work based on scope: own/client/company/contact/book scopes go to the revenue-lead role;
+ * product:* scopes go to the supplied product owner agent if provided, else to revenue-lead;
+ * unknown scopes default to revenue-lead. Returns a WorkRoute with the assigned agent or owner.
+ */
+export async function routeRoleForScope(
+  ctx: PluginContext,
+  companyId: string,
+  scope: string,
+  opts?: { productOwnerAgentId?: string | null },
+): Promise<WorkRoute> {
+  // Product scope: use the supplied owner if available, else fall back to revenue-lead
+  if (scope.startsWith("product:")) {
+    const ownerId = opts?.productOwnerAgentId?.trim();
+    if (ownerId) {
+      return { assigneeAgentId: ownerId, assigneeUserId: null, via: "product-owner" };
+    }
+  }
+  return routeRole(ctx, companyId, "revenue-lead");
 }
 
 /** Unknown status counts as usable (older Cockpits did not send it). */

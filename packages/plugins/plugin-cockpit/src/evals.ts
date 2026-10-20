@@ -12,7 +12,7 @@
  * `output` document ITSELF: the agent that made the calls does not get to say what
  * came back.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { SKILLS } from "./skills.js";
 import {
@@ -20,6 +20,7 @@ import {
   evalPrompt,
   gateSkill,
   gradeAnswer,
+  loadEvalTemplate,
   offlineGate,
   resultsEntry,
   scenarioHash,
@@ -32,7 +33,7 @@ import {
   type Scenario,
   type SkillState,
 } from "./eval-model.js";
-import { RESULTS_FILE, scenariosFor, scenarioSkills } from "./eval-scenarios.js";
+import { AGENT_EVALS, RESULTS_FILE, scenariosFor, scenarioSkills, cockpitToolNames } from "./eval-scenarios.js";
 import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
 
@@ -191,6 +192,9 @@ export interface HarnessRequest {
 /** The name a candidate's test copy goes by: never the real skill's, and tied to the text's hash. */
 export const candidateSlugFor = (slug: string, hash: string): string => `${slug}-candidate-${hash.slice(0, 6)}`;
 
+/** The name a template's test copy goes by: never the real skill's, and tied to the template hash. */
+export const templateSlugFor = (slug: string, hash: string): string => `${slug}-template-${hash.slice(0, 6)}`;
+
 /** The candidate's install text: the same skill, with its name and slug changed so it never collides with the real one. */
 export function candidateInstallText(markdown: string, slug: string, hash: string): { slug: string; text: string } {
   const candidateSlug = candidateSlugFor(slug, hash);
@@ -201,13 +205,16 @@ export function candidateInstallText(markdown: string, slug: string, hash: strin
 export interface PlanInput {
   skill: string;
   scenarioIds?: string[];
-  mode: "live" | "candidate";
+  mode: "live" | "candidate" | "template";
   agentId: string;
   candidateMarkdown?: string;
   candidateFiles?: Array<{ path: string; content: string }>;
+  templateKey?: string;
+  templateText?: string;
+  templateHash?: string;
 }
 
-export async function planEval(env: Env, companyId: string, input: PlanInput): Promise<Record<string, unknown>> {
+export async function planEval(env: Env, companyId: string, input: PlanInput, agentEvals?: Record<string, unknown>): Promise<Record<string, unknown>> {
   const info = skillBySlug(input.skill);
   const all = scenariosFor(info.slug);
   const picked = input.scenarioIds?.length ? all.filter((s) => input.scenarioIds!.includes(s.id)) : all;
@@ -229,6 +236,58 @@ export async function planEval(env: Env, companyId: string, input: PlanInput): P
     if (!resolved?.skillId) throw new EvalError(`${info.slug} is not installed in this company yet: open the Cockpit once (it syncs its skills), then plan again.`);
     if (drift.drifted) notes.push(`The company's copy of this skill differs from what the plugin ships${driftFiles(drift)} (it is behind, or was edited). Sync first (cockpit.load, or the plugin's sync-skills), then plan again: results would be filed under text agents are not reading.`);
     return { skill: info.slug, mode: "live", hash: info.hash, skillId: resolved.skillId, drift: drift.drifted, changedFiles: drift.changedFiles, scenarios: picked.map((s) => ({ id: s.id, title: s.title })), requests: requests(resolved.skillId), notes, rules };
+  }
+  if (input.mode === "template") {
+    const templateKey = input.templateKey?.trim();
+    const templateText = input.templateText; // Keep raw text for hashing
+    if (!templateKey) throw new EvalError("mode template needs templateKey: the identifier for the scenario template.");
+    if (!templateText || !templateText.trim()) throw new EvalError("mode template needs templateText: the candidate rendered text of the template.");
+    const providedHash = input.templateHash?.trim();
+    if (!providedHash) throw new EvalError("mode template needs templateHash: the 16-hex hash from Setup template-preview.");
+    if (!/^[0-9a-f]{16}$/.test(providedHash)) throw new EvalError(`templateHash must be 16 hexadecimal characters (got "${providedHash}").`);
+    const computedHash = createHash("sha256").update(templateText, "utf8").digest("hex").slice(0, 16);
+    if (computedHash !== providedHash) {
+      throw new EvalError(
+        `templateHash mismatch: provided "${providedHash}" but computed "${computedHash}" from the templateText. ` +
+          `The template text may have changed or the hash was computed differently.`,
+      );
+    }
+    // Load the template scenario to validate it exists and is valid
+    const templateScenario = loadEvalTemplate(templateKey, agentEvals ?? AGENT_EVALS, SKILLS.map((s) => s.slug!), (name: string) => cockpitToolNames().has(name));
+    if (templateScenario.skill !== info.slug) {
+      throw new EvalError(
+        `Template "${templateKey}" is for skill "${templateScenario.skill}", but you asked for skill "${info.slug}". ` +
+          `Use the correct template or skill.`,
+      );
+    }
+    const templatedScenarios = templateScenario.scenarios;
+    const usedScenarios = input.scenarioIds?.length ? templatedScenarios.filter((s) => input.scenarioIds!.includes(s.id)) : templatedScenarios;
+    if (usedScenarios.length === 0) {
+      throw new EvalError(
+        input.scenarioIds?.length
+          ? `None of ${input.scenarioIds.join(", ")} is a scenario in template "${templateKey}" (has ${templatedScenarios.map((s) => s.id).join(", ")}).`
+          : `Template "${templateKey}" has no scenarios.`,
+      );
+    }
+    return {
+      skill: info.slug,
+      mode: "template",
+      templateKey,
+      templateHash: providedHash,
+      scenarios: usedScenarios.map((s) => ({ id: s.id, title: s.title })),
+      install: [
+        {
+          step: "Install the template text as a test copy (the skill policy lets only the Operator do this).",
+          method: "POST",
+          path: `/api/companies/${companyId}/skills`,
+          body: { name: `${info.slug}-template-${providedHash.slice(0, 6)}`, slug: `${info.slug}-template-${providedHash.slice(0, 6)}`, markdown: templateText },
+        },
+      ],
+      requests: requests("<templateSkillId>"),
+      cleanup: { step: "When every run is recorded, remove the test copy.", method: "DELETE", path: `/api/companies/${companyId}/skills/<templateSkillId>` },
+      notes,
+      rules: [...rules, `Record with templateHash ${providedHash}.`],
+    };
   }
   const markdown = input.candidateMarkdown?.trim();
   if (!markdown) throw new EvalError("mode candidate needs candidateMarkdown: the full SKILL.md text of the change you want checked.");
@@ -272,11 +331,31 @@ export interface Recorded {
 
 const newId = (): string => `ev${randomBytes(6).toString("hex")}`;
 
-export async function recordEval(env: Env, companyId: string, input: { skill: string; mode: "live" | "candidate"; candidateHash?: string; items: RecordItem[] }): Promise<{ recorded: Recorded[]; state: SkillState; hash: string; entry: ReturnType<typeof resultsEntry> | null }> {
+export async function recordEval(env: Env, companyId: string, input: { skill: string; mode: "live" | "candidate" | "template"; candidateHash?: string; templateKey?: string; templateHash?: string; items: RecordItem[] }): Promise<{ recorded: Recorded[]; state: SkillState; hash: string; entry: ReturnType<typeof resultsEntry> | null }> {
   const info = skillBySlug(input.skill);
   const scenarios = scenariosFor(info.slug);
   let hash = info.hash;
-  if (input.mode === "candidate") {
+  if (input.mode === "template") {
+    const templateKey = input.templateKey?.trim();
+    const templateHash = input.templateHash?.trim();
+    if (!templateKey) throw new EvalError("mode template needs templateKey: the identifier for the scenario template.");
+    if (!templateHash) throw new EvalError("mode template needs templateHash: the 16-hex hash from plan.");
+    if (templateHash.length === 64 && /^[0-9a-f]{64}$/.test(templateHash)) {
+      throw new EvalError(`templateHash must be 16 hexadecimal characters, not 64. Use the 16-hex hash from skill-eval plan or template-preview, not the full SHA-256.`);
+    }
+    if (!/^[0-9a-f]{16}$/.test(templateHash)) throw new EvalError(`templateHash must be 16 hexadecimal characters (got "${templateHash}").`);
+    hash = templateHash;
+    // Validate template exists and matches the skill: loadEvalTemplate will throw if key is unknown.
+    try {
+      const templateScenario = loadEvalTemplate(templateKey, AGENT_EVALS, SKILLS.map((s) => s.slug!), (name: string) => cockpitToolNames().has(name));
+      if (templateScenario.skill !== info.slug) {
+        throw new EvalError(`Template "${templateKey}" is for skill "${templateScenario.skill}", but you asked for skill "${info.slug}".`);
+      }
+    } catch (error) {
+      if (error instanceof EvalError) throw error;
+      throw new EvalError(`Template "${templateKey}" could not be loaded: ${message(error)}`);
+    }
+  } else if (input.mode === "candidate") {
     if (!input.candidateHash || !/^[0-9a-f]{16}$/.test(input.candidateHash)) throw new EvalError("mode candidate needs candidateHash: the hash skill-eval plan gave for the candidate text.");
     hash = input.candidateHash;
   } else {
@@ -293,6 +372,13 @@ export async function recordEval(env: Env, companyId: string, input: { skill: st
     }
     recorded.push(await recordOne(env, companyId, { info, scenario, mode: input.mode, hash, issueRef: item.issueId }));
   }
+  // Template mode: reject if no item came back graded or not-done (all refused or empty)
+  if (input.mode === "template" && input.items.length > 0) {
+    const hasGradedOrNotDone = recorded.some((r) => r.state === "graded" || r.state === "not-done");
+    if (!hasGradedOrNotDone) {
+      throw new EvalError(`Unknown template hash ${hash}: none of these runs tested a template test copy for it (${templateSlugFor(info.slug, hash)}). Use the hash skill-eval plan gave for this template text, run the scenarios on its test copy and record those.`);
+    }
+  }
   const rows = await listResults(env.ctx, companyId, info.slug);
   const state = skillState(scenarios, hash, rows);
   const full = state.missing.length === 0;
@@ -305,16 +391,17 @@ export function ranSkillName(title: string | null | undefined): string | null {
   return found ? found[1]! : null;
 }
 
-/** Why a harness task did not test the text it is being recorded for, or null when it did. Live: the skill itself. Candidate: the test copy named after that text's hash. */
-export function ranMismatch(ran: string | null, mode: "live" | "candidate", slug: string, hash: string): string | null {
+/** Why a harness task did not test the text it is being recorded for, or null when it did. Live: the skill itself. Candidate/Template: the test copy named after that text's hash. */
+export function ranMismatch(ran: string | null, mode: "live" | "candidate" | "template", slug: string, hash: string): string | null {
   if (!ran) return "That harness task has no skill name in its title (expected \"Skill test: <skill>\"), so it cannot be tied to the skill it ran. Plan again and run it fresh.";
   const name = ran.toLowerCase();
   if (mode === "live") return name === slug.toLowerCase() ? null : `That harness run tested "${ran}", not ${slug}: it was not run on the live skill text. Run it on ${slug} and record that.`;
-  const copy = candidateSlugFor(slug, hash);
-  return name.includes(copy.toLowerCase()) ? null : `That harness run tested "${ran}", not the candidate's test copy ${copy}: it was not run on this text. Install the candidate as the plan says, run the scenarios on it and record those.`;
+  const copy = mode === "template" ? templateSlugFor(slug, hash) : candidateSlugFor(slug, hash);
+  const label = mode === "template" ? "template's test copy" : "candidate's test copy";
+  return name.includes(copy.toLowerCase()) ? null : `That harness run tested "${ran}", not the ${label} ${copy}: it was not run on this text. Install the test copy as the plan says, run the scenarios on it and record those.`;
 }
 
-async function recordOne(env: Env, companyId: string, input: { info: SkillInfo; scenario: Scenario; mode: "live" | "candidate"; hash: string; issueRef: string }): Promise<Recorded> {
+async function recordOne(env: Env, companyId: string, input: { info: SkillInfo; scenario: Scenario; mode: "live" | "candidate" | "template"; hash: string; issueRef: string }): Promise<Recorded> {
   const { scenario, info } = input;
   const base = { scenarioId: scenario.id, issueId: input.issueRef };
   const issue = await env.ctx.issues.get(input.issueRef, companyId).catch(() => null);

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
+import { emitAllOwnMetrics } from "./own-metrics.js";
 import {
   definePlugin,
   runWorker,
@@ -199,7 +200,7 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -484,6 +485,7 @@ const plugin = definePlugin({
         if (result.summaries || result.hygiene) ctx.logger.info("CRM sales weekly", result);
       });
     });
+    ctx.jobs.register("own-metrics", () => trackJob(ctx, "own-metrics", async () => void (await emitAllOwnMetrics(ctx))));
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
@@ -781,6 +783,8 @@ async function dispatch(
       return driveFolderResolve(ctx, viewer, body);
     case "drive_folder_ensure":
       return driveFolderEnsure(ctx, viewer, body);
+    case "drive_file_save":
+      return driveFileSave(ctx, viewer, body);
     case "drive_project_kind_set":
       return driveProjectKindSet(ctx, viewer, body);
     case "drive_project_kind_list":

@@ -6,6 +6,7 @@ import { JOBS } from "./manifest.js";
 import { SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { approveStarterPack, bootstrapCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
+import { registerTemplateTools } from "./template-tools.js";
 import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
 
 /** Registers everything; exported for tests. */
@@ -19,6 +20,7 @@ export function registerSetup(ctx: PluginContext): void {
       }
     });
   }
+  registerTemplateTools(ctx);
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", async (params, context) => {
     const companyId = requiredCompany(context);
