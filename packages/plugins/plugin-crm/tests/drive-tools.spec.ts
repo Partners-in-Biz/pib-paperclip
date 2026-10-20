@@ -19,7 +19,7 @@ function createMockBroker(st: BrokerState) {
       return found ? { status: 200, ok: true, text: async () => JSON.stringify({ success: true, data: { folder: found } }) } : { status: 404, ok: false, text: async () => JSON.stringify({ success: false, error: "Not found" }) };
     }
     if (init.method === "POST" && url.includes("/registry/ensure")) {
-      const body = JSON.parse(init.body || "{}"), { entity_type, entity_id, name, parent_entity_id } = body;
+      const body = JSON.parse(init.body || "{}"), { entity_type, entity_id, name, parent_entity_id, subfolders } = body;
       st.posts.push({ url, headers: init.headers, body });
       const key = `${entity_type}:${entity_id}`;
       let isNew = !st.registry.has(key);
@@ -72,7 +72,7 @@ describe("Drive folder tools", () => {
   it("(a) company-linked project idempotent: create then exists", async () => {
     const st = seed();
     linked(st, "co-a", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Website" } as never] });
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r1.data?.status).toBe("created");
@@ -84,7 +84,7 @@ describe("Drive folder tools", () => {
 
   it("(b) unlinked/contact-linked → Products (no parent_entity_id in POST)", async () => {
     const st = seed();
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p-unlinked", companyId: CO, name: "Solo" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-unlinked" });
     expect(state.posts[0].body.parent_entity_id).toBeUndefined();
@@ -95,7 +95,7 @@ describe("Drive folder tools", () => {
   it("(c) company-linked: posts have name 'Acme Ltd (Primary Contact)', parent_entity_id set", async () => {
     const st = seed();
     linked(st, "co-c", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Website" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(state.posts[0].body.entity_type).toBe("crm_company");
@@ -107,17 +107,19 @@ describe("Drive folder tools", () => {
   it("(d) all requests: Bearer token header, no forbidden keys", async () => {
     const st = seed();
     linked(st, "co-d", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     for (const post of state.posts) {
       expect(post.headers.Authorization).toBe("Bearer token");
-      expect(JSON.stringify(post.body)).not.toMatch(/folder_id|folderId|parent_id|parentId|drive_id/i);
+      // Forbidden keys: folder_id, folderId, parent_id, parentId, or standalone drive_id key
+      // (but shared_drive_id is allowed)
+      expect(JSON.stringify(post.body)).not.toMatch(/"(?:folder_id|folderId|parent_id|parentId|drive_id)"/i);
     }
   });
 
   it("(e) UUID/PAR-123/Drive-id → invalid_name", async () => {
-    const { harness, state } = await setup({ driveBrokerToken: "token" });
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } });
     for (const n of ["3f2b8c1e-9d4a-4e6b-8a7c-1d2e3f4a5b6c", "PAR-123", "1AbCdEfGhIjKlMnOpQrStUvWxYz012335"]) {
       harness.seed({ projects: [{ id: `p${n}`, companyId: CO, name: n } as never] });
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: `p${n}` });
@@ -127,7 +129,7 @@ describe("Drive folder tools", () => {
   });
 
   it("(f) name collision → needs_human_look", async () => {
-    const { harness, state } = await setup({ driveBrokerToken: "token" });
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } });
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Café Plan" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     const posts1 = state.posts.length;
@@ -140,7 +142,7 @@ describe("Drive folder tools", () => {
   it("(g) 502 retry: no duplicate Drive creations, registry entries exist", async () => {
     const st = seed();
     linked(st, "co-g", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     state.failRegistryWriteOnce = true;
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
@@ -152,7 +154,7 @@ describe("Drive folder tools", () => {
   });
 
   it("(h) resolve: not_found→ensure→found; bad entity_type errors", async () => {
-    const { harness } = await setup({ driveBrokerToken: "token" });
+    const { harness } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } });
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     let r = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p1" });
     expect(r.data?.status).toBe("not_found");
@@ -174,7 +176,7 @@ describe("Drive folder tools", () => {
   it("(k) broker 403 error (non-retryable) fails tool", async () => {
     const st = seed();
     linked(st, "co-k", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     state.forceStatus = 403;
     const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
@@ -185,7 +187,7 @@ describe("Drive folder tools", () => {
   it("(l) company sibling collision vs unlinked non-collision", async () => {
     const st = seed();
     linked(st, "co-l", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Site" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     st.client_projects!.push({ id: "cp2", company_id: CO, project_id: "p2", client_kind: "company", client_ref: "co-l", created_at: "2026-01-01T00:00:00Z" });
@@ -199,7 +201,7 @@ describe("Drive folder tools", () => {
 
   it("(m) resolve unwraps {success:true,data:{folder:{...}}} envelope", async () => {
     const st = seed();
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     const r = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p1" });
@@ -216,7 +218,7 @@ describe("Drive folder tools", () => {
     st.contacts!.push(contact("con-n2", "Primary Contact"));
     st.contact_companies!.push({ id: "cc-n1", company_id: CO, contact_id: "con-n1", account_id: "co-n1", role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
     st.contact_companies!.push({ id: "cc-n2", company_id: CO, contact_id: "con-n2", account_id: "co-n2", role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "crm_company", entity_id: "co-n1" });
     expect(r1.error || r1.data?.status).toBeDefined();
     const postsAfterFirst = state.posts.length;
@@ -227,7 +229,7 @@ describe("Drive folder tools", () => {
   it("(o) created_by_run is sent in ensure body when runId is given", async () => {
     const st = seed();
     linked(st, "co-o", "Acme Ltd");
-    const { harness, state } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(state.posts.some((p) => p.body.created_by_run === "run-1")).toBe(true);
@@ -235,7 +237,7 @@ describe("Drive folder tools", () => {
 
   it("(p) network error on first resolve in ensure → CrmError not BrokerError", async () => {
     const st = seed();
-    const { harness } = await setup({ driveBrokerToken: "token" }, st);
+    const { harness } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
     harness.ctx.http.fetch = async () => {
       throw new Error("Network timeout");
@@ -246,7 +248,7 @@ describe("Drive folder tools", () => {
   });
 
   it("(q) long CamelCase name rejected as drive_id", async () => {
-    const { harness } = await setup({ driveBrokerToken: "token" });
+    const { harness } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } });
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ProjectManagementDashboardV2" } as never] });
     const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r.data?.status).toBe("invalid_name");
