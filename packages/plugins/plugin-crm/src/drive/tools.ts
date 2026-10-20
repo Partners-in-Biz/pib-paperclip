@@ -7,6 +7,7 @@ import { planFolders, companyFolderName, type DriveFacts, type Sibling, type Dri
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
+import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
@@ -24,6 +25,21 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Ensure Drive folder",
     description: "Create (once) the standard Drive folder tree for a project or CRM company and return its path and URL. Call drive_folder_resolve first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Never hard-code a Drive ID. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.",
     parametersSchema: schema(["entity_type", "entity_id"], { entity_type: oneOf(["project", "crm_company"], "The kind of entity: Paperclip project or CRM company."), entity_id: text("The entity's id: a project id or a CRM company record id.", 100) }),
+  },
+  {
+    name: "drive_file_save",
+    displayName: "Save file to Drive",
+    description: "Save a file to a Paperclip project's Google Drive folder. Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths (max 5 MB). Exactly one source required: contentBase64 or path.",
+    parametersSchema: schema(["projectId", "fileKind", "name", "mimeType"], {
+      projectId: text("The Paperclip project id (determines the Drive folder).", 100),
+      fileKind: text("File kind for classification (e.g. client, product, book, marketing, company, seo, social, campaigns, ads, ops; stored in the Drive file record).", 50),
+      name: text("File name: YYYY-MM-DD <what> v<n>.<ext> or <ISSUE>-<step>-<ts>.<ext> (e.g. 2026-10-20 report v1.pdf or PAR-4059-login-1760000000.png).", 300),
+      mimeType: text("MIME type (e.g. application/pdf, image/png).", 100),
+      contentBase64: text("File content as base64 (mutually exclusive with path). Binary-safe."),
+      path: text("Absolute local file path (mutually exclusive with contentBase64). Must be inside an allowed root. Max 5 MB."),
+      sha256: text("Optional: hex-encoded sha256 to verify the file content after decode/read.", 64),
+      requestId: text("Optional: request ID for correlation.", 100),
+    }),
   },
   {
     name: "drive_project_kind_set",
@@ -304,4 +320,31 @@ export async function driveProjectKindList(ctx: PluginContext, viewer: Viewer, p
   }
 
   return { projects: result, total: result.length };
+}
+
+export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<SaveDriveFileResult> {
+  const input: SaveDriveFileInput = {
+    companyId: viewer.companyId,
+    projectId: params.projectId as string,
+    fileKind: params.fileKind as string,
+    name: params.name as string,
+    mimeType: params.mimeType as string,
+    contentBase64: params.contentBase64 as string | undefined,
+    path: params.path as string | undefined,
+    sha256: params.sha256 as string | undefined,
+    requestId: params.requestId as string | undefined,
+  };
+
+  if (!input.projectId) throw new CrmError("Missing projectId");
+  if (!input.fileKind) throw new CrmError("Missing fileKind");
+  if (!input.name) throw new CrmError("Missing name");
+  if (!input.mimeType) throw new CrmError("Missing mimeType");
+
+  // Verify project exists in the company
+  const project = await ctx.projects.get(input.projectId, input.companyId);
+  if (!project) {
+    return { status: "project_not_found" };
+  }
+
+  return saveDriveFile(ctx, viewer, input);
 }
