@@ -143,6 +143,16 @@ function resolveProfile(key: string, raw: unknown, problems: string[]): RunProfi
   return profile;
 }
 
+function parseSubagentPolicy(key: string, raw: unknown, problems: string[]): SubagentPolicy | undefined {
+  if (raw === undefined) return undefined;
+  try {
+    return parseSubagents(raw, key);
+  } catch (e) {
+    problems.push(e instanceof Error ? e.message : String(e));
+    return undefined;
+  }
+}
+
 /** `{{include:name}}` and `{{variable}}` markers in a template file. */
 const INCLUDE_RE = /\{\{include:([a-z0-9-]+)\}\}/g;
 const VARIABLE_RE = /\{\{([a-zA-Z][a-zA-Z0-9]*)\}\}/g;
@@ -201,8 +211,9 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
     const match = rec(t.match) ?? {};
     const requires = rec(t.requires) ?? {};
     // Pack v2 fields
-    const escalatesTo = t.escalatesTo === undefined ? undefined : str(t.escalatesTo);
-    const subagents = t.subagents === undefined ? undefined : (() => { try { return parseSubagents(t.subagents, key); } catch (e) { problems.push(e instanceof Error ? e.message : String(e)); return undefined; } })();
+    const reportsToResolved = t.reportsTo === null || t.reportsTo === undefined ? null : str(t.reportsTo);
+    const escalatesTo = t.escalatesTo === undefined ? reportsToResolved : str(t.escalatesTo);
+    const subagents = parseSubagentPolicy(key, t.subagents, problems);
     const evalFile = t.evalFile === undefined ? undefined : str(t.evalFile);
     if (evalFile !== undefined) {
       if (evalFile.length === 0 || evalFile.length > 80) problems.push(`${key}: evalFile must be non-empty and <=80 chars`);
@@ -223,7 +234,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
         icon: str(t.icon),
         group: str(t.group) as TemplateGroup,
         capabilities: str(t.capabilities),
-        reportsTo: t.reportsTo === null || t.reportsTo === undefined ? null : str(t.reportsTo),
+        reportsTo: reportsToResolved,
         ...(escalatesTo ? { escalatesTo } : {}),
         adapterPreference,
         runProfile: profile,
@@ -259,16 +270,16 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
       next = byKey.get(next)!.reportsTo;
     }
   }
-  // escalatesTo validation: must reference existing template, no cycles
+  // escalatesTo validation: must reference existing template or be null/'ceo', no cycles
   for (const template of templates) {
-    if (template.escalatesTo) {
+    if (template.escalatesTo && template.escalatesTo !== "ceo") {
       if (!byKey.has(template.escalatesTo)) {
         problems.push(`${template.key}: escalatesTo ${template.escalatesTo} is not a template of the pack`);
       } else {
         // Check for cycles in escalatesTo graph
         const seen = new Set<string>([template.key]);
         let next: string | undefined = template.escalatesTo;
-        while (next && byKey.has(next)) {
+        while (next && next !== "ceo" && byKey.has(next)) {
           if (seen.has(next)) {
             problems.push(`${template.key}: the escalatesTo chain loops through ${next}`);
             break;

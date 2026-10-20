@@ -83,6 +83,9 @@ export function subagentExtraArgs(p: SubagentPolicy | undefined): string[] {
     return ["--disallowedTools", "Task,Agent"];
   }
 
+  // The non-empty form (--allowedTools) is unverified against the installed Claude CLI.
+  // In the CLI, --allowedTools is a permission auto-approve list, not a restriction.
+  // C1/O2 must confirm this behavior before the sync uses it.
   const toolsList = [
     ...p.allowed.map((name) => `Task(${name})`),
     ...p.allowed.map((name) => `Agent(${name})`),

@@ -477,7 +477,9 @@ describe("pack v2 parsing", () => {
     expect(pack).toBeTruthy();
     // Check that defaults applied
     for (const t of pack!.templates) {
-      expect(t.escalatesTo).toBeUndefined();
+      // escalatesTo defaults to reportsTo when not specified
+      if (t.reportsTo) expect(t.escalatesTo).toBe(t.reportsTo);
+      else expect(t.escalatesTo).toBeUndefined();
       expect(t.subagents).toBeUndefined();
       expect(t.evalFile).toBeUndefined();
       expect(t.skeleton).toBeUndefined();
@@ -517,7 +519,28 @@ describe("pack v2 parsing", () => {
     // Developers report to Delivery Lead; they should default escalatesTo to it
     const dev = pack!.templates.find((t) => t.key === "developer");
     expect(dev!.reportsTo).toBe("delivery-lead");
-    expect(dev!.escalatesTo).toBeUndefined(); // Not specified, so it's undefined
+    expect(dev!.escalatesTo).toBe("delivery-lead"); // Defaults to reportsTo when not specified
+  });
+
+  it("allows template with reportsTo of 'ceo' and omitted escalatesTo (resolves to 'ceo')", () => {
+    const manifest = base();
+    const { pack, problems } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    // The CEO reports to null and escalatesTo should also be 'ceo' (or omitted, resolving to null)
+    const ceo = pack!.templates.find((t) => t.key === "ceo");
+    expect(ceo!.reportsTo).toBeNull();
+    // CEO has no escalatesTo, so it should not be present (or be null via the default)
+    expect(ceo!.escalatesTo).toBeUndefined();
+    expect(problems).not.toContain(expect.stringMatching(/ceo.*escalatesTo/));
+  });
+
+  it("parses the shipped templates pack without errors", () => {
+    const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack).toBeTruthy();
+    // Check that escalatesTo is resolved for all templates
+    for (const t of pack!.templates) {
+      if (t.reportsTo) expect(t.escalatesTo).toBe(t.reportsTo);
+    }
   });
 
   it("validates escalatesTo references an existing template", () => {
