@@ -47,6 +47,7 @@ import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } fr
 import { doneCheckFor } from "./done-checks.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
+import { rehearseGovernor } from "./governor-rehearse.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
 import { parseSnapshot, teamSignature } from "./merge.js";
@@ -654,6 +655,49 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
         limit: typeof query.limit === "number" ? query.limit : undefined,
       });
       return { status: 200, body: { rows } };
+    }
+    if (input.routeKey === "governor-rehearse") {
+      const body = input.body && typeof input.body === "object" && !Array.isArray(input.body) ? (input.body as Record<string, unknown>) : {};
+
+      // Validate required field
+      if (typeof body.companyId !== "string" || !String(body.companyId).trim()) {
+        return { status: 400, body: { error: "companyId is required and must be a non-empty string" } };
+      }
+
+      // Check companyId match
+      if (String(body.companyId).trim() !== input.companyId) {
+        return { status: 400, body: { error: "Body companyId does not match resolved companyId" } };
+      }
+
+      // Validate agentName
+      if (typeof body.agentName !== "string" || !String(body.agentName).trim()) {
+        return { status: 400, body: { error: "agentName is required and must be a non-empty string" } };
+      }
+
+      // Check for unknown fields
+      const allowed = new Set(["companyId", "agentName", "canaryStatus"]);
+      for (const field of Object.keys(body)) {
+        if (!allowed.has(field)) {
+          return { status: 400, body: { error: `Unknown field: ${field}` } };
+        }
+      }
+
+      const result = await rehearseGovernor(env, input.companyId, {
+        agentName: String(body.agentName).trim(),
+        canaryStatus: typeof body.canaryStatus === "string" ? body.canaryStatus : undefined,
+      });
+
+      if (result.outcome === "completed") {
+        return { status: 200, body: result };
+      }
+
+      const reason = result.reason;
+      if (reason === "bad_input" || reason === "never_pause" || reason === "agent_not_found") {
+        return { status: 400, body: result };
+      }
+
+      // agent_already_paused, governor_active, not_paused -> 409
+      return { status: 409, body: result };
     }
     return { status: 404, body: { error: "Not found" } };
   } catch (error) {
