@@ -7,6 +7,7 @@ import { ESIGN_TOOLS } from "./esign-tools.js";
 import { GROWTH_TOOLS } from "./growth-tools.js";
 import { SERVICE_KEYS, SERVICES } from "./services.js";
 import { DRIVE_TOOLS } from "./drive/tools.js";
+import { CLIENT_PROJECT_KINDS } from "./sites.js";
 
 /**
  * The CRM's agent tools. Every parameter has a description, and an enum where
@@ -56,6 +57,7 @@ const P = {
   recordType: oneOf(RECORD_TYPES, "The kind of record."),
   recordId: text("The record's id."),
   amountMinor: int("Value in minor units (cents): 150000 is R 1,500.00.", { minimum: 0 }),
+  projectKind: { type: ["string", "null"], enum: [...CLIENT_PROJECT_KINDS, null], description: "The project's purpose: seo, website, app, social, ads, campaigns, book, platform or ops. Set to null to clear it." },
 };
 
 export const CRM_TOOLS: PluginToolDeclaration[] = [
@@ -490,14 +492,14 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-client-projects",
     displayName: "List client projects",
-    description: "The Paperclip projects (code folders) that belong to a client, and the company's projects that belong to no client yet (suggested ones match the client's name).",
+    description: "The Paperclip projects (code folders) that belong to a client, each with its kind, and the company's projects that belong to no client yet (suggested ones match the client's name).",
     parametersSchema: schema(["client"], { client: P.client }),
   },
   {
     name: "link-client-project",
     displayName: "Link project to client",
-    description: "Make a Paperclip project part of a client, so it shows on the client's CRM page. A project belongs to one client.",
-    parametersSchema: schema(["client", "projectId"], { client: P.client, projectId: text("The project (from list-client-projects).") }),
+    description: "Make a Paperclip project part of a client, so it shows on the client's CRM page. A project belongs to one client, with an optional kind.",
+    parametersSchema: schema(["client", "projectId"], { client: P.client, projectId: text("The project (from list-client-projects)."), kind: P.projectKind }),
   },
   {
     name: "contact-graph",
