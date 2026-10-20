@@ -7,7 +7,7 @@ import { MAX_REMINDERS, DEFAULT_REMIND_AFTER_DAYS } from "../src/client-actions.
 import { ERASE_DUE_DAYS } from "../src/privacy.js";
 import { AT_RISK_BELOW, HEALTH_WEIGHTS, SHARP_DROP, WATCH_BELOW } from "../src/health-score.js";
 import { DOMAIN_WARN_DAYS, DOWN_AFTER_MINUTES, TLS_WARN_DAYS } from "../src/monitor-net.js";
-import { CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "../src/skills-references.js";
+import { CANARY_REFERENCE, DRIVE_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "../src/skills-references.js";
 import { CARE_REFERENCE_FILES, CLIENT_CARE_SECTION, CLIENT_REPORT_REFERENCE, CLIENT_REQUESTS_REFERENCE, PRIVACY_POLICY_TEMPLATE, PRIVACY_REFERENCE, SUPPORT_AND_HEALTH_REFERENCE, TERMS_TEMPLATE, COOKIE_NOTICE_TEMPLATE } from "../src/skills-care.js";
 import { CARE_TOOLS } from "../src/care-tools.js";
 import { NPS_COOLDOWN_DAYS, SLA_HOURS } from "../src/support.js";
@@ -29,7 +29,7 @@ const toolNames = new Set(CRM_TOOLS.map((tool) => tool.name));
 describe("the CRM skills and their references", () => {
   it("stay within 18,000 characters, with the long material in references", () => {
     for (const skill of SKILLS) expect(skill.markdown!.length, skill.skillKey).toBeLessThanOrEqual(18_000);
-    expect(records.files!.map((file) => file.path)).toEqual(["references/services.md", "references/new-client.md", "references/canary.md", ...CARE_REFERENCE_FILES.map((file) => file.path), ...GROWTH_REFERENCE_FILES.map((file) => file.path)]);
+    expect(records.files!.map((file) => file.path)).toEqual(["references/services.md", "references/new-client.md", "references/canary.md", "references/drive.md", ...CARE_REFERENCE_FILES.map((file) => file.path), ...GROWTH_REFERENCE_FILES.map((file) => file.path)]);
     expect(outbound.files!.map((file) => file.path)).toEqual(["references/lead-capture.md"]);
     for (const skill of [records, outbound]) for (const file of skill.files!) expect(file.content.length, file.path).toBeGreaterThan(1_000);
     // Each skill points at its references by the path it ships them under.
@@ -212,5 +212,13 @@ describe("the guidance for documents to sign, attribution and site counters", ()
     const before = skillVersion(records);
     const changed = { ...records, files: records.files!.map((file) => (file.path === "references/esign.md" ? { ...file, content: `${file.content}\nOne more rule.` } : file)) };
     expect(skillVersion(changed)).not.toBe(before);
+  });
+
+  it("the Drive reference carries the tool order and the no-Shared-Drive-ID rule", () => {
+    expect(DRIVE_REFERENCE).toMatch(/drive_folder_resolve[\s\S]*drive_folder_ensure[\s\S]*drive_file_save/);
+    expect(DRIVE_REFERENCE).toMatch(/driveBrokerToken/);
+    expect(DRIVE_REFERENCE).toMatch(/drive\.sharedDriveId/);
+    expect(DRIVE_REFERENCE).toMatch(/drive_not_bound[^\n]*once[^\n]*stop/);
+    expect(records.markdown).toMatch(/references\/drive\.md/);
   });
 });
