@@ -152,12 +152,14 @@ export function createFakeDb(store: Store, options: FakeDbOptions) {
     if (/\b(JOIN|UNION|EXISTS|GROUP BY|count\(|max\(|jsonb_agg)\b/i.test(flat) || /\bIN \(SELECT/i.test(flat)) {
       throw new Error(`fake db: query needs a route: ${flat.slice(0, 160)}`);
     }
-    const m = /^SELECT .+? FROM (\S+)(?: (?!WHERE\b|ORDER\b|LIMIT\b)(\w+))?(?: WHERE (.+?))?(?: ORDER BY (.+?))?(?: LIMIT (\S+))?$/i.exec(flat);
+    const m = /^SELECT (?:DISTINCT )?(.+?) FROM (\S+)(?: (?!WHERE\b|ORDER\b|LIMIT\b)(\w+))?(?: WHERE (.+?))?(?: ORDER BY (.+?))?(?: LIMIT (\S+))?$/i.exec(flat);
     if (!m) throw new Error(`fake db: cannot parse query ${flat.slice(0, 160)}`);
-    const name = m[1]!.split(".")[1]!;
-    let rows = rowsOf(name).filter((row) => matches(row, m[3], params));
-    if (m[4]) {
-      const keys = splitTop(m[4], /^,/).map((part) => {
+    const isDistinct = /^SELECT DISTINCT/i.test(flat);
+    const selectCols = m[1]!.split(",").map((col) => col.trim().replace(/^\w+\./, ""));
+    const name = m[2]!.split(".")[1]!;
+    let rows = rowsOf(name).filter((row) => matches(row, m[4], params));
+    if (m[5]) {
+      const keys = splitTop(m[5], /^,/).map((part) => {
         const [col, dir] = part.trim().split(/\s+/);
         return { col: col!.replace(/^\w+\./, ""), desc: /desc/i.test(dir ?? "") };
       });
@@ -172,8 +174,24 @@ export function createFakeDb(store: Store, options: FakeDbOptions) {
         return 0;
       });
     }
-    if (m[5]) rows = rows.slice(0, Number(evalExpr(m[5], params)));
-    return rows.map((row) => ({ ...row }));
+    if (m[6]) rows = rows.slice(0, Number(evalExpr(m[6], params)));
+    const result = rows.map((row) => {
+      const out: Row = {};
+      for (const col of selectCols) {
+        out[col] = row[col];
+      }
+      return out;
+    });
+    if (isDistinct) {
+      const seen = new Set<string>();
+      return result.filter((row) => {
+        const key = JSON.stringify(row);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    return result;
   }
 
   function insert(sql: string, params: unknown[]): { rowCount: number } {

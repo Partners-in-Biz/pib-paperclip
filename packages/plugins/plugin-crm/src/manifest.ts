@@ -84,6 +84,12 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     } as unknown as JsonSchema,
+    emitClientProjects: {
+      type: "boolean",
+      title: "Emit client projects",
+      description: "Send each client's linked projects to the other plugins so they route work to the right project. Leave off until the links are typed.",
+      default: false,
+    },
   },
 };
 
