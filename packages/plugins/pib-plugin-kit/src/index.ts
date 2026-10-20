@@ -38,6 +38,7 @@ export * from "./waiting.js";
 export * from "./client-project.js";
 export * from "./ask-effects.js";
 export * from "./privacy.js";
+export * from "./growth-scope.js";
 export * from "./sender-scope.js";
 export * from "./drive.js";
 
