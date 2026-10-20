@@ -45,6 +45,7 @@ import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
+import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
@@ -531,6 +532,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // an open question follows its issue, and an agent's close of an onboarding or
   // System health issue is checked (unfinished work reopens with what is missing).
   const doneCheck = doneCheckFor(env);
+  const outwardGate = outwardGateFor(env);
   ctx.events.on("issue.updated", async (event) => {
     try {
       await onAskIssueUpdated(env, event);
@@ -547,6 +549,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+    try {
+      await outwardGate(event);
+    } catch (error) {
+      ctx.logger.info("Outward gate failed", { issueId: event.entityId, error: message(error) });
     }
     try {
       await onIssueNeedsYou(env, event);
