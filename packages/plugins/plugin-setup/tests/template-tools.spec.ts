@@ -180,6 +180,32 @@ describe("template-tools", () => {
       expect(result.data.rendered).toContain("Test Company");
     });
 
+    it("returns error for unknown company id", async () => {
+      const { ctx } = fakeCtx();
+      const pack = loadPack();
+      const nonHostOwned = pack.templates.find((t) => !t.hostOwned)!;
+      let handler: unknown;
+      (ctx as any).tools.register = (_name: string, _decl: unknown, fn: unknown) => {
+        if (_name === "template-get") handler = fn;
+      };
+      registerTemplateTools(ctx);
+      const result = await (handler as any)({ key: nonHostOwned.key, companyId: "nonexistent-company" }, {});
+      expect(result.error).toContain('company "nonexistent-company" not found');
+    });
+
+    it("returns consistent hostOwned: false for non-host templates", async () => {
+      const { ctx } = fakeCtx();
+      const pack = loadPack();
+      const nonHostOwned = pack.templates.find((t) => !t.hostOwned)!;
+      let handler: unknown;
+      (ctx as any).tools.register = (_name: string, _decl: unknown, fn: unknown) => {
+        if (_name === "template-get") handler = fn;
+      };
+      registerTemplateTools(ctx);
+      const result = await (handler as any)({ key: nonHostOwned.key }, {});
+      expect(result.data.hostOwned).toBe(false);
+    });
+
     it("includes subagents when template has them", async () => {
       const { ctx } = fakeCtx();
       const pack = loadPack();

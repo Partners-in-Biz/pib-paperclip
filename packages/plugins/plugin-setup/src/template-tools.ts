@@ -6,24 +6,15 @@ import type { JsonSchema, PluginContext, PluginToolDeclaration } from "@papercli
 import { loadPack, packSources, templateByKey, templateVars, type AgentTemplate, type TemplateVars } from "./templates.js";
 import { renderInstructions } from "./templates-render.js";
 import { renderHash } from "./render-hash.js";
+import { varsFor } from "./new-company.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
 
-interface CompanyInfo {
-  name: string;
-  prefix: string | null;
-}
-
-/** Read company name and issue prefix for template rendering. */
-async function getCompanyInfo(ctx: PluginContext, companyId: string): Promise<CompanyInfo> {
-  try {
-    const company = (await ctx.companies.get(companyId)) as { name?: string; issuePrefix?: string | null } | null;
-    return { name: company?.name ?? "the company", prefix: company?.issuePrefix ?? null };
-  } catch {
-    return { name: "the company", prefix: null };
-  }
+/** Extract string from unknown, or null. */
+function str(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 export const TEMPLATE_TOOLS: PluginToolDeclaration[] = [
@@ -68,69 +59,72 @@ function renderCanonicalHash(template: AgentTemplate): string | null {
   return renderHash(rendered);
 }
 
-/** Get a template's full details. Renders with company vars if companyId given. */
-async function getTemplate(
-  ctx: PluginContext,
-  key: string,
-  companyId?: string
-): Promise<
+type TemplateGetResult =
   | { error: string }
-  | {
-      key: string;
-      hostOwned?: true;
-      stub?: true;
-    }
+  | { key: string; hostOwned: true }
   | {
       key: string;
       file: string;
       scope: string;
-      hostOwned?: false;
+      hostOwned: false;
       raw: string;
       rendered: string;
       renderHash: string;
       subagents?: unknown;
-    }
-> {
+      extraArgs?: unknown;
+    };
+
+/** Get a template's full details. Renders with company vars if companyId given. */
+async function getTemplate(ctx: PluginContext, key: string, companyId?: string): Promise<TemplateGetResult> {
   const template = templateByKey(key);
   if (!template) {
     return { error: `unknown template "${key}"` };
   }
 
   if (template.hostOwned) {
-    return { key, hostOwned: true, stub: true };
+    return { key, hostOwned: true };
   }
 
-  // Get template vars (company-specific if companyId given)
+  // Get template vars: use varsFor if companyId given, otherwise defaults
   let vars: TemplateVars;
   if (companyId) {
-    const company = await getCompanyInfo(ctx, companyId);
-    vars = templateVars({
-      company: company.name === "the company" ? null : company.name,
-      prefix: company.prefix,
-      owner: null,
-      ceo: null,
-      wikiRoot: null,
-    });
+    try {
+      // Validate company exists before getting vars
+      const company = await ctx.companies.get(companyId);
+      if (!company) {
+        return { error: `company "${companyId}" not found` };
+      }
+      const { vars: companyVars } = await varsFor(ctx, { companyId, key: null });
+      vars = companyVars;
+    } catch {
+      return { error: `company "${companyId}" not found` };
+    }
   } else {
     vars = templateVars();
   }
 
-  const { files, blocks } = packSources();
+  const { files } = packSources();
   const raw = files[template.file];
   if (raw === undefined) {
     return { error: `template "${key}" has no instructions file` };
   }
 
   const rendered = renderInstructions(template, vars);
-  return {
+  const result: TemplateGetResult & { key: string; file: string; scope: string; hostOwned: false } = {
     key,
     file: template.file,
     scope: template.scope ?? "generic",
+    hostOwned: false,
     raw,
     rendered,
     renderHash: renderHash(rendered),
-    ...(template.subagents ? { subagents: template.subagents } : {}),
   };
+
+  if (template.subagents) {
+    result.subagents = template.subagents;
+  }
+
+  return result;
 }
 
 /** Register the two tools with ctx.tools.register. */
@@ -146,19 +140,19 @@ export function registerTemplateTools(ctx: PluginContext): void {
 
   ctx.tools.register("template-get", TEMPLATE_TOOLS[1]!, async (params, run) => {
     try {
-      const key = typeof params === "object" && params !== null && "key" in params ? (params as Record<string, unknown>).key : null;
-      if (typeof key !== "string") {
+      const p = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+      const key = str(p.key);
+      if (!key) {
         return { error: "key is required and must be a string" };
       }
-      const companyId =
-        typeof params === "object" && params !== null && "companyId" in params ? (params as Record<string, unknown>).companyId : null;
-      const result = await getTemplate(ctx, key, typeof companyId === "string" ? companyId : undefined);
+      const companyId = str(p.companyId);
+      const result = await getTemplate(ctx, key, companyId ?? undefined);
       if ("error" in result) {
         return { error: result.error };
       }
-      const isStub = "stub" in result && result.stub;
+      const isHostOwned = result.hostOwned === true;
       return {
-        content: isStub ? `Template "${key}" is host-owned.` : `Template "${key}" loaded.`,
+        content: isHostOwned ? `Template "${key}" is host-owned.` : `Template "${key}" loaded.`,
         data: result,
       };
     } catch (e) {

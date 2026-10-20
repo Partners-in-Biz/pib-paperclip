@@ -337,7 +337,7 @@ interface DraftInput {
   wikiRoot?: unknown;
 }
 
-async function varsFor(ctx: PluginContext, input: DraftInput) {
+export async function varsFor(ctx: PluginContext, input: DraftInput) {
   const company = await companyInfo(ctx, input.companyId);
   const ceo = input.ceo && typeof input.ceo === "object" ? (input.ceo as Record<string, unknown>) : null;
   return {
