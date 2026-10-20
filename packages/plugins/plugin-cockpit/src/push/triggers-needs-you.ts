@@ -7,6 +7,7 @@
  */
 
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import type { NotifyOwnerDeps } from "./notify.js";
 import { assignableUser } from "../constants.js";
 import { getRoles } from "../db.js";
 import { message, type Env } from "../env.js";
@@ -19,7 +20,7 @@ import { upsertSeenAssignee } from "./store.js";
  * - Checks if previous assignee != owner and current assignee == owner.
  * - Uses upsertSeenAssignee to prevent replays from firing twice.
  */
-export async function onIssueNeedsYou(env: Env, event: PluginEvent, deps?: { deliver?: (ctx: any, companyId: string, subs: any[], payload: any, opts?: any) => Promise<void> }): Promise<void> {
+export async function onIssueNeedsYou(env: Env, event: PluginEvent, deps?: NotifyOwnerDeps): Promise<void> {
   const companyId = event.companyId;
   const issueId = event.entityId;
   if (!companyId || !issueId) return;
@@ -43,18 +44,26 @@ export async function onIssueNeedsYou(env: Env, event: PluginEvent, deps?: { del
   if (currentAssignee !== ownerUserId) return;
 
   // Get previous assignee (from event payload)
+  // Key insight: host puts only CHANGED fields into _previous for issue.updated.
+  // A missing assigneeUserId key means the assignee did not change.
   const payload = event.payload as Record<string, unknown> | null;
-  const previousFromEvent = payload?._previous && typeof payload._previous === "object" ? (payload._previous as Record<string, unknown>).assigneeUserId : undefined;
-  const previousAssignee = typeof previousFromEvent === "string" ? previousFromEvent : previousFromEvent === null ? null : undefined;
+  const _previous = payload?._previous && typeof payload._previous === "object" ? (payload._previous as Record<string, unknown>) : null;
+  const assigneeChangedInEvent = _previous !== null && "assigneeUserId" in _previous;
+  const previousAssignee = assigneeChangedInEvent ? (_previous.assigneeUserId ?? null) : undefined;
 
   // Fire only if:
-  // - When event carries _previous: BOTH event-previous and seenPrevious differ from owner (prevents replay double-fire)
-  // - When no event previous: seenPrevious differs from owner
+  // - On issue.updated: assigneeUserId key exists in _previous AND its value !== owner AND seenPrevious !== owner
+  // - On issue.created: no _previous at all AND seenPrevious !== owner
   let shouldFire = false;
-  if (previousAssignee !== undefined) {
-    shouldFire = previousAssignee !== ownerUserId && seenPrevious !== ownerUserId;
-  } else {
+  if (event.eventType === "issue.created") {
+    // For issue.created: fire only if seenPrevious differs from owner (no _previous expected)
     shouldFire = seenPrevious !== ownerUserId;
+  } else {
+    // For issue.updated: fire only if assigneeUserId key exists in _previous AND its value differs from owner AND seenPrevious differs from owner
+    if (assigneeChangedInEvent && (typeof previousAssignee === "string" || previousAssignee === null)) {
+      shouldFire = previousAssignee !== ownerUserId && seenPrevious !== ownerUserId;
+    }
+    // If _previous exists but assigneeUserId key is absent, assignee did not change -> do not fire
   }
 
   if (!shouldFire) return;

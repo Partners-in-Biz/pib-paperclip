@@ -4,7 +4,7 @@
  * same issue twice in 6h -> one, link format, replayed event -> one, and assignee away from owner -> no push.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { onIssueNeedsYou } from "../src/push/triggers-needs-you.js";
 import { appendPushLog, listRecentPushLog, upsertSubscription, type PushLogEntry } from "../src/push/store.js";
 import { COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
@@ -49,6 +49,18 @@ d("Needs-you trigger (Postgres)", () => {
       deviceLabel: "Test Device",
     });
   }, 120_000);
+
+  beforeEach(async () => {
+    // Clear push_seen_assignee and push log tables before each test
+    await pg.ctx.db.execute(
+      `DELETE FROM plugin_cockpit_b8a99e8b16.push_seen_assignee WHERE company_id = $1`,
+      [A],
+    );
+    await pg.ctx.db.execute(
+      `DELETE FROM plugin_cockpit_b8a99e8b16.push_log WHERE company_id = $1`,
+      [A],
+    );
+  });
 
   afterAll(async () => {
     await pg?.stop();
@@ -104,39 +116,55 @@ d("Needs-you trigger (Postgres)", () => {
 
   it("unrelated update (title change) -> no push", async () => {
     const now = env.now();
+    const issueId2 = "issue-unrelated-change";
+    const identifier2 = "PAR-3941";
+
+    // First, simulate that this issue was already assigned to owner (with a prior push)
+    // This represents the issue having been assigned to owner before
+    await appendPushLog(pg.ctx, {
+      companyId: A,
+      class: "needs_you",
+      issueRef: identifier2,
+      title: "Earlier Push",
+      status: "sent",
+      createdAt: now,
+    });
+
     // 11+ minutes later to avoid window collapse
     const later = new Date(now.getTime() + 12 * 60 * 1000);
     const event = mockEvent({
-      issueId: ISSUE_ID,
+      issueId: issueId2,
       companyId: A,
       currentAssigneeUserId: OWNER_ID,
       timestamp: later,
+      includeEmptyPrevious: true, // Unrelated update: no assigneeUserId in _previous
     });
 
     const originalGet = pg.ctx.issues.get;
     pg.ctx.issues.get = async () => ({
-      id: ISSUE_ID,
+      id: issueId2,
       companyId: A,
-      identifier: ISSUE_IDENTIFIER,
+      identifier: identifier2,
       title: "Updated Title",
       assigneeUserId: OWNER_ID,
     } as any);
 
     try {
-      await onIssueNeedsYou(env, event);
+      const env2 = { ...env, now: () => later };
+      await onIssueNeedsYou(env2, event);
     } finally {
       pg.ctx.issues.get = originalGet;
     }
 
-    // Should not add a new log entry (already seen as owner)
+    // Should not add a new log entry (assignee did not change)
     const logs = await listRecentPushLog(pg.ctx, A, new Date(later.getTime() - 24 * 60 * 60 * 1000));
-    const sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === ISSUE_IDENTIFIER && l.class === "needs_you");
-    expect(sentLogs).toHaveLength(1); // Still just the one from before
+    const sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier2 && l.class === "needs_you");
+    expect(sentLogs).toHaveLength(1); // Still just the one from the setup
   });
 
   it("same issue twice in 6h with distinct transitions -> one push (duplicate prevented by trigger)", async () => {
-    const issueId2 = "issue-456";
-    const identifier2 = "PAR-3935";
+    const issueId3 = "issue-456";
+    const identifier3 = "PAR-3935";
     const now = env.now();
 
     // Deliver function that logs exactly once, like sendPush does
@@ -155,7 +183,7 @@ d("Needs-you trigger (Postgres)", () => {
 
     // First transition: unassigned -> owner
     const event1 = mockEvent({
-      issueId: issueId2,
+      issueId: issueId3,
       companyId: A,
       _previousAssigneeUserId: null,
       currentAssigneeUserId: OWNER_ID,
@@ -164,11 +192,11 @@ d("Needs-you trigger (Postgres)", () => {
 
     const originalGet = pg.ctx.issues.get;
     pg.ctx.issues.get = async (id: string) => {
-      if (id === issueId2) {
+      if (id === issueId3) {
         return {
-          id: issueId2,
+          id: issueId3,
           companyId: A,
-          identifier: identifier2,
+          identifier: identifier3,
           title: "Another Issue",
           assigneeUserId: OWNER_ID,
         } as any;
@@ -182,7 +210,7 @@ d("Needs-you trigger (Postgres)", () => {
       // Second transition: 3h later with different previous assignee
       const later3h = new Date(now.getTime() + 3 * 60 * 60 * 1000);
       const event2 = mockEvent({
-        issueId: issueId2,
+        issueId: issueId3,
         companyId: A,
         _previousAssigneeUserId: OTHER_USER,
         currentAssigneeUserId: OWNER_ID,
@@ -199,7 +227,7 @@ d("Needs-you trigger (Postgres)", () => {
     // Second call should not fire because seenPrevious is already OWNER_ID
     // So only the first call logs anything
     const logs = await listRecentPushLog(pg.ctx, A, new Date(now.getTime() - 24 * 60 * 60 * 1000));
-    const sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier2);
+    const sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier3);
 
     expect(sentLogs).toHaveLength(1); // Only one from the first call
   });
@@ -342,6 +370,172 @@ d("Needs-you trigger (Postgres)", () => {
     const anyLogs = logs.filter((l: PushLogEntry) => l.issueRef === identifier6);
     expect(anyLogs).toHaveLength(0);
   });
+
+  it("owner-assigned issue with no seen row and unrelated update (no assigneeUserId in _previous) -> no push", async () => {
+    const issueId7 = "issue-unrelated";
+    const identifier7 = "PAR-3937";
+    const now = env.now();
+
+    // Event with _previous but NO assigneeUserId key (e.g., title change)
+    const event = mockEvent({
+      issueId: issueId7,
+      companyId: A,
+      currentAssigneeUserId: OWNER_ID,
+      timestamp: now,
+      // intentionally omit _previousAssigneeUserId to test the case where _previous exists but lacks assigneeUserId
+      includeEmptyPrevious: true,
+    });
+
+    // Track deliver calls
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+    };
+
+    const originalGet = pg.ctx.issues.get;
+    pg.ctx.issues.get = async () => ({
+      id: issueId7,
+      companyId: A,
+      identifier: identifier7,
+      title: "Unrelated Update",
+      assigneeUserId: OWNER_ID,
+    } as any);
+
+    try {
+      await onIssueNeedsYou(env, event, { deliver: mockDeliver });
+    } finally {
+      pg.ctx.issues.get = originalGet;
+    }
+
+    // Should not fire (assignee did not change)
+    expect(deliverCalls).toHaveLength(0);
+    const logs = await listRecentPushLog(pg.ctx, A, new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    const anyLogs = logs.filter((l: PushLogEntry) => l.issueRef === identifier7);
+    expect(anyLogs).toHaveLength(0);
+  });
+
+  it("issue.created assigned to owner -> one push", async () => {
+    const issueId8 = "issue-created";
+    const identifier8 = "PAR-3938";
+    const now = env.now();
+
+    // issue.created event (no _previous)
+    const event: PluginEvent = {
+      eventId: "test-event-create",
+      eventType: "issue.created",
+      occurredAt: now.toISOString(),
+      actorId: "test-actor",
+      actorType: "system",
+      entityId: issueId8,
+      entityType: "issue",
+      companyId: A,
+      payload: {
+        identifier: identifier8,
+        // No _previous for issue.created
+      },
+    };
+
+    // Deliver function that logs exactly once
+    const deliverLogging = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      if (subs.length > 0) {
+        await appendPushLog(ctx, {
+          companyId,
+          class: payload.class,
+          issueRef: payload.tag || null,
+          title: payload.title || null,
+          status: "sent",
+          createdAt: now,
+        });
+      }
+    };
+
+    const originalGet = pg.ctx.issues.get;
+    pg.ctx.issues.get = async () => ({
+      id: issueId8,
+      companyId: A,
+      identifier: identifier8,
+      title: "Created Issue",
+      assigneeUserId: OWNER_ID,
+    } as any);
+
+    try {
+      await onIssueNeedsYou(env, event, { deliver: deliverLogging });
+    } finally {
+      pg.ctx.issues.get = originalGet;
+    }
+
+    // Should fire and log one push
+    const logs = await listRecentPushLog(pg.ctx, A, new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    const sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier8);
+    expect(sentLogs).toHaveLength(1);
+    expect(sentLogs[0]!.class).toBe("needs_you");
+  });
+
+  it("_previous.assigneeUserId === owner -> no push (already seen)", async () => {
+    const issueId9 = "issue-seen-as-owner";
+    const identifier9 = "PAR-3939";
+    const now = env.now();
+
+    // First event: unassigned -> owner
+    const event1 = mockEvent({
+      issueId: issueId9,
+      companyId: A,
+      _previousAssigneeUserId: null,
+      currentAssigneeUserId: OWNER_ID,
+      timestamp: now,
+    });
+
+    const deliverLogging = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      if (subs.length > 0) {
+        await appendPushLog(ctx, {
+          companyId,
+          class: payload.class,
+          issueRef: payload.tag || null,
+          title: payload.title || null,
+          status: "sent",
+          createdAt: now,
+        });
+      }
+    };
+
+    const originalGet = pg.ctx.issues.get;
+    pg.ctx.issues.get = async () => ({
+      id: issueId9,
+      companyId: A,
+      identifier: identifier9,
+      title: "Already Seen Issue",
+      assigneeUserId: OWNER_ID,
+    } as any);
+
+    try {
+      // First call: should fire
+      await onIssueNeedsYou(env, event1, { deliver: deliverLogging });
+
+      let logs = await listRecentPushLog(pg.ctx, A, new Date(now.getTime() - 24 * 60 * 60 * 1000));
+      let sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier9);
+      expect(sentLogs).toHaveLength(1);
+
+      // Second event: owner -> owner (seenPrevious is now owner)
+      const later = new Date(now.getTime() + 1 * 60 * 60 * 1000);
+      const event2 = mockEvent({
+        issueId: issueId9,
+        companyId: A,
+        _previousAssigneeUserId: OWNER_ID,
+        currentAssigneeUserId: OWNER_ID,
+        timestamp: later,
+      });
+
+      const env2 = { ...env, now: () => later };
+      await onIssueNeedsYou(env2, event2, { deliver: deliverLogging });
+
+      // Should still only have 1 push (seenPrevious is OWNER_ID, so condition fails)
+      logs = await listRecentPushLog(pg.ctx, A, new Date(later.getTime() - 24 * 60 * 60 * 1000));
+      sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier9);
+      expect(sentLogs).toHaveLength(1);
+    } finally {
+      pg.ctx.issues.get = originalGet;
+    }
+  });
 });
 
 function mockEvent(opts: {
@@ -350,6 +544,7 @@ function mockEvent(opts: {
   _previousAssigneeUserId?: string | null;
   currentAssigneeUserId: string | null;
   timestamp: Date;
+  includeEmptyPrevious?: boolean;
 }): PluginEvent {
   return {
     eventId: "test-event-1",
@@ -362,7 +557,12 @@ function mockEvent(opts: {
     companyId: opts.companyId,
     payload: {
       identifier: "TEST",
-      ...(opts._previousAssigneeUserId !== undefined && {
+      ...(opts.includeEmptyPrevious && {
+        _previous: {
+          // Intentionally no assigneeUserId key to test unrelated updates
+        },
+      }),
+      ...(!opts.includeEmptyPrevious && opts._previousAssigneeUserId !== undefined && {
         _previous: {
           assigneeUserId: opts._previousAssigneeUserId,
         },
