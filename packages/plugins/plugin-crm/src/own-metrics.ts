@@ -80,7 +80,7 @@ export async function emitAllOwnMetrics(ctx: PluginContext): Promise<number> {
       if (Object.keys(await readConfig(ctx, companyId)).length === 0) continue;
       if (await emitOwnMetrics(ctx, companyId)) emitted += 1;
     } catch (error) {
-      ctx.logger.info("CRM own metrics skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+      ctx.logger.info("CRM own metrics skipped", { companyId, error: error instanceof Error ? error.constructor.name : "Unknown" });
     }
   }
   return emitted;
