@@ -66,7 +66,7 @@ describe("manifest and migration", () => {
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
       "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "agents.pause", "agents.resume", "agents.invoke", "approvals.read", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
-      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
+      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read", "issue.attachments.read",
       // 0.5.0: goals mirrored to the host, and the members for the single-admin check
       "goals.read", "goals.create", "goals.update", "access.members.read",
       // 0.5.1: the harness task's output document, read by the Cockpit itself when it grades a golden scenario

@@ -1,7 +1,7 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
 
-export const VERSION = "0.5.1";
+export const VERSION = "0.5.2";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -45,6 +45,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     // The hire tasks Setup opens for the CEO must wake it: a plugin-created issue wakes nobody by itself.
     "issues.wakeup",
+    "agents.read",
+    "agent.tools.register",
     "plugin.state.read",
     "plugin.state.write",
     "api.routes.register",
