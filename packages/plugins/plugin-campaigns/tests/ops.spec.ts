@@ -167,10 +167,13 @@ describe("companies and skills", () => {
     await expect(harness.runJob("setup-status")).resolves.toBeUndefined();
   });
 
-  it("answers a webhook with a plain error until the plugin is ready, never a crash", async () => {
+  it("answers an unsubscribe webhook with a missing token normally, and throws on unknown endpoints", async () => {
     // The module-level context is set by setup(); the endpoint list is the manifest's.
-    await boot();
-    await expect(plugin.definition.onWebhook!({ endpointKey: "unsubscribe", headers: {}, rawBody: "", requestId: "r" })).rejects.toThrow("This unsubscribe link is not valid.");
+    const { harness } = await boot();
+    // A missing token returns normally (logs a refusal silently).
+    await expect(plugin.definition.onWebhook!({ endpointKey: "unsubscribe", headers: {}, rawBody: "", parsedBody: {}, requestId: "r" })).resolves.toBeUndefined();
+    // An unknown endpoint still throws.
+    await expect(plugin.definition.onWebhook!({ endpointKey: "nope", headers: {}, rawBody: "", requestId: "r" })).rejects.toThrow("Unknown endpoint.");
   });
 });
 
