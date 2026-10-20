@@ -23,6 +23,7 @@ import type { AccountRef } from "./providers/types.js";
 import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
+import { saveCreativeToDrive } from "./drive.js";
 import { syncAccount } from "./sync.js";
 import { isOwnerDelegateApproval, ownerRouteOf } from "./owner-route.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
@@ -190,6 +191,15 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           cta: String(payload.cta),
         });
         results.push({ what: `Created creative "${created.name}"`, ok: true, externalId: created.externalId });
+        await saveCreativeToDrive(rt.ctx, {
+          companyId: rt.companyId,
+          proposalId: p.id,
+          name: created.name,
+          platform: t.account.platform,
+          fields: { externalId: created.externalId, link: payload.link, headline: payload.headline, body: payload.body, cta: payload.cta, imageHash: payload.imageHash ?? null, videoId: payload.videoId ?? null },
+          savedAt: rt.now(),
+          driveSave: rt.driveSave,
+        });
       } else if (p.kind === "create_ad") {
         const payload = p.payload as Record<string, unknown>;
         const created = await t.provider.createAd(t.env, t.token, t.ref, {
