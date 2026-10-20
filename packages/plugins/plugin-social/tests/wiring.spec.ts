@@ -86,6 +86,59 @@ describe("the events do their work", () => {
     expect(harness.getState({ scopeKind: "company", scopeId: "co-1", namespace: "pib-kit", stateKey: "client-projects:company:c1" })).toEqual({ projectIds: ["proj-acme"], updatedAt: "2026-10-03T08:00:00Z" });
   });
 
+  it("stores and reads projects with kind when the new payload format is used (social+website -> social project chosen)", async () => {
+    const { harness } = await boot();
+    await harness.emit("plugin.partnersinbiz.crm.client.projects.updated", {
+      clientKind: "company",
+      clientRef: "c1",
+      projects: [
+        { projectId: "proj-social", kind: "social" },
+        { projectId: "proj-website", kind: "website" },
+      ],
+      updatedAt: "2026-10-03T08:00:00Z",
+    }, { companyId: "co-1" });
+    const stored = harness.getState({ scopeKind: "company", scopeId: "co-1", namespace: "pib-kit", stateKey: "client-projects:company:c1" });
+    expect(stored).toEqual({
+      projectIds: ["proj-social", "proj-website"],
+      projects: [
+        { projectId: "proj-social", kind: "social" },
+        { projectId: "proj-website", kind: "website" },
+      ],
+      updatedAt: "2026-10-03T08:00:00Z",
+    });
+  });
+
+  it("falls back to the Social project when a client has only website project (existing behavior)", async () => {
+    const { harness } = await boot();
+    await harness.emit("plugin.partnersinbiz.crm.client.projects.updated", {
+      clientKind: "company",
+      clientRef: "c1",
+      projects: [{ projectId: "proj-website", kind: "website" }],
+      updatedAt: "2026-10-03T08:00:00Z",
+    }, { companyId: "co-1" });
+    const stored = harness.getState({ scopeKind: "company", scopeId: "co-1", namespace: "pib-kit", stateKey: "client-projects:company:c1" });
+    expect(stored).toEqual({
+      projectIds: ["proj-website"],
+      projects: [{ projectId: "proj-website", kind: "website" }],
+      updatedAt: "2026-10-03T08:00:00Z",
+    });
+  });
+
+  it("treats legacy projectIds-only event as null-kind links and falls back when social kind is requested", async () => {
+    const { harness } = await boot();
+    await harness.emit("plugin.partnersinbiz.crm.client.projects.updated", {
+      clientKind: "company",
+      clientRef: "c1",
+      projectIds: ["proj-legacy"],
+      updatedAt: "2026-10-03T08:00:00Z",
+    }, { companyId: "co-1" });
+    const stored = harness.getState({ scopeKind: "company", scopeId: "co-1", namespace: "pib-kit", stateKey: "client-projects:company:c1" });
+    expect(stored).toEqual({
+      projectIds: ["proj-legacy"],
+      updatedAt: "2026-10-03T08:00:00Z",
+    });
+  });
+
   it("registers the connect-account effect, and an answer nobody gave is refused, never run", async () => {
     const { harness, emitted } = await boot();
     expect(askEffectKeys()).toContain(CONNECT_EFFECT_KEY);

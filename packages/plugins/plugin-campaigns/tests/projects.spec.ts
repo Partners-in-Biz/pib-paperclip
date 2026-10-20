@@ -11,6 +11,9 @@ const project = (id: string, extra: Record<string, unknown> = {}) => ({ id, comp
 const link = (harness: Awaited<ReturnType<typeof boot>>["harness"], projectIds: string[], updatedAt = new Date().toISOString(), ref = "acme") =>
   harness.emit(CRM as `plugin.${string}`, { clientKind: "company", clientRef: ref, projectIds, updatedAt }, { companyId: CO });
 
+const linkWithKinds = (harness: Awaited<ReturnType<typeof boot>>["harness"], projects: Array<{ projectId: string; kind: string | null }>, updatedAt = new Date().toISOString(), ref = "acme") =>
+  harness.emit(CRM as `plugin.${string}`, { clientKind: "company", clientRef: ref, projects, updatedAt }, { companyId: CO });
+
 function store(): Store {
   const s = seed();
   s.campaigns!.push(
@@ -142,5 +145,52 @@ describe("client work opens in the client's own project", () => {
     expect(revise).toBeTruthy();
     expect(revise?.projectId).toBe(await campaignsProjectId(harness.ctx, CO));
     expect(revise?.projectId).not.toBe("proj-acme");
+  });
+});
+
+describe("client work with kind-based project resolution", () => {
+  it("selects the campaigns project when campaigns and website links exist", async () => {
+    const s = store();
+    const { harness } = await boot({ store: s });
+    harness.seed({ projects: [project("proj-campaigns"), project("proj-website")] });
+    await linkWithKinds(harness, [
+      { projectId: "proj-campaigns", kind: "campaigns" },
+      { projectId: "proj-website", kind: "website" },
+    ]);
+    const issue = await stepIssueFor(harness, s, "e-acme", "camp-acme");
+    expect(issue.projectId).toBe("proj-campaigns");
+  });
+
+  it("falls back to managed Campaigns project when only website link exists", async () => {
+    const s = store();
+    const { harness } = await boot({ store: s });
+    harness.seed({ projects: [project("proj-website")] });
+    await linkWithKinds(harness, [
+      { projectId: "proj-website", kind: "website" },
+    ]);
+    const issue = await stepIssueFor(harness, s, "e-acme", "camp-acme");
+    const managed = await campaignsProjectId(harness.ctx, CO);
+    expect(issue.projectId).toBe(managed);
+  });
+
+  it("selects the platform project when platform and website links exist but campaigns requested", async () => {
+    const s = store();
+    const { harness } = await boot({ store: s });
+    harness.seed({ projects: [project("proj-platform"), project("proj-website")] });
+    await linkWithKinds(harness, [
+      { projectId: "proj-platform", kind: "platform" },
+      { projectId: "proj-website", kind: "website" },
+    ]);
+    const issue = await stepIssueFor(harness, s, "e-acme", "camp-acme");
+    expect(issue.projectId).toBe("proj-platform");
+  });
+
+  it("treats legacy projectIds as null-kind links and uses them when kind is requested", async () => {
+    const s = store();
+    const { harness } = await boot({ store: s });
+    harness.seed({ projects: [project("proj-acme")] });
+    await link(harness, ["proj-acme"]);
+    const issue = await stepIssueFor(harness, s, "e-acme", "camp-acme");
+    expect(issue.projectId).toBe("proj-acme");
   });
 });
