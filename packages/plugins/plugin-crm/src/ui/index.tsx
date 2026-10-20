@@ -77,6 +77,7 @@ import { ClientAgreementsCard, type CreatedKey } from "./agreements.js";
 import { agreementsVisible, type AgreementsView, type GrowthView } from "./agreements-view.js";
 import { ClientCareCard } from "./care.js";
 import { careVisible, type CareView } from "./care-view.js";
+import { DriveFiles } from "./DriveFiles.js";
 import type { CreatedLeadForm, LeadFormView } from "./leads-view.js";
 import type { ChecklistResult } from "./checklist-view.js";
 import { NewClientCard } from "./new-client.js";
@@ -1478,6 +1479,11 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
               onLink={(projectId) => run(() => linkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project linked")}
               onUnlink={(projectId) => run(() => unlinkProject({ client: `${client.kind}:${client.id}`, projectId }), "Project unlinked")}
             />
+          ) : null}
+          {company || companies.length === 0 ? (
+            (data.projects ?? []).map((project) => (
+              <DriveFiles key={project.projectId} projectId={project.projectId} />
+            ))
           ) : null}
           {company || companies.length === 0 ? (
             <NewClientCard
