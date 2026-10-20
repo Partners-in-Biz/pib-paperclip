@@ -378,6 +378,76 @@ describe("the pack validator can fail", () => {
   it("refuses a manifest that is not an object", () => expect(parsePack("x", {}, {}).problems).toEqual(["the manifest is not an object"]));
 });
 
+describe("shared blocks v2 (PAR-4023)", () => {
+  const isMarkdownHeading = (line: string) => /^\s{0,3}#{1,6}\s/.test(line);
+  const isTextUnderMaxSize = (text: string, max: number) => text.length <= max;
+  const includedBlockNames = (text: string) => Array.from(text.matchAll(/\{\{include:([a-z0-9-]+)\}\}/g), (m) => m[1]!);
+  const tokenLeaks = (text: string) => Array.from(text.matchAll(/Peet|Elon|R500|PAR-/g));
+
+  const genericIncludesPibBlock = (templates: Array<{ key: string; body: string }>, pibKeys: Set<string>) =>
+    templates.filter((t) => !pibKeys.has(t.key) && includedBlockNames(t.body).some((b) => b.startsWith("pib-"))).map((t) => t.key);
+
+  const PIB_BLOCKS = ["pib-autonomy", "pib-company-standards", "pib-mistakes", "pib-design-seo-gate"];
+  const OTHER_NEW_BLOCKS = ["scheduled-runs", "anti-loop", "stuck-rule", "evidence", "testing"];
+  const ALL_NEW_BLOCKS = [...PIB_BLOCKS, ...OTHER_NEW_BLOCKS];
+
+  it("holds 9 new blocks, each under 2400 chars, with total under 12000, no markdown headings", () => {
+    const blocks = ALL_NEW_BLOCKS.map((name) => ({ name, text: PACK_SHARED_BLOCKS[name] || "" }));
+    let total = 0;
+    for (const { name, text } of blocks) {
+      expect(text.length, `${name} size`).toBeGreaterThan(0);
+      expect(isTextUnderMaxSize(text, 2400), `${name} <= 2400`).toBe(true);
+      const lines = text.split("\n");
+      for (const line of lines) {
+        if (!line.includes("<!--")) expect(isMarkdownHeading(line), `${name} no heading: ${line}`).toBe(false);
+      }
+      total += text.length;
+    }
+    expect(total <= 12000, "total blocks size").toBe(true);
+  });
+
+  it("every {{include:X}} in every template resolves to an existing block", () => {
+    const allBlocks = { ...PACK_SHARED_BLOCKS };
+    for (const [key, body] of Object.entries(PACK_AGENT_FILES)) {
+      const names = includedBlockNames(body);
+      for (const name of names) {
+        expect(name in allBlocks, `${key} includes ${name}`).toBe(true);
+      }
+    }
+  });
+
+  it("every non-pib- new block has no token leaks", () => {
+    for (const name of OTHER_NEW_BLOCKS) {
+      const text = PACK_SHARED_BLOCKS[name];
+      const leaks = tokenLeaks(text || "");
+      expect(leaks.length, `${name} token leaks`).toBe(0);
+    }
+  });
+
+  it("templates in PiB scope do not include non-pib- new blocks; genericIncludesPibBlock reports them if they do", () => {
+    const manifest = PACK_MANIFEST_JSON as any;
+    const PIB_SCOPE_KEYS = new Set<string>();
+    for (const t of manifest.templates || []) {
+      if (t.scope === "pib") PIB_SCOPE_KEYS.add(t.key);
+    }
+    const notInScope = (manifest.templates || []).map((t: any) => ({ key: t.key, body: PACK_AGENT_FILES[t.key] || "" }));
+    const violations = genericIncludesPibBlock(notInScope, PIB_SCOPE_KEYS);
+    expect(violations).toEqual([]);
+  });
+
+  it("proves the helpers work: fabricated cases fail as expected", () => {
+    expect(isTextUnderMaxSize("x".repeat(2401), 2400)).toBe(false);
+    expect(isMarkdownHeading("## Title")).toBe(true);
+    expect(isMarkdownHeading("  ## Title")).toBe(true);
+    expect(isMarkdownHeading("    ## Title")).toBe(false);
+    const leaks = tokenLeaks("ask Peet about R500 on PAR-12");
+    expect(leaks.length).toBe(3);
+    const fakeTemplate = [{ key: "test", body: "{{include:pib-autonomy}}" }];
+    expect(genericIncludesPibBlock(fakeTemplate, new Set())).toEqual(["test"]);
+    expect(genericIncludesPibBlock(fakeTemplate, new Set(["test"]))).toEqual([]);
+  });
+});
+
 describe("block expansion", () => {
   it("replaces include markers with the shared block", () => {
     expect(expandBlocks("A\n{{include:x}}\nB", { x: "BLOCK\n" })).toBe("A\nBLOCK\nB\n");
