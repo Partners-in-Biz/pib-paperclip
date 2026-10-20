@@ -44,6 +44,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     const { uploadFetch: realUploadFetch, state } = createFakeBroker({ failWith: failWithUpload });
     const brokerState_ = brokerState || state;
     const folderCache = new Map<string, { id: string; path: string }>();
+    let publicUrlFetchMock: ((url: string) => any) | null = null;
 
     const brokerFactory = (fetchFn: any, cfg: any) => {
       const broker: Broker = {
@@ -85,13 +86,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     };
 
     vi.spyOn(brokerModule, 'createBroker' as any).mockImplementation(brokerFactory);
-    ctx.http = { fetch: async () => ({} as any) };
+    ctx.http = { fetch: async (url: string) => publicUrlFetchMock ? publicUrlFetchMock(url) : ({} as any) };
     const configMap = new Map<string, any>();
     ctx.config = { get: async (companyId: string) => configMap.get(companyId) ?? null, set: async (companyId: string, value: any) => configMap.set(companyId, value) } as any;
     ctx.projects = { get: async (projectId: string, companyId: string) => projectId.startsWith('p') ? { id: projectId, companyId, name: projectId } : null, list: async () => [] } as any;
 
     const viewer = { companyId: CO_A, userId: "user-1", runId: "run-1", agentId: "agent-1", role: "agent" as const };
-    return { viewer, brokerState: brokerState_, configMap };
+    return { viewer, brokerState: brokerState_, configMap, setPublicUrlFetchMock: (fn: (url: string) => any) => { publicUrlFetchMock = fn; } };
   }
 
   afterEach(() => {
@@ -259,5 +260,39 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     // Verify the full serialized result contains no sensitive data
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain(tempDir);
+  });
+
+  it("publicUrl save -> status 'saved', url stripped of sig params, 1 upload", async () => {
+    const { viewer, brokerState, configMap, setPublicUrlFetchMock } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const content = Buffer.from("public bytes content");
+    setPublicUrlFetchMock(() => ({ status: 200, ok: true, arrayBuffer: async () => content.buffer, headers: new Map() }));
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 public v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/file.txt",
+    });
+    expect(result.status).toBe("saved");
+    expect(result.sha256).toBeTruthy();
+    expect(result.url).not.toMatch(/X-Amz|Signature|token/);
+    expect(brokerState.requests).toHaveLength(1);
+  });
+
+  it("publicUrl fetch_failed -> fetch_failed status", async () => {
+    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    setPublicUrlFetchMock(() => ({ status: 404, ok: false, arrayBuffer: async () => (new Uint8Array()).buffer, headers: new Map() }));
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 fetch v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/404",
+    });
+    expect(result.status).toBe("fetch_failed");
+  });
+
+  it("publicUrl private IP -> fetch_failed", async () => {
+    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    setPublicUrlFetchMock(() => { throw new Error("blocked_private_address"); });
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 blocked v1.txt", mimeType: "text/plain", publicUrl: "http://192.168.1.1/file",
+    });
+    expect(result.status).toBe("invalid_input");
   });
 });
