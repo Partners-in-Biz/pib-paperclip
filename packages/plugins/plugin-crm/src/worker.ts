@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
+import { emitAllOwnMetrics } from "./own-metrics.js";
 import {
   definePlugin,
   runWorker,
@@ -484,6 +485,7 @@ const plugin = definePlugin({
         if (result.summaries || result.hygiene) ctx.logger.info("CRM sales weekly", result);
       });
     });
+    ctx.jobs.register("own-metrics", () => trackJob(ctx, "own-metrics", async () => void (await emitAllOwnMetrics(ctx))));
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
