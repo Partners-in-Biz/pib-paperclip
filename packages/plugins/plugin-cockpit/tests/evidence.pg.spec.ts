@@ -4,8 +4,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { recordEvidence } from "../src/evidence.js";
+import manifest from "../src/manifest.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
 
@@ -14,7 +14,7 @@ const d = available ? describe : describe.skip;
 const AGENT = "aaaaaaaa-0000-4000-8000-0000000000a1";
 
 // Read actual package.json version at test time
-const pkgJson = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf-8")) as { version: string };
+const pkgJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as { version: string };
 const EXPECTED_VERSION = pkgJson.version;
 
 d("Issue evidence (Postgres)", () => {
@@ -242,8 +242,7 @@ d("Issue evidence (Postgres)", () => {
   });
 
   it("manifest lists issue.attachments.read capability and version matches package.json", async () => {
-    const w = await make();
-    expect(w.manifest.capabilities).toContain("issue.attachments.read");
-    expect(w.manifest.version).toBe(EXPECTED_VERSION);
+    expect(manifest.capabilities).toContain("issue.attachments.read");
+    expect(manifest.version).toBe(EXPECTED_VERSION);
   });
 });
