@@ -3,7 +3,7 @@ import { realpath as realpathAsync } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { relative } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { normalizeUrl } from "@partnersinbiz/pib-plugin-kit";
+import { normalizeUrl, safeFetchBytes } from "@partnersinbiz/pib-plugin-kit";
 import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError } from "./broker.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
@@ -13,25 +13,27 @@ const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo",
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-export async function fetchPublicBytes(ctx: PluginContext, url: string, maxRedirects = 5): Promise<Uint8Array> {
-  let current = normalizeUrl(url);
-  for (let hop = 0; hop <= maxRedirects; hop += 1) {
-    const res = await ctx.http.fetch(current, { method: "GET", headers: { "User-Agent": "PiB-SEO-Bot/1.0 (+https://partnersinbiz.online)" }, redirect: "manual" });
-    const headers: Record<string, string> = {};
-    res.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
-    if (res.status >= 300 && res.status < 400 && headers.location) {
-      current = new URL(headers.location, current).toString();
-      current = normalizeUrl(current);
-      continue;
+export async function fetchPublicBytes(ctx: PluginContext, url: string): Promise<Uint8Array> {
+  // Validate scheme is http or https
+  const normalized = normalizeUrl(url);
+  try {
+    const urlObj = new URL(normalized);
+    if (!["http:", "https:"].includes(urlObj.protocol)) {
+      throw new Error("fetch_failed");
     }
-    if (!res.ok) throw new Error("fetch_failed");
-    const contentLength = headers["content-length"];
-    if (contentLength && parseInt(contentLength, 10) > MAX_FILE_BYTES) throw new Error("too_large");
-    const buffer = await res.arrayBuffer();
-    if (buffer.byteLength > MAX_FILE_BYTES) throw new Error("too_large");
-    return new Uint8Array(buffer);
+  } catch {
+    throw new Error("fetch_failed");
   }
-  throw new Error("fetch_failed");
+
+  try {
+    const result = await safeFetchBytes(ctx, url, { maxRedirects: 3, maxBytes: MAX_FILE_BYTES });
+    if (result.status !== 200) {
+      throw new Error("fetch_failed");
+    }
+    return result.bytes;
+  } catch {
+    throw new Error("fetch_failed");
+  }
 }
 
 export interface SaveDriveFileInput {

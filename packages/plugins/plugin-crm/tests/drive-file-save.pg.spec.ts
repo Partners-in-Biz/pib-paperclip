@@ -44,7 +44,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     const { uploadFetch: realUploadFetch, state } = createFakeBroker({ failWith: failWithUpload });
     const brokerState_ = brokerState || state;
     const folderCache = new Map<string, { id: string; path: string }>();
-    let publicUrlFetchMock: ((url: string) => any) | null = null;
+    let publicUrlFetchMock: ((url: string, init?: any) => any) | null = null;
 
     const brokerFactory = (fetchFn: any, cfg: any) => {
       const broker: Broker = {
@@ -86,13 +86,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     };
 
     vi.spyOn(brokerModule, 'createBroker' as any).mockImplementation(brokerFactory);
-    ctx.http = { fetch: async (url: string) => publicUrlFetchMock ? publicUrlFetchMock(url) : ({} as any) };
+    ctx.http = { fetch: async (url: string, init?: any) => publicUrlFetchMock ? publicUrlFetchMock(url, init) : ({} as any) } as any;
     const configMap = new Map<string, any>();
     ctx.config = { get: async (companyId: string) => configMap.get(companyId) ?? null, set: async (companyId: string, value: any) => configMap.set(companyId, value) } as any;
     ctx.projects = { get: async (projectId: string, companyId: string) => projectId.startsWith('p') ? { id: projectId, companyId, name: projectId } : null, list: async () => [] } as any;
 
     const viewer = { companyId: CO_A, userId: "user-1", runId: "run-1", agentId: "agent-1", role: "agent" as const };
-    return { viewer, brokerState: brokerState_, configMap, setPublicUrlFetchMock: (fn: (url: string) => any) => { publicUrlFetchMock = fn; } };
+    return { viewer, brokerState: brokerState_, configMap, setPublicUrlFetchMock: (fn: (url: string, init?: any) => any) => { publicUrlFetchMock = fn; } };
   }
 
   afterEach(() => {
@@ -266,7 +266,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     const { viewer, brokerState, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const content = Buffer.from("public bytes content");
-    setPublicUrlFetchMock(() => ({ status: 200, ok: true, arrayBuffer: async () => content.buffer, headers: new Map() }));
+    setPublicUrlFetchMock(() => new Response(content.buffer, { status: 200, headers: { "content-type": "text/plain" } }));
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 public v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/file.txt",
     });
@@ -276,23 +276,72 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(brokerState.requests).toHaveLength(1);
   });
 
-  it("publicUrl fetch_failed -> fetch_failed status", async () => {
+  it("publicUrl non-2xx response -> fetch_failed status", async () => {
     const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
-    setPublicUrlFetchMock(() => ({ status: 404, ok: false, arrayBuffer: async () => (new Uint8Array()).buffer, headers: new Map() }));
+    setPublicUrlFetchMock(() => new Response(null, { status: 404 }));
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 fetch v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/404",
     });
     expect(result.status).toBe("fetch_failed");
+    expect(result.hint).not.toContain("example.com");
   });
 
-  it("publicUrl private IP -> fetch_failed", async () => {
+  it("publicUrl private IP direct -> fetch_failed via SSRF guard", async () => {
     const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
-    setPublicUrlFetchMock(() => { throw new Error("blocked_private_address"); });
-    const result = await saveDriveFile(ctx, viewer as any, {
-      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 blocked v1.txt", mimeType: "text/plain", publicUrl: "http://192.168.1.1/file",
+    const calls: Array<{ url: string; init?: any }> = [];
+    setPublicUrlFetchMock((url: string, init?: any) => {
+      calls.push({ url, init });
+      // Model SSRF host-blocking by rejecting private/loopback addresses
+      if (url.includes("127.0.0.1") || url.includes("169.254.169.254") || url.includes("10.0.0.1")) {
+        throw new Error("SSRF protection: blocked private address");
+      }
+      return new Response(Buffer.from("public"), { status: 200, headers: { "content-type": "text/plain" } });
     });
-    expect(result.status).toBe("invalid_input");
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 blocked v1.txt", mimeType: "text/plain", publicUrl: "http://127.0.0.1/file",
+    });
+    expect(result.status).toBe("fetch_failed");
+    expect(result.hint).not.toContain("127.0.0.1");
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("publicUrl redirect to private IP -> fetch_failed via SSRF re-check", async () => {
+    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const calls: Array<{ url: string; init?: any }> = [];
+    setPublicUrlFetchMock((url: string, init?: any) => {
+      calls.push({ url, init });
+      // Model SSRF host-blocking by rejecting private/loopback addresses
+      if (url.includes("169.254.169.254")) {
+        throw new Error("SSRF protection: blocked private address");
+      }
+      // First request redirects from public to private
+      if (url === "https://example.com/redirect") {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/secret" } });
+      }
+      return new Response(Buffer.from("public"), { status: 200, headers: { "content-type": "text/plain" } });
+    });
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 redir v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/redirect",
+    });
+    expect(result.status).toBe("fetch_failed");
+    expect(result.hint).not.toContain("169.254.169.254");
+    expect(calls.length).toBeGreaterThan(1); // Verify redirect was followed and re-checked
+    expect(calls.some(c => c.init?.redirect === "manual")).toBe(true);
+  });
+
+  it("publicUrl over-cap body -> fetch_failed", async () => {
+    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const largeData = new Uint8Array(5 * 1024 * 1024 + 1); // Over 5MB limit
+    setPublicUrlFetchMock(() => new Response(largeData.buffer, { status: 200 }));
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 large v1.txt", mimeType: "text/plain", publicUrl: "https://example.com/large",
+    });
+    expect(result.status).toBe("fetch_failed");
+    expect(JSON.stringify(result)).not.toContain("example.com");
   });
 });
