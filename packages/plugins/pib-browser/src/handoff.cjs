@@ -9,6 +9,10 @@ function createHandoff({ dir = '/run/pib-browser/handoff', fs = require('node:fs
         // Validate identity format with parseIdentity
         if (!parseIdentity(identity)) return false;
 
+        // Check the flag directory and file ownership/permissions. The parent /run/pib-browser
+        // directory must itself be root-owned, created by the installer or systemd RuntimeDirectory.
+        // This function does not verify parent directory ownership.
+
         // Check directory: real directory, root-owned, not group/world-writable
         const dirStat = fs.lstatSync(dir);
         if (!dirStat.isDirectory() || dirStat.uid !== 0 || (dirStat.mode & 0o022) !== 0) {
