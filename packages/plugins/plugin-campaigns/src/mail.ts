@@ -93,6 +93,7 @@ import { assigneeFields, workOwner } from "./owner.js";
 import { projectForCampaign } from "./projects.js";
 import { resolveEmailSender, senderDisplayName, type EmailSender } from "./sender.js";
 import { announceSuppression, suppressAddress, suppressionPayload } from "./suppress.js";
+import { saveSendRecord } from "./drive.js";
 
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
@@ -385,6 +386,20 @@ async function applySendResult(ctx: PluginContext, row: OutboxRow, result: MailS
       ...(subject ? { subject } : {}),
     },
   });
+
+  // Not awaited: send result returns immediately; Drive save continues in the background.
+  void saveSendRecord(ctx, {
+    companyId: enrollment.companyId,
+    campaignId: enrollment.campaignId,
+    enrollmentId: enrollment.id,
+    stepPosition: enrollment.stepPosition,
+    variant: sentStep?.variant ?? "a",
+    subject,
+    messageId: result.messageId ?? null,
+    threadId: result.threadId ?? null,
+    sentAt: new Date(),
+  }).catch(() => undefined);
+
   const sentEnrollment: EnrollmentDraft = {
     ...enrollment,
     sendingKey: null,
