@@ -79,7 +79,7 @@ export async function ensureAdsProject(ctx: PluginContext, companyId: string): P
 export async function projectForScope(ctx: PluginContext, companyId: string, scopeKey: ScopeKey): Promise<string | undefined> {
   const fallback = (await adsProjectId(ctx, companyId)) ?? null;
   try {
-    const choice = await resolveClientProjectId(ctx, companyId, scopeOfKey(scopeKey), { fallbackProjectId: fallback });
+    const choice = await resolveClientProjectId(ctx, companyId, scopeOfKey(scopeKey), { fallbackProjectId: fallback, kind: "ads" });
     return choice.projectId ?? undefined;
   } catch {
     return fallback ?? undefined;

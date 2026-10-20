@@ -181,11 +181,14 @@ export interface ClientProjectChoice {
  * The project to open a piece of work in. Own work (`scope` null) takes
  * `fallbackProjectId`, the plugin's own managed project. A client with a linked
  * project gets it (the first, when several; pass `pick` to choose). When `kind`
- * is specified, only linked projects with that exact kind are considered, falling
- * back to "platform" if no match. A client with no suitable link gets the fallback,
- * never another client's. Linked projects that no longer exist or are archived are
- * skipped when the plugin may read projects (`projects.read`); without that
- * capability the link is trusted.
+ * is specified, selection proceeds in steps:
+ * - Step 1: Exact match on the requested kind.
+ * - Step 2: If no step 1 match and kind != "platform", fall through to "platform" kind.
+ * - Step 3: If no steps 1–2 match, use any legacy link with kind=null (for backward compatibility).
+ * - Step 4: Fall back to fallbackProjectId.
+ * A client with no suitable link gets the fallback, never another client's.
+ * Linked projects that no longer exist or are archived are skipped when the plugin
+ * may read projects (`projects.read`); without that capability the link is trusted.
  */
 export async function resolveClientProjectId(
   ctx: PluginContext,
@@ -276,6 +279,24 @@ export async function resolveClientProjectId(
     }
   }
 
-  // Step 3: Fall back to the plugin's own project
+  // Step 3: If no step 1 or 2 match, try legacy data (kind=null) for backward compatibility
+  const step3Candidates: Array<{ projectId: string; kind: string | null }> = [];
+  for (const link of links) {
+    if (link.kind === null) {
+      if (await isUsable(link.projectId)) {
+        step3Candidates.push(link);
+      }
+    }
+  }
+
+  if (step3Candidates.length > 0) {
+    const ids = step3Candidates.map((l) => l.projectId);
+    const chosen = options.pick ? options.pick(ids) : ids[0];
+    if (chosen) {
+      return { projectId: chosen, source: "client-link", kind: null, linked: linkedIds };
+    }
+  }
+
+  // Step 4: Fall back to the plugin's own project
   return { projectId: fallback, source: fallback ? "fallback" : "none", kind: null, linked: linkedIds };
 }
