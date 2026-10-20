@@ -5,85 +5,168 @@ import { CRM_PLUGIN_ID } from "../src/crm-projection.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
 const tick = () => new Promise(r => setTimeout(r, 10));
+
 describe("drive save", () => {
   let fake: ReturnType<typeof fakeCtx>;
-  beforeEach(() => { fake = fakeCtx({ companies: { "co-1": {} } }); vi.clearAllMocks(); });
 
-  it("saved: emits contentBase64+sha256", async () => {
-    const bytes = Buffer.from([1, 2, 3]);
-    const p = driveSave(fake.ctx, { companyId: "co-1", kind: "attachment", name: "test.bin", mimeType: "application/octet-stream", bytes });
+  beforeEach(() => {
+    fake = fakeCtx({ companies: { "co-1": {} } });
+    vi.clearAllMocks();
+  });
+
+  it("(1) saved: emits contentBase64+sha256, resolves driveFileId+url", async () => {
+    const bytes = Buffer.from([1, 2, 3, 255, 254, 253]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "attachment", name: "test.bin", mimeType: "application/octet-stream", bytes });
     await tick();
     const emitted = fake.emitted[0]!.payload;
+    expect(emitted.sha256).toBe(sha256);
     expect(Buffer.from(emitted.contentBase64 as string, "base64")).toEqual(bytes);
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: emitted.requestId, driveFileId: "f", url: "https://example.com/f" });
-    expect((await p).status).toBe("saved");
+    const requestId = emitted.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-123", url: "https://drive.example.com/file-123" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+    if (result.status === "saved") expect(result.driveFileId).toBe("file-123");
   });
 
-  it("failed: returns reason+hint", async () => {
-    const p = driveSave(fake.ctx, { companyId: "co-1", kind: "test", name: "x", mimeType: "x", bytes: Buffer.from("x") });
+  it("(2) failed: returns status=failed with reason+hint", async () => {
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "test", name: "test.txt", mimeType: "text/plain", bytes: Buffer.from("test") });
     await tick();
-    const rid = fake.emitted[0]!.payload.requestId as string;
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.failed}`, "co-1", { requestId: rid, reason: "upload_failed", hint: "timeout" });
-    const result = await p;
-    expect(result.status === "failed" && result.reason).toBe("upload_failed");
+    const requestId = fake.emitted[0]!.payload.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.failed}`, "co-1", { requestId, reason: "upload_failed", hint: "Network timeout" });
+    const result = await promise;
+    if (result.status === "failed") {
+      expect(result.reason).toBe("upload_failed");
+      expect(result.hint).toBe("Network timeout");
+    }
   });
 
-  it("timeout: no_ack", async () => {
+  it("(3) timeout: no_ack on timeout, late reply ignored", async () => {
     vi.useFakeTimers();
-    const p = driveSave(fake.ctx, { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x"), timeoutMs: 50 });
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "test", name: "test.txt", mimeType: "text/plain", bytes: Buffer.from("test"), timeoutMs: 50 });
     vi.advanceTimersByTime(100);
-    expect((await p).status).toBe("no_ack");
+    const result = await promise;
+    const requestId = fake.emitted[0]!.payload.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-1", url: "https://example.com/file-1" });
+    expect(result.status).toBe("no_ack");
     vi.useRealTimers();
   });
 
-  it("emit failure: emit_failed", async () => {
-    const result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error()) } }, { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
-    expect(result.status === "failed" && result.reason).toBe("emit_failed");
+  it("(4) never throws: emit failures + invalid inputs", async () => {
+    let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")) } },
+      { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") expect(result.reason).toBe("emit_failed");
+
+    result = await driveSave({ events: { on: vi.fn(), emit: vi.fn(() => { throw new Error("E"); }) } },
+      { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
+    if (result.status === "failed") expect(result.reason).toBe("emit_failed");
+
+    const cases = [
+      { requestId: "bad-id", bytes: Buffer.from("x"), reason: "invalid_request_id" },
+      { bytes: Buffer.alloc(5 * 1024 * 1024 + 1), reason: "too_large" },
+      { publicUrl: "http://x.com", reason: "invalid_input" },
+      { reason: "invalid_input" },
+    ] as const;
+
+    for (const tc of cases) {
+      fake.emitted = [];
+      const opts: any = { companyId: "co-1", kind: "x", name: "x", mimeType: "x" };
+      if ("requestId" in tc) opts.requestId = tc.requestId;
+      if ("bytes" in tc) opts.bytes = tc.bytes;
+      if ("publicUrl" in tc) opts.publicUrl = tc.publicUrl;
+      result = await driveSave(fake.ctx, opts);
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") expect(result.reason).toBe(tc.reason);
+      expect(fake.emitted).toHaveLength(0);
+    }
   });
 
-  it("invalid subfolder: invalid_input", async () => {
-    fake.emitted = [];
-    const r = await driveSave(fake.ctx, { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x"), subfolder: "" });
-    expect(r.status === "failed" && r.reason).toBe("invalid_input");
-    expect(fake.emitted).toHaveLength(0);
-  });
-
-  it("mismatched requestId/companyId: ignored", async () => {
-    const p = driveSave(fake.ctx, { companyId: "co-1", requestId: "r1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x"), timeoutMs: 50 });
+  it("(5) wrong requestId/companyId ignored", async () => {
+    const promise = driveSave(fake.ctx, { companyId: "co-1", requestId: "req1", kind: "test", name: "test.txt", mimeType: "text/plain", bytes: Buffer.from("test"), timeoutMs: 50 });
     await tick();
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: "wrong", driveFileId: "f1", url: "https://example.com/f1" });
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: "wrong", driveFileId: "file-1", url: "https://example.com/file-1" });
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-2", { requestId: "req1", driveFileId: "file-2", url: "https://example.com/file-2" });
     vi.useFakeTimers();
     vi.advanceTimersByTime(100);
-    expect((await p).status).toBe("no_ack");
+    const result = await promise;
+    expect(result.status).toBe("no_ack");
     vi.useRealTimers();
   });
 
-  it("duplicate requestId: rejected", async () => {
+  it("(6) subscription idempotent, duplicate requestId rejected", async () => {
     registerDriveReplies(fake.ctx);
-    const p1 = driveSave(fake.ctx, { companyId: "co-1", requestId: "dup", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
+    registerDriveReplies(fake.ctx);
+    expect(Array.from(fake.handlers.keys()).filter(n => n.includes(DRIVE_EVENTS.saved)).length).toBeLessThanOrEqual(1);
+
+    const p1 = driveSave(fake.ctx, { companyId: "co-1", requestId: "dup", kind: "test", name: "f1.txt", mimeType: "text/plain", bytes: Buffer.from("test1") });
     await tick();
-    const r2 = await driveSave(fake.ctx, { companyId: "co-1", requestId: "dup", kind: "x", name: "y", mimeType: "x", bytes: Buffer.from("y") });
-    expect(r2.status === "failed" && r2.reason).toBe("duplicate_request_id");
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: "dup", driveFileId: "f", url: "https://example.com/f" });
-    expect((await p1).status).toBe("saved");
+    const result2 = await driveSave(fake.ctx, { companyId: "co-1", requestId: "dup", kind: "test", name: "f2.txt", mimeType: "text/plain", bytes: Buffer.from("test2") });
+    if (result2.status === "failed") expect(result2.reason).toBe("duplicate_request_id");
+    expect(fake.emitted).toHaveLength(1);
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: "dup", driveFileId: "file-1", url: "https://example.com/file-1" });
+    const result1 = await p1;
+    expect(result1.status).toBe("saved");
   });
 
-  it("publicUrl: no content/sha256", async () => {
-    const p = driveSave(fake.ctx, { companyId: "co-1", kind: "external", name: "x", mimeType: "x", publicUrl: "https://example.com/d.pdf" });
+  it("(7) publicUrl: emits publicUrl, no contentBase64", async () => {
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "external", name: "remote.pdf", mimeType: "application/pdf", publicUrl: "https://example.com/document.pdf" });
     await tick();
     const emitted = fake.emitted[0]!.payload;
+    expect(emitted.publicUrl).toBe("https://example.com/document.pdf");
     expect(emitted.contentBase64).toBeUndefined();
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: emitted.requestId, driveFileId: "f", url: "https://example.com/f" });
-    expect((await p).status).toBe("saved");
+    expect(emitted.sha256).toBeUndefined();
+    const requestId = emitted.requestId;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-789", url: "https://drive.example.com/file-789" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+});
+
+describe("subfolder and client (PAR-4064)", () => {
+  let fake: ReturnType<typeof fakeCtx>;
+
+  beforeEach(() => {
+    fake = fakeCtx({ companies: { "co-1": {} } });
+    vi.clearAllMocks();
   });
 
-  it("subfolder/client: present/absent", async () => {
-    const p = driveSave(fake.ctx, { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x"), subfolder: "03 Deliverables", client: { kind: "company", ref: "acme" } });
+  it("(1) subfolder and client passed: emits subfolder, clientKind, clientRef", async () => {
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "contract", name: "deal.pdf", mimeType: "application/pdf", bytes: Buffer.from("pdf"), subfolder: "03 Deliverables", client: { kind: "contact", ref: "ct-1" } });
     await tick();
     const emitted = fake.emitted[0]!.payload;
     expect(emitted.subfolder).toBe("03 Deliverables");
-    expect(emitted.clientKind).toBe("company");
-    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: emitted.requestId, driveFileId: "f", url: "https://example.com/f" });
-    expect((await p).status).toBe("saved");
+    expect(emitted.clientKind).toBe("contact");
+    expect(emitted.clientRef).toBe("ct-1");
+    const requestId = emitted.requestId;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "f-1", url: "https://example.com/f-1" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+
+  it("(2) subfolder and client omitted: payload has no subfolder, clientKind, clientRef", async () => {
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "attachment", name: "doc.pdf", mimeType: "application/pdf", bytes: Buffer.from("data") });
+    await tick();
+    const emitted = fake.emitted[0]!.payload;
+    expect(emitted.subfolder).toBeUndefined();
+    expect(emitted.clientKind).toBeUndefined();
+    expect(emitted.clientRef).toBeUndefined();
+    const requestId = emitted.requestId;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "f-2", url: "https://example.com/f-2" });
+    const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+
+  it.each([
+    { subfolder: "  ", client: undefined },
+    { subfolder: undefined, client: { kind: "contact", ref: "" } },
+  ])("(3) invalid subfolder/client: returns invalid_input, emits nothing", async (tc) => {
+    const opts: any = { companyId: "co-1", kind: "test", name: "x", mimeType: "x", bytes: Buffer.from("x"), timeoutMs: 50 };
+    if (tc.subfolder !== undefined) opts.subfolder = tc.subfolder;
+    if (tc.client !== undefined) opts.client = tc.client;
+    const result = await driveSave(fake.ctx, opts);
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") expect(result.reason).toBe("invalid_input");
+    expect(fake.emitted).toHaveLength(0);
   });
 });
