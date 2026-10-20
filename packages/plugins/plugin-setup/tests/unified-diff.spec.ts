@@ -84,4 +84,48 @@ describe("applyUnifiedDiff", () => {
     const r = applyUnifiedDiff("", `@@ -0,0 +1,1 @@\n+a`);
     expect(r.ok && r.text).toBe("a\n");
   });
+
+  it("single-hunk diff ending in newline", () => {
+    const base = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    const diff = "--- a/f\n+++ b/f\n@@ -2,1 +2,1 @@\n-b\n+B\n";
+    const r = applyUnifiedDiff(base, diff);
+    expect(r.ok && r.text).toBe("a\nB\nc\nd\ne\nf\ng\nh\n");
+  });
+
+  it("multi-hunk diff ending in newline", () => {
+    const base = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    const diff = "--- a/f\n+++ b/f\n@@ -2,1 +2,1 @@\n-b\n+B\n@@ -5,1 +5,1 @@\n-e\n+E\n";
+    const r = applyUnifiedDiff(base, diff);
+    expect(r.ok && r.text).toBe("a\nB\nc\nd\nE\nf\ng\nh\n");
+  });
+
+  it("hunk 1 adds lines, hunk 2 applies after offset", () => {
+    const base = "a\nb\nc\nd\ne\nf\n";
+    const diff = `@@ -1,2 +1,4 @@\n a\n+X\n+Y\n b\n@@ -5,2 +7,2 @@\n e\n-f\n+F`;
+    const r = applyUnifiedDiff(base, diff);
+    expect(r.ok && r.text).toBe("a\nX\nY\nb\nc\nd\ne\nF\n");
+  });
+
+  it("hunk 1 removes lines, hunk 2 applies after offset", () => {
+    const base = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    const diff = `@@ -1,4 +1,2 @@\n a\n-b\n-c\n d\n@@ -6,2 +4,2 @@\n f\n-g\n+G`;
+    const r = applyUnifiedDiff(base, diff);
+    expect(r.ok && r.text).toBe("a\nd\ne\nf\nG\nh\n");
+  });
+
+  it("applies real git diff output", () => {
+    const base = "line1\nline2\nline3\nline4\nline5\n";
+    // Real git diff has --- and +++ lines that precede the @@
+    const realDiff = "--- a/test.txt\n+++ b/test.txt\n@@ -1,5 +1,5 @@\n line1\n-line2\n+line2-modified\n line3\n line4\n line5";
+    const r = applyUnifiedDiff(base, realDiff);
+    expect(r.ok && r.text).toBe("line1\nline2-modified\nline3\nline4\nline5\n");
+  });
+
+  it("rejects hunk with context mismatch when preceded by offset-changing hunk", () => {
+    const base = "a\nb\nc\nd\ne\n";
+    // Hunk 1 adds a line at position 1, changing offsets; hunk 2 has wrong context.
+    const diff = `@@ -1,1 +1,2 @@\n a\n+X\n@@ -3,1 +4,1 @@\n-WRONG\n+c`;
+    const r = applyUnifiedDiff(base, diff);
+    expect(!r.ok && r.error.includes("does not apply")).toBe(true);
+  });
 });

@@ -9,7 +9,13 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
   const srcLines = srcNorm.split("\n");
   if (hasTrailNewline && srcLines.length > 0) srcLines.pop();
 
-  const diffLines = diffNorm.split("\n");
+  let diffLines = diffNorm.split("\n");
+  // If diff ends with "\n", split leaves a trailing empty string; drop it.
+  // Interior empty lines (blank context lines) are preserved.
+  if (diffNorm.endsWith("\n") && diffLines.length > 0 && diffLines[diffLines.length - 1] === "") {
+    diffLines = diffLines.slice(0, -1);
+  }
+
   const hunkStart = diffLines.findIndex((l) => l.startsWith("@@"));
   if (hunkStart === -1) return { ok: false, error: "diff has no hunks" };
 
@@ -18,6 +24,7 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
   let idx = hunkStart;
   let hunkNum = 0;
   let prevEnd = -1;
+  let offset = 0;
 
   while (idx < diffLines.length && diffLines[idx].startsWith("@@")) {
     hunkNum++;
@@ -29,7 +36,7 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
     const newCount = m[4] ? parseInt(m[4], 10) : 1;
     const oldIdx = oldCount === 0 ? oldStart : oldStart - 1;
 
-    if (oldIdx < 0 || oldIdx > result.length)
+    if (oldIdx < 0 || oldIdx > srcLines.length)
       return { ok: false, error: `hunk ${hunkNum} starts at invalid line ${oldStart}` };
     if (hunkNum > 1 && oldIdx < prevEnd)
       return { ok: false, error: `hunk ${hunkNum} overlaps with previous hunk` };
@@ -73,10 +80,11 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
 
     let srcOff = 0;
     const lines: string[] = [];
+    const adjustedOldIdx = oldIdx + offset;
 
     for (const op of ops) {
       if (op.type !== "add") {
-        const si = oldIdx + srcOff;
+        const si = adjustedOldIdx + srcOff;
         if (si >= result.length)
           return { ok: false, error: `hunk ${hunkNum} does not apply at line ${oldStart + srcOff}` };
         if (result[si] !== op.line) {
@@ -94,8 +102,9 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
       }
     }
 
-    result.splice(oldIdx, oldCount, ...lines);
-    prevEnd = oldIdx + lines.length;
+    result.splice(adjustedOldIdx, oldCount, ...lines);
+    offset += lines.length - oldCount;
+    prevEnd = oldIdx + oldCount;
     idx = opIdx;
   }
 

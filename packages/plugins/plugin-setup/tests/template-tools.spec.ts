@@ -223,5 +223,37 @@ describe("template-tools", () => {
       registerTemplateTools(ctx);
       expect(registered).toEqual(new Set(["template-list", "template-get", "template-preview"]));
     });
+
+    it("applies diff with trailing newline successfully", async () => {
+      const { ctx } = fakeCtx();
+      const pack = loadPack();
+      const template = pack.templates.find((t) => !t.hostOwned);
+      expect(template).toBeDefined();
+
+      const previewHandler = getHandler(ctx, "template-preview");
+      const getHandlerFn = getHandler(ctx, "template-get");
+      const getResult = await getHandlerFn({ key: template!.key }, {});
+      const raw = getResult.data.raw;
+
+      // Build a diff that ends with "\n" (like real git diffs)
+      const marker = "TRAILING-NEWLINE-TEST";
+      const lines = raw.split("\n");
+      let lineIndex = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.trim().length > 0) {
+          lineIndex = i;
+          break;
+        }
+      }
+      const originalLine = lines[lineIndex]!;
+      const unifiedDiff = `@@ -${lineIndex + 1},1 +${lineIndex + 1},1 @@\n-${originalLine}\n+${marker}\n`;
+
+      const previewResult = await previewHandler({ key: template!.key, unifiedDiff }, {});
+
+      expect(previewResult.error).toBeUndefined();
+      expect(previewResult.data).toBeDefined();
+      expect(previewResult.data.rendered).toContain(marker);
+      expect(previewResult.data.changed).toBe(true);
+    });
   });
 });

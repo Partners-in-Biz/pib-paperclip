@@ -49,6 +49,7 @@ export const TEMPLATE_TOOLS: PluginToolDeclaration[] = [
   },
 ];
 
+/** List all templates in the pack with key, file, scope, hostOwned flag, and hash. */
 function listTemplates(): { templates: Array<{ key: string; file: string; scope: string; hostOwned: boolean; hash: string | null }> } {
   const pack = loadPack();
   return {
@@ -62,6 +63,7 @@ function listTemplates(): { templates: Array<{ key: string; file: string; scope:
   };
 }
 
+/** Hash of a template rendered with default vars, or null for host-owned. */
 function renderCanonicalHash(template: AgentTemplate): string | null {
   if (template.hostOwned) return null;
   const defaultVars = templateVars();
@@ -97,6 +99,7 @@ type TemplatePreviewResult =
       changed: boolean;
     };
 
+/** Get a template's full details. Renders with company vars if companyId given. */
 async function getTemplate(ctx: PluginContext, key: string, companyId?: string): Promise<TemplateGetResult> {
   const template = templateByKey(key);
   if (!template) {
