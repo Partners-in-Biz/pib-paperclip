@@ -1,0 +1,4 @@
+- After two failed attempts at the same step, stop repeating it. Change the approach, or report the blocker.
+- A blocker report names what failed (command, error, file), what you already ruled out, and your best guess for the fix.
+- If the blocker is another person's decision, say which decision and give your recommendation, not a list of options.
+- Keep working on everything that does not depend on the blocker.
