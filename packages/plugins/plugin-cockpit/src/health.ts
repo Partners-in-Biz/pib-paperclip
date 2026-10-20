@@ -23,6 +23,7 @@ import { ladderTick } from "./ladder.js";
 import { routineFailureTick } from "./routine-failures.js";
 import { authStreakAgents, type StreakRun } from "./watch-model.js";
 import { readStreakRuns } from "./watch.js";
+import { checkCriticalTriggers } from "./push/triggers-critical.js";
 
 const CLOSED = new Set(["done", "cancelled"]);
 
@@ -378,6 +379,23 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         }
       } catch (error) {
         env.ctx.logger.info("Auth card failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // Critical triggers: push notifications for critical health, agent errors, auth issues
+        const agents = await listAgents(env, row.companyId);
+        const runs = await readStreakRuns(env.ctx, row.companyId, env.now());
+        const authAgentsMap = authStreakAgents(runs);
+        const authAgentIds = new Set(authAgentsMap.keys());
+        const problems = await collectProblems(env, row.companyId, { trackWarnings: false });
+        const healthLevel = problems.entries.length === 0 ? "ok" : problems.entries.some((e) => e.status === "bad") ? "bad" : "warn";
+        const criticalsNotified = await checkCriticalTriggers(env.ctx, row.companyId, {
+          agents: agents.map((a) => ({ status: a.status, id: a.id, name: a.name })),
+          authAgentIds,
+          healthLevel,
+        });
+        if (criticalsNotified > 0) counts.criticalsPushed = (counts.criticalsPushed ?? 0) + criticalsNotified;
+      } catch (error) {
+        env.ctx.logger.info("Critical triggers failed", { companyId: row.companyId, error: message(error) });
       }
     }
     counts[key] = (counts[key] ?? 0) + 1;
