@@ -29,7 +29,7 @@ import {
   type QuoteRow,
 } from "./db.js";
 import { docFileName, renderDocument, type DocKind, type DocView } from "./documents.js";
-import { BillingError, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
+import { BillingError, buildInvoiceHtml, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
 import { nextDocumentNumber } from "./numbering.js";
@@ -1081,3 +1081,26 @@ export function describePeriod(start: Date, period: string): string {
 }
 
 export { actorLabel, isOpenStatus };
+
+/** The printable HTML of an invoice (the `invoice-html` tool, and the copy a filing issue carries). */
+export async function invoiceHtmlOf(ctx: PluginContext, invoice: InvoiceRow, settings: BillingSettings): Promise<string> {
+  return invoiceHtmlFrom(invoice, await invoiceView(ctx, invoice, settings));
+}
+
+export function invoiceHtmlFrom(invoice: InvoiceRow, view: DocView): string {
+  return buildInvoiceHtml({
+    kind: "Invoice",
+    number: invoice.number,
+    status: invoice.status,
+    currency: invoice.currency,
+    sender: view.sender,
+    customer: view.customer,
+    lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
+    taxRate: view.legacy ? Number(invoice.tax_rate ?? 0) : 0,
+    totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
+    payment: view.payment ?? null,
+    notes: view.notes ?? null,
+    issuedAt: invoice.sent_at == null ? null : String(iso(invoice.sent_at)),
+    dueAt: iso(invoice.due_at),
+  });
+}

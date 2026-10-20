@@ -12,6 +12,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { AS_AT_CUTOFF_SQL, INVOICE_COLUMNS, table, type CreditNoteRow, type InvoiceRow } from "./db.js";
 import { balanceOutstanding, deriveInvoiceStatus, OPEN_STATUSES, type BalanceState, type InvoiceStatusValue } from "./domain.js";
 import { withdrawPaidDecisions } from "./closeouts.js";
+import { openInvoiceFilingIssue } from "./filing.js";
 import { emitInvoicePaid } from "./handoff.js";
 import { retireInvoiceLinks, retireLinksForOtherAmount } from "./pay/links.js";
 
@@ -169,12 +170,17 @@ export async function refreshInvoiceStatus(ctx: PluginContext, invoiceId: string
   else if (balanceOutstanding({ ...balance.state, status: next }) > 0) await retireLinksForOtherAmount(ctx, invoiceId, balanceOutstanding({ ...balance.state, status: next })).catch(() => 0);
   if (next === "paid" && (res.rowCount ?? 0) > 0) {
     // Paid in full by any path (payment, POP, bank match, credit, approval): tell the CRM and the Cockpit once.
+    let paidAt: unknown = null;
     try {
       const rows = await ctx.db.query<{ paid_at: unknown }>(`SELECT paid_at FROM ${table(ctx, "invoices")} WHERE id = $1`, [invoiceId]);
-      await emitInvoicePaid(ctx, { ...balance.invoice, paid_at: rows[0]?.paid_at ?? null });
+      paidAt = rows[0]?.paid_at ?? null;
+      await emitInvoicePaid(ctx, { ...balance.invoice, paid_at: paidAt });
     } catch (error) {
       ctx.logger.info("invoice.paid hand-off not sent", { invoiceId, error: error instanceof Error ? error.message : String(error) });
     }
+    await openInvoiceFilingIssue(ctx, balance.invoice, paidAt).catch((error) =>
+      ctx.logger.info("Invoice filing issue not opened", { invoiceId, error: error instanceof Error ? error.message : String(error) }),
+    );
     // Payment and reminder decisions still open for it are not needed any more.
     await withdrawPaidDecisions(ctx, balance.invoice.company_id, invoiceId, balance.invoice.number).catch((error) =>
       ctx.logger.info("Open decisions not withdrawn", { invoiceId, error: error instanceof Error ? error.message : String(error) }),

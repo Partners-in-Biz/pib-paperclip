@@ -19,6 +19,8 @@ export const WORK_ORIGINS = {
   billFromEmail: "billing:bill-from-email:",
   /** A client signed a document (CRM e-sign), one per signed document: `billing:signed:<documentId>`. */
   signed: "billing:signed:",
+  /** A paid invoice to save to Drive, one per invoice: `billing:drive-file:invoice:<invoiceId>`. No done check: the Account Manager closes it. */
+  driveFileInvoice: "billing:drive-file:invoice:",
 } as const;
 
 /** Decisions only a person makes (the Reviewer may check first); never done-checked. */
