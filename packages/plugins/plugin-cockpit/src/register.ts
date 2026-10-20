@@ -30,6 +30,7 @@ import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
+import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
 import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
 import { ensureSetupIssue } from "./bootstrap.js";
 import { forgetChecks } from "./checks.js";
@@ -579,13 +580,15 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
         ? await runMemoryTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
-          : OPS_TOOL_SET.has(tool.name)
-            ? await runOpsTool(env, tool.name, params, run)
-            : ACCEPTANCE_TOOL_SET.has(tool.name)
-              ? await runAcceptanceTool(env, tool.name, params, run)
-              : EVAL_TOOL_SET.has(tool.name)
-                ? await runEvalTool(env, tool.name, params, run)
-                : await runTool(env, tool.name, params, run);
+          : AGENT_READ_TOOL_NAMES.has(tool.name)
+            ? await runAgentReadTool(env, tool.name, params, run)
+            : OPS_TOOL_SET.has(tool.name)
+              ? await runOpsTool(env, tool.name, params, run)
+              : ACCEPTANCE_TOOL_SET.has(tool.name)
+                ? await runAcceptanceTool(env, tool.name, params, run)
+                : EVAL_TOOL_SET.has(tool.name)
+                  ? await runEvalTool(env, tool.name, params, run)
+                  : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

@@ -93,6 +93,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
+      "repairs-list", "governor-state", "watchdog-findings",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
       "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",
