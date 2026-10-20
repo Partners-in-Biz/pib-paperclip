@@ -104,17 +104,20 @@ async function verifyApproval(
 
     // Check if description has been modified by agent after human close
     const latestDoneTime = new Date(latestDone.createdAt).getTime();
+    // Fail closed: if latestDoneTime is unparseable, ignore description
+    const isLatestDoneTimeValid = Number.isFinite(latestDoneTime);
     const hasAgentUpdateAfterClose = activity.some(e => {
       if (e.action !== 'issue.updated') return false;
       if (e.id === latestDone.id) return false;
       if (e.actorType === 'user') return false;
       const entryTime = new Date(e.createdAt).getTime();
-      return entryTime >= latestDoneTime;
+      // Fail closed: treat unparseable timestamps as after the close
+      return !(entryTime < latestDoneTime);
     });
 
     let markerText = '';
-    // Only use description if no agent has updated the issue after the human close
-    if (!hasAgentUpdateAfterClose) {
+    // Only use description if latestDoneTime is valid and no agent has updated the issue after the human close
+    if (isLatestDoneTimeValid && !hasAgentUpdateAfterClose) {
       markerText = issue.description || '';
     }
 
