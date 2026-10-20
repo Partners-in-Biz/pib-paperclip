@@ -279,3 +279,39 @@ export async function hasAnySubscription(ctx: PluginContext): Promise<boolean> {
   const rows = await ctx.db.query<{ n: string }>(`SELECT 1 FROM ${T.subscriptions} LIMIT 1`, []);
   return rows.length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Critical Level Tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the last remembered critical level for a trigger kind (e.g., "bad", "2", "4", null).
+ * Uses push_rate table with fixed window_start (epoch constant).
+ */
+export async function readCriticalLevel(ctx: PluginContext, key: string): Promise<string | null> {
+  const epochStart = new Date(0).toISOString(); // Fixed epoch constant
+  const rows = await ctx.db.query<{ n: string }>(
+    `SELECT n FROM ${T.rate} WHERE key = $1 AND window_start = $2`,
+    [key, epochStart],
+  );
+  return rows[0]?.n ?? null;
+}
+
+/**
+ * Upsert the remembered critical level (or clear it by setting n to NULL-like empty).
+ * Uses push_rate table with fixed window_start (epoch constant).
+ */
+export async function upsertCriticalLevel(ctx: PluginContext, key: string, level: string | null): Promise<void> {
+  const epochStart = new Date(0).toISOString(); // Fixed epoch constant
+  if (level === null) {
+    // Clear by deleting the row
+    await ctx.db.execute(`DELETE FROM ${T.rate} WHERE key = $1 AND window_start = $2`, [key, epochStart]);
+  } else {
+    // Upsert the level value
+    await ctx.db.execute(
+      `INSERT INTO ${T.rate} (key, window_start, n) VALUES ($1, $2, $3)
+       ON CONFLICT (key, window_start) DO UPDATE SET n = $3`,
+      [key, epochStart, level],
+    );
+  }
+}
