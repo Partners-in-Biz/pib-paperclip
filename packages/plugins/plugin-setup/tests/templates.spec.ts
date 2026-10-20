@@ -524,13 +524,17 @@ describe("pack v2 parsing", () => {
 
   it("allows template with reportsTo of 'ceo' and omitted escalatesTo (resolves to 'ceo')", () => {
     const manifest = base();
+    // Find the delivery-lead template which has reportsTo "ceo"
+    const dlTemplate = find(manifest, "delivery-lead");
+    // Ensure escalatesTo is not set so it defaults
+    delete dlTemplate.escalatesTo;
     const { pack, problems } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
-    // The CEO reports to null and escalatesTo should also be 'ceo' (or omitted, resolving to null)
-    const ceo = pack!.templates.find((t) => t.key === "ceo");
-    expect(ceo!.reportsTo).toBeNull();
-    // CEO has no escalatesTo, so it should not be present (or be null via the default)
-    expect(ceo!.escalatesTo).toBeUndefined();
-    expect(problems).not.toContain(expect.stringMatching(/ceo.*escalatesTo/));
+    // Verify no problems with escalatesTo
+    expect(problems.some((p) => /escalatesTo/.test(p))).toBe(false);
+    // The delivery-lead should have reportsTo "ceo" and escalatesTo should default to "ceo"
+    const dl = pack!.templates.find((t) => t.key === "delivery-lead");
+    expect(dl!.reportsTo).toBe("ceo");
+    expect(dl!.escalatesTo).toBe("ceo");
   });
 
   it("parses the shipped templates pack without errors", () => {
