@@ -301,3 +301,21 @@ test('activity list in reverse order still picks newest done entry', async () =>
   assert.equal(r.reason, 'approval_not_closed_by_human');
   fs.rmSync(tmp, { recursive: true });
 });
+
+test('description marker + human close + agent issue.updated with unparseable createdAt => fails', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apt-'));
+  const store = createApprovalStore({ stateDir: tmp, fs, path });
+  const now = Date.now();
+  const responses = {
+    'http://api/api/issues/PAR-1007': { ok: true, data: { id: 'PAR-1007', status: 'done', companyId: 'c1', description: 'approval for user1:action', completedAt: new Date(now - 5000).toISOString() } },
+    'http://api/api/issues/PAR-1007/activity': { ok: true, data: [
+      { id: 'a1', action: 'issue.updated', createdAt: new Date(now - 5000).toISOString(), actorType: 'user', actorId: 'u1', details: { changes: { status: { from: 'open', to: 'done' } } } },
+      { id: 'a2', action: 'issue.updated', createdAt: 'not-a-date', actorType: 'agent', actorId: 'ag1', details: { changes: { title: { from: 'old', to: 'new' } } } }
+    ] },
+    'http://api/api/issues/PAR-1007/comments': { ok: true, data: [] }
+  };
+  const fetch = makeFakeFetch(responses);
+  const r = await verifyApproval({ approval: 'PAR-1007', identity: 'user1', action: 'action', companyId: 'c1' }, { fetch, apiBase: 'http://api', token: 'tk', clock: { now: () => now }, store });
+  assert.equal(r.reason, 'approval_marker_missing');
+  fs.rmSync(tmp, { recursive: true });
+});
