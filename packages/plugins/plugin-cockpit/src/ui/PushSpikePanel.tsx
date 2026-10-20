@@ -13,7 +13,6 @@ import {
 export function PushSpikePanel() {
   const publicKeyAction = usePluginAction("cockpit.pushSpike.publicKey");
   const subscribeAction = usePluginAction("cockpit.pushSpike.subscribe");
-  const sendAction = usePluginAction("cockpit.pushSpike.send");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,19 +72,6 @@ export function PushSpikePanel() {
     }
   };
 
-  const handleSendSpike = async () => {
-    setError(null);
-    setResult(null);
-    setBusy(true);
-    try {
-      await sendAction({});
-      setResult("✓ Sent");
-      setBusy(false);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   return (
     <Card title="Push spike" subtitle="Test web push notifications">
       {envDescription && (
@@ -99,7 +85,6 @@ export function PushSpikePanel() {
       {(error || result) && <div style={{ marginTop: 12 }}><PageMessage message={(error ?? result) as string} tone={error ? "bad" : "ok"} /></div>}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <Button type="button" onClick={handleTurnOn} disabled={busy}>{busy ? "Loading…" : "Turn on"}</Button>
-        <Button type="button" variant="secondary" onClick={handleSendSpike} disabled={busy}>{busy ? "Loading…" : "Send"}</Button>
       </div>
     </Card>
   );
