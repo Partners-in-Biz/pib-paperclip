@@ -79,6 +79,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
   const id = params.entity_id as string;
+  const include_tree = params.include_tree as boolean | undefined; // Internal param: get tree for already-ensured folders
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
@@ -100,7 +101,8 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if (existing) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  // If folder exists and we don't need the tree with subfolders, return early
+  if (existing && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
 
   const facts = await loadDriveFacts(ctx, viewer, type, id);
   const siblings = await loadDriveSiblings(ctx, viewer, type, id);
@@ -127,7 +129,8 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
   if (!lastResult) throw new CrmError("No plan steps executed");
   // Use the tree from the last step (the leaf folder) which includes subfolders
-  const finalTree = lastResult.tree ?? tree;
+  // Fall back to accumulated tree if lastResult.tree is empty (broker may return [])
+  const finalTree = lastResult.tree?.length ? lastResult.tree : tree;
   return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree: finalTree };
 }
 

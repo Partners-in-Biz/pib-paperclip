@@ -154,7 +154,8 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   }
 
   let resolvedSubfolderId: string | null = null;
-  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId });
+  // Pass include_tree when subfolder is set, so already-ensured projects return tree with subfolders
+  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, ...(subfolder ? { include_tree: true } : {}) });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
   }

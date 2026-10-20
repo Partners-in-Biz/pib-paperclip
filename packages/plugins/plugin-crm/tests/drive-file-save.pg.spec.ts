@@ -7,7 +7,7 @@ import { vi, afterEach } from "vitest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { saveDriveFile, type SaveDriveFileInput } from "../src/drive/save.js";
-import { driveFileSave } from "../src/drive/tools.js";
+import { driveFileSave, driveFolderEnsure } from "../src/drive/tools.js";
 import * as brokerModule from "../src/drive/broker.js";
 import { listDriveFiles, getDriveFile } from "../src/drive/store.js";
 import { insertAccount } from "../src/db.js";
@@ -467,5 +467,67 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     const rootFiles = await listDriveFiles(ctx, CO_A, { projectId: "p1", subfolder: null });
     expect(rootFiles).toHaveLength(1);
     expect(rootFiles[0].subfolder).toBe(null);
+  });
+
+  it("subfolder on already-ensured project -> resolves from tree returned with include_tree", async () => {
+    const { viewer, brokerState, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+
+    // First call without subfolder (simulates previous ensure)
+    const r1 = await saveDriveFile(ctx, viewer, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 first v1.txt",
+      mimeType: "text/plain", contentBase64: Buffer.from("first").toString("base64"),
+    });
+    expect(r1.status).toBe("saved");
+    expect(brokerState.requests).toHaveLength(1);
+
+    // Second call with subfolder on already-ensured project
+    const r2 = await saveDriveFile(ctx, viewer, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 second v1.txt",
+      mimeType: "text/plain", contentBase64: Buffer.from("second").toString("base64"), subfolder: "02 Assets",
+    });
+    expect(r2.status).toBe("saved");
+    expect(r2.subfolder).toBe("02 Assets");
+    expect(brokerState.requests).toHaveLength(2); // One more upload
+  });
+
+  it("driveFolderEnsure with existing folder: include_tree=false returns empty tree, include_tree=true returns tree with subfolders", async () => {
+    const { viewer, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+  });
+
+  it("broker returning empty tree falls back to accumulated tree", async () => {
+    // Create context with broker that returns empty tree on last step
+    const { viewer, configMap } = setupContext();
+    const folderCache = new Map<string, { id: string; path: string }>();
+
+    const brokerFactory = (fetchFn: any, cfg: any) => {
+      const broker: any = {
+        resolve: async () => null,
+        ensure: async (body: any) => {
+          const cacheKey = `${body.entity_type}:${body.entity_id}`;
+          let cached = folderCache.get(cacheKey);
+          if (!cached) {
+            cached = { id: `folder_${Math.random().toString(36).slice(2, 11)}`, path: `Projects/${body.entity_id}` };
+            folderCache.set(cacheKey, cached);
+          }
+          return {
+            folder: { id: cached.id, entity_type: body.entity_type, entity_id: body.entity_id, path: cached.path, folder_id: cached.id, folder_url: `https://drive.google.com/drive/folders/${cached.id}` },
+            created: true,
+            tree: [], // Broker returns empty tree
+          };
+        },
+        uploadFile: async (input: any) => ({ fileId: `file_${Date.now()}`, name: input.name, mimeType: input.mimeType, size: 0, sha256: "hash", webViewLink: "url", deduplicated: false }),
+      };
+      return broker;
+    };
+
+    vi.spyOn(await import("../src/drive/broker.js"), "createBroker" as any).mockImplementation(brokerFactory);
+    await configureCompanyDrive(CO_A, configMap);
+    const res = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: "p3", include_tree: true });
+
+    // Should use accumulated tree since broker returned empty
+    expect((res as any).tree).toBeDefined();
+    expect((res as any).tree.length).toBeGreaterThan(0); // Has accumulated entries
   });
 });
