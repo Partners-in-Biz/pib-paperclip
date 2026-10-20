@@ -261,6 +261,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Repairs: system actions taken to fix issues detected by the Cockpit's checks.
     { routeKey: "repairs-create", method: "POST", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     { routeKey: "repairs-list", method: "GET", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
+    // Governor rehearse: safely tests the quota governor with synthetic failures.
+    { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
     {
