@@ -238,6 +238,7 @@ import {
   setDelivery,
 } from "./mail.js";
 import { jevConfigFor } from "./jev.js";
+import { emitClientProjectsForCompany } from "./client-projects-emit.js";
 import {
   checkClientSite,
   clientSitesAndProjects,
@@ -525,6 +526,8 @@ const plugin = definePlugin({
     await syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
+    // Emit client projects for all companies at startup (never blocks start).
+    void startupClientProjectsEmit(ctx).catch((error) => ctx.logger.info("CRM client projects startup emit failed", { error: error instanceof Error ? error.message : String(error) }));
 
     // Data handler for Drive folder registry lookup (read-only, never calls ensure)
     ctx.data.register("drive-folder", async (params) => {
@@ -2005,6 +2008,7 @@ async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | nu
       if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await emitChanges(ctx, companyId, sinceSeconds);
       await emitSites(ctx, companyId, sinceSeconds);
+      await emitClientProjectsForCompany(ctx, companyId);
       if (sinceSeconds == null) {
         await recordFullShare(ctx, companyId);
         // Which clients are sensitive, said again every night for whoever missed it.
@@ -2025,6 +2029,21 @@ async function syncKnownCompanies(ctx: PluginContext) {
     for (const companyId of await crmCompanyIds(ctx)) await skillSync?.ensure(companyId);
   } catch (error) {
     ctx.logger.info("CRM skill sync deferred", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** Emit client projects for all companies at startup. */
+async function startupClientProjectsEmit(ctx: PluginContext) {
+  for (const companyId of await crmCompanyIds(ctx)) {
+    try {
+      if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
+      await emitClientProjectsForCompany(ctx, companyId);
+    } catch (error) {
+      ctx.logger.info("CRM client projects startup emit skipped", {
+        companyId,
+        error: error instanceof Error ? error.constructor.name : "Unknown",
+      });
+    }
   }
 }
 
