@@ -57,7 +57,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
 
-\`href\` links lack the company prefix; write \`/<prefix>/issues/PIB-12\`.
+\`href\` links lack the company prefix: in comments write \`/<prefix>/issues/PIB-12\` (prefix: the brief's \`company.prefix\`).
 
 Everything else goes through the Paperclip API (the \`paperclip\` skill): read issues and comments, create issues, assign, comment, change status, wake agents.
 

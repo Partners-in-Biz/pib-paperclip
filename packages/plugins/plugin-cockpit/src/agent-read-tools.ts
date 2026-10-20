@@ -15,7 +15,35 @@ function params(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Runs read-only agent tools: repairs-list, governor-state, watchdog-findings.
+ * Caps a limit parameter: defaults to 50, floors to int, clamps to [1, 100].
+ * Non-finite numbers (null, undefined, NaN, etc.) are treated as unset.
+ */
+function capLimit(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return 50;
+  return Math.min(100, Math.max(1, Math.floor(v)));
+}
+
+/**
+ * Recursively redacts secret strings in an object/array.
+ * Never throws; tolerates circular refs by depth-limiting recursion.
+ */
+function redactDeep(value: unknown, depth = 0): unknown {
+  const MAX_DEPTH = 10;
+  if (depth > MAX_DEPTH) return value;
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, depth + 1));
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      result[k] = redactDeep(v, depth + 1);
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Executes a read-only agent tool by name.
  */
 export async function runAgentReadTool(env: Env, name: string, raw: unknown, run: ToolRunContext): Promise<ToolResult> {
   const companyId = run.companyId;
@@ -23,7 +51,7 @@ export async function runAgentReadTool(env: Env, name: string, raw: unknown, run
 
   try {
     if (name === "repairs-list") {
-      const limit = Math.min(100, typeof p.limit === "number" ? Math.max(1, p.limit) : 50);
+      const limit = capLimit(p.limit);
       const repairs = await listRepairs(env.ctx, companyId, {
         kind: typeof p.kind === "string" ? p.kind : undefined,
         since: typeof p.since === "string" ? p.since : undefined,
@@ -46,12 +74,12 @@ export async function runAgentReadTool(env: Env, name: string, raw: unknown, run
     if (name === "governor-state") {
       const stateKey = { scopeKind: "company" as const, scopeId: companyId, namespace: GOVERNOR_NS, stateKey: GOVERNOR_STATE_KEY };
       const raw = await env.ctx.state.get(stateKey);
-      const state = raw && typeof raw === "object" && !Array.isArray(raw) ? redactSecrets(JSON.stringify(raw)) : null;
-      return toolOk(state ? "Governor state found." : "No governor state.", { state: state ? JSON.parse(state) : null }) as ToolResult;
+      const state = raw && typeof raw === "object" && !Array.isArray(raw) ? redactDeep(raw) : null;
+      return toolOk(state ? "Governor state found." : "No governor state.", { state }) as ToolResult;
     }
 
     if (name === "watchdog-findings") {
-      const limit = Math.min(100, typeof p.limit === "number" ? Math.max(1, p.limit) : 50);
+      const limit = capLimit(p.limit);
       const rows = await env.ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, description, status, origin_kind
          FROM public.issues
