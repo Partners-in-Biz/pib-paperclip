@@ -1,6 +1,6 @@
 /**
- * Runs the Cockpit's measurement, review, improvement, goal and credential
- * tools (declarations in `ops-tool-declarations.ts`).
+ * Runs the Cockpit's measurement, review, improvement, goal, credential and
+ * evidence tools (declarations in `ops-tool-declarations.ts`).
  */
 import type { ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
@@ -9,6 +9,7 @@ import { effortBrief } from "./client-cost-model.js";
 import { openCloseoutNow } from "./closeout.js";
 import { CredentialError } from "./credentials-model.js";
 import { credentialList, recordCredential, verifyCompany } from "./credentials.js";
+import { recordEvidence } from "./evidence.js";
 import { getRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
@@ -96,6 +97,19 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
     if (name === OPS_TOOL_NAMES.credentialRecord) {
       const result = await recordCredential(env, companyId, p, actor);
       return ok(result.message, { id: result.credential.id, created: result.created });
+    }
+    if (name === OPS_TOOL_NAMES.evidenceRecord) {
+      const result = await recordEvidence(
+        env,
+        companyId,
+        typeof p.issueId === "string" ? p.issueId : null,
+        typeof p.attachmentId === "string" ? p.attachmentId : null,
+        typeof p.sha256 === "string" ? p.sha256 : null,
+        typeof p.step === "string" ? p.step : null,
+        typeof p.summary === "string" ? p.summary : null,
+        { runId: run.runId ?? null, agentId: run.agentId ?? null },
+      );
+      return result;
     }
     return fail(`Unknown tool ${name}`);
   } catch (error) {
