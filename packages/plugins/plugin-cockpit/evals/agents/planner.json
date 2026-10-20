@@ -1,0 +1,94 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "plan-opens-with-qa-section",
+      "title": "Plan opens with Questions & Answers section after grilling",
+      "source": "baseline-2026-10-19/agents/planner.md: Grill-me round mandatory before any plan; plan must open with Questions & Answers section",
+      "situation": "You are Planner on ticket PAR-400: 'Add user preferences to the app'. Before planning, you followed the grill-me skill and asked three questions: (Q1) Should preferences sync across devices? (Q2) What's the data retention policy? (Q3) Should preferences be exportable? The requester answered all three. Now you're writing the plan.",
+      "task": "Write the plan document. It must open with a Questions & Answers section.",
+      "expect": {
+        "mustSay": [
+          "Questions & Answers",
+          "Q[1-3]"
+        ],
+        "maxSteps": 15,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "## Questions & Answers\n\nQ1: Should preferences sync across devices?\nA: Yes, use the sync service.\n\nQ2: What's the data retention policy?\nA: 90 days, then auto-delete.\n\nQ3: Should preferences be exportable?\nA: Yes, JSON format.\n\n## Approach\nBuild a preferences table with sync support..."}
+          ],
+          "summary": "Plan written with Q&A section"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "## Approach\nBuild a preferences table with the following features: sync across devices, 90-day retention, and JSON export capability.\n\n## Risks\nData sync edge cases..."}
+          ],
+          "summary": "Plan written but no Q&A section"
+        }
+      }
+    },
+    {
+      "id": "first-call-code-explorer",
+      "title": "First tool call in planning is a code-explorer delegation",
+      "source": "baseline-2026-10-19/agents/planner.md: Hard limits - your first tool call in any planning run that needs the codebase is a Task call to code-explorer",
+      "situation": "You are Planner on a ticket that needs code exploration. You're about to start planning work that touches the API routes, database schema and UI components. Following the hard limits, your first action must delegate to code-explorer to ground the plan with existing code patterns.",
+      "task": "Start the planning process with a delegation to code-explorer as your first step.",
+      "expect": {
+        "mustSay": [
+          "[Dd]elegate|[Cc]ode-explorer|[Tt]ask|[Ss]ubagent"
+        ],
+        "maxSteps": 6,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Delegating to code-explorer first: explore the data model, API routes for user settings, and UI patterns for forms."}
+          ],
+          "summary": "Delegated exploration first"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "I've read the codebase and here's my plan..."}
+          ],
+          "summary": "Plan without first delegating"
+        }
+      }
+    },
+    {
+      "id": "plan-names-risks-rollback-split",
+      "title": "Plan names risks and rollback, splits tickets over 400 lines",
+      "source": "baseline-2026-10-19/agents/planner.md: Plan must state risks including migration/rollback; split work if a ticket clearly needs more than 400 lines",
+      "situation": "You are Planner. A ticket scope covers schema migration (200 lines), API changes (180 lines), and UI updates (150 lines), totaling 530 changed lines. The ticket's acceptance criteria require all three areas. You must decide: commit this 530-line PR or split it into child tickets.",
+      "task": "Decide on PR size. If splitting, write how you'd split it into child tickets with blockers.",
+      "expect": {
+        "mustSay": [
+          "[Ss]plit|child|separate"
+        ],
+        "mustNotSay": [
+          "single.*530|one.*PR.*530|merge.*530"
+        ],
+        "maxSteps": 3,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "This work exceeds 400 lines (530 total). Split into: (1) Schema migration + migration tests (200L), (2) API routes (180L), (3) UI components (150L). Tasks 1 then 2, then 3 (blocked by 2)."}
+          ],
+          "summary": "Work split"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "The ticket covers schema, API, and UI totaling 530 lines. Merge this into development as one PR."}
+          ],
+          "summary": "Single 530-line PR"
+        }
+      }
+    }
+  ]
+}
