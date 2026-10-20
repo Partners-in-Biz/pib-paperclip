@@ -64,6 +64,8 @@ export const CRM_ORIGINS = {
   esign: "crm:esign:",
   /** `crm:esign-stale:<document id>`: a client has not signed after the reminders (Account Manager). */
   esignStale: "crm:esign-stale:",
+  /** `crm:drive-file:esign:<document id>`: file a signed copy to Drive (Account Manager). */
+  driveFileEsign: "crm:drive-file:esign:",
 } as const;
 
 export const originFor = {
@@ -89,6 +91,7 @@ export const originFor = {
   feedbackLow: (feedbackId: string) => `${CRM_ORIGINS.feedbackLow}${feedbackId}`,
   esign: (documentId: string) => `${CRM_ORIGINS.esign}${documentId}`,
   esignStale: (documentId: string) => `${CRM_ORIGINS.esignStale}${documentId}`,
+  driveFileEsign: (documentId: string) => `${CRM_ORIGINS.driveFileEsign}${documentId}`,
   siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
   siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
   siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
@@ -105,7 +108,7 @@ export const LEGACY_ORIGINS = {
 };
 
 /** Work the CRM hands to agents (not approvals or hires), old and new ids. */
-export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale):/;
+export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale|drive-file):/;
 
 /** Lead follow-ups, old and new ids. */
 export function isLeadFollowUp(originId: string | null | undefined): boolean {
