@@ -150,8 +150,10 @@ d("edge watch (Postgres)", () => {
     });
 
     const blockedComments = w.comments.filter((c) => c.issueId === blocked4);
+    const blockerComments = w.comments.filter((c) => c.issueId === blocker4);
     // Should only have 2 total (one per issue), not 4
     expect(blockedComments.length).toBe(1);
+    expect(blockerComments.length).toBe(1);
   });
 
   it("skips edge older than cutoff", async () => {

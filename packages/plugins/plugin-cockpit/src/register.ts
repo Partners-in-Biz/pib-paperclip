@@ -64,7 +64,7 @@ import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
-import { registerW1cEdge, onEdgeIssueUpdated } from "./register-w1c-edge.js";
+import { registerW1cEdge } from "./register-w1c-edge.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -542,11 +542,6 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await onIssueNeedsYou(env, event);
     } catch (error) {
       ctx.logger.info("Push: needs-you trigger failed", { issueId: event.entityId, error: message(error) });
-    }
-    try {
-      await onEdgeIssueUpdated(env, event);
-    } catch (error) {
-      ctx.logger.info("Edge watch: could not check issue update", { issueId: event.entityId, error: message(error) });
     }
   });
 

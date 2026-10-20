@@ -11,8 +11,11 @@ const IN_FLIGHT = new Set<string>();
 
 /**
  * Ensures the cutoff time is seeded in plugin state (once per deploy/registration).
+ * Seeds from the event's occurredAt time (minus 5 seconds for safety), falling back
+ * to now minus 5 seconds if no event time is available. This ensures the first edge
+ * created during the deployment is not skipped.
  */
-export async function ensureEdgeWatchCutoff(env: Env, companyId: string): Promise<string> {
+export async function ensureEdgeWatchCutoff(env: Env, companyId: string, eventOccurredAt?: string): Promise<string> {
   const existing = await env.ctx.state.get({
     scopeKind: "company" as const,
     scopeId: companyId,
@@ -24,8 +27,21 @@ export async function ensureEdgeWatchCutoff(env: Env, companyId: string): Promis
     return existing;
   }
 
-  // Seed with current time
-  const cutoff = env.now().toISOString();
+  // Seed from event time (minus 5 seconds) or now minus 5 seconds
+  let seedTime = env.now();
+  if (eventOccurredAt) {
+    try {
+      const eventTime = new Date(eventOccurredAt);
+      seedTime = new Date(eventTime.getTime() - 5000); // 5 seconds before event
+    } catch {
+      // Fall back to now minus 5 seconds
+      seedTime = new Date(env.now().getTime() - 5000);
+    }
+  } else {
+    seedTime = new Date(env.now().getTime() - 5000);
+  }
+
+  const cutoff = seedTime.toISOString();
   await env.ctx.state.set(
     {
       scopeKind: "company" as const,
@@ -60,8 +76,8 @@ export async function onEdgeRelationsUpdated(env: Env, event: PluginEvent): Prom
 
   if (!enabled) return;
 
-  // Get the cutoff time
-  const cutoff = await ensureEdgeWatchCutoff(env, companyId);
+  // Get the cutoff time, seeding from the event's time on first occurrence
+  const cutoff = await ensureEdgeWatchCutoff(env, companyId, event.occurredAt);
 
   // Get list of blocker IDs from the event (new ones)
   const blockedByIssueIds = Array.isArray(payload.blockedByIssueIds) ? (payload.blockedByIssueIds as string[]) : [];
@@ -116,7 +132,8 @@ export async function onEdgeRelationsUpdated(env: Env, event: PluginEvent): Prom
       const blockerIssue = await env.ctx.issues.get(edge.blockerId, companyId);
       if (!blockerIssue) continue;
 
-      // Check for marker on blocked issue
+      // Check for marker on blocked issue.
+      // listComments is limited to 500 comments per the host; sufficient for marker deduplication.
       const blockedComments = await env.ctx.issues.listComments(edge.blockedId, companyId);
       if (shouldPostToIssue(blockedComments, edge.blockedId, edge.blockerId)) {
         const body = renderEdgeComment(
@@ -151,20 +168,6 @@ ${marker}`;
       IN_FLIGHT.delete(marker);
     }
   }
-}
-
-/**
- * Handles issue.updated event for edge watch deduplication.
- * Checks if the issue's status changed and skips announcement if terminal.
- */
-export async function onEdgeIssueUpdated(env: Env, event: PluginEvent): Promise<void> {
-  const companyId = event.companyId;
-  if (!companyId) return;
-
-  // This is a lighter check: we mainly rely on onEdgeRelationsUpdated for the full logic.
-  // This handler is here for completeness and to catch issue updates that might re-fire
-  // the relation subscription (though in practice only relation creation triggers announcement).
-  // For now, we don't do anything here since the main logic is in onEdgeRelationsUpdated.
 }
 
 /**
