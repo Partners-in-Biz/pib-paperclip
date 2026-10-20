@@ -5,13 +5,15 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { devices, mute, subscribe, test, unsubscribe } from "../src/push/actions.js";
-import { listSubscriptionsForUser } from "../src/push/store.js";
+import { devices, mute, publicKey, subscribe, test, unsubscribe } from "../src/push/actions.js";
+import { listSubscriptionsForUser, hasAnySubscription, upsertSubscription, createKeyIfAbsent } from "../src/push/store.js";
 import { COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
 import type { Env } from "../src/env.js";
 import { createECDH, randomBytes } from "node:crypto";
 import { registerCockpit } from "../src/register.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
+import { PushKeyError } from "../src/push/keys.js";
+import { generateVapidKeyPair } from "../src/push/vapid.js";
 
 const available = await embeddedAvailable();
 const d = available ? describe : describe.skip;
@@ -499,6 +501,64 @@ d("Push page actions (Postgres)", () => {
           nullContext,
         ),
       ).rejects.toThrow();
+    });
+
+    it("cockpit.push.publicKey returns existing key and never queries subs", async () => {
+      // Clean up: delete any existing keys
+      await pg.ctx.db.execute(`DELETE FROM plugin_cockpit_b8a99e8b16.push_keys WHERE id = 'vapid'`, []);
+
+      // Create a key in the database
+      const generated = generateVapidKeyPair();
+      await createKeyIfAbsent(pg.ctx, {
+        publicKey: generated.publicKey,
+        privateKey: generated.privateKey,
+      });
+
+      const result = await publicKey(pg.ctx);
+      expect(result.publicKey).toBe(generated.publicKey);
+    });
+
+    it("cockpit.push.publicKey throws key_lost when key missing and subscriptions exist", async () => {
+      // Clean up: delete any existing keys and subscriptions
+      await pg.ctx.db.execute(`DELETE FROM plugin_cockpit_b8a99e8b16.push_keys WHERE id = 'vapid'`, []);
+      await pg.ctx.db.execute(
+        `DELETE FROM plugin_cockpit_b8a99e8b16.push_subscriptions WHERE company_id IN ($1, $2)`,
+        [COMPANY_A, COMPANY_B],
+      );
+
+      // Add a subscription to the database
+      await upsertSubscription(pg.ctx, {
+        companyId: COMPANY_A,
+        userId: "test-user",
+        endpoint: "https://fcm.googleapis.com/fcm/send/test",
+        p256dh: "key-material-1",
+        auth: "key-material-2",
+      });
+
+      // Try to get public key with no key stored
+      await expect(publicKey(pg.ctx)).rejects.toMatchObject({
+        code: "key_lost",
+        message: "key lost, devices must re-subscribe",
+      });
+    });
+
+    it("cockpit.push.publicKey generates and stores key when key missing and no subscriptions", async () => {
+      // Clean up: delete any existing keys and subscriptions
+      await pg.ctx.db.execute(`DELETE FROM plugin_cockpit_b8a99e8b16.push_keys WHERE id = 'vapid'`, []);
+      await pg.ctx.db.execute(
+        `DELETE FROM plugin_cockpit_b8a99e8b16.push_subscriptions WHERE company_id IN ($1, $2)`,
+        [COMPANY_A, COMPANY_B],
+      );
+
+      // Ensure no subscriptions exist
+      const hasSubs = await hasAnySubscription(pg.ctx);
+      expect(hasSubs).toBe(false);
+
+      // Call publicKey - should generate a new key
+      const result = await publicKey(pg.ctx);
+
+      expect(result.publicKey).toBeTruthy();
+      expect(result.publicKey).toMatch(/^[\w\-_]+$/); // base64url
     });
   });
 });

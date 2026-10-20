@@ -271,6 +271,16 @@ export async function getSeenAssignee(ctx: PluginContext, companyId: string, iss
 }
 
 // ---------------------------------------------------------------------------
+// Subscription Existence Check
+// ---------------------------------------------------------------------------
+
+/** Check if any push subscriptions exist in the instance database. */
+export async function hasAnySubscription(ctx: PluginContext): Promise<boolean> {
+  const rows = await ctx.db.query<{ n: string }>(`SELECT 1 FROM ${T.subscriptions} LIMIT 1`, []);
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
 // Critical Level Tracking
 // ---------------------------------------------------------------------------
 
