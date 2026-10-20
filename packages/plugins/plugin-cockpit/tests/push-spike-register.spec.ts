@@ -17,13 +17,6 @@ describe("Push spike actions registration", () => {
     expect(fake.actions.has("cockpit.pushSpike.subscribe")).toBe(true);
   });
 
-  it("registers cockpit.pushSpike.send action", () => {
-    const fake = fakeCtx();
-    registerCockpit(fake.ctx);
-
-    expect(fake.actions.has("cockpit.pushSpike.send")).toBe(true);
-  });
-
   it("cockpit.pushSpike.publicKey returns publicKey only", async () => {
     const fake = fakeCtx();
     registerCockpit(fake.ctx);
