@@ -47,8 +47,11 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 - **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
 ## Files in Drive
-\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
-\`drive_folder_ensure\` creates (once) the standard Drive folder tree for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_folder_resolve\` looks up the Google Drive folder (path, URL) for a project or company. ALWAYS call first before saving any file to Drive. Never hard-code a folder ID.
+\`drive_folder_ensure\` creates the standard Drive folder tree (once) and returns its path and URL. Call resolve first; call this only when resolve says not_found. Safe to call again: existing folder returned unchanged. Returns needs_human_look when another project or company would get the same name — ask a human, do not retry or rename.
+
+## Binding a company's Shared Drive
+\`drive_binding_discover\` and \`drive_binding_set\`: bind the company's Shared Drive. Discover lists available shared drives from the read-only Google Drive connection; it auto-binds on exact case-insensitive company name match or returns candidates. Set to bind a specific drive from the candidate list.
 
 ## Project Drive folder kinds
 \`drive_project_kind_set\` and \`drive_project_kind_list\` organize projects by folder branch type (client, product, book, marketing, company). \`set\` works for any project, including own projects with no client link; pass projectId, kind, and optional scopeRef (e.g., for marketing campaigns). \`list\` (read-only) returns kinds for specified projects or all in the company; a client-linked project with no explicit kind defaults to "client".
