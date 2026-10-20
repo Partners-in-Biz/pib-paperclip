@@ -6,8 +6,10 @@
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isAllowedPushEndpoint } from "./hosts.js";
-import { listSubscriptionsForUser, deleteSubscription, setSubscriptionState, upsertSubscription, type PushSubscription } from "./store.js";
+import { listSubscriptionsForUser, deleteSubscription, setSubscriptionState, upsertSubscription, hasAnySubscription, createKeyIfAbsent, getKey, importSpikeKey, type PushSubscription } from "./store.js";
 import { sendPush, type SendDeps } from "./send.js";
+import { PushKeyError } from "./keys.js";
+import { generateVapidKeyPair } from "./vapid.js";
 
 interface CockpitError extends Error {
   code?: string;
@@ -128,6 +130,40 @@ export async function unsubscribe(ctx: PluginContext, companyId: string, userId:
   if (!deleted) throwError("not_found", "Device not found");
 
   return { ok: true };
+}
+
+/**
+ * Get or create the VAPID public key for the push notification page.
+ * Honors the key_lost guard: if the stored key is lost and subscriptions exist, throws PushKeyError.
+ * Fetches from the database, with fallback import from spike state, to ensure consistency with the sender.
+ */
+export async function publicKey(ctx: PluginContext): Promise<{ publicKey: string }> {
+  // Try to get existing key from database
+  let key = await getKey(ctx);
+
+  // If not found, try to import from spike state
+  if (!key) {
+    await importSpikeKey(ctx);
+    key = await getKey(ctx);
+  }
+
+  // If still not found, check if subscriptions exist
+  if (!key) {
+    const hasSubs = await hasAnySubscription(ctx);
+    if (hasSubs) {
+      throw new PushKeyError("key_lost", "key lost, devices must re-subscribe");
+    }
+
+    // No subscriptions and no key: create a new key
+    const generated = generateVapidKeyPair();
+    const result = await createKeyIfAbsent(ctx, {
+      publicKey: generated.publicKey,
+      privateKey: generated.privateKey,
+    });
+    key = result;
+  }
+
+  return { publicKey: key.publicKey };
 }
 
 export interface TestParams {

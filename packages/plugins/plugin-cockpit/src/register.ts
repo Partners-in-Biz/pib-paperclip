@@ -61,8 +61,7 @@ import { onCommentCreated, upkeep } from "./memory/service.js";
 import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS } from "./tools.js";
-import { devices, mute, subscribe, test, unsubscribe } from "./push/actions.js";
-import { getOrCreateVapidKey, createPushKeyStore } from "./push/keys.js";
+import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
@@ -410,16 +409,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.actions.register("cockpit.push.publicKey", async (_params, context) => {
     requireUser(context);
     try {
-      const publicKey = await getOrCreateVapidKey(createPushKeyStore(ctx.state), {
-        hasSubscriptions: async () => {
-          // For page actions, we can skip the hasSubscriptions check since DB subscriptions are clean
-          return false;
-        },
-      });
-      return { publicKey: publicKey.publicKey };
+      return await publicKey(ctx);
     } catch (error) {
-      const err = error as { code?: string; message?: string };
-      if (err.code) throw new CockpitError(err.message ?? err.code);
+      if (error instanceof Error && "code" in error) {
+        throw new CockpitError((error as { message?: string }).message ?? error.message);
+      }
       throw error;
     }
   });
