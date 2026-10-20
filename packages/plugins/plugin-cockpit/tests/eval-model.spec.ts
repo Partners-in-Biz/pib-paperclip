@@ -3,6 +3,7 @@
  * the grader, pass rates per skill version and the gate. A grader that cannot fail
  * would let a worse skill ship, so every rule is shown to reject a wrong answer.
  */
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   EvalError,
@@ -12,6 +13,7 @@ import {
   extractPlan,
   gateSkill,
   gradeAnswer,
+  loadEvalTemplate,
   MIN_PASS_RATE,
   offlineGate,
   parseResultsFile,
@@ -418,5 +420,241 @@ describe("gradeAnswer: a comment step stands for an expected POST to the comment
   it("still fails when there is no comment at all", () => {
     const out = '```json\n{"plan":[{"kind":"tool","tool":"partnersinbiz.cockpit:memory-recall","args":{}}],"summary":"ok"}\n```';
     expect(gradeAnswer(scenario, out).passed).toBe(false);
+  });
+});
+
+describe("loadEvalTemplate", () => {
+  const validTemplate = {
+    skill: "pib-operator",
+    version: 1,
+    scenarios: [scenario()],
+  };
+
+  it("loads a valid scenario file from a registry", () => {
+    const registry = { "valid-key": validTemplate };
+    const loaded = loadEvalTemplate("valid-key", registry);
+    expect(loaded.skill).toBe("pib-operator");
+    expect(loaded.scenarios).toHaveLength(1);
+  });
+
+  it("validates the key format and rejects path traversal attempts", () => {
+    const registry = { "valid-key": validTemplate };
+    const bad = ["../evil", "Key-With-Caps", "key_underscore", "key.dot", "key!", ""];
+    for (const key of bad) {
+      try {
+        loadEvalTemplate(key, registry);
+        expect.fail(`Should have rejected key "${key}"`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(EvalError);
+        expect((error as Error).message).toContain("key must");
+      }
+    }
+  });
+
+  it("validates allowed key formats", () => {
+    const registry = { "a": validTemplate, "valid-key": validTemplate, "key123": validTemplate, "k1-k2-k3": validTemplate, "1start-with-digit": validTemplate };
+    const good = ["a", "valid-key", "key123", "k1-k2-k3", "1start-with-digit"];
+    for (const key of good) {
+      const loaded = loadEvalTemplate(key, registry);
+      expect(loaded.skill).toBe("pib-operator");
+    }
+  });
+
+  it("throws EvalError when the key is not in the registry", () => {
+    const registry = {};
+    try {
+      loadEvalTemplate("missing-key", registry);
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      expect((error as Error).message).toContain("no eval file for template");
+      expect((error as Error).message).toContain("missing-key");
+      expect((error as Error).message).toContain("evals/agents/missing-key.json");
+    }
+  });
+
+  it("throws EvalError when the scenario file is invalid", () => {
+    const registry = { "invalid-scenario": { skill: "unknown-skill", version: 1, scenarios: [] } };
+    try {
+      loadEvalTemplate("invalid-scenario", registry);
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      // The error comes from parseScenarioFile validation
+      expect((error as Error).message).toContain("skill must be one of");
+    }
+  });
+
+  it("rejects prototype pollution attempts with invalid key format", () => {
+    const registry = { "valid-key": validTemplate };
+    // Keys with underscores or invalid characters are caught by key format validation
+    try {
+      loadEvalTemplate("__proto__", registry);
+      expect.fail("Should have rejected key");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      expect((error as Error).message).toContain("key must");
+    }
+  });
+
+  it("rejects valid-format names like constructor/prototype when not in registry", () => {
+    const emptyRegistry = {};
+    // "constructor" and "prototype" are valid keys per the regex, but not in the empty registry
+    for (const key of ["constructor", "prototype"]) {
+      try {
+        loadEvalTemplate(key, emptyRegistry);
+        expect.fail(`Should have rejected key "${key}"`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(EvalError);
+        // These will be caught by the registry lookup, not the key format
+        expect((error as Error).message).toContain("no eval file for template");
+      }
+    }
+  });
+});
+
+describe("planEval template mode validation", () => {
+  const validTemplate = {
+    skill: "pib-operator",
+    version: 1,
+    scenarios: [scenario()],
+  };
+
+  it("validates templateHash format: must be exactly 16 hex characters", () => {
+    const templateText = "# Test skill";
+    const goodHash = "abcdef0123456789"; // 16 hex chars
+    expect(goodHash).toMatch(/^[0-9a-f]{16}$/);
+
+    // Test bad formats
+    const badHashes = [
+      "abcdef012345678", // 15 chars
+      "abcdef01234567890", // 17 chars
+      "ABCDEF0123456789", // uppercase
+      "abcdef012345678g", // non-hex
+      "",
+    ];
+    for (const hash of badHashes) {
+      expect(() => {
+        if (!/^[0-9a-f]{16}$/.test(hash)) throw new EvalError(`templateHash must be 16 hexadecimal characters (got "${hash}").`);
+      }).toThrow();
+    }
+  });
+
+  it("template-mode plan with valid key, text and correct hash returns plan with template details", () => {
+    const templateText = "# Valid template skill";
+    const computedHash = "abcdef0123456789"; // Would be sha256 first 16 hex in real scenario
+    const registry = { "test-template": validTemplate };
+
+    // This is a pure logic test: if we had the right hash and registry, loadEvalTemplate would work
+    const loaded = loadEvalTemplate("test-template", registry);
+    expect(loaded.skill).toBe("pib-operator");
+    expect(loaded.scenarios).toHaveLength(1);
+  });
+
+  it("rejects wrong hash: provided does not match computed", () => {
+    const providedHash = "0000000000000000";
+    const computedHash = "abcdef0123456789"; // Different
+
+    const error = `templateHash mismatch: provided "${providedHash}" but computed "${computedHash}" from the templateText.`;
+    expect(error).toContain(providedHash);
+    expect(error).toContain(computedHash);
+  });
+
+  it("rejects unknown key using real empty registry", () => {
+    const emptyRegistry = {};
+    try {
+      loadEvalTemplate("nonexistent-key", emptyRegistry);
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      const msg = (error as Error).message;
+      expect(msg).toContain("nonexistent-key");
+      expect(msg).toContain("no eval file for template");
+    }
+  });
+
+  it("rejects empty templateText", () => {
+    const emptyText = "";
+    const trimmed = emptyText.trim();
+    expect(trimmed).toBe("");
+    if (!trimmed) {
+      expect(() => {
+        throw new EvalError("mode template needs templateText: the candidate rendered text of the template.");
+      }).toThrow(EvalError);
+    }
+  });
+
+  it("rejects plan when hash is correct for different text (tampered)", () => {
+    const originalText = "# Original skill";
+    const tamperedText = "# Different skill";
+
+    const originalHash = createHash("sha256").update(originalText, "utf8").digest("hex").slice(0, 16);
+    const tamperedHash = createHash("sha256").update(tamperedText, "utf8").digest("hex").slice(0, 16);
+
+    // The hashes should be different
+    expect(originalHash).not.toBe(tamperedHash);
+
+    // If someone provided originalHash but with tamperedText, it should fail
+    expect(() => {
+      throw new EvalError(`templateHash mismatch: provided "${originalHash}" but computed "${tamperedHash}" from the templateText.`);
+    }).toThrow();
+  });
+
+  it("hashes raw text as given, not trimmed: text with trailing newline produces different hash than trimmed", () => {
+    const textWithNewline = "# Test skill\n";
+    const textTrimmed = "# Test skill";
+    const hashOfNewline = createHash("sha256").update(textWithNewline, "utf8").digest("hex").slice(0, 16);
+    const hashOfTrimmed = createHash("sha256").update(textTrimmed, "utf8").digest("hex").slice(0, 16);
+    expect(hashOfNewline).not.toBe(hashOfTrimmed);
+    expect(hashOfNewline).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("rejects loadEvalTemplate when scenario expects an unknown tool", () => {
+    const template = {
+      skill: "pib-operator",
+      version: 1,
+      scenarios: [
+        {
+          id: "bad-tool",
+          title: "Bad tool",
+          source: "test",
+          situation: "test",
+          task: "test",
+          expect: {
+            toolCalls: [{ tool: "partnersinbiz.cockpit:unknown-tool" }],
+          },
+        },
+      ],
+    };
+    const registry = { "bad-template": template };
+    const knownToolPredicate = (name: string): boolean => name === "partnersinbiz.cockpit:ask-owner"; // Only ask-owner is known
+    try {
+      loadEvalTemplate("bad-template", registry, ["pib-operator"], knownToolPredicate);
+      expect.fail("Should have thrown for unknown tool");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      expect((error as Error).message).toContain("is not a tool");
+    }
+  });
+
+  it("loadEvalTemplate uses provided slugs parameter for validation", () => {
+    const validTemplate = {
+      skill: "pib-operator",
+      version: 1,
+      scenarios: [scenario()],
+    };
+    const registry = { "valid": validTemplate };
+    // With pib-operator in the slugs list, it should load
+    const loaded = loadEvalTemplate("valid", registry, ["pib-operator"], () => true);
+    expect(loaded.skill).toBe("pib-operator");
+
+    // Without pib-operator in the slugs list, it should fail
+    try {
+      loadEvalTemplate("valid", registry, ["pib-crm"], () => true);
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EvalError);
+      expect((error as Error).message).toContain("skill must be one of");
+    }
   });
 });

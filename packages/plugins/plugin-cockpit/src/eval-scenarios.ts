@@ -17,6 +17,12 @@ import { EVAL_TOOL_NAMES } from "./eval-tool-declarations.js";
 import { TOOL_NAMES } from "./tools.js";
 import { MEMORY_TOOLS } from "@partnersinbiz/pib-plugin-kit";
 
+/**
+ * Bundled agent eval templates. Each distilled template's `evals/agents/<key>.json`
+ * is imported statically and added here; esbuild inlines it into dist/worker.js.
+ */
+export const AGENT_EVALS: Record<string, unknown> = {};
+
 /** Every tool this plugin registers, as agents name it. */
 export function cockpitToolNames(): Set<string> {
   const names = [...Object.values(TOOL_NAMES), ...Object.values(OPS_TOOL_NAMES), ...Object.values(ACCEPTANCE_TOOL_NAMES), ...Object.values(EVAL_TOOL_NAMES), ...Object.values(MEMORY_TOOLS)] as string[];
