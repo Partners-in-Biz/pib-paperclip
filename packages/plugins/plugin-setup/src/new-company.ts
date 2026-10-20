@@ -68,13 +68,28 @@ interface CompanyInfo {
   requireApproval: boolean | null;
 }
 
-async function companyInfo(ctx: PluginContext, companyId: string): Promise<CompanyInfo> {
+/**
+ * Explicit lookup: found=true iff ctx.companies.get returned a non-null company.
+ * Always returns info: the actual values if found, fallback values otherwise.
+ */
+async function companyLookup(ctx: PluginContext, companyId: string): Promise<{ found: boolean; info: CompanyInfo }> {
   try {
     const company = (await ctx.companies.get(companyId)) as { name?: string; issuePrefix?: string | null; requireBoardApprovalForNewAgents?: boolean } | null;
-    return { id: companyId, name: company?.name ?? "the company", prefix: company?.issuePrefix ?? null, requireApproval: typeof company?.requireBoardApprovalForNewAgents === "boolean" ? company.requireBoardApprovalForNewAgents : null };
+    if (company) {
+      return {
+        found: true,
+        info: { id: companyId, name: company.name ?? "the company", prefix: company.issuePrefix ?? null, requireApproval: typeof company.requireBoardApprovalForNewAgents === "boolean" ? company.requireBoardApprovalForNewAgents : null },
+      };
+    }
+    return { found: false, info: { id: companyId, name: "the company", prefix: null, requireApproval: null } };
   } catch {
-    return { id: companyId, name: "the company", prefix: null, requireApproval: null };
+    return { found: false, info: { id: companyId, name: "the company", prefix: null, requireApproval: null } };
   }
+}
+
+async function companyInfo(ctx: PluginContext, companyId: string): Promise<CompanyInfo> {
+  const { info } = await companyLookup(ctx, companyId);
+  return info;
 }
 
 async function planFacts(ctx: PluginContext, companyId: string): Promise<PlanFacts> {
@@ -338,9 +353,7 @@ interface DraftInput {
 }
 
 export async function varsFor(ctx: PluginContext, input: DraftInput) {
-  const company = await companyInfo(ctx, input.companyId);
-  // Explicit check: company found iff it was retrieved successfully (not just the default fallback)
-  const found = !(company.name === "the company" && company.prefix === null && company.requireApproval === null);
+  const { found, info: company } = await companyLookup(ctx, input.companyId);
   const ceo = input.ceo && typeof input.ceo === "object" ? (input.ceo as Record<string, unknown>) : null;
   return {
     company,

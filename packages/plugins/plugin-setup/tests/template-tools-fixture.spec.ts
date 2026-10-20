@@ -37,47 +37,16 @@ const fixturePack: TemplatePack = {
   templates: [fixtureHostOwned, fixtureSubagents, fixtureTemplate],
 };
 
-// Use a simpler approach: read and export the needed functions from original, override a few
-vi.mock(
-  "../src/templates.js",
-  () => {
-    // Create a synchronous mock factory that returns the overrides
-    return {
-      // Overridden functions
-      loadPack: () => fixturePack,
-      templateByKey: (key: string) => fixturePack.templates.find((t) => t.key === key) ?? null,
-      packSources: () => ({ files: fixtureFiles, blocks: fixtureBlocks }),
-      // Re-export stubs for the functions we don't mock (they'll be imported from actual module)
-      // These are defined inline to avoid circular dependencies
-      expandBlocks: (text: string, blocks: Record<string, string>): string => {
-        const INCLUDE_RE = /\{\{include:([a-z0-9-]+)\}\}/g;
-        return text.replace(INCLUDE_RE, (_all, name: string) => (blocks[name] ?? "").trimEnd()).trimEnd() + "\n";
-      },
-      fillVariables: (text: string, vars: any): string => {
-        const VARIABLE_RE = /\{\{([a-zA-Z][a-zA-Z0-9]*)\}\}/g;
-        const PREFIX_LINK_RE = /\[([^\]]+)\]\(\/\{\{prefix\}\}\/[^)]*\)/g;
-        const linked = vars.prefix ? text : text.replace(PREFIX_LINK_RE, "$1");
-        return linked
-          .replace(VARIABLE_RE, (all: string, name: string) => (name in vars ? vars[name] : all))
-          .replace(/\bthe CEO, the CEO\b/g, "the CEO");
-      },
-      // Other needed exports
-      templateVars: (input?: any) => ({
-        company: input?.company?.trim() || "the company",
-        prefix: input?.prefix?.trim() || "",
-        owner: input?.owner?.trim() || "the company owner",
-        ceo: input?.ceo?.name?.trim() || "the CEO",
-        ceoLink: "the CEO",
-        wikiRoot: input?.wikiRoot?.trim() || "(not configured)",
-      }),
-      // Type exports
-      NO_WIKI_ROOT: "(not configured)",
-      // Functions that might be needed
-      matchTemplate: () => null,
-      manager: () => null,
-    };
-  }
-);
+// Mock the pack accessors, use real render code
+vi.mock("../src/templates.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/templates.js")>();
+  return {
+    ...actual,
+    loadPack: () => fixturePack,
+    templateByKey: (key: string) => fixturePack.templates.find((t) => t.key === key) ?? null,
+    packSources: () => ({ files: fixtureFiles, blocks: fixtureBlocks }),
+  };
+});
 
 // Import registerTemplateTools after the mock is set up.
 import { registerTemplateTools } from "../src/template-tools.js";
@@ -123,6 +92,14 @@ describe("template-tools fixture", () => {
     const { templateGet } = registerTemplateTools(ctx);
     const r = await templateGet({ key: "f-sub", companyId: "c2" }, { companyId: "c1" });
     expect(r.error).toContain("must match");
+  });
+
+  it("company literally named 'the company' is reported as found", async () => {
+    const { ctx } = fakeCtx({ companies: { "c": { name: "the company" } } });
+    const { templateGet } = registerTemplateTools(ctx);
+    const r = await templateGet({ key: "f-sub" }, { companyId: "c" });
+    if (r.error) throw new Error(`Handler returned error: ${r.error}`);
+    expect(r.data!.rendered).toContain("the company");
   });
 
   it("returns error when company not found", async () => {
