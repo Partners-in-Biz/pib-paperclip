@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { emailHash, generateLeadKey, hashIp, KEY_GRACE_DAYS, LIMITS, MAX_BODY_BYTES } from "../src/lead-form.js";
-import { createLeadEndpoint, handleLeadWebhook, ipSalt, LeadRejected, openClientLeadIssue, RATE, retryClientLeadIssues, verifyTurnstile } from "../src/lead-capture.js";
+import { createLeadEndpoint, handleLeadWebhook, ipSalt, LeadRejected, openClientLeadIssue, RATE, resetLeadCaches, retryClientLeadIssues, verifyTurnstile } from "../src/lead-capture.js";
 import { processHeldLeads } from "../src/leads.js";
+import { leadFormItems } from "../src/setup-status.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
 import { BOARD, CO, crmIssues, tool } from "./helpers/crm.js";
@@ -466,6 +467,71 @@ describe("Cloudflare Turnstile", () => {
     expect(JSON.stringify(booted.harness.logs)).not.toContain("resolved:");
   });
 
+  it("no keys at all: the form works without a spam check", async () => {
+    const booted = await bootLeads();
+    const { source } = await makeSource(booted, {});
+    const fetch = vi.spyOn(booted.harness.ctx.http, "fetch");
+    expect(await post(booted, lead(source.key, { turnstileToken: "tok" }), { "x-real-ip": ip(80) })).toMatchObject({ status: "stored" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("site key set but secret missing: the form is refused until the secret is added", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    // Config now has no secret, but the source still has the site key from when it was created
+    booted.harness.setConfig({ timezone: "Africa/Johannesburg", leads: { turnstileSiteKey: "0x4AAAAAAA" } });
+    resetLeadCaches();
+    const fetch = vi.spyOn(booted.harness.ctx.http, "fetch");
+    // First post with missing secret
+    expect(String(await rejected(post(booted, lead(source.key, { email: "p1@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(81) })))).toMatch(/This form is temporarily unavailable/);
+    expect(fetch).not.toHaveBeenCalled();
+    // Verify the logger was called with the misconfigured event
+    expect(booted.harness.logs.some((entry) => /CRM Turnstile secret is not configured/.test(entry.message) && entry.meta?.event === "turnstile_misconfigured")).toBe(true);
+    // Second post still fails (secret still missing, not cached)
+    expect(String(await rejected(post(booted, lead(source.key, { email: "p2@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(82) })))).toMatch(/temporarily unavailable/);
+    // Now add the secret and verify it passes
+    booted.harness.setConfig(withTurnstile);
+    resetLeadCaches();
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockImplementation(answer({ success: true }) as never);
+    expect(await post(booted, lead(source.key, { email: "p3@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(83) })).toMatchObject({ status: "stored" });
+  });
+
+  it("source has snapshot site key, config has no site key and no secret: rejected, then secret added: passes", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    // Config now has neither site key nor secret (but source snapshot still has the key from when it was created)
+    booted.harness.setConfig({ timezone: "Africa/Johannesburg" });
+    resetLeadCaches();
+    const fetch = vi.spyOn(booted.harness.ctx.http, "fetch");
+    // Post is rejected even though config has no site key, because the source snapshot has it
+    expect(String(await rejected(post(booted, lead(source.key, { email: "p1@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(84) })))).toMatch(/temporarily unavailable/);
+    expect(fetch).not.toHaveBeenCalled();
+    // Verify logger was called (the caller knows source.turnstileSiteKey is set, so empty secret is misconfigured)
+    expect(booted.harness.logs.some((entry) => /CRM Turnstile secret is not configured/.test(entry.message) && entry.meta?.event === "turnstile_misconfigured")).toBe(true);
+    // Now add the secret and verify it passes
+    booted.harness.setConfig({ timezone: "Africa/Johannesburg", leads: { turnstileSecret: SECRET_REF } });
+    resetLeadCaches();
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockImplementation(answer({ success: true }) as never);
+    expect(await post(booted, lead(source.key, { email: "p2@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(85) })).toMatchObject({ status: "stored" });
+  });
+
+  it("secret resolution throws: the lead is stored and logged with the error", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.secrets, "resolve").mockRejectedValue(new Error("secret service down"));
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockImplementation(answer({ success: true }) as never);
+    expect(await post(booted, lead(source.key, { turnstileToken: "tok" }), { "x-real-ip": ip(84) })).toMatchObject({ status: "stored" });
+    expect(booted.harness.logs.some((entry) => /CRM Turnstile secret could not be read/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
+  });
+
+  it("Cloudflare non-OK response: the lead is stored and logged with the status code", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockImplementation(answer({}, 500) as never);
+    expect(await post(booted, lead(source.key, { turnstileToken: "tok" }), { "x-real-ip": ip(85) })).toMatchObject({ status: "stored" });
+    expect(booted.harness.logs.some((entry) => /CRM Turnstile check returned non-OK/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
+  });
+
   it("reads the secret once for many submissions, so a busy form stays under the host's secret limit", async () => {
     const booted = await bootLeads({ config: withTurnstile });
     const { source } = await makeSource(booted, {});
@@ -481,9 +547,11 @@ describe("Cloudflare Turnstile", () => {
     const { source } = await makeSource(booted, {});
     vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
     expect(await post(booted, lead(source.key, { turnstileToken: "tok" }))).toMatchObject({ status: "stored" });
-    expect(booted.harness.logs.some((entry) => /did not answer/.test(entry.message))).toBe(true);
+    expect(booted.harness.logs.some((entry) => /did not answer/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
+    booted.harness.logs.length = 0;
     vi.spyOn(booted.harness.ctx.http, "fetch").mockImplementation(answer({}, 503) as never);
     expect(await verifyTurnstile(booted.harness.ctx, CO, "tok", null)).toBe("unavailable");
+    expect(booted.harness.logs.some((entry) => /returned non-OK/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
   });
 
   it("a signed server request needs no token; a form with no secret saved is not checked", async () => {
@@ -491,7 +559,7 @@ describe("Cloudflare Turnstile", () => {
     const made = await makeSourceAsPerson(booted, { serverSecret: true });
     expect(await handleLeadWebhook(booted.harness.ctx, signedDelivery(made.serverSecret!, lead(made.source.key)))).toMatchObject({ status: "stored" });
     const noSecret = await bootLeads({ config: { timezone: "Africa/Johannesburg", leads: { turnstileSiteKey: "0x4AAA" } } });
-    expect(await verifyTurnstile(noSecret.harness.ctx, CO, "tok", null)).toBe("unavailable");
+    expect(await verifyTurnstile(noSecret.harness.ctx, CO, "tok", null)).toBe("misconfigured");
   });
 });
 
@@ -698,5 +766,38 @@ describe("the per-visitor hourly limit", () => {
     expect(String(await rejected(send(ip(61), "c@smith-plumbing.test")))).toMatch(/Too many submissions/);
     // A refusal is not written down.
     expect(booted.store.lead_hits.filter((row) => row.outcome === "rate_limited")).toHaveLength(0);
+  });
+});
+
+describe("setup-status Turnstile item", () => {
+  const SECRET_REF = { type: "secret_ref", secretId: "sec-turnstile" };
+  const withTurnstile = { timezone: "Africa/Johannesburg", leads: { turnstileSiteKey: "0x4AAAAAAA", turnstileSecret: SECRET_REF } };
+
+  it("site key without secret shows status missing instead of optional", async () => {
+    const booted = await bootLeads({ config: { timezone: "Africa/Johannesburg", leads: { turnstileSiteKey: "0x4AAAAAAA" } } });
+    await makeSource(booted, {});
+    const items = await leadFormItems(booted.harness.ctx, CO, "/settings");
+    const turnstileItem = items.find((i) => i.key === "turnstile")!;
+    expect(turnstileItem).toBeDefined();
+    expect(turnstileItem.status).toBe("missing");
+    expect(turnstileItem.detail).toMatch(/temporarily unavailable/);
+  });
+
+  it("both keys saved shows status done", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    await makeSource(booted, {});
+    const items = await leadFormItems(booted.harness.ctx, CO, "/settings");
+    const turnstileItem = items.find((i) => i.key === "turnstile")!;
+    expect(turnstileItem.status).toBe("done");
+    expect(turnstileItem.detail).toMatch(/Cloudflare Turnstile is on/);
+  });
+
+  it("no keys saved shows status optional", async () => {
+    const booted = await bootLeads();
+    await makeSource(booted, {});
+    const items = await leadFormItems(booted.harness.ctx, CO, "/settings");
+    const turnstileItem = items.find((i) => i.key === "turnstile")!;
+    expect(turnstileItem.status).toBe("optional");
+    expect(turnstileItem.detail).not.toMatch(/temporarily unavailable/);
   });
 });
