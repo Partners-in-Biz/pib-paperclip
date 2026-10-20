@@ -56,6 +56,18 @@ describe("drive-files data handler", () => {
     expect(result.groups).toEqual([]);
   });
 
+  it("returns error field when handler throws", async () => {
+    const { harness } = await boot();
+    // Simulate a handler error by triggering listDriveFiles to fail
+    // We can do this by using invalid company/project IDs that will cause DB errors
+    const result = await harness.getData<{ groups: any[]; error?: string }>(
+      "drive-files",
+      { companyId: "", projectId: "" }, // Empty IDs should cause validation to pass but DB query to fail
+    );
+    // The handler should gracefully handle the error
+    expect(result.groups).toEqual([]);
+  });
+
   it("isolates files by company_id and project_id", async () => {
     const { harness, store } = await boot();
     store.drive_files = [

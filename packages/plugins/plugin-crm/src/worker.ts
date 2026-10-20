@@ -559,8 +559,10 @@ const plugin = definePlugin({
         const files = await listDriveFiles(ctx, companyId, { projectId });
         const groups = listClientFiles(files);
         return { groups };
-      } catch {
-        return { groups: [] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.logger.error(`drive-files handler error for company ${companyId} project ${projectId}: ${message}`);
+        return { groups: [], error: "Could not load files." };
       }
     });
 

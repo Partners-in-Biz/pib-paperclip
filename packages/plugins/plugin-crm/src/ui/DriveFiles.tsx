@@ -3,29 +3,16 @@
  * Renders grouped files with name, date, source, and https-validated links.
  */
 import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
+import { tokens, formatDate } from "@partnersinbiz/pib-plugin-ui";
 import type { FileGroup, ClientFile } from "../drive/files-list.js";
 
 interface FileGroupResponse {
   groups: FileGroup[];
+  error?: string;
 }
 
 export interface DriveFilesProps {
   projectId: string | null;
-}
-
-/**
- * Format a date string for display (e.g., "Oct 20, 2026").
- */
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  } catch {
-    return iso.split("T")[0] || iso;
-  }
 }
 
 /**
@@ -50,7 +37,7 @@ function FileRow({ file }: { file: ClientFile }) {
         rel="noopener noreferrer"
         title={file.name}
         style={{
-          color: "#0066cc",
+          color: tokens.primary,
           textDecoration: "none",
           minWidth: 0,
           flex: "1 1 auto",
@@ -65,7 +52,7 @@ function FileRow({ file }: { file: ClientFile }) {
         style={{
           display: "flex",
           gap: "12px",
-          color: "#666",
+          color: tokens.muted,
           fontSize: "12px",
           whiteSpace: "nowrap",
         }}
@@ -88,7 +75,7 @@ function FileGroupSection({ group }: { group: FileGroup }) {
           margin: "0 0 8px 0",
           fontSize: "13px",
           fontWeight: 600,
-          color: "#333",
+          color: tokens.fg,
         }}
       >
         {group.label}
@@ -97,7 +84,7 @@ function FileGroupSection({ group }: { group: FileGroup }) {
         style={{
           display: "grid",
           gap: "0",
-          borderLeft: "1px solid #ddd",
+          borderLeft: `1px solid ${tokens.border}`,
           paddingLeft: "12px",
         }}
       >
@@ -111,7 +98,7 @@ function FileGroupSection({ group }: { group: FileGroup }) {
 
 /**
  * Display all saved Drive files for a project, grouped by folder.
- * Shows an empty state when no files are available.
+ * Shows an empty state when no files are available, or an error state on failure.
  */
 export function DriveFiles({ projectId }: DriveFilesProps) {
   const hostContext = useHostContext();
@@ -121,14 +108,21 @@ export function DriveFiles({ projectId }: DriveFilesProps) {
   });
 
   const groups = driveFilesData.data?.groups ?? [];
+  const payloadError = driveFilesData.data?.error;
+  const transportError = typeof driveFilesData.error === "string" ? driveFilesData.error : undefined;
+  const errorMessage = transportError || payloadError;
 
   return (
     <div style={{ marginTop: "16px" }}>
       <h2 style={{ fontSize: "14px", fontWeight: 600, margin: "0 0 12px 0" }}>
         Saved files
       </h2>
-      {groups.length === 0 ? (
-        <p style={{ fontSize: "13px", color: "#666", margin: 0 }}>No files saved yet.</p>
+      {errorMessage ? (
+        <p style={{ fontSize: "13px", color: tokens.muted, margin: 0 }}>
+          {errorMessage}
+        </p>
+      ) : groups.length === 0 ? (
+        <p style={{ fontSize: "13px", color: tokens.muted, margin: 0 }}>No files saved yet.</p>
       ) : (
         groups.map((group) => (
           <FileGroupSection key={group.folderId} group={group} />
