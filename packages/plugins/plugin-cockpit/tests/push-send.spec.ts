@@ -1,251 +1,191 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { generateVapidKeyPair } from "../src/push/vapid.js";
+import type { PushSubscription } from "../src/push/store.js";
+import { decryptPayload, generateP256Keys } from "./push-test-helpers.js";
+
+const store = vi.hoisted(() => ({
+  appendPushLog: vi.fn(),
+  createKeyIfAbsent: vi.fn(),
+  deleteSubscription: vi.fn(),
+  getKey: vi.fn(),
+  markSubscriptionOk: vi.fn(),
+  setSubscriptionState: vi.fn(),
+  takeRateSlot: vi.fn(),
+}));
+vi.mock("../src/push/store.js", () => store);
+
 import { sendPush, type PushPayload } from "../src/push/send.js";
-import { MAX_PLAINTEXT_BYTES } from "../src/push/encrypt.js";
+
+const ENDPOINT = "https://fcm.googleapis.com/fcm/send/device-one";
+const ENDPOINT_2 = "https://updates.push.services.mozilla.com/wpush/v2/device-two";
+const NOW = new Date("2026-10-20T10:30:00Z");
+
+const payload = (over: Partial<PushPayload> = {}): PushPayload => ({
+  title: "Needs you",
+  body: "Approve the invoice",
+  url: "/PAR/issues/PAR-1",
+  tag: "PAR-1",
+  class: "needs_you",
+  ...over,
+});
 
 describe("sendPush", () => {
-  let mockCtx: any;
-  let mockPostPush: any;
+  const vapid = generateVapidKeyPair();
+  let subscriber: ReturnType<typeof generateP256Keys>;
+  let sub: PushSubscription;
+  let config: Record<string, unknown> | undefined;
+  let ctx: any;
+  let post: ReturnType<typeof vi.fn>;
+  let used: Map<string, number>;
 
-  const vapidPublicKey = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEk0ZjnQaFhcEApkTUpULsqnVEXJsy
-4UVPIOoSjrahIS+dTGL0sCtiUtH0JRV0sxUGR+YJ4ZwUUgOBosvLK0tj9g==
------END PUBLIC KEY-----`;
+  const makeSub = (over: Partial<PushSubscription> = {}): PushSubscription => ({
+    id: "sub-1",
+    companyId: "co-1",
+    userId: "user-1",
+    endpoint: ENDPOINT,
+    p256dh: subscriber.p256dh,
+    auth: subscriber.auth,
+    deviceLabel: "Phone",
+    createdAt: NOW.toISOString(),
+    lastOkAt: null,
+    lastError: null,
+    state: "ok",
+    ...over,
+  } as PushSubscription);
 
-  const vapidPrivateKey = `-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgegQaYaYAma1DxXA1
-tYHCSsKnVx7P0JM7umfTC+JraAShRANCAASTRmOdBoWFwQCmRNSlQuyqdURcmzLh
-RU8g6hKOtqEhL51MYvSwK2JS0fQlFXSzFQZH5gnhnBRSA4Giy8srS2P2
------END PRIVATE KEY-----`;
+  const send = (subs: PushSubscription[], p = payload(), cls = p.class) =>
+    sendPush(ctx, "co-1", subs, p, { class: cls, deps: { postPush: post as any, now: () => NOW } });
 
   beforeEach(() => {
-    mockPostPush = vi.fn(async () => ({ status: 201 }));
-
-    mockCtx = {
-      config: {
-        get: vi.fn(async () => ({ pushEnabled: true, vapidSubject: "mailto:test@example.com" })),
-      },
-      db: {
-        execute: vi.fn(async () => ({ rowCount: 1 })),
-        query: vi.fn(async () => [{ public_key: vapidPublicKey, private_key: vapidPrivateKey }]),
-      },
-    };
+    vi.clearAllMocks();
+    subscriber = generateP256Keys();
+    sub = makeSub();
+    config = { pushEnabled: true };
+    ctx = { config: { get: vi.fn(async () => config) } };
+    post = vi.fn(async () => ({ status: 201, headers: {}, body: "", bodyTruncated: false }));
+    used = new Map();
+    store.getKey.mockResolvedValue({ ...vapid, created: false });
+    store.takeRateSlot.mockImplementation(async (_c: unknown, key: string, _w: Date, cap: number) => {
+      const n = used.get(key) ?? 0;
+      if (n >= cap) return false;
+      used.set(key, n + 1);
+      return true;
+    });
+    store.deleteSubscription.mockResolvedValue(true);
+    store.setSubscriptionState.mockResolvedValue(true);
+    store.markSubscriptionOk.mockResolvedValue(true);
   });
 
-  describe("disabled when pushEnabled is false", () => {
-    it("returns disabled:true with no network calls when pushEnabled=false", async () => {
-      mockCtx.config.get = vi.fn(async () => ({ pushEnabled: false }));
-
-      const subs = [
-        {
-          id: "sub1",
-          userId: "user1",
-          endpoint: "https://fcm.googleapis.com/push/test",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Test Device",
-          state: "ok" as const,
-        },
-      ];
-
-      const payload: PushPayload = {
-        title: "Test",
-        body: "Test body",
-        url: "/test",
-        tag: "test-tag",
-        class: "critical",
-      };
-
-      const result = await sendPush(mockCtx, "company1", subs, payload, {
-        class: "critical",
-        deps: { postPush: mockPostPush },
-      });
-
-      expect(result.disabled).toBe(true);
-      expect(result.devices).toHaveLength(0);
-      expect(mockPostPush).not.toHaveBeenCalled();
-    });
-
-    it("returns disabled:true when pushEnabled is unset", async () => {
-      mockCtx.config.get = vi.fn(async () => ({}));
-
-      const subs = [
-        {
-          id: "sub1",
-          userId: "user1",
-          endpoint: "https://fcm.googleapis.com/push/test",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Test Device",
-          state: "ok" as const,
-        },
-      ];
-
-      const payload: PushPayload = {
-        title: "Test",
-        body: "Test body",
-        url: "/test",
-        tag: "test-tag",
-        class: "critical",
-      };
-
-      const result = await sendPush(mockCtx, "company1", subs, payload, {
-        class: "critical",
-        deps: { postPush: mockPostPush },
-      });
-
-      expect(result.disabled).toBe(true);
-      expect(mockPostPush).not.toHaveBeenCalled();
-    });
+  it("sends encrypted body with VAPID, TTL and urgency headers (needs_you)", async () => {
+    const res = await send([sub]);
+    expect(res.devices).toEqual([{ endpoint: ENDPOINT, label: "Phone", outcome: "sent", status: 201 }]);
+    const [url, headers, body] = post.mock.calls[0];
+    expect(url).toBe(ENDPOINT);
+    expect(headers.Authorization).toMatch(/^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=/);
+    expect(headers.Authorization.endsWith(`k=${vapid.publicKey}`)).toBe(true);
+    expect(headers["Content-Encoding"]).toBe("aes128gcm");
+    expect(headers.TTL).toBe("14400");
+    expect(headers.Urgency).toBe("normal");
+    expect(headers.Topic).toBe("PAR-1");
+    const plain = JSON.parse(decryptPayload(body, subscriber.privateKey, subscriber.auth));
+    expect(plain).toEqual({ title: "Needs you", body: "Approve the invoice", url: "/PAR/issues/PAR-1", tag: "PAR-1", class: "needs_you" });
   });
 
-  describe("payload validation", () => {
-    it("throws when payload exceeds 2 KB", async () => {
-      const subs = [
-        {
-          id: "sub1",
-          userId: "user1",
-          endpoint: "https://fcm.googleapis.com/push/test",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Test Device",
-          state: "ok" as const,
-        },
-      ];
-
-      const largeBody = "x".repeat(2500);
-      const payload: PushPayload = {
-        title: "Test",
-        body: largeBody,
-        url: "/test",
-        tag: "test-tag",
-        class: "critical",
-      };
-
-      await expect(
-        sendPush(mockCtx, "company1", subs, payload, {
-          class: "critical",
-          deps: { postPush: mockPostPush },
-        })
-      ).rejects.toThrow(/exceeds 2048 bytes/);
-    });
+  it("uses 24 h TTL and high urgency for critical", async () => {
+    await send([sub], payload({ class: "critical" }));
+    const headers = post.mock.calls[0][1];
+    expect(headers.TTL).toBe("86400");
+    expect(headers.Urgency).toBe("high");
   });
 
-  describe("device filtering", () => {
-    it("skips muted devices without rate slot", async () => {
-      const subs = [
-        {
-          id: "muted1",
-          userId: "user1",
-          endpoint: "https://fcm.googleapis.com/push/muted",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Muted Device",
-          state: "muted" as const,
-        },
-      ];
-
-      const payload: PushPayload = {
-        title: "Test",
-        body: "Test body",
-        url: "/test",
-        tag: "test-tag",
-        class: "needs_you",
-      };
-
-      const result = await sendPush(mockCtx, "company1", subs, payload, {
-        class: "needs_you",
-        deps: { postPush: mockPostPush },
-      });
-
-      expect(result.devices).toHaveLength(1);
-      expect(result.devices[0].outcome).toBe("skipped_muted");
-      expect(mockPostPush).not.toHaveBeenCalled();
-    });
-
-    it("refuses endpoints not in allow-list without rate slot and calls setSubscriptionState", async () => {
-      const mockSetSubscriptionState = vi.fn();
-      mockCtx.db.execute = vi.fn(async (query: string) => {
-        if (query.includes("UPDATE") && query.includes("state")) {
-          mockSetSubscriptionState();
-        }
-        return { rowCount: 1 };
-      });
-
-      const subs = [
-        {
-          id: "bad1",
-          userId: "user1",
-          endpoint: "https://bad-host.example.com/push",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Bad Endpoint",
-          state: "ok" as const,
-        },
-      ];
-
-      const payload: PushPayload = {
-        title: "Test",
-        body: "Test body",
-        url: "/test",
-        tag: "test-tag",
-        class: "needs_you",
-      };
-
-      const result = await sendPush(mockCtx, "company1", subs, payload, {
-        class: "needs_you",
-        deps: { postPush: mockPostPush },
-      });
-
-      expect(result.devices).toHaveLength(1);
-      expect(result.devices[0].outcome).toBe("refused");
-      expect(mockPostPush).not.toHaveBeenCalled();
-      expect(mockSetSubscriptionState).toHaveBeenCalled();
-    });
+  it("marks the device ok and logs a sent row on 201", async () => {
+    await send([sub]);
+    expect(store.markSubscriptionOk).toHaveBeenCalledWith(ctx, ENDPOINT);
+    expect(store.appendPushLog).toHaveBeenCalledWith(ctx, expect.objectContaining({ status: "sent", class: "needs_you" }));
   });
 
-  describe("rate limiting", () => {
-    it("caps when rate limit exceeded for non-critical with appendPushLog", async () => {
-      const mockAppendPushLog = vi.fn();
-      mockCtx.db.execute = vi.fn(async (query: string) => {
-        if (query.includes("INSERT") && query.includes("push_log")) {
-          mockAppendPushLog();
-        }
-        if (query.includes("UPDATE") && query.includes("push_rate")) {
-          return { rowCount: 0 }; // Rate limit exceeded
-        }
-        return { rowCount: 1 };
-      });
-
-      const subs = [
-        {
-          id: "sub1",
-          userId: "user1",
-          endpoint: "https://fcm.googleapis.com/push/test",
-          p256dh: "BOx1XBqKMl8QzAUGhXO8w8f8xpq6OuSI7InhGvV_P_tZHYKKgS6UIL-BUg7qnWwZW7MdV1sCCrmVXI_8bZzVGQ8",
-          auth: "m6yd1iqpALXV1f2OEPkPEQ",
-          deviceLabel: "Test Device",
-          state: "ok" as const,
-        },
-      ];
-
-      const payload: PushPayload = {
-        title: "Test",
-        body: "Test body",
-        url: "/test",
-        tag: "test-tag",
-        class: "needs_you",
-      };
-
-      const result = await sendPush(mockCtx, "company1", subs, payload, {
-        class: "needs_you",
-        deps: { postPush: mockPostPush },
-      });
-
-      expect(result.capped).toBe(true);
-      expect(result.devices).toHaveLength(0);
-      expect(mockPostPush).not.toHaveBeenCalled();
-      expect(mockAppendPushLog).toHaveBeenCalled();
-    });
+  it.each([404, 410])("deletes the row on %i", async (status) => {
+    post.mockResolvedValue({ status, headers: {}, body: "", bodyTruncated: false });
+    const res = await send([sub]);
+    expect(res.devices[0].outcome).toBe("deleted");
+    expect(store.deleteSubscription).toHaveBeenCalledWith(ctx, "co-1", "user-1", ENDPOINT);
   });
 
+  it.each([401, 403])("flags needs_resubscribe and keeps the row on %i", async (status) => {
+    post.mockResolvedValue({ status, headers: {}, body: "", bodyTruncated: false });
+    const res = await send([sub]);
+    expect(res.devices[0].outcome).toBe("needs_resubscribe");
+    expect(store.setSubscriptionState).toHaveBeenCalledWith(ctx, ENDPOINT, "needs_resubscribe", `http_${status}`);
+    expect(store.deleteSubscription).not.toHaveBeenCalled();
+  });
+
+  it("records last_error on 500 and keeps going with the next device", async () => {
+    const second = makeSub({ id: "sub-2", endpoint: ENDPOINT_2 });
+    post.mockResolvedValueOnce({ status: 500, headers: {}, body: "", bodyTruncated: false });
+    const res = await send([sub, second]);
+    expect(res.devices.map((d) => d.outcome)).toEqual(["error", "sent"]);
+    expect(store.setSubscriptionState).toHaveBeenCalledWith(ctx, ENDPOINT, "ok", "http_500");
+    expect(store.deleteSubscription).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a non-allowlisted stored endpoint and flags it", async () => {
+    const bad = makeSub({ endpoint: "https://evil.example.com/push" });
+    const res = await send([bad]);
+    expect(res.devices[0].outcome).toBe("refused");
+    expect(store.setSubscriptionState).toHaveBeenCalledWith(ctx, bad.endpoint, "needs_resubscribe", "endpoint_not_allowed");
+    expect(post).not.toHaveBeenCalled();
+    expect(store.takeRateSlot).not.toHaveBeenCalled();
+  });
+
+  it("skips muted devices without a slot or a network call", async () => {
+    const res = await send([makeSub({ state: "muted" })]);
+    expect(res.devices[0].outcome).toBe("skipped_muted");
+    expect(post).not.toHaveBeenCalled();
+    expect(store.takeRateSlot).not.toHaveBeenCalled();
+  });
+
+  it.each([false, undefined])("sends nothing when pushEnabled=%s", async (value) => {
+    config = value === undefined ? {} : { pushEnabled: value };
+    const res = await send([sub]);
+    expect(res).toEqual({ disabled: true, capped: false, devices: [] });
+    expect(post).not.toHaveBeenCalled();
+    expect(store.takeRateSlot).not.toHaveBeenCalled();
+  });
+
+  it("logs capped and sends nothing when the non-critical budget is spent", async () => {
+    used.set("non_critical", 30);
+    const res = await send([sub]);
+    expect(res.capped).toBe(true);
+    expect(post).not.toHaveBeenCalled();
+    expect(store.appendPushLog).toHaveBeenCalledWith(ctx, expect.objectContaining({ status: "capped" }));
+  });
+
+  it("lets critical through after non-critical sends used their 30", async () => {
+    used.set("non_critical", 30);
+    used.set("all", 30);
+    const res = await send([sub], payload({ class: "critical" }));
+    expect(res.capped).toBe(false);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps critical too once the global 60 is used", async () => {
+    used.set("all", 60);
+    const res = await send([sub], payload({ class: "critical" }));
+    expect(res.capped).toBe(true);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("throws before any network call when the payload is 2 KB or more", async () => {
+    await expect(send([sub], payload({ body: "x".repeat(2100) }))).rejects.toThrow(/under 2048 bytes/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("creates the VAPID key when none is stored", async () => {
+    store.getKey.mockResolvedValue(null);
+    store.createKeyIfAbsent.mockImplementation(async (_c: unknown, k: { publicKey: string; privateKey: string }) => ({ ...k, created: true }));
+    await send([sub]);
+    expect(store.createKeyIfAbsent).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
 });
