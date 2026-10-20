@@ -15,12 +15,13 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig } from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
-import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
+import { ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
 import { approvalIssueDescription, approvalIssueTitle, changeLines, experimentLines, verdictComment } from "./copy.js";
 import * as E from "./engine.js";
+import { socialApprovalIssues, socialScopes, type SocialApprovalIssuePort, type SocialScopeResolver } from "./ports.js";
 import { sqlGrowthStore } from "./sql.js";
 import type { Experiment, ExperimentPost, GrowthStore, PlaybookChange, Program, ProgramConstraints } from "./store.js";
 
@@ -29,6 +30,13 @@ export interface GrowthEnv {
   store: GrowthStore;
   now: () => Date;
   fetchImpl?: typeof fetch;
+  /** Ports the host can swap (tests, other plugins); default to Social's own. */
+  issues?: SocialApprovalIssuePort;
+  scopes?: SocialScopeResolver;
+}
+
+function issuePort(env: GrowthEnv): SocialApprovalIssuePort {
+  return env.issues ?? socialApprovalIssues(env.ctx);
 }
 
 export function growthEnv(ctx: PluginContext, store: GrowthStore = sqlGrowthStore(ctx)): GrowthEnv {
@@ -45,7 +53,6 @@ export interface GrowthActor {
 
 type Params = Record<string, unknown>;
 
-const OPEN_ISSUE = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 const OPEN_EXPERIMENTS: Experiment["status"][] = ["proposed", "running"];
 
 function actorId(a: GrowthActor): string {
@@ -135,7 +142,7 @@ export async function ensureProgram(env: GrowthEnv, companyId: string, target: P
 
 /** The program named by `client` / `clientKind` + `clientRef` (own work when left out). Unknown clients are refused. */
 export async function programForParams(env: GrowthEnv, actor: GrowthActor, params: Params): Promise<Program> {
-  const resolved = await scopeFromParams(env.ctx, actor.companyId, params);
+  const resolved = await (env.scopes ?? socialScopes(env.ctx)).fromParams(actor.companyId, params);
   return ensureProgram(env, actor.companyId, targetOfResolved(resolved));
 }
 
@@ -172,19 +179,14 @@ export function programOut(program: Program) {
 async function comment(env: GrowthEnv, companyId: string, issueId: string | null, body: string): Promise<void> {
   if (!issueId) return;
   try {
-    await env.ctx.issues.createComment(issueId, body, companyId);
+    await issuePort(env).comment(companyId, issueId, body);
   } catch (error) {
     env.ctx.logger.info("Growth issue comment failed", { issueId, error: errorMessage(error) });
   }
 }
 
 async function issueOpen(env: GrowthEnv, companyId: string, issueId: string): Promise<boolean> {
-  try {
-    const issue = await env.ctx.issues.get(issueId, companyId);
-    return Boolean(issue && OPEN_ISSUE.has(String(issue.status)));
-  } catch {
-    return false;
-  }
+  return issuePort(env).isOpen(companyId, issueId);
 }
 
 /** This week's approval issue for the program: comment on it, or open it. */
@@ -197,7 +199,7 @@ async function announce(env: GrowthEnv, config: SocialConfig, program: Program, 
   }
   const scope = programScope(program);
   try {
-    const issue = await createIssueSafely(env.ctx, {
+    const issue = await issuePort(env).createApproval({
       companyId,
       projectId: await projectIdFor(env.ctx, companyId, scope),
       title: approvalIssueTitle(program, week),
@@ -230,7 +232,7 @@ async function closeIfDecided(env: GrowthEnv, companyId: string, programId: stri
   if (!(await issueOpen(env, companyId, issueId))) return;
   await comment(env, companyId, issueId, "Everything on this issue has been decided.");
   try {
-    await env.ctx.issues.update(issueId, { status: "done" }, companyId);
+    await issuePort(env).setStatus(companyId, issueId, "done");
   } catch (error) {
     env.ctx.logger.info("Growth approval issue not closed", { issueId, error: errorMessage(error) });
   }
