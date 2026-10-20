@@ -8,6 +8,8 @@
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { assignableUser } from "../constants.js";
+import { getRoles } from "../db.js";
 import type { NotifyOwnerDeps } from "./notify.js";
 import { notifyOwner } from "./notify.js";
 import { readCriticalLevel, upsertCriticalLevel } from "./store.js";
@@ -28,11 +30,8 @@ export async function notifyCritical(
   deps?: NotifyOwnerDeps,
 ): Promise<void> {
   // Look up owner to notify
-  const roles = await ctx.db.query<{ owner_user_id: string | null }>(
-    `SELECT owner_user_id FROM plugin_cockpit_b8a99e8b16.roles WHERE company_id = $1`,
-    [opts.companyId],
-  );
-  const ownerUserId = roles[0]?.owner_user_id;
+  const roles = await getRoles(ctx, opts.companyId);
+  const ownerUserId = assignableUser(roles?.ownerUserId ?? null);
   if (!ownerUserId) return; // No owner, cannot notify
 
   await notifyOwner(
@@ -70,16 +69,14 @@ export async function checkCriticalTriggers(
     healthLevel: "ok" | "warn" | "bad";
     publicBaseUrl?: string;
   },
+  deps?: NotifyOwnerDeps,
 ): Promise<number> {
   try {
     let notified = 0;
 
     // Get the owner for notifications
-    const rolesRows = await ctx.db.query<{ owner_user_id: string | null }>(
-      `SELECT owner_user_id FROM plugin_cockpit_b8a99e8b16.roles WHERE company_id = $1`,
-      [companyId],
-    );
-    const ownerUserId = rolesRows[0]?.owner_user_id;
+    const roles = await getRoles(ctx, companyId);
+    const ownerUserId = assignableUser(roles?.ownerUserId ?? null);
     if (!ownerUserId) return 0; // No owner, cannot notify
 
     // Helper: generate public URL
@@ -92,7 +89,7 @@ export async function checkCriticalTriggers(
     // Map "ok" -> 0, "warn" -> 1, "bad" -> 2 for comparison
     const levelMap = { ok: 0, warn: 1, bad: 2 };
     const currentLevel = levelMap[input.healthLevel];
-    const previousLevel = rememberedLevel !== null ? levelMap[rememberedLevel as keyof typeof levelMap] : -1;
+    const previousLevel = rememberedLevel !== null ? parseInt(rememberedLevel, 10) : -1;
 
     // Fire if level is critical and (new or worse)
     if (currentLevel === 2 && (previousLevel < 0 || currentLevel > previousLevel)) {
@@ -104,10 +101,10 @@ export async function checkCriticalTriggers(
         issueRef: "critical:health",
         ownerUserId,
         url: cockpitUrl,
-      });
+      }, deps);
       notified += 1;
-      // Remember the level
-      await upsertCriticalLevel(ctx, levelKey, "bad");
+      // Remember the level (store numeric level as string)
+      await upsertCriticalLevel(ctx, levelKey, String(currentLevel));
     } else if (currentLevel < 2 && previousLevel >= 0) {
       // Clear memory when condition clears (drops back below critical)
       await upsertCriticalLevel(ctx, levelKey, null);
@@ -129,7 +126,7 @@ export async function checkCriticalTriggers(
         issueRef: "critical:agents",
         ownerUserId,
         url: cockpitUrl,
-      });
+      }, deps);
       notified += 1;
       // Remember the error count
       await upsertCriticalLevel(ctx, agentErrorKey, String(errorCount));
@@ -157,7 +154,7 @@ export async function checkCriticalTriggers(
         issueRef: "critical:auth",
         ownerUserId,
         url: cockpitUrl,
-      });
+      }, deps);
       notified += 1;
       // Remember the auth count
       await upsertCriticalLevel(ctx, authKey, String(currentAuthCount));
