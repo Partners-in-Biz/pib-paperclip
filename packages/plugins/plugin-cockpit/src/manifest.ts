@@ -164,6 +164,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.create",
     "issue.comments.read",
     "issue.relations.read",
+    "issue.attachments.read",
     "approvals.read",
     "agents.read",
     "agents.pause",
