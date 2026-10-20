@@ -5,12 +5,12 @@
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { getOvernightWindow, getSastTime } from "./policy.js";
-import { appendPushLog, listDeferredSince, listSubscriptionsForCompany, updatePushLogStatus } from "./store.js";
-import { sendPush, type SendDeps } from "./send.js";
+import { getOvernightWindow } from "./policy.js";
+import { listDeferredSince, listSubscriptionsForCompany, updatePushLogStatus } from "./store.js";
+import { sendPush } from "./send.js";
+import { listRoles } from "../db.js";
 
 export interface PushDigestDeps {
-  send?: typeof sendPush;
   now?: () => Date;
 }
 
@@ -23,7 +23,6 @@ export async function runPushDigestForCompany(
   companyId: string,
   opts: { deps?: PushDigestDeps } = {},
 ): Promise<boolean> {
-  const send = opts.deps?.send ?? sendPush;
   const now = (opts.deps?.now ?? (() => new Date()))();
 
   // Find the window start (most recent 22:00 SAST before now)
@@ -54,10 +53,9 @@ export async function runPushDigestForCompany(
   };
 
   // Send the digest
-  const result = await send(ctx, companyId, subs, payload, {
+  const result = await sendPush(ctx, companyId, subs, payload, {
     class: "digest",
     deps: {
-      postPush: opts.deps?.send ? undefined : undefined,
       now: () => now,
     },
   });
@@ -84,30 +82,25 @@ export async function runPushDigestForCompany(
 }
 
 /**
- * Run the digest job: iterate over all companies, collecting errors per company.
- * Returns a summary of sent digests and errors.
+ * Run the digest job: iterate over all companies with saved Cockpit settings,
+ * collecting errors per company. Returns a summary of sent digests and errors.
  */
 export async function runPushDigest(ctx: PluginContext, now?: () => Date): Promise<Record<string, number>> {
-  // Get all companies by reading from the heartbeat_companies table
-  const companies = await ctx.db.query<{ company_id: string }>(
-    `SELECT DISTINCT company_id FROM heartbeat_runs`,
-    [],
-  );
-
-  const companyIds = [...new Set(companies.map((row) => String(row.company_id)))];
+  // Get all companies that have saved roles (same pattern as healthAlerts and governorTick)
+  const rows = await listRoles(ctx);
 
   const summary: Record<string, number> = { sent: 0, skipped: 0, failed: 0 };
 
-  for (const companyId of companyIds) {
+  for (const row of rows) {
     try {
-      const sent = await runPushDigestForCompany(ctx, companyId, { deps: { now } });
+      const sent = await runPushDigestForCompany(ctx, row.companyId, { deps: { now } });
       if (sent) {
         summary.sent = (summary.sent ?? 0) + 1;
       } else {
         summary.skipped = (summary.skipped ?? 0) + 1;
       }
     } catch (err) {
-      ctx.logger.error(`Push digest failed for company ${companyId}`, { error: String(err) });
+      ctx.logger.error(`Push digest failed for company ${row.companyId}`, { error: String(err) });
       summary.failed = (summary.failed ?? 0) + 1;
     }
   }

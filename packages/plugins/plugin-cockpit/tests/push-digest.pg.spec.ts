@@ -4,9 +4,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { runPushDigestForCompany } from "../src/push/digest.js";
+import { runPushDigestForCompany, runPushDigest } from "../src/push/digest.js";
 import { appendPushLog, listDeferredSince, upsertSubscription, type PushSubscription } from "../src/push/store.js";
 import { getOvernightWindow } from "../src/push/policy.js";
+import { saveRoles } from "../src/db.js";
+import * as sendModule from "../src/push/send.js";
 import type { SendResult } from "../src/push/send.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
 
@@ -65,12 +67,10 @@ d("Push digest job (Postgres)", () => {
       title: "Item 3",
     });
 
-    let sendCallCount = 0;
     let capturedPayload: { title: string; body: string; url: string; tag: string } | undefined;
 
     // Mock sendPush to verify behavior
-    const mockSend = vi.fn(async (ctx, companyId, subs: PushSubscription[], payload, opts) => {
-      sendCallCount += 1;
+    const mockSendPush = vi.spyOn(sendModule, "sendPush").mockImplementation(async (ctx, companyId, subs: PushSubscription[], payload, opts) => {
       capturedPayload = payload;
       // Return success with devices
       return {
@@ -84,24 +84,27 @@ d("Push digest job (Postgres)", () => {
       } as SendResult;
     });
 
-    // Run the digest job with mock sender
-    const sent = await runPushDigestForCompany(pg.ctx, A, {
-      deps: {
-        now: () => NOW,
-        send: mockSend,
-      },
-    });
+    try {
+      // Run the digest job (sendPush is mocked)
+      const sent = await runPushDigestForCompany(pg.ctx, A, {
+        deps: {
+          now: () => NOW,
+        },
+      });
 
-    expect(sent).toBe(true);
-    expect(sendCallCount).toBe(1);
-    expect(capturedPayload?.title).toBe("3 items waited overnight");
-    expect(capturedPayload?.body).toBe("Items waiting for you to review");
-    expect(capturedPayload?.url).toBe("/cockpit");
-    expect(capturedPayload?.tag).toBe("digest");
+      expect(sent).toBe(true);
+      expect(mockSendPush).toHaveBeenCalledTimes(1);
+      expect(capturedPayload?.title).toBe("3 items waited overnight");
+      expect(capturedPayload?.body).toBe("Items waiting for you to review");
+      expect(capturedPayload?.url).toBe("/cockpit");
+      expect(capturedPayload?.tag).toBe("digest");
 
-    // Verify the deferred rows are now collapsed
-    const deferredAfter = await listDeferredSince(pg.ctx, A, getOvernightWindow(NOW));
-    expect(deferredAfter).toHaveLength(0);
+      // Verify the deferred rows are now collapsed
+      const deferredAfter = await listDeferredSince(pg.ctx, A, getOvernightWindow(NOW));
+      expect(deferredAfter).toHaveLength(0);
+    } finally {
+      mockSendPush.mockRestore();
+    }
   });
 
   it("run twice -> one push total (idempotent)", async () => {
@@ -129,35 +132,33 @@ d("Push digest job (Postgres)", () => {
       title: "Item B",
     });
 
-    let sendCallCount = 0;
-    const mockSend = vi.fn(async () => {
-      sendCallCount += 1;
-      return {
-        disabled: false,
-        capped: false,
-        devices: [{ endpoint: "https://example.com", label: null, outcome: "sent" as const }],
-      } as SendResult;
-    });
+    const mockSendPush = vi.spyOn(sendModule, "sendPush").mockResolvedValue({
+      disabled: false,
+      capped: false,
+      devices: [{ endpoint: "https://example.com", label: null, outcome: "sent" as const }],
+    } as SendResult);
 
-    // First run
-    const sent1 = await runPushDigestForCompany(pg.ctx, B, {
-      deps: {
-        now: () => NOW,
-        send: mockSend,
-      },
-    });
-    expect(sent1).toBe(true);
-    expect(sendCallCount).toBe(1);
+    try {
+      // First run
+      const sent1 = await runPushDigestForCompany(pg.ctx, B, {
+        deps: {
+          now: () => NOW,
+        },
+      });
+      expect(sent1).toBe(true);
+      expect(mockSendPush).toHaveBeenCalledTimes(1);
 
-    // Second run (no deferred rows left)
-    const sent2 = await runPushDigestForCompany(pg.ctx, B, {
-      deps: {
-        now: () => NOW,
-        send: mockSend,
-      },
-    });
-    expect(sent2).toBe(false);
-    expect(sendCallCount).toBe(1); // Still 1, not 2
+      // Second run (no deferred rows left)
+      const sent2 = await runPushDigestForCompany(pg.ctx, B, {
+        deps: {
+          now: () => NOW,
+        },
+      });
+      expect(sent2).toBe(false);
+      expect(mockSendPush).toHaveBeenCalledTimes(1); // Still 1, not 2
+    } finally {
+      mockSendPush.mockRestore();
+    }
   });
 
   it("rows before 22:00 window not counted", async () => {
