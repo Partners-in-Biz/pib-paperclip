@@ -139,5 +139,144 @@ describe("Notifications UI components", () => {
       );
       expect(html).toContain("Unnamed device");
     });
+
+    it("includes aria-labels on mute button with device name", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "Pete's iPhone",
+        state: "ok",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: null,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain('aria-label="Mute Pete&#x27;s iPhone"');
+    });
+
+    it("includes aria-labels on remove button with device name", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "Pete's iPhone",
+        state: "ok",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: null,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain('aria-label="Remove Pete&#x27;s iPhone"');
+    });
+
+    it("applies overflowWrap style to device label", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "A very long device name that should wrap anywhere if it exceeds the container width",
+        state: "ok",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: null,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain("overflow-wrap:anywhere");
+      expect(html).toContain("A very long device name that should wrap");
+    });
+
+    it("clamps lastError to 200 characters with ellipsis", () => {
+      const longError = "e".repeat(250);
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "Device",
+        state: "needs_resubscribe",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: longError,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain("Error: " + "e".repeat(200) + "…");
+      expect(html).not.toContain("e".repeat(201));
+    });
+
+    it("applies overflowWrap to error message", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "Device",
+        state: "needs_resubscribe",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: "push service worker lost",
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain("overflow-wrap:anywhere");
+    });
+
+    it("renders unmute button with correct aria-label when muted", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "iPad",
+        state: "muted",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: null,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      expect(html).toContain('aria-label="Unmute iPad"');
+    });
+
+    it("renders device label that breaks at word boundaries", () => {
+      const device: DeviceInfo = {
+        id: "dev1",
+        label: "VeryLongUnbrokenDeviceNameThatExceeds60Characters012345678901234567890",
+        state: "ok",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        lastOkAt: null,
+        lastError: null,
+      };
+      const html = renderToStaticMarkup(
+        createElement(DeviceList, {
+          devices: [device],
+          onMute: mockOnMute,
+          onRemove: mockOnRemove,
+        })
+      );
+      // Verify the label is present
+      expect(html).toContain("VeryLongUnbrokenDeviceNameThatExceeds60Characters");
+      // Verify overflowWrap is set
+      expect(html).toContain("overflow-wrap:anywhere");
+    });
   });
 });
