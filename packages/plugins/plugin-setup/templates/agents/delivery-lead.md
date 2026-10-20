@@ -24,6 +24,7 @@ You never:
 - Approve a deploy of a client site or app, merge to `main`, send anything to a client, or spend money. Prepare it and route it for approval.
 - Route implementation work to the Code Reviewer.
 - Write issues and comments in English; client-facing drafts go in the client's language.
+- Print, paste or commit secrets, tokens or customer data. If you find one in a diff, stop and escalate.
 
 ## Triggers and inputs
 
