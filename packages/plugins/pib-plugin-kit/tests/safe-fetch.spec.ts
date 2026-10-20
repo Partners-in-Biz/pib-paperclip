@@ -106,4 +106,169 @@ describe("safeFetch and safeFetchBytes", () => {
     // Should have two fetch calls
     expect(fetchCalls).toHaveLength(2);
   });
+
+  it("safeFetchBytes: Content-Length header above maxBytes is rejected without reading body", async () => {
+    const mockFetch = vi.fn(async (url: string, init: any) => {
+      // Create a body that would throw if getReader is called
+      const bodyTouched = new Error("Body stream was accessed when it should not have been");
+      return {
+        status: 200,
+        ok: true,
+        headers: new Map([
+          ["content-type", "application/octet-stream"],
+          ["content-length", "100000000"], // 100 MB, way over default 25 MiB
+        ]),
+        text: async () => {
+          throw bodyTouched;
+        },
+        arrayBuffer: async () => {
+          throw bodyTouched;
+        },
+        body: {
+          getReader: () => {
+            throw bodyTouched;
+          },
+        },
+      } as any;
+    });
+
+    ctx.http.fetch = mockFetch as any;
+
+    const promise = safeFetchBytes(ctx, "https://example.com/oversized");
+    await expect(promise).rejects.toThrow(
+      "Response exceeds maxBytes limit (100000000 > 26214400) fetching"
+    );
+    // Verify body was never read
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it("safeFetchBytes: streamed body larger than maxBytes with NO Content-Length is rejected", async () => {
+    let readerWasCancelled = false;
+
+    const mockFetch = vi.fn(async (url: string, init: any) => {
+      return {
+        status: 200,
+        ok: true,
+        headers: new Map([["content-type", "application/octet-stream"]]),
+        // No Content-Length header
+        text: async () => "should not reach here",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        body: {
+          getReader: () => ({
+            read: vi.fn(async () => {
+              // First chunk is small, second is large to exceed limit
+              if (!readerWasCancelled) {
+                readerWasCancelled = true;
+                return { done: false, value: new Uint8Array(1000) };
+              }
+              // Second read would return huge chunk but should not get here
+              return { done: false, value: new Uint8Array(50000000) };
+            }),
+            releaseLock: vi.fn(() => {
+              // Mark that lock was released (stream was cancelled)
+            }),
+          }),
+        },
+      } as any;
+    });
+
+    ctx.http.fetch = mockFetch as any;
+    const maxBytes = 1024;
+
+    const promise = safeFetchBytes(ctx, "https://example.com/stream-oversized", {
+      maxBytes,
+    });
+    await expect(promise).rejects.toThrow(
+      `Response exceeds maxBytes limit (streamed data > ${maxBytes})`
+    );
+  });
+
+  it("safeFetchBytes: streamed body with lying (too-small) Content-Length is rejected", async () => {
+    const mockFetch = vi.fn(async (url: string, init: any) => {
+      return {
+        status: 200,
+        ok: true,
+        headers: new Map([
+          ["content-type", "application/octet-stream"],
+          ["content-length", "100"], // Claims 100 bytes
+        ]),
+        text: async () => "should not reach here",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        body: {
+          getReader: () => ({
+            read: vi.fn(async function (this: any) {
+              // Return more data than Content-Length claimed
+              const readCount = (this.read.mock.callCount || 0) + 1;
+              if (readCount === 1) {
+                return { done: false, value: new Uint8Array(50) };
+              }
+              if (readCount === 2) {
+                return { done: false, value: new Uint8Array(75) }; // Total 125 > 100
+              }
+              return { done: true };
+            }),
+            releaseLock: vi.fn(),
+          }),
+        },
+      } as any;
+    });
+
+    ctx.http.fetch = mockFetch as any;
+    const maxBytes = 100;
+
+    const promise = safeFetchBytes(ctx, "https://example.com/lying-content-length", {
+      maxBytes,
+    });
+    await expect(promise).rejects.toThrow(
+      `Response exceeds maxBytes limit (streamed data > ${maxBytes})`
+    );
+  });
+
+  it("safeFetchBytes: body exactly maxBytes long succeeds and returns exact bytes", async () => {
+    const maxBytes = 256;
+    const exactData = new Uint8Array(maxBytes);
+    // Fill with recognizable pattern
+    for (let i = 0; i < maxBytes; i++) {
+      exactData[i] = i % 256;
+    }
+
+    let readCallCount = 0;
+    const mockFetch = vi.fn(async (url: string, init: any) => {
+      return {
+        status: 200,
+        ok: true,
+        headers: new Map([
+          ["content-type", "application/octet-stream"],
+          ["content-length", maxBytes.toString()],
+        ]),
+        text: async () => "should not reach here",
+        arrayBuffer: async () => exactData.buffer,
+        body: {
+          getReader: () => ({
+            read: vi.fn(async () => {
+              readCallCount += 1;
+              if (readCallCount === 1) {
+                // Return all data in one chunk
+                return { done: false, value: new Uint8Array(exactData) };
+              }
+              // Second call indicates we're done
+              return { done: true };
+            }),
+            releaseLock: vi.fn(),
+          }),
+        },
+      } as any;
+    });
+
+    ctx.http.fetch = mockFetch as any;
+
+    const result = await safeFetchBytes(ctx, "https://example.com/exact-size", {
+      maxBytes,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.contentType).toBe("application/octet-stream");
+    expect(result.bytes.length).toBe(maxBytes);
+    expect(result.bytes).toEqual(exactData);
+  });
 });
