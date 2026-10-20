@@ -29,8 +29,6 @@ export const OPERATOR_REFERENCE_PATHS = {
   coach: "references/skill-coach.md",
 } as const;
 
-export const OWNER_CHECKS_REFERENCE_PATH = "references/owner-checks.md";
-
 // ---------------------------------------------------------------------------
 // Health checks
 // ---------------------------------------------------------------------------
@@ -225,36 +223,6 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 // ---------------------------------------------------------------------------
 // Asking with an effect
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Owner checks
-// ---------------------------------------------------------------------------
-
-export const OWNER_CHECKS_REFERENCE = `# Owner checks: decisions only the owner can make
-
-An owner-only check is something only the company owner can decide or do (tapping an approval, signing off, entering a key, granting consent, making a one-time call). Every owner-only check sits as its own issue in the owner's queue (\`WAITING-ON-OWNER\`), where the Operator reads it daily.
-
-## How to handle owner checks
-
-When you find that a step needs an owner-only decision or approval:
-
-1. **Never add a blocker edge to the owner's issue.** If PAR-200 (build, assigned to you) waits on PAR-201 (owner-assigned: tap approve in Stripe), do not set PAR-200's \`blockedByIssueIds: [PAR-201]\`. The owner-check stays in its own queue, read every day; blocking issues prevent this.
-2. **Keep work moving.** Finish what does not depend on the owner check. If some steps do depend on it, open a sibling issue that you hold and depends on the owner check through an \`unblockDescriptor\` or a question to the owner.
-3. **Use ask-owner only when a specific step is gated.** If you are finishing PAR-200 and one step needs the owner to "confirm the refund", use \`${T(TOOL_NAMES.askOwner)}\` on PAR-200 with \`kind: "grant"\` or \`"decision"\` (never assign to the owner; they are asked, not assigned). The owner answers on that issue, and work resumes. Owner-only items that are pure approvals or sign-offs belong on their own issue, not as a question on the work issue.
-
-## Do and don't
-
-**Do:**
-- Own work stays in the owner's queue (\`WAITING-ON-OWNER\`), where it is read daily by the Operator.
-- Hand-off work that depends on the owner check to the role that owns it, with an \`unblockDescriptor\` naming the owner check.
-- Use \`ask-owner\` to ask a question tied to a specific issue you are working on.
-- Close an owner-check issue when the owner has decided or acted.
-
-**Don't:**
-- Never block a work issue on an owner issue (\`blockedByIssueIds\`).
-- Never assign an issue to the owner yourself; they are asked, not assigned.
-- Never list owner-check approvals as blockers on work that continues anyway. They are read daily; your task can move on.
-`;
 
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
 

@@ -10,7 +10,7 @@ import { agentFacingSummary, COMPANY_SKILL_DESCRIPTION, COMPANY_SKILL_KEY, COMPA
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
 import { ACCEPTANCE_DESCRIPTION, ACCEPTANCE_FILES, ACCEPTANCE_SKILL_BODY } from "./acceptance-skill.js";
-import { OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
+import { OPERATOR_FILES, OPERATOR_REFERENCE_PATHS } from "./skill-references.js";
 import { SCREENSHOT_REFERENCE, SCREENSHOT_REFERENCE_PATH } from "./screenshots.js";
 import { TOOL_NAMES } from "./tools.js";
 
@@ -275,10 +275,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: COMPANY_SKILL_SLUG,
     description: COMPANY_SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: COMPANY_SKILL_SLUG, description: COMPANY_SKILL_DESCRIPTION }, companySkillBody()),
-    files: [
-      { path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE },
-      { path: OWNER_CHECKS_REFERENCE_PATH, content: OWNER_CHECKS_REFERENCE },
-    ],
+    files: [{ path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE }],
   },
   {
     skillKey: SKILL_KEYS.acceptance,
