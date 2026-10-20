@@ -49,7 +49,6 @@ export const TEMPLATE_TOOLS: PluginToolDeclaration[] = [
   },
 ];
 
-/** List all templates in the pack with key, file, scope, hostOwned flag, and hash. */
 function listTemplates(): { templates: Array<{ key: string; file: string; scope: string; hostOwned: boolean; hash: string | null }> } {
   const pack = loadPack();
   return {
@@ -63,14 +62,12 @@ function listTemplates(): { templates: Array<{ key: string; file: string; scope:
   };
 }
 
-/** Hash of a template rendered with default vars, or null for host-owned. */
 function renderCanonicalHash(template: AgentTemplate): string | null {
   if (template.hostOwned) return null;
   const defaultVars = templateVars();
   const rendered = renderInstructions(template, defaultVars);
   return renderHash(rendered);
 }
-
 
 type TemplateGetResult =
   | { error: string }
@@ -100,7 +97,6 @@ type TemplatePreviewResult =
       changed: boolean;
     };
 
-/** Get a template's full details. Renders with company vars if companyId given. */
 async function getTemplate(ctx: PluginContext, key: string, companyId?: string): Promise<TemplateGetResult> {
   const template = templateByKey(key);
   if (!template) {
@@ -162,7 +158,6 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
   return result;
 }
 
-/** Preview a template with a unified diff applied. */
 async function previewTemplate(ctx: PluginContext, key: string, unifiedDiff: string): Promise<TemplatePreviewResult> {
   const template = templateByKey(key);
   if (!template) {
@@ -173,27 +168,22 @@ async function previewTemplate(ctx: PluginContext, key: string, unifiedDiff: str
     return { key, hostOwned: true };
   }
 
-  // Get the raw text
   const { files } = packSources();
   const raw = files[template.file];
   if (raw === undefined) {
     return { error: `template "${key}" has no instructions file` };
   }
 
-  // Render the original to get baseRenderHash
   const defaultVars = templateVars();
   const baseRendered = renderInstructions(template, defaultVars);
   const baseRenderHash = renderHash(baseRendered);
 
-  // Apply the diff to get patched raw text
   const diffResult = applyUnifiedDiff(raw, unifiedDiff);
   if (!diffResult.ok) {
     return { error: `diff does not apply cleanly: ${diffResult.error}` };
   }
 
   const patchedRaw = diffResult.text;
-
-  // Render the patched template using renderInstructions with rawOverride
   const rendered = renderInstructions(template, defaultVars, patchedRaw);
   const renderHashValue = renderHash(rendered);
   const changed = rendered !== baseRendered;
@@ -209,7 +199,7 @@ async function previewTemplate(ctx: PluginContext, key: string, unifiedDiff: str
   };
 }
 
-/** Register the two tools with ctx.tools.register. */
+/** Register the three tools with ctx.tools.register. */
 export function registerTemplateTools(ctx: PluginContext): { templateList: any; templateGet: any; templatePreview: any } {
   const templateList = async (_params: unknown, _run: any) => {
     try {

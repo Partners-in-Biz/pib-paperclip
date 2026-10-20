@@ -59,7 +59,6 @@ export function applyUnifiedDiff(source: string, diff: string): ApplyResult {
         ops.push({ type: "add", line: c });
         newCnt++;
       } else if (p === "\\") {
-        // Ignore "\ No newline" marker
       } else {
         return { ok: false, error: `invalid hunk body line in hunk ${hunkNum}: ${line}` };
       }

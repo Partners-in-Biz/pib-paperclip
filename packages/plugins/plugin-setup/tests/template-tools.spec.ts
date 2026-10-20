@@ -16,6 +16,44 @@ function getHandler(ctx: any, toolName: string) {
   return handler as any;
 }
 
+function buildLineDiff(raw: string, replacement?: string): string {
+  const lines = raw.split("\n");
+  let lineIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim().length > 0) {
+      lineIndex = i;
+      break;
+    }
+  }
+  if (lineIndex === -1) throw new Error("No non-empty line found");
+  const originalLine = lines[lineIndex]!;
+  const newLine = replacement ?? originalLine;
+  return `@@ -${lineIndex + 1},1 +${lineIndex + 1},1 @@\n-${originalLine}\n+${newLine}`;
+}
+
+function mockHostOwnedTemplate(): AgentTemplate {
+  return {
+    key: "test-host-owned",
+    name: "Test Host Owned",
+    title: "Test Host Owned Template",
+    role: "general",
+    icon: "bot",
+    group: "core",
+    capabilities: "Mock",
+    reportsTo: null,
+    adapterPreference: ["claude_local"],
+    runProfile: { model: "claude-sonnet-5-5", effort: "medium", timeoutSec: 3600, maxTurnsPerRun: 200, maxConcurrentRuns: 3 },
+    desiredSkills: ["plugin/partnersinbiz-cockpit/company-os"],
+    file: "test-host-owned",
+    match: { names: [], titles: [], roles: [] },
+    provisioning: "host",
+    defaultOn: false,
+    requires: { modules: [] },
+    notes: [],
+    hostOwned: true,
+  };
+}
+
 describe("template-tools", () => {
   it("exports three tools, all in manifest", () => {
     expect(TEMPLATE_TOOLS).toHaveLength(3);
@@ -105,77 +143,41 @@ describe("template-tools", () => {
       vi.restoreAllMocks();
     });
 
-    it("returns error for unknown key", async () => {
+    it.each([
+      ["unknown key", "nonexistent", "dummy", "unknown template"],
+      ["bad diff", loadPack().templates[0].key, `@@ -1,2 +1,2 @@\n-nonexistent\n+line`, "does not apply cleanly"],
+    ])("error: %s", async (_, key, diff, expected) => {
       const { ctx } = fakeCtx();
       const handler = getHandler(ctx, "template-preview");
-      const result = await handler({ key: "nonexistent", unifiedDiff: "dummy" }, { companyId: "test" });
-      expect(result.error).toContain("unknown template");
+      const result = await handler({ key, unifiedDiff: diff }, { companyId: "test" });
+      expect(result.error).toContain(expected);
     });
 
-    it("bad diff: context does not match returns error", async () => {
+    it("applies diff cleanly, hash differs from base, and marker renders", async () => {
       const { ctx } = fakeCtx();
-      const handler = getHandler(ctx, "template-preview");
-
       const pack = loadPack();
-      const template = pack.templates[0];
-
-      const badDiff = `--- a/test.md
-+++ b/test.md
-@@ -1,2 +1,2 @@
--This line does not exist in the template
-+Replaced
- Another line that also does not exist
-`;
-
-      const result = await handler({ key: template.key, unifiedDiff: badDiff }, { companyId: "test" });
-      expect(result.error).toContain("does not apply cleanly");
-    });
-
-    it("good diff: applies cleanly and produces different render hash with marker", async () => {
-      const { ctx } = fakeCtx({ companies: { "test": { name: "Test" } } });
-      const pack = loadPack();
-      // Find a non-host-owned template
       const template = pack.templates.find((t) => !t.hostOwned);
       expect(template).toBeDefined();
 
       const previewHandler = getHandler(ctx, "template-preview");
-      // Get the template to obtain its raw text
       const getHandlerFn = getHandler(ctx, "template-get");
-      const getResult = await getHandlerFn({ key: template!.key }, { companyId: "test" });
-      expect(getResult.data.raw).toBeTruthy();
-
+      const getResult = await getHandlerFn({ key: template!.key }, {});
+      const baselineRenderHash = getResult.data.renderHash;
       const raw = getResult.data.raw;
-      const lines = raw.split("\n");
-      // Use a simple change: replace first non-empty line
-      let lineIndex = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i]!.trim().length > 0) {
-          lineIndex = i;
-          break;
-        }
-      }
-      expect(lineIndex).toBeGreaterThanOrEqual(0);
 
-      const originalLine = lines[lineIndex]!;
-      const markerLine = "PREVIEW-MARKER-4197";
-
-      // Build a simple unified diff
-      const unifiedDiff = `@@ -${lineIndex + 1},1 +${lineIndex + 1},1 @@
--${originalLine}
-+${markerLine}`;
-
-      const previewResult = await previewHandler(
-        { key: template!.key, unifiedDiff },
-        { companyId: "test" }
-      );
+      const marker = "PREVIEW-MARKER-4197";
+      const unifiedDiff = buildLineDiff(raw, marker);
+      const previewResult = await previewHandler({ key: template!.key, unifiedDiff }, {});
 
       expect(previewResult.data).toBeDefined();
-      expect(previewResult.data.rendered).toContain(markerLine);
+      expect(previewResult.data.rendered).toContain(marker);
       expect(previewResult.data.renderHash).toMatch(/^[0-9a-f]{16}$/);
+      expect(previewResult.data.renderHash).not.toBe(previewResult.data.baseRenderHash);
+      expect(previewResult.data.baseRenderHash).toBe(baselineRenderHash);
       expect(previewResult.data.changed).toBe(true);
     });
 
-    it("hash differs: preview renderHash differs from baseRenderHash and baseRenderHash stable", async () => {
+    it("no-op diff: identical replacement returns changed false and same hash", async () => {
       const { ctx } = fakeCtx();
       const pack = loadPack();
       const template = pack.templates.find((t) => !t.hostOwned);
@@ -183,74 +185,12 @@ describe("template-tools", () => {
 
       const previewHandler = getHandler(ctx, "template-preview");
       const getHandlerFn = getHandler(ctx, "template-get");
-      // Get with default variables (no companyId)
       const getResult = await getHandlerFn({ key: template!.key }, {});
       const baselineRenderHash = getResult.data.renderHash;
-
       const raw = getResult.data.raw;
-      const lines = raw.split("\n");
-      // Find first non-empty line
-      let lineIndex = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i]!.trim().length > 0) {
-          lineIndex = i;
-          break;
-        }
-      }
-      expect(lineIndex).toBeGreaterThanOrEqual(0);
 
-      const originalLine = lines[lineIndex]!;
-
-      // Build a simple unified diff
-      const unifiedDiff = `@@ -${lineIndex + 1},1 +${lineIndex + 1},1 @@
--${originalLine}
-+MODIFIED-LINE-4197`;
-
-      const previewResult = await previewHandler(
-        { key: template!.key, unifiedDiff },
-        {}
-      );
-
-      expect(previewResult.data).toBeDefined();
-      expect(previewResult.data.renderHash).not.toBe(previewResult.data.baseRenderHash);
-      expect(previewResult.data.baseRenderHash).toBe(baselineRenderHash);
-    });
-
-    it("no-op diff safety: replacing line with identical text returns changed false and same hash", async () => {
-      const { ctx } = fakeCtx();
-      const pack = loadPack();
-      const template = pack.templates.find((t) => !t.hostOwned);
-      expect(template).toBeDefined();
-
-      const previewHandler = getHandler(ctx, "template-preview");
-      const getHandlerFn = getHandler(ctx, "template-get");
-      // Get with default variables (no companyId)
-      const getResult = await getHandlerFn({ key: template!.key }, {});
-      const baselineRenderHash = getResult.data.renderHash;
-
-      const raw = getResult.data.raw;
-      const lines = raw.split("\n");
-      // Find first non-empty line
-      let lineIndex = -1;
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i]!.trim().length > 0) {
-          lineIndex = i;
-          break;
-        }
-      }
-      expect(lineIndex).toBeGreaterThanOrEqual(0);
-
-      const line = lines[lineIndex]!;
-
-      // A no-op diff that removes and re-adds the same line
-      const unifiedDiff = `@@ -${lineIndex + 1},1 +${lineIndex + 1},1 @@
--${line}
-+${line}`;
-
-      const previewResult = await previewHandler(
-        { key: template!.key, unifiedDiff },
-        {}
-      );
+      const unifiedDiff = buildLineDiff(raw);
+      const previewResult = await previewHandler({ key: template!.key, unifiedDiff }, {});
 
       expect(previewResult.data).toBeDefined();
       expect(previewResult.data.changed).toBe(false);
@@ -258,52 +198,17 @@ describe("template-tools", () => {
       expect(previewResult.data.renderHash).toBe(baselineRenderHash);
     });
 
-    it("host-owned template returns stub with hostOwned flag", async () => {
+    it("host-owned template returns stub", async () => {
       const { ctx } = fakeCtx();
-      const pack = loadPack();
-      const hostOwnedTemplate = pack.templates.find((t) => t.hostOwned);
-
-      // If no real host-owned template exists, mock one for testing
-      if (!hostOwnedTemplate) {
-        const mockHostOwnedTemplate: AgentTemplate = {
-          key: "test-host-owned",
-          name: "Test Host Owned",
-          title: "Test Host Owned Template",
-          role: "general",
-          icon: "bot",
-          group: "core",
-          capabilities: "Mock template for testing host-owned behavior",
-          reportsTo: null,
-          adapterPreference: ["claude_local"],
-          runProfile: {
-            model: "claude-sonnet-5-5",
-            effort: "medium",
-            timeoutSec: 3600,
-            maxTurnsPerRun: 200,
-            maxConcurrentRuns: 3,
-          },
-          desiredSkills: ["plugin/partnersinbiz-cockpit/company-os"],
-          file: "test-host-owned",
-          match: { names: [], titles: [], roles: [] },
-          provisioning: "host",
-          defaultOn: false,
-          requires: { modules: [] },
-          notes: [],
-          hostOwned: true,
-        };
-
-        const originalTemplateByKey = templatesModule.templateByKey;
-        vi.spyOn(templatesModule, "templateByKey").mockImplementation((key: string) => {
-          if (key === "test-host-owned") return mockHostOwnedTemplate;
-          return originalTemplateByKey(key);
-        });
-      }
-
-      const templateKey = hostOwnedTemplate?.key ?? "test-host-owned";
+      const hostOwnedTemplate = loadPack().templates.find((t) => t.hostOwned);
+      const templateKey = hostOwnedTemplate?.key ?? (() => {
+        const mock = mockHostOwnedTemplate();
+        const orig = templatesModule.templateByKey;
+        vi.spyOn(templatesModule, "templateByKey").mockImplementation((k) => k === "test-host-owned" ? mock : orig(k));
+        return "test-host-owned";
+      })();
       const handler = getHandler(ctx, "template-preview");
       const result = await handler({ key: templateKey, unifiedDiff: "dummy" }, { companyId: "test" });
-
-      expect(result.data).toBeDefined();
       expect(result.data.hostOwned).toBe(true);
       expect(result.data.raw).toBeUndefined();
       expect(result.data.rendered).toBeUndefined();
@@ -311,14 +216,12 @@ describe("template-tools", () => {
       expect(result.error).toBeUndefined();
     });
 
-    it("tool is registered by registerTemplateTools", async () => {
+    it("registers all three tools", async () => {
       const { ctx } = fakeCtx();
-      let previewRegistered = false;
-      (ctx as any).tools.register = (_name: string, _decl: unknown, fn: unknown) => {
-        if (_name === "template-preview") previewRegistered = true;
-      };
+      const registered = new Set<string>();
+      (ctx as any).tools.register = (name: string) => registered.add(name);
       registerTemplateTools(ctx);
-      expect(previewRegistered).toBe(true);
+      expect(registered).toEqual(new Set(["template-list", "template-get", "template-preview"]));
     });
   });
 });
