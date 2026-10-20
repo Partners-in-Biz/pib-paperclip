@@ -3,6 +3,10 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const { EXIT } = require('./exit-codes.cjs');
+const { createApprovalStore, verifyApproval } = require('./approval.cjs');
+const { createHandoff } = require('./handoff.cjs');
+const { checkFill } = require('./fill-rules.cjs');
+const { authenticate: authFn } = require('./auth.cjs');
 
 const MAX_LINE_SIZE = 64 * 1024; // 64 KiB
 
@@ -33,7 +37,9 @@ function loadConfig(env) {
     evidenceDir,
     apiBase,
     policyPath: env.PIB_BROWSER_POLICY || '',
-    sitesPath: env.PIB_BROWSER_SITES || ''
+    sitesPath: env.PIB_BROWSER_SITES || '',
+    stateDir: env.PIB_BROWSER_STATE_DIR || '/var/lib/pib-browser',
+    handoffDir: env.PIB_BROWSER_HANDOFF_DIR || '/run/pib-browser/handoff'
   };
 }
 function createServer(deps) {
@@ -151,6 +157,12 @@ function listen(server, socketPath, socketMode) {
     tryListen();
   });
 }
+function buildVerifyApproval({ apiBase, store, clock, fetch }) {
+  return (params, { token }) => verifyApproval(params, {
+    fetch, apiBase, token, clock, store
+  });
+}
+
 async function main() {
   const config = loadConfig(process.env);
 
@@ -171,7 +183,17 @@ async function main() {
     }
   }
 
-  const { authenticate: authFn } = require('./auth.cjs');
+  const store = createApprovalStore({ stateDir: config.stateDir, fs, path });
+  const handoff = createHandoff({ dir: config.handoffDir, fs });
+
+  const dispatchClock = { now: () => Date.now() };
+  const verifyApprovalFn = buildVerifyApproval({
+    apiBase: config.apiBase,
+    store,
+    clock: dispatchClock,
+    fetch: globalThis.fetch
+  });
+
   const { createDispatcher } = require('./dispatch.cjs');
   const { dispatch } = createDispatcher({
     authenticate: (req) => authFn(req, { fetch: globalThis.fetch }),
@@ -179,7 +201,10 @@ async function main() {
     policy: policyResult.policy,
     sites,
     clock: () => new Date(),
-    evidenceDir: config.evidenceDir
+    evidenceDir: config.evidenceDir,
+    verifyApproval: verifyApprovalFn,
+    handoff,
+    checkFill
   });
 
   const server = createServer({ dispatch, logger: () => {} });
@@ -200,4 +225,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadConfig, createServer, listen };
+module.exports = { loadConfig, createServer, listen, buildVerifyApproval };
