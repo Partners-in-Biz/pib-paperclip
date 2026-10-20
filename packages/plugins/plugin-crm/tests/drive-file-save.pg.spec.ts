@@ -169,6 +169,28 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     if (result.hint) expect(result.hint).not.toContain("/etc");
   });
 
+  it("bare name (no path) -> path_not_allowed, result doesn't contain input", async () => {
+    const { viewer, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const input = "secret.png";
+    const result = await saveDriveFile(ctx, viewer, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 out v1.txt", mimeType: "text/plain", path: input,
+    }, { allowedRoots: [tempDir] });
+    expect(result.status).toBe("path_not_allowed");
+    expect(JSON.stringify(result)).not.toContain(input);
+  });
+
+  it("path with trailing slash -> path_not_allowed, result doesn't contain input", async () => {
+    const { viewer, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const input = "/etc/passwd/";
+    const result = await saveDriveFile(ctx, viewer, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 out v1.txt", mimeType: "text/plain", path: input,
+    }, { allowedRoots: [tempDir] });
+    expect(result.status).toBe("path_not_allowed");
+    expect(JSON.stringify(result)).not.toContain(input);
+  });
+
   it("unbound company -> drive_not_bound", async () => {
     const { viewer, brokerState } = setupContext();
     const result = await saveDriveFile(ctx, viewer as any, {

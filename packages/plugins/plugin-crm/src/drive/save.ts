@@ -69,13 +69,21 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     } else {
       const fileBytes = await loadFileFromPath(filePath!, opts?.allowedRoots);
       if (fileBytes === null) {
-        return { status: "path_not_allowed", hint: `Path not allowed: ${filePath!.split("/").pop() || filePath}` };
+        return { status: "path_not_allowed", hint: "Path not allowed: source must be a file inside the permitted drive root" };
       }
       bytes = fileBytes;
     }
   } catch (e) {
     if (e instanceof Error && e.message === "too_large") {
       return { status: "too_large" };
+    }
+    // Treat file-not-found and other path errors as path_not_allowed to avoid leaking path info
+    if (e instanceof Error && (
+      e.message.includes("ENOENT") || e.message.includes("No such file") ||
+      e.message.includes("not found") || e.message.includes("ENOTDIR") ||
+      e.message.includes("Not a regular file")
+    )) {
+      return { status: "path_not_allowed", hint: "Path not allowed: source must be a file inside the permitted drive root" };
     }
     return { status: "invalid_input", hint: `Failed to load file: ${e instanceof Error ? e.message : String(e)}` };
   }
