@@ -55,6 +55,13 @@ import { parseClientRef, requireClient } from "./lookup.js";
 import { companyPrefix, pagePath, refOf, type ClientKind } from "./refs.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+export const CLIENT_PROJECT_KINDS = ["seo", "website", "app", "social", "ads", "campaigns", "book", "platform", "ops"] as const;
+export type ClientProjectKind = (typeof CLIENT_PROJECT_KINDS)[number];
+
+// ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------
 
@@ -1004,12 +1011,13 @@ interface ProjectLinkRow {
   client_kind: string;
   client_ref: string;
   project_id: string;
+  kind: string | null;
   created_at: unknown;
 }
 
 async function projectLinks(ctx: PluginContext, companyId: string): Promise<ProjectLinkRow[]> {
   return ctx.db.query<ProjectLinkRow>(
-    `SELECT id, client_kind, client_ref, project_id, created_at FROM ${table(ctx, "client_projects")} WHERE company_id = $1 ORDER BY created_at`,
+    `SELECT id, client_kind, client_ref, project_id, kind, created_at FROM ${table(ctx, "client_projects")} WHERE company_id = $1 ORDER BY created_at`,
     [companyId],
   );
 }
@@ -1042,13 +1050,14 @@ async function companyProjects(ctx: PluginContext, companyId: string): Promise<P
   });
 }
 
-function projectOut(project: ProjectSummary, prefix: string | null) {
+function projectOut(project: ProjectSummary, prefix: string | null, kind: string | null = null) {
   return {
     projectId: project.id,
     name: project.name,
     status: project.status,
     repoUrl: project.repoUrl,
     archived: project.archived,
+    kind,
     link: pagePath(prefix, `/projects/${project.urlKey ?? project.id}`),
   };
 }
@@ -1065,7 +1074,7 @@ export async function clientProjects(ctx: PluginContext, viewer: Viewer, client:
   const mine = links.filter((link) => link.client_kind === client.kind && link.client_ref === client.id);
   const linked = mine.map((link) => {
     const project = byId.get(link.project_id);
-    return project ? projectOut(project, prefix) : { projectId: link.project_id, name: "Project not found (deleted?)", status: null, repoUrl: null, archived: true, link: null };
+    return project ? projectOut(project, prefix, link.kind) : { projectId: link.project_id, name: "Project not found (deleted?)", status: null, repoUrl: null, archived: true, kind: link.kind, link: null };
   });
   if (!options.candidates) return { linked };
   const taken = new Set(links.map((link) => link.project_id));
@@ -1096,18 +1105,50 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
   const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
   if (!projectId) throw new CrmError("projectId is required (list-client-projects shows them)");
   const project = await requireProject(ctx, viewer.companyId, projectId);
-  const existing = (await projectLinks(ctx, viewer.companyId)).find((link) => link.project_id === project.id);
-  if (existing) {
-    if (existing.client_kind === client.kind && existing.client_ref === client.id) return { projectId: project.id, name: project.name, client: refOf(client.kind, client.id), alreadyLinked: true };
+  const ref = refOf(client.kind, client.id);
+
+  // kind: absent leaves it as it is, null clears it, a string sets it (one project per kind and client).
+  let kind: string | null | undefined;
+  if (params.kind !== undefined) {
+    if (params.kind !== null && !CLIENT_PROJECT_KINDS.includes(params.kind as ClientProjectKind)) {
+      throw new CrmError(`Unknown kind '${String(params.kind)}'. Use one of: ${CLIENT_PROJECT_KINDS.join(", ")}.`);
+    }
+    kind = params.kind as string | null;
+  }
+
+  const links = await projectLinks(ctx, viewer.companyId);
+  const existing = links.find((link) => link.project_id === project.id);
+  if (existing && (existing.client_kind !== client.kind || existing.client_ref !== client.id)) {
     throw new CrmError(`${project.name} already belongs to ${refOf(existing.client_kind as ClientKind, existing.client_ref)}. A person unlinks it there first.`);
   }
-  await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "client_projects")} (id, company_id, client_kind, client_ref, project_id, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (company_id, project_id) DO NOTHING`,
-    [randomUUID(), viewer.companyId, client.kind, client.id, project.id, actorOf(viewer)],
-  );
-  return { projectId: project.id, name: project.name, client: refOf(client.kind, client.id), linked: true };
+  if (existing && (kind === undefined || kind === existing.kind)) {
+    return { projectId: project.id, name: project.name, client: ref, alreadyLinked: true, kind: existing.kind };
+  }
+
+  const kindTaken = (holder?: string) => new CrmError(`${ref} already has a ${kind} project${holder ? ` (${holder})` : ""}. Relink that one to another kind or null first.`);
+  if (kind) {
+    const holder = links.find((link) => link.client_kind === client.kind && link.client_ref === client.id && link.project_id !== project.id && link.kind === kind);
+    if (holder) throw kindTaken((await requireProject(ctx, viewer.companyId, holder.project_id).catch(() => null))?.name ?? holder.project_id);
+  }
+
+  try {
+    if (existing) {
+      await ctx.db.execute(`UPDATE ${table(ctx, "client_projects")} SET kind = $1 WHERE id = $2`, [kind ?? null, existing.id]);
+      return { projectId: project.id, name: project.name, client: ref, linked: true, kind: kind ?? null, kindChanged: true, previousKind: existing.kind };
+    }
+    await ctx.db.execute(
+      `INSERT INTO ${table(ctx, "client_projects")} (id, company_id, client_kind, client_ref, project_id, kind, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (company_id, project_id) DO NOTHING`,
+      [randomUUID(), viewer.companyId, client.kind, client.id, project.id, kind ?? null, actorOf(viewer)],
+    );
+  } catch (err) {
+    // Two requests racing for the same kind: the partial unique index lets one win.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (kind && (code === "23505" || /duplicate key|unique/i.test(String((err as Error)?.message)))) throw kindTaken();
+    throw err;
+  }
+  return { projectId: project.id, name: project.name, client: ref, linked: true, kind: kind ?? null };
 }
 
 export async function unlinkClientProject(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
