@@ -7,6 +7,7 @@ import { loadPack, packSources, templateByKey, templateVars, type AgentTemplate,
 import { renderInstructions } from "./templates-render.js";
 import { renderHash } from "./render-hash.js";
 import { varsFor } from "./new-company.js";
+import { subagentExtraArgs, type SubagentPolicy } from "./subagents.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -70,8 +71,8 @@ type TemplateGetResult =
       raw: string;
       rendered: string;
       renderHash: string;
-      subagents?: unknown;
-      extraArgs?: unknown;
+      subagents?: SubagentPolicy;
+      extraArgs?: string[];
     };
 
 /** Get a template's full details. Renders with company vars if companyId given. */
@@ -88,17 +89,17 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
   // Get template vars: use varsFor if companyId given, otherwise defaults
   let vars: TemplateVars;
   if (companyId) {
+    let company;
     try {
-      // Validate company exists before getting vars
-      const company = await ctx.companies.get(companyId);
-      if (!company) {
-        return { error: `company "${companyId}" not found` };
-      }
-      const { vars: companyVars } = await varsFor(ctx, { companyId, key: null });
-      vars = companyVars;
+      company = await ctx.companies.get(companyId);
     } catch {
       return { error: `company "${companyId}" not found` };
     }
+    if (!company) {
+      return { error: `company "${companyId}" not found` };
+    }
+    const { vars: companyVars } = await varsFor(ctx, { companyId, key: null });
+    vars = companyVars;
   } else {
     vars = templateVars();
   }
@@ -110,7 +111,18 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
   }
 
   const rendered = renderInstructions(template, vars);
-  const result: TemplateGetResult & { key: string; file: string; scope: string; hostOwned: false } = {
+  const extraArgs = subagentExtraArgs(template.subagents);
+  const result: {
+    key: string;
+    file: string;
+    scope: string;
+    hostOwned: false;
+    raw: string;
+    rendered: string;
+    renderHash: string;
+    subagents?: SubagentPolicy;
+    extraArgs?: string[];
+  } = {
     key,
     file: template.file,
     scope: template.scope ?? "generic",
@@ -122,6 +134,9 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
 
   if (template.subagents) {
     result.subagents = template.subagents;
+  }
+  if (extraArgs.length > 0) {
+    result.extraArgs = extraArgs;
   }
 
   return result;
