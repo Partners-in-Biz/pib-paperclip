@@ -200,7 +200,7 @@ import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, createBrokerForCompany } from "./drive/tools.js";
-import { driveBindingDiscover, driveBindingSet } from "./drive/binding.js";
+import { driveBindingDiscover, driveBindingSet, driveBindingStatus } from "./drive/binding.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -787,6 +787,8 @@ async function dispatch(
       return driveBindingDiscover(ctx, viewer, body);
     case "drive_binding_set":
       return driveBindingSet(ctx, viewer, body);
+    case "drive_binding_status":
+      return driveBindingStatus(ctx, viewer);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);

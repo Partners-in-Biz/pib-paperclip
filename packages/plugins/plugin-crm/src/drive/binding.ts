@@ -1,5 +1,5 @@
 /**
- * Per-company Shared Drive binding: discover and set.
+ * Per-company Shared Drive binding: discover, set, and check status.
  * Storage: plugin state scoped to company (no DB migration needed, src-only release).
  */
 
@@ -27,6 +27,15 @@ interface BindingState {
   sharedDriveId: string;
   name: string;
   setBoundAt: string; // ISO timestamp
+}
+
+interface DriveBindingStatusResult {
+  bound: boolean;
+  sharedDriveId?: string;
+  tokenSet?: boolean;
+  serviceAccountEmail?: string;
+  serviceAccountIsMember: boolean;
+  identityError?: string;
 }
 
 /** Extract config-pinned sharedDriveId. */
@@ -190,3 +199,84 @@ export async function driveBindingSet(
   };
 }
 
+export async function driveBindingStatus(
+  ctx: PluginContext,
+  viewer: Viewer,
+): Promise<DriveBindingStatusResult> {
+  const companyId = viewer.companyId;
+  const cfg = await readConfig(ctx, companyId);
+
+  // Get effective binding (config-pinned or state)
+  const binding = await effectiveBinding(ctx, companyId, cfg);
+  const bound = !!binding;
+  const sharedDriveId = binding?.sharedDriveId;
+
+  // Check if driveBrokerToken is set
+  const tokenSet = !!cfg.driveBrokerToken;
+
+  // Always return basic status; only fetch identity if token is set
+  if (!tokenSet) {
+    return {
+      bound,
+      sharedDriveId,
+      tokenSet,
+      serviceAccountIsMember: false,
+    };
+  }
+
+  // Token is set: try to get identity from the broker
+  let serviceAccountEmail: string | undefined;
+  let serviceAccountIsMember = false;
+  let identityError: string | undefined;
+
+  try {
+    const resolver = new SecretResolver(ctx, companyId, cfg);
+    const token = await resolver.get("driveBrokerToken");
+    if (!token) {
+      // No token available; return status without identity info
+      return {
+        bound,
+        sharedDriveId,
+        tokenSet: false,
+        serviceAccountIsMember: false,
+      };
+    }
+
+    const baseUrl = (cfg.driveBrokerUrl as string) || "https://partnersinbiz.online";
+    // Only append shared_drive_id param when bound
+    const url = bound && sharedDriveId
+      ? `${baseUrl}/api/v1/workspace-broker/identity?shared_drive_id=${encodeURIComponent(sharedDriveId)}`
+      : `${baseUrl}/api/v1/workspace-broker/identity`;
+
+    const res = await ctx.http.fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (res.ok) {
+      const body = JSON.parse(await res.text()) as { serviceAccountEmail?: string; isMember?: boolean };
+      serviceAccountEmail = body.serviceAccountEmail;
+      serviceAccountIsMember = body.isMember === true;
+    } else {
+      identityError = `broker identity unavailable (status ${res.status})`;
+    }
+  } catch {
+    identityError = "broker identity unavailable (network error)";
+  }
+
+  const response: DriveBindingStatusResult = {
+    bound,
+    sharedDriveId,
+    tokenSet,
+    serviceAccountIsMember,
+  };
+
+  if (serviceAccountEmail) {
+    response.serviceAccountEmail = serviceAccountEmail;
+  }
+  if (identityError) {
+    response.identityError = identityError;
+  }
+
+  return response;
+}

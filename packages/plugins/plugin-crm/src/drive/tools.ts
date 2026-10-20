@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
-import { driveBindingDiscover, driveBindingSet, effectiveSharedDriveId } from "./binding.js";
+import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, companyFolderName, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
@@ -49,6 +49,12 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Set Shared Drive binding",
     description: "Bind this company to a specific Shared Drive. Pass the sharedDriveId from drive_binding_discover (must be in the candidate list from the last discover call). The ID must be in the discovered list or this fails; run discover first. If the company's Shared Drive is pinned in settings, this fails with a clear message. Read-only discovery should never write.",
     parametersSchema: schema(["sharedDriveId"], { sharedDriveId: text("The Shared Drive ID from the candidate list (drive_binding_discover).", 100) }),
+  },
+  {
+    name: "drive_binding_status",
+    displayName: "Check Shared Drive binding status",
+    description: "read-only: check whether this company's Shared Drive is bound, whether the broker token is set, and whether the service account is a member of the drive. Does not modify anything.",
+    parametersSchema: schema([], {}),
   },
 ];
 
