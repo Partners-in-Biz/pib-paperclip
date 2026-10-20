@@ -109,7 +109,7 @@ export async function mute(ctx: PluginContext, companyId: string, userId: string
   if (!sub) throwError("not_found", "Device not found");
 
   const newState = shouldMute ? "muted" : "ok";
-  await setSubscriptionState(ctx, sub.endpoint, newState, shouldMute ? null : null);
+  await setSubscriptionState(ctx, sub.endpoint, newState, null);
 
   return { ok: true };
 }

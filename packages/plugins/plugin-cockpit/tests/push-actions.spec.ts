@@ -10,6 +10,8 @@ import { listSubscriptionsForUser } from "../src/push/store.js";
 import { COMPANY, embeddedAvailable, startPg } from "./helpers/pg.js";
 import type { Env } from "../src/env.js";
 import { createECDH, randomBytes } from "node:crypto";
+import { registerCockpit } from "../src/register.js";
+import { fakeCtx } from "./helpers/fake-ctx.js";
 
 const available = await embeddedAvailable();
 const d = available ? describe : describe.skip;
@@ -391,6 +393,112 @@ d("Push page actions (Postgres)", () => {
       // User A lists devices in company B: should see the device
       const listB = await devices(pg.ctx, COMPANY_B, USER_A);
       expect(listB).toHaveLength(1);
+    });
+  });
+
+  describe("agent actor rejection (via registered actions)", () => {
+    it("cockpit.push.subscribe rejects agent actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.subscribe")!;
+      const keys = createRealSubscriptionKeyPair();
+
+      const agentContext = {
+        companyId: COMPANY_A,
+        actor: { type: "agent", agentId: "agent-1", userId: null },
+      };
+
+      await expect(
+        action(
+          {
+            endpoint: "https://fcm.googleapis.com/fcm/send/test",
+            p256dh: keys.p256dh,
+            auth: keys.auth,
+          },
+          agentContext,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("cockpit.push.devices rejects agent actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.devices")!;
+
+      const agentContext = {
+        companyId: COMPANY_A,
+        actor: { type: "agent", agentId: "agent-1", userId: null },
+      };
+
+      await expect(action({}, agentContext)).rejects.toThrow();
+    });
+
+    it("cockpit.push.mute rejects agent actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.mute")!;
+
+      const agentContext = {
+        companyId: COMPANY_A,
+        actor: { type: "agent", agentId: "agent-1", userId: null },
+      };
+
+      await expect(action({ id: "device-id" }, agentContext)).rejects.toThrow();
+    });
+
+    it("cockpit.push.unsubscribe rejects agent actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.unsubscribe")!;
+
+      const agentContext = {
+        companyId: COMPANY_A,
+        actor: { type: "agent", agentId: "agent-1", userId: null },
+      };
+
+      await expect(action({ id: "device-id" }, agentContext)).rejects.toThrow();
+    });
+
+    it("cockpit.push.test rejects agent actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.test")!;
+
+      const agentContext = {
+        companyId: COMPANY_A,
+        actor: { type: "agent", agentId: "agent-1", userId: null },
+      };
+
+      await expect(action({}, agentContext)).rejects.toThrow();
+    });
+
+    it("cockpit.push.subscribe rejects null actor", async () => {
+      const fake = fakeCtx();
+      registerCockpit(fake.ctx);
+
+      const action = fake.actions.get("cockpit.push.subscribe")!;
+      const keys = createRealSubscriptionKeyPair();
+
+      const nullContext = {
+        companyId: COMPANY_A,
+        actor: { type: "system", userId: null },
+      };
+
+      await expect(
+        action(
+          {
+            endpoint: "https://fcm.googleapis.com/fcm/send/test",
+            p256dh: keys.p256dh,
+            auth: keys.auth,
+          },
+          nullContext,
+        ),
+      ).rejects.toThrow();
     });
   });
 });
