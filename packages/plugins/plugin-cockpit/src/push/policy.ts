@@ -77,7 +77,6 @@ export function getSastTime(now: Date): { hour: number; day: number } {
  * Otherwise, returns yesterday's 22:00 SAST (in UTC).
  */
 export function getOvernightWindow(now: Date): Date {
-  const sast = getSastTime(now);
   const sastMs = now.getTime() + 2 * 60 * 60 * 1000;
 
   // Start of today in SAST (midnight)

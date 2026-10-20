@@ -53,18 +53,21 @@ d("Push digest job (Postgres)", () => {
       class: "needs_you",
       status: "deferred",
       title: "Item 1",
+      createdAt: new Date("2026-10-20T00:00:00Z"),
     });
     await appendPushLog(pg.ctx, {
       companyId: A,
       class: "needs_you",
       status: "deferred",
       title: "Item 2",
+      createdAt: new Date("2026-10-20T00:00:00Z"),
     });
     await appendPushLog(pg.ctx, {
       companyId: A,
       class: "needs_you",
       status: "deferred",
       title: "Item 3",
+      createdAt: new Date("2026-10-20T00:00:00Z"),
     });
 
     let capturedPayload: { title: string; body: string; url: string; tag: string } | undefined;
