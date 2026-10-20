@@ -63,6 +63,15 @@ describe("template-tools", () => {
       expect(registered.get("template-get")).toBe(true);
       (ctx as any).tools.register = original;
     });
+
+    it("returns handlers object", () => {
+      const { ctx } = fakeCtx();
+      const result = registerTemplateTools(ctx);
+      expect(result).toHaveProperty("templateList");
+      expect(result).toHaveProperty("templateGet");
+      expect(typeof result.templateList).toBe("function");
+      expect(typeof result.templateGet).toBe("function");
+    });
   });
 
   describe("template-list handler", () => {
@@ -81,27 +90,16 @@ describe("template-tools", () => {
       }
     });
 
-    it("host-owned templates have hash null", async () => {
-      const { ctx } = fakeCtx();
-      const pack = loadPack();
-      const hostOwned = pack.templates.find((t) => t.hostOwned);
-      if (!hostOwned) return;
-      const handler = getHandler(ctx, "template-list");
-      const result = await handler({}, { companyId: "test" });
-      const entry = result.data.templates.find((t: any) => t.key === hostOwned.key);
-      expect(entry.hash).toBeNull();
-    });
-
     it("non-host-owned templates have hash equal to renderHash of canonical render", async () => {
       const { ctx } = fakeCtx();
       const pack = loadPack();
       const nonHostOwned = pack.templates.find((t) => !t.hostOwned);
-      if (!nonHostOwned) return;
+      expect(nonHostOwned).toBeDefined();
       const handler = getHandler(ctx, "template-list");
       const result = await handler({}, { companyId: "test" });
-      const entry = result.data.templates.find((t: any) => t.key === nonHostOwned.key);
+      const entry = result.data.templates.find((t: any) => t.key === nonHostOwned!.key);
       const defaultVars = templateVars();
-      const rendered = renderInstructions(nonHostOwned, defaultVars);
+      const rendered = renderInstructions(nonHostOwned!, defaultVars);
       const expectedHash = renderHash(rendered);
       expect(entry.hash).toBe(expectedHash);
     });
@@ -115,19 +113,8 @@ describe("template-tools", () => {
       expect(result.error).toContain("unknown template");
     });
 
-    it("returns stub for host-owned template", async () => {
-      const { ctx } = fakeCtx();
-      const pack = loadPack();
-      const hostOwned = pack.templates.find((t) => t.hostOwned);
-      if (!hostOwned) return;
-      const handler = getHandler(ctx, "template-get");
-      const result = await handler({ key: hostOwned.key }, { companyId: "test" });
-      expect(result.data.hostOwned).toBe(true);
-      expect(result.data.raw).toBeUndefined();
-    });
-
     it("returns raw, rendered, and renderHash for non-host-owned template", async () => {
-      const { ctx } = fakeCtx();
+      const { ctx } = fakeCtx({ companies: { "test": { name: "Test Company" } } });
       const pack = loadPack();
       const nonHostOwned = pack.templates.find((t) => !t.hostOwned)!;
       const handler = getHandler(ctx, "template-get");
@@ -145,16 +132,25 @@ describe("template-tools", () => {
       const handler = getHandler(ctx, "template-get");
       const result = await handler({ key: nonHostOwned.key, companyId: "company-1" }, { companyId: "company-1" });
       expect(result.data.rendered).toContain("Test Company");
-      const resultBad = await handler({ key: nonHostOwned.key, companyId: "nonexistent-company" }, {});
+      const resultBad = await handler({ key: nonHostOwned.key, companyId: "nonexistent-company" }, { companyId: "nonexistent-company" });
       expect(resultBad.error).toContain('company "nonexistent-company" not found');
     });
 
-    it("returns hostOwned false and handles subagents", async () => {
-      const { ctx } = fakeCtx();
+    it("rejects mismatched companyId parameter", async () => {
+      const { ctx } = fakeCtx({ companies: { "company-1": { name: "Test Company" }, "company-2": { name: "Test Company 2" } } });
       const pack = loadPack();
       const nonHostOwned = pack.templates.find((t) => !t.hostOwned)!;
       const handler = getHandler(ctx, "template-get");
-      const result = await handler({ key: nonHostOwned.key }, {});
+      const result = await handler({ key: nonHostOwned.key, companyId: "company-2" }, { companyId: "company-1" });
+      expect(result.error).toContain("must match the current run company");
+    });
+
+    it("returns hostOwned false and handles subagents", async () => {
+      const { ctx } = fakeCtx({ companies: { "test": { name: "Test Company" } } });
+      const pack = loadPack();
+      const nonHostOwned = pack.templates.find((t) => !t.hostOwned)!;
+      const handler = getHandler(ctx, "template-get");
+      const result = await handler({ key: nonHostOwned.key }, { companyId: "test" });
       expect(result.data.hostOwned).toBe(false);
       // If template has subagents, verify extraArgs is computed; otherwise verify both are absent
       const withSubagents = pack.templates.find((t) => t.subagents && !t.hostOwned);

@@ -86,20 +86,16 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
     return { key, hostOwned: true };
   }
 
-  // Get template vars: use varsFor if companyId given, otherwise defaults
+  // Get template vars: use varsFor if companyId given, otherwise defaults.
+  // varsFor looks up the company and catches errors; check if company was not found.
   let vars: TemplateVars;
   if (companyId) {
-    let company;
-    try {
-      company = await ctx.companies.get(companyId);
-    } catch {
+    const varsResult = await varsFor(ctx, { companyId, key: null });
+    // If the returned company has the default "the company" name, it was not found
+    if (varsResult.company.name === "the company") {
       return { error: `company "${companyId}" not found` };
     }
-    if (!company) {
-      return { error: `company "${companyId}" not found` };
-    }
-    const { vars: companyVars } = await varsFor(ctx, { companyId, key: null });
-    vars = companyVars;
+    vars = varsResult.vars;
   } else {
     vars = templateVars();
   }
@@ -143,25 +139,35 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
 }
 
 /** Register the two tools with ctx.tools.register. */
-export function registerTemplateTools(ctx: PluginContext): void {
-  ctx.tools.register("template-list", TEMPLATE_TOOLS[0]!, async (_params, _run) => {
+export function registerTemplateTools(ctx: PluginContext): { templateList: any; templateGet: any } {
+  const templateList = async (_params: unknown, _run: any) => {
     try {
       const data = listTemplates();
       return { content: `Listed ${data.templates.length} templates.`, data };
     } catch (e) {
       return { error: `Failed to list templates: ${e instanceof Error ? e.message : String(e)}` };
     }
-  });
+  };
 
-  ctx.tools.register("template-get", TEMPLATE_TOOLS[1]!, async (params, run) => {
+  const templateGet = async (params: unknown, run: any) => {
     try {
       const p = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
       const key = str(p.key);
       if (!key) {
         return { error: "key is required and must be a string" };
       }
-      const companyId = str(p.companyId);
-      const result = await getTemplate(ctx, key, companyId ?? undefined);
+
+      // Default companyId to run.companyId; reject if different.
+      const passedCompanyId = str(p.companyId);
+      const runCompanyId = typeof run?.companyId === "string" ? run.companyId : null;
+      const companyId = passedCompanyId || runCompanyId || undefined;
+
+      // If a companyId was explicitly passed and it differs from run.companyId, reject it.
+      if (passedCompanyId && runCompanyId && passedCompanyId !== runCompanyId) {
+        return { error: `companyId must match the current run company` };
+      }
+
+      const result = await getTemplate(ctx, key, companyId);
       if ("error" in result) {
         return { error: result.error };
       }
@@ -173,5 +179,10 @@ export function registerTemplateTools(ctx: PluginContext): void {
     } catch (e) {
       return { error: `Failed to get template: ${e instanceof Error ? e.message : String(e)}` };
     }
-  });
+  };
+
+  ctx.tools.register("template-list", TEMPLATE_TOOLS[0]!, templateList);
+  ctx.tools.register("template-get", TEMPLATE_TOOLS[1]!, templateGet);
+
+  return { templateList, templateGet };
 }
