@@ -1,6 +1,6 @@
 -- 0.11.0: Growth Lab (kit experimentsMigration) and growth metrics and decisions.
 -- - Kit tables: growth_programs, growth_playbook_versions, growth_experiments, growth_experiment_items, growth_playbook_changes.
--- - Cockpit additions: growth_metrics (per-channel scopes), growth_ledger (experiment verdicts), project_kinds.
+-- - Cockpit additions: growth_metrics (per-channel scopes), growth_ledger (experiment verdicts).
 
 CREATE TABLE plugin_cockpit_b8a99e8b16.growth_programs (
   id text PRIMARY KEY,
@@ -144,14 +144,4 @@ CREATE TABLE IF NOT EXISTS plugin_cockpit_b8a99e8b16.growth_ledger (
   CONSTRAINT growth_ledger_verdict CHECK (verdict IS NULL OR verdict IN ('win', 'loss', 'no_change', 'inconclusive')),
   CONSTRAINT growth_ledger_decision CHECK (playbook_decision IS NULL OR playbook_decision IN ('kept', 'discarded', 'pending')),
   UNIQUE (company_id, channel, experiment_id, decided_at)
-);
-
--- Project kinds: minimal additive table for project classification by channel or growth context.
-CREATE TABLE IF NOT EXISTS plugin_cockpit_b8a99e8b16.project_kinds (
-  id text PRIMARY KEY,
-  company_id text NOT NULL,
-  project_id text NOT NULL,
-  kind text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (company_id, project_id)
 );

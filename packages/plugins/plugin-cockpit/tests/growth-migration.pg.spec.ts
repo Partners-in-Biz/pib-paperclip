@@ -1,7 +1,7 @@
 /**
  * Migration 012_growth.sql: Growth Lab tables (kit experimentsMigration),
  * growth_metrics for per-channel measurements, growth_ledger for experiment
- * verdicts and decisions, and project_kinds for project classification.
+ * verdicts and decisions.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -19,11 +19,10 @@ describe("migration 012_growth: structure", () => {
     }
   });
 
-  it("adds growth_metrics, growth_ledger, and project_kinds without deleting anything", () => {
+  it("adds growth_metrics and growth_ledger without deleting anything", () => {
     for (const text of [
       `CREATE TABLE IF NOT EXISTS ${T("growth_metrics")}`,
       `CREATE TABLE IF NOT EXISTS ${T("growth_ledger")}`,
-      `CREATE TABLE IF NOT EXISTS ${T("project_kinds")}`,
       "CONSTRAINT growth_metrics_source CHECK (source IN ('tool', 'csv'))",
       "CONSTRAINT growth_ledger_verdict CHECK (verdict IS NULL OR verdict IN ('win', 'loss', 'no_change', 'inconclusive'))",
       "CONSTRAINT growth_ledger_decision CHECK (playbook_decision IS NULL OR playbook_decision IN ('kept', 'discarded', 'pending'))",
@@ -48,10 +47,10 @@ d("migration 012_growth: application (Postgres)", () => {
     const h = await startPg();
     try {
       const tables = await h.client.query(
-        `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name IN ('growth_programs', 'growth_metrics', 'growth_ledger', 'project_kinds')`,
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name IN ('growth_programs', 'growth_metrics', 'growth_ledger')`,
         [NAMESPACE],
       );
-      expect(tables.rows.length).toBe(4); // growth_programs, growth_experiment_items, growth_experiments, growth_playbook_versions from kit; growth_metrics, growth_ledger, project_kinds from cockpit (not all shown above but all created)
+      expect(tables.rows.length).toBe(3); // growth_programs from kit; growth_metrics, growth_ledger from cockpit
       // Verify growth_metrics structure
       const metricsColumns = await h.client.query(
         `SELECT column_name, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'growth_metrics' ORDER BY ordinal_position`,
@@ -167,29 +166,6 @@ d("migration 012_growth: application (Postgres)", () => {
       expect(rows.rows.length).toBe(2);
       expect((rows.rows[0] as any).verdict).toBe("win");
       expect((rows.rows[1] as any).verdict).toBe("loss");
-    } finally {
-      await h.stop();
-    }
-  });
-
-  it("inserts and reads project_kinds", async () => {
-    const h = await startPg();
-    try {
-      const companyId = "11111111-1111-1111-1111-111111111111";
-      const kinds = [
-        { id: "pk1", company_id: companyId, project_id: "proj1", kind: "growth" },
-        { id: "pk2", company_id: companyId, project_id: "proj2", kind: "ops" },
-      ];
-      for (const k of kinds) {
-        await h.client.query(
-          `INSERT INTO ${NAMESPACE}.project_kinds (id, company_id, project_id, kind) VALUES ($1, $2, $3, $4)`,
-          [k.id, k.company_id, k.project_id, k.kind],
-        );
-      }
-      const rows = await h.client.query(`SELECT * FROM ${NAMESPACE}.project_kinds ORDER BY id`);
-      expect(rows.rows.length).toBe(2);
-      expect((rows.rows[0] as any).kind).toBe("growth");
-      expect((rows.rows[1] as any).kind).toBe("ops");
     } finally {
       await h.stop();
     }
