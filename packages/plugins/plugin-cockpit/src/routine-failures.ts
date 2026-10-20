@@ -3,7 +3,7 @@
  * the assignee on first failure, and escalate on the second distinct failure.
  */
 
-import { createWorkIssue, escalate, routineHealth, type SkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, escalate, routineHealth } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN, ORIGIN_ID } from "./constants.js";
 import { message, type Env } from "./env.js";
 
