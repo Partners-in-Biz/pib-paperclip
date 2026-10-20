@@ -14,6 +14,12 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "The Setup page saves this for you the first time you choose modules. Saving is what lets the weekly job open and update the Finish setup issue for this company.",
   properties: {
+    ownerCompany: {
+      type: "boolean",
+      title: "This is Partners in Biz's own company (owner company only)",
+      description: "Tick this ONLY on Partners in Biz's own company. It allows PiB-only (scope pib) agent templates in the hire list. Leave it off for every client company.",
+      default: false,
+    },
     weeklyIssue: {
       type: "boolean",
       title: "Weekly Finish setup issue",

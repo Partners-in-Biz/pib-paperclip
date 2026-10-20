@@ -5,6 +5,7 @@ import { AGENT_LIST_UNREADABLE, hiringFor, PLUGIN_LIST_UNREADABLE, runClientStep
 import { MODULE_KEYS, SETUP_PLUGIN, type ModuleKey } from "../src/kit-setup.js";
 import { WIKI_PLUGIN } from "../src/memory.js";
 import { allModulesOn } from "../src/modules.js";
+import { loadPack, templateByKey } from "../src/templates.js";
 import { emptyRoleState, type TeamRole, type TeamRoleKey, type TeamRoleState } from "../src/team.js";
 
 const CO = "co-new";
@@ -37,7 +38,7 @@ interface Fake {
   configs: Map<string, { saved: boolean; config: Record<string, unknown> }>;
 }
 
-function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; roles?: Partial<Record<TeamRoleKey, "ok" | "hiring" | "missing" | "attention">>; installed?: Record<string, RunnerPlugin> | null; modules?: Record<ModuleKey, boolean>; hires?: Array<{ templateKey: string; issueId: string; status: string }>; me?: string | null; starter?: { approved: boolean; importedAt: string | null }; configs?: Record<string, { saved: boolean; config: Record<string, unknown> }>; failures?: Record<string, string>; statuses?: RunnerEnv["statuses"] } = {}): Fake {
+function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; roles?: Partial<Record<TeamRoleKey, "ok" | "hiring" | "missing" | "attention">>; installed?: Record<string, RunnerPlugin> | null; modules?: Record<ModuleKey, boolean>; hires?: Array<{ templateKey: string; issueId: string; status: string }>; me?: string | null; starter?: { approved: boolean; importedAt: string | null }; configs?: Record<string, { saved: boolean; config: Record<string, unknown> }>; failures?: Record<string, string>; statuses?: RunnerEnv["statuses"]; ownerCompany?: boolean } = {}): Fake {
   const out: Fake = { saves: [], actions: [], roleHires: [], templateHires: [], drafts: [], recorded: [], wiki: { n: 0 }, imports: { n: 0 }, configs: new Map(), env: undefined as unknown as RunnerEnv };
   for (const [key, value] of Object.entries(patch.configs ?? {})) out.configs.set(key, value);
   const failures = patch.failures ?? {};
@@ -57,6 +58,7 @@ function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; ro
     modules: patch.modules ?? allModulesOn(),
     installed: patch.installed === undefined ? INSTALLED() : patch.installed,
     options: patch.options ?? {},
+    ownerCompany: patch.ownerCompany,
     requireApproval: false,
     statuses: patch.statuses ?? {},
     starter: patch.starter ?? { approved: false, importedAt: null },
@@ -441,6 +443,23 @@ describe("the team template pack", () => {
     expect(selectedTemplates({ templates: ["developer", "growth-marketing-lead", "nope"] }, allModulesOn()).map((template) => template.key)).toEqual(["developer", "growth-marketing-lead"]);
     expect(selectedTemplates({ templates: ["growth-marketing-lead", "wiki-maintainer"] }, { ...allModulesOn(), social: false, memory: false })).toEqual([]);
     expect(MODULE_KEYS).toContain("memory");
+  });
+
+  it("opens no Hire task for a pib template in a client company, and opens it in the owner company", async () => {
+    const templates = loadPack().templates;
+    templates.push({ ...templateByKey("developer")!, key: "pib-only", name: "PiB Only", scope: "pib", defaultOn: true });
+    try {
+      const options = { templates: ["pib-only"] };
+      const client = fake({ options });
+      const clientOut = await stepTemplates(client.env);
+      expect(client.templateHires).toEqual([]);
+      expect(clientOut.items.map((item) => item.key)).not.toContain("pib-only");
+      const owner = fake({ options, ownerCompany: true });
+      await stepTemplates(owner.env);
+      expect(owner.templateHires.map((hire) => hire.key)).toEqual(["pib-only"]);
+    } finally {
+      templates.splice(templates.findIndex((t) => t.key === "pib-only"), 1);
+    }
   });
 
   it("hires a template that holds a kit role through that role's plugin, with the template's own description, and skips the plain role", async () => {
