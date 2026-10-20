@@ -40,13 +40,22 @@ export const CLIENT_PROJECT_EVENTS = {
 export interface ClientProjectsEvent {
   clientKind: ClientKind;
   clientRef: string;
-  /** Every Paperclip project linked to the client, oldest link first. Empty after the last unlink. */
-  projectIds: string[];
+  /** Every Paperclip project linked to the client, oldest link first. Empty after the last unlink. (Legacy: project ids only, kinds unknown.) */
+  projectIds?: string[];
+  /** Every Paperclip project linked to the client, oldest link first, each with its CRM-owned kind (or null if kind unknown). (New payload.) */
+  projects?: Array<{ projectId: string; kind: string | null }>;
   updatedAt: string;
+}
+
+/** A single client-to-project link. */
+export interface ClientProjectLink {
+  projectId: string;
+  kind: string | null;
 }
 
 interface StoredClientProjects {
   projectIds: string[];
+  projects?: ClientProjectLink[];
   updatedAt: string;
 }
 
@@ -59,13 +68,50 @@ const clientProjectsState = (companyId: string, scope: { kind: ClientKind; id: s
 
 /** Stores one client's list; an older event than the stored one is ignored. Returns whether it stored. */
 export async function rememberClientProjects(ctx: PluginContext, companyId: string, event: ClientProjectsEvent): Promise<boolean> {
-  if ((event.clientKind !== "company" && event.clientKind !== "contact") || !event.clientRef || !Array.isArray(event.projectIds)) return false;
+  if ((event.clientKind !== "company" && event.clientKind !== "contact") || !event.clientRef) return false;
+  // Accept either legacy projectIds or new projects format
+  if (!Array.isArray(event.projectIds) && !Array.isArray(event.projects)) return false;
+
   const key = clientProjectsState(companyId, { kind: event.clientKind, id: event.clientRef });
   const current = (await ctx.state.get(key)) as StoredClientProjects | null;
   const have = stampMs(current?.updatedAt);
   const next = stampMs(event.updatedAt);
+  // Reject if stored updatedAt is strictly newer than incoming; equal updatedAt from a later arrival overwrites.
   if (Number.isFinite(have) && Number.isFinite(next) && have > next) return false;
-  await ctx.state.set(key, { projectIds: event.projectIds.filter((id) => typeof id === "string" && id), updatedAt: event.updatedAt });
+
+  // Normalize projects: filter and normalize kinds
+  const normalized: ClientProjectLink[] = [];
+  const seen = new Set<string>();
+
+  if (Array.isArray(event.projects)) {
+    for (const p of event.projects) {
+      if (typeof p === "object" && p !== null && typeof p.projectId === "string" && p.projectId.length > 0 && !seen.has(p.projectId)) {
+        const kind = typeof p.kind === "string" ? p.kind.trim() || null : null;
+        normalized.push({ projectId: p.projectId, kind });
+        seen.add(p.projectId);
+      }
+    }
+  } else if (Array.isArray(event.projectIds)) {
+    // Legacy: filter valid ids, no projects key
+    for (const id of event.projectIds) {
+      if (typeof id === "string" && id.length > 0 && !seen.has(id)) {
+        normalized.push({ projectId: id, kind: null });
+        seen.add(id);
+      }
+    }
+  }
+
+  const stored: StoredClientProjects = {
+    projectIds: normalized.map((l) => l.projectId),
+    updatedAt: event.updatedAt,
+  };
+
+  // Only include projects if the event provided the new format
+  if (Array.isArray(event.projects)) {
+    stored.projects = normalized;
+  }
+
+  await ctx.state.set(key, stored);
   return true;
 }
 
@@ -82,21 +128,51 @@ export function registerClientProjectWatch(ctx: PluginContext): void {
   });
 }
 
-/** The project ids the CRM linked to the client (empty for own work or an unlinked client). */
-export async function clientProjectIds(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<string[]> {
+/** The project links the CRM linked to the client, with their kinds (empty for own work or an unlinked client). */
+export async function clientProjectLinks(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ClientProjectLink[]> {
   if (!scope) return [];
   try {
     const stored = (await ctx.state.get(clientProjectsState(companyId, scope))) as StoredClientProjects | null;
-    return Array.isArray(stored?.projectIds) ? stored.projectIds.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+    if (!stored) return [];
+
+    // If stored has the new projects format, use it (re-normalize defensively)
+    if (Array.isArray(stored.projects)) {
+      const normalized: ClientProjectLink[] = [];
+      const seen = new Set<string>();
+      for (const p of stored.projects) {
+        if (typeof p === "object" && p !== null && typeof p.projectId === "string" && p.projectId.length > 0 && !seen.has(p.projectId)) {
+          normalized.push({ projectId: p.projectId, kind: typeof p.kind === "string" && p.kind.length > 0 ? p.kind : null });
+          seen.add(p.projectId);
+        }
+      }
+      return normalized;
+    }
+
+    // Fall back to legacy: map projectIds to links with kind null
+    if (Array.isArray(stored.projectIds)) {
+      return stored.projectIds
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .map((projectId) => ({ projectId, kind: null }));
+    }
+
+    return [];
   } catch {
     return [];
   }
+}
+
+/** The project ids the CRM linked to the client (empty for own work or an unlinked client). */
+export async function clientProjectIds(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<string[]> {
+  const links = await clientProjectLinks(ctx, companyId, scope);
+  return links.map((l) => l.projectId);
 }
 
 export interface ClientProjectChoice {
   projectId: string | null;
   /** `client-link`: the client's own project from the CRM; `fallback`: the plugin's own project, because the client has none linked; `own`: own work, so the plugin's own project; `none`: no project at all. */
   source: "client-link" | "fallback" | "own" | "none";
+  /** The kind of the chosen link (null for fallback/own/none, or when the link's kind is unknown). */
+  kind: string | null;
   /** Every project the CRM linked to the client. */
   linked: string[];
 }
@@ -104,34 +180,102 @@ export interface ClientProjectChoice {
 /**
  * The project to open a piece of work in. Own work (`scope` null) takes
  * `fallbackProjectId`, the plugin's own managed project. A client with a linked
- * project gets it (the first, when several; pass `pick` to choose); a client
- * with none gets the fallback, never another client's. Linked projects that no
- * longer exist or are archived are skipped when the plugin may read projects
- * (`projects.read`); without that capability the link is trusted.
+ * project gets it (the first, when several; pass `pick` to choose). When `kind`
+ * is specified, only linked projects with that exact kind are considered, falling
+ * back to "platform" if no match. A client with no suitable link gets the fallback,
+ * never another client's. Linked projects that no longer exist or are archived are
+ * skipped when the plugin may read projects (`projects.read`); without that
+ * capability the link is trusted.
  */
 export async function resolveClientProjectId(
   ctx: PluginContext,
   companyId: string,
   scope: ClientScope,
-  options: { fallbackProjectId?: string | null; pick?: (projectIds: string[]) => string | null; verify?: boolean } = {},
+  options: { fallbackProjectId?: string | null; pick?: (projectIds: string[]) => string | null; verify?: boolean; kind?: string } = {},
 ): Promise<ClientProjectChoice> {
   const fallback = options.fallbackProjectId ?? null;
-  if (!scope) return { projectId: fallback, source: fallback ? "own" : "none", linked: [] };
-  const linked = await clientProjectIds(ctx, companyId, scope);
-  const usable: string[] = [];
-  for (const id of linked) {
-    if (options.verify === false) {
-      usable.push(id);
-      continue;
+  if (!scope) return { projectId: fallback, source: fallback ? "own" : "none", kind: null, linked: [] };
+
+  const links = await clientProjectLinks(ctx, companyId, scope);
+  const linkedIds = links.map((l) => l.projectId);
+
+  // Helper: check if a project is usable (exists, not archived)
+  const isUsable = (() => {
+    const cache = new Map<string, boolean>();
+    return async (id: string): Promise<boolean> => {
+      if (cache.has(id)) return cache.get(id)!;
+      let result = true; // default: trust the link
+      if (options.verify !== false) {
+        try {
+          const project = (await ctx.projects.get(id, companyId)) as { archivedAt?: unknown } | null;
+          // usable only if project exists and is not archived
+          result = !!(project && !project.archivedAt);
+        } catch {
+          result = true; // on error (projects.read not granted), trust the link
+        }
+      }
+      cache.set(id, result);
+      return result;
+    };
+  })();
+
+  // Normalize kind parameter
+  const requestedKind = options.kind ? options.kind.trim() : undefined;
+
+  // If no kind requested, use the old behavior (first linked, usable)
+  if (!requestedKind) {
+    const usable: string[] = [];
+    for (const id of linkedIds) {
+      if (await isUsable(id)) usable.push(id);
     }
-    try {
-      const project = (await ctx.projects.get(id, companyId)) as { archivedAt?: unknown } | null;
-      if (project && !project.archivedAt) usable.push(id);
-    } catch {
-      usable.push(id);
+    const chosen = usable.length > 0 ? (options.pick ? options.pick(usable) : usable[0]!) : null;
+    if (chosen) {
+      const chosenLink = links.find((l) => l.projectId === chosen);
+      return { projectId: chosen, source: "client-link", kind: chosenLink?.kind ?? null, linked: linkedIds };
+    }
+    return { projectId: fallback, source: fallback ? "fallback" : "none", kind: null, linked: linkedIds };
+  }
+
+  // Kind was requested. Step 1: Try exact match with requested kind
+  const step1Candidates: Array<{ projectId: string; kind: string | null }> = [];
+  for (const link of links) {
+    if (link.kind === requestedKind) {
+      if (await isUsable(link.projectId)) {
+        step1Candidates.push(link);
+      }
     }
   }
-  const chosen = usable.length > 0 ? (options.pick ? options.pick(usable) : usable[0]!) : null;
-  if (chosen) return { projectId: chosen, source: "client-link", linked };
-  return { projectId: fallback, source: fallback ? "fallback" : "none", linked };
+
+  if (step1Candidates.length > 0) {
+    const ids = step1Candidates.map((l) => l.projectId);
+    const chosen = options.pick ? options.pick(ids) : ids[0];
+    if (chosen) {
+      const chosenLink = step1Candidates.find((l) => l.projectId === chosen);
+      return { projectId: chosen, source: "client-link", kind: chosenLink?.kind ?? null, linked: linkedIds };
+    }
+  }
+
+  // Step 2: If no step 1 match and requested kind is not "platform", try "platform"
+  if (requestedKind !== "platform") {
+    const step2Candidates: Array<{ projectId: string; kind: string | null }> = [];
+    for (const link of links) {
+      if (link.kind === "platform") {
+        if (await isUsable(link.projectId)) {
+          step2Candidates.push(link);
+        }
+      }
+    }
+
+    if (step2Candidates.length > 0) {
+      const ids = step2Candidates.map((l) => l.projectId);
+      const chosen = options.pick ? options.pick(ids) : ids[0];
+      if (chosen) {
+        const chosenLink = step2Candidates.find((l) => l.projectId === chosen);
+        return { projectId: chosen, source: "client-link", kind: chosenLink?.kind ?? null, linked: linkedIds };
+      }
+    }
+  }
+
+  // Step 3: Fall back to the plugin's own project
+  return { projectId: fallback, source: fallback ? "fallback" : "none", kind: null, linked: linkedIds };
 }
