@@ -111,16 +111,21 @@ export interface EsignAccess {
   /** The owner turned it on for this client. */
   enabled: EsignClient | null;
   allowed: boolean;
+  /** Whether the templates were marked as reviewed by a lawyer (for non-canary clients). */
+  templatesReviewed: boolean;
 }
 
 export async function esignAccess(ctx: PluginContext, companyId: string, client: ClientKey): Promise<EsignAccess> {
   const canary = isCanaryId(client.id);
   const enabled = await getEsignClient(ctx, companyId, client);
-  return { canary, enabled, allowed: canary || Boolean(enabled) };
+  return { canary, enabled, allowed: canary || Boolean(enabled), templatesReviewed: enabled?.templatesReviewed ?? false };
 }
 
 export const OFF_NOTE = (name: string) =>
   `E-sign is only on for the canary client until the owner turns it on for ${name}. The templates are drafts nobody has had reviewed by a lawyer, so the owner decides per client. Put a Needs-you item on the client (CRM, open the client, Agreements, "Turn on e-sign"; the steps are in Setup, CRM, E-sign acceptance) and carry on with the rest of the work.`;
+
+export const NOT_REVIEWED_NOTE = (name: string) =>
+  `E-sign is on for ${name} but the templates are not marked as reviewed by a lawyer. The owner must open the client in the CRM, go to Agreements, use "Turn on e-sign" and tick the reviewed box, then send again. Put a Needs-you item on the client and carry on.`;
 
 /** Turns e-sign on for a client. A person only (the board action `crm.enable-esign`): it is the owner's gate, so an agent cannot open it. */
 export async function enableEsign(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
@@ -456,6 +461,7 @@ export async function sendForSignatureTool(ctx: PluginContext, viewer: Viewer, p
   const client = { kind: doc.clientKind, id: doc.clientRef };
   const access = await esignAccess(ctx, viewer.companyId, client);
   if (!access.allowed) throw new CrmError(OFF_NOTE(name));
+  if (!access.canary && !access.templatesReviewed) throw new CrmError(NOT_REVIEWED_NOTE(name));
   // No approval for a link that cannot open: the plugin must know its public address first (the same rule as the lead form and the event snippet).
   if (!(await signUrls(ctx, viewer.companyId))) throw new CrmError(NO_SIGN_ADDRESS_NOTE);
   if (doc.status !== "draft" && doc.status !== "expired") {
