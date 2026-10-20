@@ -84,7 +84,7 @@ describe("manifest and migration", () => {
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-list")).toMatchObject({ method: "GET", path: "/repairs", auth: "board", companyResolution: { from: "query", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
-      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"],
+      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"], [JOBS.pushDigest, "0 4 * * *"],
     ]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],

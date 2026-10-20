@@ -64,6 +64,8 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { getOrCreateVapidKey, createPushKeyStore, hasSpikeSubscriptions, PushKeyError } from "./push/keys.js";
 import { subscribe, type SpikeActionDeps } from "./push/spike-actions.js";
 import { postPush } from "./push/transport.js";
+import { runPushDigest } from "./push/digest.js";
+import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -479,6 +481,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
   });
+  ctx.jobs.register(JOBS.pushDigest, async () => {
+    ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
+  });
 
   registerMemoryActions(env);
 
@@ -515,6 +520,21 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+    // Notify owner when an issue becomes assigned to them (needs_you trigger).
+    try {
+      await onIssueNeedsYou(env, event);
+    } catch (error) {
+      ctx.logger.info("Needs-you trigger failed", { issueId: event.entityId, error: message(error) });
+    }
+  });
+
+  // issue.created: when an issue is created and assigned to the owner, notify them.
+  ctx.events.on("issue.created", async (event) => {
+    try {
+      await onIssueNeedsYou(env, event);
+    } catch (error) {
+      ctx.logger.info("Needs-you trigger (created) failed", { issueId: event.entityId, error: message(error) });
     }
   });
 

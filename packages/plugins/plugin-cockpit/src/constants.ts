@@ -22,6 +22,8 @@ export const JOBS = {
   acceptanceNightly: "acceptance-nightly",
   /** Every 15 minutes: pauses agents when quota failures breach thresholds, resumes when safe. */
   governor: "governor",
+  /** Every night at 04:00 UTC (06:00 SAST): sends one digest push "N items waited overnight" for each company, collapsing the deferred rows. */
+  pushDigest: "push-digest",
 } as const;
 
 export const ROUTINES = {

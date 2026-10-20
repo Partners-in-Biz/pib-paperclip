@@ -56,7 +56,7 @@ export interface DecideInput {
  * Returns { hour: 0-23 } where hour increments at 00:00 SAST.
  * Returns day as an integer (days since epoch in SAST).
  */
-function getSastTime(now: Date): { hour: number; day: number } {
+export function getSastTime(now: Date): { hour: number; day: number } {
   // SAST = UTC+2, so add 2 hours to UTC timestamp.
   const timestamp = now.getTime();
   const sastTime = timestamp + 2 * 60 * 60 * 1000;
@@ -69,6 +69,33 @@ function getSastTime(now: Date): { hour: number; day: number } {
   const day = Math.floor(sastTime / (24 * 60 * 60 * 1000));
 
   return { hour, day };
+}
+
+/**
+ * Calculate the most recent 22:00 SAST before `now`.
+ * If `now` is at or after 22:00 SAST, returns today's 22:00 SAST (in UTC).
+ * Otherwise, returns yesterday's 22:00 SAST (in UTC).
+ */
+export function getOvernightWindow(now: Date): Date {
+  const sast = getSastTime(now);
+  const sastMs = now.getTime() + 2 * 60 * 60 * 1000;
+
+  // Start of today in SAST (midnight)
+  const sastDayStart = Math.floor(sastMs / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+
+  // 22:00 on today's SAST date = 22 hours into the day
+  const todayAt22SastMs = sastDayStart + 22 * 60 * 60 * 1000;
+
+  // Convert back to UTC
+  const todayAt22UtcMs = todayAt22SastMs - 2 * 60 * 60 * 1000;
+
+  // If current time is at or after today's 22:00 SAST, use that
+  if (now.getTime() >= todayAt22UtcMs) {
+    return new Date(todayAt22UtcMs);
+  }
+
+  // Otherwise, use yesterday's 22:00 SAST
+  return new Date(todayAt22UtcMs - 24 * 60 * 60 * 1000);
 }
 
 /**
