@@ -79,6 +79,7 @@ export interface DeviceInfo {
   id: string;
   label: string | null;
   state: "ok" | "muted" | "needs_resubscribe";
+  createdAt: string;
   lastOkAt: string | null;
   lastError: string | null;
 }
@@ -89,6 +90,7 @@ export async function devices(ctx: PluginContext, companyId: string, userId: str
     id: sub.id,
     label: sub.deviceLabel,
     state: sub.state,
+    createdAt: sub.createdAt,
     lastOkAt: sub.lastOkAt,
     lastError: sub.lastError,
   }));
