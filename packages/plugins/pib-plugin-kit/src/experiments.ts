@@ -220,33 +220,6 @@ CREATE INDEX growth_playbook_changes_program ON ${ns}.growth_playbook_changes (p
 `;
 }
 
-/**
- * Idempotent migration to upgrade Social (V1) to support the V2 scope_key-based scoping.
- * Adds columns, widens autopilot CHECK, backfills scope_key from client_kind/client_ref,
- * and creates partial unique index on scope_key. Does not make scope_key NOT NULL
- * (old inserts omit it; they use client_kind/client_ref).
- */
-export function experimentsScopeAlterMigration(ns: string): string {
-  return `ALTER TABLE ${ns}.growth_programs
-  ADD COLUMN IF NOT EXISTS scope_key text,
-  ADD COLUMN IF NOT EXISTS project_id text;
-
-ALTER TABLE ${ns}.growth_programs
-  DROP CONSTRAINT IF EXISTS growth_programs_autopilot;
-
-ALTER TABLE ${ns}.growth_programs
-  ADD CONSTRAINT growth_programs_autopilot CHECK (autopilot IN ('off', 'safe', 'reviewed', 'full'));
-
-UPDATE ${ns}.growth_programs
-  SET scope_key = CASE
-    WHEN client_kind IS NULL AND client_ref IS NULL THEN 'own'
-    ELSE 'client:' || coalesce(client_kind, 'company') || ':' || coalesce(client_ref, '')
-  END
-  WHERE scope_key IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS growth_programs_scope_key ON ${ns}.growth_programs (company_id, channel, scope_key) WHERE scope_key IS NOT NULL;
-`;
-}
 
 export interface ExperimentArm {
   key: string; // "control" | "variant" | ...
