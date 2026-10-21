@@ -491,11 +491,6 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(brokerState.requests).toHaveLength(2); // One more upload
   });
 
-  it("driveFolderEnsure with existing folder: include_tree=false returns empty tree, include_tree=true returns tree with subfolders", async () => {
-    const { viewer, configMap } = setupContext();
-    await configureCompanyDrive(CO_A, configMap);
-  });
-
   it("broker returning empty tree falls back to accumulated tree", async () => {
     // Create context with broker that returns empty tree on last step
     const { viewer, configMap } = setupContext();
