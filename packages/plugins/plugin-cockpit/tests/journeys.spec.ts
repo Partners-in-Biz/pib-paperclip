@@ -24,8 +24,8 @@ for (const plugin of PLUGINS) {
 const toolSteps = (j: Journey) => j.steps.filter((s) => s.kind === "tool").map((s) => ({ step: s, plugin: s.tool!.split(":")[0]!, name: s.tool!.split(":")[1]! }));
 
 describe("the shipped journeys", () => {
-  it("are the five the audit asked for, the nightly lead capture, and (0.6.0) e-sign and the site visit counter, each with its own key", () => {
-    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events"]);
+  it("are the five the audit asked for, the nightly lead capture, and (0.6.0) e-sign the site visit counter and (0.11.0) the support case with NPS feedback, each with its own key", () => {
+    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events", "support-case-nps"]);
     expect(new Set(JOURNEYS.map((j) => j.key)).size).toBe(JOURNEYS.length);
     expect(journeyByKey("lead-capture")!.title).toBe("Lead captured and qualified");
     expect(journeyByKey("ghost")).toBeNull();
@@ -328,7 +328,7 @@ describe("what a trigger runs", () => {
     expect(journeysFor("release", "partnersinbiz.billing").map((j) => j.key)).toEqual(["quote-to-invoice"]);
     expect(journeysFor("release", "partnersinbiz.social").map((j) => j.key)).toEqual(["social-draft-review"]);
     expect(journeysFor("release", "partnersinbiz.seo").map((j) => j.key)).toEqual(["seo-sprint-draft"]);
-    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["client-report", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events"]);
+    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["client-report", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events", "support-case-nps"]);
     expect(journeysFor("release", "partnersinbiz.payroll")).toEqual([]);
   });
 

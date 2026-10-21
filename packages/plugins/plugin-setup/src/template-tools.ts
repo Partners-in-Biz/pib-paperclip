@@ -1,5 +1,5 @@
 /**
- * Setup agent tools: template-list, template-get.
+ * Setup agent tools: template-list, template-get, template-preview.
  * Pure declarations and handlers (no I/O except company lookup in get).
  */
 import type { JsonSchema, PluginContext, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
@@ -8,6 +8,7 @@ import { renderInstructions } from "./templates-render.js";
 import { renderHash } from "./render-hash.js";
 import { varsFor } from "./new-company.js";
 import { subagentExtraArgs, type SubagentPolicy } from "./subagents.js";
+import { applyUnifiedDiff } from "./unified-diff.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -34,6 +35,16 @@ export const TEMPLATE_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["key"], {
       key: { type: "string", description: "The template key from template-list" },
       companyId: { type: "string", description: "Optional: render with this company's variables" },
+    }),
+  },
+  {
+    name: "template-preview",
+    displayName: "Preview template change",
+    description:
+      "Dry-run a proposed edit to a template: apply a unified diff to the template's raw source in memory (nothing is saved), and return the rendered candidate with default variables and its render hash. Rejects a diff that does not apply cleanly. Host-owned templates return a stub with no raw/rendered/hash. Read-only.",
+    parametersSchema: schema(["key", "unifiedDiff"], {
+      key: { type: "string", description: "The template key from template-list" },
+      unifiedDiff: { type: "string", description: "A unified diff against the raw source returned by template-get" },
     }),
   },
 ];
@@ -73,6 +84,19 @@ type TemplateGetResult =
       renderHash: string;
       subagents?: SubagentPolicy;
       extraArgs?: string[];
+    };
+
+type TemplatePreviewResult =
+  | { error: string }
+  | { key: string; hostOwned: true }
+  | {
+      key: string;
+      hostOwned: false;
+      raw: string;
+      rendered: string;
+      renderHash: string;
+      baseRenderHash: string;
+      changed: boolean;
     };
 
 /** Get a template's full details. Renders with company vars if companyId given. */
@@ -137,8 +161,49 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
   return result;
 }
 
-/** Register the two tools with ctx.tools.register. */
-export function registerTemplateTools(ctx: PluginContext): { templateList: any; templateGet: any } {
+async function previewTemplate(ctx: PluginContext, key: string, unifiedDiff: string): Promise<TemplatePreviewResult> {
+  const template = templateByKey(key);
+  if (!template) {
+    return { error: `unknown template "${key}"` };
+  }
+
+  if (template.hostOwned) {
+    return { key, hostOwned: true };
+  }
+
+  const { files } = packSources();
+  const raw = files[template.file];
+  if (raw === undefined) {
+    return { error: `template "${key}" has no instructions file` };
+  }
+
+  const defaultVars = templateVars();
+  const baseRendered = renderInstructions(template, defaultVars);
+  const baseRenderHash = renderHash(baseRendered);
+
+  const diffResult = applyUnifiedDiff(raw, unifiedDiff);
+  if (!diffResult.ok) {
+    return { error: `diff does not apply cleanly: ${diffResult.error}` };
+  }
+
+  const patchedRaw = diffResult.text;
+  const rendered = renderInstructions(template, defaultVars, patchedRaw);
+  const renderHashValue = renderHash(rendered);
+  const changed = rendered !== baseRendered;
+
+  return {
+    key,
+    hostOwned: false,
+    raw: patchedRaw,
+    rendered,
+    renderHash: renderHashValue,
+    baseRenderHash,
+    changed,
+  };
+}
+
+/** Register the three tools with ctx.tools.register. */
+export function registerTemplateTools(ctx: PluginContext): { templateList: any; templateGet: any; templatePreview: any } {
   const templateList = async (_params: unknown, _run: any) => {
     try {
       const data = listTemplates();
@@ -180,8 +245,35 @@ export function registerTemplateTools(ctx: PluginContext): { templateList: any; 
     }
   };
 
+  const templatePreview = async (params: unknown, run: any) => {
+    try {
+      const p = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+      const key = str(p.key);
+      if (!key) {
+        return { error: "key is required and must be a string" };
+      }
+      const unifiedDiff = str(p.unifiedDiff);
+      if (!unifiedDiff) {
+        return { error: "unifiedDiff is required and must be a string" };
+      }
+
+      const result = await previewTemplate(ctx, key, unifiedDiff);
+      if ("error" in result) {
+        return { error: result.error };
+      }
+      const isHostOwned = result.hostOwned === true;
+      return {
+        content: isHostOwned ? `Template "${key}" is host-owned.` : `Template "${key}" preview rendered.`,
+        data: result,
+      };
+    } catch (e) {
+      return { error: `Failed to preview template: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  };
+
   ctx.tools.register("template-list", TEMPLATE_TOOLS[0]!, templateList);
   ctx.tools.register("template-get", TEMPLATE_TOOLS[1]!, templateGet);
+  ctx.tools.register("template-preview", TEMPLATE_TOOLS[2]!, templatePreview);
 
-  return { templateList, templateGet };
+  return { templateList, templateGet, templatePreview };
 }

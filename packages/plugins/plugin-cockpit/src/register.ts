@@ -30,6 +30,7 @@ import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
+import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
 import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
 import { ensureSetupIssue } from "./bootstrap.js";
 import { forgetChecks } from "./checks.js";
@@ -39,12 +40,15 @@ import { registerCockpitEffects, resolveOpenCockpitAsks } from "./effects.js";
 import { activateGoals, businessReviews } from "./goals.js";
 import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
 import { recheckImprovements } from "./improvements.js";
+import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
+import { GROWTH_TOOL_SET, runGrowthTool } from "./growth-tools.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
+import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
@@ -65,6 +69,8 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { runPushDigest } from "./push/digest.js";
+import { registerW1cEdge } from "./register-w1c-edge.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -151,15 +157,15 @@ function idList(value: unknown): string[] | null {
 }
 
 /** Iterates all companies: reads config, calls governCompany for trigger + pause path. */
-export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; already_paused: number; paused: number; errors: number; failed: number }> {
-  const results = { tried: 0, disabled: 0, idle: 0, already_paused: 0, paused: 0, errors: 0, failed: 0 };
+export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; paused: number; errors: number; failed: number; waiting: number; canary_started: number; resumed: number; cleared: number; stuck: number }> {
+  const results = { tried: 0, disabled: 0, idle: 0, paused: 0, errors: 0, failed: 0, waiting: 0, canary_started: 0, resumed: 0, cleared: 0, stuck: 0 };
   for (const row of await listRoles(env.ctx)) {
     results.tried += 1;
     try {
       const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
       const governorConfig = config?.governor as GovernorConfig | undefined;
       const result = await governCompany(env, row.companyId, governorConfig);
-      // `paused` counts agents paused this tick; an already-paused company adds none.
+      // `paused` counts agents paused this tick.
       if (result.outcome === "paused") results.paused += result.paused;
       else results[result.outcome] += 1;
       results.errors += result.errors;
@@ -196,6 +202,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     ...(["operator", "reviewer"] as const).map((kind) => ({ role: HIRE_MATCH_ROLES[kind], onLinked: onLinkedFor(env, kind) })),
     { role: ACCEPTANCE_MATCH_ROLE, onLinked: onAcceptanceLinked(env) },
   ]);
+  // Edge watch: announce when new blocker edges are created.
+  registerW1cEdge(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -238,6 +246,17 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       ctx.logger.info("Cockpit invoice.paid handling failed", { error: message(error) });
     }
   });
+
+  // Growth verdicts from every channel into the ledger (best effort: the weekly review reconciles through ledger-upsert).
+  for (const pluginKey of GROWTH_VERDICT_SOURCES) {
+    ctx.events.on(pluginEvent(pluginKey, GROWTH_VERDICT_EVENT), async (event) => {
+      try {
+        await onGrowthVerdictEvent(env, pluginKey, event);
+      } catch (error) {
+        ctx.logger.info("Cockpit growth verdict handling failed", { pluginKey, error: message(error) });
+      }
+    });
+  }
 
   ctx.actions.register("cockpit.load", async (params, context) => {
     const companyId = requiredCompany(context);
@@ -511,6 +530,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
   });
+  ctx.jobs.register(JOBS.pushDigest, async () => {
+    ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
+  });
 
   registerMemoryActions(env);
 
@@ -531,6 +553,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // an open question follows its issue, and an agent's close of an onboarding or
   // System health issue is checked (unfinished work reopens with what is missing).
   const doneCheck = doneCheckFor(env);
+  const outwardGate = outwardGateFor(env);
   ctx.events.on("issue.updated", async (event) => {
     try {
       await onAskIssueUpdated(env, event);
@@ -547,6 +570,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+    try {
+      await outwardGate(event);
+    } catch (error) {
+      ctx.logger.info("Outward gate failed", { issueId: event.entityId, error: message(error) });
     }
     try {
       await onIssueNeedsYou(env, event);
@@ -580,13 +608,17 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
         ? await runMemoryTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
-          : OPS_TOOL_SET.has(tool.name)
-            ? await runOpsTool(env, tool.name, params, run)
-            : ACCEPTANCE_TOOL_SET.has(tool.name)
-              ? await runAcceptanceTool(env, tool.name, params, run)
-              : EVAL_TOOL_SET.has(tool.name)
-                ? await runEvalTool(env, tool.name, params, run)
-                : await runTool(env, tool.name, params, run);
+          : AGENT_READ_TOOL_NAMES.has(tool.name)
+            ? await runAgentReadTool(env, tool.name, params, run)
+            : OPS_TOOL_SET.has(tool.name)
+              ? await runOpsTool(env, tool.name, params, run)
+              : GROWTH_TOOL_SET.has(tool.name)
+                ? await runGrowthTool(env, tool.name, params, run)
+                : ACCEPTANCE_TOOL_SET.has(tool.name)
+                  ? await runAcceptanceTool(env, tool.name, params, run)
+                  : EVAL_TOOL_SET.has(tool.name)
+                    ? await runEvalTool(env, tool.name, params, run)
+                    : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

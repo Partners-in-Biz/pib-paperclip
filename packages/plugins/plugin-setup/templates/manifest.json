@@ -410,6 +410,49 @@
       ]
     },
     {
+      "key": "revenue-lead",
+      "name": "Revenue Lead",
+      "title": "Revenue Lead",
+      "role": "general",
+      "icon": "target",
+      "group": "core",
+      "capabilities": "Owns pipeline and revenue outcomes: every deal is owned and moving, clients are invoiced and heard from, and cash is clear. Mira handles product strategy.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "fromKitRole": "revenue-lead"
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-crm/crm-records",
+        "plugin/partnersinbiz-crm/sales-lead",
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "revenue-lead",
+      "match": {
+        "names": [
+          "Revenue Lead"
+        ],
+        "titles": [
+          "Revenue Lead",
+          "Business Lead"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": false,
+      "requires": {
+        "modules": [
+          "crm"
+        ]
+      },
+      "scope": "pib",
+      "notes": [
+        "Holds the kit Revenue Lead role: hire it through the CRM plugin's own hire (Setup does this) so it is linked and wired.",
+        "This is the Revenue Lead agent: Mira is the product owner/strategy counterpart; do not confuse the two roles."
+      ]
+    },
+    {
       "key": "summarizer",
       "name": "Summarizer",
       "title": "Summarizer",

@@ -59,9 +59,15 @@ export class DriveNotBoundError extends Error {
   }
 }
 
+export interface IdentityResult {
+  serviceAccountEmail: string;
+  isMember?: boolean;
+}
+
 export interface Broker {
   resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null>;
   ensure(body: EnsureBody): Promise<EnsureResult>;
+  identity(sharedDriveId?: string): Promise<IdentityResult>;
   uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
 }
 
@@ -126,6 +132,20 @@ export function createBroker(
     }
   }
 
+  async function identity(overrideSharedDriveId?: string): Promise<IdentityResult> {
+    const sharedDriveId = overrideSharedDriveId || cfg.sharedDriveId;
+    const url = `${baseUrl}/api/v1/workspace-broker/identity?shared_drive_id=${encodeURIComponent(sharedDriveId)}`;
+    try {
+      const res = await fetchFn(url, { method: "GET", headers: { Authorization: `Bearer ${cfg.token}` } });
+      if (!res.ok) throw parseError(res.status, await res.text());
+      const body = JSON.parse(await res.text()) as IdentityResult;
+      return body;
+    } catch (err) {
+      if (err instanceof BrokerError) throw err;
+      throw new BrokerError(`Network error during identity check: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+  }
+
   async function uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult> {
     // (1) Check sharedDriveId is not empty before any HTTP call
     if (!cfg.sharedDriveId || cfg.sharedDriveId.trim() === "") {
@@ -184,7 +204,7 @@ export function createBroker(
     }
   }
 
-  return { resolve, ensure, uploadFile };
+  return { resolve, ensure, identity, uploadFile };
 }
 
 function parseError(status: number, text: string): BrokerError {

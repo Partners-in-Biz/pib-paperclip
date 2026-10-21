@@ -85,6 +85,15 @@ export async function listSubscriptionsForUser(ctx: PluginContext, companyId: st
   return rows.map(subscriptionFrom);
 }
 
+export async function listSubscriptionsForCompany(ctx: PluginContext, companyId: string): Promise<PushSubscription[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT id, company_id, user_id, endpoint, p256dh, auth, device_label, created_at, last_ok_at, last_error, state
+     FROM ${T.subscriptions} WHERE company_id = $1`,
+    [companyId],
+  );
+  return rows.map(subscriptionFrom);
+}
+
 export async function deleteSubscription(ctx: PluginContext, companyId: string, userId: string, endpoint: string): Promise<boolean> {
   const res = await ctx.db.execute(`DELETE FROM ${T.subscriptions} WHERE company_id = $1 AND user_id = $2 AND endpoint = $3`, [companyId, userId, endpoint]);
   return (res.rowCount ?? 0) > 0;
@@ -159,6 +168,35 @@ export async function listRecentPushLog(ctx: PluginContext, companyId: string, s
     status: String(row.status) as "sent" | "collapsed" | "deferred" | "dropped" | "capped",
     createdAt: String(row.created_at),
   }));
+}
+
+export async function listDeferredSince(ctx: PluginContext, companyId: string, since: Date): Promise<PushLogEntry[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT id, company_id, class, issue_ref, title, status, created_at FROM ${T.log}
+     WHERE company_id = $1 AND status = 'deferred' AND created_at >= $2
+     ORDER BY created_at DESC`,
+    [companyId, since.toISOString()],
+  );
+  return rows.map((row) => ({
+    id: String(row.id),
+    companyId: String(row.company_id),
+    class: String(row.class),
+    issueRef: row.issue_ref ? String(row.issue_ref) : null,
+    title: row.title ? String(row.title) : null,
+    status: String(row.status) as "sent" | "collapsed" | "deferred" | "dropped" | "capped",
+    createdAt: String(row.created_at),
+  }));
+}
+
+export async function updatePushLogStatus(ctx: PluginContext, companyId: string, ids: string[], newStatus: "sent" | "collapsed" | "deferred" | "dropped" | "capped"): Promise<number> {
+  if (ids.length === 0) return 0;
+  // Use the IN clause with parameter array
+  const placeholders = ids.map((_, i) => `$${i + 3}`).join(",");
+  const res = await ctx.db.execute(
+    `UPDATE ${T.log} SET status = $1 WHERE company_id = $2 AND id IN (${placeholders})`,
+    [newStatus, companyId, ...ids],
+  );
+  return res.rowCount ?? 0;
 }
 
 // ---------------------------------------------------------------------------

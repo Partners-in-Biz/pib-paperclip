@@ -10,7 +10,7 @@ import { agentFacingSummary, COMPANY_SKILL_DESCRIPTION, COMPANY_SKILL_KEY, COMPA
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
 import { ACCEPTANCE_DESCRIPTION, ACCEPTANCE_FILES, ACCEPTANCE_SKILL_BODY } from "./acceptance-skill.js";
-import { OPERATOR_FILES, OPERATOR_REFERENCE_PATHS } from "./skill-references.js";
+import { CREATIVE_BAR_PATH, CREATIVE_BAR_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
 import { SCREENSHOT_REFERENCE, SCREENSHOT_REFERENCE_PATH } from "./screenshots.js";
 import { TOOL_NAMES } from "./tools.js";
 
@@ -52,6 +52,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(TOOL_NAMES.postBrief)} | Post the daily brief on this week's "Daily brief" issue. |
 | ${T(TOOL_NAMES.askOwner)} | One question to the owner on the issue that waits for it; the reply comes back on that issue. |
 | ${T(TOOL_NAMES.profile)} / ${T(TOOL_NAMES.updateProfile)} | The company's own profile; fill empty fields from the website and past work. |
+| ${T(TOOL_NAMES.repairsList)}, ${T(TOOL_NAMES.governorState)}, ${T(TOOL_NAMES.watchdogFindings)} | Repairs, pauses, findings. |
 | ${T(OPS_TOOL_NAMES.measure)} | What the work cost and how it went: notional spend, tokens, run time, retries, failures, plan limits, review coverage. \`parts: ["clients"]\` adds each customer's effort against what they paid. |
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
@@ -69,19 +70,19 @@ ${routingMap()}
 ## Daily operations review (routine, 07:00)
 
 1. **Read.** Call ${T(TOOL_NAMES.brief)}: \`health\`, \`waiting\`, \`asks\`, \`stuckFlows\`, \`unassigned\`, \`team\`, \`agents\`, \`improvements\`, \`repairs\`, \`goals\`, \`kpis\`.
-2. **Health first.** For every \`bad\` check, then every \`warn\`: follow its \`fix\`. If an agent owns the broken thing, open or reuse an issue for that agent with the check, the detail and the link, and wake it. If only a person can fix it (a key, a login, a setting, money), it goes on the brief once, with the link. How to act on each kind of check: \`${OPERATOR_REFERENCE_PATHS.health}\`; finished code with no proof, outward approvals the Reviewer never saw, failing acceptance journeys and skill evals: \`${OPERATOR_REFERENCE_PATHS.quality}\`; the Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`. A plugin bug goes to the owner with ${T(TOOL_NAMES.askOwner)}, never to a retry. The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when everything is ok (closing it yourself reopens it).
-3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.** Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks): missing or paused, the owner fixes it in Setup → Team, so put it on the brief with \`/<prefix>/setup?section=team\`. Each module's routines are on (their setup items and checks say when one is off). \`asks\` are the questions agents put to the owner, oldest first on the brief; answer one yourself from context in a comment and hand the issue back to the agent that asked, which closes it.
+2. **Health first.** For every \`bad\` check, then every \`warn\`: follow its \`fix\`. If an agent owns the broken thing, open or reuse an issue for that agent with the check, the detail and the link, and wake it. If only a person can fix it (a key, a login, a setting, money), it goes on the brief once, with the link. How to act on each kind of check: \`${OPERATOR_REFERENCE_PATHS.health}\`; finished code with no proof, outward approvals the Reviewer never saw, failing acceptance journeys and skill evals: \`${OPERATOR_REFERENCE_PATHS.quality}\`; the Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`. A plugin bug goes to the owner with ${T(TOOL_NAMES.askOwner)}, never to a retry. The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when all is ok (closing it yourself reopens it).
+3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.** Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks): missing or paused, the owner fixes it in Setup → Team, so put it on the brief with \`/<prefix>/setup?section=team\`. Each module's routines are on (setup items and checks say when one is off). \`asks\` are the questions agents put to the owner, oldest first on the brief; answer one yourself from context in a comment and hand the issue back to the agent that asked, which closes it.
 4. **Route unassigned work.** Each item in \`unassigned\` is an open issue nobody holds: assign it to the agent in the role that owns the work (Who owns what) and wake it, or close it as a duplicate. Never leave work unassigned.
-5. **Unblock agents.** Health lists issues **blocked with no way out** for over a day (nothing can wake them) and issues **in progress with nobody working on them**; also check other blocked work (\`GET /api/companies/{companyId}/issues?status=blocked\`). Read the whole thread first: the answer is often there. For each:
-   - Give every blocked issue a way out with \`PATCH /api/issues/{id}\`: \`blockedByIssueIds\` when another issue must finish first; \`unblockDescriptor\` \`{"owner": {"agentId": …}, "action": "what must happen"}\` when another agent must do something; ${T(TOOL_NAMES.askOwner)} when a person must (one question, every link and step in it, while the agent does other work). Nothing left to wait for: set it \`todo\` and wake the assignee, or cancel it with a reason.
+5. **Unblock agents.** Health lists issues **blocked with no way out** for over a day (nothing can wake them) and issues **in progress with nobody working on them**; also check other blocked work (\`GET /api/companies/{companyId}/issues?status=blocked\`). Read the whole thread first: the answer is often there. Then:
+   - Give every blocked issue a way out with \`PATCH /api/issues/{id}\`: \`blockedByIssueIds\` when another issue must finish first; \`unblockDescriptor\` \`{"owner": {"agentId": …}, "action": "what must happen"}\` when another agent must do something; ${T(TOOL_NAMES.askOwner)} when a person must (one question, every link and step in it, while the agent does other work). Nothing to wait for: set it \`todo\` and wake the assignee, or cancel it with a reason.
    - In progress, assignee idle for 12 hours: comment what to do next to wake it; if it cannot, reassign to the role that owns it; if the work is done, close it with evidence.
-   - Answer the question yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. Lasting knowledge: save it with ${T(MEMORY_TOOLS.add)}.
-   - Reassign it when the wrong agent has it; split off a hand-off (below) when another agent must do part of it. The same block twice goes in the weekly retro.
-6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first. Waiting on an agent: wake it, or hand the work to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
-7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions. Keep only money, legal, one-time grants (a login consent, a key, a DNS record) and real judgement.
-8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Make sure each has an owner agent and is not blocked.
+   - Answer it yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. Lasting knowledge: save it with ${T(MEMORY_TOOLS.add)}.
+   - Reassign it when the wrong agent has it; split off a hand-off (below) when another agent must do part of it. A repeat block goes in the weekly retro.
+6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first. Waiting on an agent: wake it, or hand it to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
+7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions. Keep only money, legal, one-time grants (login consent, key, DNS record) and real judgement.
+8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Each needs an owner agent and must not be blocked.
 9. **Improvements and reviews.** Each overdue item in \`improvements\`: record the number (${T(OPS_TOOL_NAMES.improvementResolve)} with \`resultValue\`) or drop it. A **Close-out review** or **Business review** issue assigned to you: work its checklist (\`${OPERATOR_REFERENCE_PATHS.closeout}\`, \`${OPERATOR_REFERENCE_PATHS.goals}\`) and record each change with ${T(OPS_TOOL_NAMES.improvementPropose)}.
-10. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief per day.
+10. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief a day.
 11. Close the routine issue with one line: what you fixed, what you handed off, what waits on the owner.
 
 ## The daily brief
@@ -200,6 +201,7 @@ When "Review outward-facing work before I approve" is on, every outward-facing a
 - Timing, when it has a time: sensible for the audience and not clashing with another scheduled post.
 - No personal data (private people's names, numbers or addresses) unless they agreed.
 - Spelling and grammar in the client's language (en-ZA unless the brand says otherwise).
+- The creative bar: score it as \`${CREATIVE_BAR_PATH}\` says (hook, clarity, brand, CTA, format; pass is 80 or more and no blocker) and put the score and every blocker in your comment.
 
 ### Campaign email
 - Audience: matches the brief. "No tags" means every contact: flag it unless the issue says a person agreed.
@@ -209,6 +211,7 @@ When "Review outward-facing work before I approve" is on, every outward-facing a
 - Every link works; no test or staging addresses.
 - Opt-out and POPIA: it says who we are and how to stop (reply STOP, or the unsubscribe link the Mailbox adds as the List-Unsubscribe header); no claims we cannot back up.
 - Tokens read well when filled in, with fallbacks (\`{{first_name|there}}\`); nothing left raw.
+- The creative bar: score it as \`${CREATIVE_BAR_PATH}\` says (subject line as the hook; pass is 80 or more and no blocker) and put the score and every blocker in your comment.
 
 ### Invoice or quote email
 - Right client, contact and email address.
@@ -268,6 +271,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: SKILL_SLUGS.reviewer,
     description: REVIEWER_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.reviewer, description: REVIEWER_DESCRIPTION }, REVIEWER_SKILL_BODY),
+    files: [{ path: CREATIVE_BAR_PATH, content: CREATIVE_BAR_REFERENCE }],
   },
   {
     skillKey: COMPANY_SKILL_KEY,
@@ -275,7 +279,10 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: COMPANY_SKILL_SLUG,
     description: COMPANY_SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: COMPANY_SKILL_SLUG, description: COMPANY_SKILL_DESCRIPTION }, companySkillBody()),
-    files: [{ path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE }],
+    files: [
+      { path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE },
+      { path: OWNER_CHECKS_REFERENCE_PATH, content: OWNER_CHECKS_REFERENCE },
+    ],
   },
   {
     skillKey: SKILL_KEYS.acceptance,

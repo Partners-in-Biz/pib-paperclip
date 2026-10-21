@@ -10,6 +10,7 @@ import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
 import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
 import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
+import { GROWTH_TOOLS } from "./growth-tool-declarations.js";
 import { OPS_TOOLS } from "./ops-tool-declarations.js";
 import { BANNED_WORDS_MAX, PROFILE_FIELDS } from "./profile-model.js";
 
@@ -26,6 +27,9 @@ export const TOOL_NAMES = {
   askOwner: "ask-owner",
   profile: "company-profile",
   updateProfile: "update-company-profile",
+  repairsList: "repairs-list",
+  governorState: "governor-state",
+  watchdogFindings: "watchdog-findings",
 } as const;
 
 const PROFILE_PROPERTIES: Record<string, JsonSchema> = Object.fromEntries(
@@ -136,8 +140,36 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       issueId: { type: "string", description: "The issue you are working on, for the record (optional)." },
     }),
   },
+  {
+    name: TOOL_NAMES.repairsList,
+    displayName: "Repairs list",
+    description:
+      "List system repairs recorded by the Cockpit: what issues were detected and fixed. Optional filters by kind and/or since timestamp. Results ordered newest first, limit capped at 100.",
+    parametersSchema: schema([], {
+      kind: { type: "string", description: "Filter by repair kind (optional), e.g. 'governor'." },
+      since: { type: "string", description: "Filter by timestamp (ISO 8601, optional), e.g. '2026-10-20T00:00:00Z'." },
+      limit: { type: "integer", description: "Number of results (default 50, capped at 100)." },
+    }),
+  },
+  {
+    name: TOOL_NAMES.governorState,
+    displayName: "Governor state",
+    description:
+      "Read the governor's current state: which agents are paused and when they will resume. Returns null if the governor has not paused agents yet.",
+    parametersSchema: schema([], {}),
+  },
+  {
+    name: TOOL_NAMES.watchdogFindings,
+    displayName: "Watchdog findings",
+    description:
+      "List open watchdog findings: task issues that are not done or cancelled. Each has an identifier, title, first 500 characters of description (redacted for secrets), and the check type (chain_idle, orphan_blocker, or null if unknown). Limit capped at 100.",
+    parametersSchema: schema([], {
+      limit: { type: "integer", description: "Number of results (default 50, capped at 100)." },
+    }),
+  },
   ...MEMORY_TOOL_DECLARATIONS,
   ...OPS_TOOLS,
+  ...GROWTH_TOOLS,
   ...ACCEPTANCE_TOOLS,
   ...EVAL_TOOLS,
 ];

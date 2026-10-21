@@ -1,0 +1,13 @@
+{
+  "checkedAt": "2026-10-21T12:34:56.789Z",
+  "identities": {
+    "pib:meta": {
+      "ok": true,
+      "reason": ""
+    },
+    "client:ca:google-ads": {
+      "ok": false,
+      "reason": "session_expired"
+    }
+  }
+}

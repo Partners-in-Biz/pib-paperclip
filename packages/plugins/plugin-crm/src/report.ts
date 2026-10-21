@@ -22,6 +22,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { saveReportCopy } from "./report-copy.js";
 import { clientContacts, clientInfo, clientProjectOf, customerClients, hasActiveService, isInternalClient, logOnClient, pickRecipient, type ClientInfo } from "./care-clients.js";
 import {
   approvalsOfSubject,
@@ -584,6 +585,15 @@ export const reportHooks: MailApprovalHooks = {
       const sentRecord = (await getReportById(ctx, approval.companyId, record.id)) ?? record;
       const name = (await clientInfo(ctx, approval.companyId, record.client))?.name ?? "the client";
       await openReportFilingIssue(ctx, sentRecord, name).catch((error) => ctx.logger.warn("report filing issue failed", { reportId: record.id, error: String(error) }));
+      // Save report HTML to Drive (fire-and-forget: failures never affect the send)
+      void saveReportCopy(ctx, {
+        companyId: approval.companyId,
+        clientName: name,
+        period: sentRecord.period,
+        seq: 1,
+        html: sentRecord.html,
+        client: sentRecord.client,
+      });
     }
   },
   async onRefused(ctx, approval, by) {

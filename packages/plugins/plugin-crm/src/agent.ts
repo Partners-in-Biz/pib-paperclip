@@ -37,7 +37,7 @@ export const AM_NAME = "Account Manager";
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
 /** The CRM's roles: the Account Manager, and the optional sales team it covers while unstaffed. */
-export const CRM_ROLE_KEYS = ["account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk"] as const;
+export const CRM_ROLE_KEYS = ["account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead"] as const;
 export type CrmRoleKey = (typeof CRM_ROLE_KEYS)[number];
 
 /** The CRM's own skills, as the host keys them. */
@@ -176,12 +176,23 @@ export const DEAL_DESK_ROLE = salesHireRole({
   toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.billing],
 });
 
+export const REVENUE_LEAD_ROLE = salesHireRole({
+  roleKey: "revenue-lead",
+  name: "Revenue Lead",
+  icon: "target",
+  capabilities: "Pipeline and revenue: deals owned, clients invoiced, cash clear.",
+  skill: { key: CRM_SKILL_KEYS.salesLead, slug: "pib-sales-lead", purpose: "revenue" },
+  work: "Pipeline, revenue and invoicing.",
+  toolPlugins: [PIB_PLUGINS.crm, PIB_PLUGINS.billing, PIB_PLUGINS.cockpit],
+});
+
 export const CRM_HIRE_ROLES: Record<CrmRoleKey, HireRole> = {
   "account-manager": ACCOUNT_MANAGER_ROLE,
   "sales-lead": SALES_LEAD_ROLE,
   "inbound-qualifier": INBOUND_QUALIFIER_ROLE,
   "crm-data-steward": DATA_STEWARD_ROLE,
   "deal-desk": DEAL_DESK_ROLE,
+  "revenue-lead": REVENUE_LEAD_ROLE,
 };
 
 export function isCrmRoleKey(value: unknown): value is CrmRoleKey {

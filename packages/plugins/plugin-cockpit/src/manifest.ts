@@ -142,6 +142,19 @@ const instanceConfigSchema: JsonSchema = {
       description: "The mailto or https URI for VAPID JWT signing. Defaults to mailto:cockpit@partnersinbiz.online.",
       default: "mailto:cockpit@partnersinbiz.online",
     },
+    edgeWatch: {
+      type: "object",
+      title: "Edge watch (optional)",
+      description: "Announces when new blocker edges (issue relations) are created, notifying both blocked and blocker issues.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable edge watch",
+          description: "When enabled, posts comments on issues when a new blocker edge is created.",
+          default: true,
+        },
+      },
+    },
   },
 };
 
@@ -253,6 +266,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Agent governor",
       description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
       schedule: "*/15 * * * *",
+    },
+    {
+      jobKey: JOBS.pushDigest,
+      displayName: "Overnight push digest",
+      description: "Every night at 04:00 UTC (06:00 SAST): for each company, if any push_log rows with status 'deferred' exist created since 22:00 SAST, sends one digest push titled \"N items waited overnight\" with url /cockpit, then marks those rows 'collapsed'. Idempotent.",
+      schedule: "0 4 * * *",
     },
   ],
   apiRoutes: [

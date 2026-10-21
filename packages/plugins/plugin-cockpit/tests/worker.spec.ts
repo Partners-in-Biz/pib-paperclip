@@ -86,7 +86,7 @@ describe("manifest and migration", () => {
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "owner-push")).toMatchObject({ method: "POST", path: "/owner-push", auth: "board", companyResolution: { from: "body", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
-      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"],
+      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"], [JOBS.pushDigest, "0 4 * * *"],
     ]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],
@@ -94,8 +94,9 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
+      "repairs-list", "governor-state", "watchdog-findings",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
-      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record",
+      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",
     ]);
     // Every tool parameter says what it is; fixed values are enums.
@@ -442,7 +443,7 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "acceptance-run", "skill-eval", "propose-skill-change"]);
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert"]);
     for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
