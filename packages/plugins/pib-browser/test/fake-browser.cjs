@@ -36,11 +36,17 @@ function createFakeBrowser(graph = {}) {
     };
     const text = async (sel) => (graph[currentUrl]?.text || '');
     const hasText = async (s) => { const p = graph[currentUrl]; return p ? (p.text || '').includes(s) : false; };
+    const describe = async (sel) => graph[currentUrl]?.fields?.[sel] || { type: 'text', autocomplete: '' };
+    const url = () => currentUrl;
+    let closeCount = 0;
     const ctx = {
       goto, click,
       fill: async () => { if (!currentUrl) throw new Error('No page loaded'); },
       text, shot: async (p) => { if (!currentUrl) throw new Error('No page loaded'); return p; }, hasText,
-      violations: () => violations, performed: () => performed, close: async () => { currentUrl = null; }
+      describe, url,
+      violations: () => violations, performed: () => performed,
+      close: async () => { currentUrl = null; closeCount++; },
+      _closeCount: () => closeCount
     };
     lastCtx = ctx;
     return ctx;
