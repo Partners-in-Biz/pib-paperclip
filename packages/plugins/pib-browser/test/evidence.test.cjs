@@ -332,3 +332,41 @@ test('evidence uses --title for step name in upload script call', async () => {
 
   fs.rmSync(tmpDir, { recursive: true });
 });
+
+test('real upload script accepts evidence.cjs argument structure with --dry-run', async () => {
+  // This test verifies the real paperclip-upload-artifact.sh script
+  // accepts the exact arguments that evidence.cjs builds for it.
+  // It uses --dry-run to avoid needing API credentials.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-real-script-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  fs.writeFileSync(pngPath, pngData);
+
+  const scriptPath = path.resolve(__dirname, '../../../../skills/paperclip/scripts/paperclip-upload-artifact.sh');
+
+  // Verify script exists
+  assert.ok(fs.existsSync(scriptPath), 'upload script should exist at expected path');
+
+  const { spawnSync } = require('node:child_process');
+
+  // Call with exact args that evidence.cjs builds: [imagePath, '--issue-id', issue, '--title', step, '--output', 'json', '--dry-run']
+  const result = spawnSync(scriptPath, [
+    pngPath,
+    '--issue-id', 'PAR-999',
+    '--title', 'real_script_test',
+    '--output', 'json',
+    '--dry-run'
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  // Script should exit 0 with --dry-run
+  assert.equal(result.status, 0, `script should exit 0 with --dry-run; stderr: ${result.stderr}`);
+
+  // Verify no "unknown option" error
+  assert.ok(!result.stderr.includes('unknown option'), 'should not report unknown options');
+  assert.ok(!result.stderr.includes('unrecognized'), 'should not report unrecognized flags');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});

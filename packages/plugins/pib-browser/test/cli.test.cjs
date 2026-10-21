@@ -279,14 +279,58 @@ test('~200 KiB valid JSON response is accepted', async (t) => {
   }
 });
 
-test('probe exit code mapping uses nullish coalescing (not ||)', () => {
-  // Verify the fix: openResp.exit ?? 2 preserves exit code 0 (which || would convert to 2)
-  // This test documents the fix: when exit is 0 (falsy), ?? returns 0, but || would return 2.
-  // The actual integration is tested by evidence tests and daemon interaction.
-  const exitCode0 = 0 ?? 2;
-  const exitCode6 = 6 ?? 2;
-  assert.equal(exitCode0, 0, 'nullish coalescing preserves exit code 0');
-  assert.equal(exitCode6, 6, 'nullish coalescing preserves non-zero exit codes');
+test('probe exit code mapping with nullish coalescing: ok:true exit:0', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-probe-test-'));
+  const statusPath = path.join(tempDir, 'status.json');
+
+  try {
+    const code = await run(['probe', '--all', '--issue', 'PAR-1', '--identities', 'test:id1'], {
+      PAPERCLIP_API_KEY: 'test_token',
+      PIB_BROWSER_STATUS: statusPath
+    }, {
+      stdout,
+      stderr,
+      send: async (req) => {
+        assert.equal(req.cmd, 'open');
+        return { exit: 0, ok: true };
+      }
+    });
+
+    assert.equal(code, 0);
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    assert.equal(status.identities['test:id1'].ok, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('probe exit code mapping with nullish coalescing: ok:false exit:6', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-probe-test-'));
+  const statusPath = path.join(tempDir, 'status.json');
+
+  try {
+    const code = await run(['probe', '--all', '--issue', 'PAR-1', '--identities', 'test:id2'], {
+      PAPERCLIP_API_KEY: 'test_token',
+      PIB_BROWSER_STATUS: statusPath
+    }, {
+      stdout,
+      stderr,
+      send: async (req) => {
+        return { exit: 6, ok: false, reason: 'session_expired' };
+      }
+    });
+
+    assert.equal(code, 0);
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    assert.equal(status.identities['test:id2'].ok, false);
+    assert.equal(status.identities['test:id2'].reason, 'session_expired');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('probe missing --issue returns exit 2', async () => {
