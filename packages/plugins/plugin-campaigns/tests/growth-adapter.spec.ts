@@ -1,10 +1,11 @@
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
-import { campaignsAdapter, judgeCampaign, MIN_SENDS_PER_ARM, type StepEvent } from "../src/growth-adapter.js";
+import { campaignsAdapter, judgeCampaign, measureCampaign, MIN_SENDS_PER_ARM, type StepEvent } from "../src/growth-adapter.js";
 
 const NOW = new Date("2026-10-21T12:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
 
-/** `n` sends of one variant at one step; the first `replies` of every group of `per` get a reply (spread evenly: `pattern` is a list of 0/1 per send). */
+/** Sends of one variant at one step; `pattern` is a list of 0/1 per send (1 = a reply follows). */
 function sends(variant: "a" | "b", pattern: number[], step = 1, prefix = variant): StepEvent[] {
   const out: StepEvent[] = [];
   pattern.forEach((replied, i) => {
@@ -35,7 +36,8 @@ describe("campaigns growth adapter", () => {
     expect(r.steps[0]?.verdict).toBe("no_change");
   });
 
-  it("wins at +15% or more and sets B as the winner", () => {
+  it("wins above the +15% threshold and sets B as the winner", () => {
+    // Batch rates move in steps of 0.2, so exactly +15% is not reachable; the smallest possible lift is +25% (0.8 to 1.0) and the 15% bar is the kit default.
     // Control batches reply 20%; variant batches 40% = +100%.
     const r = judgeCampaign([...sends("a", rate(30, 1)), ...sends("b", rate(30, 2))], { now: NOW });
     expect(r.steps[0]).toMatchObject({ verdict: "win", relativeChange: 1 });
@@ -73,5 +75,66 @@ describe("campaigns growth adapter", () => {
     const r = judgeCampaign([...sends("a", rate(30, 1)), ...old], { now: NOW });
     expect(r.steps[0]?.sends.b).toBe(0);
     expect(r.winner).toBeNull();
+  });
+});
+
+/** A fake ctx: the campaign row, the step events and a record of the UPDATE parameters. */
+function fakeCtx(campaign: { company_id?: string; status?: string; winner_variant?: string | null }, events: StepEvent[]) {
+  const row = {
+    id: "c1", company_id: campaign.company_id ?? "co1", name: "n", description: "", status: campaign.status ?? "active", from_name: "f", from_local: "l",
+    reply_to: null, audience_tags: [], start_at: null, end_at: null, approval_issue_id: null, winner_variant: campaign.winner_variant ?? null,
+  };
+  const updates: unknown[][] = [];
+  const ctx = {
+    db: {
+      namespace: "plugin_test",
+      async query(sql: string) {
+        if (sql.includes("campaign_step_events")) {
+          return events.map((e) => ({ enrollment_id: e.enrollmentId, step_position: e.stepPosition, event_type: e.eventType, variant: e.variant, occurred_at: e.occurredAt }));
+        }
+        return [row];
+      },
+      async execute(_sql: string, params: unknown[]) {
+        updates.push(params);
+        return { rowCount: 1 };
+      },
+    },
+  } as unknown as PluginContext;
+  return { ctx, updates };
+}
+
+describe("measureCampaign", () => {
+  const winning = () => [...sends("a", rate(30, 1)), ...sends("b", rate(30, 2))];
+
+  it("saves winner_variant for an active campaign", async () => {
+    const { ctx, updates } = fakeCtx({}, winning());
+    const r = await measureCampaign(ctx, "co1", "c1", { apply: true, now: NOW });
+    expect(r).toMatchObject({ winner: "b", applied: true, truncated: false });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toContain("b");
+  });
+
+  it("only judges without apply", async () => {
+    const { ctx, updates } = fakeCtx({}, winning());
+    expect(await measureCampaign(ctx, "co1", "c1", { now: NOW })).toMatchObject({ winner: "b", applied: false });
+    expect(updates).toHaveLength(0);
+  });
+
+  it("never overwrites a declared winner", async () => {
+    const { ctx, updates } = fakeCtx({ winner_variant: "a" }, winning());
+    expect(await measureCampaign(ctx, "co1", "c1", { apply: true, now: NOW })).toMatchObject({ winner: "b", applied: false });
+    expect(updates).toHaveLength(0);
+  });
+
+  it.each(["draft", "scheduled", "completed"])("throws for a %s campaign", async (status) => {
+    const { ctx, updates } = fakeCtx({ status }, winning());
+    await expect(measureCampaign(ctx, "co1", "c1", { apply: true, now: NOW })).rejects.toThrow(/active or paused/);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("rejects a campaign of another company", async () => {
+    const { ctx, updates } = fakeCtx({ company_id: "co2" }, winning());
+    await expect(measureCampaign(ctx, "co1", "c1", { apply: true, now: NOW })).rejects.toThrow("Campaign was not found");
+    expect(updates).toHaveLength(0);
   });
 });

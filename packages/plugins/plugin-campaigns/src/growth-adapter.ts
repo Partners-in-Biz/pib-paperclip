@@ -21,6 +21,8 @@ export const MIN_SENDS_PER_ARM = 30;
 export const WINDOW_DAYS = 7;
 /** Sends are grouped in batches of 5 and each batch's reply rate is one item for the verdict (a 0/1 per send has no useful median). */
 export const BATCH = 5;
+/** Row cap of one read; a campaign that reaches it is judged on the oldest rows of the window and flagged `truncated`. */
+export const MAX_EVENTS = 20_000;
 const DAY_MS = 86_400_000;
 
 export interface StepEvent {
@@ -54,8 +56,8 @@ function batchRates(sends: boolean[]): number[] {
 }
 
 /**
- * Reply rate per step: a send counts when the same enrollment and step has a
- * reply afterwards. Only sends inside the window count. A step is judged once
+ * Reply rate per step: a send counts when any reply exists on the same
+ * enrollment and step (the order in time is not checked). Only sends inside the window count. A step is judged once
  * both variants have `minPerArm` sends. The winner is the variant that wins
  * at least one step while no step goes the other way; otherwise none.
  */
@@ -89,14 +91,14 @@ export function judgeCampaign(events: StepEvent[], opts: { now?: Date; minPerArm
   return { winner: null, steps, reason: bWins && aWins ? "Steps disagree: no winner." : "No step has a clear winner yet." };
 }
 
-/** Sent and reply events of one campaign in its company, newest window first. Reads the company's rows only. */
+/** Sent and reply events of one campaign in its company, oldest first, capped at MAX_EVENTS. Reads the company's rows only. */
 export async function readStepEvents(ctx: PluginContext, companyId: string, campaignId: string, sinceIso: string): Promise<StepEvent[]> {
   const rows = await ctx.db.query<{ enrollment_id: string; step_position: number; event_type: string; variant: string | null; occurred_at: unknown }>(
     `SELECT enrollment_id, step_position, event_type, variant, occurred_at
        FROM ${table(ctx, "campaign_step_events")}
       WHERE company_id = $1 AND campaign_id = $2 AND event_type IN ('sent', 'reply') AND occurred_at >= $3::timestamptz
       ORDER BY occurred_at
-      LIMIT 20000`,
+      LIMIT ${MAX_EVENTS}`,
     [companyId, campaignId, sinceIso],
   );
   return rows.map((r) => ({
@@ -114,18 +116,19 @@ export async function measureCampaign(
   companyId: string,
   campaignId: string,
   opts: { apply?: boolean; now?: Date; minPerArm?: number } = {},
-): Promise<CampaignGrowthResult & { applied: boolean }> {
+): Promise<CampaignGrowthResult & { applied: boolean; truncated: boolean }> {
   const campaign = await getCampaign(ctx, campaignId);
   if (!campaign || campaign.companyId !== companyId) throw new Error("Campaign was not found");
   const now = opts.now ?? new Date();
   // A reply may land after the window closes, so the read starts at the window and runs to now.
   const events = await readStepEvents(ctx, companyId, campaignId, new Date(now.getTime() - WINDOW_DAYS * DAY_MS).toISOString());
+  const truncated = events.length >= MAX_EVENTS;
   const result = judgeCampaign(events, { now, minPerArm: opts.minPerArm });
-  if (!opts.apply || !result.winner || campaign.winnerVariant) return { ...result, applied: false };
+  if (!opts.apply || !result.winner || campaign.winnerVariant) return { ...result, applied: false, truncated };
   assertCanDeclareWinner(campaign.status);
   campaign.winnerVariant = result.winner;
   await saveCampaign(ctx, campaign);
-  return { ...result, applied: true };
+  return { ...result, applied: true, truncated };
 }
 
 /** The metric rows come from `campaign_step_events` through `measureCampaign`, so the generic source has nothing to fetch. */
