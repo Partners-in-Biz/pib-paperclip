@@ -145,6 +145,112 @@ describe("the weekly business review", () => {
     expect(description).toContain("- [ ] Nothing is behind. Say in one line what drove the best number");
     expect(description).not.toContain("proposed goal");
   });
+
+  it("shows Growth Lab this week section when no experiments decided", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+    });
+    expect(description).toContain("## Growth Lab this week");
+    expect(description).toContain("No experiments were decided this week.");
+  });
+
+  it("shows Growth Lab table with one experiment row", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+      growthLedger: [
+        {
+          channel: "SEO",
+          scopeKey: "organic_leads",
+          experimentId: "exp001",
+          verdict: "win",
+          relativeChange: 12.5,
+          items: 50,
+          playbookDecision: "kept",
+          decidedAt: "2026-09-28T10:00:00Z",
+        },
+      ],
+    });
+    expect(description).toContain("| SEO | organic_leads | exp001 | win | +12.5% | kept |");
+    expect(description).toContain("Summary: 1 win.");
+  });
+
+  it("handles null relativeChange as n/a in Growth Lab table", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+      growthLedger: [
+        {
+          channel: "Email",
+          scopeKey: "conversion",
+          experimentId: "exp002",
+          verdict: "no_change",
+          relativeChange: null,
+          items: 30,
+          playbookDecision: "discarded",
+          decidedAt: "2026-09-28T12:00:00Z",
+        },
+      ],
+    });
+    expect(description).toContain("| Email | conversion | exp002 | no_change | n/a | discarded |");
+    expect(description).toContain("Summary: 1 no change.");
+  });
+
+  it("shows null verdict as pending in Growth Lab table", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+      growthLedger: [
+        {
+          channel: "Social",
+          scopeKey: "engagement",
+          experimentId: "exp003",
+          verdict: null,
+          relativeChange: -5.2,
+          items: 100,
+          playbookDecision: "pending",
+          decidedAt: "2026-09-28T14:00:00Z",
+        },
+      ],
+    });
+    expect(description).toContain("| Social | engagement | exp003 | pending | -5.2% | pending |");
+  });
+
+  it("omits growthLedger section when parameter is not passed", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+    });
+    expect(description).toContain("## Growth Lab this week");
+    expect(description).toContain("No experiments were decided this week.");
+  });
+
+  it("summarizes multiple experiments with different verdicts", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+      growthLedger: [
+        { channel: "A", scopeKey: "x", experimentId: "e1", verdict: "win", relativeChange: 5, items: 10, playbookDecision: "kept", decidedAt: "2026-09-28T10:00:00Z" },
+        { channel: "B", scopeKey: "y", experimentId: "e2", verdict: "loss", relativeChange: -3, items: 15, playbookDecision: "discarded", decidedAt: "2026-09-28T11:00:00Z" },
+        { channel: "C", scopeKey: "z", experimentId: "e3", verdict: "no_change", relativeChange: 0.1, items: 20, playbookDecision: "pending", decidedAt: "2026-09-28T12:00:00Z" },
+        { channel: "D", scopeKey: "w", experimentId: "e4", verdict: "inconclusive", relativeChange: null, items: 8, playbookDecision: "pending", decidedAt: "2026-09-28T13:00:00Z" },
+      ],
+    });
+    expect(description).toContain("Summary: 1 win, 1 loss, 1 no change, 1 inconclusive.");
+  });
 });
 
 describe("the numbers the CRM reports for goals", () => {
