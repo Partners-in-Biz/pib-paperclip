@@ -12,7 +12,7 @@ import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
 import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, RETRO_REFERENCE } from "../src/skill-references.js";
-import { skillVersion } from "@partnersinbiz/pib-plugin-kit";
+import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
 import { routineFailedCheck } from "@partnersinbiz/pib-plugin-kit";
@@ -252,6 +252,17 @@ describe("the Operator's references (Wave 3)", () => {
     expect(gates).not.toMatch(/Run acceptance now/i);
     expect(gates).toContain("open an issue for the Acceptance agent");
     expect(gates).toContain("The Cockpit has no Run button");
+  });
+
+  it("the quality-gates reference carries the creative bar with the weights the kit scores by", () => {
+    const gates = operator.files!.find((f) => f.path === "references/quality-gates.md")!.content;
+    expect(gates).toContain("## The creative bar");
+    for (const [part, points] of Object.entries(CREATIVE_RUBRIC_WEIGHTS)) {
+      expect(gates, part).toMatch(new RegExp(`\\| ${part} \\| ${points} \\|`, "i"));
+    }
+    expect(gates).toContain(`${Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0)} points at most`);
+    expect(gates).toContain(`passes at ${CREATIVE_PASS_SCORE} or more`);
+    for (const rule of ["bans", "approved wording", "media rule", "alt text"]) expect(gates, rule).toContain(rule);
   });
 
   it("a change to a reference changes the skill's version, so every company's copy is brought up to date", () => {
