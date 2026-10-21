@@ -58,6 +58,23 @@ const nowIso = () => new Date().toISOString();
 function evalExpr(raw: string, params: unknown[], row?: Row): unknown {
   const expr = raw.trim();
   let m: RegExpExecArray | null;
+  // Handle COALESCE(expr1, expr2, ...) - return first non-null value
+  if ((m = /^COALESCE\((.+)\)$/i.exec(expr))) {
+    const args = splitTop(m[1]!, /^,/).map((arg) => evalExpr(arg, params, row));
+    for (const arg of args) if (arg != null) return arg;
+    return null;
+  }
+  // Handle CASE WHEN ... THEN ... ELSE ... END
+  if ((m = /^CASE\s+WHEN\s+(.+?)\s+THEN\s+(.+?)(?:\s+ELSE\s+(.+?))?\s+END$/i.exec(expr))) {
+    const condition = m[1]!;
+    const thenExpr = m[2]!;
+    const elseExpr = m[3];
+    // Evaluate the condition
+    const condResult = evalCondition(condition, params, row);
+    if (condResult) return evalExpr(thenExpr, params, row);
+    if (elseExpr) return evalExpr(elseExpr, params, row);
+    return null;
+  }
   if ((m = /^\$(\d+)(?:::(\w+))?$/.exec(expr))) {
     const value = params[Number(m[1]) - 1];
     if (m[2] === "jsonb" && typeof value === "string") return JSON.parse(value);
@@ -83,6 +100,18 @@ function evalExpr(raw: string, params: unknown[], row?: Row): unknown {
   if (row && (m = /^EXCLUDED\.(\w+)$/i.exec(expr))) return row[m[1]!];
   if (row && (m = /^(?:\w+\.)?(\w+)$/.exec(expr)) && m[1]! in row) return row[m[1]!];
   throw new Error(`fake db: unsupported expression "${expr}"`);
+}
+
+function evalCondition(cond: string, params: unknown[], row?: Row): boolean {
+  const expr = cond.trim();
+  let m: RegExpExecArray | null;
+  if ((m = /^(?:\w+\.)?(\w+)\s+IS\s+NULL$/i.exec(expr))) return row?.[m[1]!] == null;
+  if ((m = /^(?:\w+\.)?(\w+)\s+IS\s+NOT\s+NULL$/i.exec(expr))) return row?.[m[1]!] != null;
+  if ((m = /^(?:\w+\.)?(\w+)\s+(=|<>)\s+(.+)$/.exec(expr))) {
+    const value = evalExpr(m[3]!, params, row);
+    return m[2] === "=" ? row?.[m[1]!] === value : row?.[m[1]!] !== value;
+  }
+  throw new Error(`fake db: unsupported condition in CASE: "${expr}"`);
 }
 
 function timeOf(value: unknown): number {
