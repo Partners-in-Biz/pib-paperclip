@@ -537,6 +537,7 @@ const plugin = definePlugin({
 
     // Event handler for Drive save requests from other plugins (kit's driveSave)
     // The kit emits this bare event; SDK types don't include it, so we cast the event name
+    // SDK event typing does not accept this bare kit event name
     ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event: PluginEvent) => {
       const { companyId } = event;
       const payload = (event.payload as Record<string, unknown> | undefined) || {};
