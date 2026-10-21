@@ -20,6 +20,7 @@ import {
   registerCrmProjection,
   registerCrmSiteProjection,
   registerDriveReplies,
+  registerGrowthTools,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -30,6 +31,7 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
+  GROWTH_TOOL_NAMES,
 } from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
@@ -80,7 +82,9 @@ import { routineViews, saveRoutineReport } from "./service/routines.js";
 import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./service/site.js";
 import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
-import { SEO_TOOLS } from "./tools.js";
+import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
+import { seoGrowthToolsHost } from "./growth-host.js";
+import { measureExperimentsJob } from "./growth-measure.js";
 
 let env: Env | null = null;
 
@@ -92,8 +96,10 @@ const plugin = definePlugin({
     env = e;
     registerDriveReplies(ctx);
     for (const tool of SEO_TOOLS) {
+      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
     }
+    registerGrowthTools(ctx, seoGrowthToolsHost(ctx));
     registerActions(e);
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
@@ -136,6 +142,10 @@ const plugin = definePlugin({
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
+    });
+    ctx.jobs.register("measure-experiments", async () => {
+      const summary = await measureExperimentsJob(ctx);
+      if (summary.experiments) ctx.logger.info("Growth experiments measured", summary);
     });
     // The Mailbox's answer to an approval email draft request: the Gmail link goes on the sprint's Needs you.
     ctx.events.on(DRAFT_RESULT_EVENT, async (event) => {

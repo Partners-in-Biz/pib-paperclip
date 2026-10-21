@@ -15,7 +15,7 @@ import {
 } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
-import { SEO_TOOLS } from "./tools.js";
+import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
 
 export const AGENT_INSTRUCTIONS = `# SEO Specialist — Partners in Biz
 
@@ -104,7 +104,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "seo", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "issue_comments"] },
-  tools: SEO_TOOLS,
+  tools: [...SEO_TOOLS, ...GROWTH_TOOLS],
   jobs: [
     {
       jobKey: DAILY_JOB_KEY,
@@ -123,6 +123,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Weekly SEO review",
       description: "Mondays 07:00 SAST: detectors, health, capped optimization proposals and one approval issue per sprint.",
       schedule: "0 5 * * 1",
+    },
+    {
+      jobKey: "measure-experiments",
+      displayName: "Measure experiments (Growth Lab)",
+      description: "Judges each running experiment on the GSC metrics of its pages, writes the verdict and drafts a playbook change.",
+      schedule: "37 3 * * *",
     },
   ],
   apiRoutes: [
