@@ -1,9 +1,10 @@
 import { createHash, createHmac } from "node:crypto";
 
 export interface SignInput {
-  method: "PUT" | "HEAD";
+  method: "PUT" | "HEAD" | "GET" | "DELETE";
   host: string;
   path: string; // already URI-encoded, starts with /
+  query?: Record<string, string>; // query params to sign
   headers: Record<string, string>; // extra headers to sign, lowercase names
   payloadSha256: string; // hex of body
   accessKeyId: string;
@@ -20,6 +21,14 @@ export function sha256Hex(data: Uint8Array | string): string {
 export function uriEncodePath(key: string): string {
   const parts = key.split("/");
   return parts.map((part) => encodeURIComponent(part)).join("/");
+}
+
+export function canonicalQuery(query?: Record<string, string>): string {
+  if (!query || Object.keys(query).length === 0) return "";
+  const pairs = Object.keys(query)
+    .sort()
+    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(query[key])}`);
+  return pairs.join("&");
 }
 
 export function signingKey(secret: string, dateStamp: string, region: string, service: string): Buffer {
@@ -57,8 +66,13 @@ export function signR2Headers(i: SignInput): Record<string, string> {
   // Signed headers: sorted lowercase header names
   const signedHeaders = sortedHeaderNames.join(";");
 
+  // Canonical query string
+  const canonicalQueryString = canonicalQuery(i.query);
+
   // Canonical request
-  const canonicalRequest = [i.method, i.path, "", canonicalHeaders, signedHeaders, i.payloadSha256].join("\n");
+  const canonicalRequest = [i.method, i.path, canonicalQueryString, canonicalHeaders, signedHeaders, i.payloadSha256].join(
+    "\n"
+  );
 
   // Hash canonical request
   const canonicalRequestHash = sha256Hex(canonicalRequest);
