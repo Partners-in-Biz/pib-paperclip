@@ -225,7 +225,7 @@ export interface StoredFeature {
 export type SocialFeaturesPort = FeaturesPort<TaggablePost, FeatureValue, StoredFeature, ExistingScore, ScoreWrite, ScoredPostRow, MetricRow, ExperimentPost>;
 
 /** Programs, playbook versions, experiments, items and changes. */
-export type CoreGrowthStore = KitGrowthStore<{
+export interface CoreGrowthTypes {
   program: Program;
   newProgram: NewProgram;
   programPatch: ProgramPatch;
@@ -239,6 +239,8 @@ export type CoreGrowthStore = KitGrowthStore<{
   changeStatus: PlaybookChange["status"];
   newChange: NewChange;
   changePatch: ChangePatch;
-}>;
+}
+
+export type CoreGrowthStore = KitGrowthStore<CoreGrowthTypes>;
 
 export type GrowthStore = CoreGrowthStore & SocialFeaturesPort;
