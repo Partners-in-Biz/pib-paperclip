@@ -119,12 +119,33 @@ export async function upsertLedger(env: Env, companyId: string, input: LedgerInp
 }
 
 /** The event handler: a malformed or companyless event is dropped (false), never thrown. */
+/**
+ * The kit emits `GrowthVerdictEvent` in snake_case, with `scope_key` as `<kind>:<id>` (null for the company's own work); the ledger works in
+ * camelCase with the full scope key. Already-camelCase payloads pass through.
+ */
+export function ledgerPayloadFromEvent(payload: Record<string, unknown>): Record<string, unknown> {
+  if (!("experiment_id" in payload) && !("scope_key" in payload)) return payload;
+  const scope = payload.scope_key;
+  return {
+    channel: payload.channel,
+    scope: scope === null || scope === undefined || scope === "" ? "own" : typeof scope === "string" && /^(own|client:|product:|book:)/.test(scope) ? scope : `client:${String(scope)}`,
+    experimentId: payload.experiment_id,
+    verdict: payload.verdict,
+    relativeChange: payload.relative_change,
+    items: payload.items,
+    minPerArm: payload.min_per_arm,
+    playbookDecision: payload.playbook_decision,
+    decidedBy: payload.decided_by,
+    decidedAt: payload.decided_at,
+  };
+}
+
 export async function onGrowthVerdictEvent(env: Env, pluginKey: string, event: Pick<PluginEvent, "companyId" | "payload">): Promise<boolean> {
   const payload = event.payload;
   if (!event.companyId || !payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   let input: LedgerInput;
   try {
-    input = parseLedgerInput(payload as Record<string, unknown>, env.now(), { channel: pluginKey.split(".").pop() });
+    input = parseLedgerInput(ledgerPayloadFromEvent(payload as Record<string, unknown>), env.now(), { channel: pluginKey.split(".").pop() });
   } catch (error) {
     env.ctx.logger.info("Growth verdict dropped", { pluginKey, error: error instanceof Error ? error.message : String(error) });
     return false;

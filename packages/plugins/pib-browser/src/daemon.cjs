@@ -154,14 +154,13 @@ function buildVerifyApproval({ apiBase, store, clock, fetch }) {
   });
 }
 
-async function main() {
-  const config = loadConfig(process.env);
+function buildDaemon(env = process.env, deps = {}) {
+  const config = loadConfig(env);
 
   const { loadPolicy } = require('./policy.cjs');
   const policyResult = loadPolicy(config.policyPath);
   if (!policyResult.ok) {
-    console.error('Policy load failed:', policyResult.reason);
-    process.exit(1);
+    throw new Error('Policy load failed: ' + policyResult.reason);
   }
 
   let sites = null;
@@ -169,8 +168,7 @@ async function main() {
     try {
       sites = JSON.parse(fs.readFileSync(config.sitesPath, 'utf8'));
     } catch (e) {
-      console.error('Sites load failed:', e.message);
-      process.exit(1);
+      throw new Error('Sites load failed: ' + e.message);
     }
   }
 
@@ -182,13 +180,25 @@ async function main() {
     apiBase: config.apiBase,
     store,
     clock: dispatchClock,
-    fetch: globalThis.fetch
+    fetch: deps.fetch || globalThis.fetch
+  });
+
+  // Set up browser env: use provided env or default headless to '0' (headed)
+  const browserEnv = {
+    ...env,
+    PIB_BROWSER_HEADLESS: env.PIB_BROWSER_HEADLESS ?? '0'
+  };
+
+  const { createPlaywrightBrowser } = require('./driver-playwright.cjs');
+  const browser = createPlaywrightBrowser({
+    env: browserEnv,
+    playwright: deps.playwright
   });
 
   const { createDispatcher } = require('./dispatch.cjs');
   const { dispatch } = createDispatcher({
-    authenticate: (req) => authFn(req, { fetch: globalThis.fetch }),
-    browser: null,
+    authenticate: (req) => authFn(req, { fetch: deps.fetch || globalThis.fetch }),
+    browser,
     policy: policyResult.policy,
     sites,
     clock: () => new Date(),
@@ -197,13 +207,23 @@ async function main() {
     checkFill
   });
 
-  const server = createServer({ dispatch, logger: () => {} });
+  return { config, dispatch, browser, policyResult };
+}
 
+async function main() {
   try {
-    await listen(server, config.socketPath, config.socketMode);
-    console.log(`Daemon listening on ${config.socketPath}`);
+    const { config, dispatch } = buildDaemon(process.env);
+    const server = createServer({ dispatch, logger: () => {} });
+
+    try {
+      await listen(server, config.socketPath, config.socketMode);
+      console.log(`Daemon listening on ${config.socketPath}`);
+    } catch (err) {
+      console.error('Failed to start daemon:', err.message);
+      process.exit(1);
+    }
   } catch (err) {
-    console.error('Failed to start daemon:', err.message);
+    console.error('Daemon error:', err.message);
     process.exit(1);
   }
 }
@@ -215,4 +235,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadConfig, createServer, listen, buildVerifyApproval };
+module.exports = { loadConfig, createServer, listen, buildVerifyApproval, buildDaemon };
