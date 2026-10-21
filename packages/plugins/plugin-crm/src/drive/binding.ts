@@ -384,65 +384,25 @@ export async function driveBindingStatus(
 
 /**
  * Handler for Setup plugin's drive.binding.set event.
- * Called when Setup plugin requests CRM to bind a Shared Drive.
- * Reuses the same logic as driveBindingSet tool but as an event handler.
+ * Thin wrapper around driveBindingSet that catches errors and logs.
+ * Never throws; validation and emission are handled by driveBindingSet.
  */
 export async function onDriveBindingSetEvent(
   ctx: PluginContext,
   event: { companyId: string; payload: Record<string, unknown> },
 ): Promise<void> {
   const companyId = event.companyId;
-  const sharedDriveId = event.payload.sharedDriveId as string | undefined;
+  const sharedDriveId = event.payload.sharedDriveId;
 
-  if (!sharedDriveId) {
-    ctx.logger.info("drive.binding.set event received without sharedDriveId", { companyId });
+  // Validate payload.sharedDriveId is a non-empty string
+  if (typeof sharedDriveId !== "string" || !sharedDriveId.trim()) {
+    ctx.logger.info("drive.binding.set event rejected: sharedDriveId must be a non-empty string", { companyId });
     return;
   }
 
   try {
-    const cfg = await readConfig(ctx, companyId);
-
-    // Check if config-pinned
-    const configSharedDriveId = (cfg.drive as { sharedDriveId?: string })?.sharedDriveId || "";
-    if (configSharedDriveId !== "") {
-      ctx.logger.info("drive.binding.set event ignored: company has pinned Shared Drive in settings", {
-        companyId,
-        sharedDriveId,
-      });
-      return;
-    }
-
-    // Get the candidates from state
-    const candidatesData = await ctx.state.get(CANDIDATES_STATE_KEY(companyId));
-    const candidates = (Array.isArray(candidatesData) ? candidatesData : []) as Array<{ id: string; name: string }>;
-
-    // Verify sharedDriveId is in the candidate list
-    const found = candidates.find((c) => c.id === sharedDriveId);
-    if (!found) {
-      ctx.logger.info("drive.binding.set event rejected: id not in discovered candidates", {
-        companyId,
-        sharedDriveId,
-      });
-      return;
-    }
-
-    // Store the binding
-    const newBinding: BindingState = {
-      sharedDriveId,
-      name: found.name,
-      setBoundAt: new Date().toISOString(),
-    };
-    await ctx.state.set(BINDING_STATE_KEY(companyId), newBinding);
-
-    // Emit binding event
-    await emitBindingEvent(ctx, companyId, {
-      companyId,
-      connected: true,
-      bound: true,
-      sharedDriveId,
-      serviceAccountIsMember: false,
-      candidates,
-    });
+    // Call the existing driveBindingSet function (it validates, persists, and emits)
+    await driveBindingSet(ctx, { companyId } as Viewer, { sharedDriveId });
   } catch (error) {
     ctx.logger.info("drive.binding.set event handler failed", {
       companyId,
